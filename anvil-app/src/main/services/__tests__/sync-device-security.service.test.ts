@@ -27,7 +27,11 @@ import {
   provisionAccountKey,
   rotateAccountKey,
 } from '../sync-keyring.service';
-import { createRecoverySetup, prepareRecoveryUnlock, refreshRecoveryEnvelope } from '../sync-recovery.service';
+import {
+  createRecoverySetup,
+  prepareRecoveryUnlock,
+  refreshRecoveryEnvelope,
+} from '../sync-recovery.service';
 import {
   setNewDeviceTrustPolicy,
   refreshDeviceRecovery,
@@ -39,7 +43,9 @@ import {
 const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
 const ENROLLMENT = 'enrollment-1';
 
-function context(rpc: (operation: string, params: unknown) => Promise<unknown>): SyncDeviceSecurityContext {
+function context(
+  rpc: (operation: string, params: unknown) => Promise<unknown>,
+): SyncDeviceSecurityContext {
   return {
     scope: SCOPE,
     enrollmentId: ENROLLMENT,
@@ -149,7 +155,9 @@ describe('sync device security orchestration', () => {
     const backendSecurityModulePath = '../../../../cloud/backend/src/device-security';
     const backendSecurity = await import(backendSecurityModulePath);
     expect(backendSecurity.parseSecurityProof(proof.proof)).toEqual(proof.proof);
-    expect(backendSecurity.parseSecurityProof({ ...proof.proof, publicKey: setup.publicKey })).toBeNull();
+    expect(
+      backendSecurity.parseSecurityProof({ ...proof.proof, publicKey: setup.publicKey }),
+    ).toBeNull();
   });
 
   it('leaves key custody unchanged when the backend rejects recovery', async () => {
@@ -165,7 +173,11 @@ describe('sync device security orchestration', () => {
           policy: 'auto-trust-authenticated',
           revision: 2,
           trustState: 'pending',
-          recovery: { envelope: setup.envelope, recoveryId: setup.recoveryId, verifierPublicKey: setup.publicKey },
+          recovery: {
+            envelope: setup.envelope,
+            recoveryId: setup.recoveryId,
+            verifierPublicKey: setup.publicKey,
+          },
           requiresRecovery: true,
         };
       }
@@ -187,7 +199,9 @@ describe('sync device security orchestration', () => {
       }
       throw new Error('recovery rejected');
     });
-    await expect(unlockDeviceRecovery(context(rpc), setup.code)).rejects.toThrow('recovery rejected');
+    await expect(unlockDeviceRecovery(context(rpc), setup.code)).rejects.toThrow(
+      'recovery rejected',
+    );
     expect(currentAccountKey(SCOPE)).toBeNull();
     expect(db.prepare('SELECT COUNT(*) AS n FROM sync_recovery_secrets').get()).toEqual({ n: 0 });
   });
@@ -237,10 +251,16 @@ describe('sync device security orchestration', () => {
         revision: 2,
         trustState: 'trusted',
         recoveryValid: true,
-        recovery: { envelope: setup.envelope, recoveryId: setup.recoveryId, verifierPublicKey: setup.publicKey },
+        recovery: {
+          envelope: setup.envelope,
+          recoveryId: setup.recoveryId,
+          verifierPublicKey: setup.publicKey,
+        },
       };
     });
-    await expect(refreshDeviceRecovery(context(rpc))).rejects.toThrow('replaced after device revocation');
+    await expect(refreshDeviceRecovery(context(rpc))).rejects.toThrow(
+      'replaced after device revocation',
+    );
     expect(rpc).toHaveBeenCalledTimes(1);
   });
 
@@ -258,7 +278,11 @@ describe('sync device security orchestration', () => {
         revision: 2,
         trustState: 'pending',
         recoveryInvalidated: true,
-        recovery: { envelope: setup.envelope, recoveryId: setup.recoveryId, verifierPublicKey: setup.publicKey },
+        recovery: {
+          envelope: setup.envelope,
+          recoveryId: setup.recoveryId,
+          verifierPublicKey: setup.publicKey,
+        },
       };
     });
     await expect(unlockDeviceRecovery(context(rpc), setup.code)).rejects.toThrow(
@@ -334,8 +358,11 @@ describe('sync device security orchestration', () => {
     expect(currentAccountKey(SCOPE)?.version).toBe(2);
     expect(currentRecoveryId(SCOPE)).not.toBe(oldSetup.recoveryId);
     expect(
-      (db.prepare('SELECT invalidated_at FROM sync_recovery_secrets').get() as { invalidated_at: string | null })
-        .invalidated_at,
+      (
+        db.prepare('SELECT invalidated_at FROM sync_recovery_secrets').get() as {
+          invalidated_at: string | null;
+        }
+      ).invalidated_at,
     ).toBeNull();
     expect(acceptedEnvelope).not.toBeNull();
     const unlocked = prepareRecoveryUnlock(SCOPE, result.recoveryCode, acceptedEnvelope!);
@@ -353,7 +380,11 @@ describe('sync device security orchestration', () => {
           policy: 'require-approval',
           revision: 5,
           trustState: 'trusted',
-          recovery: { envelope: setup.envelope, recoveryId: setup.recoveryId, verifierPublicKey: setup.publicKey },
+          recovery: {
+            envelope: setup.envelope,
+            recoveryId: setup.recoveryId,
+            verifierPublicKey: setup.publicKey,
+          },
         };
       }
       if (operation === 'security.challenge') {
@@ -394,7 +425,11 @@ describe('sync device security orchestration', () => {
           policy: 'auto-trust-authenticated',
           revision: 2,
           trustState: 'pending',
-          recovery: { envelope: setup.envelope, recoveryId: setup.recoveryId, verifierPublicKey: setup.publicKey },
+          recovery: {
+            envelope: setup.envelope,
+            recoveryId: setup.recoveryId,
+            verifierPublicKey: setup.publicKey,
+          },
         };
       }
       if (operation === 'security.challenge') {
@@ -420,7 +455,9 @@ describe('sync device security orchestration', () => {
     fenced.assertCurrent = () => {
       if (!current) throw new Error('session generation changed');
     };
-    await expect(unlockDeviceRecovery(fenced, setup.code)).rejects.toThrow('session generation changed');
+    await expect(unlockDeviceRecovery(fenced, setup.code)).rejects.toThrow(
+      'session generation changed',
+    );
     expect(currentAccountKey(SCOPE)).toBeNull();
     expect(db.prepare('SELECT COUNT(*) AS n FROM sync_recovery_secrets').get()).toEqual({ n: 0 });
   });

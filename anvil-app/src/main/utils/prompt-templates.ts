@@ -20,10 +20,7 @@ export function loadPromptTemplate(
 }
 
 /** Substitute {{variables}} into raw template text (used by editable agents). */
-export function renderPromptTemplate(
-  template: string,
-  variables: Record<string, string>,
-): string {
+export function renderPromptTemplate(template: string, variables: Record<string, string>): string {
   let rendered = template;
   for (const [key, value] of Object.entries(variables)) {
     rendered = rendered.replaceAll(`{{${key}}}`, value);

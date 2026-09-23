@@ -68,11 +68,30 @@ import {
   RECOVERY_BUNDLE_MAX_KEYS,
   type RecoveryKeyBundle,
 } from '../../../cloud/contract/device-security.js';
-import type { SyncOperation, SyncScope } from '../../shared/sync-mesh.js';
+import {
+  SYNC_ENTITY_SCHEMA_VERSIONS,
+  type SyncOperation,
+  type SyncScope,
+} from '../../shared/sync-mesh.js';
 import { safeStorage } from 'electron';
 import { getDb } from '../db/database.js';
-import { canonicalJson, recordLocalChange } from './sync-persistence.service.js';
-import { applyRemoteEntityPayload } from './sync-entity-domain.js';
+import {
+  acknowledgeBindingLocalEdits,
+  canonicalJson,
+  deletePendingOutboxRows,
+  getBinding,
+  insertUnresolvedConflict,
+  listMutableOutboxRows,
+  recordLocalChange,
+  setBindingBase,
+  setBindingQuarantine,
+} from './sync-persistence.service.js';
+import {
+  applyRemoteEntityPayload,
+  entityPayloadIssue,
+  isSupportedEntityType,
+  readEntityPayloadJson,
+} from './sync-entity-domain.js';
 import { encryptSecret, decryptSecret } from './auth.service.js';
 
 const X25519_SPKI_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
@@ -1295,6 +1314,26 @@ export function sealJsonEnvelope(
   return gcmSeal(key, aad, Buffer.from(canonicalJson(value), 'utf8'));
 }
 
+/** Opens a DSK-sealed JSON envelope after authenticating its exact AAD. */
+export function unsealJsonEnvelope(
+  key: Buffer,
+  aad: string,
+  envelope: { enc: string; nonce: string; ct: string },
+): unknown {
+  if (key.byteLength !== 32 || envelope.enc !== SEALED_ENTITY_ALG) {
+    throw new Error('Malformed sealed JSON envelope');
+  }
+  const plaintext = gcmOpen(key, aad, envelope.nonce, envelope.ct);
+  if (plaintext.byteLength > 512 * 1024) {
+    throw new Error('Sealed JSON envelope is too large');
+  }
+  try {
+    return JSON.parse(plaintext.toString('utf8')) as unknown;
+  } catch {
+    throw new Error('Sealed JSON envelope is not valid JSON');
+  }
+}
+
 function unwrapKeyMaterial(
   scope: SyncScope,
   enrollmentId: string,
@@ -2297,8 +2336,35 @@ export function retryQuarantinedEntities(scope: SyncScope): void {
   }>;
   for (const row of rows) {
     let envelope: unknown;
+    let remoteRevision: number | null = null;
+    let schemaVersion: number | null = null;
     try {
-      envelope = JSON.parse(row.quarantine_json);
+      const parsed = JSON.parse(row.quarantine_json) as unknown;
+      if (
+        parsed !== null &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        'envelope' in parsed &&
+        'revision' in parsed
+      ) {
+        const wrapped = parsed as {
+          envelope: unknown;
+          revision: unknown;
+          schemaVersion?: unknown;
+        };
+        envelope = wrapped.envelope;
+        remoteRevision =
+          typeof wrapped.revision === 'number' && Number.isInteger(wrapped.revision)
+            ? wrapped.revision
+            : null;
+        schemaVersion =
+          typeof wrapped.schemaVersion === 'number' && Number.isInteger(wrapped.schemaVersion)
+            ? wrapped.schemaVersion
+            : null;
+      } else {
+        // Older quarantines stored the sealed envelope directly.
+        envelope = parsed;
+      }
     } catch {
       continue;
     }
@@ -2310,20 +2376,51 @@ export function retryQuarantinedEntities(scope: SyncScope): void {
         envelope,
       );
       const domainJson = canonicalJson(payload);
-      getDb()
-        .prepare(
-          `UPDATE sync_bindings SET quarantine_json = NULL, base_payload_json = ?
-           WHERE backend_id = ? AND account_id = ? AND dataset_epoch = ?
-             AND entity_type = ? AND entity_id = ?`,
-        )
-        .run(
-          domainJson,
-          scope.backendId,
-          scope.accountId,
-          scope.datasetEpoch,
-          row.entity_type,
-          row.entity_id,
-        );
+      // A scan or pull can only retry a sealed envelope once its schema is
+      // still understood. Leave newer/unknown schema revisions quarantined;
+      // decrypting them must not silently project data this build cannot
+      // validate.
+      if (
+        schemaVersion !== null &&
+        (!isSupportedEntityType(row.entity_type) ||
+          schemaVersion !== SYNC_ENTITY_SCHEMA_VERSIONS[row.entity_type] ||
+          entityPayloadIssue(row.entity_type, payload) !== null)
+      ) {
+        continue;
+      }
+      const binding = getBinding(scope, row.entity_type, row.entity_id);
+      if (binding === null) continue;
+      const localPayloadJson = readEntityPayloadJson(row.entity_type, row.entity_id);
+      const dirty =
+        binding.localEditGeneration > binding.acknowledgedGeneration ||
+        listMutableOutboxRows(scope, row.entity_type, row.entity_id).length > 0;
+      setBindingQuarantine(scope, row.entity_type, row.entity_id, null);
+      if (dirty && localPayloadJson !== domainJson) {
+        const kind: 'edit-edit' | 'delete-edit' =
+          localPayloadJson === null ? 'delete-edit' : 'edit-edit';
+        insertUnresolvedConflict(scope, {
+          basePayloadJson: binding.basePayloadJson,
+          localPayloadJson,
+          remotePayloadJson: domainJson,
+          baseRevision: binding.baseRevision,
+          remoteRevision: remoteRevision ?? binding.baseRevision,
+          entityType: row.entity_type,
+          entityId: row.entity_id,
+          kind,
+        });
+        continue;
+      }
+      setBindingBase(
+        scope,
+        row.entity_type,
+        row.entity_id,
+        remoteRevision ?? binding.baseRevision,
+        domainJson,
+      );
+      if (dirty) {
+        acknowledgeBindingLocalEdits(scope, row.entity_type, row.entity_id);
+        deletePendingOutboxRows(scope, row.entity_type, row.entity_id);
+      }
       applyRemoteEntityPayload(row.entity_type, row.entity_id, payload);
     } catch {
       // Still undecryptable — leave it quarantined.

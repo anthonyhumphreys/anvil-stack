@@ -18,7 +18,17 @@ function git(dir: string, ...args: string[]): string {
 function makeSourceRepo(suffix: string): { repoDir: string; head: string } {
   const repoDir = mkdtempSync(join(tmpdir(), `anvil-wt-src-${suffix}-`));
   git(repoDir, 'init');
-  git(repoDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init');
+  git(
+    repoDir,
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=t',
+    'commit',
+    '--allow-empty',
+    '-m',
+    'init',
+  );
   writeFileSync(join(repoDir, 'file.txt'), 'base');
   git(repoDir, 'add', 'file.txt');
   git(repoDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'add file');

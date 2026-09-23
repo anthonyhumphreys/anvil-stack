@@ -363,10 +363,7 @@ export class FakeAccountCoordinator {
     maxBytes: number;
   }): SyncScanPageResult {
     const scan = this.loadScan(params.scanId);
-    const after =
-      params.cursor === null
-        ? null
-        : (JSON.parse(params.cursor) as [string, string]);
+    const after = params.cursor === null ? null : (JSON.parse(params.cursor) as [string, string]);
     const rows = [...this.entities.entries()]
       .filter(([, row]) => row.operation !== 'delete')
       .map(([key, row]) => {

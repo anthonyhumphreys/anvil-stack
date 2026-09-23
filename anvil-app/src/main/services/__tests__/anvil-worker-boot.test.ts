@@ -25,21 +25,19 @@ describe('anvil-worker boot payload', () => {
 
   it('rejects non-JSON and wrong document kinds', () => {
     expect(() => parseBootstrapPayload('not json')).toThrow('not valid JSON');
-    expect(() =>
-      parseBootstrapPayload(JSON.stringify({ kind: 'anvil.agent-sandbox' })),
-    ).toThrow('unrecognized bootstrap document');
+    expect(() => parseBootstrapPayload(JSON.stringify({ kind: 'anvil.agent-sandbox' }))).toThrow(
+      'unrecognized bootstrap document',
+    );
   });
 
   it('rejects documents missing required fields', () => {
     for (const field of ['environmentId', 'backendUrl', 'enrollmentCode'] as const) {
       const doc = { ...VALID, [field]: '' };
-      expect(() => parseBootstrapPayload(JSON.stringify(doc))).toThrow(
-        `missing ${field}`,
-      );
+      expect(() => parseBootstrapPayload(JSON.stringify(doc))).toThrow(`missing ${field}`);
     }
-    expect(() =>
-      parseBootstrapPayload(JSON.stringify({ ...VALID, ttlSeconds: 0 })),
-    ).toThrow('ttlSeconds');
+    expect(() => parseBootstrapPayload(JSON.stringify({ ...VALID, ttlSeconds: 0 }))).toThrow(
+      'ttlSeconds',
+    );
   });
 
   it('fails closed on keying material — pairing payloads are never bootstrap', () => {
@@ -79,11 +77,8 @@ describe('anvil-worker boot payload', () => {
     ).toBe('env_env');
 
     expect(
-      readBootstrap(
-        ['node', 'boot.mjs'],
-        { ANVIL_BOOTSTRAP_FILE: '/tmp/boot.json' },
-        () => fileDoc,
-      ).environmentId,
+      readBootstrap(['node', 'boot.mjs'], { ANVIL_BOOTSTRAP_FILE: '/tmp/boot.json' }, () => fileDoc)
+        .environmentId,
     ).toBe('env_file');
   });
 

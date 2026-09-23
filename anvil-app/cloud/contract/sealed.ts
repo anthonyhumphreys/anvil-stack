@@ -18,6 +18,7 @@
 //     URL fragment (never sent to the server).
 
 import { canonicalizeJson } from './sync';
+import type { BrowserWorkspaceBinding } from './browser-workspace';
 
 export const SEALED_ENTITY_ALG = 'aes-256-gcm';
 export const SEALED_NONCE_BYTES = 12;
@@ -400,6 +401,19 @@ export interface DashboardGrantInner {
   scopes: string[];
   /** ISO-8601 grant expiry — the snapshot stream dies with it. */
   expiresAt: string;
+  /**
+   * browser-workspace/1 bindings. Optional for wire compatibility; a grant
+   * without both lists has no workspace action authority.
+   */
+  workspaceBindings?: BrowserWorkspaceBinding[];
+  /** The single Desktop-selected workspace binding used by browser-workspace/1. */
+  workspace?: { workspaceId: string; repoIds: string[] };
+  /** Enrollment that issued the grant; old grants without it cannot execute commands. */
+  enrollmentId?: string;
+  /** @deprecated use workspaceBindings. */
+  workspaceIds?: string[];
+  /** @deprecated use workspaceBindings. */
+  repositoryIds?: string[];
 }
 
 /**

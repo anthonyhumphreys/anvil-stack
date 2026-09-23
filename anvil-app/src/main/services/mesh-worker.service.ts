@@ -119,6 +119,7 @@ import type { MeshWorkerStatus } from '../../shared/sync-runtime.js';
 
 interface MeshWorkerContext {
   apiUrl: string;
+  backendUrl?: string;
   accessToken: string;
   enrollmentId: string;
   /** Sync scope for E2E unsealing (handoff checkpoints); optional. */
@@ -225,6 +226,7 @@ function provisionerScope(): ProvisionerScope | null {
     accountId: ctx.scope.accountId,
     enrollmentId: ctx.enrollmentId,
     apiUrl: ctx.apiUrl,
+    ...(ctx.backendUrl === undefined ? {} : { backendUrl: ctx.backendUrl }),
     accessToken: ctx.accessToken,
   };
 }

@@ -72,6 +72,17 @@ describe('terminal service sessions', () => {
     expect(listTerminals('workspace-b')).toEqual([]);
   });
 
+  it('supports an isolated owner key without changing the legacy terminal identity', () => {
+    const legacy = createTerminal('workspace-a', 'repo-a', '/repo-a');
+    const scoped = createTerminal('workspace-a', 'repo-a', '/repo-a', {
+      sessionKey: 'browser-grant-a',
+    });
+
+    expect(scoped.terminalId).not.toBe(legacy.terminalId);
+    expect(ptyState.spawned).toHaveLength(2);
+    expect(listTerminals('workspace-a')).toHaveLength(2);
+  });
+
   it('buffers sequenced output for a renderer that attaches later', () => {
     const session = createTerminal('workspace-a', 'repo-a', '/repo-a');
     ptyState.spawned[0].emitData('first');

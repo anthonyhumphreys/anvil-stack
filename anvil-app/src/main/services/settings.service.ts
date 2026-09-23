@@ -790,6 +790,8 @@ function defaultSettings(): AppSettings {
   };
 }
 
+// Crash-reporting (Sentry) consent only. Activation metrics are local-only
+// rows in the activation_events table and are independent of this flag.
 export function isTelemetryEnabled(): boolean {
   const row = getDb().prepare('SELECT telemetry_enabled FROM settings WHERE id = 1').get() as
     | { telemetry_enabled: number | null }

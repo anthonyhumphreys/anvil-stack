@@ -61,9 +61,31 @@ export interface BootstrapExplanation {
 }
 
 const PACKAGE_MANAGERS = new Set([
-  'npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'uv', 'poetry', 'cargo', 'go',
-  'gem', 'bundler', 'composer', 'mvn', 'mvnw', 'gradle', 'gradlew', 'brew',
-  'apt', 'apt-get', 'dnf', 'yum', 'pacman', 'nuget', 'dotnet',
+  'npm',
+  'pnpm',
+  'yarn',
+  'bun',
+  'pip',
+  'pip3',
+  'uv',
+  'poetry',
+  'cargo',
+  'go',
+  'gem',
+  'bundler',
+  'composer',
+  'mvn',
+  'mvnw',
+  'gradle',
+  'gradlew',
+  'brew',
+  'apt',
+  'apt-get',
+  'dnf',
+  'yum',
+  'pacman',
+  'nuget',
+  'dotnet',
 ]);
 
 function stepSummary(step: BootstrapStep): string {
@@ -156,7 +178,13 @@ export function getBootstrapApproval(
       'SELECT id, workspace_id, digest, shell_approved, created_at FROM bootstrap_approvals WHERE workspace_id = ? AND digest = ?',
     )
     .get(workspaceId, digest) as
-    | { id: string; workspace_id: string; digest: string; shell_approved: number; created_at: string }
+    | {
+        id: string;
+        workspace_id: string;
+        digest: string;
+        shell_approved: number;
+        created_at: string;
+      }
     | undefined;
   if (!row) return null;
   return {
@@ -225,10 +253,7 @@ export function getWorkspaceBootstrap(workspaceId: string): BootstrapRecipe | nu
   }
 }
 
-export function setWorkspaceBootstrap(
-  workspaceId: string,
-  recipe: BootstrapRecipe | null,
-): void {
+export function setWorkspaceBootstrap(workspaceId: string, recipe: BootstrapRecipe | null): void {
   getDb()
     .prepare('UPDATE workspaces SET bootstrap_json = ?, updated_at = ? WHERE id = ?')
     .run(recipe === null ? null : JSON.stringify(recipe), nowIso(), workspaceId);
@@ -314,7 +339,14 @@ export function startBootstrapRun(input: {
   });
   void handle.done.then((result: BootstrapRunResult) => {
     for (const outcome of result.steps) {
-      updateStep.run(outcome.state, outcome.log || null, outcome.exitCode, nowIso(), runId, outcome.stepId);
+      updateStep.run(
+        outcome.state,
+        outcome.log || null,
+        outcome.exitCode,
+        nowIso(),
+        runId,
+        outcome.stepId,
+      );
     }
     finish.run(result.state, null, nowIso(), runId);
   });
@@ -330,7 +362,9 @@ export function getBootstrapRun(runId: string): BootstrapRunSummary | null {
     | undefined;
   if (!run) return null;
   const steps = db
-    .prepare('SELECT step_id, state, exit_code FROM bootstrap_run_steps WHERE run_id = ? ORDER BY rowid')
+    .prepare(
+      'SELECT step_id, state, exit_code FROM bootstrap_run_steps WHERE run_id = ? ORDER BY rowid',
+    )
     .all(runId) as Array<{ step_id: string; state: string; exit_code: number | null }>;
   return {
     id: run.id,
@@ -343,7 +377,9 @@ export function getBootstrapRun(runId: string): BootstrapRunSummary | null {
 
 export function listBootstrapRuns(workspaceId: string): BootstrapRunSummary[] {
   const rows = getDb()
-    .prepare('SELECT id FROM bootstrap_runs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 20')
+    .prepare(
+      'SELECT id FROM bootstrap_runs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 20',
+    )
     .all(workspaceId) as Array<{ id: string }>;
   return rows.map((r) => getBootstrapRun(r.id)).filter((r): r is BootstrapRunSummary => r !== null);
 }
@@ -418,7 +454,9 @@ export async function resolveWorkspaceCommits(
  * `unknown-outcome` — non-idempotent uncertainty requires inspection and
  * is never silently retried.
  */
-export async function recoverBootstrapRuns(checkoutRootFor: (workspaceId: string) => string | null): Promise<void> {
+export async function recoverBootstrapRuns(
+  checkoutRootFor: (workspaceId: string) => string | null,
+): Promise<void> {
   const db = getDb();
   const interrupted = db
     .prepare(`SELECT id, workspace_id, digest, state FROM bootstrap_runs WHERE state = 'running'`)
@@ -426,8 +464,7 @@ export async function recoverBootstrapRuns(checkoutRootFor: (workspaceId: string
   for (const run of interrupted) {
     const recipe = getWorkspaceBootstrap(run.workspace_id);
     const checkoutRoot = checkoutRootFor(run.workspace_id);
-    const verifySteps =
-      recipe?.steps.filter((s) => s.kind === 'verify') ?? [];
+    const verifySteps = recipe?.steps.filter((s) => s.kind === 'verify') ?? [];
     let postconditionsProven = false;
     if (recipe !== null && checkoutRoot !== null && verifySteps.length > 0) {
       const result = await runBootstrapRecipe(

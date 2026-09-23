@@ -176,10 +176,7 @@ describe('mesh-session provider driver', () => {
   it('resumes a prior provider thread via thread/resume', async () => {
     const fake = fakeAppServer();
     configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
-    const result = await runRemoteSessionTurn(
-      spec({ resumeThreadId: 'thr-prior-9' }),
-      HOOKS_BASE,
-    );
+    const result = await runRemoteSessionTurn(spec({ resumeThreadId: 'thr-prior-9' }), HOOKS_BASE);
     expect(result.providerThreadId).toBe('thr-prior-9');
     expect(fake.received.some((m) => m['method'] === 'thread/resume')).toBe(true);
     expect(fake.received.some((m) => m['method'] === 'thread/start')).toBe(false);
@@ -188,9 +185,7 @@ describe('mesh-session provider driver', () => {
   it('times out a thread that never starts and kills the child', async () => {
     const fake = fakeAppServer({ threadReady: false });
     configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
-    await expect(runRemoteSessionTurn(spec(), HOOKS_BASE)).rejects.toThrow(
-      'thread-ready-timeout',
-    );
+    await expect(runRemoteSessionTurn(spec(), HOOKS_BASE)).rejects.toThrow('thread-ready-timeout');
     expect(fake.killedWith).toContain('SIGTERM');
   });
 
@@ -236,9 +231,9 @@ describe('mesh-session provider driver', () => {
   it('kills the process group when the turn exceeds its timeout', async () => {
     const fake = fakeAppServer({ holdTurn: true });
     configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
-    await expect(
-      runRemoteSessionTurn(spec({ turnTimeoutMs: 200 }), HOOKS_BASE),
-    ).rejects.toThrow('turn-timeout-exceeded');
+    await expect(runRemoteSessionTurn(spec({ turnTimeoutMs: 200 }), HOOKS_BASE)).rejects.toThrow(
+      'turn-timeout-exceeded',
+    );
     expect(fake.killedWith).toContain('SIGTERM');
   });
 });

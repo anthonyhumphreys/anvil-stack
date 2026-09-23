@@ -69,6 +69,7 @@ import {
   AccountKeyUnavailableError,
   UnsealError,
   handleCryptoBoundaryEntity,
+  retryQuarantinedEntities,
   sealEntityPayload,
   unsealEntityPayload,
 } from './sync-keyring.service.js';
@@ -675,7 +676,14 @@ async function scanCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
         entityType: validated.entityType,
         entityId: validated.entityId,
         operation: validated.operation,
-        payloadJson: wire.kind === 'domain' ? wire.json : wire.rawJson,
+        payloadJson:
+          wire.kind === 'domain'
+            ? wire.json
+            : canonicalJson({
+                envelope: JSON.parse(wire.rawJson) as unknown,
+                revision: validated.revision,
+                schemaVersion: validated.schemaVersion,
+              }),
         revision: validated.revision,
         schemaVersion: validated.schemaVersion,
       });
@@ -692,6 +700,12 @@ async function scanCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
 
   assertCurrent(input);
   activateStagedScan(input.scope, finish.nextCursor);
+  // A scan may stage a sealed domain envelope before the page containing its
+  // pairing/wrap material is consumed. The keyring retry that runs while the
+  // crypto row is handled predates activation, so run it once more after the
+  // staged bindings become visible. It only reopens sealed envelopes; unknown
+  // entity/schema payloads remain quarantined for review.
+  retryQuarantinedEntities(input.scope);
 }
 
 function mapPushItemResult(
@@ -831,7 +845,14 @@ function stagedEntitiesForWire(
     entities.push({
       entityType: item.entityType,
       entityId: item.entityId,
-      payloadJson: wire.kind === 'domain' ? wire.json : wire.rawJson,
+      payloadJson:
+        wire.kind === 'domain'
+          ? wire.json
+          : canonicalJson({
+              envelope: JSON.parse(wire.rawJson) as unknown,
+              revision: item.revision,
+              schemaVersion: item.schemaVersion,
+            }),
       revision: item.revision,
       schemaVersion: item.schemaVersion,
     });
@@ -1302,15 +1323,42 @@ function applySyncedChange(scope: SyncScope, enrollmentId: string, change: Synce
   }
   const binding = getBinding(scope, change.entityType, change.entityId);
   const wire = wirePayloadToDomain(scope, change.entityType, change.entityId, change.payload);
-  const payloadJson = wire.kind === 'domain' ? wire.json : wire.rawJson;
+  if (wire.kind === 'quarantined') {
+    // A missing ADK is a transient crypto condition, not an application
+    // conflict. Preserve the raw authenticated envelope and the remote
+    // revision until keyring-pairing/wrap processing installs the key. The
+    // keyring retry can then compare the decrypted remote value with any
+    // local edit and create a normal, reviewable conflict if they differ.
+    const quarantine = canonicalJson({
+      envelope: JSON.parse(wire.rawJson) as unknown,
+      revision: change.revision,
+      schemaVersion: change.schemaVersion,
+    });
+    if (
+      binding !== null &&
+      binding.baseRevision !== null &&
+      change.revision <= binding.baseRevision
+    ) {
+      return;
+    }
+    if (binding === null) {
+      upsertBinding(scope, change.entityType, change.entityId, {
+        baseRevision: null,
+        basePayloadJson: null,
+        quarantineJson: quarantine,
+      });
+    } else {
+      setBindingQuarantine(scope, change.entityType, change.entityId, quarantine);
+    }
+    return;
+  }
+  const payloadJson = wire.json;
   const quarantineReason =
     change.operation === 'delete'
       ? isSupportedEntityType(change.entityType)
         ? null
         : 'unsupported-entity-type'
-      : wire.kind === 'quarantined'
-        ? wire.reason
-        : entityQuarantineReason(change.entityType, change.schemaVersion, payloadJson);
+      : entityQuarantineReason(change.entityType, change.schemaVersion, payloadJson);
   if (binding) {
     if (binding.baseRevision !== null && change.revision <= binding.baseRevision) {
       return;

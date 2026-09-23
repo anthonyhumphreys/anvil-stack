@@ -20,10 +20,7 @@ import type {
   SubscribeFrame,
   UnsubscribeFrame,
 } from '../../../cloud/contract/socket.js';
-import type {
-  DurableEvent,
-  EventPullResult,
-} from '../../../cloud/contract/jobs.js';
+import type { DurableEvent, EventPullResult } from '../../../cloud/contract/jobs.js';
 
 interface MeshObserverContext {
   apiUrl: string;
@@ -82,9 +79,7 @@ const SEEN_TRIM_BELOW = 500;
 /** `event.pull` page budget per replay — bounds a pathological backlog. */
 const REPLAY_MAX_PAGES = 10;
 
-export function configureMeshObserverContext(
-  provider: () => MeshObserverContext | null,
-): void {
+export function configureMeshObserverContext(provider: () => MeshObserverContext | null): void {
   contextProvider = provider;
 }
 
@@ -263,12 +258,13 @@ export function handleGapFrame(frame: GapFrame): void {
  * ActivityPayload; `gap` rows mark stream holes rather than producing
  * output; lifecycle kinds surface as status lines.
  */
-function eventToActivity(event: DurableEvent): { kind: AttemptActivity['kind']; text: string } | null {
+function eventToActivity(
+  event: DurableEvent,
+): { kind: AttemptActivity['kind']; text: string } | null {
   if (event.kind === 'gap') return null;
   if (event.kind === 'activity') {
     const payload = event.payload as { kind?: string; text?: string };
-    const kind =
-      payload.kind === 'stdout' || payload.kind === 'stderr' ? payload.kind : 'status';
+    const kind = payload.kind === 'stdout' || payload.kind === 'stderr' ? payload.kind : 'status';
     return { kind, text: payload.text ?? '' };
   }
   return { kind: 'status', text: `[${event.kind}]` };

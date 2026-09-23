@@ -11,8 +11,7 @@ const rpcCalls: RpcCall[] = [];
 let rpcHandler: (operation: string, params: unknown) => unknown = () => ({});
 
 vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import('../sync-backend-client.service.js')>();
+  const original = await importOriginal<typeof import('../sync-backend-client.service.js')>();
   return {
     ...original,
     rpc: async (
@@ -115,9 +114,9 @@ describe('observeAttempt', () => {
   it('sends a subscribe frame and delivers activity to the listener', async () => {
     const received: AttemptActivity[] = [];
     const stop = observeAttempt('att-1', (a) => received.push(a));
-    expect(sentFrames.some((f) => f['type'] === 'subscribe' && f['scope'] === 'attempt:att-1')).toBe(
-      true,
-    );
+    expect(
+      sentFrames.some((f) => f['type'] === 'subscribe' && f['scope'] === 'attempt:att-1'),
+    ).toBe(true);
     // Let the initial replayEvents promise settle before asserting.
     await new Promise((resolve) => setImmediate(resolve));
 

@@ -30,7 +30,7 @@ import {
   updateChatThread,
   updateChatThreadAttention,
 } from '../chat-persistence.service.js';
-import { listChatTurnSummaries, saveChatEvent } from '../chat-evidence.service.js';
+import { saveChatEvent } from '../chat-evidence.service.js';
 import {
   listChatArtifacts,
   readChatArtifactFile,
@@ -427,15 +427,6 @@ describe('chat thread persistence', () => {
       { type: 'file_edit', filePath: 'src/app.ts', diff: '--- a\n+++ b' },
       { type: 'command_exec', command: 'pnpm test', output: 'failed', exitCode: 1 },
     ]);
-
-    const summaries = listChatTurnSummaries(thread.id);
-    expect(summaries).toHaveLength(1);
-    expect(summaries[0].changedFiles).toEqual(['src/app.ts']);
-    expect(summaries[0].tests[0]).toMatchObject({
-      command: 'pnpm test',
-      failed: true,
-      exitCode: 1,
-    });
 
     const refreshed = getChatThread(thread.id);
     expect(refreshed?.messageCount).toBe(2);

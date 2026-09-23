@@ -1,16 +1,12 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import {
-  canonicalChangeHashInput,
-  hashChange,
-} from '../../../../cloud/contract/sync';
+import { canonicalChangeHashInput, hashChange } from '../../../../cloud/contract/sync';
 import {
   canonicalChangeHashInput as sharedCanonicalInput,
   hashChange as sharedHashChange,
 } from '../../../shared/sync-mesh';
 
-const sha256Hex = (input: string): string =>
-  createHash('sha256').update(input).digest('hex');
+const sha256Hex = (input: string): string => createHash('sha256').update(input).digest('hex');
 
 const change = {
   entityType: 'workflow-template',

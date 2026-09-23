@@ -137,7 +137,7 @@ Freeze a major version and additive minor policy. Unknown optional response fiel
 | Sync | `sync.push`, `sync.pull`, `sync.scan.begin`, `sync.scan.page`, `sync.scan.finish` | Conditional revisions, ordered change log, receipts, retained base, reset protocol |
 | Data portability | `data.export.begin`, `data.export.page`, `data.import.preview`, `data.import.commit`, `data.operationStatus` | Versioned portable entities and mappings; preserve conflicts; no live lease migration |
 | Worker | `worker.connect`, `worker.describe`, `worker.capabilities.publish`, `worker.replica.publish` | Incarnation ownership, bounded metadata, observed freshness |
-| Jobs | `job.create`, `job.get`, `job.list`, `job.claim`, `attempt.renew`, `attempt.report`, `job.cancel` | Target resolution, capacity, fence, immutable input manifest, uncertain effects |
+| Jobs | `job.create`, `job.get`, `job.list`, `job.claim`, `attempt.renew`, `attempt.report`, `job.cancel` | Target resolution, source-scoped idempotency lookup via optional `job.list.requestId`, capacity, fence, immutable input manifest, uncertain effects |
 | Events/control | `event.pull`, `approval.get`, `approval.decide` | Durable sequence, gap markers, scoped expiring action approval |
 | Handoff | `handoff.create`, `handoff.get`, `handoff.advance`, `handoff.cancel` | Server-validated state transitions; source relinquishment before target activation |
 | Artifacts | `artifact.reserve`, `artifact.finalize`, `artifact.get`, `artifact.list`, `artifact.delete` | Account/attempt ownership, byte limits, checksum, retention, deletion recovery |

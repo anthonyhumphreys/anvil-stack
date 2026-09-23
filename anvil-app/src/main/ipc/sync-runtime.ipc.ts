@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron';
 import {
   approveDashboardGrant,
+  addCloudProviderConnection,
   cancelMeshJob,
   commitDataImport,
   decideMeshApproval,
@@ -19,8 +20,14 @@ import {
   initiateSessionHandoff,
   issueEnrollmentCode,
   listConflictViews,
+  listCloudEnvironments,
+  listCloudProviderConnections,
+  listLocalCloudEnvironments,
+  listDashboardWorkspaces,
   openHostedAccountPage,
   refreshHostedEntitlement,
+  reapCloudEnvironment,
+  requestCloudEnvironment,
   listDashboardRequests,
   listDevices,
   listMeshHandoffs,
@@ -32,6 +39,7 @@ import {
   resolveRuntimeConflict,
   revokeDashboardAccess,
   revokeDevice,
+  removeCloudProviderConnection,
   replaceDeviceRecovery,
   resetEncryptedSyncAccount,
   setNewDeviceTrustPolicy,
@@ -47,7 +55,11 @@ import type {
   SyncEncryptedSyncAccountResetConfirmation,
 } from '../../shared/sync-device-security.js';
 import type { ApprovalDecision } from '../../../cloud/contract/jobs.js';
-import { DASHBOARD_SCOPES, type DashboardScope } from '../../../cloud/contract/dashboard.js';
+import {
+  isEnvironmentProviderId,
+  type EnvironmentProviderId,
+} from '../../../cloud/contract/environment.js';
+import { DASHBOARD_WORKSPACE_SCOPES } from '../services/dashboard-grant.service.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -59,6 +71,127 @@ function isDeviceTrustPolicy(value: unknown): value is SyncDeviceTrustPolicy {
 
 export function registerSyncRuntimeHandlers(): void {
   ipcMain.handle('sync-runtime:status', () => getRuntimeStatus());
+
+  ipcMain.handle('sync-runtime:cloud-provider-connections-list', () =>
+    listCloudProviderConnections(),
+  );
+
+  ipcMain.handle('sync-runtime:cloud-provider-connection-add', (_event, payload: unknown) => {
+    if (!isRecord(payload) || !isEnvironmentProviderId(payload['provider'])) {
+      throw new Error('cloud-provider-connection-add requires a known provider');
+    }
+    const config = payload['config'];
+    if (!isRecord(config)) {
+      throw new Error('cloud-provider-connection-add requires a config object');
+    }
+    const displayName = payload['displayName'];
+    const secret = payload['secret'];
+    if (displayName !== undefined && typeof displayName !== 'string') {
+      throw new Error('cloud-provider-connection-add displayName must be a string');
+    }
+    if (secret !== undefined && typeof secret !== 'string') {
+      throw new Error('cloud-provider-connection-add secret must be a string');
+    }
+    return addCloudProviderConnection({
+      provider: payload['provider'] as EnvironmentProviderId,
+      config,
+      ...(displayName === undefined ? {} : { displayName }),
+      ...(secret === undefined ? {} : { secret }),
+    });
+  });
+
+  ipcMain.handle(
+    'sync-runtime:cloud-provider-connection-remove',
+    (_event, connectionId: unknown) => {
+      if (typeof connectionId !== 'string' || connectionId.trim() === '') {
+        throw new Error('cloud-provider-connection-remove requires a connection id');
+      }
+      return removeCloudProviderConnection(connectionId);
+    },
+  );
+
+  ipcMain.handle('sync-runtime:cloud-environments-local-list', () => listLocalCloudEnvironments());
+
+  ipcMain.handle('sync-runtime:cloud-environments-list', (_event, includeTerminal: unknown) =>
+    listCloudEnvironments(includeTerminal === true),
+  );
+
+  ipcMain.handle('sync-runtime:cloud-environment-request', (_event, payload: unknown) => {
+    if (!isRecord(payload) || !isEnvironmentProviderId(payload['provider'])) {
+      throw new Error('cloud-environment-request requires a known provider');
+    }
+    const ttlSeconds = payload['ttlSeconds'];
+    if (
+      typeof ttlSeconds !== 'number' ||
+      !Number.isSafeInteger(ttlSeconds) ||
+      ttlSeconds < 60 ||
+      ttlSeconds > 7 * 24 * 60 * 60
+    ) {
+      throw new Error(
+        'cloud-environment-request ttlSeconds must be a whole number from 60 seconds to 7 days',
+      );
+    }
+    const optionalStringKeys = [
+      'environmentId',
+      'imageRef',
+      'displayName',
+      'connectionId',
+    ] as const;
+    for (const key of optionalStringKeys) {
+      if (payload[key] !== undefined && typeof payload[key] !== 'string') {
+        throw new Error(`cloud-environment-request ${key} must be a string`);
+      }
+    }
+    const networkPolicy = payload['networkPolicy'];
+    if (
+      networkPolicy !== undefined &&
+      (!Array.isArray(networkPolicy) || !networkPolicy.every((entry) => typeof entry === 'string'))
+    ) {
+      throw new Error('cloud-environment-request networkPolicy must be a string array');
+    }
+    const resources = payload['resources'];
+    if (resources !== undefined && !isRecord(resources)) {
+      throw new Error('cloud-environment-request resources must be an object');
+    }
+    if (resources !== undefined) {
+      for (const [key, value] of Object.entries(resources)) {
+        if (key !== 'vcpus' && key !== 'memoryMb') {
+          throw new Error(`cloud-environment-request has unknown resource ${key}`);
+        }
+        if (
+          value !== undefined &&
+          (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
+        ) {
+          throw new Error(`cloud-environment-request ${key} must be a positive whole number`);
+        }
+      }
+    }
+    return requestCloudEnvironment({
+      provider: payload['provider'] as EnvironmentProviderId,
+      ttlSeconds,
+      ...(payload['environmentId'] === undefined
+        ? {}
+        : { environmentId: payload['environmentId'] as string }),
+      ...(payload['imageRef'] === undefined ? {} : { imageRef: payload['imageRef'] as string }),
+      ...(networkPolicy === undefined ? {} : { networkPolicy: networkPolicy as string[] }),
+      ...(resources === undefined
+        ? {}
+        : { resources: resources as { vcpus?: number; memoryMb?: number } }),
+      ...(payload['displayName'] === undefined
+        ? {}
+        : { displayName: payload['displayName'] as string }),
+      ...(payload['connectionId'] === undefined
+        ? {}
+        : { connectionId: payload['connectionId'] as string }),
+    });
+  });
+
+  ipcMain.handle('sync-runtime:cloud-environment-reap', (_event, environmentId: unknown) => {
+    if (typeof environmentId !== 'string' || environmentId.trim() === '') {
+      throw new Error('cloud-environment-reap requires an environment id');
+    }
+    return reapCloudEnvironment(environmentId);
+  });
 
   ipcMain.handle('sync-runtime:preview', () => previewAdoption());
 
@@ -207,6 +340,7 @@ export function registerSyncRuntimeHandlers(): void {
   // surface. Grants carry scoped, sealed projections; the browser never
   // sees account key material.
   ipcMain.handle('sync-runtime:dashboard-requests', () => listDashboardRequests());
+  ipcMain.handle('sync-runtime:dashboard-workspaces', () => listDashboardWorkspaces());
 
   ipcMain.handle('sync-runtime:dashboard-decide', (_event, payload: unknown) => {
     if (
@@ -216,21 +350,42 @@ export function registerSyncRuntimeHandlers(): void {
     ) {
       throw new Error('dashboard-decide requires requestId and an approved|denied decision');
     }
-    const scopes = payload['scopes'];
-    if (
-      scopes !== undefined &&
-      (!Array.isArray(scopes) ||
-        !scopes.every(
-          (s) => typeof s === 'string' && DASHBOARD_SCOPES.includes(s as DashboardScope),
-        ))
-    ) {
-      throw new Error('dashboard-decide scopes must be known dashboard scopes');
-    }
+    const approval = payload['approval'];
     if (payload['decision'] === 'approved') {
-      return approveDashboardGrant(
-        payload['requestId'],
-        scopes === undefined ? undefined : (scopes as DashboardScope[]),
-      );
+      if (!isRecord(approval)) {
+        throw new Error(
+          'dashboard-decide approval requires workspaceId, repoIds, and actionScopes',
+        );
+      }
+      if (typeof approval['workspaceId'] !== 'string' || approval['workspaceId'].trim() === '') {
+        throw new Error('dashboard-decide workspaceId must be a non-empty string');
+      }
+      const repoIds = approval['repoIds'];
+      if (
+        !Array.isArray(repoIds) ||
+        repoIds.length === 0 ||
+        !repoIds.every((repoId) => typeof repoId === 'string' && repoId.trim() !== '')
+      ) {
+        throw new Error('dashboard-decide repoIds must contain at least one repository');
+      }
+      const actionScopes = approval['actionScopes'];
+      if (
+        !Array.isArray(actionScopes) ||
+        !actionScopes.every(
+          (scope) =>
+            typeof scope === 'string' &&
+            DASHBOARD_WORKSPACE_SCOPES.includes(
+              scope as (typeof DASHBOARD_WORKSPACE_SCOPES)[number],
+            ),
+        )
+      ) {
+        throw new Error('dashboard-decide actionScopes must be known dashboard scopes');
+      }
+      return approveDashboardGrant(payload['requestId'], {
+        workspaceId: approval['workspaceId'],
+        repoIds: repoIds as string[],
+        actionScopes: actionScopes as string[],
+      });
     }
     return denyDashboardGrant(payload['requestId']);
   });

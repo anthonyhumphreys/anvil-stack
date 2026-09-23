@@ -175,9 +175,10 @@ export async function runWorkflowRuntime(
         );
         return;
       }
-      if ((state.attempts?.length ?? 0) >= config.maxAttempts)
+      const attempts = (state.attempts ??= []);
+      if (attempts.length >= config.maxAttempts)
         throw new Error('Maximum attempts reached for this step.');
-      const priorAttempt = state.attempts?.at(-1);
+      const priorAttempt = attempts.at(-1);
       const attempt =
         (priorAttempt?.status === 'running' || priorAttempt?.status === 'waiting') &&
         priorAttempt.remote !== undefined &&
@@ -196,7 +197,7 @@ export async function runWorkflowRuntime(
                   ? node.reasoningEffort
                   : resolveCodexReasoningEffort(node.model, node.reasoningEffort),
             };
-      if (attempt !== priorAttempt) (state.attempts ??= []).push(attempt);
+      if (attempt !== priorAttempt) attempts.push(attempt);
       state.status = 'running';
       state.startedAt = attempt.startedAt;
       state.completedAt = undefined;
@@ -210,7 +211,8 @@ export async function runWorkflowRuntime(
       hooks.persist(run);
       try {
         const result = await hooks.execute(run, node, controller.signal);
-        const current = state.attempts.at(-1)!;
+        const current = attempts.at(-1);
+        if (current === undefined) throw new Error('Workflow attempt state is missing.');
         if (controller.signal.aborted || run.status === 'cancelled') {
           current.status = 'cancelled';
           current.completedAt = new Date().toISOString();
@@ -243,7 +245,7 @@ export async function runWorkflowRuntime(
         state.threadId = result.threadId ?? state.threadId;
         const tasks = node.teamStrategy === 'autonomous' ? parseDelegation(result.output) : null;
         if (tasks) {
-          if (state.attempts.length >= config.maxAttempts)
+          if (attempts.length >= config.maxAttempts)
             throw new Error('Delegation needs a remaining attempt for synthesis.');
           expandWorkflowTeam(run, node, tasks);
         } else {
@@ -251,7 +253,8 @@ export async function runWorkflowRuntime(
           recordWorkflowEvent(run, 'completed', `${node.name} completed.`, node.id);
         }
       } catch (error) {
-        const current = state.attempts.at(-1)!;
+        const current = attempts.at(-1);
+        if (current === undefined) throw new Error('Workflow attempt state is missing.');
         current.status = controller.signal.aborted ? 'cancelled' : 'failed';
         current.error = error instanceof Error ? error.message : String(error);
         current.completedAt = new Date().toISOString();

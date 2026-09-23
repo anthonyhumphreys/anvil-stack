@@ -389,6 +389,9 @@ CREATE TABLE IF NOT EXISTS dashboard_requests (
   browser_pub TEXT NOT NULL,
   challenge TEXT NOT NULL,
   scopes TEXT NOT NULL,
+  workspace_scopes TEXT NOT NULL DEFAULT '[]',
+  repository_scopes TEXT NOT NULL DEFAULT '[]',
+  granted_scopes TEXT NOT NULL DEFAULT '[]',
   origin TEXT,
   user_agent TEXT,
   expires_at INTEGER NOT NULL,
@@ -403,6 +406,35 @@ CREATE TABLE IF NOT EXISTS dashboard_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_dashboard_requests_account
   ON dashboard_requests (account_id, state);
+-- browser-workspace/1 command relay. Routing metadata is visible to the
+-- coordinator for scope/expiry enforcement; command and result bodies remain
+-- opaque AES-GCM envelopes opened only by the Desktop grant issuer.
+CREATE TABLE IF NOT EXISTS dashboard_commands (
+  command_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  repository_id TEXT,
+  envelope TEXT NOT NULL,
+  envelope_sha TEXT NOT NULL,
+  state TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  claim_enrollment_id TEXT,
+  claim_fence INTEGER NOT NULL DEFAULT 0,
+  claim_expires_at INTEGER,
+  result TEXT,
+  result_sha TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dashboard_commands_request_id
+  ON dashboard_commands (request_id, command_id);
+CREATE INDEX IF NOT EXISTS idx_dashboard_commands_queue
+  ON dashboard_commands (request_id, state, created_at);
+CREATE INDEX IF NOT EXISTS idx_dashboard_commands_expiry
+  ON dashboard_commands (state, expires_at, claim_expires_at);
 -- ENV-09 managed-environment bootstrap staging: the anvil-pair payload
 -- a source minted for a backend-provisioned environment. These rows ARE
 -- plaintext pairing material held inside the hosted trust boundary —

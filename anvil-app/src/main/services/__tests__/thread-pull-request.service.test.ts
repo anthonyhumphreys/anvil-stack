@@ -116,9 +116,7 @@ describe('durable thread pull request associations', () => {
     const links = listThreadPullRequestLinks(original.id);
     await refreshThreadPullRequest(original.id, links[0].id);
 
-    await vi.waitFor(() =>
-      expect(getChatThread(original.id)?.settledAt).toBeTruthy(),
-    );
+    await vi.waitFor(() => expect(getChatThread(original.id)?.settledAt).toBeTruthy());
     expect(mocks.send).toHaveBeenCalledWith(
       'chat:event',
       expect.objectContaining({

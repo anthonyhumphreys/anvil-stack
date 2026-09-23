@@ -674,9 +674,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
     const agent = getEditableAgent('agent-remote');
     expect(agent?.name).toBe('Reviewer');
     expect(agent?.promptBody).toBe('Review the diff for {{repoName}}.');
-    expect(getBinding(SCOPE, SYNC_ENTITY_EDITABLE_AGENT, 'agent-remote')?.baseRevision).toBe(
-      2,
-    );
+    expect(getBinding(SCOPE, SYNC_ENTITY_EDITABLE_AGENT, 'agent-remote')?.baseRevision).toBe(2);
   });
 
   it('applies a remote workspace definition and marks it needs-setup', async () => {
@@ -716,9 +714,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
         .prepare('SELECT portable_id FROM workspace_repo_definitions WHERE workspace_id = ?')
         .all('ws-remote'),
     ).toHaveLength(1);
-    expect(
-      getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, 'ws-remote')?.baseRevision,
-    ).toBe(4);
+    expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, 'ws-remote')?.baseRevision).toBe(4);
   });
 
   it('applies a remote settings update to allowlisted fields only', async () => {
@@ -833,9 +829,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
         }),
       }),
     );
-    expect(
-      db.prepare('SELECT id FROM workspaces WHERE id = ?').get('ws-remote'),
-    ).toBeUndefined();
+    expect(db.prepare('SELECT id FROM workspaces WHERE id = ?').get('ws-remote')).toBeUndefined();
   });
 
   it('save-copy on an editable-agent conflict preserves the local version', async () => {

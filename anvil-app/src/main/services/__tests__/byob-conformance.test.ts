@@ -74,15 +74,11 @@ describe('BYOB-02: unmodified desktop client against the non-Cloudflare fixture'
       { accountId },
       { accessToken: ADMIN_TOKEN },
     );
-    const session = await postAuthRoute<DeviceSession>(
-      connection,
-      'enroll',
-      {
-        proof: { method: 'enrollment-code', code: issued.code },
-        installationId: 'byob-desktop-install',
-        displayName: 'BYOB desktop',
-      },
-    );
+    const session = await postAuthRoute<DeviceSession>(connection, 'enroll', {
+      proof: { method: 'enrollment-code', code: issued.code },
+      installationId: 'byob-desktop-install',
+      displayName: 'BYOB desktop',
+    });
     expect(session.accountId).toBe(accountId);
     expect(session.accessToken.startsWith('anvil_at_')).toBe(true);
 

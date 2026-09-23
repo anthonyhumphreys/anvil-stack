@@ -19,6 +19,7 @@
 // channel gated by its grant scopes. It never receives the ADK.
 
 import type { DashboardGrantPayload, SealedDashboardSnapshot } from './sealed.js';
+import type { BrowserWorkspaceBinding } from './browser-workspace.js';
 
 /**
  * Scopes a dashboard grant may carry. `read-dashboard` is the baseline;
@@ -29,13 +30,23 @@ export type DashboardScope =
   | 'read-dashboard'
   | 'submit-task'
   | 'approve-action'
-  | 'request-handoff';
+  | 'request-handoff'
+  // browser-workspace/1 action scopes. Legacy grants omit workspace/repo
+  // bindings and therefore cannot authorize these operations.
+  | 'workspace-read'
+  | 'workspace-write'
+  | 'terminal'
+  | 'preview';
 
 export const DASHBOARD_SCOPES: readonly DashboardScope[] = [
   'read-dashboard',
   'submit-task',
   'approve-action',
   'request-handoff',
+  'workspace-read',
+  'workspace-write',
+  'terminal',
+  'preview',
 ];
 
 export function isDashboardScope(value: unknown): value is DashboardScope {
@@ -63,6 +74,14 @@ export interface DashboardRequest {
   challenge: string;
   /** Scopes the browser asked for; the grant may carry a subset. */
   scopes: DashboardScope[];
+  /** Workspace/repository bindings requested by browser-workspace/1. */
+  workspaceBindings?: BrowserWorkspaceBinding[];
+  /** @deprecated use workspaceBindings; accepted only for one-to-one legacy callers. */
+  workspaceIds?: string[];
+  /** @deprecated use workspaceBindings; accepted only for one-to-one legacy callers. */
+  repositoryIds?: string[];
+  /** Explicitly approved scopes; absent on legacy grants. */
+  grantedScopes?: DashboardScope[];
   /** Claimed page origin — a hint and a binding, not proof of identity. */
   origin?: string;
   /** User-agent hint — contextual only, never cryptographic proof. */
@@ -80,8 +99,18 @@ export interface DashboardRequest {
  * `dashboard.requests` (user role): pending requests awaiting a trusted
  * device's decision. Bounded list, newest first.
  */
+export interface DashboardRequestsParams {
+  /**
+   * Optional issuer-bound lookup. Omitting this field (or sending `{}`)
+   * preserves the bounded pending-request list behavior.
+   */
+  requestId?: string;
+}
+
 export interface DashboardRequestsResult {
   requests: DashboardRequest[];
+  /** Issuer-bound live lookup used by browser-workspace command revalidation. */
+  request?: DashboardRequest;
 }
 
 /**
@@ -96,6 +125,13 @@ export interface DashboardDecideParams {
   grant?: DashboardGrantPayload;
   /** First sealed snapshot under the DSK — required on approval. */
   snapshot?: SealedDashboardSnapshot;
+  /** Optional browser-workspace/1 approval bindings. */
+  workspaceBindings?: BrowserWorkspaceBinding[];
+  /** @deprecated use workspaceBindings. */
+  workspaceIds?: string[];
+  /** @deprecated use workspaceBindings. */
+  repositoryIds?: string[];
+  grantedScopes?: DashboardScope[];
 }
 
 export interface DashboardDecideResult {
@@ -136,6 +172,11 @@ export interface HostedDashboardRequestInput {
   browserPub: string;
   challenge: string;
   scopes: DashboardScope[];
+  workspaceBindings?: BrowserWorkspaceBinding[];
+  /** @deprecated use workspaceBindings. */
+  workspaceIds?: string[];
+  /** @deprecated use workspaceBindings. */
+  repositoryIds?: string[];
   expiresAt: string;
   origin?: string;
   userAgent?: string;

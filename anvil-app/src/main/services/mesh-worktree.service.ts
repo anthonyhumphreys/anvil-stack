@@ -120,10 +120,7 @@ export async function allocateAttemptWorktrees(input: {
   for (const [index, repo] of input.repositories.entries()) {
     const worktree = await withRepoRefLock(repo.sourcePath, async () => {
       const branch = `${branchPrefix}/${input.attemptId}`;
-      const worktreePath = join(
-        input.rootDir,
-        `${index}-${sanitizeComponent(repo.repositoryId)}`,
-      );
+      const worktreePath = join(input.rootDir, `${index}-${sanitizeComponent(repo.repositoryId)}`);
       // `add -b` fails if the branch already exists — the correct outcome:
       // a collision means the attempt id is not unique and retrying with
       // `-B` would silently destroy whatever that branch points at.

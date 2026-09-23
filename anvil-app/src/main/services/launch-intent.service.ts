@@ -1,14 +1,8 @@
 import type { BrowserWindow } from 'electron';
-import {
-  LEGACY_PROTOCOL,
-  PRIMARY_PROTOCOL,
-} from '../../shared/app-identity.js';
+import { LEGACY_PROTOCOL, PRIMARY_PROTOCOL } from '../../shared/app-identity.js';
 import type { OpenInAnvilLaunchIntent, OpenInAnvilRepoSpec } from '../../shared/types.js';
 
-const SUPPORTED_PROTOCOL_PREFIXES = [
-  `${PRIMARY_PROTOCOL}://open`,
-  `${LEGACY_PROTOCOL}://open`,
-];
+const SUPPORTED_PROTOCOL_PREFIXES = [`${PRIMARY_PROTOCOL}://open`, `${LEGACY_PROTOCOL}://open`];
 
 let pendingIntent: OpenInAnvilLaunchIntent | null = null;
 

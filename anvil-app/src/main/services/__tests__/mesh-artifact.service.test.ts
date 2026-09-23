@@ -5,8 +5,7 @@ const rpcCalls: Array<{ operation: string; params: unknown }> = [];
 let rpcHandler: (operation: string, params: unknown) => unknown = () => ({});
 
 vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import('../sync-backend-client.service.js')>();
+  const original = await importOriginal<typeof import('../sync-backend-client.service.js')>();
   return {
     ...original,
     rpc: async (
@@ -79,10 +78,7 @@ describe('artifact upload', () => {
     });
 
     expect(manifest.state).toBe('published');
-    expect(rpcCalls.map((c) => c.operation)).toEqual([
-      'artifact.reserve',
-      'artifact.finalize',
-    ]);
+    expect(rpcCalls.map((c) => c.operation)).toEqual(['artifact.reserve', 'artifact.finalize']);
     const reserve = rpcCalls[0].params as { byteLength: number; sha256: string };
     expect(reserve.byteLength).toBe(bytes.byteLength);
     expect(reserve.sha256).toBe(sha256);

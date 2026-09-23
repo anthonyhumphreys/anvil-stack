@@ -12,7 +12,7 @@
 // either. Grants are scoped, expiring, and revocable; delegated actions
 // ride grant scopes, never ambient session authority.
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { getDb } from '../db/database.js';
 import { rpc as backendRpc } from './sync-backend-client.service.js';
 import {
@@ -29,29 +29,114 @@ import type {
   DashboardRequest,
   DashboardRequestsResult,
   DashboardRevokeResult,
-  DashboardScope,
 } from '../../../cloud/contract/dashboard.js';
+import {
+  BROWSER_WORKSPACE_MAX_RESULT_PLAINTEXT_BYTES,
+  BROWSER_WORKSPACE_OPERATION_SCOPE,
+  browserWorkspaceCommandAssociatedData,
+  browserWorkspaceResultAssociatedData,
+  type BrowserWorkspaceCommandEnvelope,
+  type BrowserWorkspaceOperation,
+  type BrowserWorkspaceResultEnvelope,
+} from '../../../cloud/contract/browser-workspace.js';
 import type { JobListResult } from '../../../cloud/contract/jobs.js';
 import type { SyncScope } from '../../shared/sync-mesh.js';
 import {
   sealJsonEnvelope,
   sealToRecipientPub,
+  unsealJsonEnvelope,
   unwrapSecretBytes,
   wrapSecretBytes,
 } from './sync-keyring.service.js';
+import { revokeSharedBrowserWorkspaceGrant } from './browser-workspace-tools.service.js';
 import { canonicalJson } from './sync-persistence.service.js';
 
-interface DashboardGrantContext {
+export const DASHBOARD_WORKSPACE_SCOPES = [
+  'read-dashboard',
+  'workspace-read',
+  'workspace-write',
+  'submit-task',
+  'approve-action',
+  'request-handoff',
+  'terminal',
+  'preview',
+] as const;
+
+export type DashboardWorkspaceScope = (typeof DASHBOARD_WORKSPACE_SCOPES)[number];
+
+export interface DashboardGrantWorkspaceSelection {
+  workspaceId: string;
+  repoIds: string[];
+}
+
+export interface DashboardGrantApproval {
+  workspace: DashboardGrantWorkspaceSelection;
+  scopes: string[];
+}
+
+export type DashboardWorkspaceCommand = BrowserWorkspaceCommandEnvelope & {
+  /** Claim fence is Desktop-local relay metadata, not part of the sealed envelope. */
+  claimFence?: number;
+};
+
+export interface DashboardCommandResult {
+  status: 'completed' | 'failed' | 'uncertain' | 'rejected';
+  result?: unknown;
+  resultEnvelope?: DashboardWorkspaceResultEnvelope;
+  error?: string;
+}
+
+export type DashboardWorkspaceResultEnvelope = BrowserWorkspaceResultEnvelope;
+
+export interface DashboardGrantRevalidation {
+  state: 'approved' | 'expired' | 'revoked' | 'denied' | 'pending';
+  expiresAt: string;
+  enrollmentId: string;
+  workspace: DashboardGrantWorkspaceSelection;
+  scopes: string[];
+}
+
+export interface DashboardGrantCommandExecutorInput {
+  commandId: string;
+  requestId: string;
+  enrollmentId: string;
+  operation: BrowserWorkspaceOperation;
+  workspaceId: string;
+  repositoryId: string | null;
+  repoIds: string[];
+  scopes: string[];
+  expiresAt: string;
+  payload: unknown;
+}
+
+export type DashboardGrantCommandExecutor = (
+  input: DashboardGrantCommandExecutorInput,
+) => Promise<unknown>;
+
+export interface DashboardGrantContext {
   apiUrl: string;
   accessToken: string;
   enrollmentId: string;
+  /** Relay adapter. No command is executed without all three callbacks. */
+  pullBrowserWorkspaceCommands?: (
+    scope: SyncScope,
+    enrollmentId: string,
+  ) => Promise<DashboardWorkspaceCommand[]>;
+  revalidateBrowserWorkspaceGrant?: (
+    scope: SyncScope,
+    grantId: string,
+  ) => Promise<DashboardGrantRevalidation>;
+  publishBrowserWorkspaceCommandResult?: (
+    scope: SyncScope,
+    command: DashboardWorkspaceCommand,
+    result: DashboardCommandResult,
+  ) => Promise<void>;
+  executeBrowserWorkspaceCommand?: DashboardGrantCommandExecutor;
 }
 
 let contextProvider: (() => DashboardGrantContext | null) | null = null;
 
-export function configureDashboardGrantContext(
-  provider: () => DashboardGrantContext | null,
-): void {
+export function configureDashboardGrantContext(provider: () => DashboardGrantContext | null): void {
   contextProvider = provider;
 }
 
@@ -81,6 +166,8 @@ export interface DashboardGrantRow {
   seq: number;
   state: 'pending' | 'approved' | 'denied' | 'expired' | 'revoked';
   request: DashboardRequest | null;
+  workspace: DashboardGrantWorkspaceSelection | null;
+  enrollmentId: string | null;
 }
 
 interface GrantRow {
@@ -88,6 +175,9 @@ interface GrantRow {
   browser_pub: string;
   dsk_wrapped: Buffer | null;
   scopes_json: string;
+  workspace_id: string | null;
+  repo_ids_json: string;
+  enrollment_id: string | null;
   expires_at: string;
   seq: number;
   state: string;
@@ -96,6 +186,11 @@ interface GrantRow {
 }
 
 function rowToGrant(row: GrantRow): DashboardGrantRow {
+  const workspaceId = row.workspace_id ?? null;
+  const workspace =
+    workspaceId === null
+      ? null
+      : { workspaceId, repoIds: JSON.parse(row.repo_ids_json || '[]') as string[] };
   return {
     requestId: row.request_id,
     browserPub: row.browser_pub,
@@ -104,6 +199,8 @@ function rowToGrant(row: GrantRow): DashboardGrantRow {
     seq: row.seq,
     state: row.state as DashboardGrantRow['state'],
     request: row.request_json === null ? null : (JSON.parse(row.request_json) as DashboardRequest),
+    workspace,
+    enrollmentId: row.enrollment_id ?? null,
   };
 }
 
@@ -118,6 +215,44 @@ export function listDashboardGrants(scope: SyncScope): DashboardGrantRow[] {
   return rows.map(rowToGrant);
 }
 
+export interface DashboardGrantWorkspaceOption {
+  workspaceId: string;
+  name: string;
+  repos: Array<{ repoId: string; name: string }>;
+}
+
+/** Renderer-safe choices for the explicit grant approval surface. */
+export function listDashboardGrantWorkspaces(): DashboardGrantWorkspaceOption[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT w.id AS workspace_id, w.name AS workspace_name,
+              r.id AS repo_id, r.name AS repo_name
+       FROM workspaces w
+       LEFT JOIN workspace_repos wr ON wr.workspace_id = w.id
+       LEFT JOIN repos r ON r.id = wr.repo_id
+       ORDER BY w.name COLLATE NOCASE ASC, r.name COLLATE NOCASE ASC`,
+    )
+    .all() as Array<{
+    workspace_id: string;
+    workspace_name: string;
+    repo_id: string | null;
+    repo_name: string | null;
+  }>;
+  const byId = new Map<string, DashboardGrantWorkspaceOption>();
+  for (const row of rows) {
+    const current = byId.get(row.workspace_id) ?? {
+      workspaceId: row.workspace_id,
+      name: row.workspace_name,
+      repos: [],
+    };
+    if (row.repo_id !== null && row.repo_name !== null) {
+      current.repos.push({ repoId: row.repo_id, name: row.repo_name });
+    }
+    byId.set(row.workspace_id, current);
+  }
+  return [...byId.values()];
+}
+
 function upsertObserved(scope: SyncScope, request: DashboardRequest): void {
   const db = getDb();
   const existing = db
@@ -125,14 +260,15 @@ function upsertObserved(scope: SyncScope, request: DashboardRequest): void {
       `SELECT state FROM mesh_dashboard_grants
        WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
     )
-    .get(scope.backendId, scope.accountId, request.requestId) as
-    | { state: string }
-    | undefined;
+    .get(scope.backendId, scope.accountId, request.requestId) as { state: string } | undefined;
   // A locally decided state (approved/denied/revoked) is authoritative —
   // mirror only requests we have not acted on, or terminal backend
   // transitions we have not seen yet.
   if (existing !== undefined && existing.state !== 'pending') {
-    if (['expired', 'revoked', 'denied'].includes(request.state) && existing.state !== request.state) {
+    if (
+      ['expired', 'revoked', 'denied'].includes(request.state) &&
+      existing.state !== request.state
+    ) {
       db.prepare(
         `UPDATE mesh_dashboard_grants SET state = ?, request_json = ?, updated_at = ?
          WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
@@ -144,6 +280,8 @@ function upsertObserved(scope: SyncScope, request: DashboardRequest): void {
         scope.accountId,
         request.requestId,
       );
+      // Terminal state observed remotely: the grant's browser-owned PTYs die here.
+      revokeSharedBrowserWorkspaceGrant(request.requestId);
     }
     return;
   }
@@ -169,6 +307,9 @@ function upsertObserved(scope: SyncScope, request: DashboardRequest): void {
     nowIso(),
     nowIso(),
   );
+  if (request.state !== 'pending' && request.state !== 'approved') {
+    revokeSharedBrowserWorkspaceGrant(request.requestId);
+  }
 }
 
 /**
@@ -260,6 +401,563 @@ function sealSnapshot(
 
 const SNAPSHOT_MIN_INTERVAL_MS = 30_000;
 
+const MAX_COMMANDS_PER_PUMP = 8;
+const MAX_BROWSER_COMMAND_RESULT_BYTES = BROWSER_WORKSPACE_MAX_RESULT_PLAINTEXT_BYTES;
+const commandPumpInFlight = new Set<string>();
+const activeCommandIds = new Set<string>();
+
+function commandScope(operation: BrowserWorkspaceOperation): DashboardWorkspaceScope {
+  return BROWSER_WORKSPACE_OPERATION_SCOPE[operation];
+}
+
+export function dashboardCommandAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  requestId: string;
+  commandId: string;
+  operation: BrowserWorkspaceOperation;
+  workspaceId: string;
+  repositoryId?: string;
+  expiresAt: string;
+}): string {
+  return browserWorkspaceCommandAssociatedData(input);
+}
+
+export function dashboardResultAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  requestId: string;
+  commandId: string;
+  operation: BrowserWorkspaceOperation;
+  workspaceId: string;
+  repositoryId?: string;
+  expiresAt: string;
+}): string {
+  return browserWorkspaceResultAssociatedData(input);
+}
+
+interface CommandReceiptRow {
+  grant_id: string;
+  command_id: string;
+  kind: string;
+  workspace_id: string;
+  repo_id: string | null;
+  expires_at: string;
+  payload_hash: string;
+  command_envelope_json: string | null;
+  claim_fence: number | null;
+  state: 'executing' | 'completed' | 'failed' | 'uncertain';
+  result_wrapped: Buffer | null;
+  result_envelope_json: string | null;
+  result_published: number;
+  error_message: string | null;
+}
+
+function commandReceipt(
+  scope: SyncScope,
+  command: DashboardWorkspaceCommand,
+): CommandReceiptRow | undefined {
+  return getDb()
+    .prepare(
+      `SELECT grant_id, command_id, kind, workspace_id, repo_id, expires_at,
+              payload_hash, command_envelope_json, claim_fence, state,
+              result_wrapped, result_envelope_json, result_published, error_message
+       FROM mesh_browser_command_receipts
+       WHERE backend_id = ? AND account_id = ? AND grant_id = ? AND command_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, command.requestId, command.commandId) as
+    | CommandReceiptRow
+    | undefined;
+}
+
+function hashCommandPayload(command: DashboardWorkspaceCommand): string {
+  return createHash('sha256')
+    .update(
+      canonicalJson({
+        commandId: command.commandId,
+        requestId: command.requestId,
+        operation: command.operation,
+        workspaceId: command.workspaceId,
+        repositoryId: command.repositoryId,
+        expiresAt: command.expiresAt,
+        payload: { enc: command.enc, nonce: command.nonce, ct: command.ct },
+      }),
+    )
+    .digest('hex');
+}
+
+function resultFromReceipt(receipt: CommandReceiptRow): DashboardCommandResult {
+  const result =
+    receipt.result_wrapped === null
+      ? undefined
+      : (() => {
+          const bytes = unwrapSecretBytes(receipt.result_wrapped);
+          if (bytes === null) return undefined;
+          try {
+            return JSON.parse(bytes.toString('utf8')) as unknown;
+          } catch {
+            return undefined;
+          }
+        })();
+  return {
+    status: receipt.state === 'executing' ? 'uncertain' : receipt.state,
+    ...(result === undefined ? {} : { result }),
+    ...(receipt.error_message === null ? {} : { error: receipt.error_message }),
+  };
+}
+
+function commandResultFailureMessage(result: unknown): string | null {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return null;
+  const error = (result as Record<string, unknown>).error;
+  if (typeof error !== 'object' || error === null || Array.isArray(error)) return null;
+  const message = (error as Record<string, unknown>).message;
+  return typeof message === 'string' ? message.slice(0, 2_000) : 'The Desktop command failed.';
+}
+
+function commandFromReceipt(receipt: CommandReceiptRow): DashboardWorkspaceCommand | null {
+  if (receipt.command_envelope_json === null) return null;
+  try {
+    const envelope = JSON.parse(receipt.command_envelope_json) as DashboardWorkspaceCommand;
+    if (
+      envelope.requestId !== receipt.grant_id ||
+      envelope.commandId !== receipt.command_id ||
+      envelope.operation !== receipt.kind ||
+      envelope.workspaceId !== receipt.workspace_id ||
+      (envelope.repositoryId ?? null) !== receipt.repo_id ||
+      envelope.expiresAt !== receipt.expires_at
+    ) {
+      return null;
+    }
+    return {
+      ...envelope,
+      ...(receipt.claim_fence === null ? {} : { claimFence: receipt.claim_fence }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function markReceiptUncertain(scope: SyncScope, receipt: CommandReceiptRow): void {
+  getDb()
+    .prepare(
+      `UPDATE mesh_browser_command_receipts
+       SET state = 'uncertain', error_message = ?, updated_at = ?
+       WHERE backend_id = ? AND account_id = ? AND grant_id = ? AND command_id = ?
+         AND state = 'executing'`,
+    )
+    .run(
+      'Desktop restarted or lost the command worker before the outcome was recorded.',
+      nowIso(),
+      scope.backendId,
+      scope.accountId,
+      receipt.grant_id,
+      receipt.command_id,
+    );
+}
+
+async function publishStoredReceipt(
+  scope: SyncScope,
+  command: DashboardWorkspaceCommand,
+  receipt: CommandReceiptRow,
+  ctx: DashboardGrantContext,
+): Promise<void> {
+  if (ctx.publishBrowserWorkspaceCommandResult === undefined) return;
+  const stored = resultFromReceipt(receipt);
+  if (stored.status === 'uncertain') {
+    await ctx.publishBrowserWorkspaceCommandResult(scope, command, stored);
+    return;
+  }
+  if (receipt.result_published !== 0) return;
+  const grant = getDb()
+    .prepare(
+      `SELECT dsk_wrapped FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, command.requestId) as
+    | { dsk_wrapped: Buffer | null }
+    | undefined;
+  const dsk =
+    grant?.dsk_wrapped === null || grant?.dsk_wrapped === undefined
+      ? null
+      : unwrapSecretBytes(grant.dsk_wrapped);
+  if (dsk === null || dsk.byteLength !== 32) {
+    await ctx.publishBrowserWorkspaceCommandResult(scope, command, {
+      status: 'failed',
+      error: 'Grant key is unavailable while publishing the command result.',
+    });
+    return;
+  }
+  const publishStatus: 'completed' | 'failed' =
+    stored.status === 'completed' && stored.result !== undefined ? 'completed' : 'failed';
+  const envelope =
+    receipt.result_envelope_json === null
+      ? (() => {
+          const sealed = sealJsonEnvelope(
+            dsk,
+            dashboardResultAssociatedData({
+              backendId: scope.backendId,
+              accountId: scope.accountId,
+              requestId: command.requestId,
+              commandId: command.commandId,
+              operation: command.operation,
+              workspaceId: command.workspaceId,
+              repositoryId: command.repositoryId,
+              expiresAt: command.expiresAt,
+            }),
+            publishStatus === 'failed'
+              ? (stored.result ?? { error: stored.error ?? 'The Desktop command failed.' })
+              : stored.result,
+          );
+          const resultEnvelope: DashboardWorkspaceResultEnvelope = {
+            v: 1,
+            enc: 'aes-256-gcm',
+            requestId: command.requestId,
+            commandId: command.commandId,
+            operation: command.operation,
+            workspaceId: command.workspaceId,
+            ...(command.repositoryId === undefined ? {} : { repositoryId: command.repositoryId }),
+            expiresAt: command.expiresAt,
+            ...sealed,
+          };
+          getDb()
+            .prepare(
+              `UPDATE mesh_browser_command_receipts SET result_envelope_json = ?, updated_at = ?
+               WHERE backend_id = ? AND account_id = ? AND grant_id = ? AND command_id = ?`,
+            )
+            .run(
+              JSON.stringify(resultEnvelope),
+              nowIso(),
+              scope.backendId,
+              scope.accountId,
+              command.requestId,
+              command.commandId,
+            );
+          return resultEnvelope;
+        })()
+      : (JSON.parse(receipt.result_envelope_json) as DashboardWorkspaceResultEnvelope);
+  await ctx.publishBrowserWorkspaceCommandResult(scope, command, {
+    status: publishStatus,
+    resultEnvelope: envelope,
+  });
+  getDb()
+    .prepare(
+      `UPDATE mesh_browser_command_receipts SET result_published = 1, updated_at = ?
+       WHERE backend_id = ? AND account_id = ? AND grant_id = ? AND command_id = ?`,
+    )
+    .run(nowIso(), scope.backendId, scope.accountId, command.requestId, command.commandId);
+}
+
+/**
+ * A claimed command that fails a local or remote grant check still needs a
+ * fenced failed outcome. Recording it first makes the encrypted failure a
+ * durable outbox item if the completion response is lost.
+ */
+async function rejectBrowserWorkspaceCommand(
+  scope: SyncScope,
+  command: DashboardWorkspaceCommand,
+  reason: string,
+  ctx: DashboardGrantContext,
+): Promise<void> {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR IGNORE INTO mesh_browser_command_receipts
+       (backend_id, account_id, grant_id, command_id, kind, workspace_id, repo_id,
+        expires_at, payload_hash, command_envelope_json, claim_fence, state,
+        error_message, created_at, updated_at, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?)`,
+  ).run(
+    scope.backendId,
+    scope.accountId,
+    command.requestId,
+    command.commandId,
+    command.operation,
+    command.workspaceId,
+    command.repositoryId ?? null,
+    command.expiresAt,
+    hashCommandPayload(command),
+    JSON.stringify(command),
+    command.claimFence ?? null,
+    reason.slice(0, 2_000),
+    nowIso(),
+    nowIso(),
+    nowIso(),
+  );
+  const receipt = commandReceipt(scope, command);
+  if (receipt !== undefined) await publishStoredReceipt(scope, command, receipt, ctx);
+}
+
+async function dispatchBrowserWorkspaceCommand(
+  scope: SyncScope,
+  command: DashboardWorkspaceCommand,
+  guard: () => boolean,
+  ctx: DashboardGrantContext,
+): Promise<void> {
+  const receipt = commandReceipt(scope, command);
+  if (receipt !== undefined) {
+    if (receipt.state === 'executing' && !activeCommandIds.has(command.commandId)) {
+      markReceiptUncertain(scope, receipt);
+      const recovered = commandReceipt(scope, command);
+      if (recovered !== undefined) await publishStoredReceipt(scope, command, recovered, ctx);
+    } else if (receipt.state !== 'executing') {
+      await publishStoredReceipt(scope, command, receipt, ctx);
+    }
+    return;
+  }
+  if (
+    ctx.revalidateBrowserWorkspaceGrant === undefined ||
+    ctx.publishBrowserWorkspaceCommandResult === undefined ||
+    ctx.executeBrowserWorkspaceCommand === undefined
+  ) {
+    // No relay or executor means no execution. This also keeps older builds
+    // with read-only dashboard support from accidentally running commands.
+    return;
+  }
+
+  const grant = getDb()
+    .prepare(
+      `SELECT * FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, command.requestId) as GrantRow | undefined;
+  if (
+    grant === undefined ||
+    grant.state !== 'approved' ||
+    grant.workspace_id === null ||
+    grant.enrollment_id === null ||
+    grant.enrollment_id !== ctx.enrollmentId ||
+    Date.parse(grant.expires_at) <= Date.now() ||
+    Date.parse(command.expiresAt) <= Date.now()
+  ) {
+    await rejectBrowserWorkspaceCommand(
+      scope,
+      command,
+      'Grant is missing, expired, revoked, or not bound to this Desktop enrollment.',
+      ctx,
+    );
+    return;
+  }
+  const requestedScope = commandScope(command.operation);
+  const grantedScopes = JSON.parse(grant.scopes_json) as string[];
+  const repoIds = JSON.parse(grant.repo_ids_json || '[]') as string[];
+  if (
+    requestedScope === null ||
+    !grantedScopes.includes(requestedScope) ||
+    command.workspaceId !== grant.workspace_id ||
+    (command.repositoryId !== undefined && !repoIds.includes(command.repositoryId))
+  ) {
+    await rejectBrowserWorkspaceCommand(
+      scope,
+      command,
+      'Command is outside the grant workspace or action scope.',
+      ctx,
+    );
+    return;
+  }
+
+  const remote = await ctx.revalidateBrowserWorkspaceGrant(scope, command.requestId);
+  if (
+    !guard() ||
+    remote.state !== 'approved' ||
+    remote.enrollmentId !== grant.enrollment_id ||
+    remote.workspace.workspaceId !== grant.workspace_id ||
+    Date.parse(remote.expiresAt) <= Date.now() ||
+    remote.expiresAt !== grant.expires_at ||
+    !remote.scopes.includes(requestedScope) ||
+    (command.repositoryId !== undefined && !remote.workspace.repoIds.includes(command.repositoryId))
+  ) {
+    await rejectBrowserWorkspaceCommand(
+      scope,
+      command,
+      'Grant was revoked, expired, or changed before dispatch.',
+      ctx,
+    );
+    return;
+  }
+
+  const payloadHash = hashCommandPayload(command);
+  getDb()
+    .prepare(
+      `INSERT INTO mesh_browser_command_receipts
+       (backend_id, account_id, grant_id, command_id, kind, workspace_id, repo_id,
+        expires_at, payload_hash, command_envelope_json, claim_fence, state,
+        created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'executing', ?, ?)`,
+    )
+    .run(
+      scope.backendId,
+      scope.accountId,
+      command.requestId,
+      command.commandId,
+      command.operation,
+      command.workspaceId,
+      command.repositoryId ?? null,
+      command.expiresAt,
+      payloadHash,
+      JSON.stringify(command),
+      command.claimFence ?? null,
+      nowIso(),
+      nowIso(),
+    );
+  activeCommandIds.add(command.commandId);
+  try {
+    const dsk = grant.dsk_wrapped === null ? null : unwrapSecretBytes(grant.dsk_wrapped);
+    if (dsk === null || dsk.byteLength !== 32) throw new Error('Grant key is unavailable.');
+    const payload = unsealJsonEnvelope(
+      dsk,
+      dashboardCommandAssociatedData({
+        backendId: scope.backendId,
+        accountId: scope.accountId,
+        requestId: command.requestId,
+        commandId: command.commandId,
+        operation: command.operation,
+        workspaceId: command.workspaceId,
+        repositoryId: command.repositoryId,
+        expiresAt: command.expiresAt,
+      }),
+      { enc: command.enc, nonce: command.nonce, ct: command.ct },
+    );
+    if (!guard()) return;
+    const result = await ctx.executeBrowserWorkspaceCommand({
+      commandId: command.commandId,
+      requestId: command.requestId,
+      enrollmentId: grant.enrollment_id,
+      operation: command.operation,
+      workspaceId: command.workspaceId,
+      repositoryId: command.repositoryId ?? null,
+      repoIds,
+      scopes: grantedScopes,
+      expiresAt: command.expiresAt,
+      payload,
+    });
+    const serializedResult = canonicalJson(result);
+    if (Buffer.byteLength(serializedResult, 'utf8') > MAX_BROWSER_COMMAND_RESULT_BYTES) {
+      throw new Error('Browser workspace command result exceeds the relay limit.');
+    }
+    const wrappedResult = wrapSecretBytes(Buffer.from(serializedResult, 'utf8'));
+    const failed =
+      typeof result === 'object' &&
+      result !== null &&
+      !Array.isArray(result) &&
+      (result as Record<string, unknown>).ok === false;
+    const failureMessage = failed ? commandResultFailureMessage(result) : null;
+    getDb()
+      .prepare(
+        `UPDATE mesh_browser_command_receipts
+         SET state = ?, result_wrapped = ?, error_message = ?,
+             updated_at = ?, completed_at = ?
+         WHERE backend_id = ? AND account_id = ? AND grant_id = ? AND command_id = ?`,
+      )
+      .run(
+        failed ? 'failed' : 'completed',
+        wrappedResult,
+        failureMessage,
+        nowIso(),
+        nowIso(),
+        scope.backendId,
+        scope.accountId,
+        command.requestId,
+        command.commandId,
+      );
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+    getDb()
+      .prepare(
+        `UPDATE mesh_browser_command_receipts
+         SET state = 'failed', error_message = ?, updated_at = ?, completed_at = ?
+         WHERE backend_id = ? AND account_id = ? AND grant_id = ? AND command_id = ?`,
+      )
+      .run(
+        message,
+        nowIso(),
+        nowIso(),
+        scope.backendId,
+        scope.accountId,
+        command.requestId,
+        command.commandId,
+      );
+  } finally {
+    activeCommandIds.delete(command.commandId);
+  }
+  const completed = commandReceipt(scope, command);
+  if (completed !== undefined) await publishStoredReceipt(scope, command, completed, ctx);
+}
+
+/**
+ * Pull and dispatch browser workspace commands without extending the sync
+ * cycle. The relay adapter must revalidate the grant before every mutation.
+ */
+export async function pumpBrowserWorkspaceCommands(
+  scope: SyncScope,
+  guard: () => boolean,
+): Promise<void> {
+  const key = `${scope.backendId}:${scope.accountId}`;
+  if (commandPumpInFlight.has(key)) return;
+  const ctx = contextProvider?.() ?? null;
+  if (
+    ctx === null ||
+    ctx.pullBrowserWorkspaceCommands === undefined ||
+    ctx.revalidateBrowserWorkspaceGrant === undefined ||
+    ctx.publishBrowserWorkspaceCommandResult === undefined ||
+    ctx.executeBrowserWorkspaceCommand === undefined
+  ) {
+    return;
+  }
+  commandPumpInFlight.add(key);
+  try {
+    // Any executing receipt left by a previous process is deliberately
+    // uncertain. Retrying a mutation after a crash is unsafe.
+    const stale = getDb()
+      .prepare(
+        `SELECT grant_id, command_id, kind, workspace_id, repo_id, expires_at,
+                payload_hash, command_envelope_json, claim_fence, state,
+                result_wrapped, result_envelope_json, result_published, error_message
+         FROM mesh_browser_command_receipts
+         WHERE backend_id = ? AND account_id = ? AND state = 'executing'`,
+      )
+      .all(scope.backendId, scope.accountId) as CommandReceiptRow[];
+    for (const receipt of stale) {
+      if (!activeCommandIds.has(receipt.command_id)) markReceiptUncertain(scope, receipt);
+    }
+    // Complete/failed receipts are a durable result outbox. A lost response
+    // from dashboard.command.complete must be retried byte-for-byte without
+    // claiming or executing the command again.
+    const pendingResults = getDb()
+      .prepare(
+        `SELECT grant_id, command_id, kind, workspace_id, repo_id, expires_at,
+                payload_hash, command_envelope_json, claim_fence, state,
+                result_wrapped, result_envelope_json, result_published, error_message
+         FROM mesh_browser_command_receipts
+         WHERE backend_id = ? AND account_id = ?
+           AND state IN ('completed', 'failed') AND result_published = 0
+         ORDER BY updated_at ASC LIMIT ?`,
+      )
+      .all(scope.backendId, scope.accountId, MAX_COMMANDS_PER_PUMP) as CommandReceiptRow[];
+    for (const receipt of pendingResults) {
+      const command = commandFromReceipt(receipt);
+      if (command === null) continue;
+      if (!guard()) return;
+      try {
+        await publishStoredReceipt(scope, command, receipt, ctx);
+      } catch {
+        // Keep the exact envelope in the local outbox and let the next pump
+        // retry it. One unavailable/revoked grant must not starve new work.
+      }
+    }
+    const commands = await ctx.pullBrowserWorkspaceCommands(scope, ctx.enrollmentId);
+    for (const command of commands) {
+      if (!guard()) return;
+      try {
+        await dispatchBrowserWorkspaceCommand(scope, command, guard, ctx);
+      } catch {
+        // Network/relay failures leave the claim fenced remotely and are
+        // retried or become unknown-outcome; continue servicing other grants.
+      }
+    }
+  } finally {
+    commandPumpInFlight.delete(key);
+  }
+}
+
 async function publishSnapshot(scope: SyncScope, row: GrantRow): Promise<void> {
   const dsk = row.dsk_wrapped === null ? null : unwrapSecretBytes(row.dsk_wrapped);
   if (dsk === null) return;
@@ -292,6 +990,9 @@ export async function serviceDashboardGrants(
     upsertObserved(scope, request);
   }
   if (!guard()) return;
+  // Command work is intentionally detached from this sync cycle. A slow
+  // Desktop command must never hold the account sync cursor or block pulls.
+  void pumpBrowserWorkspaceCommands(scope, guard).catch(() => undefined);
   const db = getDb();
   const approved = db
     .prepare(
@@ -307,6 +1008,7 @@ export async function serviceDashboardGrants(
         `UPDATE mesh_dashboard_grants SET state = 'expired', updated_at = ?
          WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
       ).run(nowIso(), scope.backendId, scope.accountId, row.request_id);
+      revokeSharedBrowserWorkspaceGrant(row.request_id);
       continue;
     }
     const last = row.last_published_at === null ? 0 : Date.parse(row.last_published_at);
@@ -323,7 +1025,7 @@ export async function serviceDashboardGrants(
 export async function approveDashboardRequest(
   scope: SyncScope,
   requestId: string,
-  scopes?: DashboardScope[],
+  approval?: DashboardGrantApproval,
 ): Promise<void> {
   const db = getDb();
   const row = db
@@ -339,19 +1041,61 @@ export async function approveDashboardRequest(
     throw new Error(`dashboard request is ${row.state}, not pending`);
   }
   const request = JSON.parse(row.request_json) as DashboardRequest;
-  const granted = scopes ?? request.scopes;
-  const invalid = granted.filter((s) => !request.scopes.includes(s));
+  if (approval === undefined) {
+    throw new Error('dashboard approval requires an explicit workspace and repository selection');
+  }
+  const workspaceId = approval.workspace.workspaceId.trim();
+  const repoIds = [...new Set(approval.workspace.repoIds.map((id) => id.trim()).filter(Boolean))];
+  if (workspaceId === '') throw new Error('dashboard approval requires a workspace');
+  if (repoIds.length === 0) {
+    throw new Error('dashboard approval requires at least one repository');
+  }
+  const workspaceRepoRows = getDb()
+    .prepare(
+      `SELECT repo_id FROM workspace_repos
+       WHERE workspace_id = ? AND repo_id IN (${repoIds.map(() => '?').join(',')})`,
+    )
+    .all(workspaceId, ...repoIds) as Array<{ repo_id: string }>;
+  if (workspaceRepoRows.length !== repoIds.length) {
+    throw new Error('dashboard approval includes a repository outside the selected workspace');
+  }
+  const granted = [...new Set(approval.scopes)];
+  // Dashboard projection access is the non-action baseline. Keep existing
+  // dashboard flows intact while leaving every workspace action unchecked by
+  // default in the approval UI.
+  if (
+    (request.scopes as readonly string[]).includes('read-dashboard') &&
+    !granted.includes('read-dashboard')
+  ) {
+    granted.unshift('read-dashboard');
+  }
+  const invalid = granted.filter((s) => !(request.scopes as readonly string[]).includes(s));
   if (invalid.length > 0) {
     throw new Error(`scopes not requested: ${invalid.join(', ')}`);
   }
+  if (
+    granted.some(
+      (scopeName) => !DASHBOARD_WORKSPACE_SCOPES.includes(scopeName as DashboardWorkspaceScope),
+    )
+  ) {
+    throw new Error('dashboard approval includes an unknown scope');
+  }
   const expiresAt = request.expiresAt;
+  if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
+    throw new Error('dashboard request has expired');
+  }
   const dsk = randomBytes(32);
   const inner: DashboardGrantInner = {
     v: 1,
     dsk: dsk.toString('base64'),
     scopes: granted,
     expiresAt,
+    workspace: { workspaceId, repoIds },
+    enrollmentId: contextProvider?.()?.enrollmentId ?? '',
   };
+  if (inner.enrollmentId === '') {
+    throw new Error('dashboard approval requires an active enrollment');
+  }
   const aad = dashboardGrantAssociatedData({
     backendId: scope.backendId,
     accountId: scope.accountId,
@@ -380,15 +1124,21 @@ export async function approveDashboardRequest(
     decision: 'approved',
     grant,
     snapshot,
+    workspaceBindings: [{ workspaceId, repositoryIds: repoIds }],
+    grantedScopes: granted,
   });
   db.prepare(
     `UPDATE mesh_dashboard_grants
-     SET state = 'approved', dsk_wrapped = ?, scopes_json = ?, seq = 1,
+     SET state = 'approved', dsk_wrapped = ?, scopes_json = ?, workspace_id = ?,
+         repo_ids_json = ?, enrollment_id = ?, seq = 1,
          last_published_at = ?, updated_at = ?
      WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
   ).run(
     wrapSecretBytes(dsk),
     JSON.stringify(granted),
+    workspaceId,
+    JSON.stringify(repoIds),
+    inner.enrollmentId,
     nowIso(),
     nowIso(),
     scope.backendId,
@@ -398,10 +1148,7 @@ export async function approveDashboardRequest(
 }
 
 /** Denies a pending request. */
-export async function denyDashboardRequest(
-  scope: SyncScope,
-  requestId: string,
-): Promise<void> {
+export async function denyDashboardRequest(scope: SyncScope, requestId: string): Promise<void> {
   await dashRpc<DashboardDecideResult>('dashboard.decide', {
     requestId,
     decision: 'denied',
@@ -412,13 +1159,11 @@ export async function denyDashboardRequest(
        WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
     )
     .run(nowIso(), scope.backendId, scope.accountId, requestId);
+  revokeSharedBrowserWorkspaceGrant(requestId);
 }
 
 /** Revokes a live grant — the snapshot stream ends immediately. */
-export async function revokeDashboardGrant(
-  scope: SyncScope,
-  requestId: string,
-): Promise<void> {
+export async function revokeDashboardGrant(scope: SyncScope, requestId: string): Promise<void> {
   await dashRpc<DashboardRevokeResult>('dashboard.revoke', { requestId });
   getDb()
     .prepare(
@@ -426,6 +1171,7 @@ export async function revokeDashboardGrant(
        WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
     )
     .run(nowIso(), scope.backendId, scope.accountId, requestId);
+  revokeSharedBrowserWorkspaceGrant(requestId);
 }
 
 function nowIso(): string {

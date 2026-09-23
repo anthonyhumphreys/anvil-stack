@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { validBootstrap } from '../../provisioner/src/bootstrap';
+import { validBootstrap, type MeshEnvironmentBootstrap } from '../../provisioner/src/bootstrap';
 import { bootWithSandbox } from '../../provisioner/src/lifecycle';
 
 const BOOTSTRAP = {
@@ -10,7 +10,7 @@ const BOOTSTRAP = {
   backendUrl: 'https://sync.example.test',
   enrollmentCode: 'anvil-ec-AAAAA-BBBBB',
   ttlSeconds: 900,
-};
+} satisfies MeshEnvironmentBootstrap;
 
 describe('mesh provisioner bootstrap contract', () => {
   it('accepts backend 0.2 enrollment bootstrap and rejects legacy key-bearing payloads', () => {

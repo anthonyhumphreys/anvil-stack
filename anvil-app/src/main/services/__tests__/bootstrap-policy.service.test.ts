@@ -300,9 +300,9 @@ describe('workspace bootstrap storage', () => {
     };
     expect(JSON.parse(row.bootstrap_json!)).toEqual(RECIPE);
     setWorkspaceBootstrap(WS, null);
-    const cleared = db
-      .prepare('SELECT bootstrap_json FROM workspaces WHERE id = ?')
-      .get(WS) as { bootstrap_json: string | null };
+    const cleared = db.prepare('SELECT bootstrap_json FROM workspaces WHERE id = ?').get(WS) as {
+      bootstrap_json: string | null;
+    };
     expect(cleared.bootstrap_json).toBeNull();
   });
 });

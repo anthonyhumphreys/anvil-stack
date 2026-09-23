@@ -23,8 +23,7 @@ const rpcCalls: RpcCall[] = [];
 let rpcHandler: (operation: string, params: unknown) => unknown = () => ({});
 
 vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import('../sync-backend-client.service.js')>();
+  const original = await importOriginal<typeof import('../sync-backend-client.service.js')>();
   return {
     ...original,
     rpc: async (
@@ -68,7 +67,17 @@ function makeRepoWithRemote(suffix: string): { repoDir: string; head: string } {
   const remoteDir = join(base, 'remote.git');
   execFileSync('git', ['init', '--bare', remoteDir]);
   execFileSync('git', ['init', repoDir]);
-  git(repoDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init');
+  git(
+    repoDir,
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=t',
+    'commit',
+    '--allow-empty',
+    '-m',
+    'init',
+  );
   git(repoDir, 'remote', 'add', 'origin', remoteDir);
   git(repoDir, 'push', '-u', 'origin', 'HEAD:main');
   const head = git(repoDir, 'rev-parse', 'HEAD');
@@ -241,9 +250,10 @@ describe('initiateHandoff', () => {
       .prepare('SELECT state, generation FROM mesh_session_ownership WHERE session_id = ?')
       .get(sessionId) as { state: string; generation: number };
     expect(ownership.state).toBe('relinquished');
-    const journal = db
-      .prepare('SELECT role, state FROM mesh_handoff_journal')
-      .get() as { role: string; state: string };
+    const journal = db.prepare('SELECT role, state FROM mesh_handoff_journal').get() as {
+      role: string;
+      state: string;
+    };
     expect(journal).toEqual({ role: 'source', state: 'ownership-transferred' });
 
     // Quiescence happened between durable reject and checkpoint advance.
@@ -256,8 +266,9 @@ describe('initiateHandoff', () => {
         c.operation === 'handoff.advance' &&
         (c.params as { to: string }).to === 'source-relinquished-and-checkpointed',
     );
-    const checkpoint = (relinquish!.params as { checkpoint: { repositories: Array<{ commit: string }> } })
-      .checkpoint;
+    const checkpoint = (
+      relinquish!.params as { checkpoint: { repositories: Array<{ commit: string }> } }
+    ).checkpoint;
     expect(checkpoint.repositories[0]?.commit).toBe(head);
     rmSync(join(repoDir, '..'), { recursive: true, force: true });
   });
@@ -278,9 +289,9 @@ describe('initiateHandoff', () => {
     const { sessionId } = seedSession('prefail', repoDir);
     installHandoffFake({ failAdvanceTo: 'source-quiescing' });
 
-    await expect(
-      initiateHandoff({ sessionId, targetEnrollmentId: 'enr-2' }),
-    ).rejects.toThrow('injected-advance-failure');
+    await expect(initiateHandoff({ sessionId, targetEnrollmentId: 'enr-2' })).rejects.toThrow(
+      'injected-advance-failure',
+    );
 
     // Local mirror restored — the source may resume under still-valid ownership.
     const ownership = db

@@ -622,6 +622,31 @@ describe('managed environments (ENV-09)', () => {
     expect(replay.job.id).toBe(first.job.id);
   });
 
+  it('enforces the managed concurrency cap for overlapping creates', async () => {
+    const fx = fixture('concurrent-caps');
+    await Promise.all(
+      ['env_cc1', 'env_cc2'].map((environmentId) =>
+        postRpc(
+          'environment.bootstrap',
+          { environmentId, payload: MANAGED_ENROLLMENT_CODE },
+          fx.provisionerAuth,
+        ),
+      ),
+    );
+
+    const responses = await Promise.all([
+      createManagedJob(fx.provisionerAuth, 'env_cc1'),
+      createManagedJob(fx.provisionerAuth, 'env_cc2'),
+    ]);
+    const successes = responses.filter((response) => !isRpcError(response.body));
+    const failures = responses.filter((response) => isRpcError(response.body));
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect((failures[0]?.body as { error?: { details?: { reason?: string } } }).error?.details?.reason).toBe(
+      'managed-concurrency-cap',
+    );
+  });
+
   it('skips managed caps for BYO providers', async () => {
     const fx = fixture('byo');
     const response = await postRpc(

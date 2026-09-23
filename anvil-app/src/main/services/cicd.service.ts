@@ -194,7 +194,9 @@ function analyseGitHubWorkflow(
 
   const jobs = asRecord(root?.jobs);
   if (!jobs || Object.keys(jobs).length === 0) {
-    findings.push(makeFinding('error', file, 'This workflow does not define any jobs.', workflowId));
+    findings.push(
+      makeFinding('error', file, 'This workflow does not define any jobs.', workflowId),
+    );
     return;
   }
 
@@ -221,7 +223,7 @@ function analyseGitHubWorkflow(
         'job',
         file.path,
         stringValue(job?.name) ?? jobKey,
-        uses ? `Reusable workflow: ${uses}` : stringValue(job?.['runs-on']) ?? 'Runner not set',
+        uses ? `Reusable workflow: ${uses}` : (stringValue(job?.['runs-on']) ?? 'Runner not set'),
         1,
         jobNodeId,
         needs.length === 0 && !job?.['runs-on'] && !uses ? 'warning' : 'configured',
@@ -238,13 +240,28 @@ function analyseGitHubWorkflow(
     }
 
     if (!job?.['runs-on'] && !uses) {
-      findings.push(makeFinding('warning', file, `Job "${jobKey}" has no runner or reusable workflow.`, jobNodeId));
+      findings.push(
+        makeFinding(
+          'warning',
+          file,
+          `Job "${jobKey}" has no runner or reusable workflow.`,
+          jobNodeId,
+        ),
+      );
     }
 
     if (environment) {
       const gateNodeId = nodeId(file.path, `gate:${jobKey}:${environment}`);
       nodes.push(
-        makeNode('github-actions', 'gate', file.path, environment, 'Environment protection', 2, gateNodeId),
+        makeNode(
+          'github-actions',
+          'gate',
+          file.path,
+          environment,
+          'Environment protection',
+          2,
+          gateNodeId,
+        ),
       );
       edges.push({ from: gateNodeId, to: jobNodeId, label: 'approves' });
     }
@@ -252,7 +269,11 @@ function analyseGitHubWorkflow(
     const steps = asArray(job?.steps);
     steps.slice(0, 8).forEach((stepRaw, index) => {
       const step = asRecord(stepRaw);
-      const label = stringValue(step?.name) ?? stringValue(step?.uses) ?? stringValue(step?.run) ?? `Step ${index + 1}`;
+      const label =
+        stringValue(step?.name) ??
+        stringValue(step?.uses) ??
+        stringValue(step?.run) ??
+        `Step ${index + 1}`;
       const stepNodeId = nodeId(file.path, `job:${jobKey}:step:${index}`);
       nodes.push(
         makeNode(
@@ -291,7 +312,14 @@ function analyseAzurePipeline(
   );
 
   if (!root?.trigger && !root?.pr && !root?.schedules) {
-    findings.push(makeFinding('warning', file, 'This pipeline has no CI, PR, or scheduled trigger.', pipelineId));
+    findings.push(
+      makeFinding(
+        'warning',
+        file,
+        'This pipeline has no CI, PR, or scheduled trigger.',
+        pipelineId,
+      ),
+    );
   }
 
   const stages = asArray(root?.stages);
@@ -299,14 +327,22 @@ function analyseAzurePipeline(
   const steps = asArray(root?.steps);
 
   if (stages.length === 0 && jobs.length === 0 && steps.length === 0) {
-    findings.push(makeFinding('error', file, 'This pipeline does not define stages, jobs, or steps.', pipelineId));
+    findings.push(
+      makeFinding(
+        'error',
+        file,
+        'This pipeline does not define stages, jobs, or steps.',
+        pipelineId,
+      ),
+    );
     return;
   }
 
   if (stages.length > 0) {
     stages.forEach((rawStage, index) => {
       const stage = asRecord(rawStage);
-      const label = stringValue(stage?.stage) ?? stringValue(stage?.template) ?? `Stage ${index + 1}`;
+      const label =
+        stringValue(stage?.stage) ?? stringValue(stage?.template) ?? `Stage ${index + 1}`;
       const stageNodeId = nodeId(file.path, `stage:${label}:${index}`);
       const isTemplate = !!stage?.template;
       nodes.push(
@@ -356,22 +392,45 @@ function appendAzureJobs(
         file.path,
         label,
         stringValue(job?.displayName) ??
-          (isDeployment ? `Environment: ${environmentName(job?.environment) ?? 'not set'}` : undefined),
+          (isDeployment
+            ? `Environment: ${environmentName(job?.environment) ?? 'not set'}`
+            : undefined),
         depth,
         jobNodeId,
       ),
     );
-    edges.push({ from: parentNodeId, to: jobNodeId, label: job?.dependsOn ? 'dependsOn' : undefined });
+    edges.push({
+      from: parentNodeId,
+      to: jobNodeId,
+      label: job?.dependsOn ? 'dependsOn' : undefined,
+    });
 
     const environment = environmentName(job?.environment);
     if (isDeployment && environment) {
       const gateNodeId = nodeId(file.path, `gate:${label}:${environment}`);
-      nodes.push(makeNode('azure-pipelines', 'gate', file.path, environment, 'Deployment environment', depth + 1, gateNodeId));
+      nodes.push(
+        makeNode(
+          'azure-pipelines',
+          'gate',
+          file.path,
+          environment,
+          'Deployment environment',
+          depth + 1,
+          gateNodeId,
+        ),
+      );
       edges.push({ from: gateNodeId, to: jobNodeId, label: 'approves' });
     }
 
     if (!isTemplate && !job?.pool && !job?.uses && !job?.strategy) {
-      findings.push(makeFinding('info', file, `Job "${label}" does not set a pool; it may rely on a default.`, jobNodeId));
+      findings.push(
+        makeFinding(
+          'info',
+          file,
+          `Job "${label}" does not set a pool; it may rely on a default.`,
+          jobNodeId,
+        ),
+      );
     }
 
     appendAzureSteps(file, jobNodeId, asArray(job?.steps), nodes, edges, depth + 1);

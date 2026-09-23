@@ -130,11 +130,19 @@ describe('integrateResults', () => {
     const { workspaceId, portableId, repo, base } = seedFixture('merge');
     try {
       seedResultRef({
-        repo, portableId, workspaceId, base, dispatchId: 'disp-a',
+        repo,
+        portableId,
+        workspaceId,
+        base,
+        dispatchId: 'disp-a',
         files: { 'a.txt': 'base\nfrom-a\n' },
       });
       seedResultRef({
-        repo, portableId, workspaceId, base, dispatchId: 'disp-b',
+        repo,
+        portableId,
+        workspaceId,
+        base,
+        dispatchId: 'disp-b',
         files: { 'b.txt': 'from-b\n' },
       });
 
@@ -168,11 +176,19 @@ describe('integrateResults', () => {
     const { workspaceId, portableId, repo, base } = seedFixture('conflict');
     try {
       seedResultRef({
-        repo, portableId, workspaceId, base, dispatchId: 'disp-a',
+        repo,
+        portableId,
+        workspaceId,
+        base,
+        dispatchId: 'disp-a',
         files: { 'a.txt': 'version-a\n' },
       });
       seedResultRef({
-        repo, portableId, workspaceId, base, dispatchId: 'disp-b',
+        repo,
+        portableId,
+        workspaceId,
+        base,
+        dispatchId: 'disp-b',
         files: { 'a.txt': 'version-b\n' },
       });
 
@@ -194,9 +210,7 @@ describe('integrateResults', () => {
       expect(git(repo, 'rev-parse', integrated.branch)).not.toBe('');
       expect(git(repo, 'diff', '--name-only', '--diff-filter=U')).toBe('');
       // Both adopted refs survive for inspection/manual resolution.
-      expect(
-        git(repo, 'rev-parse', `refs/mesh/result/disp-b/${portableId}`),
-      ).not.toBe('');
+      expect(git(repo, 'rev-parse', `refs/mesh/result/disp-b/${portableId}`)).not.toBe('');
       // No merge state left behind in the user checkout.
       expect(git(repo, 'status', '--porcelain')).toBe('');
       expect(existsSync(join(repo, '.git', 'MERGE_HEAD'))).toBe(false);
@@ -210,7 +224,11 @@ describe('integrateResults', () => {
     const { workspaceId, portableId, repo, base } = seedFixture('verify');
     try {
       seedResultRef({
-        repo, portableId, workspaceId, base, dispatchId: 'disp-a',
+        repo,
+        portableId,
+        workspaceId,
+        base,
+        dispatchId: 'disp-a',
         files: { 'a.txt': 'changed\n' },
       });
 
@@ -236,12 +254,20 @@ describe('integrateResults', () => {
     const { workspaceId, portableId, repo, base } = seedFixture('diverged');
     try {
       seedResultRef({
-        repo, portableId, workspaceId, base, dispatchId: 'disp-a',
+        repo,
+        portableId,
+        workspaceId,
+        base,
+        dispatchId: 'disp-a',
         files: { 'a.txt': 'a\n' },
       });
       // Corrupt the second dispatch's pin — a different base for the same repo.
       seedResultRef({
-        repo, portableId, workspaceId, base, dispatchId: 'disp-b',
+        repo,
+        portableId,
+        workspaceId,
+        base,
+        dispatchId: 'disp-b',
         files: { 'b.txt': 'b\n' },
       });
       db.prepare(
@@ -278,7 +304,11 @@ describe('integrateResults', () => {
     const { workspaceId, portableId, repo, base } = seedFixture('restart');
     try {
       seedResultRef({
-        repo, portableId, workspaceId, base, dispatchId: 'disp-a',
+        repo,
+        portableId,
+        workspaceId,
+        base,
+        dispatchId: 'disp-a',
         files: { 'a.txt': 'changed\n' },
       });
       const input = {

@@ -73,7 +73,7 @@ describe('workspace activity feed', () => {
     const settled = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
     updateChatThreadAttention(settled.id, 'complete');
     inMemoryDb
-      .prepare('UPDATE chat_threads SET settled_at = datetime(\'now\') WHERE id = ?')
+      .prepare("UPDATE chat_threads SET settled_at = datetime('now') WHERE id = ?")
       .run(settled.id);
 
     const seen = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });

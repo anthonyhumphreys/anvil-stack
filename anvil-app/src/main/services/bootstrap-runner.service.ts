@@ -205,7 +205,12 @@ function runStep(
     const argv = step.argv ?? [];
     const child =
       step.shell !== undefined
-        ? spawn(step.shell, { cwd, env: buildEnv(step, options.resolveEnv), shell: true, detached: true })
+        ? spawn(step.shell, {
+            cwd,
+            env: buildEnv(step, options.resolveEnv),
+            shell: true,
+            detached: true,
+          })
         : spawn(argv[0] ?? '', argv.slice(1), {
             cwd,
             env: buildEnv(step, options.resolveEnv),

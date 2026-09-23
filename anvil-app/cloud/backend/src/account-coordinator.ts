@@ -146,6 +146,12 @@ import {
 } from '../../contract/environment';
 import {
   base64ByteLength,
+  CRYPTO_ENTITY_DEVICE_IDENTITY,
+  CRYPTO_ENTITY_KEYRING_PAIRING,
+  CRYPTO_ENTITY_KEYRING_PAIRED,
+  CRYPTO_ENTITY_KEYRING_ROTATION,
+  CRYPTO_ENTITY_KEYRING_WRAP,
+  isCryptoBoundaryEntityType,
   SEALED_ENTITY_ALG,
   SEALED_NONCE_BYTES,
   sealedTaskEnvelopeIssue,
@@ -168,6 +174,7 @@ import {
   type DashboardPublishParams,
   type DashboardPublishResult,
   type DashboardRequest,
+  type DashboardRequestsParams,
   type DashboardRequestsResult,
   type DashboardRevokeResult,
   type HostedDashboardRequestInput,
@@ -177,6 +184,25 @@ import {
   type KeyringReportResult,
 } from '../../contract/dashboard';
 import type { HostedEntitlement } from '../../contract/entitlements';
+import {
+  BROWSER_WORKSPACE_OPERATION_SCOPE,
+  BROWSER_WORKSPACE_RPC_CLASS,
+  BROWSER_WORKSPACE_MAX_ENVELOPE_BYTES,
+  isBrowserWorkspaceMutatingOperation,
+  isBrowserWorkspaceOperation,
+  type BrowserWorkspaceBinding,
+  type BrowserWorkspaceCommandEnvelope,
+  type BrowserWorkspaceOperation,
+  type BrowserWorkspaceResultEnvelope,
+  type DashboardClaimedCommand,
+  type DashboardCommandClaimParams,
+  type DashboardCommandClaimResult,
+  type DashboardCommandCompleteParams,
+  type DashboardCommandCompleteResult,
+  type DashboardCommandState,
+  type DashboardCommandStatusResult,
+  type DashboardCommandSubmitResult,
+} from '../../contract/browser-workspace';
 import { ephemeralOperationAllowed } from '../../contract/operations';
 import {
   SOCKET_SUBPROTOCOL,
@@ -502,6 +528,9 @@ interface DashboardRequestRow {
   browser_pub: string;
   challenge: string;
   scopes: string;
+  workspace_scopes: string;
+  repository_scopes: string;
+  granted_scopes: string;
   origin: string | null;
   user_agent: string | null;
   expires_at: number;
@@ -513,6 +542,28 @@ interface DashboardRequestRow {
   decided_at: number | null;
   created_at: number;
   updated_at: number;
+  [key: string]: string | number | null;
+}
+
+interface DashboardCommandRow {
+  command_id: string;
+  account_id: string;
+  request_id: string;
+  operation: string;
+  workspace_id: string;
+  repository_id: string | null;
+  envelope: string;
+  envelope_sha: string;
+  state: DashboardCommandState;
+  expires_at: number;
+  claim_enrollment_id: string | null;
+  claim_fence: number;
+  claim_expires_at: number | null;
+  result: string | null;
+  result_sha: string | null;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
   [key: string]: string | number | null;
 }
 
@@ -577,6 +628,8 @@ const ACCOUNT_PURGE_TABLES = [
   'environments',
   'credential_grants',
   'environment_bootstrap',
+  'dashboard_commands',
+  'dashboard_requests',
 ] as const;
 /** Per-account retained-history budget enforced before accepting changes. */
 const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
@@ -602,6 +655,40 @@ const MAX_TASK_KEY_WRAPS = MAX_RESULT_RECIPIENTS + 1;
 /** Browser dashboard: pending-list page size and snapshot byte cap. */
 const MAX_DASHBOARD_PENDING_LIST = 50;
 const MAX_DASHBOARD_SNAPSHOT_BYTES = 256 * 1024;
+const MAX_DASHBOARD_COMMAND_BYTES = BROWSER_WORKSPACE_MAX_ENVELOPE_BYTES;
+const MAX_DASHBOARD_COMMANDS_PER_GRANT = 2_000;
+const MAX_DASHBOARD_COMMAND_CLAIM = 10;
+const DASHBOARD_COMMAND_LEASE_MS = 120_000;
+const DASHBOARD_COMMAND_MAX_TTL_MS = 10 * 60 * 1000;
+const DASHBOARD_COMMAND_RETENTION_MS = 24 * 60 * 60 * 1000;
+const DASHBOARD_READ_RESULT_RETENTION_MS = 2 * 60 * 1000;
+const MAX_DASHBOARD_COMMAND_ROWS_PER_GRANT = 2_000;
+const MAX_DASHBOARD_COMMAND_ROWS_PER_ACCOUNT = 10_000;
+const MAX_DASHBOARD_COMMAND_BYTES_PER_GRANT = 32 * 1024 * 1024;
+const MAX_DASHBOARD_COMMAND_BYTES_PER_ACCOUNT = 128 * 1024 * 1024;
+const BROWSER_WORKSPACE_REPOSITORY_OPERATIONS = new Set<BrowserWorkspaceOperation>([
+  'file.list',
+  'file.read',
+  'file.write',
+  'git.status',
+  'git.diff',
+  'chat.thread.list',
+  'chat.create',
+  'chat.history.read',
+  'chat.session.start',
+  'chat.send',
+  'chat.status',
+  'chat.cancel',
+  'workflow.get',
+  'workflow.start',
+  'workflow.cancel',
+  'terminal.create',
+  'terminal.read',
+  'terminal.write',
+  'terminal.resize',
+  'terminal.close',
+  'preview.screenshot',
+]);
 /** keyring.report: bounded revoked-id list per rotation. */
 const MAX_ROTATION_REVOKED_IDS = 128;
 const MAX_REPORT_RESULT_BYTES = 64 * 1024;
@@ -854,6 +941,24 @@ export class AccountCoordinator extends DurableObject<Env> {
       'sealed_result',
       'ALTER TABLE attempts ADD COLUMN sealed_result TEXT',
     );
+    // browser-workspace/1 approval bindings on dashboard rows created before
+    // the command relay existed. Empty lists deliberately preserve the
+    // legacy grant's lack of workspace action authority.
+    this.ensureColumn(
+      'dashboard_requests',
+      'workspace_scopes',
+      "ALTER TABLE dashboard_requests ADD COLUMN workspace_scopes TEXT NOT NULL DEFAULT '[]'",
+    );
+    this.ensureColumn(
+      'dashboard_requests',
+      'repository_scopes',
+      "ALTER TABLE dashboard_requests ADD COLUMN repository_scopes TEXT NOT NULL DEFAULT '[]'",
+    );
+    this.ensureColumn(
+      'dashboard_requests',
+      'granted_scopes',
+      "ALTER TABLE dashboard_requests ADD COLUMN granted_scopes TEXT NOT NULL DEFAULT '[]'",
+    );
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
@@ -932,6 +1037,19 @@ export class AccountCoordinator extends DurableObject<Env> {
         return rpcErrorResponse(undefined, 'unavailable');
       }
     };
+    const hostedDashboardAsync = async (
+      handler: (body: unknown) => Promise<Response>,
+      body: unknown,
+    ): Promise<Response> => {
+      try {
+        return await handler(body);
+      } catch (error) {
+        if (isRpcFailure(error)) {
+          return failureResponse(undefined, error);
+        }
+        return rpcErrorResponse(undefined, 'unavailable');
+      }
+    };
     if (url.pathname === '/internal/dashboard-request' && request.method === 'POST') {
       return hostedDashboard(
         (body) => this.handleHostedDashboardRequest(body),
@@ -947,6 +1065,18 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (url.pathname === '/internal/dashboard-snapshot' && request.method === 'POST') {
       return hostedDashboard(
         (body) => this.handleHostedDashboardSnapshot(body),
+        await request.json().catch(() => null),
+      );
+    }
+    if (url.pathname === '/internal/dashboard-command-submit' && request.method === 'POST') {
+      return hostedDashboardAsync(
+        (body) => this.handleHostedDashboardCommandSubmit(body),
+        await request.json().catch(() => null),
+      );
+    }
+    if (url.pathname === '/internal/dashboard-command-status' && request.method === 'POST') {
+      return hostedDashboard(
+        (body) => this.handleHostedDashboardCommandStatus(body),
         await request.json().catch(() => null),
       );
     }
@@ -1488,7 +1618,10 @@ export class AccountCoordinator extends DurableObject<Env> {
     // BILL-03: the hosted entitlement gate runs after authentication and
     // envelope validation but before any dispatch — a denied mutating op
     // consumes no receipts, sequences, or durable state.
-    if (HOSTED_OPERATION_CLASS[rpc.operation as OperationName] === 'mutating') {
+    const hostedOperationClass =
+      HOSTED_OPERATION_CLASS[rpc.operation as OperationName] ??
+      BROWSER_WORKSPACE_RPC_CLASS[rpc.operation as keyof typeof BROWSER_WORKSPACE_RPC_CLASS];
+    if (hostedOperationClass === 'mutating') {
       const denial = await this.hostedWriteDenial(auth, rpc.requestId);
       if (denial !== null) {
         return denial;
@@ -1530,7 +1663,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         case 'job.get':
           return this.handleJobGet(rpc.requestId, rpc.params);
         case 'job.list':
-          return this.handleJobList(rpc.requestId, rpc.params);
+          return this.handleJobList(auth, rpc.requestId, rpc.params);
         case 'job.claim':
           return await this.handleJobClaim(auth, rpc.requestId, rpc.params);
         case 'attempt.renew':
@@ -1588,13 +1721,20 @@ export class AccountCoordinator extends DurableObject<Env> {
         // request row is the lifecycle authority; grant/snapshot envelopes
         // are opaque to the coordinator.
         case 'dashboard.requests':
-          return this.handleDashboardRequests(auth, rpc.requestId);
+          return this.handleDashboardRequests(auth, rpc.requestId, rpc.params);
         case 'dashboard.decide':
           return this.handleDashboardDecide(auth, rpc.requestId, rpc.params);
         case 'dashboard.publish':
           return this.handleDashboardPublish(auth, rpc.requestId, rpc.params);
         case 'dashboard.revoke':
           return this.handleDashboardRevoke(auth, rpc.requestId, rpc.params);
+        // browser-workspace/1 relay. These additive operations intentionally
+        // stay outside the frozen mesh/1 inventory; only the approving grant
+        // issuer may claim or complete its opaque command envelopes.
+        case 'dashboard.command.claim':
+          return this.handleDashboardCommandClaim(auth, rpc.requestId, rpc.params);
+        case 'dashboard.command.complete':
+          return await this.handleDashboardCommandComplete(auth, rpc.requestId, rpc.params);
         // SESSION-03: generation-fenced session ownership transfer. The
         // handoff row is the state authority; the mesh_sessions row is the
         // generation authority — ownership moves once, by CAS.
@@ -1724,11 +1864,28 @@ export class AccountCoordinator extends DurableObject<Env> {
     let totalBytes = 0;
     for (const item of prepared) {
       assertPendingChange(item.change);
-      // E2E: any payload carrying an `enc` field must be a well-formed
-      // sealed envelope. The backend never opens it — this is structural
-      // validation only, and plaintext (pre-sealing) payloads still pass.
+      // E2E: ordinary payloads carrying an `enc` field must be a well-formed
+      // ADK envelope. Crypto-boundary payloads use their own structural
+      // validator above; plaintext (pre-sealing) domain payloads still pass.
       const payload = item.change.payload;
+      const cryptoIssue =
+        item.change.operation === 'delete'
+          ? null
+          : cryptoBoundaryPayloadIssue(
+              item.change.entityType,
+              item.change.entityId,
+              payload,
+            );
+      if (cryptoIssue !== null) {
+        throw new RpcFailure('malformed-request', {
+          reason: 'crypto-boundary-invalid',
+          entityType: item.change.entityType,
+          issue: cryptoIssue,
+          changeId: item.change.changeId,
+        });
+      }
       if (
+        !isCryptoBoundaryEntityType(item.change.entityType) &&
         payload !== null &&
         typeof payload === 'object' &&
         'enc' in payload &&
@@ -2994,12 +3151,13 @@ export class AccountCoordinator extends DurableObject<Env> {
     const isManagedProvision =
       create.kind === 'provision-environment' &&
       create.inputManifest.inputs['provider'] === 'anvil-managed';
+    let managedCaps: { maxTtlSeconds: number; maxConcurrent: number } | null = null;
     if (isManagedProvision) {
       // Idempotent replays must return the existing job, not a fresh cap
       // rejection — the slot was accounted when the job was born.
       const replay = this.readJobByRequest(auth.enrollmentId, create.requestId);
       if (replay === null) {
-        await this.assertManagedProvisionAllowed(auth, create.inputManifest, now);
+        managedCaps = await this.assertManagedProvisionAllowed(auth, create.inputManifest, now);
       }
     }
     const created = this.commit(() => {
@@ -3013,6 +3171,11 @@ export class AccountCoordinator extends DurableObject<Env> {
           });
         }
         return { job: this.jobSummary(existing), notifyTarget: null as string | null };
+      }
+      if (managedCaps !== null) {
+        // The async entitlement preflight can overlap another create. Keep
+        // the cap authoritative at the point where this job row is inserted.
+        this.assertManagedProvisionConcurrency(auth.accountId, managedCaps);
       }
       const placement = this.resolvePlacement(auth, create, now);
       const jobId = crypto.randomUUID();
@@ -3266,25 +3429,35 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   /** `job.list`: newest-first, optional state filter, bounded page. */
-  private handleJobList(requestId: string, params: unknown): Response {
+  private handleJobList(auth: SpikeAuth, requestId: string, params: unknown): Response {
     const list = parseJobListParams(params);
     const result = this.commit(() => {
       this.expireQueuedJobs(Date.now());
-      const rows =
-        list.state === undefined
-          ? this.ctx.storage.sql
-              .exec<JobRow>(
-                'SELECT * FROM jobs ORDER BY created_at DESC, job_id ASC LIMIT ?',
-                list.limit,
-              )
-              .toArray()
-          : this.ctx.storage.sql
-              .exec<JobRow>(
-                'SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, job_id ASC LIMIT ?',
-                list.state,
-                list.limit,
-              )
-              .toArray();
+      let rows: JobRow[];
+      if (list.requestId !== undefined) {
+        // The optional requestId filter is deliberately scoped to the
+        // verified source enrollment. Older compatible backends may ignore
+        // this additive field; the client searches its bounded response.
+        const job = this.readJobByRequest(auth.enrollmentId, list.requestId);
+        rows =
+          job === null || (list.state !== undefined && job.state !== list.state) ? [] : [job];
+      } else {
+        rows =
+          list.state === undefined
+            ? this.ctx.storage.sql
+                .exec<JobRow>(
+                  'SELECT * FROM jobs ORDER BY created_at DESC, job_id ASC LIMIT ?',
+                  list.limit,
+                )
+                .toArray()
+            : this.ctx.storage.sql
+                .exec<JobRow>(
+                  'SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, job_id ASC LIMIT ?',
+                  list.state,
+                  list.limit,
+                )
+                .toArray();
+      }
       const out: JobListResult = { jobs: rows.map((row) => this.jobSummary(row)) };
       return out;
     });
@@ -6083,7 +6256,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     auth: SpikeAuth,
     manifest: ExecutionManifest,
     now: number,
-  ): Promise<void> {
+  ): Promise<{ maxTtlSeconds: number; maxConcurrent: number }> {
     if (this.env.MANAGED_PROVISIONER === undefined) {
       throw new RpcFailure('forbidden', {
         reason: 'provider-unavailable',
@@ -6107,6 +6280,23 @@ export class AccountCoordinator extends DurableObject<Env> {
       });
     }
     // Concurrency counts live managed environments AND managed provision
+    // jobs still in flight. The same check is repeated inside the create
+    // transaction below: this preflight runs across an async entitlement
+    // lookup, so two requests can otherwise both observe the same slot.
+    this.assertManagedProvisionConcurrency(auth.accountId, caps);
+    return caps;
+  }
+
+  /**
+   * Checks the authoritative managed-environment slot count. Callers that
+   * are about to insert a managed provision job must run this from inside
+   * their transaction as well as during async entitlement preflight.
+   */
+  private assertManagedProvisionConcurrency(
+    accountId: string,
+    caps: { maxTtlSeconds: number; maxConcurrent: number },
+  ): void {
+    // Concurrency counts live managed environments AND managed provision
     // jobs still in flight — a burst of creates cannot slip the window
     // between job.create and the claimer writing the environment row.
     const live = this.ctx.storage.sql
@@ -6121,8 +6311,8 @@ export class AccountCoordinator extends DurableObject<Env> {
              AND state IN ('queued', 'running')
              AND json_extract(input_manifest, '$.inputs.provider') = 'anvil-managed'
          ) AS n`,
-        auth.accountId,
-        auth.accountId,
+        accountId,
+        accountId,
       )
       .one().n;
     if (live >= caps.maxConcurrent) {
@@ -6752,12 +6942,34 @@ export class AccountCoordinator extends DurableObject<Env> {
 
   /** Lazily expires pending requests past their expiry (bounded per pass). */
   private expireDashboardRequests(now: number): number {
-    return this.ctx.storage.sql.exec(
+    const pending = this.ctx.storage.sql.exec(
       `UPDATE dashboard_requests SET state = 'expired', updated_at = ?
        WHERE state = 'pending' AND expires_at <= ?`,
       now,
       now,
     ).rowsWritten;
+    const grants = this.ctx.storage.sql.exec(
+      `UPDATE dashboard_requests SET state = 'expired', grant = NULL, snapshot = NULL,
+         updated_at = ?
+       WHERE state = 'approved' AND expires_at <= ?`,
+      now,
+      now,
+    ).rowsWritten;
+    // Access ends with the grant: once a request is no longer approved the
+    // relay drops stored result ciphertext. Command rows stay (without the
+    // envelope payload) so status can report an honest terminal state, and
+    // result_sha stays so an issuer's idempotent re-completion still matches.
+    this.ctx.storage.sql.exec(
+      `UPDATE dashboard_commands SET result = NULL, updated_at = ?
+       WHERE result IS NOT NULL AND request_id IN (
+         SELECT request_id FROM dashboard_requests WHERE state <> 'approved'
+       )`,
+      now,
+    );
+    // Queued work can never execute after its deadline. A claimed command
+    // remains explicitly uncertain once its lease expires.
+    this.expireDashboardCommands(now);
+    return pending + grants;
   }
 
   private dashboardRequestRecord(row: DashboardRequestRow): DashboardRequest {
@@ -6766,6 +6978,12 @@ export class AccountCoordinator extends DurableObject<Env> {
       browserPub: row.browser_pub,
       challenge: row.challenge,
       scopes: JSON.parse(row.scopes) as DashboardRequest['scopes'],
+      ...(JSON.parse(row.workspace_scopes) as BrowserWorkspaceBinding[]).length === 0
+        ? {}
+        : { workspaceBindings: JSON.parse(row.workspace_scopes) as BrowserWorkspaceBinding[] },
+      ...(JSON.parse(row.granted_scopes) as DashboardRequest['scopes']).length === 0
+        ? {}
+        : { grantedScopes: JSON.parse(row.granted_scopes) as DashboardRequest['scopes'] },
       ...(row.origin === null ? {} : { origin: row.origin }),
       ...(row.user_agent === null ? {} : { userAgent: row.user_agent }),
       expiresAt: new Date(row.expires_at).toISOString(),
@@ -6783,12 +7001,27 @@ export class AccountCoordinator extends DurableObject<Env> {
    * browser authorization queue for its account. Pending rows past expiry
    * are lazily expired first; the list is bounded, newest first.
    */
-  private handleDashboardRequests(auth: SpikeAuth, requestId: string): Response {
+  private handleDashboardRequests(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const lookup = parseDashboardRequestsParams(params);
     const result = this.commit((): DashboardRequestsResult => {
       this.assertNotRevoked(auth);
       this.provisionEnrollment(auth);
       const now = Date.now();
       this.expireDashboardRequests(now);
+      if (lookup.requestId !== undefined) {
+        const row = this.readDashboardRequest(lookup.requestId);
+        if (row === null || row.account_id !== auth.accountId) {
+          throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+        }
+        // This lookup is deliberately issuer-bound. Account membership alone
+        // must not turn dashboard.requests into a grant-state oracle for a
+        // different trusted device; the approving enrollment is the authority
+        // that owns the live grant revalidation used by the workspace relay.
+        if (row.decided_by !== auth.enrollmentId) {
+          throw new RpcFailure('forbidden', { reason: 'not-grant-issuer' });
+        }
+        return { requests: [], request: this.dashboardRequestRecord(row) };
+      }
       const rows = this.ctx.storage.sql
         .exec<DashboardRequestRow>(
           `SELECT * FROM dashboard_requests
@@ -6840,15 +7073,45 @@ export class AccountCoordinator extends DurableObject<Env> {
         if (grant.browserPub !== row.browser_pub) {
           throw new RpcFailure('malformed-request', { reason: 'grant.browserPub' });
         }
+        if (
+          decide.workspaceBindings !== undefined &&
+          Date.parse(grant.expiresAt) !== row.expires_at
+        ) {
+          throw new RpcFailure('malformed-request', { reason: 'grant.expiresAt' });
+        }
+        const requestedBindings = JSON.parse(row.workspace_scopes) as BrowserWorkspaceBinding[];
+        const workspaceBindings = decide.workspaceBindings ?? [];
+        const grantedScopes = decide.grantedScopes ?? [];
+        if (
+          (requestedBindings.length > 0 &&
+            workspaceBindings.some(
+              (binding) =>
+                !requestedBindings.some(
+                  (requested) =>
+                    requested.workspaceId === binding.workspaceId &&
+                    binding.repositoryIds.every((repo) => requested.repositoryIds.includes(repo)),
+                ),
+            )) ||
+          grantedScopes.some((scope) => !JSON.parse(row.scopes).includes(scope))
+        ) {
+          throw new RpcFailure('forbidden', { reason: 'dashboard-scope-escalation' });
+        }
         const snapshot = decide.snapshot as SealedDashboardSnapshot;
+        if (snapshot.seq !== 1) {
+          throw new RpcFailure('malformed-request', { reason: 'snapshot-seq-initial' });
+        }
         this.ctx.storage.sql.exec(
           `UPDATE dashboard_requests SET
              state = 'approved', grant = ?, snapshot = ?, snapshot_seq = ?,
+             workspace_scopes = ?, repository_scopes = ?, granted_scopes = ?,
              decided_by = ?, decided_at = ?, updated_at = ?
            WHERE request_id = ?`,
           JSON.stringify(grant),
           JSON.stringify(snapshot),
           snapshot.seq,
+          JSON.stringify(workspaceBindings),
+          '[]',
+          JSON.stringify(grantedScopes),
           auth.enrollmentId,
           now,
           now,
@@ -6895,6 +7158,15 @@ export class AccountCoordinator extends DurableObject<Env> {
       }
       if (row.state !== 'approved') {
         throw new RpcFailure('conflict', { reason: 'grant-not-approved', state: row.state });
+      }
+      if (row.expires_at <= now) {
+        this.ctx.storage.sql.exec(
+          `UPDATE dashboard_requests SET state = 'expired', grant = NULL, snapshot = NULL,
+             updated_at = ? WHERE request_id = ?`,
+          now,
+          row.request_id,
+        );
+        throw new RpcFailure('conflict', { reason: 'grant-expired' });
       }
       if (row.decided_by !== auth.enrollmentId) {
         throw new RpcFailure('forbidden', { reason: 'not-grant-issuer' });
@@ -6945,6 +7217,27 @@ export class AccountCoordinator extends DurableObject<Env> {
         now,
         row.request_id,
       );
+      this.ctx.storage.sql.exec(
+        `UPDATE dashboard_commands SET state = 'revoked', updated_at = ?
+         WHERE request_id = ? AND state = 'queued'`,
+        now,
+        row.request_id,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE dashboard_commands SET state = 'unknown-outcome', updated_at = ?
+         WHERE request_id = ? AND state = 'claimed'`,
+        now,
+        row.request_id,
+      );
+      // Revocation ends result access immediately, including for commands
+      // that already completed. result_sha is kept so the issuer's durable
+      // outbox can still satisfy the idempotent re-completion check.
+      this.ctx.storage.sql.exec(
+        `UPDATE dashboard_commands SET result = NULL, updated_at = ?
+         WHERE request_id = ? AND result IS NOT NULL`,
+        now,
+        row.request_id,
+      );
       return {
         request: this.dashboardRequestRecord(
           this.readDashboardRequestRequired(revoke.requestId),
@@ -6978,6 +7271,7 @@ export class AccountCoordinator extends DurableObject<Env> {
           existing.browser_pub === input.browserPub &&
           existing.challenge === input.challenge &&
           existing.scopes === JSON.stringify(input.scopes) &&
+          existing.workspace_scopes === JSON.stringify(input.workspaceBindings) &&
           existing.expires_at === input.expiresAtMs;
         if (!unchanged) {
           throw new RpcFailure('conflict', { reason: 'request-id-reuse' });
@@ -6989,15 +7283,17 @@ export class AccountCoordinator extends DurableObject<Env> {
       }
       this.ctx.storage.sql.exec(
         `INSERT INTO dashboard_requests (
-           request_id, account_id, browser_pub, challenge, scopes, origin,
+           request_id, account_id, browser_pub, challenge, scopes,
+           workspace_scopes, repository_scopes, granted_scopes, origin,
            user_agent, expires_at, state, grant, snapshot, snapshot_seq,
            decided_by, decided_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, NULL, NULL, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?, 'pending', NULL, NULL, 0, NULL, NULL, ?, ?)`,
         input.requestId,
         input.accountId,
         input.browserPub,
         input.challenge,
         JSON.stringify(input.scopes),
+        JSON.stringify(input.workspaceBindings),
         input.origin ?? null,
         input.userAgent ?? null,
         input.expiresAtMs,
@@ -7055,6 +7351,7 @@ export class AccountCoordinator extends DurableObject<Env> {
   private handleHostedDashboardSnapshot(body: unknown): Response {
     const { requestId } = parseDashboardRequestIdParams(body);
     const result = this.commit((): HostedDashboardSnapshotResult => {
+      this.expireDashboardRequests(Date.now());
       const row = this.readDashboardRequest(requestId);
       if (row === null) {
         throw new RpcFailure('not-found', { reason: 'dashboard-request' });
@@ -7068,6 +7365,431 @@ export class AccountCoordinator extends DurableObject<Env> {
       };
     });
     return rpcSuccessResponse(requestId, result);
+  }
+
+  private readDashboardCommand(commandId: string): DashboardCommandRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<DashboardCommandRow>(
+          'SELECT * FROM dashboard_commands WHERE command_id = ?',
+          commandId,
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  /** Expires queued work and makes an abandoned claim explicitly uncertain. */
+  private expireDashboardCommands(now: number): void {
+    this.ctx.storage.sql.exec(
+      `UPDATE dashboard_commands SET state = 'expired', updated_at = ?
+       WHERE state = 'queued' AND expires_at <= ?`,
+      now,
+      now,
+    );
+    this.ctx.storage.sql.exec(
+      `UPDATE dashboard_commands SET state = 'unknown-outcome', updated_at = ?
+       WHERE state = 'claimed' AND (claim_expires_at IS NULL OR claim_expires_at <= ?)`,
+      now,
+      now,
+    );
+    // Results are retained long enough for a browser reconnect, then pruned
+    // in bounded account-object sweeps. This prevents ciphertext retention
+    // from becoming an unbounded append-only log.
+    const stale = this.ctx.storage.sql
+      .exec<{
+        command_id: string;
+        request_state: string;
+        request_expires_at: number;
+        operation: string;
+        state: DashboardCommandState;
+        updated_at: number;
+      }>(
+        `SELECT c.command_id, c.operation, c.state, c.updated_at,
+                r.state AS request_state, r.expires_at AS request_expires_at
+         FROM dashboard_commands c
+         JOIN dashboard_requests r ON r.request_id = c.request_id
+         WHERE c.state IN ('completed', 'failed', 'expired', 'revoked', 'unknown-outcome')
+         ORDER BY c.updated_at ASC LIMIT ?`,
+        SWEEP_BATCH_ROWS,
+      )
+      .toArray();
+    for (const row of stale) {
+      const mutating =
+        isBrowserWorkspaceOperation(row.operation) &&
+        isBrowserWorkspaceMutatingOperation(row.operation);
+      const keepUntil =
+        mutating || row.state === 'unknown-outcome'
+          ? row.request_expires_at + DASHBOARD_COMMAND_RETENTION_MS
+          : row.updated_at + DASHBOARD_READ_RESULT_RETENTION_MS;
+      if (keepUntil > now) continue;
+      this.ctx.storage.sql.exec(
+        'DELETE FROM dashboard_commands WHERE command_id = ?',
+        row.command_id,
+      );
+    }
+  }
+
+  private dashboardCommandStatus(row: DashboardCommandRow): DashboardCommandStatusResult {
+    const result: DashboardCommandStatusResult = {
+      requestId: row.request_id,
+      commandId: row.command_id,
+      operation: row.operation as BrowserWorkspaceOperation,
+      state: row.state,
+      expiresAt: new Date(row.expires_at).toISOString(),
+    };
+    if (row.result !== null) {
+      result.result = JSON.parse(row.result) as BrowserWorkspaceResultEnvelope;
+    }
+    return result;
+  }
+
+  private dashboardCommandScopeAllowed(
+    row: DashboardRequestRow,
+    command: BrowserWorkspaceCommandEnvelope,
+  ): void {
+    const granted = JSON.parse(row.granted_scopes) as string[];
+    const required = BROWSER_WORKSPACE_OPERATION_SCOPE[command.operation];
+    if (!granted.includes(required)) {
+      throw new RpcFailure('forbidden', { reason: 'dashboard-scope', required });
+    }
+    const bindings = JSON.parse(row.workspace_scopes) as BrowserWorkspaceBinding[];
+    const binding = bindings.find((entry) => entry.workspaceId === command.workspaceId);
+    if (binding === undefined) {
+      throw new RpcFailure('forbidden', { reason: 'dashboard-workspace' });
+    }
+    if (command.repositoryId !== undefined && !binding.repositoryIds.includes(command.repositoryId)) {
+      throw new RpcFailure('forbidden', { reason: 'dashboard-repository' });
+    }
+    if (
+      BROWSER_WORKSPACE_REPOSITORY_OPERATIONS.has(command.operation) &&
+      (command.repositoryId === undefined || !binding.repositoryIds.includes(command.repositoryId))
+    ) {
+      throw new RpcFailure('forbidden', { reason: 'dashboard-repository-required' });
+    }
+  }
+
+  /** Desktop-only claim path; the hosted identity is never sufficient here. */
+  private async handleDashboardCommandClaim(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const claim = parseDashboardCommandClaimParams(params);
+    const writeDenial = await this.hostedWriteDenial(auth, requestId);
+    const result = this.commit((): DashboardCommandClaimResult & { deniedMutating: boolean } => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      this.expireDashboardRequests(now);
+      this.expireDashboardCommands(now);
+      const dashboard = this.readDashboardRequest(claim.requestId);
+      if (dashboard === null || dashboard.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+      }
+      if (dashboard.state !== 'approved') {
+        throw new RpcFailure('conflict', { reason: 'grant-not-approved', state: dashboard.state });
+      }
+      if (dashboard.expires_at <= now) {
+        throw new RpcFailure('conflict', { reason: 'grant-expired' });
+      }
+      if (dashboard.decided_by !== auth.enrollmentId) {
+        throw new RpcFailure('forbidden', { reason: 'not-grant-issuer' });
+      }
+      const rows = this.ctx.storage.sql
+        .exec<DashboardCommandRow>(
+          `SELECT * FROM dashboard_commands
+           WHERE request_id = ? AND state = 'queued' AND expires_at > ?
+           ORDER BY created_at ASC LIMIT ?`,
+          claim.requestId,
+          now,
+          Math.min(MAX_DASHBOARD_COMMAND_CLAIM * 4, (claim.limit ?? 1) * 4),
+        )
+        .toArray();
+      const commands: DashboardClaimedCommand[] = [];
+      let deniedMutating = false;
+      for (const row of rows) {
+        if (
+          writeDenial !== null &&
+          isBrowserWorkspaceOperation(row.operation) &&
+          isBrowserWorkspaceMutatingOperation(row.operation)
+        ) {
+          deniedMutating = true;
+          continue;
+        }
+        const fence = row.claim_fence + 1;
+        const lease = Math.min(row.expires_at, now + DASHBOARD_COMMAND_LEASE_MS);
+        this.ctx.storage.sql.exec(
+          `UPDATE dashboard_commands SET state = 'claimed', claim_enrollment_id = ?,
+             claim_fence = ?, claim_expires_at = ?, updated_at = ?
+           WHERE command_id = ? AND state = 'queued'`,
+          auth.enrollmentId,
+          fence,
+          lease,
+          now,
+          row.command_id,
+        );
+        const claimed = this.readDashboardCommand(row.command_id);
+        if (claimed === null || claimed.state !== 'claimed') continue;
+        commands.push({
+          commandId: claimed.command_id,
+          requestId: claimed.request_id,
+          envelope: JSON.parse(claimed.envelope) as BrowserWorkspaceCommandEnvelope,
+          claimFence: claimed.claim_fence,
+          claimExpiresAt: new Date(claimed.claim_expires_at as number).toISOString(),
+        });
+      }
+      return { requestId: claim.requestId, commands, deniedMutating };
+    });
+    if (result.deniedMutating && result.commands.length === 0 && writeDenial !== null) {
+      return writeDenial;
+    }
+    return rpcSuccessResponse(requestId, {
+      requestId: result.requestId,
+      commands: result.commands,
+    });
+  }
+
+  private async handleDashboardCommandComplete(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const complete = parseDashboardCommandCompleteParams(params);
+    const resultSha = await sha256Hex(JSON.stringify(complete.result));
+    const result = this.commit((): DashboardCommandCompleteResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      const dashboard = this.readDashboardRequest(complete.requestId);
+      const command = this.readDashboardCommand(complete.commandId);
+      if (
+        dashboard === null ||
+        dashboard.account_id !== auth.accountId ||
+        command === null ||
+        command.account_id !== auth.accountId ||
+        command.request_id !== complete.requestId
+      ) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-command' });
+      }
+      if (dashboard.decided_by !== auth.enrollmentId) {
+        throw new RpcFailure('forbidden', { reason: 'not-grant-issuer' });
+      }
+      if (command.state === 'completed' || command.state === 'failed') {
+        if (command.result_sha !== resultSha) {
+          throw new RpcFailure('conflict', { reason: 'command-result-reuse' });
+        }
+        return {
+          requestId: command.request_id,
+          commandId: command.command_id,
+          state: command.state,
+        };
+      }
+      if (command.state !== 'claimed') {
+        if (command.state === 'unknown-outcome') {
+          return {
+            requestId: command.request_id,
+            commandId: command.command_id,
+            state: 'unknown-outcome',
+          };
+        }
+        throw new RpcFailure('conflict', { reason: 'command-not-claimed', state: command.state });
+      }
+      const original = JSON.parse(command.envelope) as BrowserWorkspaceCommandEnvelope;
+      if (
+        complete.result.operation !== original.operation ||
+        complete.result.workspaceId !== original.workspaceId ||
+        (complete.result.repositoryId ?? null) !== (original.repositoryId ?? null) ||
+        complete.result.expiresAt !== original.expiresAt
+      ) {
+        throw new RpcFailure('malformed-request', { reason: 'result-binding' });
+      }
+      if (
+        command.claim_enrollment_id !== auth.enrollmentId ||
+        command.claim_fence !== complete.claimFence
+      ) {
+        throw new RpcFailure('conflict', { reason: 'command-claim-fence' });
+      }
+      if (command.claim_expires_at === null || command.claim_expires_at <= now) {
+        this.ctx.storage.sql.exec(
+          `UPDATE dashboard_commands SET state = 'unknown-outcome', result = ?, result_sha = ?,
+             updated_at = ? WHERE command_id = ? AND state = 'claimed'`,
+          JSON.stringify(complete.result),
+          resultSha,
+          now,
+          command.command_id,
+        );
+        return {
+          requestId: command.request_id,
+          commandId: command.command_id,
+          state: 'unknown-outcome',
+        };
+      }
+      this.ctx.storage.sql.exec(
+        `UPDATE dashboard_commands SET state = ?, result = ?, result_sha = ?,
+           completed_at = ?, updated_at = ?
+         WHERE command_id = ? AND state = 'claimed' AND claim_fence = ?`,
+        complete.outcome,
+        JSON.stringify(complete.result),
+        resultSha,
+        now,
+        now,
+        command.command_id,
+        complete.claimFence,
+      );
+      return {
+        requestId: command.request_id,
+        commandId: command.command_id,
+        state: complete.outcome,
+      };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private async handleHostedDashboardCommandSubmit(body: unknown): Promise<Response> {
+    const input = parseDashboardCommandSubmitInput(body);
+    const envelopeJson = JSON.stringify(input.command);
+    const envelopeSha = await sha256Hex(envelopeJson);
+    const result = this.commit((): DashboardCommandSubmitResult => {
+      const now = Date.now();
+      this.expireDashboardRequests(now);
+      this.expireDashboardCommands(now);
+      const dashboard = this.readDashboardRequest(input.requestId);
+      if (dashboard === null) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+      }
+      const existing = this.ctx.storage.sql
+        .exec<DashboardCommandRow>(
+          `SELECT * FROM dashboard_commands WHERE request_id = ? AND command_id = ?`,
+          input.requestId,
+          input.command.commandId,
+        )
+        .toArray()[0];
+      if (existing !== undefined) {
+        if (existing.envelope_sha !== envelopeSha) {
+          throw new RpcFailure('conflict', { reason: 'command-id-reuse' });
+        }
+        return {
+          requestId: existing.request_id,
+          commandId: existing.command_id,
+          state: existing.state,
+          deduplicated: true,
+          expiresAt: new Date(existing.expires_at).toISOString(),
+        };
+      }
+      if (dashboard.account_id !== input.accountId || dashboard.state !== 'approved') {
+        throw new RpcFailure('conflict', { reason: 'grant-not-approved', state: dashboard.state });
+      }
+      if (dashboard.expires_at <= now) {
+        throw new RpcFailure('conflict', { reason: 'grant-expired' });
+      }
+      this.dashboardCommandScopeAllowed(dashboard, input.command);
+      const expiresAt = Date.parse(input.command.expiresAt);
+      if (
+        !Number.isFinite(expiresAt) ||
+        expiresAt <= now ||
+        expiresAt > dashboard.expires_at ||
+        expiresAt > now + DASHBOARD_COMMAND_MAX_TTL_MS
+      ) {
+        throw new RpcFailure('malformed-request', { reason: 'command-expiresAt' });
+      }
+      const count = this.ctx.storage.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM dashboard_commands
+           WHERE request_id = ? AND state IN ('queued', 'claimed')`,
+          input.requestId,
+        )
+        .toArray()[0]?.count ?? 0;
+      if (count >= MAX_DASHBOARD_COMMANDS_PER_GRANT) {
+        throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-queue' });
+      }
+      const retained = this.ctx.storage.sql
+        .exec<{ count: number }>(
+          'SELECT COUNT(*) AS count FROM dashboard_commands WHERE request_id = ?',
+          input.requestId,
+        )
+        .toArray()[0]?.count ?? 0;
+      if (retained >= MAX_DASHBOARD_COMMAND_ROWS_PER_GRANT) {
+        throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-retention' });
+      }
+      const accountRetained = this.ctx.storage.sql
+        .exec<{ count: number }>(
+          'SELECT COUNT(*) AS count FROM dashboard_commands WHERE account_id = ?',
+          dashboard.account_id,
+        )
+        .toArray()[0]?.count ?? 0;
+      if (accountRetained >= MAX_DASHBOARD_COMMAND_ROWS_PER_ACCOUNT) {
+        throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-account-retention' });
+      }
+      const retainedBytes = this.ctx.storage.sql
+        .exec<{ bytes: number | null }>(
+          `SELECT COALESCE(SUM(length(envelope) + COALESCE(length(result), 0)), 0) AS bytes
+           FROM dashboard_commands WHERE request_id = ?`,
+          input.requestId,
+        )
+        .toArray()[0]?.bytes ?? 0;
+      if (retainedBytes + envelopeJson.length > MAX_DASHBOARD_COMMAND_BYTES_PER_GRANT) {
+        throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-bytes' });
+      }
+      const accountRetainedBytes = this.ctx.storage.sql
+        .exec<{ bytes: number | null }>(
+          `SELECT COALESCE(SUM(length(envelope) + COALESCE(length(result), 0)), 0) AS bytes
+           FROM dashboard_commands WHERE account_id = ?`,
+          dashboard.account_id,
+        )
+        .toArray()[0]?.bytes ?? 0;
+      if (accountRetainedBytes + envelopeJson.length > MAX_DASHBOARD_COMMAND_BYTES_PER_ACCOUNT) {
+        throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-account-bytes' });
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO dashboard_commands (
+           command_id, account_id, request_id, operation, workspace_id, repository_id,
+           envelope, envelope_sha, state, expires_at, claim_enrollment_id, claim_fence,
+           claim_expires_at, result, result_sha, created_at, updated_at, completed_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, NULL, 0, NULL, NULL, NULL, ?, ?, NULL)`,
+        input.command.commandId,
+        dashboard.account_id,
+        input.requestId,
+        input.command.operation,
+        input.command.workspaceId,
+        input.command.repositoryId ?? null,
+        envelopeJson,
+        envelopeSha,
+        expiresAt,
+        now,
+        now,
+      );
+      return {
+        requestId: input.requestId,
+        commandId: input.command.commandId,
+        state: 'queued',
+        deduplicated: false,
+        expiresAt: new Date(expiresAt).toISOString(),
+      };
+    });
+    return Response.json(result);
+  }
+
+  private handleHostedDashboardCommandStatus(body: unknown): Response {
+    const input = parseDashboardCommandStatusInput(body);
+    const result = this.commit((): DashboardCommandStatusResult => {
+      const now = Date.now();
+      this.expireDashboardRequests(now);
+      this.expireDashboardCommands(now);
+      const row = this.readDashboardCommand(input.commandId);
+      if (row === null || row.request_id !== input.requestId) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-command' });
+      }
+      const status = this.dashboardCommandStatus(row);
+      // The command's terminal state stays honest, but result ciphertext is
+      // only served while the grant remains approved: revocation, expiry, or
+      // denial end read access even for results produced before the change.
+      const dashboard = this.readDashboardRequest(row.request_id);
+      if (dashboard === null || dashboard.state !== 'approved') {
+        delete status.result;
+      }
+      return status;
+    });
+    return Response.json(result);
   }
 
   // ---- SESSION-03 handoff ---------------------------------------------------
@@ -7461,6 +8183,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     /** Artifact r2_keys whose objects purge after the SQL phase commits. */
     const orphanArtifactKeys: { artifactId: string; r2Key: string }[] = [];
     this.commit(() => {
+      this.expireDashboardRequests(now);
       const expired = this.ctx.storage.sql
         .exec<{ sequence: number; nbytes: number | null }>(
           `SELECT sequence, length(cast(payload AS blob)) AS nbytes
@@ -8256,6 +8979,142 @@ function assertPendingChange(change: PendingChange): void {
   }
 }
 
+/**
+ * Crypto-boundary entities are intentionally not ordinary ADK envelopes.
+ * Their `enc` values describe the key-distribution protocol (for example
+ * `pairing-aes-256-gcm`), so running them through `sealedEnvelopeIssue`
+ * would reject valid pairing/wrap records as an unknown generic algorithm.
+ * Keep this check structural only: the account key and pairing secret never
+ * reach the coordinator.
+ */
+function cryptoBoundaryPayloadIssue(
+  entityType: string,
+  entityId: string,
+  payload: unknown,
+): string | null {
+  if (!isCryptoBoundaryEntityType(entityType)) return null;
+  if (!isRecord(payload)) return 'payload-object';
+
+  switch (entityType) {
+    case CRYPTO_ENTITY_DEVICE_IDENTITY:
+      if (payload['v'] !== 1) return 'device-identity-version';
+      if (!isBoundedId(payload['enrollmentId']) || payload['enrollmentId'] !== entityId) {
+        return 'device-identity-enrollment';
+      }
+      return base64ByteLengthValue(payload['pub'], 32, 'device-identity-pub');
+    case CRYPTO_ENTITY_KEYRING_WRAP:
+      if (payload['v'] !== 1 || payload['enc'] !== 'x25519-aes-256-gcm') {
+        return 'keyring-wrap-version';
+      }
+      if (
+        typeof payload['keyVersion'] !== 'number' ||
+        !Number.isSafeInteger(payload['keyVersion']) ||
+        payload['keyVersion'] < 1
+      ) {
+        return 'keyring-wrap-key-version';
+      }
+      {
+        const ephIssue = base64ByteLengthValue(
+          payload['ephPub'],
+          32,
+          'keyring-wrap-eph-pub',
+        );
+        if (ephIssue !== null) return ephIssue;
+        const nonceIssue = base64ByteLengthValue(
+          payload['nonce'],
+          SEALED_NONCE_BYTES,
+          'keyring-wrap-nonce',
+        );
+        if (nonceIssue !== null) return nonceIssue;
+      }
+      const ctIssue = base64ByteLengthAtLeast(payload['ct'], 16, 'keyring-wrap-ct');
+      if (ctIssue !== null) return ctIssue;
+      if (!isBoundedId(payload['senderEnrollmentId'])) return 'keyring-wrap-sender';
+      const senderPubIssue = base64ByteLengthValue(
+        payload['senderPub'],
+        32,
+        'keyring-wrap-sender-pub',
+      );
+      if (senderPubIssue !== null) return senderPubIssue;
+      if (base64UrlByteLength(payload['senderMac']) !== 32) return 'keyring-wrap-sender-mac';
+      return null;
+    case CRYPTO_ENTITY_KEYRING_PAIRING:
+      if (payload['v'] !== 1 || payload['enc'] !== 'pairing-aes-256-gcm') {
+        return 'keyring-pairing-version';
+      }
+      {
+        const nonceIssue = base64ByteLengthValue(
+          payload['nonce'],
+          SEALED_NONCE_BYTES,
+          'keyring-pairing-nonce',
+        );
+        if (nonceIssue !== null) return nonceIssue;
+      }
+      return base64ByteLengthAtLeast(payload['ct'], 16, 'keyring-pairing-ct');
+    case CRYPTO_ENTITY_KEYRING_PAIRED:
+      if (payload['v'] !== 1) return 'keyring-paired-version';
+      if (!isBoundedId(payload['enrollmentId']) || payload['enrollmentId'] !== entityId) {
+        return 'keyring-paired-enrollment';
+      }
+      {
+        const pubIssue = base64ByteLengthValue(payload['pub'], 32, 'keyring-paired-pub');
+        if (pubIssue !== null) return pubIssue;
+      }
+      if (!isBoundedId(payload['proofNonce'])) return 'keyring-paired-proof';
+      if (base64UrlByteLength(payload['mac']) !== 32) return 'keyring-paired-mac';
+      return null;
+    case CRYPTO_ENTITY_KEYRING_ROTATION:
+      if (payload['v'] !== 1) return 'keyring-rotation-version';
+      if (!isBoundedId(payload['rotationId']) || payload['rotationId'] !== entityId) {
+        return 'keyring-rotation-id';
+      }
+      if (!isBoundedId(payload['rotorEnrollmentId'])) return 'keyring-rotation-rotor';
+      if (
+        typeof payload['fromVersion'] !== 'number' ||
+        !Number.isSafeInteger(payload['fromVersion']) ||
+        payload['fromVersion'] < 1 ||
+        typeof payload['toVersion'] !== 'number' ||
+        !Number.isSafeInteger(payload['toVersion']) ||
+        payload['toVersion'] < 1
+      ) {
+        return 'keyring-rotation-version-range';
+      }
+      if (
+        !Array.isArray(payload['revokedEnrollmentIds']) ||
+        payload['revokedEnrollmentIds'].length > MAX_ROTATION_REVOKED_IDS ||
+        !payload['revokedEnrollmentIds'].every((value) => isBoundedId(value))
+      ) {
+        return 'keyring-rotation-revoked';
+      }
+      if (
+        typeof payload['rotatedAt'] !== 'string' ||
+        !Number.isFinite(Date.parse(payload['rotatedAt']))
+      ) {
+        return 'keyring-rotation-time';
+      }
+      return null;
+    default:
+      return null;
+  }
+}
+
+function base64ByteLengthValue(value: unknown, expected: number, issue: string): string | null {
+  return typeof value === 'string' && base64ByteLength(value) === expected ? null : issue;
+}
+
+function base64ByteLengthAtLeast(value: unknown, minimum: number, issue: string): string | null {
+  return typeof value === 'string' && (base64ByteLength(value) ?? -1) >= minimum ? null : issue;
+}
+
+function base64UrlByteLength(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
+    return null;
+  }
+  const padded =
+    value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
+  return base64ByteLength(padded);
+}
+
 function compareBaseRevision(
   change: PendingChange,
   existing: EntityRow | null,
@@ -8906,7 +9765,7 @@ function parseJobIdParams(params: unknown): { jobId: string } {
   return { jobId: params['jobId'] };
 }
 
-function parseJobListParams(params: unknown): { state?: JobState; limit: number } {
+function parseJobListParams(params: unknown): { state?: JobState; requestId?: string; limit: number } {
   if (!isRecord(params)) {
     throw new RpcFailure('malformed-request', { reason: 'list-params' });
   }
@@ -8924,7 +9783,15 @@ function parseJobListParams(params: unknown): { state?: JobState; limit: number 
   ) {
     throw new RpcFailure('malformed-request', { reason: 'limit' });
   }
-  return { ...(state === undefined ? {} : { state }), limit: limit ?? DEFAULT_JOB_LIST_LIMIT };
+  const requestId = params['requestId'];
+  if (requestId !== undefined && !isBoundedId(requestId)) {
+    throw new RpcFailure('malformed-request', { reason: 'requestId' });
+  }
+  return {
+    ...(state === undefined ? {} : { state }),
+    ...(requestId === undefined ? {} : { requestId }),
+    limit: limit ?? DEFAULT_JOB_LIST_LIMIT,
+  };
 }
 
 function parseAttemptRenewParams(params: unknown): AttemptRenewParams {
@@ -9885,6 +10752,18 @@ function parseDashboardRequestIdParams(params: unknown): { requestId: string } {
   return { requestId: params['requestId'] };
 }
 
+function parseDashboardRequestsParams(params: unknown): DashboardRequestsParams {
+  if (params === undefined || params === null) return {};
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'dashboard-requests-params' });
+  }
+  if (params['requestId'] === undefined) return {};
+  if (!isBoundedId(params['requestId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'requestId' });
+  }
+  return { requestId: params['requestId'] };
+}
+
 /** Validates the sealed DSK wrap's plaintext binding + crypto fields. */
 function parseDashboardGrant(value: unknown): DashboardGrantPayload {
   if (!isRecord(value)) {
@@ -9953,6 +10832,74 @@ function parseDashboardSnapshot(value: unknown): SealedDashboardSnapshot {
   return value as unknown as SealedDashboardSnapshot;
 }
 
+function parseWorkspaceBindings(value: unknown, reason = 'workspaceBindings'): BrowserWorkspaceBinding[] {
+  if (!Array.isArray(value) || value.length > 64) {
+    throw new RpcFailure('malformed-request', { reason });
+  }
+  const bindings: BrowserWorkspaceBinding[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || !isBoundedId(entry['workspaceId']) || entry['workspaceId'].includes('|')) {
+      throw new RpcFailure('malformed-request', { reason });
+    }
+    const rawRepositories = entry['repositoryIds'];
+    if (!Array.isArray(rawRepositories) || rawRepositories.length > 64) {
+      throw new RpcFailure('malformed-request', { reason });
+    }
+    const repositoryIds: string[] = [];
+    for (const repositoryId of rawRepositories) {
+      if (!isBoundedId(repositoryId) || repositoryId.includes('|') || repositoryIds.includes(repositoryId)) {
+        throw new RpcFailure('malformed-request', { reason });
+      }
+      repositoryIds.push(repositoryId);
+    }
+    if (bindings.some((binding) => binding.workspaceId === entry['workspaceId'])) {
+      throw new RpcFailure('malformed-request', { reason });
+    }
+    bindings.push({ workspaceId: entry['workspaceId'], repositoryIds });
+  }
+  return bindings;
+}
+
+/** Compatibility parser for the first draft's parallel workspace/repository arrays. */
+function parseLegacyWorkspaceBindings(
+  source: Record<string, unknown>,
+): BrowserWorkspaceBinding[] | undefined {
+  const rawWorkspaces = source['workspaceIds'];
+  const rawRepositories = source['repositoryIds'];
+  if (rawWorkspaces === undefined && rawRepositories === undefined) return undefined;
+  if (!Array.isArray(rawWorkspaces) || !Array.isArray(rawRepositories)) {
+    throw new RpcFailure('malformed-request', { reason: 'workspaceBindings' });
+  }
+  if (rawWorkspaces.length > 64 || rawRepositories.length > 64) {
+    throw new RpcFailure('malformed-request', { reason: 'workspaceBindings' });
+  }
+  if (rawWorkspaces.length > 1 && rawRepositories.length !== 0 && rawRepositories.length !== rawWorkspaces.length) {
+    // Never turn a single repository list into a cross-workspace wildcard.
+    throw new RpcFailure('malformed-request', { reason: 'workspaceBindings' });
+  }
+  const workspaces = rawWorkspaces.map((value) => {
+    if (!isBoundedId(value) || value.includes('|')) {
+      throw new RpcFailure('malformed-request', { reason: 'workspaceBindings' });
+    }
+    return value;
+  });
+  const repositories = rawRepositories.map((value) => {
+    if (!isBoundedId(value) || value.includes('|')) {
+      throw new RpcFailure('malformed-request', { reason: 'workspaceBindings' });
+    }
+    return value;
+  });
+  return workspaces.map((workspaceId, index) => ({
+    workspaceId,
+    repositoryIds:
+      repositories.length === workspaces.length
+        ? [repositories[index] as string]
+        : workspaces.length === 1
+          ? repositories
+          : [],
+  }));
+}
+
 function parseDashboardDecideParams(params: unknown): DashboardDecideParams {
   if (!isRecord(params)) {
     throw new RpcFailure('malformed-request', { reason: 'decide-params' });
@@ -9972,7 +10919,32 @@ function parseDashboardDecideParams(params: unknown): DashboardDecideParams {
     throw new RpcFailure('malformed-request', { reason: 'grant-requestId' });
   }
   const snapshot = parseDashboardSnapshot(params['snapshot']);
-  return { requestId: params['requestId'], decision, grant, snapshot };
+  const workspaceBindings =
+    params['workspaceBindings'] === undefined
+      ? parseLegacyWorkspaceBindings(params)
+      : parseWorkspaceBindings(params['workspaceBindings']);
+  const rawGranted = params['grantedScopes'];
+  let grantedScopes: DashboardRequest['scopes'] | undefined;
+  if (rawGranted !== undefined) {
+    if (!Array.isArray(rawGranted) || rawGranted.length > MAX_DASHBOARD_SCOPES) {
+      throw new RpcFailure('malformed-request', { reason: 'grantedScopes' });
+    }
+    grantedScopes = [];
+    for (const entry of rawGranted) {
+      if (!isDashboardScope(entry) || grantedScopes.includes(entry)) {
+        throw new RpcFailure('malformed-request', { reason: 'grantedScopes' });
+      }
+      grantedScopes.push(entry);
+    }
+  }
+  return {
+    requestId: params['requestId'],
+    decision,
+    grant,
+    snapshot,
+    workspaceBindings,
+    grantedScopes,
+  };
 }
 
 function parseDashboardPublishParams(params: unknown): DashboardPublishParams {
@@ -9982,12 +10954,134 @@ function parseDashboardPublishParams(params: unknown): DashboardPublishParams {
   return { requestId: params['requestId'], snapshot: parseDashboardSnapshot(params['snapshot']) };
 }
 
+function parseBrowserWorkspaceCommandEnvelope(value: unknown): BrowserWorkspaceCommandEnvelope {
+  if (!isRecord(value)) {
+    throw new RpcFailure('malformed-request', { reason: 'command' });
+  }
+  if (value['v'] !== 1 || value['enc'] !== 'aes-256-gcm') {
+    throw new RpcFailure('malformed-request', { reason: 'command-version' });
+  }
+  if (!isBoundedId(value['requestId']) || value['requestId'].includes('|')) {
+    throw new RpcFailure('malformed-request', { reason: 'command-requestId' });
+  }
+  if (!isBoundedId(value['commandId']) || value['commandId'].includes('|')) {
+    throw new RpcFailure('malformed-request', { reason: 'command-commandId' });
+  }
+  if (!isBrowserWorkspaceOperation(value['operation'])) {
+    throw new RpcFailure('malformed-request', { reason: 'command-operation' });
+  }
+  if (!isBoundedId(value['workspaceId']) || value['workspaceId'].includes('|')) {
+    throw new RpcFailure('malformed-request', { reason: 'command-workspaceId' });
+  }
+  if (value['repositoryId'] !== undefined) {
+    if (!isBoundedId(value['repositoryId']) || value['repositoryId'].includes('|')) {
+      throw new RpcFailure('malformed-request', { reason: 'command-repositoryId' });
+    }
+  }
+  if (typeof value['expiresAt'] !== 'string' || !Number.isFinite(Date.parse(value['expiresAt']))) {
+    throw new RpcFailure('malformed-request', { reason: 'command-expiresAt' });
+  }
+  if (typeof value['nonce'] !== 'string' || base64ByteLength(value['nonce']) !== SEALED_NONCE_BYTES) {
+    throw new RpcFailure('malformed-request', { reason: 'command-nonce' });
+  }
+  if (
+    typeof value['ct'] !== 'string' ||
+    base64ByteLength(value['ct']) === null ||
+    (base64ByteLength(value['ct']) as number) < 16
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'command-ct' });
+  }
+  if (utf8ByteLength(JSON.stringify(value)) > MAX_DASHBOARD_COMMAND_BYTES) {
+    throw new RpcFailure('payload-too-large', { reason: 'command' });
+  }
+  return value as unknown as BrowserWorkspaceCommandEnvelope;
+}
+
+function parseBrowserWorkspaceResultEnvelope(value: unknown): BrowserWorkspaceResultEnvelope {
+  const command = parseBrowserWorkspaceCommandEnvelope(value);
+  return command as unknown as BrowserWorkspaceResultEnvelope;
+}
+
+interface ParsedDashboardCommandSubmitInput {
+  accountId: string;
+  requestId: string;
+  command: BrowserWorkspaceCommandEnvelope;
+}
+
+function parseDashboardCommandSubmitInput(body: unknown): ParsedDashboardCommandSubmitInput {
+  if (!isRecord(body) || !isBoundedId(body['accountId']) || !isBoundedId(body['requestId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'command-submit' });
+  }
+  const command = parseBrowserWorkspaceCommandEnvelope(body['command']);
+  if (command.requestId !== body['requestId']) {
+    throw new RpcFailure('malformed-request', { reason: 'command-requestId' });
+  }
+  return { accountId: body['accountId'], requestId: body['requestId'], command };
+}
+
+function parseDashboardCommandClaimParams(params: unknown): DashboardCommandClaimParams {
+  if (!isRecord(params) || !isBoundedId(params['requestId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'command-claim' });
+  }
+  const rawLimit = params['limit'];
+  if (
+    rawLimit !== undefined &&
+    (typeof rawLimit !== 'number' || !Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > MAX_DASHBOARD_COMMAND_CLAIM)
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'command-claim-limit' });
+  }
+  return { requestId: params['requestId'], ...(rawLimit === undefined ? {} : { limit: rawLimit }) };
+}
+
+function parseDashboardCommandCompleteParams(params: unknown): DashboardCommandCompleteParams {
+  if (!isRecord(params) || !isBoundedId(params['requestId']) || !isBoundedId(params['commandId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'command-complete' });
+  }
+  const claimFence = params['claimFence'];
+  if (typeof claimFence !== 'number' || !Number.isSafeInteger(claimFence) || claimFence < 1) {
+    throw new RpcFailure('malformed-request', { reason: 'command-claimFence' });
+  }
+  const outcome = params['outcome'];
+  if (outcome !== 'completed' && outcome !== 'failed') {
+    throw new RpcFailure('malformed-request', { reason: 'command-outcome' });
+  }
+  const result = parseBrowserWorkspaceResultEnvelope(params['result']);
+  if (result.requestId !== params['requestId'] || result.commandId !== params['commandId']) {
+    throw new RpcFailure('malformed-request', { reason: 'result-binding' });
+  }
+  if (result.operation !== undefined && !isBrowserWorkspaceOperation(result.operation)) {
+    throw new RpcFailure('malformed-request', { reason: 'result-operation' });
+  }
+  return {
+    requestId: params['requestId'],
+    commandId: params['commandId'],
+    claimFence,
+    outcome,
+    result,
+  };
+}
+
+function parseDashboardCommandStatusInput(body: unknown): {
+  requestId: string;
+  commandId: string;
+} {
+  if (
+    !isRecord(body) ||
+    !isBoundedId(body['requestId']) ||
+    !isBoundedId(body['commandId'])
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'command-status' });
+  }
+  return { requestId: body['requestId'], commandId: body['commandId'] };
+}
+
 interface ParsedHostedDashboardRequest {
   requestId: string;
   accountId: string;
   browserPub: string;
   challenge: string;
   scopes: DashboardRequest['scopes'];
+  workspaceBindings: BrowserWorkspaceBinding[];
   origin: string | undefined;
   userAgent: string | undefined;
   expiresAtMs: number;
@@ -10027,6 +11121,10 @@ function parseHostedDashboardRequestInput(body: unknown): ParsedHostedDashboardR
     }
     scopes.push(entry);
   }
+  const workspaceBindings =
+    body['workspaceBindings'] === undefined
+      ? parseLegacyWorkspaceBindings(body) ?? []
+      : parseWorkspaceBindings(body['workspaceBindings']);
   const expiresAtMs = Date.parse(body['expiresAt'] as string);
   if (typeof body['expiresAt'] !== 'string' || !Number.isFinite(expiresAtMs)) {
     throw new RpcFailure('malformed-request', { reason: 'expiresAt' });
@@ -10047,6 +11145,7 @@ function parseHostedDashboardRequestInput(body: unknown): ParsedHostedDashboardR
     browserPub,
     challenge,
     scopes,
+    workspaceBindings,
     origin: bounded('origin'),
     userAgent: bounded('userAgent'),
     expiresAtMs,

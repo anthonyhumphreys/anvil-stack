@@ -113,7 +113,9 @@ describe('unshareChatArtifact', () => {
     expect(result.shareId).toBeUndefined();
     expect(result.sharedUrl).toBeUndefined();
     const row = inMemoryDb
-      .prepare('SELECT share_id, shared_url, shared_at, visibility FROM chat_artifacts WHERE id = ?')
+      .prepare(
+        'SELECT share_id, shared_url, shared_at, visibility FROM chat_artifacts WHERE id = ?',
+      )
       .get(id) as { share_id: string | null; visibility: string };
     expect(row.share_id).toBeNull();
     expect(row.visibility).toBe('local');
@@ -125,9 +127,9 @@ describe('unshareChatArtifact', () => {
       new BackendRpcError({ code: 'unavailable', retryable: true }),
     );
     await expect(unshareChatArtifact(id)).rejects.toBeInstanceOf(BackendRpcError);
-    const row = inMemoryDb
-      .prepare('SELECT share_id FROM chat_artifacts WHERE id = ?')
-      .get(id) as { share_id: string | null };
+    const row = inMemoryDb.prepare('SELECT share_id FROM chat_artifacts WHERE id = ?').get(id) as {
+      share_id: string | null;
+    };
     expect(row.share_id).toBe('share-1');
   });
 });

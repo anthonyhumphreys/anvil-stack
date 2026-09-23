@@ -122,6 +122,31 @@ async function backendDescriptor(): Promise<BackendDescriptor> {
   return cachedDescriptor;
 }
 
+/**
+ * Pairing is deliberately more than an enrollment code: the payload carries
+ * the one-time secret that lets the new device receive the account key.
+ * Keeping this assertion in the real-worker gate prevents an auth-only code
+ * from accidentally turning the test into a plaintext/unauthorized replica.
+ */
+function pairingPayload(issued: Awaited<ReturnType<typeof issueEnrollmentCode>>): string {
+  if (issued.pairingPayload === null) {
+    throw new Error('real pairing payload was not issued for the new device');
+  }
+  return issued.pairingPayload;
+}
+
+/** Issue and publish the pairing entity before handing the payload off. */
+async function issuePublishedPairing(): Promise<Awaited<ReturnType<typeof issueEnrollmentCode>>> {
+  // A fresh first device may need this cycle to mint its account key before
+  // issueEnrollmentCode can seal the pairing bundle.
+  await requestSync();
+  expect(getRuntimeStatus().lastError).toBeNull();
+  const issued = await issueEnrollmentCode();
+  await requestSync();
+  expect(getRuntimeStatus().lastError).toBeNull();
+  return issued;
+}
+
 async function mintCode(accountId: string): Promise<string> {
   const res = await fetch(`${BACKEND_URL}/v1/enrollment-codes`, {
     method: 'POST',
@@ -141,6 +166,12 @@ async function enrollProfile(profile: Profile, code: string): Promise<SyncRuntim
   const status = enableSync();
   expect(status.syncEnabled).toBe(true);
   expect(status.auth.accountId).toBe(snapshot.accountId);
+  // enableSync starts the first pull in the background. Await it here so a
+  // paired worker never claims work before its ADK has been installed; a
+  // sealed diagnostic artifact must not be silently dropped by the worker's
+  // best-effort artifact upload path.
+  await requestSync();
+  expect(getRuntimeStatus().lastError).toBeNull();
   return status;
 }
 
@@ -193,13 +224,13 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       expect(getRuntimeStatus().lastError).toBeNull();
 
       // ---- Profile A issues a real pairing code for profile B.
-      const pairing = await issueEnrollmentCode();
+      const pairing = await issuePublishedPairing();
       expect(pairing.accountId).toBe(accountId);
 
       // ---- Profile B: isolated dir + SQLite, redeems the code, scans, sees A's row.
       const b = openProfile('b');
       openProfiles.push(b);
-      const bStatus = await enrollProfile(b, pairing.code);
+      const bStatus = await enrollProfile(b, pairingPayload(pairing));
       expect(bStatus.auth.accountId).toBe(accountId);
       await requestSync();
       expect(getRuntimeStatus().lastError).toBeNull();
@@ -316,16 +347,21 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       expect(getRuntimeStatus().lastError).toBeNull();
 
       // ---- Pairing code issued through the production path on A.
-      const pairing = await issueEnrollmentCode();
+      const pairing = await issuePublishedPairing();
       expect(pairing.accountId).toBe(accountId);
 
       // ---- Profile C: a completely fresh device — new userDataDir, new
       // SQLite, no prior cursors or bindings. Redeeming the code and running
-      // one cycle must materialize the account's entire dataset.
+      // the bootstrap cycles must materialize the account's entire dataset.
       const c = openProfile('c-restore');
       openProfiles.push(c);
-      const cStatus = await enrollProfile(c, pairing.code);
+      const cStatus = await enrollProfile(c, pairingPayload(pairing));
       expect(cStatus.auth.accountId).toBe(accountId);
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
+      // Pairing bootstrap can queue the local settings singleton after the
+      // first pull. Give that durable outbox row one follow-up cycle before
+      // treating the restored account as settled.
       await requestSync();
       expect(getRuntimeStatus().lastError).toBeNull();
       expect(getRuntimeStatus().pendingCount).toBe(0);
@@ -361,14 +397,14 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       const a = openProfile('a-mesh');
       openProfiles.push(a);
       await enrollProfile(a, await mintCode(accountId));
-      const pairing = await issueEnrollmentCode();
+      const pairing = await issuePublishedPairing();
       expect(pairing.accountId).toBe(accountId);
 
       // ---- Profile C: enroll, opt in as a worker (policy publish + leased
       // incarnation + capabilities over the real worker RPC surface).
       const c = openProfile('c-mesh');
       openProfiles.push(c);
-      const cStatus = await enrollProfile(c, pairing.code);
+      const cStatus = await enrollProfile(c, pairingPayload(pairing));
       expect(cStatus.auth.accountId).toBe(accountId);
       const cEnrollmentId = cStatus.auth.enrollmentId;
       expect(cEnrollmentId).not.toBeNull();
@@ -435,11 +471,11 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       const a = openProfile('a-observe');
       openProfiles.push(a);
       await enrollProfile(a, await mintCode(accountId));
-      const pairing = await issueEnrollmentCode();
+      const pairing = await issuePublishedPairing();
 
       const c = openProfile('c-observe');
       openProfiles.push(c);
-      const cStatus = await enrollProfile(c, pairing.code);
+      const cStatus = await enrollProfile(c, pairingPayload(pairing));
       const cEnrollmentId = cStatus.auth.enrollmentId;
       expect(cEnrollmentId).not.toBeNull();
       const worker = await setMeshWorkerOptIn(true);
@@ -577,7 +613,7 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       bindLocalEntities(aScope);
       await requestSync();
       expect(getRuntimeStatus().lastError).toBeNull();
-      const pairing = await issueEnrollmentCode();
+      const pairing = await issuePublishedPairing();
 
       // ---- Profile C: enroll as worker, sync the workspace, then map its
       // own checkout of the same commit and PRE-APPROVE the exact bootstrap
@@ -585,7 +621,7 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       // no remote approval is requested).
       const c = openProfile('c-prepare');
       openProfiles.push(c);
-      const cStatus = await enrollProfile(c, pairing.code);
+      const cStatus = await enrollProfile(c, pairingPayload(pairing));
       const cEnrollmentId = cStatus.auth.enrollmentId;
       expect(cEnrollmentId).not.toBeNull();
       const worker = await setMeshWorkerOptIn(true);
@@ -730,13 +766,13 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       bindLocalEntities(aScope);
       await requestSync();
       expect(getRuntimeStatus().lastError).toBeNull();
-      const pairing = await issueEnrollmentCode();
+      const pairing = await issuePublishedPairing();
 
       // ---- C: worker with the repo mapped but NO bootstrap approval — the
       // recipe gate must request a durable remote approval.
       const c = openProfile('c-approval');
       openProfiles.push(c);
-      const cStatus = await enrollProfile(c, pairing.code);
+      const cStatus = await enrollProfile(c, pairingPayload(pairing));
       const cEnrollmentId = cStatus.auth.enrollmentId;
       const worker = await setMeshWorkerOptIn(true);
       expect(worker.connected).toBe(true);
@@ -843,12 +879,17 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       await requestSync();
       expect(getRuntimeStatus().lastError).toBeNull();
 
-      const pairing = await issueEnrollmentCode();
+      const pairing = await issuePublishedPairing();
       const c = openProfile('c-launch');
       openProfiles.push(c);
-      const cStatus = await enrollProfile(c, pairing.code);
+      const cStatus = await enrollProfile(c, pairingPayload(pairing));
       const cEnrollment = cStatus.auth.enrollmentId;
       expect(cEnrollment).not.toBeNull();
+      // Enrollment rows are provisioned lazily on the first authenticated
+      // backend RPC. Finish this target's bootstrap before switching back to
+      // A, otherwise handoff.create correctly rejects an unknown target.
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
 
       // ---- Device lifecycle over the real backend via the shipped wrappers.
       const a2 = reopenProfile(a);

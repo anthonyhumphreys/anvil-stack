@@ -94,6 +94,7 @@ import type { BackendWebSocketLike } from '../sync-backend-client.service';
 import { saveWorkflowTemplate } from '../workflow.service';
 import { DESCRIPTOR_VERSION, PROTOCOL } from '../../../../cloud/contract/version';
 import { WORKOS_DEVICE_AUTHORIZATION_URL } from '../workos-device-auth.service';
+import { encodePairingPayload } from '../../../../cloud/contract/sealed';
 
 const SCOPE: SyncScope = {
   backendId: 'backend-1',
@@ -513,7 +514,8 @@ function fakeBackend(
       if (accountId === undefined) {
         return err('unauthenticated');
       }
-      const code = `anvil-ec-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+      const codeBody = crypto.randomUUID().replace(/-/g, '').slice(0, 20).toUpperCase();
+      const code = `anvil-ec-${codeBody.slice(0, 5)}-${codeBody.slice(5, 10)}-${codeBody.slice(10, 15)}-${codeBody.slice(15)}`;
       codes.set(code, accountId);
       return Response.json({
         code,
@@ -951,6 +953,47 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const last = backend.calls[backend.calls.length - 1];
     expect(last.path).toBe('/v1/enrollment-codes');
     expect(last.authorization?.startsWith('Bearer at-')).toBe(true);
+  });
+
+  it('persists an E2E pairing secret while the backend is paused', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
+    const pairing = encodePairingPayload({
+      enrollmentCode: minted.code,
+      pairingNonce: 'b'.repeat(16),
+      pairingSecret: 'a'.repeat(64),
+    });
+    expect(pairing).not.toBeNull();
+
+    await enrollWithEnrollmentCode(pairing!);
+    // Enrollment is intentionally still paused, but the reviewed session
+    // scope is sufficient to wrap the one-time secret locally. This keeps a
+    // restart between enrollment and the Sync opt-in from losing the key.
+    expect(
+      db.prepare("SELECT role FROM sync_pairing WHERE nonce = 'bbbbbbbbbbbbbbbb'").get(),
+    ).toEqual({ role: 'redeemer' });
+
+    // Recreate the runtime from the same persisted session. No plaintext
+    // pairing secret is needed after the first call above.
+    resetSyncRuntimeForTests();
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    expect(
+      db.prepare("SELECT role FROM sync_pairing WHERE nonce = 'bbbbbbbbbbbbbbbb'").get(),
+    ).toEqual({ role: 'redeemer' });
+
+    enableSync();
+    expect(
+      db.prepare("SELECT role FROM sync_pairing WHERE nonce = 'bbbbbbbbbbbbbbbb'").get(),
+    ).toEqual({ role: 'redeemer' });
   });
 
   it('completes browser OIDC sign-in through the loopback callback', async () => {

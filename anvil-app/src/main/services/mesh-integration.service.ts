@@ -32,9 +32,7 @@ interface IntegrationContext {
 
 let contextProvider: (() => IntegrationContext | null) | null = null;
 
-export function configureMeshIntegrationContext(
-  provider: () => IntegrationContext | null,
-): void {
+export function configureMeshIntegrationContext(provider: () => IntegrationContext | null): void {
   contextProvider = provider;
 }
 
@@ -126,9 +124,12 @@ export async function integrateResults(input: {
     const manifest = JSON.parse(row.manifest_json) as {
       repositories?: ResultManifestRepository[];
     };
-    const output = row.output_json === null ? null : (JSON.parse(row.output_json) as {
-      adoptedRefs?: Array<{ repositoryId: string; ref: string; commit: string }>;
-    });
+    const output =
+      row.output_json === null
+        ? null
+        : (JSON.parse(row.output_json) as {
+            adoptedRefs?: Array<{ repositoryId: string; ref: string; commit: string }>;
+          });
     for (const adopted of output?.adoptedRefs ?? []) {
       const manifestRepo = (manifest.repositories ?? []).find(
         (r) => r.repositoryId === adopted.repositoryId,
@@ -141,8 +142,10 @@ export async function integrateResults(input: {
         );
       }
       baseByRepo.set(adopted.repositoryId, manifestRepo.baseCommit);
-      (mergesByRepo.get(adopted.repositoryId) ??
-        mergesByRepo.set(adopted.repositoryId, []).get(adopted.repositoryId)!).push({
+      (
+        mergesByRepo.get(adopted.repositoryId) ??
+        mergesByRepo.set(adopted.repositoryId, []).get(adopted.repositoryId)!
+      ).push({
         dispatchId,
         repositoryId: adopted.repositoryId,
         ref: adopted.ref,
@@ -209,7 +212,10 @@ export async function integrateResults(input: {
               '--name-only',
               '--diff-filter=U',
             ]);
-            files = raw.split('\n').map((f) => f.trim()).filter(Boolean);
+            files = raw
+              .split('\n')
+              .map((f) => f.trim())
+              .filter(Boolean);
           } catch {
             /* best-effort listing */
           }
@@ -232,9 +238,7 @@ export async function integrateResults(input: {
       repo.mergedRefs.push({ dispatchId: merge.dispatchId, ref: merge.ref, commit: merge.commit });
     }
     if (repo.conflicts.length === 0) {
-      repo.integratedCommit = (
-        await runGit(worktree!.worktreePath, ['rev-parse', 'HEAD'])
-      ).trim();
+      repo.integratedCommit = (await runGit(worktree!.worktreePath, ['rev-parse', 'HEAD'])).trim();
       for (const command of input.verification ?? []) {
         const outcome = await runVerificationCommand({
           repositoryId,

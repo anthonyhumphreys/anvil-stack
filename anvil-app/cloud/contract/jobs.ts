@@ -265,8 +265,11 @@ export interface JobGetResult {
   attempts: ExecutionAttempt[];
 }
 
+/** Find a source enrollment's idempotent job without paging the job list. */
 export interface JobListParams {
   state?: JobState;
+  /** Optional source-scoped idempotency lookup. */
+  requestId?: string;
   /** Page size, bounded by the backend (max 100). */
   limit?: number;
 }

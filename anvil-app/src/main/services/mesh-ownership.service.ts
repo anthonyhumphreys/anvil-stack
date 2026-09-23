@@ -18,9 +18,9 @@ export interface SessionOwnershipRow {
 
 export function readSessionOwnership(sessionId: string): SessionOwnershipRow | null {
   return (
-    (getDb()
-      .prepare('SELECT * FROM mesh_session_ownership WHERE session_id = ?')
-      .get(sessionId) as SessionOwnershipRow | undefined) ?? null
+    (getDb().prepare('SELECT * FROM mesh_session_ownership WHERE session_id = ?').get(sessionId) as
+      | SessionOwnershipRow
+      | undefined) ?? null
   );
 }
 

@@ -6,10 +6,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { EditableAgent, EditableAgentInput, Persona } from '../../shared/types.js';
-import {
-  SYNC_ENTITY_EDITABLE_AGENT,
-  SYNC_ENTITY_SCHEMA_VERSIONS,
-} from '../../shared/sync-mesh.js';
+import { SYNC_ENTITY_EDITABLE_AGENT, SYNC_ENTITY_SCHEMA_VERSIONS } from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
 import { withSyncedEntityWrite } from './sync-persistence.service.js';
 
@@ -55,9 +52,9 @@ export function listEditableAgents(): EditableAgent[] {
 }
 
 export function getEditableAgent(id: string): EditableAgent | null {
-  const row = getDb()
-    .prepare('SELECT * FROM editable_agents WHERE id = ?')
-    .get(id) as EditableAgentRow | undefined;
+  const row = getDb().prepare('SELECT * FROM editable_agents WHERE id = ?').get(id) as
+    | EditableAgentRow
+    | undefined;
   return row ? mapRow(row) : null;
 }
 

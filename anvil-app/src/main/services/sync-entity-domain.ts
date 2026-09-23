@@ -298,11 +298,15 @@ function isBootstrapRecipe(value: unknown): boolean {
     if (step.kind !== 'command' && step.kind !== 'verify') return false;
     if (typeof step.workingDirectory !== 'string' || step.workingDirectory === '') return false;
     // Exactly one of argv / shell.
-    const hasArgv = Array.isArray(step.argv) && (step.argv as unknown[]).every((a) => typeof a === 'string');
+    const hasArgv =
+      Array.isArray(step.argv) && (step.argv as unknown[]).every((a) => typeof a === 'string');
     const hasShell = typeof step.shell === 'string' && step.shell !== '';
     if (hasArgv === hasShell) return false;
     if (typeof step.timeoutMs !== 'number' || !(step.timeoutMs > 0)) return false;
-    if (!Array.isArray(step.envNames) || !(step.envNames as unknown[]).every((n) => typeof n === 'string'))
+    if (
+      !Array.isArray(step.envNames) ||
+      !(step.envNames as unknown[]).every((n) => typeof n === 'string')
+    )
       return false;
     if (step.retry !== 'safe' && step.retry !== 'inspect-before-retry' && step.retry !== 'never')
       return false;
@@ -342,9 +346,9 @@ function workspaceHasUnresolvedRefs(preferences: Record<string, unknown> | undef
     if (typeof personaId === 'string' && !personaResolvable(personaId)) return true;
     const workflowId = section['workflowTemplateId'] ?? section['templateId'];
     if (typeof workflowId === 'string') {
-      const row = db
-        .prepare('SELECT id FROM workflow_templates WHERE id = ?')
-        .get(workflowId) as { id: string } | undefined;
+      const row = db.prepare('SELECT id FROM workflow_templates WHERE id = ?').get(workflowId) as
+        | { id: string }
+        | undefined;
       if (row === undefined) return true;
     }
   }
@@ -390,8 +394,7 @@ function applyWorkspacePayload(entityId: string, payload: unknown): void {
   const db = getDb();
   const now = nowIso();
   const txn = db.transaction(() => {
-    const bootstrapJson =
-      p.bootstrap !== undefined ? JSON.stringify(p.bootstrap) : null;
+    const bootstrapJson = p.bootstrap !== undefined ? JSON.stringify(p.bootstrap) : null;
     db.prepare(
       `INSERT INTO workspaces (id, name, definition_state, bootstrap_json, created_at, updated_at)
        VALUES (?, ?, 'ready', ?, ?, ?)
@@ -717,9 +720,7 @@ export function persistConflictCopy(
         // A copied workspace gets fresh portable repo ids: membership identity
         // is scoped to the workspace, so two workspaces must not share it.
         repos: Array.isArray(payload.repos)
-          ? (payload.repos as unknown[]).map((r) =>
-              isRecord(r) ? { ...r, id: randomUUID() } : r,
-            )
+          ? (payload.repos as unknown[]).map((r) => (isRecord(r) ? { ...r, id: randomUUID() } : r))
           : [],
       };
       applyRemoteEntityPayload(entityType, copyId, copyPayload);

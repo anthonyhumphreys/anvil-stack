@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runBootstrapRecipe } from '../bootstrap-runner.service';
-import type {
-  BootstrapRecipe,
-  BootstrapStepState,
-} from '../../../../cloud/contract/bootstrap';
+import type { BootstrapRecipe, BootstrapStepState } from '../../../../cloud/contract/bootstrap';
 
 function recipe(steps: BootstrapRecipe['steps']): BootstrapRecipe {
   return { schemaVersion: 1, steps };
@@ -48,10 +45,7 @@ describe('bootstrap runner', () => {
 
   it('stops at the first failure — later steps never run', async () => {
     const result = await runBootstrapRecipe(
-      recipe([
-        nodeStep('bad', 'process.exit(3)'),
-        nodeStep('never', 'console.log("unreachable")'),
-      ]),
+      recipe([nodeStep('bad', 'process.exit(3)'), nodeStep('never', 'console.log("unreachable")')]),
       { checkoutRoot: '/tmp' },
     ).done;
     expect(result.state).toBe('failed');
@@ -136,10 +130,9 @@ describe('bootstrap runner', () => {
   });
 
   it('cancel() terminates the in-flight process group', async () => {
-    const handle = runBootstrapRecipe(
-      recipe([nodeStep('sleep', 'setTimeout(() => {}, 60000)')]),
-      { checkoutRoot: '/tmp' },
-    );
+    const handle = runBootstrapRecipe(recipe([nodeStep('sleep', 'setTimeout(() => {}, 60000)')]), {
+      checkoutRoot: '/tmp',
+    });
     setTimeout(() => handle.cancel(), 50);
     const result = await handle.done;
     expect(result.state).toBe('unknown-outcome');

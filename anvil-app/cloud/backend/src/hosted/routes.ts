@@ -11,6 +11,7 @@
 // with D1-backed nonce replay protection. Device credentials never pass.
 
 import type { EnrollmentCodeIssueResult } from '../../../contract/auth';
+import { BROWSER_WORKSPACE_MAX_RPC_BODY_BYTES } from '../../../contract/browser-workspace';
 import { parseDeviceBearer } from '../auth';
 import { isRecord, rpcErrorResponse } from '../rpc';
 import {
@@ -22,6 +23,8 @@ import {
   handleStripeWebhook,
 } from './billing-routes';
 import {
+  handleDashboardCommandStatus,
+  handleDashboardCommandSubmit,
   handleDashboardRequest,
   handleDashboardSnapshot,
   handleDashboardStatus,
@@ -53,7 +56,9 @@ import {
   setSyncAccountLink,
 } from './store';
 
-const HOSTED_BODY_MAX_BYTES = 8 * 1024;
+// browser-workspace/1 envelopes carry bounded file/history/diff/preview
+// ciphertext; service-auth still signs the exact raw body before parsing.
+const HOSTED_BODY_MAX_BYTES = BROWSER_WORKSPACE_MAX_RPC_BODY_BYTES;
 const HOSTED_SERVICE_AUDIENCE = 'anvil-hosted';
 /** Cap on the tombstone-walk when deriving a clean sync account mapping. */
 const MAX_GENERATION_BUMPS = 10;
@@ -408,6 +413,10 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
           return await handleDashboardStatus(json, env, db);
         case '/internal/hosted/dashboard-snapshot':
           return await handleDashboardSnapshot(json, env, db);
+        case '/internal/hosted/dashboard-command-submit':
+          return await handleDashboardCommandSubmit(json, env, db);
+        case '/internal/hosted/dashboard-command-status':
+          return await handleDashboardCommandStatus(json, env, db);
         // Hosted artifact sharing: the website's /artifacts/{shareId}
         // page resolves published shares through this signed channel.
         // The session object streams R2 bytes with metadata headers, so

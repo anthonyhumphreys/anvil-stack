@@ -211,12 +211,39 @@ export const Tray = class {
   destroy(): void {}
 };
 
-export const globalShortcut = { register(): boolean { return false; }, unregisterAll(): void {} };
-export const clipboard = { readText(): string { return ''; }, writeText(): void {} };
-export const systemPreferences = { getColor(): string { return '#000000'; }, on(): void {} };
+export const globalShortcut = {
+  register(): boolean {
+    return false;
+  },
+  unregisterAll(): void {},
+};
+export const clipboard = {
+  readText(): string {
+    return '';
+  },
+  writeText(): void {},
+};
+export const systemPreferences = {
+  getColor(): string {
+    return '#000000';
+  },
+  on(): void {},
+};
 export const autoUpdater = { on(): void {}, checkForUpdates(): void {}, quitAndInstall(): void {} };
 export const crashReporter = { start(): void {} };
-export const desktopCapturer = { getSources(): Promise<[]> { return Promise.resolve([]); } };
-export const webContents = { getAllWebContents(): [] { return []; } };
+export const desktopCapturer = {
+  getSources(): Promise<[]> {
+    return Promise.resolve([]);
+  },
+};
+export const webContents = {
+  getAllWebContents(): [] {
+    return [];
+  },
+};
 export const contextBridge = { exposeInMainWorld(): void {} };
-export const nativeImage = { createFromPath(): { isEmpty(): boolean } { return { isEmpty: () => true }; } };
+export const nativeImage = {
+  createFromPath(): { isEmpty(): boolean } {
+    return { isEmpty: () => true };
+  },
+};

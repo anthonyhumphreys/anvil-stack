@@ -38,6 +38,7 @@ import type {
 
 interface DispatchContext {
   apiUrl: string;
+  backendUrl?: string;
   accessToken: string;
   enrollmentId: string;
   scope?: SyncScope;
@@ -67,6 +68,7 @@ export async function requestWorkflowEnvironment(
       accountId: ctx.scope.accountId,
       enrollmentId: ctx.enrollmentId,
       apiUrl: ctx.apiUrl,
+      ...(ctx.backendUrl === undefined ? {} : { backendUrl: ctx.backendUrl }),
       accessToken: ctx.accessToken,
     },
     input,

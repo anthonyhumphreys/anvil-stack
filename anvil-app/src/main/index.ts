@@ -14,6 +14,7 @@ import { registerCodexRegistryHandlers } from './ipc/codex-registry.ipc.js';
 import { registerCodexUsageHandlers } from './ipc/codex-usage.ipc.js';
 import { registerAnvilCloudHandlers } from './ipc/anvil-cloud.ipc.js';
 import { registerDiagnosticsHandlers } from './ipc/diagnostics.ipc.js';
+import { registerMetricsHandlers } from './ipc/metrics.ipc.js';
 import { registerMobileCompanionHandlers } from './ipc/mobile-companion.ipc.js';
 import { registerRepoHandlers, handleStaleIndexingRepos } from './ipc/repo.ipc.js';
 import { ensureRepobaseMcp } from './services/repobase.service.js';
@@ -83,6 +84,7 @@ import { initializeTelemetry } from './services/telemetry.service.js';
 import { initializeAppUpdater } from './services/app-updater.service.js';
 import { registerExternalLinkHandling } from './services/external-link.service.js';
 import { initSyncRuntime, onAppFocus, onSystemResume } from './services/sync-runtime.service.js';
+import { disposeBrowserWorkspaceExecutor } from './services/browser-workspace-executor.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
@@ -287,7 +289,7 @@ function createWindow(
     const rendererUrl = new URL(process.env.ELECTRON_RENDERER_URL);
     if (options.workspaceId || options.route) {
       rendererUrl.hash = getWindowHash(
-        options.route ?? '/repos',
+        options.route ?? '/workspace',
         options.workspaceId,
         options.toolWindow,
       );
@@ -297,7 +299,7 @@ function createWindow(
     const loadOptions =
       options.workspaceId || options.route
         ? {
-            hash: getWindowHash(options.route ?? '/repos', options.workspaceId, options.toolWindow),
+            hash: getWindowHash(options.route ?? '/workspace', options.workspaceId, options.toolWindow),
           }
         : undefined;
     createdWindow.loadFile(path.join(__dirname, '../renderer/index.html'), loadOptions);
@@ -374,6 +376,7 @@ app.whenReady().then(() => {
   registerCodexUsageHandlers();
   registerAnvilCloudHandlers();
   registerDiagnosticsHandlers();
+  registerMetricsHandlers();
   registerRepoHandlers();
   registerChatHandlers();
   startThreadPullRequestWatcher();
@@ -475,6 +478,7 @@ app.on('before-quit', () => {
   cleanupBaSessions();
   cleanupDiagramServices();
   cleanupTerminals();
+  disposeBrowserWorkspaceExecutor();
   cleanupBrowser();
   cleanupChangeReviews();
   cleanupSimulatorPreview();

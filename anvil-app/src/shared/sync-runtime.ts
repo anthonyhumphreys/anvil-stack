@@ -3,7 +3,10 @@
  */
 
 import type { HandoffRecord } from '../../cloud/contract/handoff.js';
+import type { CloudEnvironment, EnvironmentProviderId } from '../../cloud/contract/environment.js';
 import type { SyncDeviceTrustSource, SyncDeviceTrustState } from './sync-device-security.js';
+
+export type { EnvironmentProviderId } from '../../cloud/contract/environment.js';
 
 export const SPIKE_DATASET_EPOCH = 'spike-epoch-1';
 
@@ -20,6 +23,34 @@ export interface SyncSpikeEnrollInput {
   accountId: string;
   enrollmentId?: string;
 }
+
+/** Secret-free provider connection summary returned by the desktop bridge. */
+export interface CloudEnvironmentProviderConnection {
+  id: string;
+  provider: EnvironmentProviderId;
+  displayName: string | null;
+  config: Record<string, unknown>;
+  hasSecret: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Local mirror of an environment this device can provision or reap. */
+export interface LocalCloudEnvironment {
+  environmentId: string;
+  provider: EnvironmentProviderId;
+  state: string;
+  handle: Record<string, unknown> | null;
+  enrollmentId: string | null;
+  jobId: string | null;
+  connectionId: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Account-visible environment lifecycle record. */
+export type CloudEnvironmentRecord = CloudEnvironment;
 
 /** A single-use pairing code minted for enrolling another device. */
 export interface SyncIssuedEnrollmentCode {
@@ -104,6 +135,8 @@ export interface SyncDeviceVerification {
 export interface SyncDashboardRequest {
   requestId: string;
   browserPub: string;
+  /** Short browser-key/challenge comparison code; origin and UA are only hints. */
+  verificationCode?: string;
   scopes: string[];
   expiresAt: string;
   /** Latest published snapshot sequence (0 before first publish). */
@@ -113,6 +146,34 @@ export interface SyncDashboardRequest {
   origin?: string;
   /** User-agent hint — contextual only. */
   userAgent?: string;
+  /** The Desktop workspace/repositories bound by an approved grant. */
+  workspace?: SyncDashboardGrantBinding;
+  /** Enrollment that approved the grant; useful audit context only. */
+  enrollmentId?: string;
+}
+
+/** Renderer-safe workspace choice for a browser grant. Paths never cross IPC. */
+export interface SyncDashboardGrantWorkspace {
+  workspaceId: string;
+  name: string;
+  repos: SyncDashboardGrantRepo[];
+}
+
+export interface SyncDashboardGrantBinding {
+  workspaceId: string;
+  repoIds: string[];
+}
+
+export interface SyncDashboardGrantRepo {
+  repoId: string;
+  name: string;
+}
+
+/** Explicit approval payload. Empty repoIds/actionScopes are intentional. */
+export interface SyncDashboardGrantApproval {
+  workspaceId: string;
+  repoIds: string[];
+  actionScopes: string[];
 }
 
 /** Result of exporting the account's synced entities to a chosen file. */

@@ -18,7 +18,9 @@ vi.mock('electron', () => ({
 }));
 
 const backendRpc = vi.hoisted(() => vi.fn());
-vi.mock('../sync-backend-client.service.js', () => ({ rpc: backendRpc }));
+vi.mock('../sync-backend-client.service.js', () => ({
+  rpc: backendRpc,
+}));
 
 const vercelCreate = vi.hoisted(() => vi.fn());
 const vercelGet = vi.hoisted(() => vi.fn());
@@ -69,6 +71,7 @@ import {
   provisionCapabilities,
   provisionEnvironment,
   reapExpiredEnvironments,
+  requestEnvironment,
   removeProviderConnection,
   terminateEnvironment,
   type ProvisionerScope,
@@ -127,6 +130,42 @@ describe('provider connections', () => {
     expect(raw.secret_blob.toString('utf-8').startsWith('enc:')).toBe(true);
   });
 
+  it('rejects unknown provider config fields and partial AWS credentials', () => {
+    expect(() =>
+      addProviderConnection(SCOPE, {
+        provider: 'aws-lambda-microvm',
+        config: { imageIdentifier: 'img', clientSecret: 'must-not-be-config' },
+      }),
+    ).toThrow(/secret field/);
+    expect(() =>
+      addProviderConnection(SCOPE, {
+        provider: 'aws-lambda-microvm',
+        config: { imageIdentifier: 'img', unsupported: 'nope' },
+      }),
+    ).toThrow(/unknown .* config field/i);
+    expect(() =>
+      addProviderConnection(SCOPE, {
+        provider: 'aws-lambda-microvm',
+        config: { imageIdentifier: 'img' },
+        secret: JSON.stringify({ accessKeyId: 'AKIA-only' }),
+      }),
+    ).toThrow(/must be supplied together/);
+  });
+
+  it('redacts credential-shaped fields from legacy nested config before returning it', () => {
+    const created = addAwsConnection();
+    db.prepare('UPDATE cloud_provider_connections SET config_json = ? WHERE id = ?').run(
+      JSON.stringify({
+        region: 'eu-west-1',
+        nested: { clientSecret: 'legacy-leak', safe: 'visible' },
+      }),
+      created.id,
+    );
+    const listed = listProviderConnections(SCOPE);
+    expect(JSON.stringify(listed)).not.toContain('legacy-leak');
+    expect(listed[0]?.config['nested']).toEqual({ safe: 'visible' });
+  });
+
   it('scopes connections to (backend, account) and advertises provision capabilities', () => {
     addAwsConnection();
     addProviderConnection(OTHER_SCOPE, { provider: 'vercel-sandbox', config: {} });
@@ -142,6 +181,32 @@ describe('provider connections', () => {
     expect(removeProviderConnection(OTHER_SCOPE, created.id)).toBe(false);
     expect(removeProviderConnection(SCOPE, created.id)).toBe(true);
     expect(listProviderConnections(SCOPE)).toHaveLength(0);
+  });
+
+  it('refuses to remove a connection while cleanup is unverified', () => {
+    const created = addAwsConnection();
+    db.prepare(
+      `INSERT INTO cloud_environments (
+         environment_id, backend_id, account_id, provider, state, handle_json,
+         enrollment_id, job_id, connection_id, created_by, expires_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'env_unverified',
+      SCOPE.backendId,
+      SCOPE.accountId,
+      'aws-lambda-microvm',
+      'failed',
+      JSON.stringify({ environmentId: 'env_unverified', providerRef: 'mvm-1' }),
+      null,
+      null,
+      created.id,
+      SCOPE.accountId,
+      null,
+      new Date().toISOString(),
+      new Date().toISOString(),
+    );
+    expect(() => removeProviderConnection(SCOPE, created.id)).toThrow(/still needed/);
+    expect(listProviderConnections(SCOPE)).toHaveLength(1);
   });
 });
 
@@ -192,6 +257,60 @@ describe('provisionEnvironment', () => {
     expect((run?.input as Record<string, unknown>)['imageIdentifier']).toBe('img-override');
   });
 
+  it('rejects a cross-scope environment id before calling the provider', async () => {
+    const otherScope: ProvisionerScope = {
+      ...SCOPE,
+      backendId: 'backend-2',
+      accountId: 'account-2',
+      enrollmentId: 'enr-other',
+    };
+    addAwsConnection();
+    addProviderConnection(otherScope, {
+      provider: 'aws-lambda-microvm',
+      config: { imageIdentifier: 'arn:aws:lambda:img/other:1' },
+      secret: JSON.stringify({ accessKeyId: 'AKIA-other', secretAccessKey: 'secret-other' }),
+    });
+    backendRpc.mockResolvedValue({ result: { environment: {} }, serverTime: '' });
+    sdkSend.mockResolvedValue({ microvmId: 'mvm-original', state: 'PENDING' });
+    await provisionEnvironment(
+      SCOPE,
+      { environmentId: 'env_cross_scope', provider: 'aws-lambda-microvm', ttlSeconds: 1800 },
+      'anvil-ec-ORIGINAL',
+    );
+    const original = listLocalEnvironments(SCOPE)[0];
+    sdkCommands.length = 0;
+
+    await expect(
+      provisionEnvironment(
+        otherScope,
+        { environmentId: 'env_cross_scope', provider: 'aws-lambda-microvm', ttlSeconds: 1800 },
+        'anvil-ec-OTHER',
+      ),
+    ).rejects.toThrow(/another sync scope/);
+    expect(sdkCommands).toHaveLength(0);
+    expect(listLocalEnvironments(SCOPE)[0]).toMatchObject({
+      environmentId: 'env_cross_scope',
+      handle: original?.handle,
+      connectionId: original?.connectionId,
+    });
+  });
+
+  it('uses the backend discovery URL in worker bootstrap, not the RPC API path', async () => {
+    addAwsConnection();
+    backendRpc.mockResolvedValue({ result: { environment: {} }, serverTime: '' });
+    sdkSend.mockResolvedValue({ microvmId: 'mvm-base', state: 'PENDING' });
+    await provisionEnvironment(
+      { ...SCOPE, backendUrl: 'https://sync.example.test/' },
+      inputs,
+      'anvil-ec-BASEURL',
+    );
+    const run = sdkCommands.find((c) => c.kind === 'run');
+    const hook = JSON.parse(
+      (run?.input as Record<string, unknown>)['runHookPayload'] as string,
+    ) as Record<string, unknown>;
+    expect(hook['backendUrl']).toBe('https://sync.example.test/');
+  });
+
   it('marks the environment failed when provider.create rejects', async () => {
     addAwsConnection();
     backendRpc.mockResolvedValue({ result: { environment: {} }, serverTime: '' });
@@ -213,6 +332,165 @@ describe('provisionEnvironment', () => {
       ),
     ).rejects.toThrow('anvil-managed');
     expect(backendRpc).not.toHaveBeenCalled();
+  });
+});
+
+describe('requestEnvironment', () => {
+  const managedInput = {
+    environmentId: 'env_retry',
+    provider: 'anvil-managed' as const,
+    ttlSeconds: 1800,
+  };
+
+  it('recovers an existing managed job before minting another bootstrap code', async () => {
+    const mint = vi.fn().mockResolvedValue('anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD');
+    let createdJob: {
+      id: string;
+      requestId: string;
+      payloadHash: string;
+      sourceEnrollmentId: string;
+    } | null = null;
+    backendRpc.mockImplementation(
+      async (_connection: unknown, operation: string, params: unknown) => {
+        if (operation === 'job.list') return { result: { jobs: [] }, serverTime: '' };
+        if (operation === 'environment.bootstrap') return { result: { ok: true }, serverTime: '' };
+        if (operation === 'job.create') {
+          const request = params as { requestId: string; payloadHash: string };
+          createdJob = {
+            id: 'job-existing',
+            requestId: request.requestId,
+            payloadHash: request.payloadHash,
+            sourceEnrollmentId: SCOPE.enrollmentId,
+          };
+          return { result: { job: createdJob }, serverTime: '' };
+        }
+        throw new Error(`unexpected operation ${operation}`);
+      },
+    );
+
+    await requestEnvironment(SCOPE, managedInput, { mintEnvironmentCode: mint });
+    expect(mint).toHaveBeenCalledTimes(1);
+    expect(createdJob).not.toBeNull();
+
+    backendRpc.mockReset();
+    backendRpc.mockResolvedValue({ result: { jobs: [createdJob] }, serverTime: '' });
+    mint.mockClear();
+    const replay = await requestEnvironment(SCOPE, managedInput, { mintEnvironmentCode: mint });
+    expect(replay.job.id).toBe('job-existing');
+    expect(mint).not.toHaveBeenCalled();
+    expect(backendRpc.mock.calls.map((call) => call[1])).toEqual(['job.list']);
+  });
+
+  it('coalesces concurrent managed retries into one code issuance', async () => {
+    const operations: string[] = [];
+    backendRpc.mockImplementation(async (_connection: unknown, operation: string) => {
+      operations.push(operation);
+      if (operation === 'job.list') {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { result: { jobs: [] }, serverTime: '' };
+      }
+      if (operation === 'environment.bootstrap') return { result: { ok: true }, serverTime: '' };
+      return {
+        result: {
+          job: {
+            id: 'job-new',
+            requestId: 'env-env_flight',
+            payloadHash: 'b'.repeat(64),
+            kind: 'provision-environment',
+            sourceEnrollmentId: SCOPE.enrollmentId,
+            state: 'queued',
+            inputManifest: {},
+            requestedTarget: { kind: 'auto' },
+          },
+        },
+        serverTime: '',
+      };
+    });
+    const mint = vi.fn().mockResolvedValue('anvil-ec-FFFFF-GGGGG-HHHHH-IIIII');
+    const input = { ...managedInput, environmentId: 'env_flight' };
+    const [first, second] = await Promise.all([
+      requestEnvironment(SCOPE, input, { mintEnvironmentCode: mint }),
+      requestEnvironment(SCOPE, input, { mintEnvironmentCode: mint }),
+    ]);
+    expect(first.job.id).toBe('job-new');
+    expect(second.job.id).toBe('job-new');
+    expect(mint).toHaveBeenCalledTimes(1);
+    expect(operations).toEqual(['job.list', 'environment.bootstrap', 'job.create']);
+  });
+
+  it('finds an existing job in a bounded list from an older backend', async () => {
+    const operations: string[] = [];
+    let createdJob: {
+      id: string;
+      requestId: string;
+      payloadHash: string;
+      sourceEnrollmentId: string;
+      kind: 'provision-environment';
+      state: 'queued';
+      inputManifest: Record<string, never>;
+      requestedTarget: { kind: 'auto' };
+    } | null = null;
+    backendRpc.mockImplementation(
+      async (_connection: unknown, operation: string, params: unknown) => {
+        operations.push(operation);
+        if (operation === 'job.list') {
+          return {
+            result: {
+              jobs:
+                createdJob === null
+                  ? []
+                  : [
+                      {
+                        ...createdJob,
+                        id: 'job-other',
+                        requestId: 'env-env_legacy',
+                        payloadHash: 'a'.repeat(64),
+                        sourceEnrollmentId: 'enr-other',
+                      },
+                      createdJob,
+                    ],
+            },
+            serverTime: '',
+          };
+        }
+        if (operation === 'environment.bootstrap') return { result: { ok: true }, serverTime: '' };
+        if (operation !== 'job.create') throw new Error(`unexpected operation ${operation}`);
+        const request = params as { requestId: string; payloadHash: string };
+        createdJob = {
+          id: 'job-legacy',
+          requestId: request.requestId,
+          payloadHash: request.payloadHash,
+          sourceEnrollmentId: SCOPE.enrollmentId,
+          kind: 'provision-environment',
+          state: 'queued',
+          inputManifest: {},
+          requestedTarget: { kind: 'auto' },
+        };
+        return {
+          result: { job: createdJob },
+          serverTime: '',
+        };
+      },
+    );
+    const mint = vi.fn().mockResolvedValue('anvil-ec-JJJJJ-KKKKK-LLLLL-MMMMM');
+    const result = await requestEnvironment(
+      SCOPE,
+      { ...managedInput, environmentId: 'env_legacy' },
+      { mintEnvironmentCode: mint },
+    );
+    expect(result.job.id).toBe('job-legacy');
+    expect(mint).toHaveBeenCalledTimes(1);
+
+    operations.length = 0;
+    mint.mockClear();
+    const replay = await requestEnvironment(
+      SCOPE,
+      { ...managedInput, environmentId: 'env_legacy' },
+      { mintEnvironmentCode: mint },
+    );
+    expect(replay.job.id).toBe('job-legacy');
+    expect(mint).not.toHaveBeenCalled();
+    expect(operations).toEqual(['job.list']);
   });
 });
 
@@ -244,9 +522,7 @@ describe('cloudflare-sandbox provider (ENV-04)', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://provisioner.example.workers.dev/v1/environments');
     expect(init.method).toBe('POST');
-    expect((init.headers as Record<string, string>)['authorization']).toBe(
-      'Bearer prov-token',
-    );
+    expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer prov-token');
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body['environmentId']).toBe('env_cf1');
     const bootstrap = body['bootstrap'] as Record<string, unknown>;
@@ -259,12 +535,8 @@ describe('cloudflare-sandbox provider (ENV-04)', () => {
   it('fails the environment when the provisioner rejects', async () => {
     addCfConnection();
     backendRpc.mockResolvedValue({ result: { environment: {} }, serverTime: '' });
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ error: 'quota' }), { status: 429 }),
-    );
-    await expect(provisionEnvironment(SCOPE, inputs, 'anvil-ec-GGGGG')).rejects.toThrow(
-      '429',
-    );
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'quota' }), { status: 429 }));
+    await expect(provisionEnvironment(SCOPE, inputs, 'anvil-ec-GGGGG')).rejects.toThrow('429');
     expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('failed');
   });
 
@@ -279,9 +551,12 @@ describe('cloudflare-sandbox provider (ENV-04)', () => {
 
     const outcome = await terminateEnvironment(SCOPE, 'env_cf1');
     expect(outcome).toBe('requested');
-    const [url, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls.find(
+      (call) => (call[1] as RequestInit).method === 'DELETE',
+    ) as [string, RequestInit];
     expect(url).toBe('https://provisioner.example.workers.dev/v1/environments/env_cf1');
     expect(init.method).toBe('DELETE');
+    expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('terminating');
   });
 });
 
@@ -346,12 +621,17 @@ describe('vercel-sandbox provider (ENV-05)', () => {
     await provisionEnvironment(SCOPE, inputs, 'anvil-ec-KKKKK');
 
     const stop = vi.fn().mockResolvedValue({});
-    vercelGet.mockResolvedValue({ status: 'running', stop });
-    expect(await terminateEnvironment(SCOPE, 'env_VC1')).toBe('verified');
-    expect(vercelGet).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'anvil-env-vc1' }),
-    );
+    vercelGet
+      .mockResolvedValueOnce({ status: 'running', stop })
+      .mockResolvedValueOnce({ status: 'stopping' });
+    expect(await terminateEnvironment(SCOPE, 'env_VC1')).toBe('requested');
+    expect(vercelGet).toHaveBeenCalledWith(expect.objectContaining({ name: 'anvil-env-vc1' }));
     expect(stop).toHaveBeenCalled();
+    expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('terminating');
+
+    vercelGet.mockResolvedValue({ status: 'stopped', stop });
+    expect(await terminateEnvironment(SCOPE, 'env_VC1')).toBe('verified');
+    expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('terminated');
 
     vercelGet.mockRejectedValue(new Error('sandbox not found'));
     db.prepare(
@@ -373,16 +653,24 @@ describe('terminate + reap', () => {
     );
   }
 
-  it('terminates a tracked environment and reports terminated', async () => {
+  it('keeps an accepted but unverified teardown in terminating until inspected gone', async () => {
     await provisioned();
-    sdkSend.mockResolvedValue({});
+    sdkSend.mockImplementation((command: { kind: string }) =>
+      Promise.resolve(command.kind === 'get' ? { state: 'TERMINATING' } : {}),
+    );
     const outcome = await terminateEnvironment(SCOPE, 'env_term');
     expect(outcome).toBe('requested');
     const terminate = sdkCommands.find((c) => c.kind === 'terminate');
     expect((terminate?.input as Record<string, unknown>)['microvmIdentifier']).toBe('mvm-t');
-    expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('terminated');
+    expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('terminating');
     const reports = backendRpc.mock.calls.map((call) => call[2] as Record<string, unknown>);
-    expect(reports.map((r) => r['state'])).toContain('terminated');
+    expect(reports.map((r) => r['state'])).toContain('terminating');
+
+    sdkSend.mockImplementation((command: { kind: string }) =>
+      Promise.resolve(command.kind === 'get' ? { state: 'TERMINATED' } : {}),
+    );
+    expect(await terminateEnvironment(SCOPE, 'env_term')).toBe('verified');
+    expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('terminated');
   });
 
   it('returns untracked for unknown environments', async () => {
@@ -401,7 +689,27 @@ describe('terminate + reap', () => {
       }
       return Promise.resolve({ result: { environment: {} }, serverTime: '' });
     });
-    sdkSend.mockResolvedValue({});
+    sdkSend.mockImplementation((command: { kind: string }) =>
+      Promise.resolve(command.kind === 'get' ? { state: 'TERMINATED' } : {}),
+    );
+    expect(await reapExpiredEnvironments(SCOPE)).toBe(1);
+    expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('terminated');
+  });
+
+  it('still reaps a failed environment when the provider handle remains', async () => {
+    await provisioned('env_failed_handle');
+    db.prepare(
+      "UPDATE cloud_environments SET state = 'failed', expires_at = '2999-01-01T00:00:00Z' WHERE environment_id = 'env_failed_handle'",
+    ).run();
+    backendRpc.mockImplementation((_conn: unknown, op: string) => {
+      if (op === 'environment.list') {
+        return Promise.resolve({ result: { environments: [] }, serverTime: '' });
+      }
+      return Promise.resolve({ result: { environment: {} }, serverTime: '' });
+    });
+    sdkSend.mockImplementation((command: { kind: string }) =>
+      Promise.resolve(command.kind === 'get' ? { state: 'TERMINATED' } : {}),
+    );
     expect(await reapExpiredEnvironments(SCOPE)).toBe(1);
     expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('terminated');
   });
@@ -419,7 +727,9 @@ describe('terminate + reap', () => {
       }
       return Promise.resolve({ result: { environment: {} }, serverTime: '' });
     });
-    sdkSend.mockResolvedValue({});
+    sdkSend.mockImplementation((command: { kind: string }) =>
+      Promise.resolve(command.kind === 'get' ? { state: 'TERMINATED' } : {}),
+    );
     expect(await reapExpiredEnvironments(SCOPE)).toBe(1);
     expect(sdkCommands.some((c) => c.kind === 'terminate')).toBe(true);
   });

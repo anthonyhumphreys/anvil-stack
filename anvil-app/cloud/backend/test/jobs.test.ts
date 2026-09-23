@@ -778,6 +778,28 @@ describe('retry policy and listing', () => {
     );
     expect(limited.jobs).toHaveLength(1);
 
+    const found = expectSuccess<JobListResult>(
+      await postRpc('job.list', { requestId: a.job.requestId, limit: 1 }, f.sourceAuth),
+    );
+    expect(found.jobs).toHaveLength(1);
+    expect(found.jobs[0]?.id).toBe(a.job.id);
+    const stateMismatch = expectSuccess<JobListResult>(
+      await postRpc(
+        'job.list',
+        { requestId: a.job.requestId, state: 'completed' },
+        f.sourceAuth,
+      ),
+    );
+    expect(stateMismatch.jobs).toHaveLength(0);
+    const missing = expectSuccess<JobListResult>(
+      await postRpc('job.list', { requestId: 'missing-request' }, f.sourceAuth),
+    );
+    expect(missing.jobs).toHaveLength(0);
+    const otherSource = expectSuccess<JobListResult>(
+      await postRpc('job.list', { requestId: a.job.requestId }, f.workerAuth),
+    );
+    expect(otherSource.jobs).toHaveLength(0);
+
     const overLimit = await postRpc('job.list', { limit: 101 }, f.sourceAuth);
     expect(overLimit.status).toBe(400);
   });

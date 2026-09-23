@@ -51,12 +51,10 @@ export async function publishWorkItemReview(id: string, text: string): Promise<v
           : {
               type: 'doc',
               version: 1,
-              content: text
-                .split('\n')
-                .map((line) => ({
-                  type: 'paragraph',
-                  content: line ? [{ type: 'text', text: line }] : [],
-                })),
+              content: text.split('\n').map((line) => ({
+                type: 'paragraph',
+                content: line ? [{ type: 'text', text: line }] : [],
+              })),
             },
     };
   } else throw new Error('This provider does not support review publication.');

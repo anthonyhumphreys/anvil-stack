@@ -658,6 +658,11 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'dashboard.decide':
     case 'dashboard.publish':
     case 'dashboard.revoke':
+    // browser-workspace/1 additive Desktop relay methods. These are
+    // intentionally outside the frozen mesh/1 operation inventory but are
+    // still authenticated and account-scoped through the same RPC path.
+    case 'dashboard.command.claim':
+    case 'dashboard.command.complete':
     // SESSION-03 session ownership handoff.
     case 'handoff.create':
     case 'handoff.get':

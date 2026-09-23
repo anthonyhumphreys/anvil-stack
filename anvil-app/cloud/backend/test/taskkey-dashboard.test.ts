@@ -376,6 +376,46 @@ describe('dashboard grants', () => {
     expect(entry?.scopes).toEqual(['read-dashboard']);
   });
 
+  it('issuer-bound lookup returns live decision and workspace authorization', async () => {
+    const fx = fixture('dash-request-lookup');
+    const requestId = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 600_000).toISOString();
+    const workspaceBindings = [{ workspaceId: 'workspace-1', repositoryIds: ['repo-1'] }];
+    await postHostedDashboardRequest(fx.accountId, requestId, {
+      scopes: ['read-dashboard', 'workspace-read'],
+      workspaceBindings,
+      expiresAt,
+    });
+    await postRpc(
+      'dashboard.decide',
+      {
+        requestId,
+        decision: 'approved',
+        grant: { ...grant(requestId), expiresAt },
+        snapshot: snapshot(1),
+        workspaceBindings,
+        grantedScopes: ['workspace-read'],
+      },
+      fx.sourceAuth,
+    );
+
+    const lookedUp = expectSuccess<DashboardRequestsResult>(
+      await postRpc('dashboard.requests', { requestId }, fx.sourceAuth),
+    );
+    expect(lookedUp.requests).toEqual([]);
+    expect(lookedUp.request).toMatchObject({
+      requestId,
+      state: 'approved',
+      decidedBy: fx.sourceEnrollmentId,
+      workspaceBindings,
+      grantedScopes: ['workspace-read'],
+    });
+
+    const foreign = await postRpc('dashboard.requests', { requestId }, fx.workerAuth);
+    expect(foreign.status).toBe(403);
+    expect(isRpcError(foreign.body)).toBe(true);
+  });
+
   it('approval stores the sealed grant + snapshot; status returns them', async () => {
     const fx = fixture('dash-approve');
     const requestId = crypto.randomUUID();

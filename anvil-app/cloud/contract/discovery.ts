@@ -43,6 +43,8 @@ export interface BackendDescriptor {
   authModes: string[];
   auth: DescriptorAuth;
   limits: DescriptorLimits;
+  /** Optional additive features negotiated independently of frozen profiles. */
+  features?: string[];
 }
 
 export type DescriptorValidationResult =
@@ -141,6 +143,12 @@ export function validateDescriptor(input: unknown): DescriptorValidationResult {
       if (typeof mode !== 'string' || !KNOWN_AUTH_MODES.includes(mode as AuthMode)) {
         errors.push(`unknown authMode: ${String(mode)}`);
       }
+    }
+  }
+
+  if (input['features'] !== undefined) {
+    if (!Array.isArray(input['features']) || !input['features'].every(isNonEmptyString)) {
+      errors.push('features must be an array of non-empty strings');
     }
   }
 

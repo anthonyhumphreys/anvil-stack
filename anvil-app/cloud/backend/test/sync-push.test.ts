@@ -199,6 +199,57 @@ describe('sync.push', () => {
     expect(pulled.changes[0].payload).toEqual(envelope);
   });
 
+  it('accepts a well-formed keyring-pairing payload as a crypto-boundary entity', async () => {
+    const ids = uniqueIds('keyring-pairing');
+    const auth = spikeBearer(ids.accountId, ids.enrollmentId);
+    const pairing = {
+      v: 1,
+      enc: 'pairing-aes-256-gcm',
+      nonce: Buffer.alloc(12, 3).toString('base64'),
+      ct: Buffer.alloc(40, 4).toString('base64'),
+    };
+    const change = await hashedChange({
+      enrollmentSequence: 1,
+      entityType: 'keyring-pairing',
+      entityId: 'pairing-nonce-1',
+      payload: pairing,
+    });
+    const result = expectSuccess<SyncPushResult>(
+      await postRpc('sync.push', { changes: [change] }, auth),
+    );
+    expect(result.results[0]?.status).toBe('accepted');
+
+    const pulled = expectSuccess<{ changes: Array<{ payload: unknown }> }>(
+      await postRpc('sync.pull', { cursor: null, maxBytes: DEFAULT_LIMITS.pageBytes }, auth),
+    );
+    expect(pulled.changes[0]?.payload).toEqual(pairing);
+  });
+
+  it('reports dedicated structural validation for malformed keyring-pairing payloads', async () => {
+    const ids = uniqueIds('keyring-pairing-bad');
+    const auth = spikeBearer(ids.accountId, ids.enrollmentId);
+    const malformed = {
+      v: 1,
+      enc: 'pairing-aes-256-gcm',
+      nonce: 'not-base64!!!',
+      ct: Buffer.alloc(40, 4).toString('base64'),
+    };
+    const change = await hashedChange({
+      enrollmentSequence: 1,
+      entityType: 'keyring-pairing',
+      entityId: 'pairing-nonce-bad',
+      payload: malformed,
+    });
+    const { status, body } = await postRpc('sync.push', { changes: [change] }, auth);
+    expect(status).toBe(httpStatusForErrorCode('malformed-request'));
+    expect(isRpcError(body)).toBe(true);
+    if (isRpcError(body)) {
+      expect(body.error.details?.['reason']).toBe('crypto-boundary-invalid');
+      expect(body.error.details?.['issue']).toBe('keyring-pairing-nonce');
+      expect(body.error.details?.['entityType']).toBe('keyring-pairing');
+    }
+  });
+
   it('rejects a malformed sealed envelope without journaling anything', async () => {
     const ids = uniqueIds('sealed-bad');
     const auth = spikeBearer(ids.accountId, ids.enrollmentId);

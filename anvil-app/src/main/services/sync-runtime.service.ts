@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { resolveBackendPaths } from '../../../cloud/contract/discovery.js';
 import type {
@@ -34,7 +34,17 @@ import type {
   JobSummary,
 } from '../../../cloud/contract/jobs.js';
 import type { HandoffGetResult, HandoffRecord } from '../../../cloud/contract/handoff.js';
-import type { KeyringReportResult } from '../../../cloud/contract/dashboard.js';
+import type {
+  DashboardRequest,
+  DashboardRequestsResult,
+  KeyringReportResult,
+} from '../../../cloud/contract/dashboard.js';
+import type {
+  BrowserWorkspaceCommand,
+  BrowserWorkspaceExecutionContext,
+  DashboardCommandClaimResult,
+  DashboardCommandCompleteResult,
+} from '../../../cloud/contract/browser-workspace.js';
 import type { HostedEntitlement } from '../../../cloud/contract/entitlements.js';
 import type {
   EnvironmentListResult,
@@ -42,7 +52,12 @@ import type {
 } from '../../../cloud/contract/environment.js';
 import {
   requestEnvironment,
+  addProviderConnection,
+  listLocalEnvironments,
+  listProviderConnections,
+  removeProviderConnection,
   type ProvisionerScope,
+  type ProviderConnectionSummary,
   type RequestEnvironmentInput,
   type RequestEnvironmentResult,
 } from './cloud-environment.service.js';
@@ -59,6 +74,8 @@ import {
   type SyncAuthPublicSnapshot,
   type SyncConflictResolutionChoice,
   type SyncConflictView,
+  type SyncDashboardGrantApproval,
+  type SyncDashboardGrantWorkspace,
   type SessionMeshState,
   type SyncDashboardRequest,
   type SyncDiagnostics,
@@ -200,11 +217,18 @@ import {
   approveDashboardRequest,
   configureDashboardGrantContext,
   denyDashboardRequest,
+  listDashboardGrantWorkspaces,
   listDashboardGrants,
+  pumpBrowserWorkspaceCommands,
   revokeDashboardGrant,
   serviceDashboardGrants,
+  type DashboardGrantRevalidation,
+  type DashboardWorkspaceCommand,
 } from './dashboard-grant.service.js';
-import type { DashboardScope } from '../../../cloud/contract/dashboard.js';
+import {
+  disposeBrowserWorkspaceExecutor,
+  executeBrowserWorkspaceCommand,
+} from './browser-workspace-executor.service.js';
 import {
   configureMeshIntegrationContext,
   resetMeshIntegrationForTests,
@@ -233,6 +257,8 @@ import { SCHEMA_VERSION } from '../db/schema.js';
 const POLL_MS = 5_000;
 /** Slower safety-net cadence while the live channel is connected. */
 const POLL_LIVE_FALLBACK_MS = 60_000;
+/** Browser workspace commands need interactive delivery even on a quiet socket. */
+const DASHBOARD_COMMAND_PUMP_MS = 1_500;
 const SPIKE_ACCESS_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 /** Refresh this far before the access token's stated expiry. */
 const REFRESH_AHEAD_MS = 60_000;
@@ -307,6 +333,7 @@ export type SyncConnectionState = 'offline' | 'connecting' | 'live';
 
 let auth: SyncAuthService | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let dashboardCommandPumpTimer: ReturnType<typeof setInterval> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let lastError: string | null = null;
 let sessionExpired = false;
@@ -330,6 +357,19 @@ let devSpikeEnabled = false;
 /** Test hook: routes ALL backend HTTP (enroll/refresh/revoke/issue + engine rpc). */
 let fetchOverride: typeof fetch | undefined;
 let runtimeUserDataDir: string | null = null;
+interface PendingPairingRedemption {
+  backendId: string;
+  accountId: string;
+  pairing: { pairingNonce: string; pairingSecret: string };
+}
+
+/**
+ * Enrollment can finish while the reviewed backend is still paused. The
+ * normal path wraps the one-time pairing secret into sync_pairing immediately;
+ * this transient fallback survives only until the next activation retry and
+ * is never persisted alongside the session or sent through IPC.
+ */
+let pendingPairingRedemption: PendingPairingRedemption | null = null;
 /**
  * Fences async engine work: bumped on every sign-out, enrollment change, and
  * backend switch. A sync cycle captures the generation (plus its scope and
@@ -378,6 +418,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     if (backend === null || fields === null || token === null) return null;
     return {
       apiUrl: apiUrlFor(backend),
+      backendUrl: backend.baseUrl,
       accessToken: token,
       enrollmentId: fields.enrollmentId,
       ...(scope === null ? {} : { scope }),
@@ -405,6 +446,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     if (backend === null || fields === null || token === null) return null;
     return {
       apiUrl: apiUrlFor(backend),
+      backendUrl: backend.baseUrl,
       accessToken: token,
       enrollmentId: fields.enrollmentId,
       sendFrame: (frame) => liveSocket?.send(JSON.stringify(frame)),
@@ -439,6 +481,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     if (backend === null || fields === null || token === null) return null;
     return {
       apiUrl: apiUrlFor(backend),
+      backendUrl: backend.baseUrl,
       accessToken: token,
       enrollmentId: fields.enrollmentId,
       ...(scope === null ? {} : { scope }),
@@ -475,8 +518,132 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const backend = getActiveBackend();
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
-    if (backend === null || fields === null || token === null) return null;
-    return { apiUrl: apiUrlFor(backend), accessToken: token, enrollmentId: fields.enrollmentId };
+    const scope = currentScope();
+    if (backend === null || fields === null || token === null || scope === null) return null;
+    const apiUrl = apiUrlFor(backend);
+    const rpcOptions = fetchOverride === undefined ? {} : { fetchFn: fetchOverride };
+    return {
+      apiUrl,
+      accessToken: token,
+      enrollmentId: fields.enrollmentId,
+      pullBrowserWorkspaceCommands: async (
+        commandScope,
+        enrollmentId,
+      ): Promise<DashboardWorkspaceCommand[]> => {
+        const grants = listDashboardGrants(commandScope).filter(
+          (grant) =>
+            grant.state === 'approved' &&
+            grant.enrollmentId === enrollmentId &&
+            grant.workspace !== null &&
+            Date.parse(grant.expiresAt) > Date.now(),
+        );
+        const claimed: DashboardWorkspaceCommand[] = [];
+        let remaining = 8;
+        for (const grant of grants) {
+          if (remaining <= 0) break;
+          try {
+            const response = await backendRpc<DashboardCommandClaimResult>(
+              { apiUrl },
+              'dashboard.command.claim',
+              { requestId: grant.requestId, limit: remaining },
+              token,
+              rpcOptions,
+            );
+            for (const command of response.result.commands) {
+              claimed.push({ ...command.envelope, claimFence: command.claimFence });
+            }
+            remaining -= response.result.commands.length;
+          } catch {
+            // The relay is authoritative for revoke/expiry/issuer checks. A
+            // stale local mirror must never turn a failed claim into work.
+          }
+        }
+        return claimed;
+      },
+      revalidateBrowserWorkspaceGrant: async (
+        commandScope,
+        requestId,
+      ): Promise<DashboardGrantRevalidation> => {
+        const response = await backendRpc<DashboardRequestsResult & { request?: DashboardRequest }>(
+          { apiUrl },
+          'dashboard.requests',
+          { requestId },
+          token,
+          rpcOptions,
+        );
+        // The relay status extension returns `request` for an issuer-bound
+        // lookup. Keep the list fallback for deployments that return the
+        // matching record in a bounded result instead.
+        const request =
+          response.result.request ??
+          response.result.requests.find((candidate) => candidate.requestId === requestId);
+        if (request === undefined) {
+          throw new Error('The relay did not return the live dashboard grant state.');
+        }
+        const binding =
+          request.workspaceBindings?.find(
+            (candidate) =>
+              candidate.workspaceId ===
+              listDashboardGrants(commandScope).find((grant) => grant.requestId === requestId)
+                ?.workspace?.workspaceId,
+          ) ?? request.workspaceBindings?.[0];
+        return {
+          state: request.state,
+          expiresAt: request.expiresAt,
+          enrollmentId: request.decidedBy ?? '',
+          workspace: {
+            workspaceId: binding?.workspaceId ?? '',
+            repoIds: binding?.repositoryIds ?? [],
+          },
+          scopes: request.grantedScopes ?? [],
+        };
+      },
+      publishBrowserWorkspaceCommandResult: async (
+        _commandScope,
+        command,
+        result,
+      ): Promise<void> => {
+        if (result.status === 'uncertain' || result.status === 'rejected') return;
+        if (command.claimFence === undefined || result.resultEnvelope === undefined) {
+          throw new Error('A claimed command result is missing its fence or sealed envelope.');
+        }
+        await backendRpc<DashboardCommandCompleteResult>(
+          { apiUrl },
+          'dashboard.command.complete',
+          {
+            requestId: command.requestId,
+            commandId: command.commandId,
+            claimFence: command.claimFence,
+            outcome: result.status === 'completed' ? 'completed' : 'failed',
+            result: result.resultEnvelope,
+          },
+          token,
+          rpcOptions,
+        );
+      },
+      executeBrowserWorkspaceCommand: async (input) => {
+        const payload =
+          typeof input.payload === 'object' &&
+          input.payload !== null &&
+          !Array.isArray(input.payload)
+            ? (input.payload as Record<string, unknown>)
+            : {};
+        const command = {
+          ...payload,
+          operation: input.operation,
+          ...(input.repositoryId === null ? {} : { repositoryId: input.repositoryId }),
+        } as BrowserWorkspaceCommand;
+        const executionContext: BrowserWorkspaceExecutionContext = {
+          grantId: input.requestId,
+          workspaceId: input.workspaceId,
+          repoIds: input.repoIds,
+          scopes: input.scopes as BrowserWorkspaceExecutionContext['scopes'],
+          expiresAt: Date.parse(input.expiresAt),
+          commandId: input.commandId,
+        };
+        return executeBrowserWorkspaceCommand(command, executionContext);
+      },
+    };
   });
   // FLOW-03: integration runs are local-only (merge adopted refs, verify)
   // — they need just the userData dir for worktree roots.
@@ -493,6 +660,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     ensureCurrentEnrollment();
     connectLiveChannel();
     armFallbackPoll();
+    armDashboardCommandPump();
     meshWorkerOnSyncReady();
     // BILL-05: pick up any hosted-access change made while the app was off.
     maybeRefreshHostedEntitlement();
@@ -505,6 +673,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
 export function resetSyncRuntimeForTests(): void {
   runtimeGeneration += 1;
   stopPolling();
+  stopDashboardCommandPump();
   clearSessionRefresh();
   teardownLiveChannel();
   resetMeshObserverForTests();
@@ -522,6 +691,8 @@ export function resetSyncRuntimeForTests(): void {
   createSocketOverride = undefined;
   lastHostedRefreshAt = 0;
   keyRotationBlockedScopeKey = null;
+  pendingPairingRedemption = null;
+  disposeBrowserWorkspaceExecutor();
 }
 
 export function setSyncRuntimeRpcForTests(rpc: SyncEngineRpc | undefined): void {
@@ -557,6 +728,24 @@ function currentScope(): SyncScope | null {
   };
 }
 
+/**
+ * Returns the authenticated scope for the reviewed backend without activating
+ * it. Enrollment may intentionally leave a backend paused until the user
+ * opts into Sync, but the pairing secret still needs to be wrapped into the
+ * local keyring before a process restart can discard it from memory.
+ */
+function reviewedSessionScope(): SyncScope | null {
+  const backend = pinnedBackend();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  if (!backend || backend.identityReviewRequired || !fields) return null;
+  if (fields.backendId !== null && fields.backendId !== backend.id) return null;
+  return {
+    backendId: backend.id,
+    accountId: fields.accountId,
+    datasetEpoch: fields.datasetEpoch,
+  };
+}
+
 function runtimeScopeKey(scope: SyncScope): string {
   return `${scope.backendId}\u0000${scope.accountId}\u0000${scope.datasetEpoch}`;
 }
@@ -580,6 +769,7 @@ function resumeSyncAfterEnrollment(): void {
   ensureCurrentEnrollment();
   connectLiveChannel();
   armFallbackPoll();
+  armDashboardCommandPump();
   meshWorkerOnSyncReady();
   void requestSync().catch(() => undefined);
 }
@@ -807,6 +997,7 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
     sessionExpired = false;
     scheduleSessionRefresh();
     ensureCurrentEnrollment();
+    pendingPairingRedemption = null;
     // OIDC enrollment has no pairing channel; this device publishes its
     // identity and receives the ADK via a keyring wrap from a device that
     // already holds it (or provisions v1 itself on a fresh account).
@@ -883,6 +1074,7 @@ export async function signInWithWorkOSDevice(
     return snapshot;
   }
   sessionExpired = false;
+  pendingPairingRedemption = null;
   if (options.startRuntime !== false) {
     scheduleSessionRefresh();
     ensureCurrentEnrollment();
@@ -1018,21 +1210,48 @@ export async function beginDeviceAuthorizationSignIn(
  * unwrapped on the next pull. Best-effort — a failure here defers sealing
  * rather than breaking the session.
  */
-function initializeSyncCrypto(pairing?: { pairingNonce: string; pairingSecret: string }): void {
-  const scope = currentScope();
+function initializeSyncCrypto(pairing?: { pairingNonce: string; pairingSecret: string }): boolean {
+  // Use the active scope during normal runtime. During enrollment the
+  // reviewed backend is still paused, so derive the same authenticated scope
+  // without changing backend state or enabling sync.
+  const activeScope = currentScope();
+  const scope = activeScope ?? reviewedSessionScope();
   const fields = requireAuth().getSessionScopeFields();
-  if (scope === null || fields === null) return;
+  if (scope === null || fields === null) return false;
+  const pending = pendingPairingRedemption;
+  const deferredPairing =
+    pairing === undefined &&
+    pending !== null &&
+    pending.backendId === scope.backendId &&
+    pending.accountId === scope.accountId
+      ? pending.pairing
+      : undefined;
+  const pairingToRegister = pairing ?? deferredPairing;
   try {
-    if (pairing !== undefined) {
-      registerPairingRedemption(scope, pairing.pairingNonce, pairing.pairingSecret);
+    if (pairingToRegister !== undefined) {
+      registerPairingRedemption(
+        scope,
+        pairingToRegister.pairingNonce,
+        pairingToRegister.pairingSecret,
+      );
     }
-    publishDeviceIdentity(scope, fields.enrollmentId);
+    // Identity publication is a sync mutation and therefore waits for the
+    // explicit Sync opt-in. Pairing redemption itself is safe to persist while
+    // the reviewed backend remains paused because it never leaves this device.
+    if (activeScope !== null) {
+      publishDeviceIdentity(activeScope, fields.enrollmentId);
+    }
+    if (pairingToRegister !== undefined && pending !== null) {
+      pendingPairingRedemption = null;
+    }
+    return true;
   } catch (error) {
     console.warn(
       `[sync] E2E crypto bootstrap failed; sealed pushes defer until keys arrive: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
+    return false;
   }
 }
 
@@ -1046,6 +1265,7 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
   // keyring secret; the server only ever sees the code portion.
   const pairing = isPairingPayloadString(code) ? decodePairingPayload(code) : null;
   const redeemCode = pairing === null ? code : pairing.enrollmentCode;
+  pendingPairingRedemption = null;
   runtimeGeneration += 1;
   const snapshot = await requireAuth().enrollWithCode(
     redeemCode,
@@ -1055,6 +1275,16 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
   sessionExpired = false;
   scheduleSessionRefresh();
   ensureCurrentEnrollment();
+  if (pairing !== null) {
+    if (snapshot.accountId === null) {
+      throw new Error('Enrollment succeeded without an account scope.');
+    }
+    pendingPairingRedemption = {
+      backendId: backend.id,
+      accountId: snapshot.accountId,
+      pairing: { pairingNonce: pairing.pairingNonce, pairingSecret: pairing.pairingSecret },
+    };
+  }
   initializeSyncCrypto(
     pairing === null
       ? undefined
@@ -1147,6 +1377,7 @@ export async function requestCloudEnvironment(
     accountId: scope.accountId,
     enrollmentId: fields.enrollmentId,
     apiUrl: apiUrlFor(backend),
+    backendUrl: backend.baseUrl,
     accessToken: token,
   };
   return requestEnvironment(provisionerScope, input, {
@@ -1164,6 +1395,47 @@ export async function requestCloudEnvironment(
       return issued.code;
     },
   });
+}
+
+function currentProvisionerScope(): ProvisionerScope {
+  const backend = getActiveBackend() ?? pinnedBackend();
+  const token = requireAuth().getAccessToken();
+  const scope = currentScope();
+  const fields = requireAuth().getSessionScopeFields();
+  if (backend === null || token === null || scope === null || fields === null) {
+    throw new Error('Sign in before managing cloud environment connections.');
+  }
+  return {
+    backendId: scope.backendId,
+    accountId: scope.accountId,
+    enrollmentId: fields.enrollmentId,
+    apiUrl: apiUrlFor(backend),
+    backendUrl: backend.baseUrl,
+    accessToken: token,
+  };
+}
+
+/** Secret-free provider connections stored on this provisioner device. */
+export function listCloudProviderConnections(): ProviderConnectionSummary[] {
+  return listProviderConnections(currentProvisionerScope());
+}
+
+/** Add a provider connection. Secrets are encrypted by the main process and never synced. */
+export function addCloudProviderConnection(input: {
+  provider: RequestEnvironmentInput['provider'];
+  displayName?: string;
+  config: Record<string, unknown>;
+  secret?: string;
+}): ProviderConnectionSummary {
+  return addProviderConnection(currentProvisionerScope(), input);
+}
+
+export function removeCloudProviderConnection(connectionId: string): boolean {
+  return removeProviderConnection(currentProvisionerScope(), connectionId);
+}
+
+export function listLocalCloudEnvironments() {
+  return listLocalEnvironments(currentProvisionerScope());
 }
 
 /** Account-wide environment records (terminal rows only with includeTerminal). */
@@ -1971,20 +2243,47 @@ export function listDashboardRequests(): SyncDashboardRequest[] {
   return listDashboardGrants(requireDashboardScope()).map((row) => ({
     requestId: row.requestId,
     browserPub: row.browserPub,
+    ...(row.request?.challenge === undefined
+      ? {}
+      : {
+          verificationCode: createHash('sha256')
+            .update(`${row.browserPub}|${row.request.challenge}`)
+            .digest('hex')
+            .slice(0, 12)
+            .toUpperCase()
+            .match(/.{1,4}/g)
+            ?.join('-'),
+        }),
     scopes: row.scopes,
     expiresAt: row.expiresAt,
     seq: row.seq,
     state: row.state,
     ...(row.request?.origin === undefined ? {} : { origin: row.request.origin }),
     ...(row.request?.userAgent === undefined ? {} : { userAgent: row.request.userAgent }),
+    ...(row.workspace === null ? {} : { workspace: row.workspace }),
+    ...(row.enrollmentId === null ? {} : { enrollmentId: row.enrollmentId }),
   }));
+}
+
+export function listDashboardWorkspaces(): SyncDashboardGrantWorkspace[] {
+  requireDashboardScope();
+  return listDashboardGrantWorkspaces();
 }
 
 export async function approveDashboardGrant(
   requestId: string,
-  scopes?: DashboardScope[],
+  approval?: SyncDashboardGrantApproval,
 ): Promise<void> {
-  await approveDashboardRequest(requireDashboardScope(), requestId, scopes);
+  if (approval === undefined) {
+    throw new Error('Choose a workspace, repository, and action permissions before approving.');
+  }
+  await approveDashboardRequest(requireDashboardScope(), requestId, {
+    workspace: {
+      workspaceId: approval.workspaceId,
+      repoIds: approval.repoIds,
+    },
+    scopes: approval.actionScopes,
+  });
 }
 
 export async function denyDashboardGrant(requestId: string): Promise<void> {
@@ -2163,6 +2462,7 @@ export function enableSync(): SyncRuntimeStatus {
   initializeSyncCrypto();
   connectLiveChannel();
   armFallbackPoll();
+  armDashboardCommandPump();
   meshWorkerOnSyncReady();
   // Fire-and-forget kick: a superseded/backoff rejection must not surface as
   // an unhandled rejection; the error is already recorded in `lastError`.
@@ -2193,6 +2493,7 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   meshObserverOnGone();
   lastError = null;
   sessionExpired = false;
+  pendingPairingRedemption = null;
   return getRuntimeStatus();
 }
 
@@ -2705,10 +3006,32 @@ function armFallbackPoll(): void {
   );
 }
 
+function armDashboardCommandPump(): void {
+  stopDashboardCommandPump();
+  dashboardCommandPumpTimer = setInterval(() => {
+    if (!isSyncEnabled()) return;
+    const scope = currentScope();
+    if (scope === null) return;
+    const generation = runtimeGeneration;
+    void pumpBrowserWorkspaceCommands(
+      scope,
+      () => generation === runtimeGeneration && isSyncEnabled(),
+    ).catch(() => undefined);
+  }, DASHBOARD_COMMAND_PUMP_MS);
+}
+
+function stopDashboardCommandPump(): void {
+  if (dashboardCommandPumpTimer === null) return;
+  clearInterval(dashboardCommandPumpTimer);
+  dashboardCommandPumpTimer = null;
+}
+
 function stopPolling(): void {
-  if (pollTimer === null) return;
-  clearInterval(pollTimer);
-  pollTimer = null;
+  if (pollTimer !== null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  stopDashboardCommandPump();
 }
 
 /**

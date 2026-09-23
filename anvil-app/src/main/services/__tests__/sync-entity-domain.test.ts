@@ -21,8 +21,7 @@ vi.mock('electron', () => ({
   safeStorage: {
     isEncryptionAvailable: () => true,
     encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf-8'),
-    decryptString: (encrypted: Buffer) =>
-      encrypted.toString('utf-8').slice('enc:'.length),
+    decryptString: (encrypted: Buffer) => encrypted.toString('utf-8').slice('enc:'.length),
   },
 }));
 
@@ -192,9 +191,7 @@ describe('editable agents', () => {
   });
 
   it('rejects malformed remote payloads without writing a row', () => {
-    expect(entityPayloadIssue(SYNC_ENTITY_EDITABLE_AGENT, { name: 'x' })).toBe(
-      'malformed-payload',
-    );
+    expect(entityPayloadIssue(SYNC_ENTITY_EDITABLE_AGENT, { name: 'x' })).toBe('malformed-payload');
     expect(entityPayloadIssue(SYNC_ENTITY_EDITABLE_AGENT, 'nope')).toBe('malformed-payload');
     applyRemoteEntityPayload(SYNC_ENTITY_EDITABLE_AGENT, 'ghost', { name: '' });
     expect(getEditableAgent('ghost')).toBeNull();
@@ -454,10 +451,10 @@ describe('workspace definitions', () => {
 describe('settings entity', () => {
   it('serializes only allowlisted fields and never secrets', () => {
     updateSettings({ theme: 'dark', openaiApiKey: 'sk-secret-123', adoPat: 'pat-456' });
-    const payload = buildEntityPayload(
-      SYNC_ENTITY_SETTINGS,
-      SYNC_SETTINGS_ENTITY_ID,
-    ) as Record<string, unknown>;
+    const payload = buildEntityPayload(SYNC_ENTITY_SETTINGS, SYNC_SETTINGS_ENTITY_ID) as Record<
+      string,
+      unknown
+    >;
     const json = JSON.stringify(payload);
     expect(payload.id).toBe(SYNC_SETTINGS_ENTITY_ID);
     const fields = payload.fields as Record<string, unknown>;
@@ -476,14 +473,12 @@ describe('settings entity', () => {
     upsertBinding(SCOPE, SYNC_ENTITY_SETTINGS, SYNC_SETTINGS_ENTITY_ID);
 
     updateSettings({ adoPat: 'secret-pat' }); // not allowlisted
-    expect(
-      listOutboxRows(SCOPE).filter((r) => r.entityType === SYNC_ENTITY_SETTINGS),
-    ).toHaveLength(0);
+    expect(listOutboxRows(SCOPE).filter((r) => r.entityType === SYNC_ENTITY_SETTINGS)).toHaveLength(
+      0,
+    );
 
     updateSettings({ theme: 'merge-conflict' }); // allowlisted
-    const rows = listOutboxRows(SCOPE).filter(
-      (r) => r.entityType === SYNC_ENTITY_SETTINGS,
-    );
+    const rows = listOutboxRows(SCOPE).filter((r) => r.entityType === SYNC_ENTITY_SETTINGS);
     expect(rows).toHaveLength(1);
     expect(rows[0].entityId).toBe(SYNC_SETTINGS_ENTITY_ID);
   });
@@ -510,9 +505,7 @@ describe('settings entity', () => {
   });
 
   it('has no save-copy support (singleton)', () => {
-    expect(
-      persistConflictCopy(SYNC_ENTITY_SETTINGS, { fields: { theme: 'dark' } }),
-    ).toBeNull();
+    expect(persistConflictCopy(SYNC_ENTITY_SETTINGS, { fields: { theme: 'dark' } })).toBeNull();
   });
 });
 
@@ -528,10 +521,7 @@ describe('canonical payloads', () => {
     const json = readEntityPayloadJson(SYNC_ENTITY_EDITABLE_AGENT, saved.id);
     expect(json).toBe(
       canonicalJson(
-        buildEntityPayload(SYNC_ENTITY_EDITABLE_AGENT, saved.id) as Record<
-          string,
-          unknown
-        >,
+        buildEntityPayload(SYNC_ENTITY_EDITABLE_AGENT, saved.id) as Record<string, unknown>,
       ),
     );
     // Sorted: capabilities < colour < description < icon < id < name < promptBody

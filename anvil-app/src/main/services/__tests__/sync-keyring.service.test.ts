@@ -31,7 +31,15 @@ vi.mock('../persona.service.js', () => ({
   buildSystemPrompt: () => '',
 }));
 const applyRemoteEntityPayload = vi.hoisted(() => vi.fn());
-vi.mock('../sync-entity-domain.js', () => ({ applyRemoteEntityPayload }));
+const readEntityPayloadJson = vi.hoisted(() => vi.fn(() => null));
+const entityPayloadIssue = vi.hoisted(() => vi.fn(() => null));
+const isSupportedEntityType = vi.hoisted(() => vi.fn(() => true));
+vi.mock('../sync-entity-domain.js', () => ({
+  applyRemoteEntityPayload,
+  entityPayloadIssue,
+  isSupportedEntityType,
+  readEntityPayloadJson,
+}));
 
 import {
   AccountKeyUnavailableError,
@@ -50,6 +58,7 @@ import {
   provisionAccountKey,
   publishDeviceIdentity,
   registerPairingRedemption,
+  retryQuarantinedEntities,
   retryPendingKeyringWraps,
   revocationsNeedingRotation,
   rotateAccountKey,
@@ -68,7 +77,7 @@ import {
   unsealScopedJson,
   wrapAccountKeyFor,
 } from '../sync-keyring.service';
-import { updateSyncState, upsertEnrollment } from '../sync-persistence.service';
+import { updateSyncState, upsertBinding, upsertEnrollment } from '../sync-persistence.service';
 
 const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
 const ENROLLMENT = 'enr-own';
@@ -115,6 +124,8 @@ beforeEach(() => {
      DELETE FROM mesh_task_keys; DELETE FROM mesh_dashboard_grants;`,
   );
   applyRemoteEntityPayload.mockClear();
+  readEntityPayloadJson.mockReset();
+  readEntityPayloadJson.mockReturnValue(null);
 });
 
 describe('entity seal/unseal', () => {
@@ -210,6 +221,51 @@ describe('entity seal/unseal', () => {
     } catch (error) {
       expect((error as UnsealError).reason).toBe('auth-failed');
     }
+  });
+
+  it('reopens a sealed binding after key delivery and records its remote revision', () => {
+    activateEnrollment();
+    markPullCompleted();
+    const key = randomBytes(32);
+    installAccountKey(SCOPE, 1, key, 'pairing');
+    const envelope = sealEntityPayload(
+      SCOPE,
+      {
+        entityType: 'workflow-template',
+        entityId: 'w-retry',
+        operation: 'create',
+        schemaVersion: 1,
+      },
+      { id: 'w-retry', name: 'Recovered', nodes: [], edges: [] },
+    );
+    db.prepare('DELETE FROM sync_keyring').run();
+    upsertBinding(SCOPE, 'workflow-template', 'w-retry', {
+      baseRevision: null,
+      basePayloadJson: null,
+      quarantineJson: JSON.stringify({ envelope, revision: 7 }),
+    });
+    installAccountKey(SCOPE, 1, key, 'pairing');
+
+    retryQuarantinedEntities(SCOPE);
+
+    const binding = db
+      .prepare(
+        `SELECT base_revision, quarantine_json FROM sync_bindings
+         WHERE backend_id = ? AND account_id = ? AND dataset_epoch = ?
+           AND entity_type = 'workflow-template' AND entity_id = 'w-retry'`,
+      )
+      .get(SCOPE.backendId, SCOPE.accountId, SCOPE.datasetEpoch) as {
+      base_revision: number | null;
+      quarantine_json: string | null;
+    };
+    expect(binding.base_revision).toBe(7);
+    expect(binding.quarantine_json).toBeNull();
+    expect(applyRemoteEntityPayload).toHaveBeenCalledWith('workflow-template', 'w-retry', {
+      id: 'w-retry',
+      name: 'Recovered',
+      nodes: [],
+      edges: [],
+    });
   });
 });
 

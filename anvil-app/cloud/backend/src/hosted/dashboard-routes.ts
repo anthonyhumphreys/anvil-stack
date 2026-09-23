@@ -129,3 +129,50 @@ export async function handleDashboardSnapshot(
     requestId: body['requestId'],
   });
 }
+
+/**
+ * `POST /internal/hosted/dashboard-command-submit` — ambient WorkOS
+ * authentication may enqueue an opaque command, but it cannot execute it.
+ * The account coordinator enforces the approved request's clear bindings.
+ */
+export async function handleDashboardCommandSubmit(
+  body: unknown,
+  env: Env,
+  db: D1Database,
+): Promise<Response> {
+  const resolved = await resolveSyncAccount(body, db);
+  if (resolved instanceof Response) {
+    return resolved;
+  }
+  if (!isRecord(body) || typeof body['requestId'] !== 'string' || !isRecord(body['command'])) {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  return forwardToAccount(env, resolved.syncAccountId, '/internal/dashboard-command-submit', {
+    accountId: resolved.syncAccountId,
+    requestId: body['requestId'],
+    command: body['command'],
+  });
+}
+
+/** `POST /internal/hosted/dashboard-command-status` — opaque result polling. */
+export async function handleDashboardCommandStatus(
+  body: unknown,
+  env: Env,
+  db: D1Database,
+): Promise<Response> {
+  const resolved = await resolveSyncAccount(body, db);
+  if (resolved instanceof Response) {
+    return resolved;
+  }
+  if (
+    !isRecord(body) ||
+    typeof body['requestId'] !== 'string' ||
+    typeof body['commandId'] !== 'string'
+  ) {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  return forwardToAccount(env, resolved.syncAccountId, '/internal/dashboard-command-status', {
+    requestId: body['requestId'],
+    commandId: body['commandId'],
+  });
+}
