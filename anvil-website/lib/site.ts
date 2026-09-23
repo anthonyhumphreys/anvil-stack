@@ -51,7 +51,7 @@ export const syncLayer = {
   title: "Sync & Mesh",
   tagline: "The account layer that keeps your machines in step.",
   description:
-    "Workspace definitions, templates, agents, and settings replicate between your devices as sealed envelopes — encrypted on your device, relayed as ciphertext, opened only where you paired it. Enrolled machines can also pick up jobs and hand running sessions to each other. The backend is a relay you choose, not a computer you rent.",
+    "Start local, then add encrypted sync when a second machine needs the same workspace definitions, templates, agents, or approved settings. Enrolled machines can also claim jobs and hand off sessions. The backend relays envelopes and coordinates work. It does not run your repo.",
   docsHref: "/docs/sync/overview",
   detailHref: "/sync"
 };
@@ -59,12 +59,12 @@ export const syncLayer = {
 export const syncMoves = [
   {
     title: "Sealed on your device",
-    body: "Every synced entity is encrypted with AES-256-GCM under a versioned account key before it leaves the outbox. The key lives on your devices — the backend never sees it.",
+    body: "Every synced entity is encrypted with AES-256-GCM under a versioned account key before it leaves the outbox. The key stays on your devices. The backend never sees it.",
     proof: "sealed · aes-256-gcm"
   },
   {
     title: "Relayed, never read",
-    body: "The backend journals ciphertext and coordinates delivery. It sees ids, types, revisions, sizes, and timing — the shape of your sync, never the content.",
+    body: "The backend journals ciphertext and coordinates delivery. It sees IDs, types, revisions, sizes, and timing. It does not see the content.",
     proof: "shape, not content"
   },
   {
@@ -77,34 +77,61 @@ export const syncMoves = [
 export const syncModes = [
   {
     mode: "Local only",
-    body: "Nothing leaves the device. Any remembered backend stays paused, not forgotten.",
-    cost: "Free — the default"
+    body: "Keep state on this device. No account or backend is required.",
+    cost: "Default"
   },
   {
     mode: "Anvil-hosted",
-    body: "The operated backend: sign in once, pair devices, done. Preview is free through 31 October 2026.",
-    cost: "Free in preview"
+    body: "Use the operated preview when your build has a configured HTTPS origin. Production provisioning is still pending.",
+    cost: "Preview / staging"
   },
   {
     mode: "Your Cloudflare",
-    body: "Deploy the open-source backend to your own Workers account with anvil-cloud mesh apply.",
-    cost: "Your infra bill"
+    body: "Deploy the official Worker, Durable Object, D1, and R2 setup to your own account with anvil-cloud mesh apply.",
+    cost: "Your infra"
   },
   {
     mode: "Compatible backend",
-    body: "Point at any URL implementing the frozen Sync v1 contract — proven with the shipped conformance suite.",
-    cost: "Free — it is yours"
+    body: "Point at any URL that passes the Sync v1 conformance suite. You operate that service.",
+    cost: "You operate it"
   }
 ];
 
 export const hostedUpsell = {
   title: "Anvil-hosted, if you would rather not run it",
-  body: "The same Sync v1 backend, operated for you: WorkOS sign-in, device management and billing on the web, artifact storage in R2, and someone else paged at 3am. Free through the preview ending 31 October 2026; paid enforcement starts 1 November 2026. Self-host stays free forever — that is the point of the contract being open.",
+  body: "The same Sync v1 backend with WorkOS sign-in, device management, billing, and artifact storage handled for you. The preview policy is free through 31 October 2026. Production provisioning is still being finished. Self-hosting remains the open path.",
   cta: "See hosted sync",
   href: "/sync"
 };
 
-// The docs landing for /docs/sync — Sync & Mesh is a capability layer, so it
+export const agentExecutionModes = [
+  {
+    provider: "AWS Lambda MicroVM",
+    detail: "Isolated, sessionful workspaces provisioned through the desktop mesh worker.",
+    status: "Desktop adapter",
+    href: "/docs/cloud/aws-preview"
+  },
+  {
+    provider: "Cloudflare Sandbox",
+    detail: "A customer-deployed provisioner for environments that stay in your account.",
+    status: "Desktop adapter",
+    href: "/docs/cloud/agent-sandboxes"
+  },
+  {
+    provider: "Vercel Sandbox",
+    detail: "A provider adapter for short-lived, non-persistent sandbox work.",
+    status: "Desktop adapter",
+    href: "/docs/cloud/agent-sandboxes"
+  },
+  {
+    provider: "Anvil-managed",
+    detail: "An Anvil-operated Cloudflare environment with hosted entitlement caps.",
+    status: "Hosted path pending launch gates",
+    href: "/docs/cloud/agent-sandboxes"
+  }
+] as const;
+
+// The docs landing for /docs/sync. Sync & Mesh is a capability layer, so it
 // stays out of productLines (the product grids) but needs the same model.
 export const syncDocsProduct = {
   id: "sync",
@@ -112,7 +139,7 @@ export const syncDocsProduct = {
   repoName: "anvil-app/ + anvil-cloud/",
   eyebrow: "Account layer",
   description:
-    "The account layer that keeps the Anvil tools you already run in step across every machine you own. Entities replicate as sealed envelopes, enrolled devices claim mesh jobs, and running sessions hand off between machines — through a backend you choose.",
+    "The account layer that keeps the Anvil tools you already run in step across every machine you own. Entities replicate as sealed envelopes, enrolled devices claim mesh jobs, and running sessions hand off between machines through a backend you choose.",
   boundary:
     "Owns account identity, device enrollment, sealed entity replication, mesh job coordination, artifact shares, and session handoff.",
   status:
@@ -124,7 +151,7 @@ export const syncDocsProduct = {
   points: [
     "End-to-end encrypted sync of workspaces, templates, agents, and approved settings",
     "X25519 device identities enrolled through single-use pair codes",
-    "Mesh jobs claimed by your own machines — compute and credentials never leave them",
+    "Mesh jobs claimed by your own machines. Compute and credentials never leave them",
     "Session handoff moves a run between devices through sealed checkpoints",
     "Artifact share links decrypt in the browser; the key lives in the URL fragment",
     "Four backends: local-only, Anvil-hosted, your Cloudflare, or any conformant server"
@@ -139,6 +166,7 @@ export const syncDocsProduct = {
 
 export const accountNavItems = [
   { label: "Overview", href: "/account" },
+  { label: "Workspace", href: "/account/workspace" },
   { label: "Dashboard", href: "/account/dashboard" },
   { label: "Billing", href: "/account/billing" },
   { label: "Devices", href: "/account/devices" },

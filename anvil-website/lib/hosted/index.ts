@@ -8,6 +8,7 @@ export {
   getAccount,
   getBilling,
   getDashboardSnapshot,
+  getDashboardCommandStatus,
   getDashboardStatus,
   getDataStatus,
   getEntitlement,
@@ -20,6 +21,7 @@ export {
   renameDevice,
   revokeDevice,
   submitDashboardRequest,
+  submitDashboardCommand,
   HostedApiError
 } from "./client";
 
@@ -44,5 +46,12 @@ export type {
   HostedPendingCheckout,
   HostedPortalResult,
   HostedReconcileResult,
-  HostedSubscription
+  HostedSubscription,
+  BrowserWorkspaceBinding,
+  BrowserWorkspaceCommandEnvelope,
+  BrowserWorkspaceOperation,
+  BrowserWorkspaceResultEnvelope,
+  DashboardCommandState,
+  HostedDashboardCommandStatusResult,
+  HostedDashboardCommandSubmitResult
 } from "./types";

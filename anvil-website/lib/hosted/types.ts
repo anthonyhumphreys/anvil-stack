@@ -157,7 +157,11 @@ export type DashboardScope =
   | "read-dashboard"
   | "submit-task"
   | "approve-action"
-  | "request-handoff";
+  | "request-handoff"
+  | "workspace-read"
+  | "workspace-write"
+  | "terminal"
+  | "preview";
 
 export type DashboardRequestState =
   | "pending"
@@ -166,12 +170,23 @@ export type DashboardRequestState =
   | "expired"
   | "revoked";
 
+/** A workspace binding is intentionally repository-scoped; it is not a workspace wildcard. */
+export interface BrowserWorkspaceBinding {
+  workspaceId: string;
+  repositoryIds: string[];
+}
+
 /** Browser → POST /internal/hosted/dashboard-request */
 export interface HostedDashboardRequestInput {
   requestId: string;
   browserPub: string;
   challenge: string;
   scopes: DashboardScope[];
+  workspaceBindings?: BrowserWorkspaceBinding[];
+  /** @deprecated use workspaceBindings; retained for legacy dashboard callers. */
+  workspaceIds?: string[];
+  /** @deprecated use workspaceBindings; retained for legacy dashboard callers. */
+  repositoryIds?: string[];
   expiresAt: string;
   origin?: string;
   userAgent?: string;
@@ -220,4 +235,146 @@ export interface HostedDashboardStatus {
 export interface HostedDashboardSnapshotResult {
   requestId: string;
   snapshot?: SealedDashboardSnapshot;
+}
+
+// ---- Browser workspace command relay ---------------------------------------
+// These fields intentionally mirror the shared browser-workspace/1 contract.
+// `ct` is opaque to the hosted service. Only routing metadata is validated or
+// indexed by the coordinator.
+
+export const BROWSER_WORKSPACE_OPERATIONS = [
+  "workspace.get",
+  "repo.list",
+  "file.list",
+  "file.read",
+  "file.write",
+  "chat.thread.list",
+  "chat.create",
+  "chat.history.read",
+  "chat.session.start",
+  "chat.send",
+  "chat.status",
+  "chat.cancel",
+  "chat.approvals.list",
+  "chat.approve",
+  "chat.input",
+  "git.status",
+  "git.diff",
+  "workflow.list",
+  "workflow.get",
+  "workflow.start",
+  "workflow.cancel",
+  "terminal.create",
+  "terminal.read",
+  "terminal.write",
+  "terminal.resize",
+  "terminal.close",
+  "preview.screenshot"
+] as const;
+
+export type BrowserWorkspaceOperation = (typeof BROWSER_WORKSPACE_OPERATIONS)[number];
+
+export type BrowserWorkspaceScope =
+  | "workspace-read"
+  | "workspace-write"
+  | "submit-task"
+  | "approve-action"
+  | "terminal"
+  | "preview";
+
+export const BROWSER_WORKSPACE_OPERATION_SCOPE: Record<
+  BrowserWorkspaceOperation,
+  BrowserWorkspaceScope
+> = {
+  "workspace.get": "workspace-read",
+  "repo.list": "workspace-read",
+  "file.list": "workspace-read",
+  "file.read": "workspace-read",
+  "file.write": "workspace-write",
+  "chat.thread.list": "workspace-read",
+  "chat.create": "submit-task",
+  "chat.history.read": "workspace-read",
+  "chat.session.start": "submit-task",
+  "chat.send": "submit-task",
+  "chat.status": "workspace-read",
+  "chat.cancel": "submit-task",
+  "chat.approvals.list": "workspace-read",
+  "chat.approve": "approve-action",
+  "chat.input": "approve-action",
+  "git.status": "workspace-read",
+  "git.diff": "workspace-read",
+  "workflow.list": "workspace-read",
+  "workflow.get": "workspace-read",
+  "workflow.start": "submit-task",
+  "workflow.cancel": "submit-task",
+  "terminal.create": "terminal",
+  "terminal.read": "terminal",
+  "terminal.write": "terminal",
+  "terminal.resize": "terminal",
+  "terminal.close": "terminal",
+  "preview.screenshot": "preview"
+};
+
+export interface BrowserWorkspaceCommandEnvelope {
+  v: 1;
+  enc: "aes-256-gcm";
+  requestId: string;
+  commandId: string;
+  operation: BrowserWorkspaceOperation;
+  workspaceId: string;
+  repositoryId?: string;
+  expiresAt: string;
+  nonce: string;
+  ct: string;
+}
+
+/** Shared transport and decrypted-payload ceilings mirrored from browser-workspace/1. */
+export const BROWSER_WORKSPACE_MAX_RPC_BODY_BYTES = 512 * 1024;
+export const BROWSER_WORKSPACE_MAX_ENVELOPE_BYTES = 384 * 1024;
+export const BROWSER_WORKSPACE_MAX_RESULT_PLAINTEXT_BYTES = 256 * 1024;
+export const BROWSER_WORKSPACE_MAX_FILE_CONTENT_BYTES = 64 * 1024;
+export const BROWSER_WORKSPACE_MAX_FILE_READ_BYTES = 512 * 1024;
+export const BROWSER_WORKSPACE_MAX_HISTORY_BYTES = 512 * 1024;
+export const BROWSER_WORKSPACE_MAX_DIFF_BYTES = 512 * 1024;
+export const BROWSER_WORKSPACE_MAX_TERMINAL_READ_BYTES = 128 * 1024;
+export const BROWSER_WORKSPACE_MAX_PREVIEW_PNG_BYTES = 180 * 1024;
+export const BROWSER_WORKSPACE_MAX_CHAT_MESSAGE_CHARS = 32_000;
+
+export interface BrowserWorkspaceResultEnvelope {
+  v: 1;
+  enc: "aes-256-gcm";
+  requestId: string;
+  commandId: string;
+  operation: BrowserWorkspaceOperation;
+  workspaceId: string;
+  repositoryId?: string;
+  expiresAt: string;
+  nonce: string;
+  ct: string;
+}
+
+export type DashboardCommandState =
+  | "queued"
+  | "claimed"
+  | "completed"
+  | "failed"
+  | "expired"
+  | "revoked"
+  | "unknown-outcome";
+
+export interface HostedDashboardCommandSubmitResult {
+  requestId: string;
+  commandId: string;
+  state: DashboardCommandState;
+  deduplicated: boolean;
+  expiresAt: string;
+}
+
+export interface HostedDashboardCommandStatusResult {
+  requestId: string;
+  commandId: string;
+  operation: BrowserWorkspaceOperation;
+  state: DashboardCommandState;
+  expiresAt: string;
+  result?: BrowserWorkspaceResultEnvelope;
 }

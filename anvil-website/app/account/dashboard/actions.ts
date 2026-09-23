@@ -9,6 +9,8 @@ import {
   HostedApiError
 } from "@/lib/hosted";
 import type {
+  BrowserWorkspaceBinding,
+  DashboardScope,
   HostedDashboardRequestResult,
   HostedDashboardSnapshotResult,
   HostedDashboardStatus
@@ -60,16 +62,23 @@ const REQUEST_SCOPES = [
   "read-dashboard",
   "submit-task",
   "approve-action",
-  "request-handoff"
+  "request-handoff",
+  "workspace-read",
+  "workspace-write",
+  "terminal",
+  "preview"
 ] as const;
 const EXPIRY_MIN_MS = 60_000;
 const EXPIRY_MAX_MS = 24 * 60 * 60_000;
+const SCOPE_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
 
 export interface DashboardRequestSubmission {
   requestId: string;
   browserPub: string;
   challenge: string;
-  scopes: string[];
+  scopes: DashboardScope[];
+  workspaceIds?: string[];
+  repositoryIds?: string[];
   expiresAt: string;
   origin?: string;
   userAgent?: string;
@@ -85,6 +94,9 @@ export async function requestDashboardAccessAction(
 ): Promise<DashboardActionResult<HostedDashboardRequestResult>> {
   const identity = await requireIdentity();
   if (!identity) return NOT_CONFIGURED;
+  if (!input || typeof input !== "object" || !Array.isArray(input.scopes)) {
+    return { ok: false, code: "malformed-request", message: "Malformed request." };
+  }
   if (!REQUEST_ID_PATTERN.test(input.requestId)) {
     return { ok: false, code: "malformed-request", message: "Malformed request." };
   }
@@ -94,6 +106,23 @@ export async function requestDashboardAccessAction(
   if (scopes.length !== input.scopes.length || scopes.length === 0) {
     return { ok: false, code: "malformed-request", message: "Unknown dashboard scope." };
   }
+  const workspaceIds = input.workspaceIds ?? [];
+  const repositoryIds = input.repositoryIds ?? [];
+  if (!Array.isArray(workspaceIds) || !Array.isArray(repositoryIds)) {
+    return { ok: false, code: "malformed-request", message: "Workspace scope is invalid." };
+  }
+  if (
+    workspaceIds.length > 32 ||
+    repositoryIds.length > 256 ||
+    !workspaceIds.every((id) => SCOPE_ID_PATTERN.test(id)) ||
+    !repositoryIds.every((id) => SCOPE_ID_PATTERN.test(id))
+  ) {
+    return { ok: false, code: "malformed-request", message: "Workspace scope is invalid." };
+  }
+  const workspaceBindings: BrowserWorkspaceBinding[] = workspaceIds.map((workspaceId) => ({
+    workspaceId,
+    repositoryIds: [...repositoryIds]
+  }));
   const expiresAtMs = Date.parse(input.expiresAt);
   if (
     !Number.isFinite(expiresAtMs) ||
@@ -108,6 +137,7 @@ export async function requestDashboardAccessAction(
       browserPub: input.browserPub,
       challenge: input.challenge,
       scopes,
+      ...(workspaceBindings.length === 0 ? {} : { workspaceBindings }),
       expiresAt: new Date(expiresAtMs).toISOString(),
       ...(input.origin === undefined ? {} : { origin: input.origin.slice(0, 200) }),
       ...(input.userAgent === undefined ? {} : { userAgent: input.userAgent.slice(0, 300) })

@@ -7,7 +7,7 @@ export const metadata = { title: "Dashboard | Anvil" };
 
 /**
  * The end-to-end encrypted account dashboard. Sign-in alone shows a locked
- * surface — content only appears after a trusted device approves this
+ * surface. Content only appears after a trusted device approves this
  * browser's ephemeral-key request and seals a session key to it.
  */
 export default async function AccountDashboardPage() {
@@ -17,10 +17,10 @@ export default async function AccountDashboardPage() {
   return (
     <div className="grid gap-6">
       <header className="grid gap-1">
-        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Dashboard</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Encrypted dashboard</h1>
         <p className="text-sm text-muted-foreground">
-          An encrypted projection of your mesh — unlocked only while a trusted device authorizes
-          this browser session.
+          A trusted device authorizes this browser session before it can read your mesh. Sign-in
+          alone is not enough.
         </p>
       </header>
 

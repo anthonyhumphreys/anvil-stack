@@ -9,10 +9,18 @@
 //
 // X25519 runs as a pure-TS Montgomery ladder (RFC 7748) because WebCrypto
 // X25519 is not yet universal; HKDF and AES-GCM use WebCrypto. The keypair
-// is ephemeral by design — private bytes live only in this tab's memory
-// and the dashboard re-requests access on reload.
+// is generated in the browser. Browser-workspace callers may persist the
+// private bytes encrypted under a non-exportable IndexedDB CryptoKey so a
+// closed tab can resume without ever storing an unencrypted private scalar.
 
 "use client";
+
+import type {
+  BrowserWorkspaceCommandEnvelope,
+  BrowserWorkspaceOperation,
+  BrowserWorkspaceResultEnvelope
+} from "./hosted/types";
+import { BROWSER_WORKSPACE_MAX_RESULT_PLAINTEXT_BYTES } from "./hosted/types";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -172,6 +180,29 @@ async function aesGcmOpen(
   return new Uint8Array(plaintext);
 }
 
+async function aesGcmSeal(
+  key: CryptoKey,
+  nonce: Uint8Array,
+  aad: string,
+  plaintext: Uint8Array
+): Promise<Uint8Array> {
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: nonce as BufferSource,
+      additionalData: encoder.encode(aad) as BufferSource
+    },
+    key,
+    plaintext as BufferSource
+  );
+  return new Uint8Array(ciphertext);
+}
+
+async function importDsk(dsk: Uint8Array, usages: KeyUsage[]): Promise<CryptoKey> {
+  if (dsk.byteLength !== 32) throw new Error("Dashboard session key must be 32 bytes.");
+  return crypto.subtle.importKey("raw", dsk as BufferSource, "AES-GCM", false, usages);
+}
+
 // ---- Dashboard envelopes ------------------------------------------------------
 
 export interface DashboardGrantEnvelope {
@@ -190,6 +221,11 @@ export interface DashboardGrantInner {
   dsk: string;
   scopes: string[];
   expiresAt: string;
+  workspaceBindings?: Array<{ workspaceId: string; repositoryIds: string[] }>;
+  /** Compatibility with the first Desktop grant implementation. */
+  workspace?: { workspaceId: string; repoIds: string[] };
+  /** The approving Desktop enrollment is bound into the sealed grant. */
+  enrollmentId?: string;
 }
 
 export interface SealedSnapshot {
@@ -231,6 +267,230 @@ export function snapshotAssociatedData(input: {
     input.requestId,
     String(input.seq)
   ].join("|");
+}
+
+/** Matches browserWorkspaceCommandAssociatedData in the shared contract. */
+export function browserWorkspaceCommandAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  requestId: string;
+  commandId: string;
+  operation: BrowserWorkspaceOperation;
+  workspaceId: string;
+  repositoryId?: string;
+  expiresAt: string;
+}): string {
+  return [
+    "anvil/browser-workspace-command/v1",
+    input.backendId,
+    input.accountId,
+    input.requestId,
+    input.commandId,
+    input.operation,
+    input.workspaceId,
+    input.repositoryId ?? "",
+    input.expiresAt
+  ].join("|");
+}
+
+/** Matches browserWorkspaceResultAssociatedData in the shared contract. */
+export function browserWorkspaceResultAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  requestId: string;
+  commandId: string;
+  operation: BrowserWorkspaceOperation;
+  workspaceId: string;
+  repositoryId?: string;
+  expiresAt: string;
+}): string {
+  return [
+    "anvil/browser-workspace-result/v1",
+    input.backendId,
+    input.accountId,
+    input.requestId,
+    input.commandId,
+    input.operation,
+    input.workspaceId,
+    input.repositoryId ?? "",
+    input.expiresAt
+  ].join("|");
+}
+
+function assertWorkspaceEnvelopeMetadata(
+  envelope: BrowserWorkspaceCommandEnvelope | BrowserWorkspaceResultEnvelope,
+  expected: {
+    requestId: string;
+    commandId: string;
+    operation: BrowserWorkspaceOperation;
+    workspaceId: string;
+    repositoryId?: string;
+    expiresAt: string;
+  }
+): void {
+  if (
+    envelope.v !== 1 ||
+    envelope.enc !== "aes-256-gcm" ||
+    envelope.requestId !== expected.requestId ||
+    envelope.commandId !== expected.commandId ||
+    envelope.operation !== expected.operation ||
+    envelope.workspaceId !== expected.workspaceId ||
+    (envelope.repositoryId ?? "") !== (expected.repositoryId ?? "") ||
+    envelope.expiresAt !== expected.expiresAt
+  ) {
+    throw new Error("Browser workspace envelope metadata does not match the command.");
+  }
+}
+
+function decodeFixedBase64(value: string, bytes: number, label: string): Uint8Array {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 !== 0) {
+    throw new Error(`Invalid ${label}.`);
+  }
+  const decoded = b64decode(value);
+  if (decoded.byteLength !== bytes) throw new Error(`Invalid ${label}.`);
+  return decoded;
+}
+
+function assertCiphertext(value: string, label: string): Uint8Array {
+  const decoded = b64decode(value);
+  if (decoded.byteLength < 16) throw new Error(`Invalid ${label}.`);
+  return decoded;
+}
+
+/**
+ * Seals a browser-workspace command under the dashboard session key. The
+ * command payload is never passed to a server action: it is JSON encrypted
+ * here, while only the routing metadata travels in cleartext.
+ */
+export async function sealBrowserWorkspaceCommand(
+  dsk: Uint8Array,
+  input: {
+    backendId: string;
+    accountId: string;
+    requestId: string;
+    commandId: string;
+    operation: BrowserWorkspaceOperation;
+    workspaceId: string;
+    repositoryId?: string;
+    expiresAt: string;
+    payload: unknown;
+  }
+): Promise<BrowserWorkspaceCommandEnvelope> {
+  if (input.payload === undefined) throw new Error("Browser workspace command payload is required.");
+  const serialized = JSON.stringify(input.payload);
+  if (serialized === undefined) throw new Error("Browser workspace command payload is not JSON-serializable.");
+  const encoded = encoder.encode(serialized);
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const key = await importDsk(dsk, ["encrypt"]);
+  const aad = browserWorkspaceCommandAssociatedData(input);
+  const ct = await aesGcmSeal(key, nonce, aad, encoded);
+  return {
+    v: 1,
+    enc: "aes-256-gcm",
+    requestId: input.requestId,
+    commandId: input.commandId,
+    operation: input.operation,
+    workspaceId: input.workspaceId,
+    ...(input.repositoryId === undefined ? {} : { repositoryId: input.repositoryId }),
+    expiresAt: input.expiresAt,
+    nonce: b64encode(nonce),
+    ct: b64encode(ct)
+  };
+}
+
+/** Opens a command on a trusted Desktop-side client or a browser test. */
+export async function openBrowserWorkspaceCommand(
+  dsk: Uint8Array,
+  envelope: BrowserWorkspaceCommandEnvelope,
+  input: {
+    backendId: string;
+    accountId: string;
+    requestId: string;
+    commandId: string;
+    operation: BrowserWorkspaceOperation;
+    workspaceId: string;
+    repositoryId?: string;
+    expiresAt: string;
+  }
+): Promise<unknown> {
+  assertWorkspaceEnvelopeMetadata(envelope, input);
+  const key = await importDsk(dsk, ["decrypt"]);
+  const plaintext = await aesGcmOpen(
+    key,
+    decodeFixedBase64(envelope.nonce, 12, "command nonce"),
+    browserWorkspaceCommandAssociatedData({ ...input }),
+    assertCiphertext(envelope.ct, "command ciphertext")
+  );
+  return JSON.parse(decoder.decode(plaintext)) as unknown;
+}
+
+/** Opens and authenticates an opaque Desktop result against its original command. */
+export async function openBrowserWorkspaceResult(
+  dsk: Uint8Array,
+  envelope: BrowserWorkspaceResultEnvelope,
+  input: {
+    backendId: string;
+    accountId: string;
+    requestId: string;
+    commandId: string;
+    operation: BrowserWorkspaceOperation;
+    workspaceId: string;
+    repositoryId?: string;
+    expiresAt: string;
+  }
+): Promise<unknown> {
+  assertWorkspaceEnvelopeMetadata(envelope, input);
+  const key = await importDsk(dsk, ["decrypt"]);
+  const plaintext = await aesGcmOpen(
+    key,
+    decodeFixedBase64(envelope.nonce, 12, "result nonce"),
+    browserWorkspaceResultAssociatedData({ ...input }),
+    assertCiphertext(envelope.ct, "result ciphertext")
+  );
+  if (plaintext.byteLength > BROWSER_WORKSPACE_MAX_RESULT_PLAINTEXT_BYTES) {
+    throw new Error("Browser workspace result is too large.");
+  }
+  return JSON.parse(decoder.decode(plaintext)) as unknown;
+}
+
+/** Seals an execution result under the DSK and its distinct result AAD. */
+export async function sealBrowserWorkspaceResult(
+  dsk: Uint8Array,
+  input: {
+    backendId: string;
+    accountId: string;
+    requestId: string;
+    commandId: string;
+    operation: BrowserWorkspaceOperation;
+    workspaceId: string;
+    repositoryId?: string;
+    expiresAt: string;
+    result: unknown;
+  }
+): Promise<BrowserWorkspaceResultEnvelope> {
+  if (input.result === undefined) throw new Error("Browser workspace result is required.");
+  const serialized = JSON.stringify(input.result);
+  if (serialized === undefined) throw new Error("Browser workspace result is not JSON-serializable.");
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const key = await importDsk(dsk, ["encrypt"]);
+  const ct = await aesGcmSeal(
+    key,
+    nonce,
+    browserWorkspaceResultAssociatedData(input),
+    encoder.encode(serialized)
+  );
+  return {
+    v: 1,
+    enc: "aes-256-gcm",
+    requestId: input.requestId,
+    commandId: input.commandId,
+    operation: input.operation,
+    workspaceId: input.workspaceId,
+    ...(input.repositoryId === undefined ? {} : { repositoryId: input.repositoryId }),
+    expiresAt: input.expiresAt,
+    nonce: b64encode(nonce),
+    ct: b64encode(ct)
+  };
 }
 
 /**
@@ -310,6 +570,33 @@ export function randomChallenge(): string {
   return b64encode(crypto.getRandomValues(new Uint8Array(32)));
 }
 
+/**
+ * The out-of-band code a trusted Desktop shows next to this pending request.
+ * Matches the Desktop derivation in sync-runtime.service.ts: SHA-256 over
+ * `${browserPub}|${challenge}`, first 12 hex chars grouped in fours.
+ */
+export async function dashboardVerificationCode(
+  browserPub: string,
+  challenge: string
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    encoder.encode(`${browserPub}|${challenge}`)
+  );
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+  return hex.slice(0, 12).toUpperCase().match(/.{1,4}/g)?.join("-") ?? hex.slice(0, 12).toUpperCase();
+}
+
 export function decodeDsk(inner: DashboardGrantInner): Uint8Array {
   return b64decode(inner.dsk);
+}
+
+export function decodeBase64(value: string): Uint8Array {
+  return b64decode(value);
+}
+
+export function encodeBase64(value: Uint8Array): string {
+  return b64encode(value);
 }

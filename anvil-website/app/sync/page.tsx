@@ -16,20 +16,20 @@ import { Button } from "@/components/ui/button";
 import { EnvelopeBoundary } from "@/components/site/envelope-boundary";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
-import { syncModes } from "@/lib/site";
+import { agentExecutionModes, syncModes } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Sync & Mesh | Anvil",
   description:
-    "Anvil Sync & Mesh: end-to-end encrypted sync across your devices, mesh jobs on your own machines, sealed artifact shares — on a backend you choose, Anvil-hosted or self-deployed."
+    "Anvil Sync & Mesh keeps portable state encrypted across devices, routes jobs to your machines, and coordinates session handoff through a backend you choose."
 };
 
 const loopSteps = [
-  { step: "Outbox", body: "Edits queue locally — offline or online, the write always lands first on your device." },
-  { step: "Seal", body: "At dispatch, each entity seals under your account key. Missing key? The row waits. Plaintext never ships as a fallback." },
+  { step: "Outbox", body: "Edits queue locally. Offline or online, the write lands on your device first." },
+  { step: "Seal", body: "At dispatch, each entity seals under your account key. If the key is missing, the row waits. Plaintext is never a fallback." },
   { step: "Push", body: "The backend validates the envelope shape and journals ciphertext. Dedupe rides the envelope hash." },
   { step: "Pull", body: "Paired devices pull over a live socket with polling fallback, then unseal at the boundary and apply." },
-  { step: "Settle", body: "Conflicts surface explicitly — never auto-overwritten. Quarantined envelopes self-heal when their key version arrives." }
+  { step: "Settle", body: "Conflicts stay visible. Quarantined envelopes retry when their key version arrives." }
 ];
 
 const handoffStates = [
@@ -43,17 +43,17 @@ const handoffStates = [
 ];
 
 const meshPoints = [
-  "Jobs — workspace prep, provider sessions, diagnostics — are created against your account and claimed by your enrolled devices.",
+  "Jobs for workspace prep, provider sessions, and diagnostics are created against your account and claimed by your enrolled devices.",
   "Workers verify the pinned Git state before spawning. Attempts run in isolated worktrees at the pinned commit.",
   "Compute, credentials, and providers stay on your machines. The backend coordinates; it never executes.",
-  "States are labeled honestly: `Stopping…` while cancellation propagates, `Lost contact` when the outcome is genuinely unknown."
+  "States stay explicit: `Stopping…` while cancellation propagates, `Lost contact` when the outcome is unknown."
 ];
 
 const sharePoints = [
   {
     icon: Share2,
     title: "Sealed share links",
-    body: "Artifact shares carry a fresh key in the URL fragment — it never reaches a server. The share page fetches ciphertext and decrypts in your browser. Revoking removes the ciphertext."
+    body: "Artifact shares carry a fresh key in the URL fragment. It never reaches a server. The share page fetches ciphertext and decrypts in your browser. Revoking removes the ciphertext."
   },
   {
     icon: FileDown,
@@ -76,13 +76,13 @@ export default function SyncPage() {
           <div className="mx-auto grid max-w-7xl gap-12 px-4 py-14 sm:px-6 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-8 lg:py-24">
             <div className="flex flex-col gap-7">
               <h1 className="max-w-3xl text-4xl font-semibold leading-[1.02] tracking-[-0.03em] sm:text-5xl lg:text-6xl">
-                Sealed. Delivered. Executed.
+                Sync your state. Run jobs on your machines.
               </h1>
               <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-                Sync &amp; Mesh replicates your Anvil state across your devices as
-                end-to-end-encrypted envelopes, dispatches jobs to your own machines, and
-                hands running sessions between them — through a backend that relays
-                ciphertext and never holds your keys.
+                Sync &amp; Mesh copies portable Anvil state between paired devices as
+                end-to-end-encrypted envelopes. Mesh jobs run on machines you enrolled,
+                and session handoff moves ownership through a sealed checkpoint. The
+                backend coordinates delivery. It does not hold your keys or run your repo.
               </p>
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                 <Button asChild size="lg">
@@ -99,8 +99,9 @@ export default function SyncPage() {
                 </Button>
               </div>
               <p className="text-sm text-muted-foreground">
-                Alpha infrastructure — implemented, tested, and rehearsed on real
-                deployments.{" "}
+                Alpha infrastructure. The protocol is implemented and tested, and Cloudflare
+                deployment is rehearsed. Physical multi-device acceptance and hosted production
+                provisioning remain open.{" "}
                 <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline underline-offset-4">
                   Current status and limits
                 </Link>
@@ -159,7 +160,7 @@ export default function SyncPage() {
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
                   Send a running session to another device. The target materializes the
                   workspace at pinned commits, the source quiesces and seals a checkpoint,
-                  and ownership transfers at a fenced generation — no live process ever
+                  and ownership transfers at a fenced generation. No live process ever
                   migrates.
                 </p>
                 <ol className="mt-4 flex flex-wrap items-center gap-1.5" aria-label="Handoff states">
@@ -176,17 +177,72 @@ export default function SyncPage() {
                 </ol>
                 <p className="mt-4 border-t pt-4 text-sm leading-6 text-muted-foreground">
                   A dirty tree or unpushed commit blocks the handoff up front with concrete
-                  remediation — it never fails mid-transfer.
+                  remediation. The handoff stops before transfer when the workspace is not ready.
                 </p>
               </div>
               <div className="rounded-lg border bg-muted/30 p-5">
                 <p className="text-sm leading-6 text-muted-foreground">
                   The mesh worker opt-in is per-device and never syncs. Enabling it lets
-                  that machine claim account jobs — there is deliberately no account-level
+                  that machine claim account jobs. There is deliberately no account-level
                   “run everywhere” switch.
                 </p>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section className="border-b bg-muted/20 py-16 lg:py-20" aria-labelledby="agents-title">
+          <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[0.72fr_1.28fr] lg:px-8">
+            <div>
+              <h2 id="agents-title" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
+                Give a workflow a temporary machine
+              </h2>
+              <p className="mt-4 text-base leading-7 text-muted-foreground">
+                A workflow can ask for a temporary environment on AWS Lambda MicroVM, Cloudflare
+                Sandbox, Vercel Sandbox, or the Anvil-managed tier. The adapter boots a worker,
+                the worker joins the mesh, and credentials arrive only for the attempt that needs
+                them. Local work stays on enrolled devices and does not need an environment.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-3">
+                <Button asChild>
+                  <Link href="/docs/cloud/agent-sandboxes">
+                    Read the sandbox contract
+                    <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                  </Link>
+                </Button>
+                <Button asChild variant="outline">
+                  <Link href="/docs/cloud/aws-preview">Inspect the AWS adapter</Link>
+                </Button>
+              </div>
+            </div>
+            <div className="overflow-hidden rounded-lg border bg-card">
+              <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.5fr)_auto] gap-4 border-b px-5 py-3 text-xs font-medium text-muted-foreground">
+                <span>Provider</span>
+                <span>What it does</span>
+                <span className="text-right">Status</span>
+              </div>
+              <ul className="divide-y">
+                {agentExecutionModes.map((mode) => (
+                  <li key={mode.provider} className="grid gap-2 px-5 py-4 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.5fr)_auto] sm:items-baseline sm:gap-4">
+                    <Link href={mode.href} className="font-medium text-foreground underline-offset-4 hover:underline">
+                      {mode.provider}
+                    </Link>
+                    <p className="text-sm leading-6 text-muted-foreground">{mode.detail}</p>
+                    <span className="font-mono text-[0.6875rem] text-muted-foreground sm:text-right">
+                      {mode.status}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-6 lg:px-8">
+            <p className="max-w-4xl border-t pt-4 text-sm leading-6 text-muted-foreground">
+              This table describes the Desktop mesh environment path. Anvil Cloud has a separate
+              agent-execution control plane with an AWS preview transport; it is not the same
+              provider matrix. Hosted environments still depend on the launch checklist: worker
+              image, production persistence, account verification, and service configuration.
+            </p>
           </div>
         </section>
 
@@ -197,8 +253,8 @@ export default function SyncPage() {
                 Shares, exports, and the way out
               </h2>
               <p className="mt-3 text-base leading-7 text-muted-foreground">
-                Account layers earn trust by making leaving boring. Everything you can put
-                in, you can take out — or seal and hand to someone else.
+                You can export synced entities, import them through a staged preview, or seal an
+                artifact for someone else. Leaving is a supported operation, not a support ticket.
               </p>
             </div>
             <div className="mt-10 grid gap-x-10 gap-y-8 sm:grid-cols-3">
@@ -222,9 +278,9 @@ export default function SyncPage() {
                 Anvil-hosted, if you would rather not run it
               </h2>
               <p className="mt-4 text-base leading-7 text-muted-foreground">
-                The same Sync v1 backend, operated for you. WorkOS sign-in, device
-                management and billing on the web, artifact storage, and someone else
-                watching the pager. Free through the preview; self-host stays free forever.
+                The same Sync v1 backend with WorkOS sign-in, device management, billing, and
+                artifact storage handled for you. The preview policy is free through 31 October
+                2026. Production provisioning is still being finished, and self-hosting remains open.
               </p>
               <div className="mt-6 flex flex-wrap gap-3">
                 <Button asChild>
@@ -250,7 +306,7 @@ export default function SyncPage() {
                     "Mesh job dispatch to your enrolled devices",
                     "Sealed artifact storage within your account limits",
                     "Web account: devices, pair codes, billing, data deletion",
-                    "Entitlement enforced at the backend — fail closed, bounded grace"
+                    "Entitlement enforced at the backend, with fail-closed writes and bounded grace"
                   ].map((point) => (
                     <li key={point} className="flex items-start gap-2.5 px-5 py-3.5 text-sm leading-6 text-muted-foreground">
                       <Check className="proof-check" aria-hidden="true" />
@@ -265,8 +321,8 @@ export default function SyncPage() {
                   <div>
                     <p className="font-medium">Free through 31 October 2026</p>
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                      Paid enforcement starts 2026-11-01T00:00:00Z. Reads and local-only
-                      mode are never gated.
+                      The current policy starts paid enforcement on 1 November 2026. Reads and
+                      local-only mode are not gated.
                     </p>
                   </div>
                 </div>
@@ -276,7 +332,7 @@ export default function SyncPage() {
                     <p className="font-medium">Self-host stays free</p>
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">
                       <code className="rounded border bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">anvil-cloud mesh apply</code>{" "}
-                      puts the same worker on your Cloudflare account.
+                      deploys the official worker to your Cloudflare account.
                     </p>
                   </div>
                 </div>
@@ -292,8 +348,8 @@ export default function SyncPage() {
                 Four ways to connect
               </h2>
               <p className="mt-3 text-base leading-7 text-muted-foreground">
-                Settings → Sync &amp; Mesh in Anvil Desktop. The contract is frozen, so the
-                same build talks to any backend that passes conformance.
+                Configure this in Anvil Desktop under Settings → Sync &amp; Mesh. The same client
+                can talk to local-only, hosted, self-deployed, or conformant backends.
               </p>
             </div>
             <div className="mt-10 overflow-hidden rounded-lg border">
@@ -311,10 +367,10 @@ export default function SyncPage() {
               </ul>
             </div>
             <p className="mt-6 max-w-3xl text-sm leading-6 text-muted-foreground">
-              Hosted staging/QA is available when
+              Hosted staging and QA are available when
               <code className="font-mono text-xs">ANVIL_HOSTED_BACKEND_URL</code> names a
-              tested HTTPS origin; production provisioning is still finishing.
-              The account area on this site is live, and self-hosted backends work today. The{" "}
+              tested HTTPS origin. Production provisioning is still finishing. The account area on
+              this site is live, and self-hosted backends work today. The{" "}
               <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline underline-offset-4">
                 status page
               </Link>{" "}

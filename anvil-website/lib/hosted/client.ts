@@ -8,6 +8,9 @@ import type {
   HostedCheckoutResult,
   HostedDashboardRequestInput,
   HostedDashboardRequestResult,
+  HostedDashboardCommandStatusResult,
+  HostedDashboardCommandSubmitResult,
+  BrowserWorkspaceCommandEnvelope,
   HostedDashboardSnapshotResult,
   HostedDashboardStatus,
   HostedDataStatusResult,
@@ -285,4 +288,32 @@ export function getDashboardSnapshot(
     ...identity,
     requestId
   });
+}
+
+/**
+ * POST /internal/hosted/dashboard-command-submit — deposits one opaque
+ * browser-workspace/1 command. The website never receives or forwards the
+ * decrypted command parameters.
+ */
+export function submitDashboardCommand(
+  identity: HostedIdentity,
+  requestId: string,
+  command: BrowserWorkspaceCommandEnvelope
+): Promise<HostedDashboardCommandSubmitResult> {
+  return hostedCall<HostedDashboardCommandSubmitResult>(
+    "/internal/hosted/dashboard-command-submit",
+    { ...identity, requestId, command }
+  );
+}
+
+/** Polls one command by its stable id. Results remain opaque until the browser opens them. */
+export function getDashboardCommandStatus(
+  identity: HostedIdentity,
+  requestId: string,
+  commandId: string
+): Promise<HostedDashboardCommandStatusResult> {
+  return hostedCall<HostedDashboardCommandStatusResult>(
+    "/internal/hosted/dashboard-command-status",
+    { ...identity, requestId, commandId }
+  );
 }

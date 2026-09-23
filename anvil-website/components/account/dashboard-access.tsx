@@ -32,7 +32,7 @@ import {
 } from "@/lib/mesh-crypto";
 
 /**
- * The decrypted dashboard projection — mirrors buildDashboardSnapshot in
+ * The decrypted dashboard projection mirrors buildDashboardSnapshot in
  * anvil-app's dashboard-grant service. Deliberately narrow: device names
  * and trust, environment lifecycle, recent jobs, pending requests.
  */
@@ -63,7 +63,7 @@ interface DashboardProjection {
 
 interface BrowserSession {
   requestId: string;
-  priv: string; // base64 raw X25519 private scalar — tab-scoped only
+  priv: string; // base64 raw X25519 private scalar, scoped to this tab
   pub: string; // base64 raw X25519 public key
   challenge: string;
   expiresAt?: string;
@@ -80,6 +80,21 @@ const SCOPE_LABELS: Record<string, string> = {
   "approve-action": "Approve actions",
   "request-handoff": "Request handoffs"
 };
+
+const JOB_ATTENTION_STATES = new Set([
+  "awaiting-approval",
+  "failed",
+  "cancel-requested",
+  "unknown-outcome"
+]);
+
+function jobNeedsAttention(state: string): boolean {
+  return JOB_ATTENTION_STATES.has(state.toLowerCase());
+}
+
+function formatJobState(state: string): string {
+  return state.replaceAll("-", " ");
+}
 
 function b64encode(bytes: Uint8Array): string {
   let binary = "";
@@ -109,7 +124,7 @@ function saveSession(session: BrowserSession): void {
   try {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
   } catch {
-    // Private-mode storage denial just means no resume — same as a fresh tab.
+    // Private-mode storage denial just means no resume, same as a fresh tab.
   }
 }
 
@@ -142,14 +157,14 @@ function endedMessage(reason: "denied" | "expired" | "revoked"): string {
     case "expired":
       return "This request expired before a device approved it. Request access again to continue.";
     case "revoked":
-      return "A trusted device revoked this session. The dashboard locked immediately — request access again to continue.";
+      return "A trusted device revoked this session. The dashboard locked immediately. Request access again to continue.";
   }
 }
 
 /**
  * DASH-01 browser side: locked → request → pending → unlocked. The
  * private key never leaves this tab (sessionStorage, memory-resident
- * after load); sign-in alone never unlocks anything — a trusted device
+ * after load); sign-in alone never unlocks anything. A trusted device
  * must approve the request and seal a DSK to this browser's keypair.
  */
 export function DashboardAccess() {
@@ -158,6 +173,8 @@ export function DashboardAccess() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [snapshotSeq, setSnapshotSeq] = useState(0);
+  const [refreshRequested, setRefreshRequested] = useState(0);
+  const [jobFilter, setJobFilter] = useState<"all" | "attention">("all");
 
   const endSession = useCallback((reason: "denied" | "expired" | "revoked") => {
     clearSession();
@@ -192,7 +209,7 @@ export function DashboardAccess() {
         if (status.state === "pending") return;
         if (status.state === "approved" && status.grant !== undefined) {
           if (status.accountId === undefined || status.backendId === undefined) {
-            setError("The backend omitted routing metadata — cannot verify the grant.");
+            setError("The backend omitted routing metadata. The grant cannot be verified.");
             return;
           }
           const inner = await unwrapDashboardGrant(
@@ -202,7 +219,7 @@ export function DashboardAccess() {
             { backendId: status.backendId, accountId: status.accountId }
           );
           if (inner === null) {
-            setError("Could not open the sealed grant — request access again.");
+            setError("Could not open the sealed grant. Request access again.");
             return;
           }
           setPhase({
@@ -235,7 +252,7 @@ export function DashboardAccess() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [phase, endSession]);
+  }, [phase, endSession, refreshRequested]);
 
   // Snapshot polling: the approving device republishes sealed projections;
   // the AAD authenticates each seq, so stale snapshots fail closed.
@@ -264,7 +281,11 @@ export function DashboardAccess() {
           endSession(status.data.state);
           return;
         }
-        if (status.data.state !== "approved" || status.data.snapshotSeq === undefined) return;
+        if (status.data.state !== "approved") return;
+        // A successful status response proves the session is healthy even when
+        // the approving device has not published a newer snapshot yet.
+        setError(null);
+        if (status.data.snapshotSeq === undefined) return;
         if (status.data.snapshotSeq <= snapshotSeq) return;
         const result = await dashboardSnapshotAction(ctx.session.requestId);
         if (cancelled) return;
@@ -281,7 +302,7 @@ export function DashboardAccess() {
           requestId: ctx.session.requestId
         });
         if (inner === null) {
-          setError("Received a snapshot that failed authentication — keeping the last good view.");
+          setError("Received a snapshot that failed authentication. Keeping the last good view.");
           return;
         }
         setError(null);
@@ -299,9 +320,9 @@ export function DashboardAccess() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [phase, endSession, snapshotSeq]);
+  }, [phase, endSession, snapshotSeq, refreshRequested]);
 
-  // Resume a tab-scoped session on reload — the private key is already in
+  // Resume a tab-scoped session on reload. The private key is already in
   // sessionStorage, so a refresh rejoins the pending/approved request
   // rather than spamming a new one.
   useEffect(() => {
@@ -312,6 +333,7 @@ export function DashboardAccess() {
   }, []);
 
   const requestAccess = useCallback(async () => {
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -344,7 +366,16 @@ export function DashboardAccess() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [busy]);
+
+  const retryDashboard = useCallback(() => {
+    setError(null);
+    if (phase.kind === "locked" || phase.kind === "ended") {
+      void requestAccess();
+      return;
+    }
+    setRefreshRequested((value) => value + 1);
+  }, [phase.kind, requestAccess]);
 
   const startOver = useCallback(() => {
     clearSession();
@@ -366,18 +397,31 @@ export function DashboardAccess() {
                   Dashboard locked
                 </CardTitle>
                 <CardDescription>
-                  Signed in — but sign-in alone never unlocks account content.
+                  You are signed in, but sign-in alone never unlocks account content.
                 </CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent className="grid gap-4">
             <p className="text-sm text-muted-foreground">
-              This browser holds no account key. Requesting access generates a one-session keypair
-              here; a trusted device then decides which capabilities to grant and seals a dashboard
-              key to this browser only. Everything you see afterwards is a projection encrypted for
-              this session — the coordinator relays ciphertext it cannot read.
+              This browser holds no account key. Requesting access creates a keypair for this tab.
+              A trusted device then chooses the scopes to grant and seals a dashboard key to this
+              browser only. The coordinator relays ciphertext. It cannot read the projection.
             </p>
+            <ul className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-3">
+              <li className="flex items-start gap-2 border-t pt-3">
+                <ShieldCheck size={14} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />
+                <span>Read access is approved on a paired device.</span>
+              </li>
+              <li className="flex items-start gap-2 border-t pt-3">
+                <Lock size={14} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />
+                <span>The private browser key stays in this tab.</span>
+              </li>
+              <li className="flex items-start gap-2 border-t pt-3">
+                <RefreshCw size={14} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />
+                <span>Snapshots refresh without exposing plaintext to the relay.</span>
+              </li>
+            </ul>
             <div>
               <Button onClick={() => void requestAccess()} disabled={busy}>
                 {busy ? "Requesting…" : "Request dashboard access"}
@@ -460,7 +504,7 @@ export function DashboardAccess() {
                 </span>
               </div>
             </CardHeader>
-            <CardContent className="grid gap-3">
+            <CardContent className="grid gap-4">
               <div className="flex flex-wrap gap-1.5">
                 {phase.scopes.map((scope) => (
                   <span
@@ -475,6 +519,17 @@ export function DashboardAccess() {
                 Action scopes appear here when granted; task submission and approvals from the
                 browser land with the delegated-action packet.
               </p>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+                <p className="text-xs text-muted-foreground">Updates automatically every 10 seconds.</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRefreshRequested((value) => value + 1)}
+                >
+                  <RefreshCw data-icon="inline-start" aria-hidden="true" />
+                  Refresh now
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
@@ -487,6 +542,34 @@ export function DashboardAccess() {
             </Card>
           ) : (
             <>
+              {projection.requests.length > 0 ? (
+                <div className="grid gap-1.5 rounded-lg border border-accent/60 bg-[oklch(var(--accent)/0.08)] px-4 py-3">
+                  <p className="text-sm font-medium">
+                    {projection.requests.length} browser request{projection.requests.length === 1 ? "" : "s"} need a device decision
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Review the origin and requested scopes on a trusted device before granting access.
+                  </p>
+                </div>
+              ) : null}
+              <div className="grid gap-3 border-y py-3 sm:grid-cols-3">
+                <div className="flex items-baseline justify-between gap-3 sm:block">
+                  <p className="text-xs font-medium text-muted-foreground">Devices</p>
+                  <p className="mt-1 font-mono text-lg tabular-nums">{projection.devices.length}</p>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 sm:block">
+                  <p className="text-xs font-medium text-muted-foreground">Environments</p>
+                  <p className="mt-1 font-mono text-lg tabular-nums">{projection.environments.length}</p>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 sm:block">
+                  <p className="text-xs font-medium text-muted-foreground">Recent jobs</p>
+                  <p className="mt-1 font-mono text-lg tabular-nums">{projection.jobs.length}</p>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Snapshot {snapshotSeq} · updated {new Date(projection.at).toLocaleString()}
+              </p>
+              <div className="grid gap-6 lg:grid-cols-2">
               <Card>
                 <CardHeader>
                   <CardTitle>Devices</CardTitle>
@@ -553,17 +636,38 @@ export function DashboardAccess() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Recent jobs</CardTitle>
-                  <CardDescription>
-                    Latest mesh executions — prompts and payloads never appear here.
-                  </CardDescription>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="grid gap-1.5">
+                      <CardTitle>Recent jobs</CardTitle>
+                      <CardDescription>Latest mesh executions. Prompts and payloads never appear here.</CardDescription>
+                    </div>
+                    <div className="flex rounded-md border p-0.5 text-xs" role="group" aria-label="Filter jobs">
+                      {(["all", "attention"] as const).map((filter) => (
+                        <button
+                          key={filter}
+                          type="button"
+                          className={`rounded px-2.5 py-1.5 capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${jobFilter === filter ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                          aria-pressed={jobFilter === filter}
+                          onClick={() => setJobFilter(filter)}
+                        >
+                          {filter === "all"
+                            ? "All"
+                            : `Needs attention${projection ? ` (${projection.jobs.filter((job) => jobNeedsAttention(job.state)).length})` : ""}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent>
-                  {projection.jobs.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No jobs in the projection.</p>
+                  {projection.jobs.filter((job) => jobFilter === "all" || jobNeedsAttention(job.state)).length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      {jobFilter === "attention" ? "No jobs need attention." : "No jobs in the projection."}
+                    </p>
                   ) : (
                     <ul className="grid gap-2">
-                      {projection.jobs.map((job) => (
+                      {projection.jobs
+                        .filter((job) => jobFilter === "all" || jobNeedsAttention(job.state))
+                        .map((job) => (
                         <li
                           key={job.jobId}
                           className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
@@ -574,9 +678,11 @@ export function DashboardAccess() {
                               {job.kind} · {job.jobId.slice(0, 8)}…
                             </span>
                           </span>
-                          <span className="shrink-0 text-xs text-muted-foreground">{job.state}</span>
+                          <span className={`shrink-0 text-xs ${jobNeedsAttention(job.state) ? "font-medium text-accent-foreground" : "text-muted-foreground"}`}>
+                            {formatJobState(job.state)}
+                          </span>
                         </li>
-                      ))}
+                        ))}
                     </ul>
                   )}
                 </CardContent>
@@ -610,15 +716,25 @@ export function DashboardAccess() {
                   </CardContent>
                 </Card>
               )}
+              </div>
             </>
           )}
         </>
       )}
 
       {error !== null && (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/50 px-4 py-3 text-sm text-destructive">
+          <span>{error}</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={retryDashboard}
+          >
+            Retry
+          </Button>
+        </div>
       )}
     </div>
   );
