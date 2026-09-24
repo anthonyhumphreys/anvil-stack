@@ -2952,6 +2952,12 @@ function sessionSummary(
   };
 }
 
+const RUNTIME_PROXY_PREFIXES = ["/_anvil/", "/api/"];
+
+function isRuntimeProxyPath(pathname: string): boolean {
+  return RUNTIME_PROXY_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
 type ClientRequestOptions = {
   clientDistDir: string;
   runtimeUrl: string;
@@ -2965,10 +2971,7 @@ async function handleClientRequest(
   try {
     const url = new URL(options.request.url ?? "/", "http://localhost");
 
-    if (
-      url.pathname.startsWith("/_anvil/") ||
-      url.pathname.startsWith("/api/")
-    ) {
+    if (isRuntimeProxyPath(url.pathname)) {
       await proxyToRuntime(options, url);
       return;
     }
@@ -2990,7 +2993,24 @@ async function proxyToRuntime(
   url: URL,
 ): Promise<void> {
   const body = await readRawBody(options.request);
-  const target = new URL(`${url.pathname}${url.search}`, options.runtimeUrl);
+  const runtimeOrigin = new URL(options.runtimeUrl).origin;
+  // Collapse leading slash runs so a protocol-relative path such as
+  // "//host/x" can never retarget the request to another origin.
+  const pathname = url.pathname.replace(/^\/+/, "/");
+  const target = new URL(`${pathname}${url.search}`, runtimeOrigin);
+
+  if (target.origin !== runtimeOrigin || !isRuntimeProxyPath(target.pathname)) {
+    await sendJson(options.response, 403, {
+      ok: false,
+      error: {
+        code: "LOCAL_PROXY_FORBIDDEN",
+        message:
+          "Refusing to proxy a request outside the local runtime origin.",
+      },
+    });
+    return;
+  }
+
   const init: RequestInit = {
     method: options.request.method ?? "GET",
     headers: headersFrom(options.request),
@@ -3299,9 +3319,19 @@ function readBearerToken(request: IncomingMessage): string | null {
     return null;
   }
 
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  const trimmed = header.trim();
 
-  return match?.[1] ?? null;
+  if (
+    trimmed.length <= 6 ||
+    trimmed.slice(0, 6).toLowerCase() !== "bearer" ||
+    trimmed.charAt(6).trim() !== ""
+  ) {
+    return null;
+  }
+
+  const token = trimmed.slice(6).trim();
+
+  return token.length > 0 ? token : null;
 }
 
 async function ensureLocalUserIdentity(

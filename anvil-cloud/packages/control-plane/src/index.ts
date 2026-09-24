@@ -140,7 +140,11 @@ export function createHttpControlPlane(
   baseUrl: string,
   fetchImpl?: FetchLike,
 ): ControlPlaneApi {
-  const base = baseUrl.replace(/\/+$/, "");
+  let base = baseUrl;
+
+  while (base.endsWith("/")) {
+    base = base.slice(0, -1);
+  }
   const fetcher: FetchLike = fetchImpl ?? (fetch as unknown as FetchLike);
 
   async function request(
