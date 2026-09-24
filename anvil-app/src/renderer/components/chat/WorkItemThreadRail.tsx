@@ -907,19 +907,38 @@ function formatExtraValue(value: unknown): string {
 
 export function stripWorkItemHtml(value?: string): string {
   if (!value) return '';
-  return value
+  const withLineBreaks = value
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<li[^>]*>/gi, '- ')
     .replace(/<\/(p|div|li|ul|ol)>/gi, '\n')
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
+    .replace(/<br\s*\/?>/gi, ' ');
+  return decodeHtmlEntities(stripHtmlTags(withLineBreaks))
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Remove tags iteratively so a tag split across another tag (e.g. `<scr<script>ipt>`)
+ * cannot survive a single-pass replace.
+ */
+function stripHtmlTags(value: string): string {
+  let result = value;
+  let previous: string;
+  do {
+    previous = result;
+    result = result.replace(/<[^>]*>/g, '');
+  } while (result !== previous);
+  return result;
+}
+
+/** Decode HTML entities; `&amp;` must be decoded last so encoded entities are not double-decoded */
+function decodeHtmlEntities(value: string): string {
+  return value
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
 }

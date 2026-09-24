@@ -685,5 +685,6 @@ function buildFallbackRepoSummary(
 }
 
 function escapeMermaidLabel(value: string): string {
-  return value.replace(/"/g, '\\"');
+  // Escape backslashes first so they cannot combine with the escaped quotes below
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }

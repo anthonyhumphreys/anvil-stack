@@ -1733,13 +1733,12 @@ export function getCompactModelLabel(
   if (!isAcpAgentProvider(provider)) return label;
   if (model === 'auto') return provider === 'devin' ? 'Devin auto' : 'Cursor auto';
 
-  const reasoning = getCursorModelReasoningEffort(model);
-  const reasoningSuffix = reasoning ? new RegExp(`\\s+${reasoning}$`, 'i') : null;
-  return label
+  const compact = label
     .replace(/\s+\([^)]*\)$/, '')
-    .replace(/\s+1M(?:\s+Thinking)?(?:\s+\S+)?$/i, '')
-    .replace(reasoningSuffix ?? /$^/, '')
-    .trim();
+    .replace(/\s+1M(?:\s+Thinking)?(?:\s+\S+)?$/i, '');
+  const reasoning = getCursorModelReasoningEffort(model);
+  if (!reasoning) return compact.trim();
+  return compact.replace(new RegExp(`\\s+${reasoning}$`, 'i'), '').trim();
 }
 
 export function getRunSettingsLabel(

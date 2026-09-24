@@ -648,16 +648,35 @@ function buildImpactAssessmentPrompt(
 function stripHtml(value?: string): string {
   if (!value) return '';
 
-  return value
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+  const withLineBreaks = value.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n\n');
+  return decodeHtmlEntities(stripHtmlTags(withLineBreaks))
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * Remove tags iteratively so a tag split across another tag (e.g. `<scr<script>ipt>`)
+ * cannot survive a single-pass replace.
+ */
+function stripHtmlTags(value: string): string {
+  let result = value;
+  let previous: string;
+  do {
+    previous = result;
+    result = result.replace(/<[^>]*>/g, '');
+  } while (result !== previous);
+  return result;
+}
+
+/** Decode HTML entities; `&amp;` must be decoded last so encoded entities are not double-decoded */
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
 }
 
 function normalizeRepoUrl(value?: string): string | undefined {
