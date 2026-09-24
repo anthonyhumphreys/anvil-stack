@@ -4,19 +4,18 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../db/schema.js';
-import type { RepositoryMapGraph } from '../../../shared/types.js';
 
 const inMemoryDb = new Database(':memory:');
 inMemoryDb.exec(SCHEMA_SQL);
 
-const { mockSummariseModule, mockSummariseRepo, mockBuildMap, mockOnRepoIndexed, mockNotify } =
-  vi.hoisted(() => ({
+const { mockSummariseModule, mockSummariseRepo, mockOnRepoIndexed, mockNotify } = vi.hoisted(
+  () => ({
     mockSummariseModule: vi.fn(),
     mockSummariseRepo: vi.fn(),
-    mockBuildMap: vi.fn(),
     mockOnRepoIndexed: vi.fn(),
     mockNotify: vi.fn(),
-  }));
+  }),
+);
 
 vi.mock('../../db/database.js', () => ({
   getDb: () => inMemoryDb,
@@ -27,9 +26,9 @@ vi.mock('../foundry.service.js', () => ({
   summariseRepo: mockSummariseRepo,
 }));
 
-vi.mock('../repository-map-worker.service.js', () => ({
-  buildRepositoryMapInWorker: mockBuildMap,
-}));
+// repository-map-worker.service.js is intentionally NOT mocked: under Vitest
+// it runs the graph build inline (no bundled worker file exists), so mapRepo
+// exercises the real repository-map path end to end.
 
 vi.mock('../code-review-git.service.js', () => ({
   getCurrentCommitSha: async () => 'deadbeef',
@@ -83,20 +82,6 @@ beforeEach(() => {
   writeFixture();
   seedRepo();
 
-  mockBuildMap.mockImplementation(
-    async (input: { repoId: string; repositoryName: string; indexedCommitSha?: string }) =>
-      ({
-        schemaVersion: 1,
-        repoId: input.repoId,
-        repositoryName: input.repositoryName,
-        indexedCommitSha: input.indexedCommitSha,
-        generatedAt: new Date().toISOString(),
-        nodes: [],
-        edges: [],
-        supportedSymbolLanguages: [],
-        warnings: [],
-      }) satisfies RepositoryMapGraph,
-  );
   mockOnRepoIndexed.mockResolvedValue(undefined);
   mockNotify.mockReturnValue(undefined);
   mockSummariseModule.mockImplementation(async (_repoName: string, modulePath: string) => ({

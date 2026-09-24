@@ -65,8 +65,11 @@ function makeRepoWithRemote(suffix: string): { repoDir: string; head: string } {
   const base = mkdtempSync(join(tmpdir(), `anvil-handoff-${suffix}-`));
   const repoDir = join(base, 'repo');
   const remoteDir = join(base, 'remote.git');
-  execFileSync('git', ['init', '--bare', remoteDir]);
-  execFileSync('git', ['init', repoDir]);
+  // Pin the initial branch to 'main' — ambient init.defaultBranch differs
+  // between dev machines and CI, and push.default=simple refuses to push a
+  // branch whose upstream name doesn't match.
+  execFileSync('git', ['init', '--bare', '--initial-branch=main', remoteDir]);
+  execFileSync('git', ['init', '--initial-branch=main', repoDir]);
   git(
     repoDir,
     '-c',
@@ -227,7 +230,9 @@ describe('evaluateHandoffReadiness', () => {
     writeFileSync(join(repoDir, 'file.txt'), 'v1');
     git(repoDir, 'add', 'file.txt');
     git(repoDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'add file');
-    git(repoDir, 'push');
+    // Explicit refspec: a bare `git push` depends on push.default matching the
+    // configured upstream, which varies with ambient git config on CI.
+    git(repoDir, 'push', 'origin', 'HEAD');
     writeFileSync(join(repoDir, 'file.txt'), 'modified');
     const result = await evaluateHandoffReadiness(sessionId);
     expect(result.blockers.map((b) => b.code)).toEqual(['dirty-tree']);

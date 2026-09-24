@@ -13,6 +13,14 @@ db.exec(SCHEMA_SQL);
 db.prepare('INSERT INTO settings (id) VALUES (1)').run();
 
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
+
+// Materialization triggers repo indexing as a side effect of
+// mapWorkspaceRepoToCheckout; keep this suite scoped to materialization.
+vi.mock('../repo-index-queue.service.js', () => ({
+  enqueueIndexJobs: vi.fn(),
+  cancelIndexJobs: vi.fn(),
+}));
+
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp', getVersion: () => 'test' },
   safeStorage: {
