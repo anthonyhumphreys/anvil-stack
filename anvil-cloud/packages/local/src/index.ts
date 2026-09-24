@@ -2997,9 +2997,12 @@ async function proxyToRuntime(
   // Collapse leading slash runs so a protocol-relative path such as
   // "//host/x" can never retarget the request to another origin.
   const pathname = url.pathname.replace(/^\/+/, "/");
-  const target = new URL(`${pathname}${url.search}`, runtimeOrigin);
+  const target = `${runtimeOrigin}${pathname}${url.search}`;
 
-  if (target.origin !== runtimeOrigin || !isRuntimeProxyPath(target.pathname)) {
+  if (
+    !target.startsWith(`${runtimeOrigin}/`) ||
+    !isRuntimeProxyPath(new URL(target).pathname)
+  ) {
     await sendJson(options.response, 403, {
       ok: false,
       error: {

@@ -232,6 +232,13 @@ export async function runVerificationCommand(input: {
   const started = Date.now();
   const timeoutMs = input.timeoutMs ?? VERIFICATION_TIMEOUT_MS;
   try {
+    // Executing a declared command is the feature: verification commands
+    // come from the job manifest, which only the account owner's mesh
+    // backend can dispatch to this enrolled device, and they run in a
+    // disposable worktree under the scrubbed meshExecEnv. If the trust
+    // model changes (e.g. third-party job sources), revisit before
+    // accepting remote-supplied commands.
+    // codeql[js/command-line-injection] manifest-declared command, executed in a disposable worktree with a scrubbed env
     const { stdout, stderr } = await execFileAsync('sh', ['-c', input.command], {
       cwd: input.cwd,
       timeout: timeoutMs,

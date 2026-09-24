@@ -287,14 +287,7 @@ export function resolveHostedAccountUrl(
   if (!value) return HOSTED_ACCOUNT_URL;
   try {
     const url = new URL(value);
-    if (
-      url.username ||
-      url.password ||
-      url.protocol === 'file:' ||
-      url.protocol === 'javascript:'
-    ) {
-      return HOSTED_ACCOUNT_URL;
-    }
+    if (url.username || url.password) return HOSTED_ACCOUNT_URL;
     if (url.protocol === 'https:') return url.href;
     if (
       !isPackaged &&
