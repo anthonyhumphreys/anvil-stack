@@ -212,7 +212,7 @@ describe('evaluateHandoffReadiness', () => {
     const { repoDir } = makeRepoWithRemote('dirty');
     const { sessionId } = seedSession('dirty', repoDir);
     writeFileSync(join(repoDir, 'untracked.txt'), 'scratch');
-    git(repoDir, 'commit', '--allow-empty', '-m', 'unpushed');
+    git(repoDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'unpushed');
     const result = await evaluateHandoffReadiness(sessionId);
     expect(result.ok).toBe(false);
     const codes = result.blockers.map((b) => b.code);
