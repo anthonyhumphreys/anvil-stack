@@ -24,7 +24,9 @@ test("redacts credential-shaped keys at any depth", () => {
 
 test("removes token strings embedded in free text", () => {
   assert.equal(
-    redactRehearsalEvidence("token anvil_at_abc-123_XYZ and anvil_rt_zzz plus anvil-ec-prod-9"),
+    redactRehearsalEvidence(
+      "token anvil_at_abc-123_XYZ and anvil_rt_zzz plus anvil-ec-prod-9",
+    ),
     "token [REDACTED] and [REDACTED] plus [REDACTED]",
   );
 });

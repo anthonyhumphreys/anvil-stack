@@ -75,7 +75,9 @@ function step(name, fn) {
       return detail;
     },
     (error) => {
-      const sanitized = redactRehearsalEvidence(String(error?.message ?? error));
+      const sanitized = redactRehearsalEvidence(
+        String(error?.message ?? error),
+      );
       steps.push({ name, ok: false, error: sanitized });
       console.log(`  FAIL ${name}: ${sanitized}`);
       throw error;
@@ -272,35 +274,32 @@ console.log(`iac-02 rehearsal: worker=${workerName} live=${live}`);
 console.log(`  backend=${backendDir} base=${publicBaseUrl}`);
 
 try {
-  await step(
-    "plan: first-deploy production plan is clean",
-    async () => {
-      const run = mustMesh("plan", ["--first-deploy", ...planArgs]);
-      const plan = run.plan;
-      const serialized = JSON.stringify(plan);
-      if (serialized.includes("ANVIL_DEV_SPIKE")) {
-        throw new Error("development-only key leaked into the production plan");
-      }
-      if (
-        !plan.secrets.some(
-          (s) => s.name === "ENROLLMENT_ADMIN_TOKEN" && !s.devOnly,
-        )
-      ) {
-        throw new Error("deployment-admin secret missing from production plan");
-      }
-      const bindings = plan.durableObjects.map((d) => d.binding).sort();
-      if (bindings.join(",") !== "ACCOUNT,SESSIONS") {
-        throw new Error(`unexpected DO bindings: ${bindings}`);
-      }
-      if (!plan.r2Buckets.some((b) => b.binding === "ARTIFACTS")) {
-        throw new Error("ARTIFACTS R2 binding missing");
-      }
-      return {
-        migrationMode: plan.migrationMode,
-        secrets: plan.secrets.map((s) => s.name),
-      };
-    },
-  );
+  await step("plan: first-deploy production plan is clean", async () => {
+    const run = mustMesh("plan", ["--first-deploy", ...planArgs]);
+    const plan = run.plan;
+    const serialized = JSON.stringify(plan);
+    if (serialized.includes("ANVIL_DEV_SPIKE")) {
+      throw new Error("development-only key leaked into the production plan");
+    }
+    if (
+      !plan.secrets.some(
+        (s) => s.name === "ENROLLMENT_ADMIN_TOKEN" && !s.devOnly,
+      )
+    ) {
+      throw new Error("deployment-admin secret missing from production plan");
+    }
+    const bindings = plan.durableObjects.map((d) => d.binding).sort();
+    if (bindings.join(",") !== "ACCOUNT,SESSIONS") {
+      throw new Error(`unexpected DO bindings: ${bindings}`);
+    }
+    if (!plan.r2Buckets.some((b) => b.binding === "ARTIFACTS")) {
+      throw new Error("ARTIFACTS R2 binding missing");
+    }
+    return {
+      migrationMode: plan.migrationMode,
+      secrets: plan.secrets.map((s) => s.name),
+    };
+  });
 
   await step("apply: dry-run compiles without provider mutation", async () => {
     const run = mesh("apply", ["--dry-run", ...planArgs]);
@@ -354,43 +353,40 @@ try {
       // account that left ENROLLMENT_ADMIN_TOKEN unbound and the admin route
       // 404'd. Provision against the deployed worker, then readiness-gate on
       // the admin route itself (covers worker + secret-version propagation).
-      await step(
-        "apply: provision ENROLLMENT_ADMIN_TOKEN secret",
-        async () => {
-          const put = spawnSync(
-            "pnpm",
-            [
-              "exec",
-              "wrangler",
-              "secret",
-              "put",
-              "ENROLLMENT_ADMIN_TOKEN",
-              "--name",
-              workerName,
-            ],
-            { cwd: backendDir, encoding: "utf8", input: `${adminToken}\n` },
-          );
-          if (put.status !== 0)
-            throw new Error(`secret put failed: ${put.stderr || put.stdout}`);
+      await step("apply: provision ENROLLMENT_ADMIN_TOKEN secret", async () => {
+        const put = spawnSync(
+          "pnpm",
+          [
+            "exec",
+            "wrangler",
+            "secret",
+            "put",
+            "ENROLLMENT_ADMIN_TOKEN",
+            "--name",
+            workerName,
+          ],
+          { cwd: backendDir, encoding: "utf8", input: `${adminToken}\n` },
+        );
+        if (put.status !== 0)
+          throw new Error(`secret put failed: ${put.stderr || put.stdout}`);
 
-          const deadline = Date.now() + 120_000;
-          let res = null;
-          do {
-            if (res !== null) await new Promise((r) => setTimeout(r, 3_000));
-            res = await postJson(
-              deployedUrl,
-              "/v1/enrollment-codes",
-              { accountId: `iac02-readiness-${randomUUID()}` },
-              `Bearer ${adminToken}`,
-            );
-          } while (res.status !== 200 && Date.now() < deadline);
-          if (res.status !== 200)
-            throw new Error(
-              `admin route never became ready: HTTP ${res.status} ${JSON.stringify(res.body)}`,
-            );
-          return { provisioned: true };
-        },
-      );
+        const deadline = Date.now() + 120_000;
+        let res = null;
+        do {
+          if (res !== null) await new Promise((r) => setTimeout(r, 3_000));
+          res = await postJson(
+            deployedUrl,
+            "/v1/enrollment-codes",
+            { accountId: `iac02-readiness-${randomUUID()}` },
+            `Bearer ${adminToken}`,
+          );
+        } while (res.status !== 200 && Date.now() < deadline);
+        if (res.status !== 200)
+          throw new Error(
+            `admin route never became ready: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+          );
+        return { provisioned: true };
+      });
 
       await step("descriptor: frozen contract advertised", async () => {
         const res = await waitForDescriptor(deployedUrl);
@@ -639,9 +635,7 @@ try {
             { encoding: "utf8", env: meshEnv() },
           );
           if (rm.status !== 0) {
-            errors.push(
-              `${restoredName}: ${rm.stderr || rm.stdout}`,
-            );
+            errors.push(`${restoredName}: ${rm.stderr || rm.stdout}`);
           } else {
             removed.push(restoredName);
           }

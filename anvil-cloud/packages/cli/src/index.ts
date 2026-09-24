@@ -3471,21 +3471,37 @@ function meshAccountUrl(context: CliContext): string | undefined {
   }
   try {
     const url = new URL(value);
-    if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
-      throw new Error("backend URL must use https (or localhost for development)");
+    if (
+      url.protocol !== "https:" &&
+      url.hostname !== "localhost" &&
+      url.hostname !== "127.0.0.1"
+    ) {
+      throw new Error(
+        "backend URL must use https (or localhost for development)",
+      );
     }
     return url.href.replace(/\/$/, "");
   } catch (error) {
-    writeInvalidUsage(context, error instanceof Error ? error.message : "Invalid backend URL.");
+    writeInvalidUsage(
+      context,
+      error instanceof Error ? error.message : "Invalid backend URL.",
+    );
     return undefined;
   }
 }
 
-function meshAccountSecret(context: CliContext, option: string, fallback: string): string | undefined {
+function meshAccountSecret(
+  context: CliContext,
+  option: string,
+  fallback: string,
+): string | undefined {
   const envName = context.values.get(option) ?? fallback;
   const value = process.env[envName];
   if (!value) {
-    writeInvalidUsage(context, `Set ${envName} or pass --${option} <environment-variable>.`);
+    writeInvalidUsage(
+      context,
+      `Set ${envName} or pass --${option} <environment-variable>.`,
+    );
     return undefined;
   }
   return value;
@@ -3502,48 +3518,101 @@ async function meshAccountRequest(
   try {
     response = await fetch(`${url}${pathName}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify(body),
       redirect: "error",
       signal: AbortSignal.timeout(15_000),
     });
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : "Backend request failed." };
+    return {
+      ok: false,
+      message:
+        error instanceof Error ? error.message : "Backend request failed.",
+    };
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    const code = payload && typeof payload === "object" && payload.error && typeof payload.error.code === "string"
-      ? payload.error.code
-      : `HTTP ${response.status}`;
+    const code =
+      payload &&
+      typeof payload === "object" &&
+      payload.error &&
+      typeof payload.error.code === "string"
+        ? payload.error.code
+        : `HTTP ${response.status}`;
     return { ok: false, message: `Backend rejected the request (${code}).` };
   }
   return { ok: true, body: payload };
 }
 
-async function commandMeshAccount(context: CliContext, action: string | undefined): Promise<void> {
+async function commandMeshAccount(
+  context: CliContext,
+  action: string | undefined,
+): Promise<void> {
   const url = meshAccountUrl(context);
   if (!url) return;
   if (action === "bootstrap") {
     const accountId = context.values.get("account") ?? context.args[3];
     if (!accountId) {
-      writeInvalidUsage(context, "mesh account bootstrap requires --account <account-id>.");
+      writeInvalidUsage(
+        context,
+        "mesh account bootstrap requires --account <account-id>.",
+      );
       return;
     }
-    const token = meshAccountSecret(context, "admin-token-env", "ANVIL_MESH_ADMIN_TOKEN");
+    const token = meshAccountSecret(
+      context,
+      "admin-token-env",
+      "ANVIL_MESH_ADMIN_TOKEN",
+    );
     if (!token) return;
-    const result = await meshAccountRequest(context, url, token, "/v1/enrollment-codes", { accountId });
+    const result = await meshAccountRequest(
+      context,
+      url,
+      token,
+      "/v1/enrollment-codes",
+      { accountId },
+    );
     if (!result.ok) {
-      writeJsonOrHuman(context, { ok: false, errors: [{ code: "BACKEND_ERROR", message: result.message }] }, result.message);
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [{ code: "BACKEND_ERROR", message: result.message }],
+        },
+        result.message,
+      );
       process.exitCode = 1;
       return;
     }
-    const code = result.body && typeof result.body.code === "string" ? result.body.code : undefined;
+    const code =
+      result.body && typeof result.body.code === "string"
+        ? result.body.code
+        : undefined;
     if (!code) {
-      writeJsonOrHuman(context, { ok: false, errors: [{ code: "INVALID_RESPONSE", message: "Backend did not return an enrollment code." }] }, "Backend did not return an enrollment code.");
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "INVALID_RESPONSE",
+              message: "Backend did not return an enrollment code.",
+            },
+          ],
+        },
+        "Backend did not return an enrollment code.",
+      );
       process.exitCode = 1;
       return;
     }
-    writeJsonOrHuman(context, { ok: true, accountId, code }, `Enrollment code for ${accountId}: ${code}`);
+    writeJsonOrHuman(
+      context,
+      { ok: true, accountId, code },
+      `Enrollment code for ${accountId}: ${code}`,
+    );
     return;
   }
 
@@ -3551,19 +3620,35 @@ async function commandMeshAccount(context: CliContext, action: string | undefine
     writeInvalidUsage(context, MESH_ACCOUNT_USAGE);
     return;
   }
-  const token = meshAccountSecret(context, "access-token-env", "ANVIL_MESH_ACCESS_TOKEN");
+  const token = meshAccountSecret(
+    context,
+    "access-token-env",
+    "ANVIL_MESH_ACCESS_TOKEN",
+  );
   if (!token) return;
-  const operation = action === "devices" ? "device.list" : action === "rename" ? "device.rename" : "device.revoke";
+  const operation =
+    action === "devices"
+      ? "device.list"
+      : action === "rename"
+        ? "device.rename"
+        : "device.revoke";
   const enrollmentId = context.values.get("enrollment") ?? context.args[3];
   if (action !== "devices" && !enrollmentId) {
-    writeInvalidUsage(context, `mesh account ${action} requires <enrollment-id> (or --enrollment).`);
+    writeInvalidUsage(
+      context,
+      `mesh account ${action} requires <enrollment-id> (or --enrollment).`,
+    );
     return;
   }
-  const params = action === "devices"
-    ? {}
-    : action === "rename"
-      ? { enrollmentId, displayName: context.values.get("name") ?? context.args[4] ?? "" }
-      : { enrollmentId };
+  const params =
+    action === "devices"
+      ? {}
+      : action === "rename"
+        ? {
+            enrollmentId,
+            displayName: context.values.get("name") ?? context.args[4] ?? "",
+          }
+        : { enrollmentId };
   const result = await meshAccountRequest(context, url, token, "/v1/rpc", {
     protocol: "anvil-backend/1",
     requestId: randomUUID(),
@@ -3571,21 +3656,41 @@ async function commandMeshAccount(context: CliContext, action: string | undefine
     params,
   });
   if (!result.ok) {
-    writeJsonOrHuman(context, { ok: false, errors: [{ code: "BACKEND_ERROR", message: result.message }] }, result.message);
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [{ code: "BACKEND_ERROR", message: result.message }],
+      },
+      result.message,
+    );
     process.exitCode = 1;
     return;
   }
   const payload = result.body;
   if (payload?.error) {
     const message = `Backend rejected the request (${payload.error.code ?? "unknown"}).`;
-    writeJsonOrHuman(context, { ok: false, errors: [{ code: payload.error.code ?? "BACKEND_ERROR", message }] }, message);
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [{ code: payload.error.code ?? "BACKEND_ERROR", message }],
+      },
+      message,
+    );
     process.exitCode = 1;
     return;
   }
   const value = payload?.result;
-  const human = action === "devices"
-    ? ((value?.devices as MeshAccountDevice[] | undefined) ?? []).map((device) => `${device.revoked ? "revoked" : "active"}\t${device.enrollmentId}\t${device.displayName ?? "(unnamed)"}`).join("\n") || "No devices enrolled."
-    : `${action === "rename" ? "Renamed" : "Revoked"} enrollment ${enrollmentId}.`;
+  const human =
+    action === "devices"
+      ? ((value?.devices as MeshAccountDevice[] | undefined) ?? [])
+          .map(
+            (device) =>
+              `${device.revoked ? "revoked" : "active"}\t${device.enrollmentId}\t${device.displayName ?? "(unnamed)"}`,
+          )
+          .join("\n") || "No devices enrolled."
+      : `${action === "rename" ? "Renamed" : "Revoked"} enrollment ${enrollmentId}.`;
   writeJsonOrHuman(context, { ok: true, result: value }, human);
 }
 

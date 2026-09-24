@@ -11,9 +11,7 @@
       "ok": true,
       "detail": {
         "migrationMode": "create",
-        "secrets": [
-          "ENROLLMENT_ADMIN_TOKEN"
-        ]
+        "secrets": ["ENROLLMENT_ADMIN_TOKEN"]
       }
     },
     {
@@ -42,10 +40,7 @@
       "ok": true,
       "detail": {
         "deploymentId": "spike-0000-0000-0000-backend01demo",
-        "profiles": [
-          "sync/1",
-          "mesh/1"
-        ]
+        "profiles": ["sync/1", "mesh/1"]
       }
     },
     {
@@ -119,10 +114,7 @@
       "name": "remove: delete rehearsal workers (state retained)",
       "ok": true,
       "detail": {
-        "removed": [
-          "mesh-rehearsal-live1",
-          "mesh-rehearsal-live1-restored"
-        ]
+        "removed": ["mesh-rehearsal-live1", "mesh-rehearsal-live1-restored"]
       }
     }
   ]

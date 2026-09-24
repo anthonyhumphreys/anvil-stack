@@ -11,9 +11,7 @@
       "ok": true,
       "detail": {
         "migrationMode": "create",
-        "secrets": [
-          "ENROLLMENT_ADMIN_TOKEN"
-        ]
+        "secrets": ["ENROLLMENT_ADMIN_TOKEN"]
       }
     },
     {

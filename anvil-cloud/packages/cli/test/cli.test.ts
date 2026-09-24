@@ -50,35 +50,77 @@ describe("main", () => {
     const originalAccess = process.env.ANVIL_MESH_ACCESS_TOKEN;
     process.env.ANVIL_MESH_ADMIN_TOKEN = "admin-secret";
     process.env.ANVIL_MESH_ACCESS_TOKEN = "device-secret";
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = new URL(String(input)).pathname;
-      expect(init?.headers).toEqual(expect.objectContaining({
-        Authorization: expect.stringMatching(/^Bearer /),
-      }));
-      if (path === "/v1/enrollment-codes") {
-        return new Response(JSON.stringify({ code: "enroll-123" }), { status: 200 });
-      }
-      return new Response(JSON.stringify({
-        requestId: "request",
-        result: { devices: [{ enrollmentId: "device-1", displayName: "Laptop", revoked: false }] },
-      }), { status: 200 });
-    });
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname;
+        expect(init?.headers).toEqual(
+          expect.objectContaining({
+            Authorization: expect.stringMatching(/^Bearer /),
+          }),
+        );
+        if (path === "/v1/enrollment-codes") {
+          return new Response(JSON.stringify({ code: "enroll-123" }), {
+            status: 200,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            requestId: "request",
+            result: {
+              devices: [
+                {
+                  enrollmentId: "device-1",
+                  displayName: "Laptop",
+                  revoked: false,
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      },
+    );
     globalThis.fetch = fetchMock as typeof fetch;
     try {
       const bootstrap = await captureStdout(() =>
-        main(["mesh", "account", "bootstrap", "--url", "https://mesh.example", "--account", "acct-1", "--json"]),
+        main([
+          "mesh",
+          "account",
+          "bootstrap",
+          "--url",
+          "https://mesh.example",
+          "--account",
+          "acct-1",
+          "--json",
+        ]),
       );
-      expect(JSON.parse(bootstrap)).toMatchObject({ ok: true, accountId: "acct-1", code: "enroll-123" });
+      expect(JSON.parse(bootstrap)).toMatchObject({
+        ok: true,
+        accountId: "acct-1",
+        code: "enroll-123",
+      });
       const devices = await captureStdout(() =>
-        main(["mesh", "account", "devices", "--url", "https://mesh.example", "--json"]),
+        main([
+          "mesh",
+          "account",
+          "devices",
+          "--url",
+          "https://mesh.example",
+          "--json",
+        ]),
       );
-      expect(JSON.parse(devices)).toMatchObject({ ok: true, result: { devices: [{ enrollmentId: "device-1" }] } });
+      expect(JSON.parse(devices)).toMatchObject({
+        ok: true,
+        result: { devices: [{ enrollmentId: "device-1" }] },
+      });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
       globalThis.fetch = originalFetch;
-      if (originalAdmin === undefined) delete process.env.ANVIL_MESH_ADMIN_TOKEN;
+      if (originalAdmin === undefined)
+        delete process.env.ANVIL_MESH_ADMIN_TOKEN;
       else process.env.ANVIL_MESH_ADMIN_TOKEN = originalAdmin;
-      if (originalAccess === undefined) delete process.env.ANVIL_MESH_ACCESS_TOKEN;
+      if (originalAccess === undefined)
+        delete process.env.ANVIL_MESH_ACCESS_TOKEN;
       else process.env.ANVIL_MESH_ACCESS_TOKEN = originalAccess;
     }
   });

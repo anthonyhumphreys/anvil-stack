@@ -8,7 +8,9 @@ export function redactRehearsalEvidence(value) {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
         key,
-        /^(?:accessToken|refreshToken|authorization|code|adminToken|enrollmentCode)$/i.test(key)
+        /^(?:accessToken|refreshToken|authorization|code|adminToken|enrollmentCode)$/i.test(
+          key,
+        )
           ? "[REDACTED]"
           : redactRehearsalEvidence(item),
       ]),

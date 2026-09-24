@@ -149,7 +149,9 @@ describe("Mesh backend recipe planning", () => {
       ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-a-staging-account-a",
       ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-a-staging-account-a)",
     });
-    expect(second.vars.ANVIL_DEPLOYMENT_ID).not.toBe(first.vars.ANVIL_DEPLOYMENT_ID);
+    expect(second.vars.ANVIL_DEPLOYMENT_ID).not.toBe(
+      first.vars.ANVIL_DEPLOYMENT_ID,
+    );
 
     const migrated = await createMeshDeploymentPlan({
       ...baseOptions(backendDir),
