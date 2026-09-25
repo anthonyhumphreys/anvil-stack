@@ -1,4 +1,4 @@
-import { handleAuth } from "@workos-inc/authkit-nextjs";
+import { handleAuth } from "@/lib/workos-sdk";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 

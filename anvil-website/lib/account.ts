@@ -1,6 +1,7 @@
 import "server-only";
 
 import { requireUser, type AuthenticatedUser } from "@/lib/auth";
+import { deploymentVariable } from "@/lib/deployment-env.js";
 import { hostedConfigured, HostedApiError } from "@/lib/hosted";
 import type { HostedIdentity } from "@/lib/hosted/types";
 import { workosConfigured } from "@/lib/workos-env";
@@ -24,7 +25,7 @@ export async function loadAccountContext(): Promise<AccountContext> {
     status: "ok",
     user,
     identity: {
-      workosClientId: process.env.WORKOS_CLIENT_ID as string,
+      workosClientId: deploymentVariable("WORKOS_CLIENT_ID", "WORKOS_CLIENT_ID") as string,
       workosUserId: user.id
     }
   };

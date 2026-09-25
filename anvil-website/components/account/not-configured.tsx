@@ -12,8 +12,8 @@ export function AuthNotConfigured() {
         <CardTitle>Account sign-in is not configured</CardTitle>
         <CardDescription>
           This deployment has no WorkOS AuthKit environment. Nothing here is broken — the account
-          area is disabled until `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD`, and
-          `NEXT_PUBLIC_WORKOS_REDIRECT_URI` are set.
+          area is disabled until the selected deployment&apos;s WorkOS values are set. See
+          `.env.example` for the staging and production variable names.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -36,8 +36,8 @@ export function BackendNotConfigured() {
       <CardHeader>
         <CardTitle>Hosted sync backend is not configured</CardTitle>
         <CardDescription>
-          You are signed in, but this deployment has no hosted service channel. Set
-          `ANVIL_BACKEND_ORIGIN`, `ANVIL_HOSTED_KEY_ID`, and `ANVIL_HOSTED_SERVICE_SECRET` to enable
+          You are signed in, but this deployment has no hosted service channel. Set the selected
+          deployment&apos;s backend origin, key id, and service secret from `.env.example` to enable
           account, billing, and device operations against the backend&apos;s `/internal/hosted/*` API.
         </CardDescription>
       </CardHeader>

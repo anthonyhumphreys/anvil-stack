@@ -26,6 +26,7 @@ concurrency:
 
 env:
   CI: true
+  ANVIL_DEPLOYMENT_ENV: staging
 
 defaults:
   run:
@@ -68,6 +69,10 @@ jobs:
       - name: Verify hosted config validator
         working-directory: anvil-app/cloud/backend
         run: node scripts/verify-hosted-config.mjs --self-check
+
+      - name: Test hosted deployment isolation
+        working-directory: anvil-app/cloud/backend
+        run: node --test scripts/hosted-deploy.test.mjs
 
       - name: Build
         run: pnpm build

@@ -1,3 +1,5 @@
+import { deploymentVariable } from "@/lib/deployment-env.js";
+
 // Hosted service-channel signing — byte-compatible with the backend
 // verifier in anvil-app/cloud/backend/src/hosted/service-auth.ts.
 //
@@ -140,8 +142,8 @@ export async function signRequest(
   body: Uint8Array
 ): Promise<HostedSignedHeaders> {
   return signHostedRequest({
-    keyId: process.env.ANVIL_HOSTED_KEY_ID ?? "",
-    secret: process.env.ANVIL_HOSTED_SERVICE_SECRET ?? "",
+    keyId: deploymentVariable("HOSTED_KEY_ID", "ANVIL_HOSTED_KEY_ID") ?? "",
+    secret: deploymentVariable("HOSTED_SERVICE_SECRET", "ANVIL_HOSTED_SERVICE_SECRET") ?? "",
     method,
     pathWithQuery: normalizePathWithQuery(path),
     body,

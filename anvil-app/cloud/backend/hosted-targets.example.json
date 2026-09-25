@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "environments": {
+    "staging": {
+      "stage": "staging",
+      "accountId": "715060911f9418f1df0f9de0265d8a64",
+      "workerName": "anvil-sync-hosted-staging",
+      "baseUrl": "https://anvil-sync-hosted-staging.still-glitter-7d20.workers.dev",
+      "artifactsBucket": "anvil-sync-hosted-staging-artifacts",
+      "databaseName": "anvil-sync-hosted-staging-billing",
+      "databaseId": "9d396edc-2967-4d94-9ca0-51311c2c4f13",
+      "deploymentId": "spike-0000-0000-0000-backend01demo",
+      "deploymentName": "Anvil hosted staging",
+      "managedProvisioner": true,
+      "provisionerName": "anvil-sync-hosted-staging-provisioner",
+      "workos": {
+        "issuer": "https://api.workos.com/user_management",
+        "desktopClientId": "client_01M2XPX4PF98H2P7HCNRBZATTE",
+        "hostedClientId": "client_01M27GDYFBX70F16V6ZQ74KSDE"
+      },
+      "secrets": {
+        "backendFile": ".wrangler/mesh/anvil-sync-hosted-staging/backend-secrets.json",
+        "provisionerTokenFile": ".wrangler/mesh/anvil-sync-hosted-staging/managed-token"
+      }
+    },
+    "production": {
+      "stage": "production",
+      "accountId": "",
+      "workerName": "",
+      "baseUrl": "",
+      "artifactsBucket": "",
+      "databaseName": "",
+      "databaseId": null,
+      "deploymentId": "",
+      "deploymentName": "",
+      "managedProvisioner": true,
+      "provisionerName": "",
+      "workos": {
+        "issuer": "https://api.workos.com/user_management",
+        "desktopClientId": "",
+        "hostedClientId": ""
+      },
+      "secrets": {
+        "backendFile": ".wrangler/hosted-secrets/production/backend-secrets.json",
+        "provisionerTokenFile": ".wrangler/hosted-secrets/production/provisioner-token"
+      }
+    }
+  }
+}

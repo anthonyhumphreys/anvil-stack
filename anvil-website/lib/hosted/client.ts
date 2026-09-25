@@ -1,5 +1,6 @@
 import "server-only";
 
+import { deploymentVariable } from "@/lib/deployment-env.js";
 import { normalizePathWithQuery, signRequest } from "./signing";
 import type {
   HostedAccount,
@@ -31,7 +32,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 export const HOSTED_PAID_ENFORCEMENT_AT = "2026-11-01T00:00:00Z";
 
 function backendOrigin(): string | null {
-  const origin = process.env.ANVIL_BACKEND_ORIGIN;
+  const origin = deploymentVariable("BACKEND_ORIGIN", "ANVIL_BACKEND_ORIGIN");
   if (typeof origin !== "string" || origin.length === 0) return null;
   try {
     const url = new URL(origin);
@@ -42,8 +43,8 @@ function backendOrigin(): string | null {
 }
 
 function signingKey(): { keyId: string; secret: string } | null {
-  const keyId = process.env.ANVIL_HOSTED_KEY_ID;
-  const secret = process.env.ANVIL_HOSTED_SERVICE_SECRET;
+  const keyId = deploymentVariable("HOSTED_KEY_ID", "ANVIL_HOSTED_KEY_ID");
+  const secret = deploymentVariable("HOSTED_SERVICE_SECRET", "ANVIL_HOSTED_SERVICE_SECRET");
   if (
     typeof keyId !== "string" ||
     !/^[A-Za-z0-9_-]{1,64}$/.test(keyId) ||

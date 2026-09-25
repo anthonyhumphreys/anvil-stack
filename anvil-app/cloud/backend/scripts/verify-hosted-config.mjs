@@ -2,11 +2,14 @@
 /**
  * verify-hosted-config.mjs — BILL-06 hosted deployment validation.
  *
- * Checks that wrangler.hosted.jsonc is safe to deploy to production:
+ * Checks that wrangler.hosted.jsonc has the shared hosted bindings needed
+ * for deployment:
  * the D1 billing store is provisioned (no placeholder database_id),
  * enforcement is on, dev-only credentials are absent, and the sync
- * surface (Durable Object bindings, DO migrations, R2 bucket) still
- * matches wrangler.jsonc. Missing billing configuration must fail
+ * surface (Durable Object bindings, DO migrations, R2 binding) still
+ * matches wrangler.jsonc. The actual bucket name is target-specific and is
+ * checked against the selected environment manifest by hosted-deploy.mjs.
+ * Missing billing configuration must fail
  * hosted deployment validation — this script is that gate.
  *
  * Usage:
@@ -212,11 +215,16 @@ function validateHostedConfig(hosted, base, rawHostedText = '') {
           `r2_buckets is missing binding ${binding} (${bucket}) — hosted deploy must ` +
             'keep the artifact store from wrangler.jsonc',
         );
-      } else if (hostedR2.get(binding) !== bucket) {
+      }
+    }
+    for (const [binding, bucket] of hostedR2) {
+      if (typeof bucket !== 'string' || bucket.trim().length === 0) {
         issues.push(
-          `r2_buckets[${binding}] points at "${hostedR2.get(binding)}" but ` +
-            `wrangler.jsonc uses "${bucket}"`,
+          `r2_buckets[${binding}].bucket_name must be a non-empty target-specific bucket name`,
         );
+      }
+      if (!baseR2.has(binding)) {
+        warnings.push(`r2_buckets has extra binding ${binding} not present in wrangler.jsonc`);
       }
     }
   }
@@ -240,7 +248,11 @@ function loadJsonc(path) {
   try {
     return { config: JSON.parse(jsoncToJson(raw)), raw };
   } catch (error) {
-    return { config: null, raw, parseError: error instanceof Error ? error.message : String(error) };
+    return {
+      config: null,
+      raw,
+      parseError: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -331,9 +343,27 @@ function runSelfCheck() {
     issues.push(`self-check: known-good fixture produced warnings: ${good.warnings.join('; ')}`);
   }
 
+  const isolated = JSON.parse(jsoncToJson(FIXTURE_GOOD));
+  isolated.r2_buckets[0].bucket_name = 'anvil-sync-hosted-staging-artifacts';
+  const isolatedResult = validateHostedConfig(isolated, base, FIXTURE_GOOD);
+  if (isolatedResult.issues.length > 0) {
+    issues.push(
+      `self-check: target-specific R2 bucket produced issues: ${isolatedResult.issues.join('; ')}`,
+    );
+  }
+
+  const invalidBucket = JSON.parse(jsoncToJson(FIXTURE_GOOD));
+  invalidBucket.r2_buckets[0].bucket_name = '';
+  const invalidBucketResult = validateHostedConfig(invalidBucket, base, FIXTURE_GOOD);
+  if (!invalidBucketResult.issues.some((issue) => issue.includes('bucket_name'))) {
+    issues.push('self-check: empty R2 bucket name was not rejected');
+  }
+
   const bad = validateHostedConfig(JSON.parse(jsoncToJson(FIXTURE_BAD)), base, FIXTURE_BAD);
   if (bad.issues.length === 0) {
-    issues.push('self-check: broken fixture produced no issues — validator is not detecting failures');
+    issues.push(
+      'self-check: broken fixture produced no issues — validator is not detecting failures',
+    );
   }
   for (const expected of [
     'placeholder',

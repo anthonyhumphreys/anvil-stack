@@ -1,4 +1,4 @@
-import { authkitProxy } from "@workos-inc/authkit-nextjs";
+import { authkitProxy } from "@/lib/workos-sdk";
 import { NextResponse } from "next/server";
 
 import { workosConfigured } from "@/lib/workos-env";

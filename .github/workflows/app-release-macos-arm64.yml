@@ -26,9 +26,12 @@ jobs:
   release-macos-arm64:
     name: Build and release macOS arm64
     runs-on: macos-15
+    environment: anvil-production
 
     env:
       GH_TOKEN: ${{ github.token }}
+      ANVIL_DEPLOYMENT_ENV: production
+      ANVIL_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.ANVIL_PRODUCTION_HOSTED_BACKEND_URL }}
       # Auto-update publication stays parked until Developer ID signing is available.
       ANVIL_UPDATE_ORIGIN: ""
 

@@ -1,7 +1,8 @@
 "use server";
 
+import { workosConfigured } from "@/lib/workos-env";
 import { revalidatePath } from "next/cache";
-import { signOut } from "@workos-inc/authkit-nextjs";
+import { signOut } from "@/lib/workos-sdk";
 
 import { hostedIdentity } from "@/lib/auth";
 import { hostedFailureMessage } from "@/lib/account";
@@ -26,7 +27,6 @@ import type {
   HostedPairDeviceResult,
   HostedReconcileResult
 } from "@/lib/hosted/types";
-import { workosConfigured } from "@/lib/workos-env";
 
 export type ActionResult<T> =
   | { ok: true; data: T }

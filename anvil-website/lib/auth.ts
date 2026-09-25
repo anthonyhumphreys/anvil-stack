@@ -1,8 +1,9 @@
 import "server-only";
 
-import { withAuth } from "@workos-inc/authkit-nextjs";
+import { withAuth } from "@/lib/workos-sdk";
 import type { HostedIdentity } from "@/lib/hosted/types";
 import { workosConfigured } from "@/lib/workos-env";
+import { deploymentVariable } from "@/lib/deployment-env.js";
 
 /** The WorkOS user object returned by `withAuth` once signed in. */
 export type AuthenticatedUser = NonNullable<
@@ -40,7 +41,7 @@ export async function currentUser(): Promise<AuthenticatedUser | null> {
 export async function hostedIdentity(): Promise<HostedIdentity | null> {
   const user = await currentUser();
   if (user === null) return null;
-  const workosClientId = process.env.WORKOS_CLIENT_ID;
+  const workosClientId = deploymentVariable("WORKOS_CLIENT_ID", "WORKOS_CLIENT_ID");
   if (!workosClientId) return null;
   return { workosClientId, workosUserId: user.id };
 }

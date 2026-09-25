@@ -10,7 +10,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "validate:docs": "node scripts/validate-docs.mjs"
+    "validate:docs": "node scripts/validate-docs.mjs",
+    "test:deployment-env": "node --test scripts/deployment-env.test.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.3",

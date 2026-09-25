@@ -30,6 +30,11 @@ jobs:
   package:
     name: Build and release Windows x64 installer and portable app
     runs-on: windows-latest
+    environment: ${{ github.ref_type == 'tag' && 'anvil-production' || 'anvil-staging' }}
+    env:
+      ANVIL_DEPLOYMENT_ENV: ${{ github.ref_type == 'tag' && 'production' || 'staging' }}
+      ANVIL_STAGING_HOSTED_BACKEND_URL: ${{ vars.ANVIL_STAGING_HOSTED_BACKEND_URL }}
+      ANVIL_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.ANVIL_PRODUCTION_HOSTED_BACKEND_URL }}
 
     steps:
       - name: Checkout
