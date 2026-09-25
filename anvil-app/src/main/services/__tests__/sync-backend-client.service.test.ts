@@ -353,6 +353,12 @@ describe('sync-backend.service association', () => {
   beforeEach(() => {
     db.exec('DELETE FROM sync_backends');
     vi.unstubAllEnvs();
+    // Release CI injects the selected endpoint into every test process.
+    // These cases exercise the resolver's own inputs, not the build target.
+    vi.stubEnv('ANVIL_DEPLOYMENT_ENV', 'staging');
+    vi.stubEnv('ANVIL_STAGING_HOSTED_BACKEND_URL', '');
+    vi.stubEnv('ANVIL_PRODUCTION_HOSTED_BACKEND_URL', '');
+    vi.stubEnv('ANVIL_HOSTED_BACKEND_URL', '');
   });
 
   it('pins a paused association and keeps one active row', () => {

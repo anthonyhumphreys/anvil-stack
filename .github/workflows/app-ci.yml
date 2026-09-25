@@ -72,7 +72,7 @@ jobs:
 
       - name: Test hosted deployment isolation
         working-directory: anvil-app/cloud/backend
-        run: node --test scripts/hosted-deploy.test.mjs
+        run: pnpm test:hosted-deploy
 
       - name: Build
         run: pnpm build
