@@ -358,6 +358,12 @@ describe('OIDC-PKCE proof verification', () => {
     );
   });
 
+  it('strips only the trailing slash run from a generic OIDC issuer', async () => {
+    await expect(legacyOidcAccountId('https://issuer.test///path//', 'user-42')).resolves.toBe(
+      `oidc_${await sha256Hex('https://issuer.test///path:user-42')}`,
+    );
+  });
+
   async function makeIssuer() {
     const keyPair = (await crypto.subtle.generateKey(
       { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },

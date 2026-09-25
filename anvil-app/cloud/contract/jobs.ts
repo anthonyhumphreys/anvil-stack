@@ -384,6 +384,8 @@ export interface ResultManifestRepository {
 export interface ResultManifestVerification {
   repositoryId: string;
   command: string;
+  /** Whether this exact command was approved locally on the worker device. */
+  approvalGranted?: boolean;
   exitCode: number | null;
   timedOut: boolean;
   durationMs: number;

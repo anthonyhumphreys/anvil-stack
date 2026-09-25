@@ -42,6 +42,13 @@ describe('discovery', () => {
 });
 
 describe('RPC envelope and auth', () => {
+  it('normalizes a long trailing-slash suffix in one path scan', async () => {
+    const response = await SELF.fetch(`https://spike.test/v1/rpc${'/'.repeat(16_384)}`, {
+      method: 'GET',
+    });
+    expect(response.status).toBe(httpStatusForErrorCode('malformed-request'));
+  });
+
   it('rejects a missing bearer as unauthenticated 401', async () => {
     const response = await SELF.fetch('https://spike.test/v1/rpc', {
       method: 'POST',

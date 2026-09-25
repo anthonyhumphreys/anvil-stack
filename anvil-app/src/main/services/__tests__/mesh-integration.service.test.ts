@@ -9,9 +9,18 @@ import { SCHEMA_SQL } from '../../db/schema';
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
 
+const meshVerificationDialog = vi.hoisted(() => ({
+  showMessageBox: vi.fn().mockResolvedValue({ response: 0 }),
+}));
+
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  app: { getPath: () => '/tmp', getVersion: () => 'test', isReady: () => true },
+  BrowserWindow: {
+    getFocusedWindow: () => ({ isVisible: () => true, isMinimized: () => false }),
+    getAllWindows: () => [{ isVisible: () => true, isMinimized: () => false }],
+  },
+  dialog: { showMessageBox: meshVerificationDialog.showMessageBox },
 }));
 
 import {
@@ -121,6 +130,7 @@ beforeEach(() => {
   db.exec('DELETE FROM mesh_integrations; DELETE FROM mesh_node_dispatches;');
   db.exec('DELETE FROM workspace_repo_definitions; DELETE FROM workspaces; DELETE FROM repos;');
   userDataDir = mkdtempSync(join(tmpdir(), 'anvil-int-ud-'));
+  meshVerificationDialog.showMessageBox.mockClear().mockResolvedValue({ response: 0 });
   resetMeshIntegrationForTests();
   configureMeshIntegrationContext(() => ({ userDataDir }));
 });

@@ -251,11 +251,13 @@ describe('hosted data-status', () => {
     expect(status.body['tombstoned']).toBe(true);
     const deletion = status.body['deletion'] as { state: string; purgedRows?: number };
     expect(['deleting', 'deleted']).toContain(deletion.state);
+    const billing = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(billing?.lifecycle).toBe(deletion.state);
   });
 });
 
 describe('hosted delete-account', () => {
-  it('tombstones the sync account, revokes sessions, marks billing deleting, and is idempotent', async () => {
+  it('tombstones the sync account, revokes sessions, reconciles billing state, and is idempotent', async () => {
     const identity = makeIdentity(`del-${crypto.randomUUID()}`);
     const { session, accountId } = await pairAndEnroll(identity, 'inst-del');
 
@@ -268,9 +270,10 @@ describe('hosted delete-account', () => {
     expect(isRpcError(revoked.body)).toBe(true);
     expect((revoked.body as { error: { code: string } }).error.code).toBe('unauthenticated');
 
-    // The billing row moved to 'deleting' and the request was audited.
+    // The billing lifecycle follows the account object's purge state, and
+    // the request was audited.
     const billing = await getBillingAccountByIdentity(hostedDb(), identity);
-    expect(billing?.lifecycle).toBe('deleting');
+    expect(billing?.lifecycle).toBe(first.body['state']);
     const auditRow = await hostedDb()
       .prepare(
         "SELECT kind, detail FROM billing_audit WHERE billing_account_id = ? AND kind = 'account.delete-requested'",
@@ -280,22 +283,41 @@ describe('hosted delete-account', () => {
     expect(auditRow).not.toBeNull();
     expect(JSON.parse(auditRow!.detail)['syncAccountId']).toBe(accountId);
 
-    // The whole signed surface now denies on lifecycle.
-    for (const path of [
-      '/internal/hosted/devices',
-      '/internal/hosted/pair-device',
-      '/internal/hosted/data-status',
-    ]) {
+    // Device management and pairing are denied while deletion is in flight
+    // or after it completes.
+    for (const path of ['/internal/hosted/devices', '/internal/hosted/pair-device']) {
       const denied = await signedHostedPost(path, identity);
       expect(denied.status).toBe(403);
       expect(errorOf(denied.body).code).toBe('forbidden');
       expect(errorOf(denied.body).details?.reason).toBe('account-deleted');
     }
 
-    // Second call is idempotent: still 200, still reporting the state.
+    // Data status stays available during the purge and reconciles a late
+    // transition to `deleted`; once terminal, the lifecycle denies it.
+    const currentBilling = await getBillingAccountByIdentity(hostedDb(), identity);
+    const status = await signedHostedPost('/internal/hosted/data-status', identity);
+    if (currentBilling?.lifecycle === 'deleted') {
+      expect(status.status).toBe(403);
+      expect(errorOf(status.body).details?.reason).toBe('account-deleted');
+    } else {
+      expect(status.status).toBe(200);
+      const deletion = status.body['deletion'] as { state: string };
+      expect(['deleting', 'deleted']).toContain(deletion.state);
+      const reconciled = await getBillingAccountByIdentity(hostedDb(), identity);
+      expect(reconciled?.lifecycle).toBe(deletion.state);
+    }
+
+    // Repeats drive an in-flight purge; a completed deletion is terminal.
     const second = await signedHostedPost('/internal/hosted/delete-account', identity);
-    expect(second.status).toBe(200);
-    expect(['deleting', 'deleted']).toContain(second.body['state']);
+    if ((await getBillingAccountByIdentity(hostedDb(), identity))?.lifecycle === 'deleted') {
+      expect(second.status).toBe(403);
+      expect(errorOf(second.body).details?.reason).toBe('account-deleted');
+    } else {
+      expect(second.status).toBe(200);
+      expect(['deleting', 'deleted']).toContain(second.body['state']);
+      const reconciled = await getBillingAccountByIdentity(hostedDb(), identity);
+      expect(reconciled?.lifecycle).toBe(second.body['state']);
+    }
   });
 
   it('returns not-found for unknown identities and unlinked accounts', async () => {

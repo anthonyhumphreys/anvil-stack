@@ -852,6 +852,67 @@ describe('local retention sweep (OPS-01)', () => {
   });
 });
 
+describe('unresolved conflict snapshots', () => {
+  it('refreshes only the remote side when a newer observation arrives', () => {
+    const original = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: 'tpl-conflict-tip',
+      kind: 'edit-edit',
+      basePayloadJson: '{"name":"base"}',
+      baseRevision: 1,
+      localPayloadJson: '{"name":"local"}',
+      remotePayloadJson: '{"name":"remote 2"}',
+      remoteRevision: 2,
+    });
+
+    const refreshed = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: 'tpl-conflict-tip',
+      kind: 'edit-delete',
+      basePayloadJson: '{"name":"ignored base"}',
+      baseRevision: 99,
+      localPayloadJson: '{"name":"ignored local"}',
+      remotePayloadJson: null,
+      remoteRevision: 5,
+    });
+
+    expect(refreshed.id).toBe(original.id);
+    expect(refreshed.basePayloadJson).toBe('{"name":"base"}');
+    expect(refreshed.baseRevision).toBe(1);
+    expect(refreshed.localPayloadJson).toBe('{"name":"local"}');
+    expect(refreshed.remotePayloadJson).toBeNull();
+    expect(refreshed.remoteRevision).toBe(5);
+    expect(refreshed.kind).toBe('edit-delete');
+
+    const stale = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: 'tpl-conflict-tip',
+      kind: 'edit-edit',
+      basePayloadJson: null,
+      baseRevision: null,
+      localPayloadJson: null,
+      remotePayloadJson: '{"name":"stale remote"}',
+      remoteRevision: 4,
+    });
+    expect(stale.remotePayloadJson).toBeNull();
+    expect(stale.remoteRevision).toBe(5);
+
+    const resetSnapshot = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: 'tpl-conflict-tip',
+      kind: 'edit-edit',
+      basePayloadJson: null,
+      baseRevision: null,
+      localPayloadJson: null,
+      remotePayloadJson: '{"name":"reset snapshot"}',
+      remoteRevision: 3,
+      remoteSnapshotIsAuthoritative: true,
+    });
+    expect(resetSnapshot.remotePayloadJson).toBe('{"name":"reset snapshot"}');
+    expect(resetSnapshot.remoteRevision).toBe(3);
+  });
+});
+
 describe('sync entitlement (BILL-05)', () => {
   const ENTITLEMENT = {
     backendId: 'backend-1',

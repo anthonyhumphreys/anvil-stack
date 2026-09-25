@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -50,6 +50,7 @@ import {
   enrollWithEnrollmentCode,
   exportSyncDiagnostics,
   approveDeviceTrust,
+  activeSyncScope,
   getDeviceSecurityStatus,
   getRuntimeStatus,
   initSyncRuntime,
@@ -70,6 +71,7 @@ import {
   stopSyncRuntimeForOneShot,
   spikeEnroll,
   listDevices,
+  listCloudEnvironments,
 } from '../sync-runtime.service';
 import {
   deriveSas,
@@ -790,8 +792,8 @@ function fakeBackend(
   return { fetchFn, codes, sessions, calls };
 }
 
-function oidcDescriptorFixture(): SyncBackendDescriptor {
-  const descriptor = descriptorFixture();
+function oidcDescriptorFixture(deploymentId = 'backend-1'): SyncBackendDescriptor {
+  const descriptor = descriptorFixture(deploymentId);
   return { ...descriptor, authModes: ['enrollment-code', 'oidc-pkce'] };
 }
 
@@ -807,6 +809,80 @@ function workosDescriptorFixture(): SyncBackendDescriptor {
     },
   };
 }
+
+async function enrollTestSession(
+  dir: string,
+  backend: ReturnType<typeof fakeBackend>,
+  descriptor = oidcDescriptorFixture(),
+): Promise<void> {
+  initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+  pinBackend({ baseUrl: 'https://backend.example.test/', descriptor });
+  const minted = (await (
+    await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+      body: JSON.stringify({ accountId: 'account-1' }),
+    })
+  ).json()) as { code: string };
+  await enrollWithEnrollmentCode(minted.code);
+}
+
+describe('session backend isolation', () => {
+  it('keeps an unbound legacy session local and never sends its credentials to the selected backend', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    await enrollTestSession(dir, backend);
+
+    const sessionPath = join(dir, 'sync-mesh-session.json');
+    const persisted = JSON.parse(readFileSync(sessionPath, 'utf-8')) as {
+      backendId: string | null;
+      accessExpiresAt: string;
+    };
+    // Legacy session files predate backend association. Make it near-expiry so
+    // requestSync would exercise refresh if the runtime treated it as usable.
+    persisted.backendId = null;
+    persisted.accessExpiresAt = new Date(Date.now() + 30_000).toISOString();
+    writeFileSync(sessionPath, JSON.stringify(persisted), 'utf-8');
+
+    resetSyncRuntimeForTests();
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    activateBackend('backend-1');
+    backend.calls.length = 0;
+
+    expect(getRuntimeStatus().auth).toMatchObject({ state: 'signed-in', accountId: 'account-1' });
+    expect(activeSyncScope()).toBeNull();
+    expect(() => enableSync()).toThrow(/not bound to this backend/);
+    await refreshHostedEntitlement();
+    await requestSync();
+    const diagnostics = await exportSyncDiagnostics();
+    expect(diagnostics.remote).toBeNull();
+    await signOutSync();
+
+    expect(backend.calls).toEqual([]);
+  });
+
+  it('blocks account operations when the saved session belongs to a different backend', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    await enrollTestSession(dir, backend);
+    activateBackend('backend-1');
+    pinBackend({
+      baseUrl: 'https://other-backend.example.test/',
+      descriptor: oidcDescriptorFixture('backend-2'),
+    });
+    activateBackend('backend-2');
+    backend.calls.length = 0;
+
+    expect(getRuntimeStatus().auth.state).toBe('signed-in');
+    expect(activeSyncScope()).toBeNull();
+    expect(() => enableSync()).toThrow(/different backend/);
+    await expect(listCloudEnvironments()).rejects.toThrow(/different backend/);
+    await refreshHostedEntitlement();
+    expect((await exportSyncDiagnostics()).remote).toBeNull();
+
+    expect(backend.calls).toEqual([]);
+  });
+});
 
 describe('real auth transport (contract routes over injected fetch)', () => {
   it('runs one-shot WorkOS bootstrap without starting runtime timers or sockets', async () => {

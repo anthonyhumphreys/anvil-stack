@@ -1032,6 +1032,22 @@ export function listConflicts(scope: SyncScope): SyncConflict[] {
   return rows.map(mapConflict);
 }
 
+/** Returns the unresolved conflict for one entity, if it has one. */
+export function getUnresolvedConflict(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+): SyncConflict | null {
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM sync_conflicts
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ? AND resolved_at IS NULL
+       ORDER BY created_at ASC LIMIT 1`,
+    )
+    .get(...scopeParams(scope), entityType, entityId) as ConflictRow | undefined;
+  return row ? mapConflict(row) : null;
+}
+
 /**
  * Marks a conflict resolved. The caller produces the actual new conditional
  * mutation via recordLocalChange; resolution unblocks the entity for dispatch.
@@ -1171,6 +1187,26 @@ export function rejectDispatchedRows(
     );
 }
 
+/** Terminally retires conflicted mutations after a reset proves they converged. */
+export function rejectConflictedOutboxRows(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+  reason: string,
+): void {
+  getDb()
+    .prepare(
+      `UPDATE sync_outbox SET state = 'rejected', result_json = ?
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ? AND state = 'conflict'`,
+    )
+    .run(
+      JSON.stringify({ status: 'rejected', reason }),
+      ...scopeParams(scope),
+      entityType,
+      entityId,
+    );
+}
+
 export function deleteBinding(scope: SyncScope, entityType: string, entityId: string): void {
   getDb()
     .prepare(`DELETE FROM sync_bindings WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?`)
@@ -1239,11 +1275,14 @@ export interface InsertConflictInput {
   baseRevision: number | null;
   remoteRevision: number | null;
   kind: SyncConflict['kind'];
+  /** A completed reset scan is authoritative even if its revision is lower. */
+  remoteSnapshotIsAuthoritative?: boolean;
 }
 
 /**
- * Inserts an unresolved conflict unless one already exists for the entity.
- * Returns the existing-or-new conflict, or null when already resolved state.
+ * Inserts an unresolved conflict, or refreshes its remote side when a newer
+ * remote observation arrives. The original base and local snapshot remain
+ * stable while the conflict is open.
  */
 export function insertUnresolvedConflict(
   scope: SyncScope,
@@ -1257,7 +1296,29 @@ export function insertUnresolvedConflict(
        ORDER BY created_at ASC LIMIT 1`,
     )
     .get(...scopeParams(scope), input.entityType, input.entityId) as ConflictRow | undefined;
-  if (existing) return mapConflict(existing);
+  if (existing) {
+    // A reset scan can report remote absence (null revision); otherwise only
+    // accept a remote revision at least as new as the one already under review.
+    // This lets a conflict track the remote tip without letting replayed older
+    // pull changes move it backwards.
+    if (
+      input.remoteSnapshotIsAuthoritative === true ||
+      input.remoteRevision === null ||
+      existing.remote_revision === null ||
+      input.remoteRevision >= existing.remote_revision
+    ) {
+      db.prepare(
+        `UPDATE sync_conflicts
+         SET remote_payload_json = ?, remote_revision = ?, kind = ?
+         WHERE id = ? AND resolved_at IS NULL`,
+      ).run(input.remotePayloadJson, input.remoteRevision, input.kind, existing.id);
+    }
+    const refreshed = db.prepare('SELECT * FROM sync_conflicts WHERE id = ?').get(existing.id) as
+      | ConflictRow
+      | undefined;
+    if (!refreshed) throw new Error(`Failed to refresh conflict ${existing.id}.`);
+    return mapConflict(refreshed);
+  }
   const id = randomUUID();
   db.prepare(
     `INSERT INTO sync_conflicts

@@ -22,6 +22,7 @@ import { execFile } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
+import { BrowserWindow, app, dialog } from 'electron';
 import { meshExecEnv } from './agent-spawn-env.js';
 
 const execFileAsync = promisify(execFile);
@@ -47,6 +48,7 @@ export interface FinalizedRepoWorktree extends AttemptRepoWorktree {
 export interface VerificationOutcome {
   repositoryId: string;
   command: string;
+  approvalGranted: boolean;
   exitCode: number | null;
   timedOut: boolean;
   durationMs: number;
@@ -56,7 +58,58 @@ export interface VerificationOutcome {
 
 const GIT_TIMEOUT_MS = 30_000;
 const VERIFICATION_TIMEOUT_MS = 5 * 60_000;
+const VERIFICATION_APPROVAL_TIMEOUT_MS = 30_000;
 const LOG_TAIL_BYTES = 4 * 1024;
+
+export type VerificationApprovalTarget =
+  | { kind: 'remote-job'; jobId: string; attemptId: string }
+  | { kind: 'integration'; integrationId: string; runId: string };
+
+async function requestVerificationApproval(input: {
+  repositoryId: string;
+  command: string;
+  cwd: string;
+  target: VerificationApprovalTarget;
+}): Promise<boolean> {
+  if (!app.isReady()) return false;
+  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  // A headless or unattended worker has no local consent surface. Fail
+  // closed instead of trying to open a parentless prompt that can stall.
+  if (parent === undefined || !parent.isVisible() || parent.isMinimized()) return false;
+
+  const target =
+    input.target.kind === 'remote-job'
+      ? `Mesh job: ${input.target.jobId}\nAttempt: ${input.target.attemptId}`
+      : `Integration: ${input.target.integrationId}\nWorkflow run: ${input.target.runId}`;
+  const prompt = dialog.showMessageBox(parent, {
+    type: 'warning',
+    title: 'Local approval required for verification',
+    message: 'An Anvil Mesh task wants to run this command on your device.',
+    detail: [
+      target,
+      `Repository: ${input.repositoryId}`,
+      `Worktree: ${input.cwd}`,
+      `Command:\n${input.command}`,
+      'The command runs with your operating-system account permissions. Approve only if you trust it.',
+      'This approval expires in 30 seconds. A late response will be ignored.',
+    ].join('\n\n'),
+    buttons: ['Run once', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+
+  let timeout: NodeJS.Timeout | undefined;
+  const expired = new Promise<boolean>((resolve) => {
+    timeout = setTimeout(() => resolve(false), VERIFICATION_APPROVAL_TIMEOUT_MS);
+    timeout.unref?.();
+  });
+  try {
+    return (await Promise.race([prompt.then((result) => result.response === 0), expired])) === true;
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
 
 /**
  * Serializes ref-mutating git operations per source checkout (spec §451:
@@ -220,25 +273,34 @@ export async function disposeAttemptWorktrees(worktrees: AttemptRepoWorktree[]):
 /**
  * Runs one declared verification command in a worktree under the
  * restricted mesh exec env (no provider/git credentials — the command
- * text is remote-authored). Honest outcomes: exit code, timeout, and a
- * bounded output tail are recorded, never summarized away.
+ * text is remote-authored). Each command needs one-run native approval on
+ * the target device, bound to its job or integration, repository, and
+ * exact text. Headless and unattended executions fail closed.
  */
 export async function runVerificationCommand(input: {
   repositoryId: string;
   command: string;
   cwd: string;
+  target: VerificationApprovalTarget;
   timeoutMs?: number;
 }): Promise<VerificationOutcome> {
   const started = Date.now();
   const timeoutMs = input.timeoutMs ?? VERIFICATION_TIMEOUT_MS;
+  let approvalGranted = false;
   try {
-    // Executing a declared command is the feature: verification commands
-    // come from the job manifest, which only the account owner's mesh
-    // backend can dispatch to this enrolled device, and they run in a
-    // disposable worktree under the scrubbed meshExecEnv. If the trust
-    // model changes (e.g. third-party job sources), revisit before
-    // accepting remote-supplied commands.
-    // codeql[js/command-line-injection] manifest-declared command, executed in a disposable worktree with a scrubbed env
+    approvalGranted = await requestVerificationApproval(input);
+    if (!approvalGranted) {
+      return {
+        repositoryId: input.repositoryId,
+        command: input.command,
+        approvalGranted: false,
+        exitCode: null,
+        timedOut: false,
+        durationMs: Date.now() - started,
+        logTail: '',
+      };
+    }
+    // codeql[js/command-line-injection] execution requires a native, target-local approval bound to this exact command and target
     const { stdout, stderr } = await execFileAsync('sh', ['-c', input.command], {
       cwd: input.cwd,
       timeout: timeoutMs,
@@ -249,6 +311,7 @@ export async function runVerificationCommand(input: {
     return {
       repositoryId: input.repositoryId,
       command: input.command,
+      approvalGranted: true,
       exitCode: 0,
       timedOut: false,
       durationMs: Date.now() - started,
@@ -266,6 +329,7 @@ export async function runVerificationCommand(input: {
     return {
       repositoryId: input.repositoryId,
       command: input.command,
+      approvalGranted,
       exitCode: typeof err.code === 'number' ? err.code : null,
       timedOut,
       durationMs: Date.now() - started,

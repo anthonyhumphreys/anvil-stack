@@ -124,7 +124,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Stable account namespace retained for generic OIDC/self-host deployments. */
 export async function legacyOidcAccountId(issuer: string, sub: string): Promise<string> {
-  return `oidc_${await sha256Hex(`${issuer.replace(/\/+$/, '')}:${sub}`)}`;
+  let issuerEnd = issuer.length;
+  while (issuerEnd > 0 && issuer.charCodeAt(issuerEnd - 1) === 0x2f) {
+    issuerEnd -= 1;
+  }
+  const normalizedIssuer = issuer.slice(0, issuerEnd);
+  return `oidc_${await sha256Hex(`${normalizedIssuer}:${sub}`)}`;
 }
 
 interface SessionRow {

@@ -14,6 +14,14 @@ export { AccountCoordinator, SessionCoordinator };
 const RPC_BODY_MAX_BYTES = 512 * 1024;
 const AUTH_BODY_MAX_BYTES = 16 * 1024;
 
+function normalizePathname(pathname: string): string {
+  let end = pathname.length;
+  while (end > 1 && pathname.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return end === pathname.length ? pathname : pathname.slice(0, end);
+}
+
 function sessionStub(env: Env): DurableObjectStub {
   return env.SESSIONS.get(env.SESSIONS.idFromName('sessions'));
 }
@@ -145,7 +153,7 @@ async function forwardAuthRoute(
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const path = url.pathname.replace(/\/+$/, '') || '/';
+  const path = normalizePathname(url.pathname);
 
   // Self-host operator page. Hosted deployments keep account management on
   // the WorkOS website and must not expose this token-entry surface.
@@ -567,7 +575,18 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
       if (!response.ok) {
         return rpcErrorResponse(envelope.request.requestId, 'unauthenticated');
       }
-      return rpcSuccessResponse(envelope.request.requestId, await response.json());
+      const claims = (await response.json().catch(() => null)) as unknown;
+      if (typeof claims !== 'object' || claims === null || Array.isArray(claims)) {
+        return rpcErrorResponse(envelope.request.requestId, 'unauthenticated');
+      }
+      const { accountId, enrollmentId } = claims as {
+        accountId?: unknown;
+        enrollmentId?: unknown;
+      };
+      if (accountId !== auth.accountId || typeof enrollmentId !== 'string') {
+        return rpcErrorResponse(envelope.request.requestId, 'unauthenticated');
+      }
+      return rpcSuccessResponse(envelope.request.requestId, { accountId, enrollmentId });
     }
     // Hosted artifact sharing (share.*): metadata ops live on the session
     // object so a share id resolves globally; byte uploads ride

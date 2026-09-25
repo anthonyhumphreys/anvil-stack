@@ -20,7 +20,7 @@ export function WorkspaceBootstrapPanel({
 }: WorkspaceBootstrapPanelProps) {
   const [status, setStatus] = useState<WorkspaceBootstrapStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [shellConsent, setShellConsent] = useState(false);
+  const [localCodeConsent, setLocalCodeConsent] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -47,7 +47,7 @@ export function WorkspaceBootstrapPanel({
     setBusy(true);
     try {
       await window.anvil.workspace.bootstrapApprove(workspaceId, {
-        shellApproved: shellConsent,
+        shellApproved: localCodeConsent,
       });
       await refresh();
     } catch (err) {
@@ -58,7 +58,7 @@ export function WorkspaceBootstrapPanel({
   };
 
   const latestRun = status?.runs[0] ?? null;
-  const needsShell = status?.explanation?.usesShell === true;
+  const needsLocalCodeConsent = status?.explanation?.requiresLocalCodeConsent === true;
 
   return (
     <div
@@ -115,19 +115,24 @@ export function WorkspaceBootstrapPanel({
                   {status.explanation.steps.map((step) => (
                     <li
                       key={step.id}
-                      className="flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-tertiary/50 px-3 py-2 text-sm"
+                      className="rounded-lg border border-border-subtle bg-bg-tertiary/50 px-3 py-2 text-sm"
                     >
-                      <span className="shrink-0 rounded bg-bg-tertiary px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide text-text-tertiary">
-                        {step.kind}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">
-                        {step.summary}
-                      </span>
-                      {step.shell && (
-                        <span className="shrink-0 text-eyebrow font-semibold uppercase text-warning">
-                          shell
+                      <div className="flex items-center gap-2">
+                        <span className="shrink-0 rounded bg-bg-tertiary px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide text-text-tertiary">
+                          {step.kind}
                         </span>
-                      )}
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">
+                          {step.summary}
+                        </span>
+                        {step.requiresLocalCodeConsent && (
+                          <span className="shrink-0 text-eyebrow font-semibold uppercase text-warning">
+                            {step.shell ? 'shell' : 'local code'}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 break-all font-mono text-xs text-text-tertiary">
+                        Working directory: {step.workingDirectory}
+                      </p>
                     </li>
                   ))}
                 </ol>
@@ -149,17 +154,17 @@ export function WorkspaceBootstrapPanel({
               )}
             </div>
 
-            {needsShell && !status.approved && (
+            {needsLocalCodeConsent && !status.approved && (
               <label className="mb-4 flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm text-text-secondary">
                 <input
                   type="checkbox"
-                  checked={shellConsent}
-                  onChange={(event) => setShellConsent(event.target.checked)}
+                  checked={localCodeConsent}
+                  onChange={(event) => setLocalCodeConsent(event.target.checked)}
                   className="mt-0.5"
                 />
                 <span>
-                  This recipe uses shell interpretation. I understand shell steps can run arbitrary
-                  commands and approve them for this device.
+                  This recipe runs commands from the workspace. They can install software, change
+                  files, or execute repository code; I approve these steps for this device.
                 </span>
               </label>
             )}
@@ -168,7 +173,7 @@ export function WorkspaceBootstrapPanel({
               {!status.approved && (
                 <button
                   type="button"
-                  disabled={busy || (needsShell && !shellConsent)}
+                  disabled={busy || (needsLocalCodeConsent && !localCodeConsent)}
                   onClick={() => void approveAndRun()}
                   className="flex items-center gap-1.5 rounded-lg bg-accent px-3.5 py-2 text-sm font-medium text-bg-primary transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
                 >

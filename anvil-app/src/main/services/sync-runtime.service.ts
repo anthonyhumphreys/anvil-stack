@@ -160,6 +160,7 @@ import {
 } from './mesh-artifact.service.js';
 import { configureArtifactShareContext } from './artifact-share.service.js';
 import { decodePairingPayload, isPairingPayloadString } from '../../../cloud/contract/sealed.js';
+import { clearCompanionAuthCaches } from './companion-auth-cache.service.js';
 import {
   deriveSas,
   deviceTrustState,
@@ -375,6 +376,16 @@ let keyRotationBlockedScopeKey: string | null = null;
 /** Timestamp of the last attempted session.describe entitlement refresh. */
 let lastHostedRefreshAt = 0;
 
+type SyncSessionScopeFields = NonNullable<ReturnType<SyncAuthService['getSessionScopeFields']>>;
+
+/** A saved credential is usable only at the exact backend that issued it. */
+function sessionBoundToBackend(
+  backend: SyncBackendRecord,
+  fields: SyncSessionScopeFields | null = auth?.getSessionScopeFields() ?? null,
+): boolean {
+  return !backend.identityReviewRequired && fields !== null && fields.backendId === backend.id;
+}
+
 export interface SyncRuntimeInitOptions {
   /** Enables the spike enrollment fixture. Pass `!app.isPackaged`. */
   devSpikeEnabled?: boolean;
@@ -408,7 +419,13 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
     const scope = currentScope();
-    if (backend === null || fields === null || token === null) return null;
+    if (
+      backend === null ||
+      fields === null ||
+      token === null ||
+      !sessionBoundToBackend(backend, fields)
+    )
+      return null;
     return {
       apiUrl: apiUrlFor(backend),
       backendUrl: backend.baseUrl,
@@ -436,7 +453,13 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const backend = getActiveBackend();
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
-    if (backend === null || fields === null || token === null) return null;
+    if (
+      backend === null ||
+      fields === null ||
+      token === null ||
+      !sessionBoundToBackend(backend, fields)
+    )
+      return null;
     return {
       apiUrl: apiUrlFor(backend),
       backendUrl: backend.baseUrl,
@@ -448,9 +471,10 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   });
   configureMeshArtifactContext(() => {
     const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
     const scope = currentScope();
-    if (backend === null || token === null) return null;
+    if (backend === null || token === null || !sessionBoundToBackend(backend, fields)) return null;
     return {
       apiUrl: apiUrlFor(backend),
       accessToken: token,
@@ -460,8 +484,9 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   // Hosted artifact sharing: same session context; user-actor share.* ops.
   configureArtifactShareContext(() => {
     const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
-    if (backend === null || token === null) return null;
+    if (backend === null || token === null || !sessionBoundToBackend(backend, fields)) return null;
     return { apiUrl: apiUrlFor(backend), accessToken: token };
   });
   // SESSION-03: handoff orchestration reads the same session context; the
@@ -471,7 +496,13 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
     const scope = currentScope();
-    if (backend === null || fields === null || token === null) return null;
+    if (
+      backend === null ||
+      fields === null ||
+      token === null ||
+      !sessionBoundToBackend(backend, fields)
+    )
+      return null;
     return {
       apiUrl: apiUrlFor(backend),
       backendUrl: backend.baseUrl,
@@ -487,7 +518,13 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
     const scope = currentScope();
-    if (backend === null || fields === null || token === null) return null;
+    if (
+      backend === null ||
+      fields === null ||
+      token === null ||
+      !sessionBoundToBackend(backend, fields)
+    )
+      return null;
     return {
       apiUrl: apiUrlFor(backend),
       accessToken: token,
@@ -512,7 +549,14 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
     const scope = currentScope();
-    if (backend === null || fields === null || token === null || scope === null) return null;
+    if (
+      backend === null ||
+      fields === null ||
+      token === null ||
+      scope === null ||
+      !sessionBoundToBackend(backend, fields)
+    )
+      return null;
     const apiUrl = apiUrlFor(backend);
     const rpcOptions = fetchOverride === undefined ? {} : { fetchFn: fetchOverride };
     return {
@@ -712,8 +756,7 @@ function pinnedBackend(): SyncBackendRecord | null {
 function currentScope(): SyncScope | null {
   const backend = getActiveBackend();
   const fields = auth?.getSessionScopeFields() ?? null;
-  if (!backend || !fields) return null;
-  if (fields.backendId !== null && fields.backendId !== backend.id) return null;
+  if (!backend || fields === null || !sessionBoundToBackend(backend, fields)) return null;
   return {
     backendId: backend.id,
     accountId: fields.accountId,
@@ -730,8 +773,7 @@ function currentScope(): SyncScope | null {
 function reviewedSessionScope(): SyncScope | null {
   const backend = pinnedBackend();
   const fields = auth?.getSessionScopeFields() ?? null;
-  if (!backend || backend.identityReviewRequired || !fields) return null;
-  if (fields.backendId !== null && fields.backendId !== backend.id) return null;
+  if (!backend || fields === null || !sessionBoundToBackend(backend, fields)) return null;
   return {
     backendId: backend.id,
     accountId: fields.accountId,
@@ -1309,10 +1351,16 @@ export async function issueEnrollmentCode(options?: {
   if (!backend) {
     throw new Error('Pin a backend first.');
   }
-  const token = requireAuth().getAccessToken();
-  if (token === null) {
-    throw new Error('Sign in before issuing a pairing code.');
+  const fields = requireAuth().getSessionScopeFields();
+  if (!sessionBoundToBackend(backend, fields)) {
+    if (fields === null) throw new Error('Sign in before issuing a pairing code.');
+    if (fields.backendId === null) {
+      throw new Error('This saved device session is not bound to this backend. Sign in again.');
+    }
+    throw new Error('This device session belongs to a different backend. Sign out first.');
   }
+  const token = requireAuth().getAccessToken();
+  if (token === null) throw new Error('Sign in before issuing a pairing code.');
   const result = await postAuthRoute<EnrollmentCodeIssueResult>(
     { apiUrl: apiUrlFor(backend) },
     'enrollment-codes',
@@ -1335,7 +1383,6 @@ export async function issueEnrollmentCode(options?: {
   // code. Ephemeral-class codes never mint a pairing: environments get
   // task-scoped keys via wraps, never account key material.
   const scope = currentScope();
-  const fields = requireAuth().getSessionScopeFields();
   let pairingPayload: string | null = null;
   if (scope !== null && fields !== null && options?.enrollmentClass !== 'ephemeral') {
     try {
@@ -1362,7 +1409,13 @@ export async function requestCloudEnvironment(
   const token = requireAuth().getAccessToken();
   const scope = currentScope();
   const fields = requireAuth().getSessionScopeFields();
-  if (backend === null || token === null || scope === null || fields === null) {
+  if (
+    backend === null ||
+    token === null ||
+    scope === null ||
+    fields === null ||
+    !sessionBoundToBackend(backend, fields)
+  ) {
     throw new Error('Sign in before requesting an environment.');
   }
   const provisionerScope: ProvisionerScope = {
@@ -1395,7 +1448,13 @@ function currentProvisionerScope(): ProvisionerScope {
   const token = requireAuth().getAccessToken();
   const scope = currentScope();
   const fields = requireAuth().getSessionScopeFields();
-  if (backend === null || token === null || scope === null || fields === null) {
+  if (
+    backend === null ||
+    token === null ||
+    scope === null ||
+    fields === null ||
+    !sessionBoundToBackend(backend, fields)
+  ) {
     throw new Error('Sign in before managing cloud environment connections.');
   }
   return {
@@ -1457,7 +1516,16 @@ async function accountRpc<R>(operation: string, params: unknown): Promise<R> {
   if (!backend) {
     throw new Error('Pin a backend first.');
   }
-  const token = requireAuth().getAccessToken();
+  const service = requireAuth();
+  const fields = service.getSessionScopeFields();
+  if (!sessionBoundToBackend(backend, fields)) {
+    if (fields === null) throw new Error('Sign in first.');
+    if (fields.backendId === null) {
+      throw new Error('This saved device session is not bound to this backend. Sign in again.');
+    }
+    throw new Error('This device session belongs to a different backend. Sign out first.');
+  }
+  const token = service.getAccessToken();
   if (token === null) {
     throw new Error('Sign in first.');
   }
@@ -1550,8 +1618,17 @@ async function readOnlySyncPull(fence: {
   generation: number;
 }): Promise<void> {
   const backend = getActiveBackend() ?? pinnedBackend();
-  const token = requireAuth().getAccessToken();
-  if (backend === null || token === null) throw new Error('Sign in before reading account state.');
+  const service = requireAuth();
+  const fields = service.getSessionScopeFields();
+  const token = service.getAccessToken();
+  if (
+    backend === null ||
+    token === null ||
+    fields === null ||
+    !sessionBoundToBackend(backend, fields)
+  ) {
+    throw new Error('Sign in before reading account state on this backend.');
+  }
   const paths = resolveBackendPaths(backend.baseUrl, backend.descriptor, {
     allowLoopbackHttp: shouldAllowLoopbackHttp(backend.baseUrl),
   });
@@ -1732,6 +1809,7 @@ export async function resetEncryptedSyncAccount(
   }
   clearAccountCrypto(fence.scope);
   keyRotationBlockedScopeKey = null;
+  clearCompanionAuthCaches();
   requireAuth().signOutLocal();
   disconnectBackend();
   sessionExpired = false;
@@ -1835,6 +1913,7 @@ export async function revokeDevice(enrollmentId: string): Promise<DeviceRevokeRe
   const scope = currentScope();
   const generation = runtimeGeneration;
   const result = await accountRpc<DeviceRevokeResult>('device.revoke', { enrollmentId });
+  clearCompanionAuthCaches();
   if (
     scope !== null &&
     generation === runtimeGeneration &&
@@ -2396,7 +2475,7 @@ async function runSessionRefresh(): Promise<void> {
   }
   const generation = runtimeGeneration;
   const fields = service.getSessionScopeFields();
-  if (fields === null || (fields.backendId !== null && fields.backendId !== backend.id)) {
+  if (!sessionBoundToBackend(backend, fields)) {
     return;
   }
   try {
@@ -2436,7 +2515,10 @@ export function enableSync(): SyncRuntimeStatus {
   if (!fields) {
     throw new Error('Enroll this device before enabling Sync.');
   }
-  if (fields.backendId !== null && fields.backendId !== backend.id) {
+  if (fields.backendId !== backend.id) {
+    if (fields.backendId === null) {
+      throw new Error('This saved device session is not bound to this backend. Sign in again.');
+    }
     throw new Error('This device session belongs to a different backend. Sign out first.');
   }
   runtimeGeneration += 1;
@@ -2467,12 +2549,14 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   // Fence first: any in-flight engine work from the old session fails its
   // generation check at the next durable write.
   runtimeGeneration += 1;
+  clearCompanionAuthCaches();
   stopPolling();
   clearSessionRefresh();
   teardownLiveChannel();
   const backend = pinnedBackend();
   const service = requireAuth();
-  if (backend !== null) {
+  const fields = service.getSessionScopeFields();
+  if (backend !== null && sessionBoundToBackend(backend, fields)) {
     try {
       await service.revokeSession(revokeAgainst(backend));
     } catch {
@@ -2583,7 +2667,10 @@ export async function refreshDeviceIdentitiesForOneShot(): Promise<void> {
     const backend = requireReviewedBackend();
     const fields = requireAuth().getSessionScopeFields();
     if (fields === null) throw new Error('Enroll this device before refreshing identities.');
-    if (fields.backendId !== null && fields.backendId !== backend.id) {
+    if (fields.backendId !== backend.id) {
+      if (fields.backendId === null) {
+        throw new Error('This saved device session is not bound to this backend. Sign in again.');
+      }
       throw new Error('This device session belongs to a different backend. Sign out first.');
     }
     // `enableSync()` starts the socket, fallback poll, worker lease, and a
@@ -2692,7 +2779,7 @@ export async function refreshHostedEntitlement(): Promise<SyncHostedStatus | nul
     backend === null ||
     fields === null ||
     token === null ||
-    (fields.backendId !== null && fields.backendId !== backend.id)
+    !sessionBoundToBackend(backend, fields)
   ) {
     return currentHostedStatus();
   }
@@ -2794,7 +2881,13 @@ export async function exportSyncDiagnostics(): Promise<SyncDiagnostics> {
   let remote: SyncRemoteAccountStats | null = null;
   const backend = getActiveBackend() ?? pinnedBackend();
   const token = auth?.getAccessToken() ?? null;
-  if (backend !== null && token !== null) {
+  const fields = auth?.getSessionScopeFields() ?? null;
+  if (
+    backend !== null &&
+    token !== null &&
+    fields !== null &&
+    sessionBoundToBackend(backend, fields)
+  ) {
     try {
       const allowLoopbackHttp = shouldAllowLoopbackHttp(backend.baseUrl);
       const paths = resolveBackendPaths(backend.baseUrl, backend.descriptor, {
@@ -2810,13 +2903,10 @@ export async function exportSyncDiagnostics(): Promise<SyncDiagnostics> {
       remote = result.result.accountStats ?? null;
       // Same describe payload keeps the hosted row fresh without an extra
       // call; an omitted field (self-host) clears it.
-      const fields = auth?.getSessionScopeFields() ?? null;
-      if (fields !== null && (fields.backendId === null || fields.backendId === backend.id)) {
-        recordEntitlement(
-          { backendId: backend.id, accountId: fields.accountId },
-          result.result.entitlement ?? null,
-        );
-      }
+      recordEntitlement(
+        { backendId: backend.id, accountId: fields.accountId },
+        result.result.entitlement ?? null,
+      );
     } catch {
       remote = null;
     }
@@ -2850,7 +2940,13 @@ export async function requestSync(): Promise<void> {
   const backend = getActiveBackend();
   const fields = auth?.getSessionScopeFields() ?? null;
   const token = auth?.getAccessToken() ?? null;
-  if (!backend || !fields || token === null) return;
+  if (
+    !backend ||
+    !fields ||
+    token === null ||
+    !sessionBoundToBackend(backend, fields)
+  )
+    return;
   const allowLoopbackHttp = shouldAllowLoopbackHttp(backend.baseUrl);
   const paths = resolveBackendPaths(backend.baseUrl, backend.descriptor, { allowLoopbackHttp });
   const scope: SyncScope = {
@@ -2868,6 +2964,7 @@ export async function requestSync(): Promise<void> {
       active !== null &&
       !active.identityReviewRequired &&
       sessionFields !== null &&
+      sessionFields.backendId === scope.backendId &&
       activeToken === token &&
       active.id === scope.backendId &&
       sessionFields.accountId === scope.accountId &&
@@ -3050,8 +3147,13 @@ function connectLiveChannel(): void {
     stale.close(1000, 'superseded generation');
   }
   const backend = getActiveBackend();
+  const fields = auth?.getSessionScopeFields() ?? null;
   const token = auth?.getAccessToken() ?? null;
-  if (!backend || backend.identityReviewRequired || token === null) {
+  if (
+    !backend ||
+    token === null ||
+    !sessionBoundToBackend(backend, fields)
+  ) {
     liveState = 'offline';
     return;
   }

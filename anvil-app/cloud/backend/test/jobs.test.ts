@@ -843,6 +843,40 @@ describe('auto placement workspace readiness (PLACE-01)', () => {
     });
     expect(created.job.targetEnrollmentId).toBeUndefined();
     expect(created.job.placementExplanation).toMatch(/workspace readiness/);
+
+    const denied = await postRpc('job.claim', { jobId: created.job.id }, f.workerAuth);
+    expect(denied.status).toBe(409);
+    if (isRpcError(denied.body)) {
+      expect(denied.body.error.details?.['reason']).toBe('target-not-eligible');
+    }
+
+    // A later ready publication makes the still-queued job eligible. Claim
+    // resolves and persists the target inside its transaction.
+    await publishReplicas(f.workerAuth, [
+      { workspaceId: 'ws-1', definitionRevision: 'wsdef-rev-1', readiness: 'ready' },
+    ]);
+    const claimed = expectSuccess<JobClaimResult>(
+      await postRpc('job.claim', { jobId: created.job.id }, f.workerAuth),
+    );
+    expect(claimed.job.targetEnrollmentId).toBe(f.workerEnrollmentId);
+  });
+
+  it('does not let an underqualified worker claim an unresolved auto job', async () => {
+    const f = fixture('requirements-unresolved');
+    await publishPolicy(f.workerAuth);
+    await connectWorker(f.workerAuth);
+    await publishCapabilities(f.workerAuth);
+
+    const created = await createJob(f.sourceAuth, {
+      requestedTarget: { kind: 'auto', requirements: { capabilities: ['docker'] } },
+    });
+    expect(created.job.targetEnrollmentId).toBeUndefined();
+
+    const denied = await postRpc('job.claim', { jobId: created.job.id }, f.workerAuth);
+    expect(denied.status).toBe(409);
+    if (isRpcError(denied.body)) {
+      expect(denied.body.error.details?.['reason']).toBe('target-not-eligible');
+    }
   });
 
   it('resolves to the worker with a ready replica at the pinned revision', async () => {

@@ -6,8 +6,7 @@ import { safeStorage } from 'electron';
  */
 function storage(): typeof safeStorage | null {
   // Non-Electron contexts (tests, daemons) may mock `electron` without a
-  // safeStorage export; treat that the same as isEncryptionAvailable() →
-  // false and take the plain-buffer path below.
+  // safeStorage export; treat that the same as isEncryptionAvailable() → false.
   try {
     return safeStorage ?? null;
   } catch {
@@ -15,11 +14,19 @@ function storage(): typeof safeStorage | null {
   }
 }
 
+function availableStorage(): typeof safeStorage | null {
+  try {
+    const store = storage();
+    return store !== null && store.isEncryptionAvailable() ? store : null;
+  } catch {
+    return null;
+  }
+}
+
 export function encryptSecret(value: string): Buffer {
-  const store = storage();
-  if (store === null || !store.isEncryptionAvailable()) {
-    console.warn('[Auth] Encryption not available — storing as plain buffer');
-    return Buffer.from(value, 'utf-8');
+  const store = availableStorage();
+  if (store === null) {
+    throw new Error('Secure storage is unavailable; secret was not stored.');
   }
   return store.encryptString(value);
 }
@@ -43,10 +50,10 @@ function looksLikePlainTextBuffer(buffer: Buffer): boolean {
 
 export function decryptSecret(encrypted: Buffer | null, label = 'secret'): string | undefined {
   if (!encrypted) return undefined;
-  const store = storage();
-  if (store === null || !store.isEncryptionAvailable()) {
-    console.warn('[Auth] Encryption not available — reading as plain buffer');
-    return encrypted.toString('utf-8');
+  const store = availableStorage();
+  if (store === null) {
+    console.warn(`[Auth] Secure storage unavailable — treating ${label} as unset`);
+    return undefined;
   }
 
   try {

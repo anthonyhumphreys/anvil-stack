@@ -447,6 +447,15 @@ describe('sync-backend.service association', () => {
     expect(getBackendStatus().hostedBackendUrl).toBeNull();
   });
 
+  it('selects the configured endpoint for the deployment environment', () => {
+    vi.stubEnv('ANVIL_DEPLOYMENT_ENV', 'production');
+    vi.stubEnv('ANVIL_STAGING_HOSTED_BACKEND_URL', 'https://staging.example.test');
+    vi.stubEnv('ANVIL_PRODUCTION_HOSTED_BACKEND_URL', 'https://production.example.test');
+    vi.stubEnv('ANVIL_HOSTED_BACKEND_URL', 'https://legacy.example.test');
+
+    expect(getBackendStatus().hostedBackendUrl).toBe('https://production.example.test/');
+  });
+
   it('fills the integration prompt with build metadata and a stand-in digest', () => {
     pinBackend({ baseUrl: 'https://one.example/', descriptor: validDescriptor });
     const prompt = getIntegrationPrompt();

@@ -154,8 +154,27 @@ describe('session.attest', () => {
         `Bearer ${host.accessToken}`,
       ),
     );
-    expect(result.accountId).toBe(accountId);
-    expect(result.enrollmentId).toBe(phone.enrollmentId);
+    expect(result).toEqual({ accountId, enrollmentId: phone.enrollmentId });
+  });
+
+  it('does not disclose verified claims from another account', async () => {
+    const accountA = `acct-${crypto.randomUUID()}`;
+    const accountB = `acct-${crypto.randomUUID()}`;
+    const host = await enroll((await issueCode(accountA)).code, 'install-attest-cross-host');
+    const foreignPhone = await enroll(
+      (await issueCode(accountB)).code,
+      'install-attest-cross-phone',
+    );
+
+    const response = await postRpc(
+      'session.attest',
+      { accessToken: foreignPhone.accessToken },
+      `Bearer ${host.accessToken}`,
+    );
+
+    expect(response.status).toBe(401);
+    expect(isRpcError(response.body) && response.body.error.code).toBe('unauthenticated');
+    expect(response.body).not.toHaveProperty('result');
   });
 
   it('fails unauthenticated for an unknown token and malformed for empty input', async () => {

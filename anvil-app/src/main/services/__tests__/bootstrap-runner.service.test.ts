@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { runBootstrapRecipe } from '../bootstrap-runner.service';
 import type { BootstrapRecipe, BootstrapStepState } from '../../../../cloud/contract/bootstrap';
 
@@ -28,6 +31,7 @@ describe('bootstrap runner', () => {
       ]),
       {
         checkoutRoot: '/tmp',
+        shellApproved: true,
         onStepState: (id, state) => transitions.push([id, state]),
       },
     ).done;
@@ -46,7 +50,7 @@ describe('bootstrap runner', () => {
   it('stops at the first failure — later steps never run', async () => {
     const result = await runBootstrapRecipe(
       recipe([nodeStep('bad', 'process.exit(3)'), nodeStep('never', 'console.log("unreachable")')]),
-      { checkoutRoot: '/tmp' },
+      { checkoutRoot: '/tmp', shellApproved: true },
     ).done;
     expect(result.state).toBe('failed');
     expect(result.steps).toHaveLength(1);
@@ -67,6 +71,7 @@ describe('bootstrap runner', () => {
       ]),
       {
         checkoutRoot: '/tmp',
+        shellApproved: true,
         resolveEnv: (name) => (name === 'MY_BINDING' ? 'bound-value' : undefined),
       },
     ).done;
@@ -96,6 +101,73 @@ describe('bootstrap runner', () => {
     expect(result.steps[0].log).toContain('no explicit shell approval');
   });
 
+  it('requires local code consent for every argv command', async () => {
+    const commands = [
+      { id: 'osascript', argv: ['osascript', '-e', 'do shell script "echo unsafe"'] },
+      { id: 'package-manager', argv: ['pnpm', 'install'] },
+      { id: 'ordinary-argv', argv: ['echo', 'ordinary argv command'] },
+    ];
+    for (const command of commands) {
+      const result = await runBootstrapRecipe(
+        recipe([
+          {
+            ...nodeStep(command.id, 'process.exit(0)'),
+            argv: command.argv,
+          },
+        ]),
+        { checkoutRoot: '/tmp' },
+      ).done;
+      expect(result.state).toBe('failed');
+      expect(result.steps[0].log).toContain('argv step without explicit local code approval');
+    }
+  });
+
+  it('refuses a lexical working directory escape before spawning', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'anvil-bootstrap-root-'));
+    const outside = mkdtempSync(join(tmpdir(), 'anvil-bootstrap-outside-'));
+    try {
+      const result = await runBootstrapRecipe(
+        recipe([
+          {
+            ...nodeStep('escape', 'process.exit(0)'),
+            workingDirectory: `../${basename(outside)}`,
+          },
+        ]),
+        { checkoutRoot: root, shellApproved: true },
+      ).done;
+      expect(result.state).toBe('failed');
+      expect(result.steps[0].log).toContain('must be relative to the checkout root');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a symlinked working directory escape',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'anvil-bootstrap-root-'));
+      const outside = mkdtempSync(join(tmpdir(), 'anvil-bootstrap-outside-'));
+      try {
+        symlinkSync(outside, join(root, 'outside-link'), 'dir');
+        const result = await runBootstrapRecipe(
+          recipe([
+            {
+              ...nodeStep('escape', 'process.exit(0)'),
+              workingDirectory: 'outside-link',
+            },
+          ]),
+          { checkoutRoot: root, shellApproved: true },
+        ).done;
+        expect(result.state).toBe('failed');
+        expect(result.steps[0].log).toContain('resolves outside the checkout root');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+        rmSync(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('runs an approved shell step', async () => {
     const result = await runBootstrapRecipe(
       recipe([
@@ -123,7 +195,7 @@ describe('bootstrap runner', () => {
           timeoutMs: 150,
         },
       ]),
-      { checkoutRoot: '/tmp' },
+      { checkoutRoot: '/tmp', shellApproved: true },
     ).done;
     expect(result.state).toBe('unknown-outcome');
     expect(result.steps[0].timedOut).toBe(true);
@@ -132,6 +204,7 @@ describe('bootstrap runner', () => {
   it('cancel() terminates the in-flight process group', async () => {
     const handle = runBootstrapRecipe(recipe([nodeStep('sleep', 'setTimeout(() => {}, 60000)')]), {
       checkoutRoot: '/tmp',
+      shellApproved: true,
     });
     setTimeout(() => handle.cancel(), 50);
     const result = await handle.done;
@@ -143,7 +216,7 @@ describe('bootstrap runner', () => {
     const chunks: string[] = [];
     const result = await runBootstrapRecipe(
       recipe([nodeStep('logs', 'console.log("a"); console.error("b")')]),
-      { checkoutRoot: '/tmp', onStepLog: (_id, chunk) => chunks.push(chunk) },
+      { checkoutRoot: '/tmp', shellApproved: true, onStepLog: (_id, chunk) => chunks.push(chunk) },
     ).done;
     expect(result.state).toBe('verified');
     expect(chunks.join('')).toContain('a');

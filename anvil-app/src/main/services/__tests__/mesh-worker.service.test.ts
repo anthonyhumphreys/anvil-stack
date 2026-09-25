@@ -10,9 +10,18 @@ import type { ExecutionAttempt, MeshJob } from '../../../../cloud/contract/jobs'
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
 
+const meshVerificationDialog = vi.hoisted(() => ({
+  showMessageBox: vi.fn().mockResolvedValue({ response: 0 }),
+}));
+
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  app: { getPath: () => '/tmp', getVersion: () => 'test', isReady: () => true },
+  BrowserWindow: {
+    getFocusedWindow: () => ({ isVisible: () => true, isMinimized: () => false }),
+    getAllWindows: () => [{ isVisible: () => true, isMinimized: () => false }],
+  },
+  dialog: { showMessageBox: meshVerificationDialog.showMessageBox },
   safeStorage: {
     isEncryptionAvailable: () => true,
     encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf-8'),
@@ -140,6 +149,7 @@ beforeEach(() => {
   db.exec('DELETE FROM mesh_worker_state; DELETE FROM mesh_attempts; DELETE FROM mesh_task_keys;');
   rpcCalls.length = 0;
   rpcHandler = () => ({});
+  meshVerificationDialog.showMessageBox.mockClear().mockResolvedValue({ response: 0 });
   resetMeshWorkerForTests();
   configureMeshWorkerContext(() => CTX);
 });

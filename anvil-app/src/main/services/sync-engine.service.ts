@@ -38,6 +38,7 @@ import {
   deleteMutableOutboxRows,
   deletePendingOutboxRows,
   getBinding,
+  getUnresolvedConflict,
   getSyncState,
   insertUnresolvedConflict,
   listBindings,
@@ -46,6 +47,7 @@ import {
   listSyncScopesForEntity,
   nextBatch,
   recordLocalChange,
+  rejectConflictedOutboxRows,
   rejectDispatchedRows,
   resolveConflict,
   setBindingBase,
@@ -903,6 +905,7 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
     for (const entity of staged) {
       const key = `${entity.entityType}\0${entity.entityId}`;
       const binding = bindings.get(key);
+      const openConflict = getUnresolvedConflict(scope, entity.entityType, entity.entityId);
       const quarantineReason = entityQuarantineReason(
         entity.entityType,
         entity.schemaVersion,
@@ -955,6 +958,7 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
           localPayloadJson: domainJson,
           remotePayloadJson: entity.payloadJson,
           remoteRevision: entity.revision,
+          remoteSnapshotIsAuthoritative: true,
         });
         continue;
       }
@@ -973,6 +977,7 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
 
       const domainJson = readLocalPayloadJson(entity.entityType, entity.entityId);
       const dirty =
+        openConflict !== null ||
         binding.localEditGeneration > binding.acknowledgedGeneration ||
         listMutableOutboxRows(scope, entity.entityType, entity.entityId).length > 0;
       if (!dirty) {
@@ -1010,6 +1015,8 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
         acknowledgeBindingLocalEdits(scope, entity.entityType, entity.entityId);
         deletePendingOutboxRows(scope, entity.entityType, entity.entityId);
         rejectDispatchedRows(scope, entity.entityType, entity.entityId, 'reset-uncertain');
+        rejectConflictedOutboxRows(scope, entity.entityType, entity.entityId, 'reset-converged');
+        resolveConvergedConflict(scope, openConflict, entity.payloadJson, entity.revision);
         continue;
       }
       // Dirty and differing: adopt the staged remote as the new base and keep
@@ -1024,6 +1031,7 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
         localPayloadJson: domainJson,
         remotePayloadJson: entity.payloadJson,
         remoteRevision: entity.revision,
+        remoteSnapshotIsAuthoritative: true,
       });
       setBindingBase(
         scope,
@@ -1032,14 +1040,17 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
         entity.revision,
         entity.payloadJson,
       );
+      rejectDispatchedRows(scope, entity.entityType, entity.entityId, 'reset-uncertain');
     }
 
     // Bound entities absent from the rebuilt remote state.
     for (const binding of bindings.values()) {
       const key = `${binding.entityType}\0${binding.entityId}`;
       if (stagedKeys.has(key)) continue;
+      const openConflict = getUnresolvedConflict(scope, binding.entityType, binding.entityId);
       const domainJson = readLocalPayloadJson(binding.entityType, binding.entityId);
       const dirty =
+        openConflict !== null ||
         binding.localEditGeneration > binding.acknowledgedGeneration ||
         listMutableOutboxRows(scope, binding.entityType, binding.entityId).length > 0;
       if (!dirty) {
@@ -1054,6 +1065,7 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
         // both sides converged on deletion.
         deleteMutableOutboxRows(scope, binding.entityType, binding.entityId);
         deleteBinding(scope, binding.entityType, binding.entityId);
+        resolveConvergedConflict(scope, openConflict, null, null);
         continue;
       }
       // Remote deleted it while local edits were unacknowledged: preserve the
@@ -1076,6 +1088,28 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
     clearScanStaging(scope);
   });
   run();
+}
+
+/** Refreshes and resolves a conflict after a reset proves both sides match. */
+function resolveConvergedConflict(
+  scope: SyncScope,
+  conflict: SyncConflict | null,
+  remotePayloadJson: string | null,
+  remoteRevision: number | null,
+): void {
+  if (conflict === null) return;
+  insertUnresolvedConflict(scope, {
+    basePayloadJson: conflict.basePayloadJson,
+    baseRevision: conflict.baseRevision,
+    entityId: conflict.entityId,
+    entityType: conflict.entityType,
+    kind: conflict.kind,
+    localPayloadJson: conflict.localPayloadJson,
+    remotePayloadJson,
+    remoteRevision,
+    remoteSnapshotIsAuthoritative: true,
+  });
+  resolveConflict(conflict.id, 'use-remote');
 }
 
 export interface ResolveSyncConflictInput {
@@ -1361,6 +1395,27 @@ function applySyncedChange(scope: SyncScope, enrollmentId: string, change: Synce
       : entityQuarantineReason(change.entityType, change.schemaVersion, payloadJson);
   if (binding) {
     if (binding.baseRevision !== null && change.revision <= binding.baseRevision) {
+      return;
+    }
+    const openConflict = getUnresolvedConflict(scope, change.entityType, change.entityId);
+    if (openConflict) {
+      const localPayloadJson = readLocalPayloadJson(change.entityType, change.entityId);
+      const kind: SyncConflictKind =
+        payloadJson === null && localPayloadJson !== null
+          ? 'edit-delete'
+          : payloadJson !== null && localPayloadJson === null
+            ? 'delete-edit'
+            : 'edit-edit';
+      insertUnresolvedConflict(scope, {
+        basePayloadJson: openConflict.basePayloadJson,
+        baseRevision: openConflict.baseRevision,
+        entityId: change.entityId,
+        entityType: change.entityType,
+        kind,
+        localPayloadJson: openConflict.localPayloadJson,
+        remotePayloadJson: payloadJson,
+        remoteRevision: change.revision,
+      });
       return;
     }
     const dirty =

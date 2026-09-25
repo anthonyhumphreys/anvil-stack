@@ -2,7 +2,22 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const electronMocks = vi.hoisted(() => ({
+  getAllWindows: vi.fn(() => [{ isVisible: () => true, isMinimized: () => false }]),
+  getFocusedWindow: vi.fn(() => null),
+  showMessageBox: vi.fn().mockResolvedValue({ response: 0 }),
+}));
+
+vi.mock('electron', () => ({
+  app: { isReady: () => true },
+  BrowserWindow: {
+    getAllWindows: electronMocks.getAllWindows,
+    getFocusedWindow: electronMocks.getFocusedWindow,
+  },
+  dialog: { showMessageBox: electronMocks.showMessageBox },
+}));
 import {
   allocateAttemptWorktrees,
   disposeAttemptWorktrees,
@@ -35,7 +50,14 @@ function makeSourceRepo(suffix: string): { repoDir: string; head: string } {
   return { repoDir, head: git(repoDir, 'rev-parse', 'HEAD') };
 }
 
-beforeEach(() => resetMeshWorktreesForTests());
+beforeEach(() => {
+  resetMeshWorktreesForTests();
+  electronMocks.getAllWindows.mockReturnValue([
+    { isVisible: () => true, isMinimized: () => false },
+  ]);
+  electronMocks.getFocusedWindow.mockReturnValue(null);
+  electronMocks.showMessageBox.mockReset().mockResolvedValue({ response: 0 });
+});
 
 describe('allocateAttemptWorktrees', () => {
   it('creates a linked worktree on a fresh attempt branch at the pinned commit', async () => {
@@ -208,15 +230,27 @@ describe('runVerificationCommand', () => {
         repositoryId: 'p-1',
         command: 'echo hello-verify',
         cwd: dir,
+        target: { kind: 'remote-job', jobId: 'job-1', attemptId: 'attempt-1' },
       });
       expect(ok.exitCode).toBe(0);
+      expect(ok.approvalGranted).toBe(true);
       expect(ok.timedOut).toBe(false);
       expect(ok.logTail).toContain('hello-verify');
+      expect(electronMocks.showMessageBox).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          detail: expect.stringContaining('Mesh job: job-1\nAttempt: attempt-1\n\nRepository: p-1'),
+        }),
+      );
+      expect(electronMocks.showMessageBox.mock.calls[0]?.[1]?.detail).toContain(
+        'Command:\necho hello-verify',
+      );
 
       const bad = await runVerificationCommand({
         repositoryId: 'p-1',
         command: 'echo fail-out >&2 && exit 3',
         cwd: dir,
+        target: { kind: 'remote-job', jobId: 'job-1', attemptId: 'attempt-1' },
       });
       expect(bad.exitCode).toBe(3);
       expect(bad.logTail).toContain('fail-out');
@@ -232,10 +266,59 @@ describe('runVerificationCommand', () => {
         repositoryId: 'p-1',
         command: 'sleep 5',
         cwd: dir,
+        target: { kind: 'remote-job', jobId: 'job-timeout', attemptId: 'attempt-timeout' },
         timeoutMs: 300,
       });
       expect(outcome.timedOut).toBe(true);
       expect(outcome.exitCode).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not execute a command after local approval is declined', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'anvil-verify-'));
+    const marker = join(dir, 'should-not-exist');
+    const command = `touch ${marker}`;
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1 });
+    try {
+      const outcome = await runVerificationCommand({
+        repositoryId: 'repo-target',
+        command,
+        cwd: dir,
+        target: { kind: 'remote-job', jobId: 'job-declined', attemptId: 'attempt-declined' },
+      });
+
+      expect(outcome).toMatchObject({ approvalGranted: false, exitCode: null, timedOut: false });
+      expect(existsSync(marker)).toBe(false);
+      const detail = electronMocks.showMessageBox.mock.calls[0]?.[1]?.detail as string;
+      expect(detail).toContain('Mesh job: job-declined\nAttempt: attempt-declined');
+      expect(detail).toContain('Repository: repo-target');
+      expect(detail).toContain(`Command:\n${command}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never runs a remote command without an interactive local approval surface', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'anvil-verify-'));
+    const marker = join(dir, 'should-not-exist');
+    electronMocks.getAllWindows.mockReturnValue([]);
+    try {
+      const outcome = await runVerificationCommand({
+        repositoryId: 'p-1',
+        command: `touch ${marker}`,
+        cwd: dir,
+        target: { kind: 'remote-job', jobId: 'job-unattended', attemptId: 'attempt-unattended' },
+      });
+
+      expect(outcome).toMatchObject({
+        approvalGranted: false,
+        exitCode: null,
+        timedOut: false,
+      });
+      expect(existsSync(marker)).toBe(false);
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

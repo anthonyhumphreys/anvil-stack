@@ -2144,13 +2144,16 @@ export interface WorkspaceBootstrapStatus {
   explanation: {
     stepCount: number;
     usesShell: boolean;
+    requiresLocalCodeConsent: boolean;
     installsPackages: boolean;
     envNames: string[];
     steps: Array<{
       id: string;
       kind: string;
       summary: string;
+      workingDirectory: string;
       shell: boolean;
+      requiresLocalCodeConsent: boolean;
       timeoutMs: number;
       retry: string;
     }>;

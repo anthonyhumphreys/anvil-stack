@@ -3114,9 +3114,10 @@ export class AccountCoordinator extends DurableObject<Env> {
   // ---- MESH-02 job/attempt lifecycle --------------------------------------
   // Durable jobs and attempts are account metadata: their writes never touch
   // the sync change sequence and are never entity changes (spec §9/§13).
-  // Placement is resolved and persisted at create; claim enforces liveness,
-  // source policy, deadline, capacity, and duplicate checks in one
-  // transaction before allocating a per-job monotonic fence. Renew and
+  // Placement is resolved at create when possible; unresolved auto jobs are
+  // resolved again at claim. Claim enforces placement, liveness, source
+  // policy, deadline, capacity, and duplicate checks in one transaction
+  // before allocating a per-job monotonic fence. Renew and
   // report require attempt + incarnation + fence to match; a stale report is
   // rejected but its recoverable result is retained on the attempt row.
 
@@ -3254,7 +3255,7 @@ export class AccountCoordinator extends DurableObject<Env> {
    */
   private resolvePlacement(
     auth: SpikeAuth,
-    create: JobCreateParams,
+    create: Pick<JobCreateParams, 'kind' | 'requestedTarget' | 'inputManifest'>,
     now: number,
   ): { targetEnrollmentId: string | null; explanation: string } {
     const requested = create.requestedTarget;
@@ -3467,9 +3468,10 @@ export class AccountCoordinator extends DurableObject<Env> {
   /**
    * `job.claim` (worker actor): one transaction checks, in order —
    * 1. caller holds a live worker incarnation (requireWorker + lease);
-   * 2. job is `queued`, unresolved-or-targeted-at-caller, inside its
-   *    queueDeadline (an expired deadline marks the job failed lazily);
-   * 3. the target worker's policy authorizes the source enrollment;
+   * 2. job is `queued`, targeted-at-caller or has an auto target re-resolved
+   *    to the caller, and inside its queueDeadline;
+   * 3. placement eligibility and the target worker's policy authorize the
+   *    source enrollment;
    * 4. capacity: active attempts < min(policy, capabilities, backend cap);
    * 5. no other non-terminal attempt exists for the job.
    * Then it allocates the next fence, creates the `claimed` attempt, and
@@ -3507,6 +3509,49 @@ export class AccountCoordinator extends DurableObject<Env> {
       }
       if (!policyAllowsSource(policy, job.source_enrollment_id, auth.enrollmentId)) {
         throw new RpcFailure('forbidden', { reason: 'source-not-allowed' });
+      }
+      if (job.target_enrollment_id === null) {
+        if (!isJobKind(job.kind)) {
+          throw new RpcFailure('unavailable', { reason: 'corrupt-job' });
+        }
+        const requestedTarget = JSON.parse(job.requested_target) as RequestedTarget;
+        if (requestedTarget.kind !== 'auto') {
+          if (requestedTarget.kind === 'environment') {
+            // An environment target is resolved by environment.report after
+            // enrollment. It must not fall back to whichever worker asks first.
+            throw new RpcFailure('conflict', { reason: 'target-not-resolved' });
+          }
+          throw new RpcFailure('unavailable', { reason: 'corrupt-job' });
+        }
+        const placement = this.resolvePlacement(
+          { ...auth, enrollmentId: job.source_enrollment_id },
+          {
+            kind: job.kind,
+            requestedTarget,
+            inputManifest: JSON.parse(job.input_manifest) as ExecutionManifest,
+          },
+          now,
+        );
+        if (placement.targetEnrollmentId === null) {
+          throw new RpcFailure('conflict', { reason: 'target-not-eligible' });
+        }
+        if (placement.targetEnrollmentId !== auth.enrollmentId) {
+          throw new RpcFailure('forbidden', {
+            reason: 'not-the-target',
+            targetEnrollmentId: placement.targetEnrollmentId,
+          });
+        }
+        this.ctx.storage.sql.exec(
+          `UPDATE jobs SET target_enrollment_id = ?, placement_explanation = ?, updated_at = ?
+           WHERE job_id = ? AND target_enrollment_id IS NULL`,
+          placement.targetEnrollmentId,
+          placement.explanation,
+          now,
+          jobId,
+        );
+        job.target_enrollment_id = placement.targetEnrollmentId;
+        job.placement_explanation = placement.explanation;
+        job.updated_at = now;
       }
       const capacity = effectiveConcurrencyCap(
         policy,

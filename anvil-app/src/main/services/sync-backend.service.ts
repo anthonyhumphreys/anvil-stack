@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { app } from 'electron';
 import { normalizeBaseUrl, toPublicDescriptor } from './sync-backend-client.service.js';
+import { resolveHostedBackendUrl } from './hosted-backend-config.js';
 import { getDb } from '../db/database.js';
 import {
   resolveBackendPaths,
@@ -70,14 +71,12 @@ function nowIso(): string {
 }
 
 function configuredHostedBackendUrl(): string | null {
-  const configured = process.env.ANVIL_HOSTED_BACKEND_URL?.trim();
-  if (!configured) return null;
-  try {
-    const parsed = new URL(normalizeBaseUrl(configured));
-    return parsed.protocol === 'https:' ? parsed.href : null;
-  } catch {
-    return null;
-  }
+  return resolveHostedBackendUrl({
+    deploymentEnv: process.env.ANVIL_DEPLOYMENT_ENV,
+    stagingUrl: process.env.ANVIL_STAGING_HOSTED_BACKEND_URL,
+    productionUrl: process.env.ANVIL_PRODUCTION_HOSTED_BACKEND_URL,
+    legacyUrl: process.env.ANVIL_HOSTED_BACKEND_URL,
+  });
 }
 
 function isLoopbackHost(baseUrl: string): boolean {

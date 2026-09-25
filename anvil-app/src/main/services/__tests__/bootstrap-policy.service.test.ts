@@ -75,7 +75,7 @@ describe('bootstrap digest + approval gate', () => {
       recipe: RECIPE,
       repositoryCommits: COMMITS,
       executionPolicy: POLICY,
-      shellApproved: false,
+      shellApproved: true,
     });
     expect(getBootstrapApproval(WS, approval.digest)).not.toBeNull();
     expect(isBootstrapApproved(WS, approval.digest, RECIPE)).toBe(true);
@@ -107,6 +107,54 @@ describe('bootstrap digest + approval gate', () => {
     expect(isBootstrapApproved(WS, approval.digest, SHELL_RECIPE)).toBe(true);
   });
 
+  it('keeps remote digest approvals parked for every argv command without local consent', () => {
+    const recipes: BootstrapRecipe[] = [
+      ['osascript', '-e', 'do shell script "echo unsafe"'],
+      ['pnpm', 'install'],
+      ['echo', 'ordinary argv command'],
+    ].map((argv, index) => ({
+      schemaVersion: 1,
+      steps: [
+        {
+          id: `command-${index}`,
+          kind: 'command',
+          workingDirectory: '.',
+          argv,
+          timeoutMs: 5_000,
+          envNames: [],
+          retry: 'safe',
+        },
+      ],
+    }));
+
+    for (const recipe of recipes) {
+      const approval = recordBootstrapApproval(WS, {
+        recipe,
+        repositoryCommits: COMMITS,
+        executionPolicy: POLICY,
+        shellApproved: false,
+      });
+      expect(isBootstrapApproved(WS, approval.digest, recipe)).toBe(false);
+      const run = startBootstrapRun({
+        workspaceId: WS,
+        recipe,
+        repositoryCommits: COMMITS,
+        executionPolicy: POLICY,
+        checkoutRoot: '/tmp',
+      });
+      expect(run.handle).toBeNull();
+      expect(getBootstrapRun(run.runId)?.state).toBe('awaiting-approval');
+    }
+
+    const ordinaryArgvApproval = recordBootstrapApproval(WS, {
+      recipe: RECIPE,
+      repositoryCommits: COMMITS,
+      executionPolicy: POLICY,
+      shellApproved: true,
+    });
+    expect(isBootstrapApproved(WS, ordinaryArgvApproval.digest, RECIPE)).toBe(true);
+  });
+
   it('explain payload surfaces shell usage, env names, and package installs', () => {
     const recipe: BootstrapRecipe = {
       schemaVersion: 1,
@@ -134,8 +182,10 @@ describe('bootstrap digest + approval gate', () => {
     const explanation = explainBootstrapRecipe(recipe);
     expect(explanation.stepCount).toBe(2);
     expect(explanation.usesShell).toBe(true);
+    expect(explanation.requiresLocalCodeConsent).toBe(true);
     expect(explanation.installsPackages).toBe(true);
     expect(explanation.envNames).toEqual(['NODE_AUTH_TOKEN']);
+    expect(explanation.steps[1].workingDirectory).toBe('.');
   });
 });
 
@@ -159,7 +209,7 @@ describe('journaled bootstrap run', () => {
       recipe: RECIPE,
       repositoryCommits: COMMITS,
       executionPolicy: POLICY,
-      shellApproved: false,
+      shellApproved: true,
     });
     const { runId, handle } = startBootstrapRun({
       workspaceId: WS,
@@ -196,7 +246,7 @@ describe('journaled bootstrap run', () => {
       recipe: failing,
       repositoryCommits: COMMITS,
       executionPolicy: POLICY,
-      shellApproved: false,
+      shellApproved: true,
     });
     const { runId, handle } = startBootstrapRun({
       workspaceId: WS,
@@ -217,10 +267,21 @@ describe('crash recovery (verifier)', () => {
   function seedInterruptedRun(recipe: BootstrapRecipe): string {
     setWorkspaceBootstrap(WS, recipe);
     const runId = 'brun-interrupted';
+    const digest = computeBootstrapDigest({
+      recipe,
+      repositoryCommits: COMMITS,
+      executionPolicy: POLICY,
+    });
+    recordBootstrapApproval(WS, {
+      recipe,
+      repositoryCommits: COMMITS,
+      executionPolicy: POLICY,
+      shellApproved: true,
+    });
     db.prepare(
       `INSERT INTO bootstrap_runs (id, workspace_id, digest, state, created_at, updated_at)
-       VALUES (?, ?, 'd', 'running', ?, ?)`,
-    ).run(runId, WS, new Date().toISOString(), new Date().toISOString());
+       VALUES (?, ?, ?, 'running', ?, ?)`,
+    ).run(runId, WS, digest, new Date().toISOString(), new Date().toISOString());
     db.prepare(
       `INSERT INTO bootstrap_run_steps (run_id, step_id, state, updated_at) VALUES (?, 'install', 'running', ?)`,
     ).run(runId, new Date().toISOString());

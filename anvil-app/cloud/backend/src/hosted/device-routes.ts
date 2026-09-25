@@ -211,7 +211,9 @@ export async function handleHostedDataStatus(
   const resolved = await resolveBillingAccount(body, db);
   if ('error' in resolved) return resolved.error;
   const { account } = resolved;
-  if (account.lifecycle !== 'active') {
+  // Keep deletion status readable while a purge is in flight so the
+  // account-object state can reconcile the billing lifecycle to `deleted`.
+  if (account.lifecycle === 'deleted') {
     return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
   }
   if (account.sync_account_id === null) {
@@ -231,13 +233,18 @@ export async function handleHostedDataStatus(
   const deletion =
     (await probeAccountDeletion(env, syncAccountId)) ??
     ({ state: tombstoned ? 'deleting' : 'none' } as const);
+  if (deletion.state === 'deleted') {
+    await markBillingLifecycle(db, account.id, 'deleted');
+  } else if (deletion.state === 'deleting' || tombstoned) {
+    await markBillingLifecycle(db, account.id, 'deleting');
+  }
   return Response.json({ syncAccountId, tombstoned, deletion });
 }
 
 /**
  * `POST /internal/hosted/delete-account` — starts deletion of the mapped
  * sync account (tombstone + session revocation + retryable purge, all
- * inside the session object) and marks the billing row `deleting`.
+ * inside the session object) and reconciles its state into the billing row.
  * Idempotent: a repeat while `deleting` re-drives the same flow and
  * reports current state; only a fully `deleted` row is denied.
  */
@@ -278,6 +285,9 @@ export async function handleHostedDeleteAccount(
     await audit(db, account.id, 'account.delete-requested', {
       syncAccountId: account.sync_account_id,
     });
+  }
+  if (payload.state === 'deleted') {
+    await markBillingLifecycle(db, account.id, 'deleted');
   }
   return Response.json({ state: payload.state });
 }

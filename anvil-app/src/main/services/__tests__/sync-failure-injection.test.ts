@@ -28,6 +28,15 @@ vi.mock('../persona.service.js', () => ({
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf-8'),
+    decryptString: (encrypted: Buffer) => {
+      const text = encrypted.toString('utf-8');
+      if (!text.startsWith('enc:')) throw new Error('Invalid test safeStorage payload.');
+      return text.slice('enc:'.length);
+    },
+  },
 }));
 
 import { rpc, type BackendConnection, type RpcResult } from '../sync-backend-client.service';

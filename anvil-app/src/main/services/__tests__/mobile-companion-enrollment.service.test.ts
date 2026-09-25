@@ -155,6 +155,7 @@ beforeEach(() => {
   clearCompanionAttestationCache();
   mocks.auth.state = 'signed-in';
   mocks.auth.accountId = 'acct-1';
+  mocks.auth.expiresAt = 'session-1';
   mocks.attestDeviceAccessToken.mockReset();
   mocks.attestDeviceAccessToken.mockImplementation(async (token: string) =>
     token === ENROLLMENT_TOKEN ? { accountId: 'acct-1', enrollmentId: 'enr-phone' } : null,
@@ -188,6 +189,103 @@ describe('account enrollment authentication', () => {
     const res = await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
     expect(res.status).toBe(401);
     expect(listCompanionEnrollmentPolicies()).toHaveLength(0);
+  });
+
+  it('re-attests after sign-out and a new session for the same account', async () => {
+    await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
+    expect(mocks.attestDeviceAccessToken).toHaveBeenCalledTimes(1);
+
+    mocks.auth.state = 'signed-out';
+    mocks.auth.accountId = null;
+    expect((await api('/api/chat/threads', { token: ENROLLMENT_TOKEN })).status).toBe(401);
+
+    mocks.auth.state = 'signed-in';
+    mocks.auth.accountId = 'acct-1';
+    mocks.auth.expiresAt = 'session-2';
+    await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
+    expect(mocks.attestDeviceAccessToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-attests after the companion authorization cache is cleared', async () => {
+    await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
+    clearCompanionAttestationCache();
+    await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
+
+    expect(mocks.attestDeviceAccessToken).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('event stream tickets', () => {
+  it('exchanges a bearer for a short-lived, single-use stream ticket', async () => {
+    const issued = await api('/api/events/ticket', { method: 'POST', token: PAIRED_TOKEN });
+    expect(issued.status).toBe(201);
+    expect(issued.body.ticket).toEqual(expect.any(String));
+    const expiresAt = Date.parse(String(issued.body.expiresAt));
+    expect(expiresAt).toBeGreaterThan(Date.now());
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 16_000);
+
+    const response = await fetch(
+      `${baseUrl}/api/events?ticket=${encodeURIComponent(String(issued.body.ticket))}`,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const reader = response.body?.getReader();
+    expect(reader).toBeDefined();
+    const firstChunk = await reader?.read();
+    expect(new TextDecoder().decode(firstChunk?.value)).toContain('event: ready');
+    await reader?.cancel();
+
+    const reused = await api(
+      `/api/events?ticket=${encodeURIComponent(String(issued.body.ticket))}`,
+    );
+    expect(reused.status).toBe(401);
+  });
+
+  it('rejects access tokens passed directly in the event stream URL', async () => {
+    const res = await api(`/api/events?access_token=${encodeURIComponent(PAIRED_TOKEN)}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects access tokens passed in attachment URLs', async () => {
+    const res = await api(
+      `/api/chat/attachments/attachment-1?access_token=${encodeURIComponent(PAIRED_TOKEN)}`,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('rechecks enrollment policy when consuming a ticket', async () => {
+    await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
+    setCompanionEnrollmentPolicy('enr-phone', 'observe');
+    const issued = await api('/api/events/ticket', { method: 'POST', token: ENROLLMENT_TOKEN });
+    expect(issued.status).toBe(201);
+
+    setCompanionEnrollmentPolicy('enr-phone', 'denied');
+    const refused = await api(
+      `/api/events?ticket=${encodeURIComponent(String(issued.body.ticket))}`,
+    );
+    expect(refused.status).toBe(403);
+  });
+});
+
+describe('mobile companion network exposure', () => {
+  it('keeps health local and only grants CORS to same-host origins', async () => {
+    const health = await fetch(`${baseUrl}/health`);
+    expect(health.status).toBe(200);
+
+    const allowed = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: 'http://127.0.0.1:8081' },
+    });
+    expect(allowed.headers.get('access-control-allow-origin')).toBe('http://127.0.0.1:8081');
+
+    const blocked = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: 'https://attacker.example' },
+    });
+    expect(blocked.headers.get('access-control-allow-origin')).toBeNull();
+
+    const wrongPort = await fetch(`${baseUrl}/health`, {
+      headers: { Origin: 'http://127.0.0.1:9999' },
+    });
+    expect(wrongPort.headers.get('access-control-allow-origin')).toBeNull();
   });
 });
 

@@ -219,6 +219,18 @@ describe('environment lifecycle', () => {
     });
     expect(created.job.targetEnrollmentId).toBeUndefined();
 
+    // An unresolved environment target cannot be claimed by the provisioner
+    // while the environment is still waiting to enroll.
+    const earlyClaim = await postRpc(
+      'job.claim',
+      { jobId: created.job.id },
+      fx.provisionerAuth,
+    );
+    expect(earlyClaim.status).toBe(409);
+    if (isRpcError(earlyClaim.body)) {
+      expect(earlyClaim.body.error.details?.['reason']).toBe('target-not-resolved');
+    }
+
     // The env self-reports enrolled (authorized by its bound
     // environment_id); the queued job resolves onto it.
     const enrolled = expectSuccess<EnvironmentReportResult>(

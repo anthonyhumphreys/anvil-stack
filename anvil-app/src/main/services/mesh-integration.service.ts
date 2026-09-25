@@ -244,10 +244,16 @@ export async function integrateResults(input: {
           repositoryId,
           command,
           cwd: worktree!.worktreePath,
+          target: {
+            kind: 'integration',
+            integrationId: input.integrationId,
+            runId: input.runId,
+          },
         });
         verification.push({
           repositoryId: outcome.repositoryId,
           command: outcome.command,
+          approvalGranted: outcome.approvalGranted,
           exitCode: outcome.exitCode,
           timedOut: outcome.timedOut,
           durationMs: outcome.durationMs,
@@ -259,7 +265,7 @@ export async function integrateResults(input: {
 
   const state: IntegrationResult['state'] = sawConflict
     ? 'conflicted'
-    : verification.some((v) => v.exitCode !== 0 || v.timedOut)
+    : verification.some((v) => v.approvalGranted === false || v.exitCode !== 0 || v.timedOut)
       ? 'failed'
       : 'integrated';
   const result: IntegrationResult = { state, repositories, verification };

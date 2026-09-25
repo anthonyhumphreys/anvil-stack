@@ -424,6 +424,7 @@ export function subscribeToCompanionEvents(
   const EventSourceCtor = (globalThis as unknown as { EventSource?: EventSourceConstructor })
     .EventSource;
   if (!EventSourceCtor) return () => {};
+  const EventSource = EventSourceCtor;
 
   const eventTypes: CompanionStreamEvent['type'][] = [
     'ready',
@@ -439,38 +440,69 @@ export function subscribeToCompanionEvents(
 
   let source: EventSourceLike | null = null;
   let closed = false;
-  // Account-mode connections resolve their bearer lazily; the stream opens
-  // once the current access token is known.
-  void resolveBearer(connection)
-    .then((token) => {
-      if (closed) return;
-      source = new EventSourceCtor(
-        `${connection.baseUrl}/api/events?access_token=${encodeURIComponent(token)}`,
-      );
-      const listeners = eventTypes.map((type) => {
-        const listener = (event: MessageEvent) => {
-          try {
-            onEvent({ type, ...(event.data ? JSON.parse(String(event.data)) : {}) });
-          } catch {
-            onEvent({ type });
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectDelayMs = 1_000;
+
+  function scheduleReconnect(): void {
+    if (closed || reconnectTimer !== null) return;
+    const delay = reconnectDelayMs;
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      openStream();
+    }, delay);
+  }
+
+  function openStream(): void {
+    void fetchJson<{ ticket: string }>(connection, '/api/events/ticket', { method: 'POST' })
+      .then(({ ticket }) => {
+        if (closed) return;
+        const nextSource = new EventSource(
+          `${connection.baseUrl}/api/events?ticket=${encodeURIComponent(ticket)}`,
+        );
+        source = nextSource;
+        const listeners = eventTypes.map((type) => {
+          const listener = (event: MessageEvent) => {
+            try {
+              onEvent({ type, ...(event.data ? JSON.parse(String(event.data)) : {}) });
+            } catch {
+              onEvent({ type });
+            }
+            if (type === 'ready') reconnectDelayMs = 1_000;
+          };
+          nextSource.addEventListener(type, listener);
+          return { type, listener };
+        });
+        nextSource.onerror = () => {
+          if (source !== nextSource) return;
+          source = null;
+          for (const { type, listener } of listeners) {
+            nextSource.removeEventListener(type, listener);
           }
+          nextSource.close();
+          onError?.();
+          scheduleReconnect();
         };
-        source?.addEventListener(type, listener);
-        return { type, listener };
-      });
-      source.onerror = () => onError?.();
-      if (closed) {
-        for (const { type, listener } of listeners) {
-          source.removeEventListener(type, listener);
+        if (closed) {
+          for (const { type, listener } of listeners) {
+            nextSource.removeEventListener(type, listener);
+          }
+          nextSource.close();
+          source = null;
         }
-        source.close();
-        source = null;
-      }
-    })
-    .catch(() => onError?.());
+      })
+      .catch(() => {
+        onError?.();
+        scheduleReconnect();
+      });
+  }
+
+  openStream();
 
   return () => {
     closed = true;
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
     source?.close();
     source = null;
   };

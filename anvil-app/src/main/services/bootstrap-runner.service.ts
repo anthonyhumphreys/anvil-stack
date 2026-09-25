@@ -6,8 +6,9 @@
 // - Ambient credentials are stripped: the child gets a minimal env
 //   allowlist plus only the bindings the caller explicitly resolves for
 //   declared `envNames`.
-// - `shell` steps run only when the caller asserts explicit shell consent
-//   (`shellApproved`) — executable repository code is never run silently.
+// - Shell and code-interpreter steps run only when the caller asserts explicit
+//   local code consent (`shellApproved`) — executable repository code is never
+//   run silently.
 // - Steps spawn in their own process group; cancellation SIGTERMs the
 //   group then escalates to SIGKILL. A step killed or timed out mid-run
 //   is `unknown-outcome` — its effects are uncertain and must never be
@@ -19,6 +20,8 @@
 // reports transitions so it stays usable standalone and testable.
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { realpath, stat } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type {
   BootstrapRecipe,
   BootstrapStep,
@@ -46,6 +49,15 @@ const AMBIENT_ENV_ALLOWLIST = [
   'WINDIR',
 ] as const;
 
+/**
+ * Every bootstrap step executes a recipe-selected command or shell expression.
+ * Keep this predicate broad: command-name allowlists cannot account for every
+ * executable that can run repository code.
+ */
+export function bootstrapStepRequiresLocalCodeConsent(step: BootstrapStep): boolean {
+  return step.shell !== undefined || step.argv !== undefined;
+}
+
 export interface BootstrapStepOutcome {
   stepId: string;
   state: BootstrapStepState;
@@ -69,7 +81,7 @@ export interface BootstrapRunOptions {
    * undefined leaves the name unset — a step that needs it fails loudly.
    */
   resolveEnv?: (name: string) => string | undefined;
-  /** Explicit shell consent from the local approval record. */
+  /** Explicit local code consent from the local approval record. */
   shellApproved?: boolean;
   /** Journal hook: invoked on every step state transition. */
   onStepState?: (stepId: string, state: BootstrapStepState, detail?: string) => void;
@@ -177,30 +189,47 @@ export function runBootstrapRecipe(
   };
 }
 
-function runStep(
+async function runStep(
   step: BootstrapStep,
   options: BootstrapRunOptions,
   onSpawn: (child: ChildProcess) => void,
 ): Promise<BootstrapStepOutcome> {
   const { onStepState, onStepLog } = options;
-  const cwd =
-    step.workingDirectory === '.'
-      ? options.checkoutRoot
-      : `${options.checkoutRoot}/${step.workingDirectory}`;
-
-  if (step.shell !== undefined && options.shellApproved !== true) {
-    onStepState?.(step.id, 'failed', 'shell step without explicit approval');
+  if (bootstrapStepRequiresLocalCodeConsent(step) && options.shellApproved !== true) {
+    const detail =
+      step.shell !== undefined
+        ? 'shell step without explicit approval'
+        : 'argv step without explicit local code approval';
+    onStepState?.(step.id, 'failed', detail);
     return Promise.resolve({
       stepId: step.id,
       state: 'failed',
       exitCode: null,
-      log: 'shell step refused: no explicit shell approval',
+      log:
+        step.shell !== undefined
+          ? 'shell step refused: no explicit shell approval'
+          : `${detail}: refused`,
       timedOut: false,
     });
   }
 
+  let cwd: string;
+  try {
+    cwd = await resolveContainedWorkingDirectory(options.checkoutRoot, step.workingDirectory);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    onStepState?.(step.id, 'failed', detail);
+    return {
+      stepId: step.id,
+      state: 'failed',
+      exitCode: null,
+      log: detail,
+      timedOut: false,
+    };
+  }
+
   onStepState?.(step.id, 'running');
-  return new Promise((resolve) => {
+  return new Promise((resolveOutcome) => {
     const tail = new TailBuffer();
     const argv = step.argv ?? [];
     const child =
@@ -236,7 +265,7 @@ function runStep(
     child.on('error', (error) => {
       clearTimeout(timer);
       onStepState?.(step.id, 'failed', error.message);
-      resolve({
+      resolveOutcome({
         stepId: step.id,
         state: 'failed',
         exitCode: null,
@@ -251,7 +280,7 @@ function runStep(
       const state: BootstrapStepState =
         code === 0 ? 'verified' : uncertain ? 'unknown-outcome' : 'failed';
       onStepState?.(step.id, state, signal ?? undefined);
-      resolve({
+      resolveOutcome({
         stepId: step.id,
         state,
         exitCode: code,
@@ -260,4 +289,36 @@ function runStep(
       });
     });
   });
+}
+
+async function resolveContainedWorkingDirectory(
+  checkoutRoot: string,
+  workingDirectory: string,
+): Promise<string> {
+  if (
+    workingDirectory.length === 0 ||
+    isAbsolute(workingDirectory) ||
+    workingDirectory.startsWith('\\') ||
+    /^[a-z]:/i.test(workingDirectory) ||
+    workingDirectory.split(/[\\/]+/).some((segment) => segment === '..')
+  ) {
+    throw new Error('bootstrap working directory must be relative to the checkout root');
+  }
+
+  const resolvedRoot = await realpath(checkoutRoot);
+  const candidate = resolve(checkoutRoot, workingDirectory);
+  const resolvedCandidate = await realpath(candidate);
+  const relativePath = relative(resolvedRoot, resolvedCandidate);
+  const contained =
+    relativePath === '' ||
+    (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
+  if (!contained) {
+    throw new Error('bootstrap working directory resolves outside the checkout root');
+  }
+
+  const info = await stat(resolvedCandidate);
+  if (!info.isDirectory()) {
+    throw new Error('bootstrap working directory is not a directory');
+  }
+  return resolvedCandidate;
 }

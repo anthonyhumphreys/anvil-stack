@@ -36,6 +36,15 @@ vi.mock('../persona.service.js', () => ({
 }));
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf-8'),
+    decryptString: (encrypted: Buffer) => {
+      const text = encrypted.toString('utf-8');
+      if (!text.startsWith('enc:')) throw new Error('Invalid test safeStorage payload.');
+      return text.slice('enc:'.length);
+    },
+  },
 }));
 
 import {
@@ -50,6 +59,7 @@ import {
   canonicalJson,
   getBinding,
   getSyncState,
+  insertUnresolvedConflict,
   listConflicts,
   listOutboxRows,
   nextBatch,
@@ -57,7 +67,11 @@ import {
   upsertBinding,
   upsertEnrollment,
 } from '../sync-persistence.service';
-import { getWorkflowTemplate, saveWorkflowTemplate } from '../workflow.service';
+import {
+  deleteWorkflowTemplate,
+  getWorkflowTemplate,
+  saveWorkflowTemplate,
+} from '../workflow.service';
 import { setAccountKeyBootstrapEligibility } from '../sync-keyring.service';
 import { getEditableAgent, saveEditableAgent } from '../editable-agent.service';
 import { getSettings } from '../settings.service';
@@ -463,6 +477,68 @@ describe('runSyncCycle pull', () => {
     expect(getWorkflowTemplate(saved.id)?.name).toBe('Local dirty');
   });
 
+  it('keeps an unresolved conflict fenced and refreshes its remote tip as pull advances', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Local version'));
+    const base = templatePayload(saved.id, 'Base version');
+    const local = templatePayload(saved.id, 'Local version');
+    upsertBinding(SCOPE, ET, saved.id, {
+      basePayloadJson: canonicalJson(base),
+      baseRevision: 1,
+    });
+    const conflict = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: saved.id,
+      kind: 'edit-edit',
+      basePayloadJson: canonicalJson(base),
+      baseRevision: 1,
+      localPayloadJson: canonicalJson(local),
+      remotePayloadJson: canonicalJson(templatePayload(saved.id, 'Remote version 2')),
+      remoteRevision: 2,
+    });
+
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [
+            {
+              entityType: ET,
+              entityId: saved.id,
+              operation: 'update' as const,
+              payload: templatePayload(saved.id, 'Remote version 3'),
+              revision: 3,
+              schemaVersion: 1,
+              sequence: 3,
+            },
+            {
+              entityType: ET,
+              entityId: saved.id,
+              operation: 'update' as const,
+              payload: templatePayload(saved.id, 'Remote version 4'),
+              revision: 4,
+              schemaVersion: 1,
+              sequence: 4,
+            },
+          ],
+          hasMore: false,
+          nextCursor: 'cursor-tip' as SyncCursor,
+        }),
+      }),
+    );
+
+    const [updated] = listConflicts(SCOPE);
+    expect(updated?.id).toBe(conflict.id);
+    expect(updated?.basePayloadJson).toBe(canonicalJson(base));
+    expect(updated?.localPayloadJson).toBe(canonicalJson(local));
+    expect(updated?.remoteRevision).toBe(4);
+    expect(JSON.parse(updated?.remotePayloadJson ?? 'null')).toEqual(
+      templatePayload(saved.id, 'Remote version 4'),
+    );
+    expect(getWorkflowTemplate(saved.id)?.name).toBe('Local version');
+    expect(getBinding(SCOPE, ET, saved.id)?.baseRevision).toBe(1);
+    expect(getSyncState(SCOPE)?.cursor).toBe('cursor-tip');
+  });
+
   it('drains pull pages until hasMore is false', async () => {
     activateEnrollment();
     let pulls = 0;
@@ -551,6 +627,183 @@ describe('runSyncCycle pull', () => {
     expect(scanned).toBe(true);
     expect(getWorkflowTemplate('scanned-tpl')?.name).toBe('From scan');
     expect(getBinding(SCOPE, ET, 'scanned-tpl')?.baseRevision).toBe(4);
+  });
+
+  it('retires a dispatched local mutation when reset scan finds a conflicting remote tip', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Original'));
+    const original = templatePayload(saved.id, 'Original');
+    upsertBinding(SCOPE, ET, saved.id, {
+      basePayloadJson: canonicalJson(original),
+      baseRevision: 1,
+    });
+    saveWorkflowTemplate(templateInput('Local edit'), saved.id);
+    const [dispatched] = nextBatch(SCOPE, ENROLLMENT);
+    expect(dispatched).toBeDefined();
+
+    await cycle(
+      fakeRpc({
+        push: () => {
+          throw new BackendRpcError({ code: 'reset-required', retryable: false });
+        },
+        scanBegin: () => ({
+          scanId: 'scan-reset-conflict',
+          watermarkStart: 8,
+          resumeCursor: 'cursor-8' as SyncCursor,
+          epoch: '1',
+        }),
+        scanPage: () => ({
+          entities: [
+            {
+              entityType: ET,
+              entityId: saved.id,
+              revision: 9,
+              schemaVersion: 1,
+              payload: templatePayload(saved.id, 'Remote reset version'),
+            },
+          ],
+          nextCursor: null,
+          done: true,
+        }),
+        scanFinish: () => ({
+          scanId: 'scan-reset-conflict',
+          complete: true,
+          watermarkEnd: 9,
+          epoch: '1',
+          nextCursor: 'cursor-9' as SyncCursor,
+        }),
+        pull: () => emptyPull('cursor-9'),
+      }),
+    );
+
+    const [row] = listOutboxRows(SCOPE);
+    expect(row?.changeId).toBe(dispatched.changeId);
+    expect(row?.state).toBe('rejected');
+    expect(row?.resultJson).toContain('reset-uncertain');
+    expect(listConflicts(SCOPE)).toHaveLength(1);
+    expect(nextBatch(SCOPE, ENROLLMENT)).toEqual([]);
+    expect(getWorkflowTemplate(saved.id)?.name).toBe('Local edit');
+  });
+
+  it('resolves an open conflict when reset scan confirms the local version is the remote tip', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Original'));
+    const original = templatePayload(saved.id, 'Original');
+    const local = templatePayload(saved.id, 'Local edit');
+    upsertBinding(SCOPE, ET, saved.id, {
+      basePayloadJson: canonicalJson(original),
+      baseRevision: 1,
+    });
+    saveWorkflowTemplate(templateInput('Local edit'), saved.id);
+    const [localMutation] = listOutboxRows(SCOPE);
+    db.prepare("UPDATE sync_outbox SET state = 'conflict' WHERE change_id = ?").run(
+      localMutation?.changeId,
+    );
+    const conflict = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: saved.id,
+      kind: 'edit-edit',
+      basePayloadJson: canonicalJson(original),
+      baseRevision: 1,
+      localPayloadJson: canonicalJson(local),
+      remotePayloadJson: canonicalJson(templatePayload(saved.id, 'Stale remote version')),
+      remoteRevision: 2,
+    });
+    updateSyncState(SCOPE, { resetRequired: true });
+
+    await cycle(
+      fakeRpc({
+        scanBegin: () => ({
+          scanId: 'scan-converged-conflict',
+          watermarkStart: 8,
+          resumeCursor: 'cursor-8' as SyncCursor,
+          epoch: '1',
+        }),
+        scanPage: () => ({
+          entities: [
+            {
+              entityType: ET,
+              entityId: saved.id,
+              revision: 9,
+              schemaVersion: 1,
+              payload: local,
+            },
+          ],
+          nextCursor: null,
+          done: true,
+        }),
+        scanFinish: () => ({
+          scanId: 'scan-converged-conflict',
+          complete: true,
+          watermarkEnd: 9,
+          epoch: '1',
+          nextCursor: 'cursor-9' as SyncCursor,
+        }),
+        pull: () => emptyPull('cursor-9'),
+      }),
+    );
+
+    expect(listConflicts(SCOPE)).toEqual([]);
+    expect(getBinding(SCOPE, ET, saved.id)?.baseRevision).toBe(9);
+    expect(getWorkflowTemplate(saved.id)?.name).toBe('Local edit');
+    expect(listOutboxRows(SCOPE)).toMatchObject([
+      { state: 'rejected', resultJson: expect.stringContaining('reset-converged') },
+    ]);
+    expect(() =>
+      resolveSyncConflict({ conflictId: conflict.id, resolution: 'use-remote' }),
+    ).toThrow('already resolved');
+    expect(getWorkflowTemplate(saved.id)?.name).toBe('Local edit');
+  });
+
+  it('resolves an open conflict when reset scan confirms both sides deleted the entity', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Original'));
+    const original = templatePayload(saved.id, 'Original');
+    upsertBinding(SCOPE, ET, saved.id, {
+      basePayloadJson: canonicalJson(original),
+      baseRevision: 1,
+    });
+    deleteWorkflowTemplate(saved.id);
+    const conflict = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: saved.id,
+      kind: 'edit-delete',
+      basePayloadJson: canonicalJson(original),
+      baseRevision: 1,
+      localPayloadJson: null,
+      remotePayloadJson: canonicalJson(original),
+      remoteRevision: 2,
+    });
+    updateSyncState(SCOPE, { resetRequired: true });
+
+    await cycle(
+      fakeRpc({
+        scanBegin: () => ({
+          scanId: 'scan-deleted-conflict',
+          watermarkStart: 8,
+          resumeCursor: 'cursor-8' as SyncCursor,
+          epoch: '1',
+        }),
+        scanPage: () => ({ entities: [], nextCursor: null, done: true }),
+        scanFinish: () => ({
+          scanId: 'scan-deleted-conflict',
+          complete: true,
+          watermarkEnd: 9,
+          epoch: '1',
+          nextCursor: 'cursor-9' as SyncCursor,
+        }),
+        pull: () => emptyPull('cursor-9'),
+      }),
+    );
+
+    expect(listConflicts(SCOPE)).toEqual([]);
+    expect(getBinding(SCOPE, ET, saved.id)).toBeNull();
+    expect(getWorkflowTemplate(saved.id)).toBeNull();
+    expect(listOutboxRows(SCOPE)).toEqual([]);
+    expect(() =>
+      resolveSyncConflict({ conflictId: conflict.id, resolution: 'use-remote' }),
+    ).toThrow('already resolved');
+    expect(getWorkflowTemplate(saved.id)).toBeNull();
   });
 
   it('applies use-remote and drops the conflict', async () => {

@@ -1939,10 +1939,12 @@ async function executeCodeTask(
         repositoryId: repo.repositoryId,
         command,
         cwd: repo.worktreePath,
+        target: { kind: 'remote-job', jobId: job.id, attemptId },
       });
       verification.push({
         repositoryId: outcome.repositoryId,
         command: outcome.command,
+        approvalGranted: outcome.approvalGranted,
         exitCode: outcome.exitCode,
         timedOut: outcome.timedOut,
         durationMs: outcome.durationMs,
@@ -1950,6 +1952,7 @@ async function executeCodeTask(
       appendJournal(attemptId, 'verification', {
         repositoryId: outcome.repositoryId,
         command: outcome.command,
+        approvalGranted: outcome.approvalGranted,
         exitCode: outcome.exitCode,
         timedOut: outcome.timedOut,
         durationMs: outcome.durationMs,

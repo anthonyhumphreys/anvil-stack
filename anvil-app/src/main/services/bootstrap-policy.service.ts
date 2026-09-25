@@ -22,6 +22,7 @@ import {
   type BootstrapStep,
 } from '../../../cloud/contract/bootstrap.js';
 import {
+  bootstrapStepRequiresLocalCodeConsent,
   runBootstrapRecipe,
   type BootstrapRunHandle,
   type BootstrapRunResult,
@@ -46,6 +47,7 @@ export function computeBootstrapDigest(input: {
 export interface BootstrapExplanation {
   stepCount: number;
   usesShell: boolean;
+  requiresLocalCodeConsent: boolean;
   /** Package-manager-style invocations run executable repository code. */
   installsPackages: boolean;
   /** Env bindings the recipe asks the target to supply. */
@@ -54,7 +56,9 @@ export interface BootstrapExplanation {
     id: string;
     kind: string;
     summary: string;
+    workingDirectory: string;
     shell: boolean;
+    requiresLocalCodeConsent: boolean;
     timeoutMs: number;
     retry: string;
   }>;
@@ -100,6 +104,7 @@ export function explainBootstrapRecipe(recipe: BootstrapRecipe): BootstrapExplan
   const steps = recipe.steps.map((step) => {
     for (const name of step.envNames) envNames.add(name);
     if (step.shell !== undefined) usesShell = true;
+    const requiresLocalCodeConsent = bootstrapStepRequiresLocalCodeConsent(step);
     const cmd = step.argv?.[0] ?? '';
     if (PACKAGE_MANAGERS.has(cmd) || PACKAGE_MANAGERS.has(cmd.split('/').pop() ?? '')) {
       installsPackages = true;
@@ -108,7 +113,9 @@ export function explainBootstrapRecipe(recipe: BootstrapRecipe): BootstrapExplan
       id: step.id,
       kind: step.kind,
       summary: stepSummary(step),
+      workingDirectory: step.workingDirectory,
       shell: step.shell !== undefined,
+      requiresLocalCodeConsent,
       timeoutMs: step.timeoutMs,
       retry: step.retry,
     };
@@ -116,6 +123,7 @@ export function explainBootstrapRecipe(recipe: BootstrapRecipe): BootstrapExplan
   return {
     stepCount: steps.length,
     usesShell,
+    requiresLocalCodeConsent: steps.some((step) => step.requiresLocalCodeConsent),
     installsPackages,
     envNames: [...envNames].sort(),
     steps,
@@ -130,7 +138,7 @@ export interface BootstrapApprovalInput {
   recipe: BootstrapRecipe;
   repositoryCommits: Readonly<Record<string, string>>;
   executionPolicy: unknown;
-  /** Explicit consent to shell steps — required when the recipe uses any. */
+  /** Explicit target-local consent for all executable bootstrap steps. */
   shellApproved: boolean;
 }
 
@@ -223,8 +231,8 @@ export function revokeBootstrapApproval(approvalId: string): void {
 
 /**
  * The policy gate: a run may proceed only when an approval pins this exact
- * digest AND covers shell usage when the recipe needs it. Anything else
- * parks the run in 'awaiting-approval'.
+ * digest AND covers local code execution when the recipe needs it. Anything
+ * else parks the run in 'awaiting-approval'.
  */
 export function isBootstrapApproved(
   workspaceId: string,
@@ -233,8 +241,8 @@ export function isBootstrapApproved(
 ): boolean {
   const approval = getBootstrapApproval(workspaceId, digest);
   if (approval === null) return false;
-  const needsShell = recipe.steps.some((s) => s.shell !== undefined);
-  return !needsShell || approval.shellApproved;
+  const needsLocalCodeConsent = recipe.steps.some(bootstrapStepRequiresLocalCodeConsent);
+  return !needsLocalCodeConsent || approval.shellApproved;
 }
 
 // ---------------------------------------------------------------------------
@@ -467,9 +475,10 @@ export async function recoverBootstrapRuns(
     const verifySteps = recipe?.steps.filter((s) => s.kind === 'verify') ?? [];
     let postconditionsProven = false;
     if (recipe !== null && checkoutRoot !== null && verifySteps.length > 0) {
+      const approval = getBootstrapApproval(run.workspace_id, run.digest);
       const result = await runBootstrapRecipe(
         { schemaVersion: recipe.schemaVersion, steps: verifySteps },
-        { checkoutRoot },
+        { checkoutRoot, shellApproved: approval?.shellApproved === true },
       ).done;
       postconditionsProven = result.state === 'verified';
     }

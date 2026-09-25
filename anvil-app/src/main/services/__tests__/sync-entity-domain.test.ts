@@ -445,6 +445,30 @@ describe('workspace definitions', () => {
         },
       }),
     ).not.toBeNull();
+
+    expect(
+      entityPayloadIssue(SYNC_ENTITY_WORKSPACE_DEFINITION, {
+        id: 'ws-traversal',
+        name: 'Traversal',
+        repos: [],
+        bootstrap: {
+          ...recipe,
+          steps: [{ ...recipe.steps[0], workingDirectory: '../outside' }],
+        },
+      }),
+    ).not.toBeNull();
+
+    expect(
+      entityPayloadIssue(SYNC_ENTITY_WORKSPACE_DEFINITION, {
+        id: 'ws-windows-path',
+        name: 'Windows path',
+        repos: [],
+        bootstrap: {
+          ...recipe,
+          steps: [{ ...recipe.steps[0], workingDirectory: 'C:\\outside' }],
+        },
+      }),
+    ).not.toBeNull();
   });
 });
 

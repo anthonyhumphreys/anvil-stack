@@ -296,10 +296,16 @@ function isBootstrapRecipe(value: unknown): boolean {
     if (!isRecord(step)) return false;
     if (typeof step.id !== 'string' || step.id === '') return false;
     if (step.kind !== 'command' && step.kind !== 'verify') return false;
-    if (typeof step.workingDirectory !== 'string' || step.workingDirectory === '') return false;
+    if (
+      typeof step.workingDirectory !== 'string' ||
+      !isRepoRelativeWorkingDirectory(step.workingDirectory)
+    )
+      return false;
     // Exactly one of argv / shell.
     const hasArgv =
-      Array.isArray(step.argv) && (step.argv as unknown[]).every((a) => typeof a === 'string');
+      Array.isArray(step.argv) &&
+      (step.argv as unknown[]).length > 0 &&
+      (step.argv as unknown[]).every((a) => typeof a === 'string');
     const hasShell = typeof step.shell === 'string' && step.shell !== '';
     if (hasArgv === hasShell) return false;
     if (typeof step.timeoutMs !== 'number' || !(step.timeoutMs > 0)) return false;
@@ -312,6 +318,14 @@ function isBootstrapRecipe(value: unknown): boolean {
       return false;
   }
   return true;
+}
+
+function isRepoRelativeWorkingDirectory(value: string): boolean {
+  if (value.length === 0 || value.startsWith('/') || value.startsWith('\\')) return false;
+  // Reject Windows drive paths as well as traversal on either platform. The
+  // recipe is portable data, so both separator styles are path separators.
+  if (/^[a-z]:/i.test(value)) return false;
+  return !value.split(/[\\/]+/).some((segment) => segment === '..');
 }
 
 function validateWorkspacePayload(payload: unknown): boolean {
