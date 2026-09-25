@@ -1,307 +1,202 @@
-# Deploy and test Sync/Mesh from this branch
+# Hosted sync deployment: staging and production
 
-Use this checkout's Anvil Cloud CLI for both deployment modes:
+Use the target manifest and wrapper below for every hosted deployment. The
+manifest locks the Worker, D1, R2, provisioner, WorkOS clients and generated
+config paths to one selected environment. Direct `anvil-cloud mesh` calls are
+lower-level tooling; do not use them to choose a hosted target.
+Run the commands from the `anvil-app/` repository root unless a command first
+changes directory.
 
-| Mode | Backend configuration | Identity and billing |
-| --- | --- | --- |
-| `hosted` | `wrangler.hosted.jsonc`, including D1, billing enforcement and reconciliation cron | Website WorkOS sign-in, signed service channel, optional Stripe checkout |
-| `self-hosted` | `wrangler.jsonc`, including the Sync/Mesh Durable Objects and R2 | Enrollment codes or your OIDC provider; no WorkOS, D1 or Stripe dependency |
+## Configure the two targets
 
-The CLI now handles resource provisioning, D1 migrations, Worker deployment
-and secret installation. Wrangler remains an internal deployment dependency;
-you do not need to invoke it for the sequence below. The optional provisioner
-commands deploy the Sandbox Worker and container image for cloud environments.
-
-## Build this branch
-
-Run from the monorepo root. Keep this terminal open for the helper functions
-and variables used below.
+The ignored generated staging config records the current staging resources and
+is represented in `hosted-targets.example.json`. Copy that template to the
+ignored operator file, then keep its staging values intact:
 
 ```sh
-export ANVIL_ROOT="$PWD"
-cd "$ANVIL_ROOT/anvil-cloud"
-pnpm install --frozen-lockfile
+mkdir -p cloud/backend/.wrangler
+cp -n cloud/backend/hosted-targets.example.json cloud/backend/.wrangler/hosted-targets.json
+```
+
+The production entry is intentionally incomplete. Before any production
+resource operation, fill its Cloudflare account id, Worker name, HTTPS origin,
+R2 bucket, D1 name, unique descriptor id/name, and production WorkOS desktop
+and website client IDs. Keep `databaseId` null until `provision` creates the
+production D1 database. Use separate resource names even when both targets
+share one Cloudflare account. Never copy the staging D1 id, deployment id,
+WorkOS client ids, or secrets into production.
+
+The WorkOS issuer is the same public URL in both targets. Use a separate
+production WorkOS environment from staging, with production website and
+desktop clients configured in that same user environment so both resolve to
+the same account. Production's `desktopClientId` and `hostedClientId` must
+both differ from both staging client IDs. The website's `WORKOS_CLIENT_ID`
+must match the selected target's `hostedClientId`; its `WORKOS_API_KEY` and
+callback configuration must come from that WorkOS environment. Keep WorkOS
+API keys in the website's protected environment settings, never in the target
+manifest or Worker vars.
+
+Generated Wrangler files and secret files live under `.wrangler/` and are
+ignored by git. `vars.json` preserves existing optional non-secret settings
+such as Stripe checkout URLs and quota overrides while locking deployment and
+WorkOS identity vars to the selected manifest entry. Do not put secret values
+in `vars.json`.
+
+## Build and preflight
+
+Build the current Anvil Cloud CLI from the sibling checkout, then verify the
+hosted target wrapper:
+
+```sh
+cd ../anvil-cloud
 pnpm --filter '@anvilstack/cloud-cli...' build
-
-cd "$ANVIL_ROOT/anvil-app/cloud/backend"
+cd ../anvil-app/cloud/backend
 pnpm install --ignore-workspace --frozen-lockfile
 pnpm typecheck
-pnpm test
-pnpm conformance:fixture
+pnpm test:hosted-deploy
 node scripts/verify-hosted-config.mjs --self-check
-
-cd "$ANVIL_ROOT"
-anvil_cloud() {
-  node "$ANVIL_ROOT/anvil-cloud/packages/cli/dist/index.js" "$@"
-}
+cd ../..
 ```
 
-The backend and provisioner are standalone packages inside the app directory.
-`--ignore-workspace` installs their own lockfiles instead of the app workspace.
-Use the built CLI above rather than a previously installed release.
+The wrapper requires an explicit environment and does not accept resource or
+config overrides. It passes the same `ANVIL_DEPLOYMENT_ENV` to the CLI, rejects
+a conflicting shell value, and keeps each generated config under
+`.wrangler/mesh/<worker-name>/`.
 
-The backend tests apply hosted migrations locally and stub Stripe and the
-managed provisioner. Fixture conformance tests the in-memory reference
-backend. These checks do not contact a deployed Worker.
-
-`pnpm dev` in the backend starts the self-host development fixture. It does
-not enable hosted billing. The hosted config validator is expected to reject
-the checked-in placeholder D1 id until resources have been provisioned.
-
-## Choose the test target
-
-Use separate Worker names, R2 buckets and D1 databases for each deployment.
-Set the Cloudflare account and API token in your shell through your normal
-credential manager. The account needs Workers, R2 and Durable Objects; hosted
-mode also needs D1. Cloud environments additionally need Containers and a
-running Docker engine locally.
+Staging plan writes only the local generated config; it makes no Cloudflare
+provider calls:
 
 ```sh
-export CLOUDFLARE_ACCOUNT_ID='<test-account-id>'
-# CLOUDFLARE_API_TOKEN must already be set, or Wrangler must be logged in.
-export MESH_MODE=hosted
-export MESH_NAME=anvil-sync-hosted-staging
-# The hostname is the Worker name followed by the account's workers.dev
-# subdomain. The bare account hostname (for example,
-# https://<your-subdomain>.workers.dev) is not a Worker endpoint.
-export MESH_ORIGIN='https://anvil-sync-hosted-staging.<your-subdomain>.workers.dev'
-export MESH_BUCKET=anvil-sync-hosted-staging-artifacts
-export MESH_DATABASE=anvil-sync-hosted-staging-billing
-export MESH_STAGE=staging
-export MESH_DIR="$ANVIL_ROOT/anvil-app/cloud/backend/.wrangler/mesh/$MESH_NAME"
-mkdir -p "$MESH_DIR"
-printf '{}\n' > "$MESH_DIR/vars.json"
-
-# The desktop hosted tile uses this exact tested HTTPS origin.
-export ANVIL_HOSTED_BACKEND_URL="$MESH_ORIGIN"
+pnpm --dir cloud/backend hosted:deploy -- --environment staging plan --json
 ```
 
-For self-hosted testing, set `MESH_MODE=self-hosted`, choose a different
-`MESH_NAME`, matching `MESH_ORIGIN` and bucket, and recalculate `MESH_DIR`.
-The helper ignores `MESH_DATABASE` in self-hosted mode. Keep an existing
-`vars.json` on subsequent runs; the command above initializes a new target.
+Review that plan before choosing any provider operation. The existing staging
+Worker, D1 id, R2 bucket, descriptor id, WorkOS clients and provisioner name
+are already seeded from the generated staging metadata. The wrapper verifies
+them again before it calls the CLI.
 
-Define one helper so every command uses the same target and configuration:
+## Deploy staging
+
+For cloud environments, deploy the staging provisioner first. Its `plan` is
+local; `apply` contacts Cloudflare. Set the token path in the staging manifest
+and use one fresh value in both the provisioner token file and backend secrets
+file:
 
 ```sh
-mesh() {
-  set -- "$@" \
-    --backend "$ANVIL_ROOT/anvil-app/cloud/backend" \
-    --mode "$MESH_MODE" --name "$MESH_NAME" --stage "$MESH_STAGE" \
-    --account-id "$CLOUDFLARE_ACCOUNT_ID" --base-url "$MESH_ORIGIN" \
-    --bucket "$MESH_BUCKET" --vars-file "$MESH_DIR/vars.json" \
-    --config-out "$MESH_DIR/wrangler.jsonc" \
-    --connection-out "$MESH_DIR/connection.json"
-  if [ "$MESH_MODE" = hosted ]; then
-    set -- "$@" --database "$MESH_DATABASE"
-  fi
-  if [ -n "${MESH_PROVISIONER_NAME:-}" ]; then
-    set -- "$@" --managed-provisioner "$MESH_PROVISIONER_NAME"
-  fi
-  anvil_cloud mesh "$@"
-}
+pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner plan --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner apply --dry-run --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner apply --test-deployment --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner secrets --json
 ```
 
-The `.wrangler` directory is ignored. Generated configs contain resource ids
-and non-secret vars. Keep secrets in a separate protected file or stream.
-Do not edit the generated config; update `vars.json` or the helper's inputs.
-The CLI retains resolved D1 ids for the same target across re-plans.
+Sync, device enrollment and desktop-to-desktop Mesh do not need the
+provisioner. The Cloudflare account must have Containers enabled and Wrangler
+must be logged in to the account selected in the manifest. Build the daemon
+image with `cloud/images/anvil-worker/prepare.sh` before provisioner planning.
 
-## Optional cloud environment provisioner
-
-Complete this section before the backend apply if testing cloud environments.
-Sync, device enrollment and desktop-to-desktop Mesh work do not need it.
-Both hosted managed capacity and BYO Cloudflare Sandbox use this provisioner.
+Then provision storage, migrate the hosted D1 database, and deploy the backend:
 
 ```sh
-cd "$ANVIL_ROOT/anvil-app"
-pnpm install --frozen-lockfile
-pnpm build:daemon
-./cloud/images/anvil-worker/prepare.sh
-
-cd "$ANVIL_ROOT/anvil-app/cloud/provisioner"
-pnpm install --ignore-workspace --frozen-lockfile
-pnpm typecheck
-cd "$ANVIL_ROOT"
-
-export MESH_PROVISIONER_NAME="$MESH_NAME-provisioner"
-provisioner() {
-  anvil_cloud mesh provisioner "$@" \
-    --provisioner "$ANVIL_ROOT/anvil-app/cloud/provisioner" \
-    --name "$MESH_PROVISIONER_NAME" --mode managed --stage "$MESH_STAGE" \
-    --account-id "$CLOUDFLARE_ACCOUNT_ID" \
-    --config-out "$MESH_DIR/provisioner.jsonc"
-}
-
-provisioner plan --write --json
-provisioner apply --dry-run --json
-provisioner apply --test-deployment --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging plan --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging provision --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging migrate --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging apply --test-deployment --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging secrets --json
 ```
 
-The dry-run builds the Linux container image locally. The real apply uploads
-it and deploys the provisioner. Its API stays closed until the token is set.
-The Cloudflare account must have Containers enabled and the Wrangler
-credential must include the Containers permission. If apply fails at
-`/accounts/<id>/containers/me` with `401 Unauthorized`, enable Containers (or
-use an API token with that permission) before retrying. R2 account state can
-also affect binding creation. A bucket may appear in `wrangler r2 bucket list`
-while a Worker binding still fails (for example, Cloudflare error `10136`);
-this runbook records the symptom only and does not infer its cause. Check the
-account's current R2 service state, API-token permissions, selected account,
-bucket name, and Wrangler version before retrying. A successful Worker upload
-with Wrangler 4.135 is evidence for that deployment attempt only, not proof
-that every R2 operation or account is ready.
+The wrapper reads backend secrets from the `staging.secrets.backendFile` path
+in the manifest. The required `HOSTED_SERVICE_KEYS` JSON map must contain a
+fresh key id and a secret of at least 32 characters. When the managed
+provisioner is enabled, the backend's `MANAGED_PROVISIONER_TOKEN` must match
+the provisioner token file. Stripe values are optional and must be supplied
+together. Secret values are streamed from files to the CLI and are never
+printed by the wrapper.
 
-Generate a token in a protected file and install it after the first apply:
+`--test-deployment` is allowed only for non-production targets. Normal apply
+and remove remain behind the CLI's provider-evidence gate. D1/R2 provisioning
+and D1 migration still mutate the selected account, so run them only after
+reviewing the target and plan.
+
+## Configure production deployment
+
+Production stays blocked until the production manifest entry is complete. The
+wrapper rejects reused Worker, R2 bucket, D1 name/id, backend origin,
+provisioner name, descriptor id, and either WorkOS client id. Production
+provision, migrate, apply, and secret operations require a production-only
+backend secrets file. If the managed provisioner is enabled, its token must
+match the backend secret and differ from any available staging token. Do not reuse staging
+service keys or Stripe credentials; the wrapper checks values when staging
+secret files are available.
+
+Use the production target only after its WorkOS application and website
+settings are ready:
 
 ```sh
-umask 077
-export MESH_TOKEN_FILE="$(mktemp)"
-openssl rand -hex 32 > "$MESH_TOKEN_FILE"
-provisioner secrets --from-file "$MESH_TOKEN_FILE" --test-deployment --json
+export PRODUCTION_EVIDENCE='<recorded-provider-lifecycle-reference>'
+pnpm --dir cloud/backend hosted:deploy -- --environment production plan --json
+pnpm --dir cloud/backend hosted:deploy -- --environment production provisioner plan --json
+pnpm --dir cloud/backend hosted:deploy -- --environment production provisioner apply --dry-run --json
+pnpm --dir cloud/backend hosted:deploy -- --environment production provisioner apply --evidence "$PRODUCTION_EVIDENCE" --json
+pnpm --dir cloud/backend hosted:deploy -- --environment production provisioner secrets --json
+pnpm --dir cloud/backend hosted:deploy -- --environment production provision --json
+pnpm --dir cloud/backend hosted:deploy -- --environment production migrate --json
+pnpm --dir cloud/backend hosted:deploy -- --environment production apply --evidence "$PRODUCTION_EVIDENCE" --json
+pnpm --dir cloud/backend hosted:deploy -- --environment production secrets --json
 ```
 
-Use that same value for the backend's `MANAGED_PROVISIONER_TOKEN` secret in
-the next section. The `--managed-provisioner` backend option adds the service
-binding; the CLI derives `ANVIL_PUBLIC_API_URL` from `MESH_ORIGIN` unless you
-explicitly set it in `vars.json`.
+Set `PRODUCTION_EVIDENCE` to the provider lifecycle reference recorded for the
+operation before each protected apply.
+Production rejects `--test-deployment`. The wrapper never creates production
+WorkOS clients or chooses production resource names on your behalf.
 
-For BYO cloud-environment testing, use `--mode byo` in the provisioner helper.
-Configure the desktop's Cloudflare Sandbox provider connection with this
-provisioner's public URL and token. If using that device-side provisioning
-path alone, leave `MESH_PROVISIONER_NAME` unset in the backend helper so it
-adds no managed service binding.
+## Website and release environments
 
-## Provision, migrate and deploy the backend
+The website selects the same `ANVIL_DEPLOYMENT_ENV=staging|production` value as
+the backend wrapper. Configure `ANVIL_STAGING_*` and
+`ANVIL_PRODUCTION_*` values from `anvil-website/.env.example` in separate
+Vercel environments. In particular, each website
+`ANVIL_<ENV>_WORKOS_CLIENT_ID` must match the manifest target's `hostedClientId`,
+and each `ANVIL_<ENV>_BACKEND_ORIGIN` must match its `baseUrl`; desktop direct
+OIDC uses `desktopClientId`. Production must use its own WorkOS API key and
+callback URL.
 
-Run these through the `mesh()` helper above. The generated target is selected
-by `--config-out`, `--vars-file` and the resource arguments; invoking a bare
-`mesh apply` can fall back to the checked-in `wrangler.jsonc` and deploy the
-`anvil-spike-*` resources instead.
+The GitHub Actions environments `anvil-staging` and `anvil-production` have
+been created. Staging has `ANVIL_STAGING_HOSTED_BACKEND_URL` set to its
+verified Worker origin. Production is restricted to `main` and `app-v*` tags;
+set `ANVIL_PRODUCTION_HOSTED_BACKEND_URL` after the production Worker origin is
+known. Add a required production reviewer once its owner is chosen. Release
+builds with no production backend URL intentionally leave hosted sync
+unavailable; BYO/self-hosted backends remain available.
 
-```sh
-mesh plan --write --json
-mesh apply --dry-run --json
-mesh provision --json
-mesh migrate --json
-mesh apply --test-deployment --json
-```
+Before publishing paid checkout, complete the [launch checklist](launch-checklist.md).
 
-Stop on a failed command. `provision` creates or reuses the selected R2 bucket
-and hosted D1 database, and records its id. `migrate` applies the declared D1
-migrations remotely; it has no D1 work in self-hosted mode. Billing migrations
-`0001_init`, `0002_billing` and `0003_preview_flag` remain forward-only.
+## Enable Stripe checkout
 
-`--test-deployment` explicitly permits initial testing on a non-production
-stage without claiming prior provider evidence. It is rejected for the
-`production` stage. Normal production apply/remove still require
-`--evidence <recorded-reference>`. This flag does not choose or isolate your
-Cloudflare resources; the names and account above do that.
+Stripe configuration is optional and remains disabled until its secrets and
+vars are set for a target. Use a Stripe test-mode account for staging. Keep
+production checkout disabled until the launch checklist, real prices, and
+business settings have been approved. Set `MESH_ORIGIN` to the selected
+manifest entry's `baseUrl`.
 
-Hosted checkout stays disabled while the first deployment and secrets land.
-Keep `HOSTED_BILLING_ENFORCEMENT` set to `"true"`; it comes from the hosted
-template. Never put the development spike bearer flag in a deployed config.
-
-## Install backend secrets
-
-Create a protected JSON file outside the repository, or pipe JSON from your
-credential manager to `mesh secrets --from-stdin --json`. File input uses:
-
-```sh
-mesh secrets --from-file /secure/path/backend-secrets.json --json
-```
-
-Install secrets after the Worker exists. This avoids creating a secret-only
-stub before the first real deploy. The CLI passes values on stdin and returns
-secret names only.
-
-Hosted secret file shape:
-
-```json
-{
-  "HOSTED_SERVICE_KEYS": "{\"staging\":\"<fresh-secret-at-least-32-bytes>\"}",
-  "STRIPE_SECRET_KEY": "<Stripe-test-mode-secret>",
-  "STRIPE_WEBHOOK_SECRET": "<test-endpoint-signing-secret>",
-  "MANAGED_PROVISIONER_TOKEN": "<same-value-as-provisioner-token>"
-}
-```
-
-`HOSTED_SERVICE_KEYS` is required for the website channel. Its key id must
-match `^[A-Za-z0-9_-]{1,64}$`. Omit the Stripe entries until testing billing,
-and omit `MANAGED_PROVISIONER_TOKEN` if no managed provisioner is bound.
-The webhook signing secret comes from the registration section below.
-
-For self-hosted enrollment-code testing, install:
-
-```json
-{
-  "ENROLLMENT_ADMIN_TOKEN": "<fresh-admin-secret>"
-}
-```
-
-Self-hosted OIDC can instead use `OIDC_ISSUER`, `OIDC_CLIENT_ID` and optional
-`OIDC_SCOPES` in `vars.json`, followed by another apply. The enrollment admin
-credential is always a secret. Managed provisioning can also be bound to a
-self-hosted backend with its matching token.
-
-## Wire the hosted website
-
-Skip this section for self-hosted deployment. Use a WorkOS development
-application and Stripe test-mode resources for staging.
-
-From the monorepo root:
-
-```sh
-cd anvil-website
-pnpm install --ignore-scripts --frozen-lockfile
-# For a new local environment only; preserve an existing .env.local.
-cp -n .env.example .env.local
-```
-
-Set the exact names from [the environment example](../../../../anvil-website/.env.example):
-
-- `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD`.
-- `NEXT_PUBLIC_WORKOS_REDIRECT_URI`, e.g. `http://localhost:3000/callback`,
-  registered with that WorkOS application. `/auth/callback` is also present as
-  a compatibility alias; use one exact URI consistently in WorkOS and the
-  local environment.
-- `ANVIL_BACKEND_ORIGIN`, equal to `MESH_ORIGIN`.
-- `ANVIL_HOSTED_KEY_ID`, e.g. `staging`, and `ANVIL_HOSTED_SERVICE_SECRET`,
-  matching the backend's `HOSTED_SERVICE_KEYS` entry.
-- `HOSTED_WORKOS_CLIENT_ID` in the Worker vars, set to the website's
-  `WORKOS_CLIENT_ID` when the desktop public client id is separate.
-- Worker vars `OIDC_ISSUER=https://api.workos.com/user_management`,
-  `OIDC_CLIENT_ID=<desktop-public-client-id>`, and `OIDC_SCOPES="openid profile"`.
-
-Run `pnpm dev` in `anvil-website`, open the printed local origin, and sign in
-at `/account`. The website needs the WorkOS variables and the signed service
-channel above; it does not reuse the desktop's loopback OIDC callback or
-device credential. Website pairing uses that service channel and enrollment
-codes. Backend OIDC vars are needed only when testing direct desktop OIDC
-login. The desktop callback is the official loopback form
-`http://127.0.0.1:<ephemeral-port>/callback`; configure the WorkOS application
-with `http://127.0.0.1:*/callback` in its redirect URI list. WorkOS does not
-allow a wildcard as the default redirect: first add
-`http://127.0.0.1:3001/callback` as the default, then add the wildcard as a
-second allowed URI. The desktop explicitly sends its actual ephemeral-port
-redirect URI, so it does not use that fixed-port default. Do not substitute
-the website callback or an `/account` route. For local account-page testing, an unpackaged desktop may use
-`ANVIL_HOSTED_ACCOUNT_URL=http://localhost:3000/account`; deployed builds must
-use the configured hosted account origin.
-
-## Enable Stripe test checkout
-
-Register a Stripe test-mode webhook endpoint at
-`<MESH_ORIGIN>/v1/hosted/stripe-webhook` for these events:
+In the Stripe Dashboard's **test mode**, create one monthly and one annual
+recurring Price. Copy their exact `price_...` IDs. Register a test-mode
+webhook endpoint at `$MESH_ORIGIN/v1/hosted/stripe-webhook` for these events:
 
 - `checkout.session.completed`, `checkout.session.expired`
 - `customer.subscription.created`, `customer.subscription.updated`,
   `customer.subscription.deleted`
 - `invoice.paid`, `invoice.payment_failed`
 
-Install its signing secret through `mesh secrets`. Configure Stripe's test
-customer portal if testing **Manage billing**. Add the following non-secret
-vars to `$MESH_DIR/vars.json`, using prices from the same Stripe test account:
+Add `STRIPE_SECRET_KEY` and the endpoint's signing secret as
+`STRIPE_WEBHOOK_SECRET` to the staging backend secret file recorded by
+`staging.secrets.backendFile` in `.wrangler/hosted-targets.json`. Never put
+these values in `vars.json`. Configure a test-mode Stripe customer portal if
+testing **Manage billing**.
+
+In `cloud/backend/.wrangler/mesh/<worker-name>/vars.json`, keep existing
+unrelated vars and set the checkout flag, fixed return URLs, and Price IDs.
+Use the same website origin for all three URLs. The backend ignores
+client-supplied redirect targets.
 
 ```json
 {
@@ -309,14 +204,28 @@ vars to `$MESH_DIR/vars.json`, using prices from the same Stripe test account:
   "HOSTED_CHECKOUT_SUCCESS_URL": "http://localhost:3000/account/billing?checkout=success",
   "HOSTED_CHECKOUT_CANCEL_URL": "http://localhost:3000/account/billing?checkout=cancel",
   "HOSTED_PORTAL_RETURN_URL": "http://localhost:3000/account/billing",
-  "STRIPE_PRICE_SYNC_MONTHLY": "price_test_monthly",
-  "STRIPE_PRICE_SYNC_ANNUAL": "price_test_annual"
+  "STRIPE_PRICE_SYNC_MONTHLY": "<monthly-price-id-from-test-mode>",
+  "STRIPE_PRICE_SYNC_ANNUAL": "<annual-price-id-from-test-mode>"
 }
 ```
 
-Use your website origin if testing a deployed website, then run
-`mesh plan --json` and `mesh apply --test-deployment --json` again. The backend
-uses these fixed return URLs. It ignores client-supplied redirect targets.
+Install secrets, review the local plan, then apply staging:
+
+```sh
+pnpm --dir cloud/backend hosted:deploy -- --environment staging secrets --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging plan --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging apply --test-deployment --json
+```
+
+Open `/account/billing` from the staging website and complete a real Checkout
+Session for the disposable staging account. For concrete purchase,
+authentication, cancellation, duplicate-delivery, and account deletion steps,
+follow [staging acceptance](staging-acceptance.md#stripe-test-mode-checkout).
+Use the [Stripe test cards](https://docs.stripe.com/testing) only with test
+mode. The monthly/yearly checkout flow creates its customer without a Stripe
+Test Clock; clock-driven renewal, grace, unpaid, and recovery cases are
+currently blocked pending a clock-bound test customer path. Do not mark those
+cases passed using unmapped `stripe trigger` payloads.
 
 Production requires the [launch checklist](launch-checklist.md), live-mode
 resources, approved prices and HTTPS return URLs. Do not reuse staging
@@ -330,28 +239,18 @@ Start with the descriptor:
 curl -fsS "$MESH_ORIGIN/.well-known/anvil-backend"
 ```
 
-It must advertise `anvil-backend/1`, `sync/1` and `enrollment-code`.
+It must advertise `anvil-backend/1`, `sync/1` and `enrollment-code`. Staging
+acceptance also requires `mesh/1`, WorkOS `workos-device`, and the exact
+staging client ID; see [staging acceptance](staging-acceptance.md).
 There is no `/health` route on the backend Worker; use the descriptor request
 above as the deployment healthcheck. A failure against the bare
 `<subdomain>.workers.dev` hostname indicates an incorrectly constructed
 `MESH_ORIGIN`, before the Worker is reached.
 
-For hosted testing:
-
-1. Sign in at `/account`; account and billing pages should load without a
-   not-configured or service-auth error.
-2. At `/account/devices`, use **Connect a device** to mint a code. In this
-   branch's desktop, open **Settings → Sync & Mesh → Pair this device**,
-   select the staging backend URL and redeem it. Start the desktop with
-   `pnpm dev` from `anvil-app`.
-3. Pair a second test device. Verify sync, worker job execution and device
-   revocation. A hosted account must map to the same sync account on both.
-4. In `/account/billing`, complete test checkout. Confirm Stripe deliveries
-   return 200 and the paid subscription grants `active` access. An eligible
-   account without a paid subscription stays in preview until
-   2026-11-01T00:00:00Z. Test cancellation and **Reconcile now**.
-5. Verify the scoped browser dashboard requests device approval and loses
-   access after revocation. The website receives sealed dashboard data.
+For signed-in staging acceptance, follow the executable sequence in
+[staging-acceptance.md](staging-acceptance.md). It identifies which gates
+require operator credentials or a second physical device and requires
+unavailable gates to be recorded as blocked.
 
 Webhook liveness after installing its secret:
 
@@ -369,7 +268,7 @@ throwaway backend with the admin credential. The suite creates and deletes
 its own test account:
 
 ```sh
-node "$ANVIL_ROOT/anvil-app/cloud/backend/conformance/suite.mjs" \
+node cloud/backend/conformance/suite.mjs \
   --url "$MESH_ORIGIN" --admin-token "$ENROLLMENT_ADMIN_TOKEN"
 ```
 
@@ -382,8 +281,8 @@ For cloud environments, enroll a source daemon with worker enabled and run
 it in a separate terminal. Request managed capacity with:
 
 ```sh
-node "$ANVIL_ROOT/anvil-app/dist-daemon/anvil-daemon.mjs" env request anvil-managed --ttl 600
-node "$ANVIL_ROOT/anvil-app/dist-daemon/anvil-daemon.mjs" env list
+node dist-daemon/anvil-daemon.mjs env request anvil-managed --ttl 600
+node dist-daemon/anvil-daemon.mjs env list
 ```
 
 Confirm the environment enrolls, appears as an ephemeral Mesh worker, can
@@ -393,21 +292,22 @@ upload alone does not prove container enrollment or job execution.
 
 ## Upgrade and cleanup
 
-Keep the same target variables, generated config and secret values for an
-upgrade. Rebuild the branch CLI/backend image as needed, run `mesh migrate`,
-then `mesh apply --test-deployment`. Secret values are installed separately;
-reapplying the Worker must preserve them.
+Keep the same selected manifest target, generated config and secret values for
+an upgrade. Rebuild the CLI/backend image as needed, then run the target
+wrapper's `migrate` and `apply` commands. Staging apply uses
+`--test-deployment`; production apply requires evidence. Secret values are
+installed separately; reapplying the Worker preserves them.
 
 Terminate test environments before removing their provisioner. For a staging
 Worker removal:
 
 ```sh
-mesh remove --test-deployment --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging remove --test-deployment --json
 # If this test deployed a provisioner:
-provisioner remove --test-deployment --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner remove --test-deployment --json
 ```
 
 Worker removal does not provide a full storage cleanup workflow. Review and
 remove the dedicated D1/R2 resources in Cloudflare when their test data is no
 longer needed. Keep billing migrations intact for any retained database.
-Delete temporary secret files when finished, including `$MESH_TOKEN_FILE`.
+Delete temporary secret files when finished.

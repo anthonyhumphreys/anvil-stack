@@ -1,7 +1,7 @@
 # Sync & Mesh — feature overview and status
 
 Branch: `feature/sync-mesh--foundations` · PR #91
-Normative spec: `anvil-sync-mesh-spec-v2.md` · Companion spec: `cloud-connected-companion.md` · Ops: `runbooks/hosted-sync/`
+Normative spec: [v2 spec](anvil-sync-mesh-spec-v2.md) · Companion spec: [cloud-connected companion](cloud-connected-companion.md) · Ops: [hosted sync runbooks](../../runbooks/hosted-sync/deploy.md)
 
 This document is the entry point. It explains what the branch builds, what has landed, and what remains — split into work an agent can execute versus decisions and verification that need a human.
 
@@ -36,7 +36,7 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - BILL-01/02/03: WorkOS identity binding, enrollment-code + OIDC device enrollment, D1 persistence, Stripe checkout/webhooks/reconciliation, entitlement enforcement at authoritative handlers.
 - BILL-04: `/account` website area — device table (list/rename/revoke), "Connect a device" code minting, billing surface.
 - BILL-05: desktop entitlement status + resumable pause.
-- IAC-01/02: deploy + rehearsal harness; live rehearsal passed on a clean account (evidence was in `iac-02-rehearsal.md`, since removed as transitive — the runbooks carry the durable procedures).
+- IAC-01/02: deploy + rehearsal harness; live rehearsal passed on a clean account. The current staging/production deployment procedure is in the [deploy runbook](../../runbooks/hosted-sync/deploy.md).
 - `device.list`/`rename`/`revoke`, `data.export`/`import`, `account.delete`/`deletionStatus` ops; hosted device + account-deletion service routes.
 
 ### Cloud agent environments (landed)
@@ -65,11 +65,11 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - `defaultPolicyTier` config for zero-touch hosts; desktop still defaults first contact to `pending`.
 - Service templates: `daemon/com.anvil.daemon.plist`, `daemon/anvil-daemon.service`; runbook: `docs/runbooks/hosted-sync/headless-daemon.md`.
 
-## Verified state
+## Verified state (25 September 2026)
 
-- App suite: 174 files / 1228 tests. Backend: 21 files / 258 tests. Contract: 52 tests.
-- `tsc` clean across main, renderer, mobile, Raycast.
-- Not yet exercised: real-device flows (see human tasks). Lint is blocked by a pre-existing ESLint 10 / `eslint-plugin-react` incompatibility.
+- The desktop suite passed 1,654 tests with 11 skipped; the backend runtime suite passed 356 tests. Desktop lint, typechecks, and build passed. The [PR review](pr-91-review.md) records the exact checks and limits.
+- The current Cloudflare Worker and WorkOS clients are **staging**. The [launch checklist](../../runbooks/hosted-sync/launch-checklist.md) tracks production identity, billing, and operational gates.
+- Real physical-device flows and signed-in hosted acceptance remain unverified; passing local suites is not a launch sign-off.
 
 ## Next steps — agent-executable
 
@@ -80,7 +80,6 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 | Raycast multi-host picker | Per-command host argument; `resolveAccountTarget` currently takes first reachable. |
 | Mobile pending-approval retry UX | Re-dial when a pending host approves; "check again" affordance. |
 | Contract packaging | Extract `@anvil/cloud-contract`; mobile/Raycast currently import by relative path. |
-| ESLint 10 / `eslint-plugin-react` compat | Upgrade plugin or pin ESLint; blocks lint repo-wide. |
 | Tailscale endpoint detection hardening | Order/heuristics for tsnet/utun interfaces in the desktop advertiser. |
 
 ## Next steps — human-required
@@ -88,7 +87,7 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 | Task | Why |
 | --- | --- |
 | Real-device dogfood | Two desktops + phone on one account: LAN kill → Tailscale path; both kill → durable ops land on reconnect; web revoke → all paths die within ~60s (attest TTL). |
-| BILL-06 launch gates | Production deploy config, Stripe live-mode keys, persistent secrets — see `runbooks/hosted-sync/launch-checklist.md`. |
+| BILL-06 launch gates | Production deploy config, Stripe live-mode keys, persistent secrets — see the [launch checklist](../../runbooks/hosted-sync/launch-checklist.md). |
 | WorkOS/OIDC client config | Register `anvil://` mobile redirect in the IdP console; contract freeze follows config. |
 | Local pairing's future | Keep ticket/token pairing first-class for zero-account users, or deprecate? Determines whether Phase 4 is worth doing. |
 | Transcript portability decision | Finished-chat transcripts live only on the origin host. Options in the spec's open questions: accept the gap (recommended), opt-in R2 artifacts, or synced entity (avoid). |

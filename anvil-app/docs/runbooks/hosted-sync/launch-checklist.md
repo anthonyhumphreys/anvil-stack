@@ -7,8 +7,11 @@ deployment commands, use [deploy.md](deploy.md).
 
 ## Identity (WorkOS)
 
-- [ ] Real WorkOS application created (not the spike fixture); production
-      user environment separate from development.
+- [ ] Separate production WorkOS environment created. Its desktop and hosted
+      client IDs differ from both staging client IDs; the issuer may remain
+      `https://api.workos.com/user_management` because client IDs select the
+      environment. Website and desktop clients in this environment map to the
+      same production user/account.
 - [ ] AuthKit configured on the website: sign-in/sign-up/callback routes,
       session cookie, correct callback origins.
 - [ ] Desktop OIDC/Connect pairing proven against the real WorkOS
@@ -35,32 +38,58 @@ deployment commands, use [deploy.md](deploy.md).
 - [ ] Customer Portal configured: allowed plan changes, cancellation
       behavior, prorations decided deliberately.
 
-## Production config
+## Production deployment split
 
-- [ ] `database_id` in `wrangler.hosted.jsonc` is the real D1 id (no
-      placeholder) — `node scripts/verify-hosted-config.mjs` exits 0.
+- [ ] Production values are complete in the ignored
+      `.wrangler/hosted-targets.json` file copied from
+      `hosted-targets.example.json`; no production secrets or resource ids are
+      committed.
+- [ ] Production generated config under
+      `.wrangler/mesh/<production-worker>/wrangler.jsonc` points to its own
+      provisioned D1 id, Worker and R2 bucket. Do not edit
+      `wrangler.hosted.jsonc` to select a deployment target.
 - [ ] `HOSTED_BILLING_ENFORCEMENT: 'true'` present; no `ANVIL_DEV_SPIKE` or
       `ENROLLMENT_ADMIN_TOKEN` in `vars`.
-- [ ] `HOSTED_SERVICE_KEYS` set as a secret; website `ANVIL_HOSTED_*` values
-      match it; keyId/secret rotation owner named.
+- [ ] Production `HOSTED_SERVICE_KEYS` is fresh and installed as a secret;
+      production website service credentials match it; key id/secret rotation
+      owner named.
 - [ ] D1 migrations applied (`migrations/hosted-billing/` 0001–0003).
-- [ ] Separate development / staging / live resources confirmed — no shared
-      Stripe customers, webhook secrets, billing DB or WorkOS environment
-      across them.
+- [ ] Production Worker, R2 bucket, D1 database, provisioner and descriptor
+      id are distinct from staging. Production managed-provisioner token and
+      Stripe credentials are fresh.
+- [ ] `anvil-staging` and `anvil-production` GitHub environments select the
+      matching hosted backend URL. Production is limited to `main` and
+      `app-v*` tags and has a required reviewer whose owner is recorded.
+- [ ] Production website has its own WorkOS API key, hosted client ID,
+      callback URIs, backend origin and `ANVIL_DEPLOYMENT_ENV=production`.
 
 ## Evidence
 
-- [ ] Stripe test-mode lifecycle run complete: purchase,
-      authentication-required payment, failed initial payment, renewal
-      failure → grace → recovery, cancel-at-period-end, immediate cancel,
-      unpaid/paused, annual interval, duplicate + abandoned checkout.
-      Recorded as evidence, not recited.
+- [ ] Signed-in staging acceptance completed against the recorded release
+      candidate, including a website WorkOS sign-in, the same user on two
+      physical desktop devices, device revoke/re-pair, scoped browser approval
+      and reconnection, managed job run/verified teardown, and disposable
+      hosted account deletion. See [staging-acceptance.md](staging-acceptance.md).
+      Missing Stripe/WorkOS/Cloudflare credentials or a second physical device
+      is **BLOCKED**, not a pass.
+- [ ] Stripe test-mode purchase, 3DS-required checkout, failed initial
+      payment, cancel-at-period-end, immediate cancellation, annual interval,
+      duplicate delivery, abandoned checkout, and reconciliation complete;
+      record test event IDs and results in the acceptance record.
+- [ ] Renewal failure → grace → recovery, unpaid/paused, and accelerated
+      renewal cases completed through a test-only customer bound to a Stripe
+      Test Clock. The current website checkout does not attach a Test Clock to
+      its customer; this gate remains **BLOCKED** until the clock-bound test
+      path exists. Unmapped `stripe trigger` fixtures do not satisfy it.
 - [ ] Fault injection evidence: duplicated/reordered/lost events, crash
       after inbox insert, crash after Stripe success before local commit,
       D1 failure, Stripe outage beyond grace, delayed webhook after
       deletion.
-- [ ] Rollback rehearsal per `rollback.md` actually performed — including
-      the schema-compatibility check on the rolled-back code.
+- [ ] Rollback rehearsal per [rollback.md](rollback.md) completed on a
+      disposable staging D1: export/import verified, Time Travel restore
+      verified, and prior Worker code checked against every applied D1
+      migration before a code rollback. Record version IDs, bookmark, export
+      checksum, and schema check.
 
 ## Clients and docs
 
@@ -76,7 +105,16 @@ deployment commands, use [deploy.md](deploy.md).
 
 ## Observability and comms
 
-- [ ] Metrics wired per `metrics.md`; alerts routed to a named owner.
+- [ ] Worker observability collection verified for the selected Worker;
+      saved application-metric queries show the expected JSON messages.
+- [ ] Cloudflare Worker error alert and external descriptor uptime check
+      notify the chosen destination; test notification received and policy
+      IDs recorded.
+- [ ] Application metrics routed to a threshold-capable alert service with
+      the starting thresholds in [metrics.md](metrics.md); D1 rows-read/
+      rows-written and account spend-budget notifications configured; named
+      responder and escalation route recorded. Saved dashboards alone do
+      not satisfy alerting.
 - [ ] Preview-end transactional reminders (7d / 1d) approved and scheduled
       where consent/configuration permits.
 - [ ] Launch comms copy approved: pricing page, preview-end notice, support
