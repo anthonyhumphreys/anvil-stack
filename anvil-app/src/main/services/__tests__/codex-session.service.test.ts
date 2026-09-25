@@ -20,6 +20,7 @@ import {
   buildAcpClientCapabilities,
   buildApprovalResponse,
   buildCodexCollaborationMode,
+  buildCodexProcessEnvironment,
   buildInputResponse,
   buildTurnSteerParams,
   resolveAcpModelValue,
@@ -33,6 +34,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const tempDir of tempDirs.splice(0)) {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -54,6 +56,21 @@ describe('codex session service', () => {
       mode: 'plan',
       settings: { model: 'gateway/model', reasoning_effort: null },
     });
+  });
+
+  it('strips ambient secrets from the provider spawn environment', async () => {
+    vi.stubEnv('GH_TOKEN', 'gh-secret');
+    vi.stubEnv('ANVIL_SYNC_TOKEN', 'anvil-secret');
+    vi.stubEnv('PATH', '/usr/bin:/bin');
+
+    const env = await buildCodexProcessEnvironment('openai', {
+      openaiApiKey: 'sk-from-settings',
+    } as Parameters<typeof buildCodexProcessEnvironment>[1]);
+
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.ANVIL_SYNC_TOKEN).toBeUndefined();
+    expect(env.PATH).toBe('/usr/bin:/bin');
+    expect(env.OPENAI_API_KEY).toBe('sk-from-settings');
   });
 
   it('keeps Cursor model ids instead of coercing them into the Codex catalog', () => {

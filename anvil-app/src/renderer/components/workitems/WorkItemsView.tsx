@@ -19,9 +19,10 @@ import {
 import { SprintSelector } from './SprintSelector';
 import { TagFilter } from './TagFilter';
 import { WorkItemCard } from './WorkItemCard';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { repoIsMapped, useWorkspace } from '../../contexts/WorkspaceContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { SettingsLink } from '../shared/SettingsLink';
 import { ChangeReviewPanel } from '../review/ChangeReviewPanel';
 
 export function buildWorkItemTree(items: WorkItem[]): WorkItem[] {
@@ -308,9 +309,16 @@ export function WorkItemsView() {
                 icon={TicketCheck}
                 title={connections.length ? 'No matching work items' : 'Connect your work tracker'}
                 description={
-                  connections.length
-                    ? 'Adjust the search, state or iteration filters.'
-                    : 'Add Azure DevOps, Linear or Jira in Settings to bring your work here.'
+                  connections.length ? (
+                    'Adjust the search, state or iteration filters.'
+                  ) : (
+                    <>
+                      <SettingsLink to="delivery#work-items">
+                        Add Azure DevOps, Linear or Jira in Settings
+                      </SettingsLink>{' '}
+                      to bring your work here.
+                    </>
+                  )
                 }
               />
             )}
@@ -530,8 +538,10 @@ async function resolveImpactAssessmentRepos(
   activeRepos: RepoInfo[],
   workspaceRepos: RepoInfo[],
 ): Promise<RepoInfo[]> {
-  const indexedWorkspaceRepos = workspaceRepos.filter((repo) => repo.status === 'indexed');
-  const indexedActiveRepos = activeRepos.filter((repo) => repo.status === 'indexed');
+  // Repo features unlock at the `mapped` tier — the fast structural pass is
+  // enough for work-item repo context; enrichment continues in the background.
+  const indexedWorkspaceRepos = workspaceRepos.filter(repoIsMapped);
+  const indexedActiveRepos = activeRepos.filter(repoIsMapped);
 
   const linkedRepoIds = new Set<string>();
   for (const item of scopeItems) {
@@ -638,16 +648,35 @@ function buildImpactAssessmentPrompt(
 function stripHtml(value?: string): string {
   if (!value) return '';
 
-  return value
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+  const withLineBreaks = value.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n\n');
+  return decodeHtmlEntities(stripHtmlTags(withLineBreaks))
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * Remove tags iteratively so a tag split across another tag (e.g. `<scr<script>ipt>`)
+ * cannot survive a single-pass replace.
+ */
+function stripHtmlTags(value: string): string {
+  let result = value;
+  let previous: string;
+  do {
+    previous = result;
+    result = result.replace(/<[^>]*>/g, '');
+  } while (result !== previous);
+  return result;
+}
+
+/** Decode HTML entities; `&amp;` must be decoded last so encoded entities are not double-decoded */
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
 }
 
 function normalizeRepoUrl(value?: string): string | undefined {

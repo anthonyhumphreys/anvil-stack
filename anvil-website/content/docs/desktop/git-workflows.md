@@ -3,9 +3,9 @@ title: Git workflows
 navTitle: Git
 description: Branch management, diff review, commit preparation, and PR handover from inside Anvil Desktop.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 113
+order: 100
 ---
 
 # Git workflows

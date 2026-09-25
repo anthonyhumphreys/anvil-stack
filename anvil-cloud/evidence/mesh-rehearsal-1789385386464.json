@@ -1,0 +1,118 @@
+{
+  "reference": "iac02-rehearsal-mesh-rehearsal-live1-mu15uwo0",
+  "recordedAt": "2026-09-14T11:31:18.557Z",
+  "live": true,
+  "workerName": "mesh-rehearsal-live1",
+  "backendDir": "/Users/anthonyhumphreys/Code/anvil/anvil-app/cloud/backend",
+  "baseUrl": "https://mesh-rehearsal-live1.anthony-humphreys.workers.dev",
+  "steps": [
+    {
+      "name": "plan: first-deploy production plan is clean",
+      "ok": true,
+      "detail": {
+        "migrationMode": "create",
+        "secrets": ["ENROLLMENT_ADMIN_TOKEN"]
+      }
+    },
+    {
+      "name": "apply: dry-run compiles without provider mutation",
+      "ok": true,
+      "detail": {
+        "dryRun": true
+      }
+    },
+    {
+      "name": "apply: provision ENROLLMENT_ADMIN_TOKEN secret",
+      "ok": true,
+      "detail": {
+        "provisioned": true
+      }
+    },
+    {
+      "name": "apply: deploy to the clean account",
+      "ok": true,
+      "detail": {
+        "workerUrl": "https://mesh-rehearsal-live1.anthony-humphreys.workers.dev"
+      }
+    },
+    {
+      "name": "descriptor: frozen contract advertised",
+      "ok": true,
+      "detail": {
+        "deploymentId": "spike-0000-0000-0000-backend01demo",
+        "profiles": ["sync/1", "mesh/1"]
+      }
+    },
+    {
+      "name": "conformance: standalone suite passes on the fresh deploy",
+      "ok": true,
+      "detail": {
+        "output": "11/11 conformance checks passed"
+      }
+    },
+    {
+      "name": "backup: enroll + seed + export",
+      "ok": true,
+      "detail": {
+        "exported": 3,
+        "entities": [
+          {
+            "entityType": "workspace",
+            "entityId": "rehearsal-0",
+            "revision": 1,
+            "schemaVersion": 1,
+            "payload": {
+              "n": 0
+            }
+          },
+          {
+            "entityType": "workspace",
+            "entityId": "rehearsal-1",
+            "revision": 1,
+            "schemaVersion": 1,
+            "payload": {
+              "n": 1
+            }
+          },
+          {
+            "entityType": "workspace",
+            "entityId": "rehearsal-2",
+            "revision": 1,
+            "schemaVersion": 1,
+            "payload": {
+              "n": 2
+            }
+          }
+        ],
+        "session": {
+          "accessToken": "[REDACTED]",
+          "accessExpiresAt": "2026-09-14T11:45:21.695Z",
+          "refreshToken": "[REDACTED]",
+          "credentialGeneration": 1,
+          "enrollmentId": "enr_05f0a253-9d10-4d8c-a04f-9dbec2b5ba14",
+          "accountId": "iac02-86110764-b496-43c9-be55-45872a92df08",
+          "datasetEpoch": "spike-epoch-1"
+        }
+      }
+    },
+    {
+      "name": "upgrade: re-apply over existing deployment, data intact",
+      "ok": true,
+      "detail": {
+        "changesAfterUpgrade": 3
+      }
+    },
+    {
+      "name": "restore: redeploy to a fresh namespace and import the backup",
+      "ok": false,
+      "error": "enrollment-code issue: null"
+    },
+    {
+      "name": "remove: delete rehearsal workers (state retained)",
+      "ok": true,
+      "detail": {
+        "removed": ["mesh-rehearsal-live1", "mesh-rehearsal-live1-restored"]
+      }
+    }
+  ]
+}

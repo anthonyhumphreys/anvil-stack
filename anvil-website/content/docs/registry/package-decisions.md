@@ -5,7 +5,7 @@ description: Interpret allow, warn, quarantine, block, explain, analysis, LLM re
 product: Anvil Registry
 section: Concepts
 journey: learn
-order: 5
+order: 110
 ---
 
 # Package decisions

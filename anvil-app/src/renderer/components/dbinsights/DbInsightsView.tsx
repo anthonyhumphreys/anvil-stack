@@ -171,7 +171,7 @@ export function DbInsightsView() {
             <button
               onClick={handleAnalyze}
               disabled={running || artifacts.length === 0}
-              className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
             >
               {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
               Analyse
@@ -221,7 +221,7 @@ export function DbInsightsView() {
                           <span>{artifact.fileType.toUpperCase()}</span>
                           <span>{formatFileSize(artifact.fileSize)}</span>
                         </div>
-                        <div className="mt-2 truncate font-mono text-[11px] text-text-tertiary">
+                        <div className="mt-2 truncate font-mono text-xs text-text-tertiary">
                           {artifact.filePath}
                         </div>
                       </div>

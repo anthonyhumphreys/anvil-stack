@@ -3,6 +3,7 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronRight,
+  CircleHelp,
   File as FileIcon,
   Image as ImageIcon,
   Hammer,
@@ -10,7 +11,6 @@ import {
   Loader2,
   Paperclip,
   Send,
-  Shield,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -22,15 +22,25 @@ import type {
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchResult,
+  ChatFollowUpIntent,
+  ChatFollowUpResult,
   CodexRegisteredSkill,
   CodexMode,
   ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
+import { ChatAccessLevelChip } from './ChatAccessLevelChip';
+import type { ChatAccessOption } from './thread-access';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { slugForDomId } from '../../utils/dom-id';
 import { getNextListboxIndex } from '../../utils/list-navigation';
 import { EXECUTION_STRATEGIES, type ExecutionStrategy } from '../../utils/execution-strategy';
+import {
+  appendComposerPrefill,
+  getFollowUpFeedback,
+  isCurrentComposerDraft,
+  type ComposerDraftVersion,
+} from './chat-composer-intent';
 
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_RENDERER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -38,6 +48,7 @@ const FILE_MENTION_SEARCH_LIMIT = 24;
 const FILE_MENTION_MENU_ID = 'chat-file-mention-menu';
 const SLASH_COMMAND_MENU_ID = 'chat-slash-command-menu';
 const SKILL_MENTION_MENU_ID = 'chat-skill-mention-menu';
+const COMPACT_FOOTER_MAX_WIDTH = 760;
 
 interface ActiveFileMention {
   start: number;
@@ -49,6 +60,18 @@ interface ActiveTextTrigger {
   start: number;
   end: number;
   query: string;
+}
+
+interface FollowUpSubmission extends ComposerDraftVersion {
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  message: string;
+  attachments?: ChatAttachment[];
+}
+
+interface FollowUpComposerFeedback {
+  kind: 'success' | 'error' | 'uncertain';
+  message: string;
 }
 
 export interface ChatQuickPrompt {
@@ -70,13 +93,32 @@ interface ChatComposerKeyEvent {
   shiftKey: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
 }
 
 interface ChatInputProps {
-  onSend: (message: string, attachments?: ChatAttachment[]) => void;
+  /**
+   * May return a promise resolving to `false` (or `false` synchronously) when
+   * the provider could not accept the message — the draft is then preserved
+   * (H2). Any other result clears the composer.
+   */
+  onSend: (
+    message: string,
+    attachments?: ChatAttachment[],
+  ) => void | boolean | Promise<void | boolean>;
   onStop?: () => void;
   disabled: boolean;
   busy?: boolean;
+  followUpCapabilities?: { guide: boolean; queue: boolean };
+  onFollowUp?: (
+    intent: ChatFollowUpIntent,
+    message: string,
+    attachments: ChatAttachment[] | undefined,
+    requestId: string,
+  ) => Promise<ChatFollowUpResult>;
+  sideQuestionAvailable?: boolean;
+  onSideQuestion?: (message: string, attachments?: ChatAttachment[]) => Promise<boolean>;
   personaColour: string;
   model?: string;
   modelProvider?: AgentProvider;
@@ -90,6 +132,12 @@ interface ChatInputProps {
   codexMode?: CodexMode;
   onCodexModeChange?: (mode: CodexMode) => void;
   codexModeDisabled?: boolean;
+  /** H9 — provider-truthful access options for the chip (ACP mode lists). */
+  accessOptions?: ChatAccessOption[];
+  /** H9 — provider-side mode actually applied by the session, when known. */
+  accessAppliedMode?: string;
+  /** H9 — full-option selector so 'plan' can route via collaboration mode. */
+  onAccessOptionSelect?: (option: ChatAccessOption) => void;
   collaborationMode?: 'default' | 'plan';
   onCollaborationModeChange?: (mode: 'default' | 'plan') => void;
   fastMode?: boolean;
@@ -98,12 +146,17 @@ interface ChatInputProps {
   contextControls?: ReactNode;
   /** Leading controls rendered in the composer footer before attachments. */
   leadingControls?: ReactNode;
-  prefill?: { id: string; text: string } | null;
+  prefill?: { id: string; text: string; attachments?: ChatAttachment[] } | null;
   draftKey?: string;
   mentionRepoIds?: string[];
   quickPrompts?: ChatQuickPrompt[];
   slashCommands?: ChatSlashCommand[];
   focusRequest?: number;
+  /**
+   * CH8 — shows the "/ commands · @ files · $ skills" hint + help popover
+   * under the composer. Intended for empty threads.
+   */
+  showSyntaxHint?: boolean;
 }
 
 interface ChatInputModelOption {
@@ -118,6 +171,10 @@ export function ChatInput({
   onStop,
   disabled,
   busy,
+  followUpCapabilities,
+  onFollowUp,
+  sideQuestionAvailable = false,
+  onSideQuestion,
   personaColour,
   model = 'gpt-5.6-sol',
   modelProvider = 'codex',
@@ -131,6 +188,9 @@ export function ChatInput({
   codexMode = 'on-request',
   onCodexModeChange,
   codexModeDisabled = false,
+  accessOptions,
+  accessAppliedMode,
+  onAccessOptionSelect,
   collaborationMode = 'default',
   onCollaborationModeChange,
   fastMode = false,
@@ -144,11 +204,23 @@ export function ChatInput({
   quickPrompts = [],
   slashCommands = [],
   focusRequest = 0,
+  showSyntaxHint = false,
 }: ChatInputProps) {
   const [value, setValue] = useState(() => loadDraft(draftKey));
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [standardFeedback, setStandardFeedback] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [followUpFeedback, setFollowUpFeedback] = useState<FollowUpComposerFeedback | null>(null);
+  const [uncertainFollowUps, setUncertainFollowUps] = useState<FollowUpSubmission[]>([]);
+  const [pendingFollowUpId, setPendingFollowUpId] = useState<string | null>(null);
+  const [standardSendPending, setStandardSendPending] = useState(false);
+  const [sideQuestionPending, setSideQuestionPending] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [preparingAttachments, setPreparingAttachments] = useState(false);
   const [fileMention, setFileMention] = useState<ActiveFileMention | null>(null);
@@ -166,11 +238,66 @@ export function ChatInput({
   const [selectedSkillMentionIndex, setSelectedSkillMentionIndex] = useState(0);
   const [dragDepth, setDragDepth] = useState(0);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [syntaxHelpOpen, setSyntaxHelpOpen] = useState(false);
+  const [compactFooter, setCompactFooter] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerWidthRef = useRef<HTMLDivElement>(null);
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
+  const draftRevisionRef = useRef(0);
+  const followUpPendingRef = useRef<{ requestId: string; draftKey?: string } | null>(null);
+  const uncertainFollowUpsRef = useRef<FollowUpSubmission[]>(uncertainFollowUps);
+  uncertainFollowUpsRef.current = uncertainFollowUps;
+  const standardSendPendingRef = useRef<string | null>(null);
+  const sideQuestionPendingRef = useRef<string | null>(null);
+  const prefillAppliedRef = useRef<string | null>(null);
+  // Mirrors `value` for the async send path — lets the deferred clear bail out
+  // when the user kept typing while the provider was deciding (H2).
+  const valueRef = useRef(value);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const syntaxHelpRef = useRef<HTMLDivElement>(null);
   const skipNextDraftSaveRef = useRef(false);
   const mentionRepoKey = mentionRepoIds.join('\0');
   const draggingFiles = dragDepth > 0;
+
+  const markDraftChanged = useCallback(() => {
+    draftRevisionRef.current += 1;
+  }, []);
+  const currentDraftVersion = useCallback(
+    (): ComposerDraftVersion => ({
+      draftKey: draftKeyRef.current,
+      revision: draftRevisionRef.current,
+    }),
+    [],
+  );
+  const rememberUncertainFollowUp = useCallback((submission: FollowUpSubmission) => {
+    const next = [
+      ...uncertainFollowUpsRef.current.filter((item) => item.requestId !== submission.requestId),
+      submission,
+    ];
+    uncertainFollowUpsRef.current = next;
+    setUncertainFollowUps(next);
+  }, []);
+  const resolveUncertainFollowUp = useCallback((requestId: string) => {
+    const next = uncertainFollowUpsRef.current.filter((item) => item.requestId !== requestId);
+    uncertainFollowUpsRef.current = next;
+    setUncertainFollowUps(next);
+  }, []);
+
+  useEffect(() => {
+    const composer = composerWidthRef.current;
+    if (!composer) return;
+
+    const updateLayout = (width: number) => setCompactFooter(width < COMPACT_FOOTER_MAX_WIDTH);
+    updateLayout(composer.getBoundingClientRect().width);
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) updateLayout(entry.contentRect.width);
+    });
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!contextMenuOpen) return;
@@ -190,6 +317,28 @@ export function ChatInput({
     };
   }, [contextMenuOpen]);
 
+  useEffect(() => {
+    if (!syntaxHelpOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!syntaxHelpRef.current?.contains(event.target as Node)) setSyntaxHelpOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSyntaxHelpOpen(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [syntaxHelpOpen]);
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -197,11 +346,10 @@ export function ChatInput({
     el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }, []);
 
-  const handleSend = useCallback(() => {
-    const trimmed = value.trim();
-    if ((!trimmed && attachments.length === 0) || disabled || preparingAttachments) return;
-    onSend(trimmed, attachments);
+  const clearComposer = useCallback(() => {
+    markDraftChanged();
     setValue('');
+    valueRef.current = '';
     setAttachments([]);
     setAttachmentPreviews({});
     setAttachmentError(null);
@@ -213,7 +361,244 @@ export function ChatInput({
     setSkillMentionError(null);
     clearDraft(draftKey);
     window.requestAnimationFrame(resizeTextarea);
-  }, [value, attachments, disabled, preparingAttachments, onSend, draftKey, resizeTextarea]);
+  }, [draftKey, markDraftChanged, resizeTextarea]);
+
+  const handleSend = useCallback(async () => {
+    const trimmed = value.trim();
+    if (
+      (!trimmed && attachments.length === 0) ||
+      disabled ||
+      busy ||
+      preparingAttachments ||
+      standardSendPendingRef.current
+    ) {
+      return;
+    }
+
+    const sendId = crypto.randomUUID();
+    const submittedVersion: ComposerDraftVersion = {
+      draftKey: draftKeyRef.current,
+      revision: draftRevisionRef.current,
+    };
+    standardSendPendingRef.current = sendId;
+    setStandardSendPending(true);
+    setStandardFeedback(null);
+
+    try {
+      const accepted = await onSend(
+        trimmed,
+        attachments.length ? copyAttachments(attachments) : undefined,
+      );
+      if (draftKeyRef.current !== submittedVersion.draftKey) return;
+      if (accepted === false) {
+        setStandardFeedback({
+          kind: 'error',
+          message: 'The message was not accepted. Your draft is still here.',
+        });
+        return;
+      }
+      if (isCurrentComposerDraft(submittedVersion, currentDraftVersion())) clearComposer();
+    } catch {
+      if (draftKeyRef.current === submittedVersion.draftKey) {
+        setStandardFeedback({
+          kind: 'error',
+          message: 'Could not confirm that the message was sent. Your draft is still here.',
+        });
+      }
+    } finally {
+      if (standardSendPendingRef.current === sendId) {
+        standardSendPendingRef.current = null;
+        if (draftKeyRef.current === submittedVersion.draftKey) setStandardSendPending(false);
+      }
+    }
+  }, [
+    value,
+    attachments,
+    disabled,
+    busy,
+    preparingAttachments,
+    onSend,
+    clearComposer,
+    currentDraftVersion,
+  ]);
+
+  const handleFollowUp = useCallback(
+    async (intent: ChatFollowUpIntent, retry?: FollowUpSubmission) => {
+      if (
+        disabled ||
+        !onFollowUp ||
+        followUpPendingRef.current ||
+        (!retry &&
+          (!busy ||
+            preparingAttachments ||
+            !followUpCapabilities?.[intent] ||
+            uncertainFollowUpsRef.current.some((submission) =>
+              isCurrentComposerDraft(submission, currentDraftVersion()),
+            )))
+      ) {
+        return;
+      }
+
+      const message = retry?.message ?? value.trim();
+      const submittedAttachments = retry ? (retry.attachments ?? []) : copyAttachments(attachments);
+      if (!retry && !message && submittedAttachments.length === 0) return;
+
+      const submission: FollowUpSubmission = retry ?? {
+        requestId: `chat-follow-up-${crypto.randomUUID()}`,
+        intent,
+        message,
+        attachments: submittedAttachments.length > 0 ? submittedAttachments : undefined,
+        draftKey: draftKeyRef.current,
+        revision: draftRevisionRef.current,
+      };
+
+      followUpPendingRef.current = {
+        requestId: submission.requestId,
+        draftKey: submission.draftKey,
+      };
+      setPendingFollowUpId(submission.requestId);
+      setFollowUpFeedback({
+        kind: 'success',
+        message: retry
+          ? 'Checking the previous send with the same request ID…'
+          : 'Sending follow-up…',
+      });
+      setStandardFeedback(null);
+
+      try {
+        const result = await onFollowUp(
+          submission.intent,
+          submission.message,
+          submission.attachments ? copyAttachments(submission.attachments) : undefined,
+          submission.requestId,
+        );
+        if (draftKeyRef.current !== submission.draftKey) return;
+
+        if (result.requestId !== submission.requestId || result.intent !== submission.intent) {
+          rememberUncertainFollowUp(submission);
+          setFollowUpFeedback({
+            kind: 'uncertain',
+            message: 'Delivery could not be confirmed. Retry this exact message safely.',
+          });
+          return;
+        }
+
+        const feedback = getFollowUpFeedback(result);
+        resolveUncertainFollowUp(submission.requestId);
+        if (feedback.kind === 'error') {
+          setFollowUpFeedback({
+            ...feedback,
+            message: `${feedback.message} Your draft is still here.`,
+          });
+          return;
+        }
+
+        const sameDraft = isCurrentComposerDraft(submission, currentDraftVersion());
+        setFollowUpFeedback({
+          ...feedback,
+          message: sameDraft
+            ? feedback.message
+            : `${feedback.message} Your newer draft is unchanged.`,
+        });
+        if (sameDraft) clearComposer();
+      } catch {
+        if (draftKeyRef.current !== submission.draftKey) return;
+        rememberUncertainFollowUp(submission);
+        setFollowUpFeedback({
+          kind: 'uncertain',
+          message: 'Delivery could not be confirmed. Retry this exact message safely.',
+        });
+      } finally {
+        if (
+          followUpPendingRef.current?.requestId === submission.requestId &&
+          followUpPendingRef.current.draftKey === submission.draftKey
+        ) {
+          followUpPendingRef.current = null;
+          if (draftKeyRef.current === submission.draftKey) setPendingFollowUpId(null);
+        }
+      }
+    },
+    [
+      attachments,
+      busy,
+      clearComposer,
+      disabled,
+      followUpCapabilities,
+      onFollowUp,
+      preparingAttachments,
+      value,
+      currentDraftVersion,
+      rememberUncertainFollowUp,
+      resolveUncertainFollowUp,
+    ],
+  );
+
+  const handleSideQuestion = useCallback(async () => {
+    const message = value.trim();
+    if (
+      disabled ||
+      !sideQuestionAvailable ||
+      !onSideQuestion ||
+      sideQuestionPendingRef.current ||
+      (!message && attachments.length === 0) ||
+      preparingAttachments
+    ) {
+      return;
+    }
+
+    const requestId = crypto.randomUUID();
+    const submittedVersion: ComposerDraftVersion = {
+      draftKey: draftKeyRef.current,
+      revision: draftRevisionRef.current,
+    };
+    sideQuestionPendingRef.current = requestId;
+    setSideQuestionPending(true);
+    setStandardFeedback(null);
+
+    try {
+      const accepted = await onSideQuestion(
+        message,
+        attachments.length ? copyAttachments(attachments) : undefined,
+      );
+      if (draftKeyRef.current !== submittedVersion.draftKey) return;
+      if (!accepted) {
+        setStandardFeedback({
+          kind: 'error',
+          message: 'The read-only side question was not started. Your draft is still here.',
+        });
+        return;
+      }
+      const sameDraft = isCurrentComposerDraft(submittedVersion, currentDraftVersion());
+      setStandardFeedback({
+        kind: 'success',
+        message: sameDraft
+          ? 'Read-only side question started.'
+          : 'Read-only side question started. Your newer draft is unchanged.',
+      });
+      if (sameDraft) clearComposer();
+    } catch {
+      if (draftKeyRef.current === submittedVersion.draftKey) {
+        setStandardFeedback({
+          kind: 'error',
+          message: 'Could not start the side question. Your draft is still here.',
+        });
+      }
+    } finally {
+      if (sideQuestionPendingRef.current === requestId) {
+        sideQuestionPendingRef.current = null;
+        if (draftKeyRef.current === submittedVersion.draftKey) setSideQuestionPending(false);
+      }
+    }
+  }, [
+    attachments,
+    clearComposer,
+    disabled,
+    onSideQuestion,
+    preparingAttachments,
+    sideQuestionAvailable,
+    value,
+    currentDraftVersion,
+  ]);
 
   const refreshComposerTriggers = useCallback(
     (nextValue: string, selectionStart: number | null) => {
@@ -236,10 +621,13 @@ export function ChatInput({
   const handleTextChange = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       const nextValue = event.target.value;
+      markDraftChanged();
+      setStandardFeedback(null);
+      setFollowUpFeedback(null);
       setValue(nextValue);
       refreshComposerTriggers(nextValue, event.target.selectionStart);
     },
-    [refreshComposerTriggers],
+    [markDraftChanged, refreshComposerTriggers],
   );
 
   const handleTextareaSelection = useCallback(() => {
@@ -272,6 +660,7 @@ export function ChatInput({
           return acc;
         }, {});
 
+        markDraftChanged();
         setAttachments((prev) => mergeAttachments(prev, prepared));
         setAttachmentPreviews((prev) => ({ ...prev, ...previews }));
       } catch (err) {
@@ -280,7 +669,7 @@ export function ChatInput({
         setPreparingAttachments(false);
       }
     },
-    [attachments.length, disabled],
+    [attachments.length, disabled, markDraftChanged],
   );
 
   const handlePaste = useCallback(
@@ -305,6 +694,7 @@ export function ChatInput({
     setAttachmentError(null);
     try {
       const selected = await window.anvil.chat.selectAttachments();
+      markDraftChanged();
       setAttachments((prev) => mergeAttachments(prev, selected.slice(0, remainingSlots)));
       if (selected.length > remainingSlots) {
         setAttachmentError('Some files were skipped.');
@@ -314,16 +704,20 @@ export function ChatInput({
     } finally {
       setPreparingAttachments(false);
     }
-  }, [attachments.length, disabled]);
+  }, [attachments.length, disabled, markDraftChanged]);
 
-  const removeAttachment = useCallback((attachmentId: string) => {
-    setAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId));
-    setAttachmentPreviews((prev) => {
-      const next = { ...prev };
-      delete next[attachmentId];
-      return next;
-    });
-  }, []);
+  const removeAttachment = useCallback(
+    (attachmentId: string) => {
+      markDraftChanged();
+      setAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId));
+      setAttachmentPreviews((prev) => {
+        const next = { ...prev };
+        delete next[attachmentId];
+        return next;
+      });
+    },
+    [markDraftChanged],
+  );
 
   const handleSelectFileMention = useCallback(
     async (result: ChatFileMentionSearchResult) => {
@@ -339,6 +733,7 @@ export function ChatInput({
         const prepared = await window.anvil.chat.prepareAttachments([
           { name: result.name, path: result.path },
         ]);
+        markDraftChanged();
         setAttachments((prev) => mergeAttachments(prev, prepared));
 
         const insert = `@${buildFileMentionLabel(result, mentionRepoIds.length > 1)} `;
@@ -372,6 +767,7 @@ export function ChatInput({
       disabled,
       fileMention,
       mentionRepoIds.length,
+      markDraftChanged,
       preparingAttachments,
       resizeTextarea,
       value,
@@ -388,6 +784,7 @@ export function ChatInput({
         .replace(/^\s+/, '')}`;
       const nextCaretPosition = slashCommand.start + insert.length;
 
+      markDraftChanged();
       setValue(nextValue);
       setSlashCommand(null);
 
@@ -399,7 +796,7 @@ export function ChatInput({
         resizeTextarea();
       });
     },
-    [disabled, resizeTextarea, slashCommand, value],
+    [disabled, markDraftChanged, resizeTextarea, slashCommand, value],
   );
 
   const handleSelectSkillMention = useCallback(
@@ -412,6 +809,7 @@ export function ChatInput({
         .replace(/^\s+/, '')}`;
       const nextCaretPosition = skillMention.start + insert.length;
 
+      markDraftChanged();
       setValue(nextValue);
       setSkillMention(null);
       setSkillMentionError(null);
@@ -424,10 +822,12 @@ export function ChatInput({
         resizeTextarea();
       });
     },
-    [disabled, resizeTextarea, skillMention, value],
+    [disabled, markDraftChanged, resizeTextarea, skillMention, value],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) return;
+
     if (fileMention && fileMentionResults.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -502,7 +902,16 @@ export function ChatInput({
       return;
     }
 
-    if (shouldSendChatMessageFromKey(e)) {
+    if (
+      shouldSendChatMessageFromKey({
+        key: e.key,
+        shiftKey: e.shiftKey,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        isComposing: e.nativeEvent.isComposing,
+        keyCode: e.nativeEvent.keyCode,
+      })
+    ) {
       e.preventDefault();
       handleSend();
     }
@@ -515,6 +924,7 @@ export function ChatInput({
   const handleVoiceTranscript = useCallback(
     (text: string) => {
       if (text.trim()) {
+        markDraftChanged();
         setValue((prev) => (prev ? `${prev} ${text}` : text));
         setTimeout(() => {
           if (textareaRef.current) {
@@ -524,11 +934,12 @@ export function ChatInput({
         }, 0);
       }
     },
-    [resizeTextarea],
+    [markDraftChanged, resizeTextarea],
   );
 
   const handleQuickPrompt = useCallback(
     (prompt: string) => {
+      markDraftChanged();
       setValue(prompt);
       setFileMention(null);
       setFileMentionResults([]);
@@ -542,7 +953,7 @@ export function ChatInput({
         resizeTextarea();
       });
     },
-    [resizeTextarea],
+    [markDraftChanged, resizeTextarea],
   );
 
   const handleDragEnter = useCallback(
@@ -590,18 +1001,55 @@ export function ChatInput({
   }, [disabled, focusRequest]);
 
   useEffect(() => {
+    markDraftChanged();
     skipNextDraftSaveRef.current = true;
-    setValue(loadDraft(draftKey));
+    const nextDraft = loadDraft(draftKey);
+    setValue(nextDraft);
+    valueRef.current = nextDraft;
+    setAttachments([]);
+    setAttachmentPreviews({});
+    setAttachmentError(null);
+    setStandardFeedback(null);
+    setFollowUpFeedback(null);
+    setUncertainFollowUps([]);
+    setPendingFollowUpId(null);
+    setStandardSendPending(false);
+    setSideQuestionPending(false);
+    followUpPendingRef.current = null;
+    uncertainFollowUpsRef.current = [];
+    standardSendPendingRef.current = null;
+    sideQuestionPendingRef.current = null;
     setFileMention(null);
     setFileMentionResults([]);
     setSlashCommand(null);
     setSkillMention(null);
-  }, [draftKey]);
+  }, [draftKey, markDraftChanged]);
 
   useEffect(() => {
-    if (!prefill) return;
+    if (!prefill) {
+      prefillAppliedRef.current = null;
+      return;
+    }
+    if (prefillAppliedRef.current === prefill.id) return;
+    prefillAppliedRef.current = prefill.id;
 
-    setValue((prev) => (prev.trim() ? `${prev}\n\n${prefill.text}` : prefill.text));
+    markDraftChanged();
+    setStandardFeedback(null);
+    setValue((prev) => appendComposerPrefill(prev, prefill.text));
+    if (prefill.attachments?.length) {
+      const current = attachmentsRef.current;
+      const next = mergeAttachments(current, prefill.attachments);
+      const uniqueIncoming = prefill.attachments.filter(
+        (attachment) =>
+          !current.some(
+            (item) => getAttachmentDedupKey(item) === getAttachmentDedupKey(attachment),
+          ),
+      );
+      if (next.length < current.length + uniqueIncoming.length) {
+        setAttachmentError('Some files were skipped.');
+      }
+      setAttachments(next);
+    }
 
     setTimeout(() => {
       const el = textareaRef.current;
@@ -610,7 +1058,7 @@ export function ChatInput({
       resizeTextarea();
       el.setSelectionRange(el.value.length, el.value.length);
     }, 0);
-  }, [prefill, resizeTextarea]);
+  }, [markDraftChanged, prefill, resizeTextarea]);
 
   useEffect(() => {
     if (disabled || !fileMention || mentionRepoIds.length === 0) {
@@ -702,6 +1150,15 @@ export function ChatInput({
   }, [draftKey, resizeTextarea, value]);
 
   const hasContent = value.trim().length > 0 || attachments.length > 0;
+  const canGuide = Boolean(followUpCapabilities?.guide && onFollowUp);
+  const canQueue = Boolean(followUpCapabilities?.queue && onFollowUp);
+  const followUpBlocked = uncertainFollowUps.some((submission) =>
+    isCurrentComposerDraft(submission, currentDraftVersion()),
+  );
+  const followUpButtonDisabled =
+    disabled || !hasContent || preparingAttachments || !!pendingFollowUpId || followUpBlocked;
+  const sideQuestionButtonDisabled =
+    disabled || !hasContent || preparingAttachments || sideQuestionPending;
   const showQuickPrompts =
     !busy &&
     !disabled &&
@@ -756,9 +1213,9 @@ export function ChatInput({
 
   return (
     <div className="bg-transparent px-3 pb-3 pt-2 xl:px-5 xl:pb-4 xl:pt-3">
-      <div className="mx-auto w-full max-w-[1040px]">
+      <div ref={composerWidthRef} className="mx-auto w-full max-w-[1040px]">
         <div
-          className={`relative rounded-xl border bg-bg-secondary shadow-lg shadow-text-primary/10 transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
+          className={`relative rounded-xl border bg-bg-secondary transition-[border-color,background-color] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
             disabled && !busy ? 'opacity-60' : ''
           } ${
             draggingFiles
@@ -796,7 +1253,7 @@ export function ChatInput({
                 </div>
               )}
               {attachmentError && (
-                <p className="mt-2 flex items-center gap-1.5 text-xs text-warning">
+                <p role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-warning">
                   <AlertCircle size={12} />
                   {attachmentError}
                 </p>
@@ -814,7 +1271,7 @@ export function ChatInput({
                   key={quickPrompt.id}
                   type="button"
                   onClick={() => handleQuickPrompt(quickPrompt.prompt)}
-                  className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                  className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                 >
                   {quickPrompt.label}
                 </button>
@@ -878,7 +1335,13 @@ export function ChatInput({
             aria-activedescendant={activeDescendant}
             placeholder={
               busy
-                ? 'Add guidance while Anvil keeps working...'
+                ? canGuide && canQueue
+                  ? 'Write a message, then choose Guide current run or Queue next...'
+                  : canGuide
+                    ? 'Write guidance for the current run...'
+                    : canQueue
+                      ? 'Write a message to queue for the next run...'
+                      : 'Follow-up sending is unavailable for this session...'
                 : disabled
                   ? 'Chat is not ready yet...'
                   : mentionRepoIds.length > 0
@@ -886,20 +1349,25 @@ export function ChatInput({
                     : 'Ask anything, paste images, or drop files here...'
             }
             rows={1}
-            className="chat-composer-textarea block w-full resize-none bg-transparent px-4 pb-3 pt-4 text-[15px] leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
+            className="chat-composer-textarea block w-full resize-none bg-transparent px-4 pb-3 pt-4 text-sm leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
             style={{ maxHeight: '200px', minHeight: '72px' }}
           />
 
-          <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 px-2.5 pb-2 pt-1">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          <div
+            className={`flex min-h-12 flex-wrap items-center gap-x-2 gap-y-1 px-2.5 pb-2 pt-1 ${
+              compactFooter ? 'flex-col items-stretch' : 'justify-between'
+            }`}
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
               {leadingControls}
               <button
                 type="button"
                 onClick={() => void handleSelectAttachments()}
                 disabled={disabled || preparingAttachments}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
-                title="Attach files"
-                aria-label="Attach files"
+                title={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
+                aria-label={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
+                aria-busy={preparingAttachments}
               >
                 {preparingAttachments ? (
                   <Loader2 size={15} className="animate-spin" />
@@ -941,14 +1409,33 @@ export function ChatInput({
               )}
             </div>
 
-            <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5">
-              {(onModelChange ||
-                onExecutionStrategyChange ||
-                onReasoningChange ||
-                onCodexModeChange ||
-                onCollaborationModeChange ||
-                onFastModeChange) &&
-                !busy && (
+            <div
+              className={`flex min-w-0 flex-wrap items-center justify-end gap-1.5 ${
+                compactFooter ? 'w-full flex-col items-stretch' : 'ml-auto'
+              }`}
+            >
+              <div
+                className={`flex min-w-0 flex-wrap items-center gap-1.5 ${
+                  compactFooter ? 'w-full' : 'flex-none'
+                }`}
+              >
+                {/* CH1 — the thread's access level is always visible here. */}
+                {(onCodexModeChange || onAccessOptionSelect) && (
+                  <ChatAccessLevelChip
+                    value={codexMode}
+                    options={accessOptions}
+                    appliedMode={accessAppliedMode}
+                    onChange={onCodexModeChange}
+                    onSelectOption={onAccessOptionSelect}
+                    disabled={codexModeDisabled}
+                  />
+                )}
+
+                {(onModelChange ||
+                  onExecutionStrategyChange ||
+                  onReasoningChange ||
+                  onCollaborationModeChange ||
+                  onFastModeChange) && (
                   <RunSettingsDropdown
                     model={model}
                     modelProvider={modelProvider}
@@ -959,52 +1446,118 @@ export function ChatInput({
                     reasoningLevel={reasoningLevel}
                     reasoningOptions={reasoningOptions}
                     onReasoningChange={onReasoningChange}
-                    codexMode={codexMode}
-                    onCodexModeChange={onCodexModeChange}
-                    codexModeDisabled={codexModeDisabled}
                     collaborationMode={collaborationMode}
                     onCollaborationModeChange={onCollaborationModeChange}
                     fastMode={fastMode}
                     fastModeAvailable={fastModeAvailable}
                     onFastModeChange={onFastModeChange}
+                    compact={compactFooter}
                   />
                 )}
+              </div>
 
-              <VoiceInputButton
-                onTranscript={(text) => {
-                  setVoiceError(null);
-                  handleVoiceTranscript(text);
-                }}
-                onError={setVoiceError}
-                disabled={disabled}
-                colour={personaColour}
-              />
-
-              {busy ? (
-                <button
-                  type="button"
-                  onClick={onStop}
-                  className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80"
-                  title="Stop generation"
-                  aria-label="Stop generation"
-                >
-                  <Square size={12} fill="currentColor" />
-                  Stop
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleSend}
-                  disabled={disabled || !hasContent || preparingAttachments}
-                  className="composer-send flex h-8 w-8 items-center justify-center rounded-lg transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
-                  style={{
-                    backgroundColor: hasContent ? personaColour : `${personaColour}40`,
+              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                <VoiceInputButton
+                  onTranscript={(text) => {
+                    setVoiceError(null);
+                    handleVoiceTranscript(text);
                   }}
-                  aria-label="Send message"
-                >
-                  <Send size={16} style={{ color: 'var(--color-bg-primary)' }} />
-                </button>
-              )}
+                  onError={setVoiceError}
+                  disabled={disabled}
+                  colour={personaColour}
+                />
+                {busy ? (
+                  <>
+                    {canGuide && (
+                      <button
+                        type="button"
+                        onClick={() => void handleFollowUp('guide')}
+                        disabled={followUpButtonDisabled}
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                        style={{ backgroundColor: personaColour }}
+                        aria-label="Guide the current run"
+                        title="Send guidance to the agent’s current run"
+                      >
+                        <Send size={13} />
+                        Guide current run
+                      </button>
+                    )}
+                    {canQueue && (
+                      <button
+                        type="button"
+                        onClick={() => void handleFollowUp('queue')}
+                        disabled={followUpButtonDisabled}
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-tertiary px-2.5 text-xs font-medium text-text-primary transition-colors hover:bg-bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                        aria-label="Queue for the next run"
+                        title="Send this message after the current run finishes"
+                      >
+                        <ListChecks size={13} />
+                        Queue next
+                      </button>
+                    )}
+                    {!canGuide && !canQueue && (
+                      <span className="px-2 text-xs text-text-tertiary">
+                        Follow-up sending is unavailable for this session.
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleSend()}
+                    disabled={
+                      disabled || !hasContent || preparingAttachments || standardSendPending
+                    }
+                    className="composer-send flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-[transform,filter,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-30"
+                    style={{
+                      backgroundColor: hasContent
+                        ? personaColour
+                        : `color-mix(in srgb, ${personaColour} 25%, transparent)`,
+                    }}
+                    aria-label={standardSendPending ? 'Sending message' : 'Send message'}
+                    aria-busy={standardSendPending}
+                    title={standardSendPending ? 'Sending message' : 'Send message'}
+                  >
+                    {standardSendPending ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Send size={14} />
+                    )}
+                    Send
+                  </button>
+                )}
+                {sideQuestionAvailable && onSideQuestion && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSideQuestion()}
+                    disabled={sideQuestionButtonDisabled}
+                    className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border-subtle bg-transparent px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                    aria-label="Ask a read-only side question"
+                    aria-busy={sideQuestionPending}
+                    title="Start a separate read-only conversation. The main run continues."
+                  >
+                    {sideQuestionPending ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <CircleHelp size={13} />
+                    )}
+                    Side question
+                  </button>
+                )}
+                {busy && (
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    disabled={!onStop}
+                    className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/70 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Stop generation"
+                    aria-label="Stop current run"
+                  >
+                    <Square size={12} fill="currentColor" />
+                    Stop
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1018,15 +1571,136 @@ export function ChatInput({
               {voiceError}
             </p>
           )}
+          {standardFeedback && (
+            <div
+              role={standardFeedback.kind === 'error' ? 'alert' : 'status'}
+              className={`border-t border-border-subtle px-4 py-2 text-xs leading-5 ${
+                standardFeedback.kind === 'error' ? 'text-error' : 'text-text-secondary'
+              }`}
+            >
+              {standardFeedback.message}
+            </div>
+          )}
+          {followUpFeedback && (
+            <div
+              role={followUpFeedback.kind === 'success' ? 'status' : 'alert'}
+              className={`flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle px-4 py-2 text-xs leading-5 ${
+                followUpFeedback.kind === 'success' ? 'text-text-secondary' : 'text-error'
+              }`}
+            >
+              <span className="min-w-0 flex-1">{followUpFeedback.message}</span>
+            </div>
+          )}
+          {uncertainFollowUps.map((submission) => (
+            <div
+              key={submission.requestId}
+              className="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle px-4 py-2 text-xs leading-5 text-warning"
+            >
+              <span className="min-w-0 flex-1">
+                An earlier follow-up has uncertain delivery. Retry will use the same message and
+                request ID.
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleFollowUp(submission.intent, submission)}
+                disabled={disabled || !!pendingFollowUpId}
+                className="shrink-0 rounded-md border border-border px-2 py-1 font-medium text-text-primary transition-colors hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Retry same message
+              </button>
+            </div>
+          ))}
         </div>
 
         <p id="chat-composer-keyboard-hint" className="sr-only">
-          Enter sends. Shift plus Enter adds a line.
+          {busy
+            ? `Enter does not send while the agent is working. Choose ${
+                [
+                  canGuide ? 'Guide current run' : null,
+                  canQueue ? 'Queue next' : null,
+                  sideQuestionAvailable ? 'Side question' : null,
+                ]
+                  .filter(Boolean)
+                  .join(', ') || 'Stop or wait'
+              }. Shift plus Enter adds a line.`
+            : 'Enter sends. Shift plus Enter adds a line.'}
           {mentionRepoIds.length > 0
             ? ' Type slash for commands, at for files, or dollar for skills.'
             : ' Type slash for commands or dollar for skills.'}
         </p>
+
+        {/* CH8 — syntax hint under the composer on empty threads. */}
+        {showSyntaxHint && (
+          <div className="mt-1.5 flex items-center justify-between gap-2 px-1">
+            <p className="text-xs text-text-tertiary">
+              <span className="font-mono">/</span> commands
+              {mentionRepoIds.length > 0 && (
+                <>
+                  {' · '}
+                  <span className="font-mono">@</span> files
+                </>
+              )}
+              {' · '}
+              <span className="font-mono">$</span> skills
+            </p>
+            <div ref={syntaxHelpRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setSyntaxHelpOpen((open) => !open)}
+                className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                aria-label="Composer syntax help"
+                aria-expanded={syntaxHelpOpen}
+              >
+                <CircleHelp size={13} />
+              </button>
+              {syntaxHelpOpen && (
+                <div
+                  role="dialog"
+                  aria-label="Composer syntax"
+                  className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-overlay"
+                >
+                  <p className="text-xs font-semibold text-text-primary">Composer shortcuts</p>
+                  <ul className="mt-2 space-y-2 text-xs leading-5 text-text-secondary">
+                    <li>
+                      <span className="font-mono text-text-primary">/</span> — quick commands like{' '}
+                      <span className="font-mono">/new</span> or{' '}
+                      <span className="font-mono">/plan</span>
+                    </li>
+                    {mentionRepoIds.length > 0 && (
+                      <li>
+                        <span className="font-mono text-text-primary">@</span> — mention files in
+                        the selected repositories
+                      </li>
+                    )}
+                    <li>
+                      <span className="font-mono text-text-primary">$</span> — invoke a registered
+                      skill
+                    </li>
+                    <li>
+                      <span className="font-mono text-text-primary">Enter</span>{' '}
+                      {busy
+                        ? `does not send; choose ${
+                            [
+                              canGuide ? 'Guide current run' : null,
+                              canQueue ? 'Queue next' : null,
+                              sideQuestionAvailable ? 'Side question' : null,
+                            ]
+                              .filter(Boolean)
+                              .join(', ') || 'wait'
+                          },`
+                        : 'sends,'}{' '}
+                      <span className="font-mono text-text-primary">Shift+Enter</span> adds a line
+                    </li>
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {preparingAttachments ? 'Preparing attachments.' : ''}
+      </p>
     </div>
   );
 }
@@ -1038,6 +1712,10 @@ function loadDraft(draftKey: string | undefined): string {
   } catch {
     return '';
   }
+}
+
+function copyAttachments(attachments: ChatAttachment[]): ChatAttachment[] {
+  return attachments.map((attachment) => ({ ...attachment }));
 }
 
 function saveDraft(draftKey: string | undefined, value: string): void {
@@ -1072,7 +1750,7 @@ function ComposerAttachmentChip({
   onRemove: () => void;
 }) {
   return (
-    <div className="flex max-w-full items-center gap-2 rounded-lg border border-border-subtle bg-bg-tertiary/60 py-1 pl-1 pr-1.5 shadow-sm">
+    <div className="flex max-w-full items-center gap-2 rounded-lg border border-border-subtle bg-bg-tertiary/60 py-1 pl-1 pr-1.5">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-bg-secondary">
         {previewDataUrl ? (
           <img src={previewDataUrl} alt="" className="h-full w-full object-cover" />
@@ -1084,7 +1762,7 @@ function ComposerAttachmentChip({
       </div>
       <div className="min-w-0">
         <p className="max-w-48 truncate text-xs font-medium text-text-primary">{attachment.name}</p>
-        <p className="text-[11px] text-text-tertiary">{formatAttachmentBytes(attachment.size)}</p>
+        <p className="text-xs text-text-tertiary">{formatAttachmentBytes(attachment.size)}</p>
       </div>
       <button
         onClick={onRemove}
@@ -1161,7 +1839,7 @@ function FileMentionMenu({
                   <p className="truncate font-mono text-xs text-text-primary">
                     {result.relativePath}
                   </p>
-                  <p className="truncate text-[11px] text-text-tertiary">
+                  <p className="truncate text-xs text-text-tertiary">
                     {result.repoName} - {formatAttachmentBytes(result.size)}
                   </p>
                 </div>
@@ -1171,7 +1849,7 @@ function FileMentionMenu({
         )}
       </div>
       {loading && results.length > 0 && (
-        <div className="border-t border-border-subtle px-3 py-1.5 text-[11px] text-text-tertiary">
+        <div className="border-t border-border-subtle px-3 py-1.5 text-xs text-text-tertiary">
           Refreshing results
         </div>
       )}
@@ -1226,7 +1904,7 @@ function SlashCommandMenu({
                 <ListChecks size={15} className={selected ? 'text-accent' : 'text-text-tertiary'} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-mono text-xs text-text-primary">{command.command}</p>
-                  <p className="truncate text-[11px] text-text-tertiary">
+                  <p className="truncate text-xs text-text-tertiary">
                     {command.label} - {command.description}
                   </p>
                 </div>
@@ -1301,7 +1979,7 @@ function SkillMentionMenu({
                 <Sparkles size={15} className={selected ? 'text-accent' : 'text-text-tertiary'} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-mono text-xs text-text-primary">${skill.name}</p>
-                  <p className="truncate text-[11px] text-text-tertiary">
+                  <p className="truncate text-xs text-text-tertiary">
                     {scopeLabel(skill.scope)}
                     {skill.description ? ` - ${skill.description}` : ''}
                   </p>
@@ -1312,7 +1990,7 @@ function SkillMentionMenu({
         )}
       </div>
       {loading && results.length > 0 && (
-        <div className="border-t border-border-subtle px-3 py-1.5 text-[11px] text-text-tertiary">
+        <div className="border-t border-border-subtle px-3 py-1.5 text-xs text-text-tertiary">
           Refreshing skills
         </div>
       )}
@@ -1532,7 +2210,7 @@ export function getSkillMentionResults(
 }
 
 export function shouldSendChatMessageFromKey(event: ChatComposerKeyEvent): boolean {
-  return event.key === 'Enter' && !event.shiftKey;
+  return event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229;
 }
 
 export function buildFileMentionOptionId(result: ChatFileMentionSearchResult): string {
@@ -1596,13 +2274,12 @@ export function getCompactModelLabel(
   if (!isAcpAgentProvider(provider)) return label;
   if (model === 'auto') return provider === 'devin' ? 'Devin auto' : 'Cursor auto';
 
-  const reasoning = getCursorModelReasoningEffort(model);
-  const reasoningSuffix = reasoning ? new RegExp(`\\s+${reasoning}$`, 'i') : null;
-  return label
+  const compact = label
     .replace(/\s+\([^)]*\)$/, '')
-    .replace(/\s+1M(?:\s+Thinking)?(?:\s+\S+)?$/i, '')
-    .replace(reasoningSuffix ?? /$^/, '')
-    .trim();
+    .replace(/\s+1M(?:\s+Thinking)?(?:\s+\S+)?$/i, '');
+  const reasoning = getCursorModelReasoningEffort(model);
+  if (!reasoning) return compact.trim();
+  return compact.replace(new RegExp(`\\s+${reasoning}$`, 'i'), '').trim();
 }
 
 export function getRunSettingsLabel(
@@ -1629,14 +2306,12 @@ function RunSettingsDropdown({
   reasoningLevel,
   reasoningOptions = REASONING_EFFORT_OPTIONS.map((option) => option.level),
   onReasoningChange,
-  codexMode,
-  onCodexModeChange,
-  codexModeDisabled,
   collaborationMode,
   onCollaborationModeChange,
   fastMode,
   fastModeAvailable,
   onFastModeChange,
+  compact,
 }: {
   model: string;
   modelProvider: AgentProvider;
@@ -1647,14 +2322,12 @@ function RunSettingsDropdown({
   reasoningLevel: ReasoningEffort;
   reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
-  codexMode: CodexMode;
-  onCodexModeChange?: (mode: CodexMode) => void;
-  codexModeDisabled: boolean;
   collaborationMode: 'default' | 'plan';
   onCollaborationModeChange?: (mode: 'default' | 'plan') => void;
   fastMode: boolean;
   fastModeAvailable: boolean;
   onFastModeChange?: (enabled: boolean) => void;
+  compact: boolean;
 }) {
   const availableOptions = REASONING_EFFORT_OPTIONS.filter((option) =>
     reasoningOptions.includes(option.level),
@@ -1699,20 +2372,32 @@ function RunSettingsDropdown({
   );
 
   return (
-    <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
+    <div
+      ref={containerRef}
+      className={`relative min-w-0 ${compact ? 'flex-1' : ''}`}
+      onKeyDown={handleKeyDown}
+    >
       <button
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="flex h-8 max-w-52 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-        title="Run settings"
+        className={`flex min-h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
+          compact ? 'w-full py-1' : 'h-8 max-w-64'
+        }`}
+        title={`Run settings: ${label}`}
         aria-label={`Run settings: ${label}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? RUN_SETTINGS_MENU_ID : undefined}
       >
         <SlidersHorizontal size={13} className="shrink-0 text-text-tertiary" />
-        <span className="truncate">{label}</span>
+        <span
+          className={
+            compact ? 'min-w-0 flex-1 whitespace-normal break-words text-left' : 'truncate'
+          }
+        >
+          {label}
+        </span>
         <ChevronDown
           size={12}
           className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
@@ -1765,34 +2450,9 @@ function RunSettingsDropdown({
               </div>
             )}
 
-            {onCodexModeChange && (
-              <label className="block">
-                <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-text-muted">
-                  <Shield size={11} />
-                  Access
-                </span>
-                <select
-                  value={codexMode}
-                  onChange={(event) => onCodexModeChange(event.target.value as CodexMode)}
-                  disabled={codexModeDisabled}
-                  className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60"
-                  title={
-                    codexModeDisabled
-                      ? 'This access mode is enforced for the current persona'
-                      : 'Choose when Codex should ask for approval'
-                  }
-                >
-                  <option value="read-only">Read only</option>
-                  <option value="on-request">Approve for me</option>
-                  <option value="workspace-auto">Auto approve</option>
-                  <option value="full-access">Full access</option>
-                </select>
-              </label>
-            )}
-
             {onModelChange && modelOptions.length > 0 && (
               <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-text-muted">Model</span>
+                <span className="mb-1 block text-xs font-medium text-text-muted">Model</span>
                 <select
                   value={encodeModelSelection(modelProvider, model)}
                   onChange={(event) => {
@@ -1814,7 +2474,7 @@ function RunSettingsDropdown({
                     </optgroup>
                   ))}
                 </select>
-                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                <span className="mt-1 block text-xs leading-4 text-text-tertiary">
                   {selectedModel?.description ??
                     `Selected for new turns through the ${modelProvider} provider.`}
                 </span>
@@ -1823,13 +2483,11 @@ function RunSettingsDropdown({
 
             {isAcpAgentProvider(modelProvider) ? (
               <div>
-                <span className="mb-1 block text-[11px] font-medium text-text-muted">
-                  Reasoning
-                </span>
+                <span className="mb-1 block text-xs font-medium text-text-muted">Reasoning</span>
                 <div className="rounded-lg border border-border-subtle bg-bg-secondary px-2.5 py-2 text-xs text-text-secondary">
                   Set by the {modelProvider === 'devin' ? 'Devin' : 'Cursor'} model
                 </div>
-                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                <span className="mt-1 block text-xs leading-4 text-text-tertiary">
                   {modelProvider === 'devin' ? 'Devin' : 'Cursor'} model IDs include their reasoning
                   level where supported.
                 </span>
@@ -1838,9 +2496,7 @@ function RunSettingsDropdown({
               onReasoningChange &&
               availableOptions.length > 0 && (
                 <label className="block">
-                  <span className="mb-1 block text-[11px] font-medium text-text-muted">
-                    Reasoning
-                  </span>
+                  <span className="mb-1 block text-xs font-medium text-text-muted">Reasoning</span>
                   <select
                     value={reasoningLevel}
                     onChange={(event) => onReasoningChange(event.target.value as ReasoningEffort)}
@@ -1864,9 +2520,7 @@ function RunSettingsDropdown({
 
             {onExecutionStrategyChange && (
               <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-text-muted">
-                  Subagents
-                </span>
+                <span className="mb-1 block text-xs font-medium text-text-muted">Subagents</span>
                 <select
                   value={executionStrategy}
                   onChange={(event) =>
@@ -1880,7 +2534,7 @@ function RunSettingsDropdown({
                     </option>
                   ))}
                 </select>
-                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                <span className="mt-1 block text-xs leading-4 text-text-tertiary">
                   {
                     EXECUTION_STRATEGIES.find((strategy) => strategy.id === executionStrategy)
                       ?.description

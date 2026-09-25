@@ -3,9 +3,9 @@ title: Workflow graphs
 navTitle: Workflows
 description: Coordinate agents across providers with specialist teams, bounded delegation, persisted handoffs, and human decisions.
 product: Anvil Desktop
-section: Automation
+section: Guides
 journey: build
-order: 117
+order: 80
 ---
 
 # Workflow graphs

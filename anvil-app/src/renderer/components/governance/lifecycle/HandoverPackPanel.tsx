@@ -118,7 +118,7 @@ export function HandoverPackPanel({ lifecycleItemId }: Props) {
         <ul className="space-y-2">
           {HANDOVER_SECTIONS.map((section) => (
             <li key={section} className="flex items-center gap-3">
-              <Check size={14} className="shrink-0 text-emerald-400" />
+              <Check size={14} className="shrink-0 text-success" />
               <span className="text-sm text-text-primary">{section}</span>
             </li>
           ))}
@@ -161,7 +161,7 @@ export function HandoverPackPanel({ lifecycleItemId }: Props) {
         <button
           onClick={handleGenerate}
           disabled={generating}
-          className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {generating ? <Loader2 size={14} className="animate-spin" /> : <Package size={14} />}
           {generating ? 'Generating…' : 'Generate Handover Pack'}

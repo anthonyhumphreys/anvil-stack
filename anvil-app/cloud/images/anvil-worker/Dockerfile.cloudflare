@@ -1,0 +1,28 @@
+# anvil-worker — Cloudflare Sandbox 1.0-preview variant.
+#
+# IMPORTANT: the base image line MUST match the provisioner worker's
+# @cloudflare/sandbox package line (currently `next` / SDK 1.0 preview). Do
+# not mix the stable package with the preview image or vice versa.
+#
+# The wrangler `containers[].image` in cloud/provisioner points here; the
+# build context is this directory (run ./prepare.sh first).
+FROM cloudflare/sandbox:next
+
+USER root
+
+# cloudflare/sandbox:next ships Node 20+, but native daemon externals may need
+# compiling when a matching prebuild is unavailable for the target platform.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/anvil
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+
+COPY anvil-daemon.mjs boot.mjs ./
+COPY anvil-worker-boot ./bin/anvil-worker-boot
+RUN chmod +x /opt/anvil/bin/anvil-worker-boot
+
+ENV ANVIL_DATA_DIR=/var/lib/anvil
+RUN mkdir -p /var/lib/anvil /run/anvil

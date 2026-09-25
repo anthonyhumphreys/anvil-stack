@@ -235,7 +235,7 @@ export function LifecycleOverview({ item, onUpdate }: Props) {
             <span className="flex-1 text-sm text-text-primary">{item.title}</span>
             <button
               onClick={() => setEditingTitle(true)}
-              className="rounded p-0.5 text-text-tertiary opacity-0 hover:text-text-primary group-hover:opacity-100"
+              className="rounded p-0.5 text-text-tertiary opacity-0 hover:text-text-primary group-focus-within:opacity-100 group-hover:opacity-100"
             >
               <Edit2 size={13} />
             </button>
@@ -354,7 +354,7 @@ export function LifecycleOverview({ item, onUpdate }: Props) {
                         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                           child.state.toLowerCase().includes('done') ||
                           child.state.toLowerCase().includes('closed')
-                            ? 'bg-emerald-500'
+                            ? 'bg-success'
                             : child.state.toLowerCase().includes('active') ||
                                 child.state.toLowerCase().includes('progress')
                               ? 'bg-blue-500'

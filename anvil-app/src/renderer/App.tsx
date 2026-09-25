@@ -7,14 +7,20 @@ import { ChatProvider } from './contexts/ChatContext';
 import { BrandProvider } from './contexts/BrandContext';
 import { getBrand, getBuildBrandId } from '../shared/branding';
 import { WorkspaceProvider, useWorkspace } from './contexts/WorkspaceContext';
+import { RepoIndexProvider } from './contexts/RepoIndexContext';
 import { WorkspaceCreator } from './components/workspace/WorkspaceCreator';
-import { RolePickerOverlay } from './components/onboard/RolePickerOverlay';
-import { ConnectorSetupOverlay } from './components/onboard/ConnectorSetupOverlay';
+import { WelcomeOverlay } from './components/onboard/WelcomeOverlay';
+import { RoleHiddenNotice } from './components/shared/RoleHiddenNotice';
 import type { UserRole, Feature, AppTheme } from '../shared/types';
 import { ROLE_FEATURES } from '../shared/types';
 
 const ReposView = lazy(() =>
   import('./components/repos/ReposView').then((module) => ({ default: module.ReposView })),
+);
+const WorkspaceView = lazy(() =>
+  import('./components/workspace/WorkspaceView').then((module) => ({
+    default: module.WorkspaceView,
+  })),
 );
 const ChatView = lazy(() =>
   import('./components/chat/ChatView').then((module) => ({ default: module.ChatView })),
@@ -129,7 +135,7 @@ const WorkspaceNotesView = lazy(() =>
   })),
 );
 
-type OnboardingPreviewStep = 'role' | 'connectors';
+type OnboardingPreviewStep = 'welcome';
 const WorkflowsView = lazy(() =>
   import('./components/workflows/WorkflowsView').then((module) => ({
     default: module.WorkflowsView,
@@ -145,6 +151,13 @@ function WorkspaceGate({ children }: { children: ReactNode }) {
     return (
       <WorkspaceCreator
         onCreated={async () => {
+          // J9/3.3: mark onboarding complete — a relaunch skips the welcome
+          // flow and lands on the workspace.
+          await window.anvil.settings.update({ onboardingStep: 'done' }).catch(() => undefined);
+          // §7 funnel — local-only activation event.
+          void window.anvil.metrics
+            .track('onboarding_step_completed', { step: 'workspace' })
+            .catch(() => undefined);
           await refreshWorkspaces();
         }}
       />
@@ -152,6 +165,21 @@ function WorkspaceGate({ children }: { children: ReactNode }) {
   }
 
   return <>{children}</>;
+}
+
+/**
+ * NV5: the catch-all route is a decision, not a hardcode. Returning users
+ * with pending attention items land on Activity (`/inbox`); new users land
+ * on Chat.
+ */
+function DefaultRedirect() {
+  const { workspaceActivity, repos, loading } = useWorkspace();
+  if (loading) return <SplashScreen label="Loading workspace" />;
+  const isNewUser = repos.length === 0;
+  const hasPendingAttention = workspaceActivity.some(
+    (summary) => summary.count > 0 && (summary.status === 'warning' || summary.status === 'error'),
+  );
+  return <Navigate to={!isNewUser && hasPendingAttention ? '/inbox' : '/chat'} replace />;
 }
 
 function LaunchIntentRouter() {
@@ -205,6 +233,8 @@ export function App() {
   const [appTheme, setAppTheme] = useState<AppTheme>(fallbackBrand.defaultTheme);
   const [cloudFeaturesEnabled, setCloudFeaturesEnabled] = useState(false);
   const [roleLoaded, setRoleLoaded] = useState(false);
+  // ST8: "Show all tools" — bypasses role hiding for this install.
+  const [showAllTools, setShowAllTools] = useState(false);
   const [connectorsConfigured, setConnectorsConfigured] = useState(false);
   const [onboardingPreviewStep, setOnboardingPreviewStep] = useState<OnboardingPreviewStep | null>(
     null,
@@ -221,8 +251,16 @@ export function App() {
       if (settings.userRole) {
         setUserRole(settings.userRole);
       }
-      // Skip connector setup for existing users (they already have workspaces)
-      if (settings.activeWorkspaceId || pendingLaunchIntent) {
+      setShowAllTools(settings.showAllTools === true);
+      // Skip the welcome flow for existing users, launch intents, and
+      // restarts after the welcome step completed but before a workspace was
+      // created (J9/3.3 resume).
+      if (
+        settings.activeWorkspaceId ||
+        pendingLaunchIntent ||
+        settings.onboardingStep === 'workspace' ||
+        settings.onboardingStep === 'done'
+      ) {
         setConnectorsConfigured(true);
       }
       setRoleLoaded(true);
@@ -309,438 +347,453 @@ export function App() {
     return () => mediaQuery?.removeEventListener('change', applyTheme);
   }, [appTheme, resolveSystemTheme]);
 
-  const guard = (feature: Feature, element: React.ReactElement) =>
-    userRole && ROLE_FEATURES[userRole].includes(feature) ? (
-      element
-    ) : (
-      <Navigate
-        to={userRole && ROLE_FEATURES[userRole].includes('chat') ? '/chat' : '/repos'}
-        replace
-      />
+  // ST8: role-hidden deep links explain themselves instead of silently
+  // redirecting. "Show anyway" flips the persisted showAllTools setting.
+  const guard = (feature: Feature, element: React.ReactElement) => {
+    if (showAllTools) return element;
+    if (userRole && ROLE_FEATURES[userRole].includes(feature)) return element;
+    return (
+      <RoleHiddenNotice
+        feature={feature}
+        userRole={userRole ?? undefined}
+        onShowAnyway={() => {
+          setShowAllTools(true);
+          void window.anvil.settings.update({ showAllTools: true });
+        }}
+      >
+        {element}
+      </RoleHiddenNotice>
     );
+  };
 
   if (!roleLoaded) {
     return <SplashScreen label={`Starting ${fallbackBrand.appName}`} />;
   }
 
-  if (onboardingPreviewStep === 'role') {
+  if (onboardingPreviewStep) {
     return (
       <BrandProvider>
-        <RolePickerOverlay
+        <WelcomeOverlay
           preview
-          onRoleSelected={() => setOnboardingPreviewStep('connectors')}
+          onRoleSelected={() => undefined}
+          onComplete={() => setOnboardingPreviewStep(null)}
           onExitPreview={() => setOnboardingPreviewStep(null)}
         />
       </BrandProvider>
     );
   }
 
-  if (onboardingPreviewStep === 'connectors') {
+  // O1–O5: one merged welcome — role + primary agent in two steps. Optional
+  // integrations (work items, git provider, docs) are deferred to point of
+  // need; the persisted onboardingStep resumes mid-flow after relaunch.
+  if (!userRole || !connectorsConfigured) {
     return (
       <BrandProvider>
-        <ConnectorSetupOverlay
-          preview
-          onContinue={() => setOnboardingPreviewStep(null)}
-          onExitPreview={() => setOnboardingPreviewStep(null)}
+        <WelcomeOverlay
+          onRoleSelected={handleRoleChange}
+          onComplete={() => {
+            setConnectorsConfigured(true);
+            window.anvil.settings.update({ onboardingStep: 'workspace' }).catch(() => undefined);
+          }}
         />
-      </BrandProvider>
-    );
-  }
-
-  if (!userRole) {
-    return (
-      <BrandProvider>
-        <RolePickerOverlay onRoleSelected={handleRoleChange} />
-      </BrandProvider>
-    );
-  }
-
-  if (!connectorsConfigured) {
-    return (
-      <BrandProvider>
-        <ConnectorSetupOverlay onContinue={() => setConnectorsConfigured(true)} />
       </BrandProvider>
     );
   }
 
   return (
     <BrandProvider>
-      <WorkspaceProvider>
-        <ChatProvider>
-          <HashRouter>
-            <LaunchIntentRouter />
-            <Suspense fallback={<SplashScreen label="Loading workspace" />}>
-              <Routes>
-                <Route
-                  element={
-                    <Shell
-                      connectionStatus={connectionStatus}
-                      userRole={userRole}
-                      cloudFeaturesEnabled={cloudFeaturesEnabled}
+      {/* RepoIndexProvider must wrap WorkspaceProvider — the workspace's
+          featureAvailability consumes live index-job state (1.3). */}
+      <RepoIndexProvider>
+        <WorkspaceProvider>
+          <ChatProvider>
+            <HashRouter>
+              <LaunchIntentRouter />
+              <Suspense fallback={<SplashScreen label="Loading workspace" />}>
+                <Routes>
+                  <Route
+                    element={
+                      <Shell
+                        connectionStatus={connectionStatus}
+                        userRole={userRole}
+                        cloudFeaturesEnabled={cloudFeaturesEnabled}
+                      />
+                    }
+                  >
+                    <Route
+                      path="/inbox"
+                      element={guard(
+                        'chat',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <InboxView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
                     />
-                  }
-                >
-                  <Route
-                    path="/inbox"
-                    element={guard(
-                      'chat',
-                      <WorkspaceGate>
+                    {/* WS2: `/workspace` is the workspace home; `/repos` keeps
+                      working as the same management surface. */}
+                    <Route
+                      path="/workspace"
+                      element={
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <WorkspaceView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>
+                      }
+                    />
+                    <Route
+                      path="/repos"
+                      element={
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <ReposView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>
+                      }
+                    />
+                    <Route
+                      path="/open"
+                      element={
                         <ErrorBoundary>
-                          <InboxView />
+                          <OpenInAnvilView />
                         </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/repos"
-                    element={
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <ReposView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>
-                    }
-                  />
-                  <Route
-                    path="/open"
-                    element={
-                      <ErrorBoundary>
-                        <OpenInAnvilView />
-                      </ErrorBoundary>
-                    }
-                  />
+                      }
+                    />
 
-                  <Route
-                    path="/meeting-notes"
-                    element={guard(
-                      'meeting-notes',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <MeetingNotesView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/workspace-notes"
-                    element={guard(
-                      'workspace-notes',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <WorkspaceNotesView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/chat"
-                    element={guard(
-                      'chat',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <ChatView userRole={userRole} />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/db-insights"
-                    element={guard(
-                      'dbinsights',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <DbInsightsView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/onboard"
-                    element={guard(
-                      'onboard',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <OnboardView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/review"
-                    element={guard(
-                      'codereview',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <ChangeReviewView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/workitems"
-                    element={guard(
-                      'workitems',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <WorkItemsView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/ba/:workItemId"
-                    element={guard(
-                      'workitems',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <BaView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/dependencies/:repoId?"
-                    element={guard(
-                      'dependencies',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <DependenciesView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/security/:repoId/dependencies"
-                    element={guard(
-                      'dependencies',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <DependenciesView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/security/:repoId?"
-                    element={guard(
-                      'security',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <SecurityView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/codereview/:repoId?"
-                    element={guard(
-                      'codereview',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <CodeReviewView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/cicd"
-                    element={guard(
-                      'cicd',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <CicdView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/cloud"
-                    element={
-                      cloudFeaturesEnabled ? (
-                        guard(
-                          'cloud',
-                          <WorkspaceGate>
-                            <ErrorBoundary>
-                              <AnvilCloudView />
-                            </ErrorBoundary>
-                          </WorkspaceGate>,
+                    <Route
+                      path="/meeting-notes"
+                      element={guard(
+                        'meeting-notes',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <MeetingNotesView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/workspace-notes"
+                      element={guard(
+                        'workspace-notes',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <WorkspaceNotesView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/chat"
+                      element={guard(
+                        'chat',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <ChatView userRole={userRole} />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/db-insights"
+                      element={guard(
+                        'dbinsights',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <DbInsightsView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/onboard"
+                      element={guard(
+                        'onboard',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <OnboardView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/review"
+                      element={guard(
+                        'codereview',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <ChangeReviewView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/workitems"
+                      element={guard(
+                        'workitems',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <WorkItemsView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/ba/:workItemId"
+                      element={guard(
+                        'workitems',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <BaView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/dependencies/:repoId?"
+                      element={guard(
+                        'dependencies',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <DependenciesView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/security/:repoId/dependencies"
+                      element={guard(
+                        'dependencies',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <DependenciesView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/security/:repoId?"
+                      element={guard(
+                        'security',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <SecurityView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/codereview/:repoId?"
+                      element={guard(
+                        'codereview',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <CodeReviewView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/cicd"
+                      element={guard(
+                        'cicd',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <CicdView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/cloud"
+                      element={
+                        cloudFeaturesEnabled ? (
+                          guard(
+                            'cloud',
+                            <WorkspaceGate>
+                              <ErrorBoundary>
+                                <AnvilCloudView />
+                              </ErrorBoundary>
+                            </WorkspaceGate>,
+                          )
+                        ) : (
+                          <Navigate to="/settings" replace />
                         )
-                      ) : (
-                        <Navigate to="/settings" replace />
-                      )
-                    }
-                  />
-                  <Route
-                    path="/automations"
-                    element={guard(
-                      'automations',
-                      <WorkspaceGate>
+                      }
+                    />
+                    <Route
+                      path="/automations"
+                      element={guard(
+                        'automations',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <AutomationsView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/dojo"
+                      element={guard(
+                        'dojo',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <DojoView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/workflows"
+                      element={guard(
+                        'workflows',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <Suspense fallback={<SplashScreen label="Loading workflows" />}>
+                              <WorkflowsView />
+                            </Suspense>
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/docs"
+                      element={guard(
+                        'docs',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <DocsView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/adrs"
+                      element={guard(
+                        'adrs',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <AdrsView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/diagrams/:repoId?"
+                      element={guard(
+                        'diagrams',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <DiagramsView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/governance"
+                      element={guard(
+                        'governance',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <GovernanceView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/browser"
+                      element={guard(
+                        'browser',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <BrowserPanel />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/argent"
+                      element={guard(
+                        'argent',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <ArgentView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/editor"
+                      element={guard(
+                        'editor',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <></>
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/git"
+                      element={guard(
+                        'git',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <GitView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/compliance"
+                      element={guard(
+                        'compliance',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <ComplianceView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/settings/:category?"
+                      element={
                         <ErrorBoundary>
-                          <AutomationsView />
+                          <SettingsView
+                            onSettingsSaved={checkConnections}
+                            onRoleChange={handleRoleChange}
+                            onThemeChange={handleThemeChange}
+                            onPreviewOnboarding={() => setOnboardingPreviewStep('welcome')}
+                            userRole={userRole}
+                          />
                         </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/dojo"
-                    element={guard(
-                      'dojo',
-                      <WorkspaceGate>
+                      }
+                    />
+                    <Route
+                      path="/settings/codex-registry"
+                      element={
                         <ErrorBoundary>
-                          <DojoView />
+                          <CodexRegistryView />
                         </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/workflows"
-                    element={guard(
-                      'workflows',
-                      <WorkspaceGate>
+                      }
+                    />
+                    <Route
+                      path="/diagnostics"
+                      element={
                         <ErrorBoundary>
-                          <Suspense fallback={<SplashScreen label="Loading workflows" />}>
-                            <WorkflowsView />
-                          </Suspense>
+                          <DiagnosticsView />
                         </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/docs"
-                    element={guard(
-                      'docs',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <DocsView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/adrs"
-                    element={guard(
-                      'adrs',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <AdrsView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/diagrams/:repoId?"
-                    element={guard(
-                      'diagrams',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <DiagramsView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/governance"
-                    element={guard(
-                      'governance',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <GovernanceView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/browser"
-                    element={guard(
-                      'browser',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <BrowserPanel />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/argent"
-                    element={guard(
-                      'argent',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <ArgentView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/editor"
-                    element={guard(
-                      'editor',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <></>
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/git"
-                    element={guard(
-                      'git',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <GitView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/compliance"
-                    element={guard(
-                      'compliance',
-                      <WorkspaceGate>
-                        <ErrorBoundary>
-                          <ComplianceView />
-                        </ErrorBoundary>
-                      </WorkspaceGate>,
-                    )}
-                  />
-                  <Route
-                    path="/settings"
-                    element={
-                      <ErrorBoundary>
-                        <SettingsView
-                          onSettingsSaved={checkConnections}
-                          onRoleChange={handleRoleChange}
-                          onThemeChange={handleThemeChange}
-                          onPreviewOnboarding={() => setOnboardingPreviewStep('role')}
-                          userRole={userRole}
-                        />
-                      </ErrorBoundary>
-                    }
-                  />
-                  <Route
-                    path="/settings/codex-registry"
-                    element={
-                      <ErrorBoundary>
-                        <CodexRegistryView />
-                      </ErrorBoundary>
-                    }
-                  />
-                  <Route
-                    path="/diagnostics"
-                    element={
-                      <ErrorBoundary>
-                        <DiagnosticsView />
-                      </ErrorBoundary>
-                    }
-                  />
-                  <Route path="*" element={<Navigate to="/chat" replace />} />
-                </Route>
-              </Routes>
-            </Suspense>
-          </HashRouter>
-        </ChatProvider>
-      </WorkspaceProvider>
+                      }
+                    />
+                    <Route path="*" element={<DefaultRedirect />} />
+                  </Route>
+                </Routes>
+              </Suspense>
+            </HashRouter>
+          </ChatProvider>
+        </WorkspaceProvider>
+      </RepoIndexProvider>
     </BrandProvider>
   );
 }

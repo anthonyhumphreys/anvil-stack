@@ -5,11 +5,11 @@ import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
 import { getDocs, groupDocs, toSearchItems } from "@/lib/docs";
 import { docsJourneys } from "@/lib/docs-navigation";
-import { productLines } from "@/lib/site";
+import { productLines, syncDocsProduct } from "@/lib/site";
 
 export const metadata = {
   title: "Docs | Anvil",
-  description: "Documentation for Anvil Desktop, Cloud, Registry, and Node Base."
+  description: "Documentation for Anvil Desktop, Sync & Mesh, Cloud, Registry, and Node Base."
 };
 
 const journeyStarts = {
@@ -29,8 +29,7 @@ export default async function DocsIndexPage() {
         <section className="border-b py-14 sm:py-20">
           <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(22rem,0.7fr)] lg:items-end lg:px-8">
             <div>
-              <p className="text-sm font-medium text-accent">Anvil documentation</p>
-              <h1 className="mt-4 max-w-3xl text-balance text-5xl font-semibold leading-[1.02] tracking-[-0.035em] sm:text-6xl">Find the right surface. Follow the work.</h1>
+              <h1 className="max-w-3xl text-balance text-5xl font-semibold leading-[1.02] tracking-[-0.035em] sm:text-6xl">Docs that assume nothing.</h1>
               <p className="mt-5 max-w-[65ch] text-pretty text-lg leading-8 text-muted-foreground">Choose a product when you know where you are working, or a path when you know what you need to do.</p>
             </div>
             <DocsSearch docs={toSearchItems(docs)} className="min-h-14 text-base" />
@@ -57,7 +56,7 @@ export default async function DocsIndexPage() {
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="max-w-2xl"><h2 id="products-heading" className="text-3xl font-semibold tracking-[-0.02em]">Documentation by product</h2><p className="mt-3 text-sm leading-6 text-muted-foreground">Each product has its own overview, status, proof, and local navigation.</p></div>
             <div className="mt-8 border-y">
-              {productLines.map((product) => (
+              {[...productLines.slice(0, 1), syncDocsProduct, ...productLines.slice(1)].map((product) => (
                 <article key={product.id} className="grid gap-5 border-b py-7 last:border-b-0 lg:grid-cols-[13rem_minmax(0,1fr)_15rem] lg:items-center">
                   <div><product.icon className="size-5 text-accent" aria-hidden="true" /><h3 className="mt-3 text-lg font-semibold">{product.title}</h3><p className="mt-1 font-mono text-xs text-muted-foreground">{product.repoName}</p></div>
                   <div><p className="max-w-[68ch] text-sm leading-6 text-muted-foreground">{product.boundary}</p><code className="mt-3 inline-block rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">{product.command}</code></div>

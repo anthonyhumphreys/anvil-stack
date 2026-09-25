@@ -3,9 +3,9 @@ title: Knowledge tools
 navTitle: Knowledge tools
 description: Browse and update Confluence content, inspect ADRs, manage Draw.io diagrams, and prepare design tooling in Anvil Desktop.
 product: Anvil Desktop
-section: Knowledge
+section: Guides
 journey: build
-order: 119
+order: 160
 ---
 
 # Knowledge tools

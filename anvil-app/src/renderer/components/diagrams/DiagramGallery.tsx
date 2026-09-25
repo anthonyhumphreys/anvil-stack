@@ -33,7 +33,7 @@ export function DiagramGallery({
         <button
           onClick={onInitialize}
           disabled={initializing}
-          className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/80 disabled:opacity-50"
+          className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/80 disabled:opacity-50"
         >
           <Sparkles size={16} />
           {initializing ? 'Initializing...' : 'Initialize Diagrams'}
@@ -71,7 +71,7 @@ export function DiagramGallery({
             <span className="mt-2 truncate text-sm font-medium text-text-primary w-full text-center">
               {d.title}
             </span>
-            <span className="mt-1 text-[11px] text-text-tertiary">
+            <span className="mt-1 text-xs text-text-tertiary">
               {new Date(d.mtime).toLocaleDateString()}
             </span>
           </button>

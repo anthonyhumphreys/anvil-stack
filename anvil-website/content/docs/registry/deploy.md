@@ -3,9 +3,9 @@ title: Deployment
 navTitle: Deployment
 description: Run Anvil Registry locally, on a NAS or Docker host, or on AWS.
 product: Anvil Registry
-section: Operations
+section: Guides
 journey: build
-order: 11
+order: 50
 ---
 
 # Deployment

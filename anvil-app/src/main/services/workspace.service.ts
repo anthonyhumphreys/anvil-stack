@@ -9,12 +9,36 @@ import type {
   WorkspaceWorkItemsPreferences,
   WorkspaceDocsPreferences,
   WorkspaceLaunchPreferences,
+  WorkspaceRepoDefinition,
   WorkspaceWithRepos,
   WorkspaceSummary,
   RepoInfo,
 } from '../../shared/types.js';
+import {
+  SYNC_ENTITY_SCHEMA_VERSIONS,
+  SYNC_ENTITY_WORKSPACE_DEFINITION,
+} from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
 import { getSettings } from './settings.service.js';
+import {
+  buildEntityPayload,
+  materializeRepoDefinitions,
+  recomputeWorkspaceDefinitionState,
+} from './sync-entity-domain.js';
+import { withSyncedEntityWrite } from './sync-persistence.service.js';
+import { cancelIndexJobs, enqueueIndexJobs } from './repo-index-queue.service.js';
+
+/** Emit sync intent for a bound workspace definition after a local write. */
+function emitWorkspaceSyncIntent(workspaceId: string): void {
+  withSyncedEntityWrite(
+    SYNC_ENTITY_WORKSPACE_DEFINITION,
+    workspaceId,
+    SYNC_ENTITY_SCHEMA_VERSIONS[SYNC_ENTITY_WORKSPACE_DEFINITION],
+    'update',
+    () => buildEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId),
+    () => {},
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Internal row types (snake_case columns from SQLite)
@@ -23,6 +47,7 @@ import { getSettings } from './settings.service.js';
 interface WorkspaceRow {
   id: string;
   name: string;
+  definition_state: 'ready' | 'needs-setup';
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +84,7 @@ interface RepoRow {
   remote_url: string | null;
   default_branch: string;
   status: string;
+  index_tier: string | null;
   last_indexed: string | null;
   file_count: number;
   branch_count: number;
@@ -76,6 +102,7 @@ function mapWorkspace(row: WorkspaceRow): Workspace {
   return {
     id: row.id,
     name: row.name,
+    definitionState: row.definition_state,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -149,6 +176,8 @@ function mapRepo(row: RepoRow): RepoInfo {
     remoteUrl: row.remote_url ?? undefined,
     defaultBranch: row.default_branch,
     status: row.status as RepoInfo['status'],
+    indexTier:
+      row.index_tier === 'mapped' || row.index_tier === 'enriched' ? row.index_tier : 'connected',
     lastIndexed: row.last_indexed ?? undefined,
     fileCount: row.file_count,
     branchCount: row.branch_count,
@@ -256,6 +285,8 @@ export function createWorkspace(opts: WorkspaceCreateOptions): Workspace {
     for (const repoId of repoIds) {
       insertRepo.run(id, repoId);
     }
+    materializeRepoDefinitions(id);
+    recomputeWorkspaceDefinitionState(id);
   });
   txn();
 
@@ -314,6 +345,11 @@ export function updateWorkspacePreferences(
 
   db.prepare(`UPDATE workspaces SET updated_at = datetime('now') WHERE id = ?`).run(workspaceId);
 
+  db.transaction(() => {
+    recomputeWorkspaceDefinitionState(workspaceId);
+    emitWorkspaceSyncIntent(workspaceId);
+  })();
+
   return getWorkspacePreferences(workspaceId)!;
 }
 
@@ -361,6 +397,8 @@ export function updateWorkspace(id: string, opts: { name: string }): Workspace {
     throw new Error(`Workspace not found: ${id}`);
   }
 
+  emitWorkspaceSyncIntent(id);
+
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow;
   return mapWorkspace(row);
 }
@@ -372,27 +410,41 @@ export function updateWorkspace(id: string, opts: { name: string }): Workspace {
 export function deleteWorkspace(id: string): void {
   const db = getDb();
   const deleteWorkspaceTxn = db.transaction(() => {
-    db.prepare(
-      `DELETE FROM chat_messages
-       WHERE thread_id IN (SELECT id FROM chat_threads WHERE workspace_id = ?)`,
-    ).run(id);
-    db.prepare(
-      `DELETE FROM chat_sessions
-       WHERE thread_id IN (SELECT id FROM chat_threads WHERE workspace_id = ?)`,
-    ).run(id);
-    db.prepare('DELETE FROM chat_threads WHERE workspace_id = ?').run(id);
-    const result = db.prepare('DELETE FROM workspaces WHERE id = ?').run(id);
-
-    if (result.changes === 0) {
-      throw new Error(`Workspace not found: ${id}`);
-    }
-
-    db.prepare('UPDATE settings SET active_workspace_id = NULL WHERE active_workspace_id = ?').run(
+    withSyncedEntityWrite(
+      SYNC_ENTITY_WORKSPACE_DEFINITION,
       id,
+      SYNC_ENTITY_SCHEMA_VERSIONS[SYNC_ENTITY_WORKSPACE_DEFINITION],
+      'delete',
+      () => null,
+      () => {
+        deleteWorkspaceRows(id);
+      },
     );
   });
 
   deleteWorkspaceTxn();
+}
+
+function deleteWorkspaceRows(id: string): void {
+  const db = getDb();
+  db.prepare(
+    `DELETE FROM chat_messages
+     WHERE thread_id IN (SELECT id FROM chat_threads WHERE workspace_id = ?)`,
+  ).run(id);
+  db.prepare(
+    `DELETE FROM chat_sessions
+     WHERE thread_id IN (SELECT id FROM chat_threads WHERE workspace_id = ?)`,
+  ).run(id);
+  db.prepare('DELETE FROM chat_threads WHERE workspace_id = ?').run(id);
+  const result = db.prepare('DELETE FROM workspaces WHERE id = ?').run(id);
+
+  if (result.changes === 0) {
+    throw new Error(`Workspace not found: ${id}`);
+  }
+
+  db.prepare('UPDATE settings SET active_workspace_id = NULL WHERE active_workspace_id = ?').run(
+    id,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -414,24 +466,151 @@ export function addReposToWorkspace(workspaceId: string, repoIds: string[]): voi
       insert.run(workspaceId, repoId);
     }
     db.prepare(`UPDATE workspaces SET updated_at = datetime('now') WHERE id = ?`).run(workspaceId);
+    materializeRepoDefinitions(workspaceId);
+    recomputeWorkspaceDefinitionState(workspaceId);
+    emitWorkspaceSyncIntent(workspaceId);
   });
   txn();
 }
 
 /**
- * Remove repos from a workspace.
+ * Portable repo entries for a workspace definition — the WS-01 mapping surface.
+ * Entries with mappedRepoId = null need a local checkout chosen before the
+ * workspace is runnable on this device.
+ */
+export function listWorkspaceRepoDefinitions(workspaceId: string): WorkspaceRepoDefinition[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT portable_id, name, remote_url, default_branch, mapped_repo_id
+       FROM workspace_repo_definitions WHERE workspace_id = ? ORDER BY name`,
+    )
+    .all(workspaceId) as Array<{
+    portable_id: string;
+    name: string;
+    remote_url: string | null;
+    default_branch: string | null;
+    mapped_repo_id: string | null;
+  }>;
+  return rows.map((row) => ({
+    portableId: row.portable_id,
+    name: row.name,
+    remoteUrl: row.remote_url ?? undefined,
+    defaultBranch: row.default_branch ?? undefined,
+    mappedRepoId: row.mapped_repo_id,
+  }));
+}
+
+/**
+ * WS-01: map a portable definition entry to an existing local checkout.
+ * Device-local only — the synced payload carries portable ids, never local
+ * repo ids — so no sync intent is emitted. Adds the checkout to workspace
+ * membership and recomputes readiness.
+ */
+export function mapWorkspaceRepoToCheckout(
+  workspaceId: string,
+  portableId: string,
+  repoId: string,
+): void {
+  const db = getDb();
+  const repo = db.prepare('SELECT id FROM repos WHERE id = ?').get(repoId) as
+    | { id: string }
+    | undefined;
+  if (!repo) throw new Error(`Repo not found: ${repoId}`);
+  const txn = db.transaction(() => {
+    const result = db
+      .prepare(
+        `UPDATE workspace_repo_definitions
+         SET mapped_repo_id = ?, updated_at = datetime('now')
+         WHERE workspace_id = ? AND portable_id = ?`,
+      )
+      .run(repoId, workspaceId, portableId);
+    if (result.changes === 0) {
+      throw new Error(`Repo definition not found: ${portableId}`);
+    }
+    db.prepare(
+      `INSERT OR IGNORE INTO workspace_repos (workspace_id, repo_id, added_at)
+       VALUES (?, ?, datetime('now'))`,
+    ).run(workspaceId, repoId);
+    recomputeWorkspaceDefinitionState(workspaceId);
+  });
+  txn();
+
+  // A mapped checkout joins the workspace — index it like any other connect.
+  enqueueIndexJobs(repoId, { reason: 'connect' });
+}
+
+/**
+ * Remove repos from a workspace. Queued/running index jobs are cancelled; the
+ * repos rows and index data are kept (other workspaces may use the repo).
  */
 export function removeReposFromWorkspace(workspaceId: string, repoIds: string[]): void {
   const db = getDb();
   const del = db.prepare(`DELETE FROM workspace_repos WHERE workspace_id = ? AND repo_id = ?`);
+  const delDef = db.prepare(
+    `DELETE FROM workspace_repo_definitions WHERE workspace_id = ? AND mapped_repo_id = ?`,
+  );
+
+  for (const repoId of repoIds) {
+    cancelIndexJobs(repoId);
+  }
 
   const txn = db.transaction(() => {
     for (const repoId of repoIds) {
       del.run(workspaceId, repoId);
+      delDef.run(workspaceId, repoId);
     }
     db.prepare(`UPDATE workspaces SET updated_at = datetime('now') WHERE id = ?`).run(workspaceId);
+    recomputeWorkspaceDefinitionState(workspaceId);
+    emitWorkspaceSyncIntent(workspaceId);
   });
   txn();
+}
+
+/**
+ * Forget a repository entirely: deletes the repos row plus its index data
+ * (repo_summaries, module_summaries, repository_map_graphs, repo_index_jobs).
+ * Refuses while any workspace still references the repo. Reviews, audits and
+ * other history keep their rows orphaned (decision: no cascade), and files on
+ * disk are never touched.
+ */
+export function forgetRepo(repoId: string): void {
+  const db = getDb();
+  const repo = db.prepare('SELECT id, name FROM repos WHERE id = ?').get(repoId) as
+    | { id: string; name: string }
+    | undefined;
+  if (!repo) throw new Error(`Repo not found: ${repoId}`);
+
+  const membership = db
+    .prepare(`SELECT COUNT(*) AS c FROM workspace_repos WHERE repo_id = ?`)
+    .get(repoId) as { c: number };
+  const mappedDefinitions = db
+    .prepare(`SELECT COUNT(*) AS c FROM workspace_repo_definitions WHERE mapped_repo_id = ?`)
+    .get(repoId) as { c: number };
+  if (membership.c + mappedDefinitions.c > 0) {
+    throw new Error(
+      `"${repo.name}" is still used by a workspace. Remove it from every workspace before forgetting it.`,
+    );
+  }
+
+  cancelIndexJobs(repoId);
+
+  // FK enforcement is suspended for this delete so history rows (reviews,
+  // audits, chat references) survive orphaned instead of cascading or
+  // blocking the delete.
+  const foreignKeys = db.pragma('foreign_keys', { simple: true }) as number;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.prepare('DELETE FROM module_summaries WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM repo_summaries WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM repository_map_graphs WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM repo_index_jobs WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM workspace_repos WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM repos WHERE id = ?').run(repoId);
+    })();
+  } finally {
+    db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -359,6 +359,7 @@ describe('codex protocol service', () => {
         approvalRequestId: 'cursor-permission-1',
         approvalKind: 'permissions',
         approvalReason: 'Needed to verify the change.',
+        approvalCommand: 'pnpm test',
         toolName: 'Run tests',
         toolInput: { command: 'pnpm test' },
         approvalPermissions: {
@@ -367,6 +368,7 @@ describe('codex protocol service', () => {
             { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
           ],
         },
+        protocolThreadId: 'cursor-session-1',
       },
     ]);
   });
@@ -815,6 +817,7 @@ describe('codex protocol service', () => {
         type: 'input_request',
         inputRequestId: 17,
         protocolThreadId: 'cursor-session-1',
+        agentLabel: 'Cursor',
         inputRequest: {
           kind: 'mcp_elicitation',
           serverName: 'Cursor',
@@ -882,20 +885,27 @@ describe('codex protocol service', () => {
 
     expect(events).toEqual([
       {
-        type: 'tool_call',
+        type: 'command_exec',
         itemId: 'tool-1',
+        command: 'pnpm test',
+        output: '',
         toolStatus: 'running',
-        toolName: 'Run tests',
-        toolInput: { command: 'pnpm test' },
-        toolOutput: undefined,
+        agentLabel: 'Devin',
       },
       {
-        type: 'tool_call',
+        type: 'command_exec',
         itemId: 'tool-1',
+        command: 'pnpm test',
+        output: 'All tests passed',
         toolStatus: 'completed',
-        toolName: undefined,
-        toolInput: {},
-        toolOutput: 'All tests passed\nEdited /repo/src/app.ts\nTouched /repo/src/app.ts',
+        agentLabel: 'Devin',
+      },
+      {
+        type: 'file_edit',
+        itemId: 'tool-1',
+        filePath: '/repo/src/app.ts',
+        diff: '',
+        agentLabel: 'Devin',
       },
       {
         type: 'tool_call',
@@ -904,6 +914,7 @@ describe('codex protocol service', () => {
         toolName: 'Apply patch',
         toolInput: {},
         toolOutput: undefined,
+        agentLabel: 'Devin',
       },
     ]);
   });
@@ -935,6 +946,247 @@ describe('codex protocol service', () => {
     expect(ready).toBe(true);
     expect(state.threadId).toBe('cursor-1');
     expect(state.initialized).toBe(true);
+  });
+});
+
+describe('ACP work-surface parity', () => {
+  const acpToolUpdate = (update: Record<string, unknown>) => ({
+    method: 'session/update',
+    params: { sessionId: 'acp-session-1', update },
+  });
+
+  it('emits file_edit events with a reconstructed unified diff from ACP diff blocks', () => {
+    const events = collectEvents(createState(), [
+      acpToolUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'edit-1',
+        kind: 'edit',
+        status: 'completed',
+        content: [
+          {
+            type: 'diff',
+            path: 'src/app.ts',
+            oldText: 'line1\nline2\nline3',
+            newText: 'line1\nchanged\nline3',
+          },
+        ],
+      }),
+    ]);
+
+    const fileEdit = events.find((event) => event.type === 'file_edit');
+    expect(fileEdit).toMatchObject({ filePath: 'src/app.ts', itemId: 'edit-1' });
+    expect(fileEdit?.diff).toBe(
+      [
+        '--- a/src/app.ts',
+        '+++ b/src/app.ts',
+        '@@ -1,3 +1,3 @@',
+        ' line1',
+        '-line2',
+        '+changed',
+        ' line3',
+      ].join('\n'),
+    );
+  });
+
+  it('marks newly created files with a /dev/null header', () => {
+    const events = collectEvents(createState(), [
+      acpToolUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'edit-2',
+        kind: 'edit',
+        status: 'completed',
+        content: [{ type: 'diff', path: 'src/new.ts', oldText: null, newText: 'a\nb' }],
+      }),
+    ]);
+
+    const fileEdit = events.find((event) => event.type === 'file_edit');
+    expect(fileEdit?.diff).toBe(
+      ['--- /dev/null', '+++ b/src/new.ts', '@@ -0,0 +1,2 @@', '+a', '+b'].join('\n'),
+    );
+  });
+
+  it('emits file_edit with an empty diff when the ACP block only carries a path', () => {
+    const events = collectEvents(createState(), [
+      acpToolUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'edit-3',
+        kind: 'edit',
+        status: 'completed',
+        content: [{ type: 'diff', path: 'src/mystery.ts' }],
+      }),
+    ]);
+
+    expect(events.find((event) => event.type === 'file_edit')).toEqual({
+      type: 'file_edit',
+      itemId: 'edit-3',
+      filePath: 'src/mystery.ts',
+      diff: '',
+    });
+  });
+
+  it('dedupes repeated diff snapshots but re-emits when the diff evolves', () => {
+    const update = (newText: string) =>
+      acpToolUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'edit-4',
+        kind: 'edit',
+        status: 'in_progress',
+        content: [
+          { type: 'diff', path: 'src/app.ts', oldText: 'start', newText },
+        ],
+      });
+
+    const events = collectEvents(createState(), [
+      update('start\none'),
+      update('start\none'),
+      update('start\none\ntwo'),
+    ]);
+
+    const fileEdits = events.filter((event) => event.type === 'file_edit');
+    expect(fileEdits).toHaveLength(2);
+    expect(fileEdits[1].diff).toContain('+two');
+  });
+
+  it('emits command_exec for ACP execute tool calls with streamed output and exit code', () => {
+    const events = collectEvents(createState(), [
+      acpToolUpdate({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'exec-1',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command: 'pnpm vitest run' },
+      }),
+      acpToolUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'exec-1',
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: '42 tests passed' } }],
+        rawOutput: { output: '42 tests passed', exitCode: 0 },
+      }),
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'command_exec',
+        itemId: 'exec-1',
+        command: 'pnpm vitest run',
+        output: '',
+        toolStatus: 'running',
+      },
+      {
+        type: 'command_exec',
+        itemId: 'exec-1',
+        command: 'pnpm vitest run',
+        output: '42 tests passed',
+        exitCode: 0,
+        toolStatus: 'completed',
+      },
+    ]);
+  });
+
+  it('keeps execute-kind mapping when updates omit the kind field', () => {
+    const events = collectEvents(createState(), [
+      acpToolUpdate({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'exec-2',
+        kind: 'execute',
+        status: 'in_progress',
+        title: '`npm test`',
+      }),
+      acpToolUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'exec-2',
+        status: 'failed',
+        rawOutput: { stderr: 'boom', exit_code: 3 },
+      }),
+    ]);
+
+    expect(events.map((event) => event.type)).toEqual(['command_exec', 'command_exec']);
+    expect(events[0]).toMatchObject({ command: 'npm test', toolStatus: 'running' });
+    expect(events[1]).toMatchObject({
+      command: 'npm test',
+      output: 'boom',
+      exitCode: 3,
+      toolStatus: 'failed',
+    });
+  });
+
+  it('does not duplicate command_exec rows for identical execute snapshots', () => {
+    const update = acpToolUpdate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'exec-3',
+      kind: 'execute',
+      status: 'completed',
+      rawInput: { command: 'ls' },
+      rawOutput: 'done',
+    });
+
+    const events = collectEvents(createState(), [update, update]);
+    expect(events.filter((event) => event.type === 'command_exec')).toHaveLength(1);
+  });
+
+  it('carries command, cwd and session detail onto ACP permission requests', () => {
+    const events = collectEvents({ ...createState(), agentLabel: 'Devin' }, [
+      {
+        id: 'perm-1',
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'devin-session-1',
+          toolCall: {
+            toolCallId: 'exec-9',
+            title: 'Delete build output',
+            kind: 'execute',
+            rawInput: { command: 'rm -rf dist', cwd: '/repo' },
+          },
+          options: [
+            { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+          ],
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'approval_request',
+        approvalRequestId: 'perm-1',
+        approvalKind: 'permissions',
+        approvalCommand: 'rm -rf dist',
+        approvalCwd: '/repo',
+        toolName: 'Delete build output',
+        toolInput: { command: 'rm -rf dist', cwd: '/repo' },
+        approvalPermissions: {
+          options: [
+            { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+          ],
+        },
+        protocolThreadId: 'devin-session-1',
+        agentLabel: 'Devin',
+      },
+    ]);
+  });
+
+  it('stamps the connected agent label on emitted events only when the session provides one', () => {
+    const acpEvents = collectEvents({ ...createState(), agentLabel: 'Cursor' }, [
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'cursor-1',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: [{ type: 'text', text: 'hi' }],
+          },
+        },
+      },
+    ]);
+    expect(acpEvents[0]).toEqual({ type: 'text', text: 'hi', agentLabel: 'Cursor' });
+
+    const codexEvents = collectEvents(createState(), [
+      { method: 'thread/compacted', params: {} },
+    ]);
+    expect(codexEvents[0]).toEqual({ type: 'context_compaction' });
+    expect('agentLabel' in codexEvents[0]).toBe(false);
   });
 });
 

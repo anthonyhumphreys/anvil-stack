@@ -3,9 +3,9 @@ title: Companion surfaces
 navTitle: Companion surfaces
 description: Pair mobile, watch, widget, menu bar, Raycast, CarPlay, and Siri controls with the desktop app.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 120
+order: 180
 ---
 
 # Companion surfaces
@@ -18,8 +18,8 @@ They are not a replacement for the desktop workspace. Full diffs, terminal work,
 
 | Surface | Use it for |
 | --- | --- |
-| Mobile companion | Pair by QR code, switch hosts and workspaces, inspect the work queue and workspace health, resolve approvals, browse threads and work items, send chat input, and launch quick actions. |
-| Raycast extension | Check workspace state, resolve approvals, send active-session input, launch predefined workflows, and focus the desktop app. |
+| Mobile companion | Pair by QR code or enroll against your account, switch hosts and workspaces, dial enrolled devices directly, inspect the work queue and workspace health, resolve approvals, browse threads and work items, send chat input, and launch quick actions. |
+| Raycast extension | Check workspace state, resolve approvals, send active-session input, launch predefined workflows, and focus the desktop app. Has an account-connected mode for reaching enrolled devices. |
 | macOS menu bar | See pending approvals, focus Anvil, launch companion workflows, and stop active sessions. |
 | Home Screen widgets | Pin live workflow health, approval counts, running sessions, repo counts, and one-tap command launches. |
 | Apple Watch | Resolve small approval decisions, send quick replies, continue, stop, summarize, or interrupt. |
@@ -31,6 +31,12 @@ They are not a replacement for the desktop workspace. Full diffs, terminal work,
 Desktop starts a local companion server only after you enable it. A pairing ticket is short-lived and contains the server address and one-time ticket in a QR code. The companion can store more than one host and prefers reachable LAN or Tailscale addresses over loopback.
 
 Settings lists paired devices with their client type and last-seen state. Revoke a device when it is lost, replaced, or no longer needs access. Raycast uses a separately issued companion token.
+
+## Account-connected mode
+
+Local pairing is not the only route in. The mobile companion can enroll against your Sync & Mesh account and then dial enrolled devices directly — useful when the desktop is reachable through the backend but not on the same network. The Raycast extension has an account-connected mode for the same kind of reach.
+
+Enrollment produces the same device-scoped, revocable credential as desktop enrollment; enrolled companions appear in the account device roster alongside desktops. The enrollment mechanics are in [Devices](/docs/sync/devices); the account side is configured in [Sync and Mesh](/docs/desktop/sync-and-mesh) settings.
 
 ## Approval limits
 

@@ -9,6 +9,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { AdrMarkdown } from './AdrMarkdown';
 import type { AdrEntry, RepoAdrs } from '../../../shared/types';
 import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
@@ -98,7 +99,7 @@ function RepoSection({
 }
 
 export function AdrsView() {
-  const { activeWorkspace } = useWorkspace();
+  const { activeWorkspace, featureAvailability } = useWorkspace();
   const [repoAdrs, setRepoAdrs] = useState<RepoAdrs[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedAdr, setSelectedAdr] = useState<{ adr: AdrEntry; repoName: string } | null>(null);
@@ -136,6 +137,16 @@ export function AdrsView() {
     : repoAdrs;
 
   const totalAdrs = repoAdrs.reduce((sum, ra) => sum + ra.adrs.length, 0);
+
+  if (!featureAvailability.repoFeaturesEnabled) {
+    return (
+      <RepoFeatureEmptyState
+        icon={BookOpen}
+        featureLabel="ADR discovery"
+        description="Architecture Decision Records are scanned from workspace repositories."
+      />
+    );
+  }
 
   // Detail view for a selected ADR
   if (selectedAdr) {

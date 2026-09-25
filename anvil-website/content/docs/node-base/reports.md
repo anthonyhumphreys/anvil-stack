@@ -5,7 +5,7 @@ description: Understand report files, strict-mode gates, network reports, and re
 product: Anvil Node Base
 section: Guides
 journey: build
-order: 9
+order: 40
 ---
 
 # Node Base reports

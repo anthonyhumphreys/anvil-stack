@@ -13,11 +13,19 @@ vi.mock('../../db/database.js', () => ({
   getDb: () => inMemoryDb,
 }));
 
+const revokeSharedArtifact = vi.hoisted(() => vi.fn());
+vi.mock('../artifact-share.service.js', () => ({
+  publishSharedArtifact: vi.fn(),
+  revokeSharedArtifact,
+}));
+
 import {
   discardChatArtifact,
   listChatArtifacts,
+  unshareChatArtifact,
   upsertChatArtifact,
 } from '../chat-artifact.service.js';
+import { BackendRpcError } from '../sync-backend-client.service.js';
 
 beforeEach(() => {
   inMemoryDb.exec('DELETE FROM chat_artifact_revisions');
@@ -71,5 +79,57 @@ describe('chat artifact storage', () => {
     expect(artifact.filePath).toBe(join(repoPath, '.anvil/artifacts/plans/delivery.md'));
     expect(discardChatArtifact(artifact.id)).toBe(false);
     expect(listChatArtifacts('thread-1')).toHaveLength(1);
+  });
+});
+
+describe('unshareChatArtifact', () => {
+  function sharedArtifact(): string {
+    const artifact = upsertChatArtifact({
+      threadId: 'thread-1',
+      repoId: 'repo-1',
+      title: 'Shared notes',
+      kind: 'markdown',
+      storage: 'session',
+      relativePath: 'scratch/shared.md',
+      content: '# Shared',
+    });
+    inMemoryDb
+      .prepare(
+        `UPDATE chat_artifacts
+         SET share_id = 'share-1', shared_url = 'https://anvilstack.dev/artifacts/share-1',
+             shared_at = '2026-01-01T00:00:00.000Z', visibility = 'shareable'
+         WHERE id = ?`,
+      )
+      .run(artifact.id);
+    return artifact.id;
+  }
+
+  it('clears local share fields when the backend share is already gone', async () => {
+    const id = sharedArtifact();
+    revokeSharedArtifact.mockRejectedValueOnce(
+      new BackendRpcError({ code: 'not-found', retryable: false }),
+    );
+    const result = await unshareChatArtifact(id);
+    expect(result.shareId).toBeUndefined();
+    expect(result.sharedUrl).toBeUndefined();
+    const row = inMemoryDb
+      .prepare(
+        'SELECT share_id, shared_url, shared_at, visibility FROM chat_artifacts WHERE id = ?',
+      )
+      .get(id) as { share_id: string | null; visibility: string };
+    expect(row.share_id).toBeNull();
+    expect(row.visibility).toBe('local');
+  });
+
+  it('keeps share fields and propagates other revoke failures', async () => {
+    const id = sharedArtifact();
+    revokeSharedArtifact.mockRejectedValueOnce(
+      new BackendRpcError({ code: 'unavailable', retryable: true }),
+    );
+    await expect(unshareChatArtifact(id)).rejects.toBeInstanceOf(BackendRpcError);
+    const row = inMemoryDb.prepare('SELECT share_id FROM chat_artifacts WHERE id = ?').get(id) as {
+      share_id: string | null;
+    };
+    expect(row.share_id).toBe('share-1');
   });
 });

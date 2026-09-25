@@ -95,14 +95,11 @@ describe('repository-map-graph.service', () => {
       repoId: 'large-repo',
       repositoryName: 'Large repository',
       repoPath: os.tmpdir(),
-      files: Array.from(
-        { length: REPOSITORY_MAP_GRAPH_LIMITS.nodes + 100 },
-        (_, index) => ({
-          relativePath: `file-${String(index).padStart(5, '0')}.md`,
-          extension: '.md',
-          sizeBytes: 10,
-        }),
-      ),
+      files: Array.from({ length: REPOSITORY_MAP_GRAPH_LIMITS.nodes + 100 }, (_, index) => ({
+        relativePath: `file-${String(index).padStart(5, '0')}.md`,
+        extension: '.md',
+        sizeBytes: 10,
+      })),
       modules: [
         {
           path: '.',

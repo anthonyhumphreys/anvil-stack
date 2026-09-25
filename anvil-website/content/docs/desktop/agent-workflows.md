@@ -3,9 +3,9 @@ title: Agent workflows
 navTitle: Agent workflows
 description: How to run planning, implementation, review, security, docs, BA, and handover sessions in Anvil Desktop.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 112
+order: 70
 ---
 
 # Agent workflows

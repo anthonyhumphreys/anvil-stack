@@ -3,9 +3,9 @@ title: Desktop architecture
 navTitle: Architecture
 description: How Anvil Desktop separates Electron main process services, preload IPC, shared contracts, renderer UI, SQLite, and companion packages.
 product: Anvil Desktop
-section: Engineering
+section: Concepts
 journey: learn
-order: 105
+order: 240
 ---
 
 # Desktop architecture

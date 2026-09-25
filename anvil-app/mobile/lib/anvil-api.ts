@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import { getAccountConnection, refreshAccountSession } from './anvil-account';
 import type {
   ChatMessage,
   ChatAttachment,
@@ -33,6 +34,16 @@ export interface CompanionConnection {
   deviceName: string;
   pairedAt: string;
   lastUsedAt: string;
+  /**
+   * 'paired' = LAN ticket/manual bearer (default). 'account' = the host is
+   * reached by presenting this device's account access token, resolved live
+   * at request time so rotated sessions never go stale in storage.
+   */
+  authMode?: 'paired' | 'account';
+  /** Account enrollment this connection authenticates as (account mode). */
+  enrollmentId?: string;
+  /** Host verified the credential but has not granted a tier yet. */
+  requiresHostApproval?: boolean;
 }
 
 export interface CompanionConnectionState {
@@ -154,6 +165,48 @@ export async function saveConnection(
     ...state.connections.filter((candidate) => candidate.id !== nextConnection.id),
   ];
   await saveConnectionState({ activeConnectionId: nextConnection.id, connections });
+}
+
+/**
+ * Upserts an account-mode connection keyed by enrollment id. Unlike
+ * saveConnection it never dedupes on baseUrl — an account-discovered host
+ * may share an address with a manually paired one, and the credentials
+ * differ.
+ */
+export async function saveAccountConnection(
+  connection: Pick<CompanionConnection, 'id' | 'baseUrl' | 'deviceName' | 'enrollmentId'> &
+    Partial<CompanionConnection>,
+): Promise<void> {
+  const state = await loadConnectionState();
+  const normalized = normalizeConnection({ ...connection, token: '', authMode: 'account' });
+  const existing = state.connections.find((candidate) => candidate.id === normalized.id);
+  const nextConnection = {
+    ...normalized,
+    pairedAt: existing?.pairedAt ?? normalized.pairedAt,
+    lastUsedAt: new Date().toISOString(),
+  };
+  const connections = [
+    nextConnection,
+    ...state.connections.filter((candidate) => candidate.id !== nextConnection.id),
+  ];
+  await saveConnectionState({
+    activeConnectionId: state.activeConnectionId ?? nextConnection.id,
+    connections,
+  });
+}
+
+/** Drops every account-mode connection (used on account sign-out). */
+export async function removeAccountConnections(): Promise<void> {
+  const state = await loadConnectionState();
+  const connections = state.connections.filter(
+    (connection) => connection.authMode !== 'account',
+  );
+  const activeConnectionId =
+    state.activeConnectionId !== null &&
+    connections.some((connection) => connection.id === state.activeConnectionId)
+      ? state.activeConnectionId
+      : (connections[0]?.id ?? null);
+  await saveConnectionState({ activeConnectionId, connections });
 }
 
 export async function clearConnection(): Promise<void> {
@@ -371,10 +424,8 @@ export function subscribeToCompanionEvents(
   const EventSourceCtor = (globalThis as unknown as { EventSource?: EventSourceConstructor })
     .EventSource;
   if (!EventSourceCtor) return () => {};
+  const EventSource = EventSourceCtor;
 
-  const source = new EventSourceCtor(
-    `${connection.baseUrl}/api/events?access_token=${encodeURIComponent(connection.token)}`,
-  );
   const eventTypes: CompanionStreamEvent['type'][] = [
     'ready',
     'heartbeat',
@@ -387,25 +438,73 @@ export function subscribeToCompanionEvents(
     'handover',
   ];
 
-  const listeners = eventTypes.map((type) => {
-    const listener = (event: MessageEvent) => {
-      try {
-        onEvent({ type, ...(event.data ? JSON.parse(String(event.data)) : {}) });
-      } catch {
-        onEvent({ type });
-      }
-    };
-    source.addEventListener(type, listener);
-    return { type, listener };
-  });
+  let source: EventSourceLike | null = null;
+  let closed = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectDelayMs = 1_000;
 
-  source.onerror = () => onError?.();
+  function scheduleReconnect(): void {
+    if (closed || reconnectTimer !== null) return;
+    const delay = reconnectDelayMs;
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      openStream();
+    }, delay);
+  }
+
+  function openStream(): void {
+    void fetchJson<{ ticket: string }>(connection, '/api/events/ticket', { method: 'POST' })
+      .then(({ ticket }) => {
+        if (closed) return;
+        const nextSource = new EventSource(
+          `${connection.baseUrl}/api/events?ticket=${encodeURIComponent(ticket)}`,
+        );
+        source = nextSource;
+        const listeners = eventTypes.map((type) => {
+          const listener = (event: MessageEvent) => {
+            try {
+              onEvent({ type, ...(event.data ? JSON.parse(String(event.data)) : {}) });
+            } catch {
+              onEvent({ type });
+            }
+            if (type === 'ready') reconnectDelayMs = 1_000;
+          };
+          nextSource.addEventListener(type, listener);
+          return { type, listener };
+        });
+        nextSource.onerror = () => {
+          if (source !== nextSource) return;
+          source = null;
+          for (const { type, listener } of listeners) {
+            nextSource.removeEventListener(type, listener);
+          }
+          nextSource.close();
+          onError?.();
+          scheduleReconnect();
+        };
+        if (closed) {
+          for (const { type, listener } of listeners) {
+            nextSource.removeEventListener(type, listener);
+          }
+          nextSource.close();
+          source = null;
+        }
+      })
+      .catch(() => {
+        onError?.();
+        scheduleReconnect();
+      });
+  }
+
+  openStream();
 
   return () => {
-    for (const { type, listener } of listeners) {
-      source.removeEventListener(type, listener);
-    }
-    source.close();
+    closed = true;
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    source?.close();
+    source = null;
   };
 }
 
@@ -414,15 +513,42 @@ async function fetchJson<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  const token = await resolveBearer(connection);
   const response = await fetchWithTimeout(`${connection.baseUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${connection.token}`,
+      Authorization: `Bearer ${token}`,
       ...(init.headers ?? {}),
     },
   });
+  if (connection.authMode === 'account' && response.status === 401) {
+    // The host rejected the presented access token — rotate the device
+    // session once and retry before declaring the connection dead.
+    const refreshed = await refreshAccountSession();
+    if (!refreshed) {
+      return readBody(response) as Promise<T>;
+    }
+    const retry = await fetchWithTimeout(`${connection.baseUrl}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${refreshed.session.accessToken}`,
+        ...(init.headers ?? {}),
+      },
+    });
+    return readBody(retry) as Promise<T>;
+  }
   return readBody(response) as Promise<T>;
+}
+
+async function resolveBearer(connection: CompanionConnection): Promise<string> {
+  if (connection.authMode !== 'account') return connection.token;
+  const account = await getAccountConnection();
+  if (!account) {
+    throw new Error('This host needs an Anvil account sign-in.');
+  }
+  return account.session.accessToken;
 }
 
 type TimedFetchInit = RequestInit & {
@@ -943,7 +1069,11 @@ function normalizeConnection(raw: unknown): CompanionConnection {
 
   const baseUrl = stringValue(raw.baseUrl, '');
   const token = stringValue(raw.token, '');
-  if (!baseUrl || !token) throw new Error('Invalid companion connection.');
+  const authMode = raw.authMode === 'account' ? 'account' : 'paired';
+  // Account connections resolve their bearer live; they need no stored token.
+  if (!baseUrl || (authMode === 'paired' && !token)) {
+    throw new Error('Invalid companion connection.');
+  }
 
   const now = new Date().toISOString();
   return {
@@ -953,6 +1083,9 @@ function normalizeConnection(raw: unknown): CompanionConnection {
     deviceName: stringValue(raw.deviceName, hostLabelFromBaseUrl(baseUrl)),
     pairedAt: stringValue(raw.pairedAt, now),
     lastUsedAt: stringValue(raw.lastUsedAt, now),
+    authMode,
+    enrollmentId: typeof raw.enrollmentId === 'string' ? raw.enrollmentId : undefined,
+    requiresHostApproval: raw.requiresHostApproval === true,
   };
 }
 

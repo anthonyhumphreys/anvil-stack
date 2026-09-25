@@ -18,11 +18,16 @@ import type {
   ChatArtifactKind,
   ChatAssistantPhase,
   ChatCollaborationMode,
+  ChatFollowUpIntent,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
+  ChatFollowUpStatus,
   ChatStartOptions,
   ChatGoalSnapshot,
   ChatLayout,
   ChatMessage,
   ChatPlanSnapshot,
+  ChatSteerResult,
   ChatThread,
   ChatThreadPullRequestInput,
   CodexEvent,
@@ -41,7 +46,7 @@ import {
   DEFAULT_CODEX_MODEL,
   resolveCodexReasoningEffort,
 } from '../../shared/codex-models';
-import { useWorkspace } from './WorkspaceContext';
+import { useWorkspace, repoIsMapped } from './WorkspaceContext';
 import { loadDesignModePreference } from '../utils/design-mode';
 import { extractFigmaRefs, formatFigmaRefsForPrompt } from '../utils/figma-url';
 import {
@@ -51,9 +56,24 @@ import {
 import { buildChatModelOptions, type ChatModelOption } from '../utils/chat-model-options';
 import { resolveChatFastModeTarget } from '../utils/chat-fast-mode';
 import { isAcpAgentProvider } from '../../shared/agent-providers';
+import { agentEventLabel } from '../utils/agent-display';
 
 export type ChatEntry =
-  | { kind: 'user'; content: string; attachments?: ChatAttachment[]; id?: string }
+  | {
+      kind: 'user';
+      content: string;
+      attachments?: ChatAttachment[];
+      id?: string;
+      /**
+       * H2 — delivery state for composer sends. 'queued' = accepted by the
+       * provider but held behind the active turn (ACP); 'failed' = the
+       * provider rejected or never received it — kept visible so retry works.
+       */
+      delivery?: 'queued' | 'delivered' | 'failed' | 'uncertain';
+      deliveryIntent?: ChatFollowUpIntent;
+      requestId?: string;
+      deliveryError?: string;
+    }
   | {
       kind: 'assistant';
       content: string;
@@ -86,6 +106,12 @@ interface ChatContextValue {
   threads: ChatThread[];
   activeThread: ChatThread | null;
   activeThreadId: string | null;
+  /** False only while the selected thread's history is being hydrated. */
+  historyReady: boolean;
+  /** Last-view timestamp captured before selectThread marks the target viewed. */
+  threadViewSnapshot: { threadId: string; lastViewedAt: string | null } | null;
+  /** Active side-question thread and the main thread it branched from. */
+  sideQuestion: { parentThreadId: string; sideThreadId: string } | null;
   liveThreadStatuses: Record<string, CodexSession['status']>;
   collaborationMode: ChatCollaborationMode;
   activePlan: ChatPlanSnapshot | null;
@@ -93,6 +119,8 @@ interface ChatContextValue {
   activeGoal: ChatGoalSnapshot | null;
   activeArtifacts: ChatArtifact[];
   discardArtifact: (artifactId: string) => Promise<void>;
+  shareArtifact: (artifactId: string) => Promise<ChatArtifact>;
+  unshareArtifact: (artifactId: string) => Promise<ChatArtifact>;
   chatLayout: ChatLayout;
   setActiveRepo: (repo: RepoInfo) => void;
   setActiveRepos: (repos: RepoInfo[]) => void;
@@ -102,8 +130,19 @@ interface ChatContextValue {
     attachments?: ChatAttachment[],
     modelContext?: string,
     fastMode?: boolean,
-  ) => Promise<void>;
-  steer: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
+  ) => Promise<boolean>;
+  /**
+   * Legacy mid-turn send. New composer intent actions use followUp instead.
+   */
+  steer: (message: string, attachments?: ChatAttachment[]) => Promise<ChatSteerResult | null>;
+  followUp: (
+    intent: ChatFollowUpIntent,
+    message: string,
+    attachments: ChatAttachment[] | undefined,
+    requestId: string,
+  ) => Promise<ChatFollowUpResult>;
+  startSideQuestion: (message: string, attachments?: ChatAttachment[]) => Promise<boolean>;
+  returnFromSideQuestion: () => Promise<void>;
   switchPersona: (persona: Persona) => Promise<void>;
   interrupt: () => Promise<void>;
   stopSession: (sessionId: string) => Promise<void>;
@@ -159,6 +198,16 @@ interface LiveAssistantSegment {
   createdAt: string;
 }
 
+interface FollowUpAttempt {
+  request: ChatFollowUpRequest;
+  threadId: string;
+  displayMessage: string;
+  repoId: string | null;
+  personaId: string;
+  timestamp: string;
+  result?: ChatFollowUpResult;
+}
+
 export function useChatContext(): ChatContextValue {
   const ctx = useContext(ChatContext);
   if (!ctx) throw new Error('useChatContext must be used within <ChatProvider>');
@@ -180,6 +229,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [activeReposState, setActiveReposState] = useState<RepoInfo[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [historyReady, setHistoryReady] = useState(true);
+  const [threadViewSnapshot, setThreadViewSnapshot] = useState<{
+    threadId: string;
+    lastViewedAt: string | null;
+  } | null>(null);
+  const [sideQuestion, setSideQuestion] = useState<{
+    parentThreadId: string;
+    sideThreadId: string;
+  } | null>(null);
   const [liveThreadStatuses, setLiveThreadStatuses] = useState<
     Record<string, CodexSession['status']>
   >({});
@@ -263,6 +321,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const lastSelectedThreadIdsRef = useRef<Record<string, string>>(loadThreadSelectionPreferences());
   const liveSessionsByThreadIdRef = useRef<Record<string, CodexSession>>({});
   const liveOutputBySessionIdRef = useRef<Record<string, LiveAssistantOutput>>({});
+  const followUpDeliveryEventsRef = useRef(new Set<string>());
+  const followUpAttemptsRef = useRef(new Map<string, FollowUpAttempt>());
+  const retiredFollowUpRequestIdsRef = useRef(new Set<string>());
   const livePersistQueueBySessionIdRef = useRef<Record<string, Promise<void>>>({});
   const threadLoadVersionRef = useRef(0);
   const pendingStreamEntryRef = useRef<{
@@ -498,21 +559,37 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (isNavigationCurrent && !isNavigationCurrent()) return;
       const loadVersion = ++threadLoadVersionRef.current;
       discardPendingStreamEntry();
+      setHistoryReady(false);
       const thread = (availableThreads ?? threadsRef.current).find(
         (candidate) => candidate.id === threadId,
       );
-      if (!thread || !threadBelongsToWorkspace(thread, activeWorkspace?.id ?? null)) return;
+      if (!thread || !threadBelongsToWorkspace(thread, activeWorkspace?.id ?? null)) {
+        setHistoryReady(true);
+        return;
+      }
       const threadPersona = findPersonaForThread(thread, personas);
       if (!threadPersona) {
         setError(`Assistant unavailable for thread: ${thread.title}`);
+        setHistoryReady(true);
         return;
       }
 
-      const [history, artifacts, intents] = await Promise.all([
-        window.anvil.chat.loadHistory(threadId),
-        window.anvil.chat.listArtifacts(threadId),
-        window.anvil.chat.listAgentUIIntents(threadId, true),
-      ]);
+      let history: ChatMessage[];
+      let artifacts: ChatArtifact[];
+      let intents: AgentUIIntent[];
+      try {
+        [history, artifacts, intents] = await Promise.all([
+          window.anvil.chat.loadHistory(threadId),
+          window.anvil.chat.listArtifacts(threadId),
+          window.anvil.chat.listAgentUIIntents(threadId, true),
+        ]);
+      } catch (err) {
+        if (loadVersion === threadLoadVersionRef.current) {
+          setError(err instanceof Error ? err.message : 'Could not load this conversation.');
+          setHistoryReady(true);
+        }
+        return;
+      }
       if (
         loadVersion !== threadLoadVersionRef.current ||
         (isNavigationCurrent && !isNavigationCurrent())
@@ -527,6 +604,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       setActivePersona((current) => (current?.id === threadPersona.id ? current : threadPersona));
       setActiveThreadId(thread.id);
+      setThreadViewSnapshot((current) =>
+        current?.threadId === thread.id
+          ? current
+          : { threadId: thread.id, lastViewedAt: thread.lastViewedAt ?? null },
+      );
+      setSideQuestion(
+        thread.purpose === 'side-question' && thread.sideQuestionOfThreadId
+          ? { parentThreadId: thread.sideQuestionOfThreadId, sideThreadId: thread.id }
+          : null,
+      );
       const nextEntries = chatMessagesToEntries(history);
       const liveSession = liveSessionsByThreadIdRef.current[thread.id];
       const liveOutput = liveSession ? liveOutputBySessionIdRef.current[liveSession.id] : null;
@@ -550,6 +637,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       setEntries(nextEntries);
+      setHistoryReady(true);
       setActiveArtifacts(artifacts);
       setAgentUIIntents(intents);
       setActiveReposState(resolvedRepos);
@@ -617,6 +705,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       threadLoadVersionRef.current += 1;
       applyThreadState(created);
       setActiveThreadId(created.id);
+      setHistoryReady(true);
+      setThreadViewSnapshot({ threadId: created.id, lastViewedAt: null });
+      setSideQuestion(null);
       setActiveReposState(repoSelection);
       setActiveRepoState(primaryRepo);
       rememberThreadSelection(
@@ -828,6 +919,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (sessionRef.current?.id === liveSession.id) {
         setSession(null);
         setBusy(false);
+        // H2 — pending queued sends die with the session; mark them not sent.
+        setEntries((prev) =>
+          prev.map((entry) =>
+            entry.kind === 'user' && entry.delivery === 'queued'
+              ? { ...entry, delivery: 'failed' as const }
+              : entry,
+          ),
+        );
       }
     },
     [discardPendingStreamEntry, forgetLiveSession],
@@ -844,6 +943,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       if (sessionRef.current?.id === sessionId) {
         setSession(null);
         setBusy(false);
+        // H2 — main drops the pending-send queue when the session dies without
+        // a final queue_update; anything still marked queued will never send.
+        setEntries((prev) =>
+          prev.map((entry) =>
+            entry.kind === 'user' && entry.delivery === 'queued'
+              ? { ...entry, delivery: 'failed' as const }
+              : entry,
+          ),
+        );
       }
     },
     [findThreadIdForSession, stopThreadLiveSession],
@@ -1002,6 +1110,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setActiveRepoState(null);
       setThreads([]);
       setActiveThreadId(null);
+      setHistoryReady(true);
+      setThreadViewSnapshot(null);
+      setSideQuestion(null);
       setActiveArtifacts([]);
       return;
     }
@@ -1032,7 +1143,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    const indexed = repos.filter((repo) => repo.status === 'indexed');
+    // Tiered indexing (§4.1): the mapped tier is enough for repo context —
+    // don't wait for the full enriched pass.
+    const indexed = repos.filter(repoIsMapped);
     setActiveReposState((current) => {
       if (current.length === 0 && indexed.length > 0) {
         return indexed;
@@ -1142,6 +1255,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const requestedWorkspaceId = activeWorkspace?.id ?? null;
     setThreads([]);
     setActiveThreadId(null);
+    setHistoryReady(false);
+    setThreadViewSnapshot(null);
+    setSideQuestion(null);
     setEntries([]);
     setActiveArtifacts([]);
     void (async () => {
@@ -1185,6 +1301,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         if (!nextThreadId) {
           setActiveThreadId(null);
+          setHistoryReady(true);
+          setThreadViewSnapshot(null);
+          setSideQuestion(null);
           setEntries([]);
           setActiveArtifacts([]);
           return;
@@ -1217,6 +1336,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const requestedWorkspaceId = activeWorkspace?.id ?? null;
     setThreads([]);
     setActiveThreadId(null);
+    setHistoryReady(false);
+    setThreadViewSnapshot(null);
+    setSideQuestion(null);
     setEntries([]);
     setActiveArtifacts([]);
     void (async () => {
@@ -1262,6 +1384,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         if (!nextThreadId) {
           setActiveThreadId(null);
+          setHistoryReady(true);
+          setThreadViewSnapshot(null);
+          setSideQuestion(null);
           setEntries([]);
           setActiveArtifacts([]);
           setSession(null);
@@ -1323,6 +1448,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         (eventSessionId ? findThreadIdForSession(eventSessionId) : null) ??
         event.appThreadId ??
         null;
+      const mainPersistsEvent = event.persistedBy === 'main';
       const isActiveSession = !!eventSessionId && eventSessionId === sessionRef.current?.id;
       const eventSession =
         eventSessionId && sessionRef.current?.id === eventSessionId
@@ -1333,9 +1459,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               )
             : null;
 
+      if (event.type === 'follow_up_delivery' && event.followUpRequestId && event.followUpStatus) {
+        followUpDeliveryEventsRef.current.add(event.followUpRequestId);
+        const attempt = followUpAttemptsRef.current.get(event.followUpRequestId);
+        if (attempt) {
+          attempt.result = {
+            requestId: event.followUpRequestId,
+            intent: event.followUpIntent ?? attempt.request.intent,
+            status: event.followUpStatus,
+            queueDepth: event.followUpQueueDepth ?? 0,
+            error: event.followUpError,
+          };
+        }
+      }
+
       if (eventSessionId && !isActiveSession && !eventThreadId) return;
 
-      if (eventThreadId && shouldPersistEvidenceEvent(event)) {
+      if (eventThreadId && shouldPersistEvidenceEvent(event) && !mainPersistsEvent) {
         window.anvil.chat
           .saveEvent(
             eventThreadId,
@@ -1444,6 +1584,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             liveOutput,
             event,
           );
+        } else if (event.type === 'queue_update') {
+          // H2 — keep queue depth truthful on the session objects so the
+          // composer chip and transcript can show pending sends.
+          const depth = event.queuedSendCount ?? 0;
+          const liveSession = liveSessionsByThreadIdRef.current[eventThreadId];
+          if (liveSession) {
+            liveSessionsByThreadIdRef.current[eventThreadId] = {
+              ...liveSession,
+              queuedSendCount: depth,
+            };
+          }
+          if (isActiveSession) {
+            setSession((prev) =>
+              prev?.id === eventSessionId ? { ...prev, queuedSendCount: depth } : prev,
+            );
+          }
         } else {
           const liveOutput = liveOutputBySessionIdRef.current[eventSessionId];
           if (liveOutput?.activeLegacySegmentId) {
@@ -1457,7 +1613,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       if (eventSessionId && !isActiveSession) {
         if (event.type === 'status' && event.status === 'complete') {
-          persistAssistantForSession(eventSessionId, { final: true });
+          if (!mainPersistsEvent) persistAssistantForSession(eventSessionId, { final: true });
           const completedOutput = liveOutputBySessionIdRef.current[eventSessionId];
           if (completedOutput) {
             liveOutputBySessionIdRef.current[eventSessionId] = {
@@ -1466,11 +1622,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             };
           }
         } else if (event.type === 'plan_update' && event.plan && eventThreadId) {
-          persistThreadPlan(eventThreadId, event.plan);
+          if (!mainPersistsEvent) persistThreadPlan(eventThreadId, event.plan);
         } else if (event.type === 'goal_update' && event.goal && eventThreadId) {
-          persistThreadGoal(eventThreadId, event.goal);
+          if (!mainPersistsEvent) persistThreadGoal(eventThreadId, event.goal);
         } else if (event.type === 'goal_cleared' && eventThreadId) {
-          persistThreadGoal(eventThreadId, null);
+          if (!mainPersistsEvent) persistThreadGoal(eventThreadId, null);
         }
         return;
       }
@@ -1480,7 +1636,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setEntries((prev) => resolveCompletedAssistantEntries(prev));
         setBusy(false);
         if (eventSessionId) {
-          persistAssistantForSession(eventSessionId, { final: true });
+          if (!mainPersistsEvent) persistAssistantForSession(eventSessionId, { final: true });
           const completedOutput = liveOutputBySessionIdRef.current[eventSessionId];
           if (completedOutput) {
             liveOutputBySessionIdRef.current[eventSessionId] = {
@@ -1492,7 +1648,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       } else if (event.type === 'status' && event.status === 'error') {
         flushPendingStreamEntry();
         setBusy(false);
-        setError(event.errorMessage ?? 'Codex could not complete this turn.');
+        setError(
+          event.errorMessage ??
+            `${agentEventLabel(event, sessionRef.current?.provider)} could not complete this turn.`,
+        );
       } else if (event.type === 'status') {
         // Ignore intermediate status events.
       } else if (event.type === 'thinking' && event.text) {
@@ -1505,7 +1664,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       } else if (event.type === 'plan_update' && event.plan) {
         flushPendingStreamEntry();
         const targetThreadId = eventThreadId ?? activeThreadRef.current?.id;
-        if (targetThreadId) persistThreadPlan(targetThreadId, event.plan);
+        if (targetThreadId && !mainPersistsEvent) persistThreadPlan(targetThreadId, event.plan);
         setEntries((prev) => [...prev, { kind: 'event', event }]);
       } else if (event.type === 'agent_ui_intent' && event.agentUIIntent) {
         flushPendingStreamEntry();
@@ -1518,12 +1677,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       } else if (event.type === 'goal_update' && event.goal) {
         flushPendingStreamEntry();
         const targetThreadId = eventThreadId ?? activeThreadRef.current?.id;
-        if (targetThreadId) persistThreadGoal(targetThreadId, event.goal);
+        if (targetThreadId && !mainPersistsEvent) persistThreadGoal(targetThreadId, event.goal);
         setEntries((prev) => [...prev, { kind: 'event', event }]);
       } else if (event.type === 'goal_cleared') {
         flushPendingStreamEntry();
         const targetThreadId = eventThreadId ?? activeThreadRef.current?.id;
-        if (targetThreadId) persistThreadGoal(targetThreadId, null);
+        if (targetThreadId && !mainPersistsEvent) persistThreadGoal(targetThreadId, null);
         setEntries((prev) => [...prev, { kind: 'event', event }]);
       } else if (event.type === 'command_exec' && event.command) {
         flushPendingStreamEntry();
@@ -1591,7 +1750,36 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setEntries((prev) => upsertThreadStatusEntry(prev, event));
       } else if (event.type === 'request_resolved' && event.resolvedRequestId !== undefined) {
         flushPendingStreamEntry();
-        setEntries((prev) => removeResolvedRequestEntry(prev, event.resolvedRequestId));
+        const resolvedRequestId = event.resolvedRequestId;
+        setEntries((prev) => removeResolvedRequestEntry(prev, resolvedRequestId, event.sessionId));
+      } else if (
+        event.type === 'follow_up_delivery' &&
+        event.followUpRequestId &&
+        event.followUpStatus
+      ) {
+        flushPendingStreamEntry();
+        if (activeThreadRef.current?.id === eventThreadId) {
+          setEntries((previous) =>
+            updateFollowUpEntry(previous, event.followUpRequestId!, {
+              delivery: followUpStatusToEntryDelivery(event.followUpStatus!),
+              deliveryIntent: event.followUpIntent,
+              deliveryError: event.followUpError,
+            }),
+          );
+          if (event.followUpStatus === 'failed' && event.followUpError) {
+            setError(event.followUpError);
+          }
+        }
+      } else if (event.type === 'queue_update') {
+        // H2 — as the provider queue drains, the oldest queued sends have been
+        // delivered; clear their 'queued' marker oldest-first.
+        flushPendingStreamEntry();
+        setEntries((prev) => releaseQueuedUserEntries(prev, event.queuedSendCount ?? 0));
+      } else if (event.type === 'usage' || event.type === 'usage_context') {
+        // H5 — collect usage events as turn data; composeChatTurns folds them
+        // into the per-turn footer instead of rendering a work row.
+        flushPendingStreamEntry();
+        setEntries((prev) => [...prev, { kind: 'event', event }]);
       } else {
         flushPendingStreamEntry();
         setEntries((prev) => [...prev, { kind: 'event', event }]);
@@ -1723,6 +1911,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  /** H2 — flag a rendered user entry as queued/not-sent without touching history. */
+  const markUserEntryDelivery = useCallback((entryId: string, delivery: 'queued' | 'failed') => {
+    setEntries((prev) =>
+      prev.map((entry) =>
+        entry.kind === 'user' && entry.id === entryId ? { ...entry, delivery } : entry,
+      ),
+    );
+  }, []);
+
   const send = useCallback(
     async (
       message: string,
@@ -1753,7 +1950,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      if (!activePersona) return;
+      if (!activePersona) return false;
 
       const enriched = buildEnrichedMessage(modelMessage, {
         artifacts: nextArtifacts,
@@ -1773,7 +1970,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           title: buildThreadTitle(displayMessage, activePersona.name),
         });
       }
-      if (!thread) return;
+      if (!thread) return false;
 
       const primaryRepo = activeRepoState ?? activeReposState[0] ?? null;
       const selectedRepoIds = activeReposState.map((repo) => repo.id);
@@ -1821,6 +2018,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           : null;
 
       if (!currentSessionForThread) {
+        let startedSession: CodexSession | null;
         try {
           const designOptions = buildDesignChatStartOptions(activePersona.id, modelMessage);
           const workspaceOptions = activeWorkspace
@@ -1836,7 +2034,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 ...designOptions,
               }
             : { threadId: thread.id, provider: modelProvider, ...designOptions };
-          const startedSession =
+          startedSession =
             scaffoldModeActive && activeWorkspace && activeScaffoldSession
               ? await window.anvil.chat.startScaffoldSession(
                   activeWorkspace.id,
@@ -1861,16 +2059,39 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                       ...designOptions,
                     })
                   : null;
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to start session');
+          setBusy(false);
+          return false;
+        }
 
-          if (!startedSession) return;
+        if (!startedSession) return false;
 
-          rememberLiveSession(thread.id, startedSession);
-          setSession(startedSession);
-          setEntries((prev) => [...prev, userEntry]);
-          setBusy(true);
-          setLiveThreadStatus(thread.id, 'busy');
-          setError(null);
+        rememberLiveSession(thread.id, startedSession);
+        setSession(startedSession);
+        setEntries((prev) => [...prev, userEntry]);
+        setBusy(true);
+        setLiveThreadStatus(thread.id, 'busy');
+        setError(null);
 
+        // H2 — the provider must accept the message before it is persisted;
+        // on rejection the entry stays visible but marked as not sent.
+        try {
+          await window.anvil.chat.send(startedSession.id, enriched, attachments, {
+            collaborationMode,
+            model: turnModel,
+            reasoningEffort: reasoningLevel,
+            serviceTier,
+          });
+        } catch (err) {
+          markUserEntryDelivery(userEntry.id!, 'failed');
+          setLiveThreadStatus(thread.id, null);
+          setBusy(false);
+          setError(err instanceof Error ? err.message : 'Send failed');
+          return false;
+        }
+
+        try {
           await window.anvil.chat.saveEntry(
             thread.id,
             startedSession.repoId ?? null,
@@ -1886,18 +2107,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             },
           );
           bumpThreadSummary(thread.id, buildThreadPreview(displayMessage, attachments), timestamp);
-
-          await window.anvil.chat.send(startedSession.id, enriched, attachments, {
-            collaborationMode,
-            model: turnModel,
-            reasoningEffort: reasoningLevel,
-            serviceTier,
-          });
         } catch (err) {
-          setError(err instanceof Error ? err.message : 'Failed to start session');
-          setBusy(false);
+          // Delivery already succeeded — a local persistence failure must not
+          // mark the accepted message as unsent.
+          console.error('[Chat] Failed to persist user message:', err);
         }
-        return;
+        return true;
       }
 
       if (session?.id !== currentSessionForThread.id) {
@@ -1907,6 +2122,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setBusy(true);
       setLiveThreadStatus(thread.id, 'busy');
       setError(null);
+
+      // H2 — persist only after the provider accepts the message; on
+      // rejection keep the entry rendered but marked as not sent.
+      try {
+        await window.anvil.chat.send(currentSessionForThread.id, enriched, attachments, {
+          collaborationMode,
+          model: turnModel,
+          reasoningEffort: reasoningLevel,
+          serviceTier,
+        });
+      } catch (err) {
+        markUserEntryDelivery(userEntry.id!, 'failed');
+        setLiveThreadStatus(thread.id, null);
+        setBusy(false);
+        setError(err instanceof Error ? err.message : 'Send failed');
+        return false;
+      }
 
       try {
         await window.anvil.chat.saveEntry(
@@ -1924,16 +2156,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           },
         );
         bumpThreadSummary(thread.id, buildThreadPreview(displayMessage, attachments), timestamp);
-        await window.anvil.chat.send(currentSessionForThread.id, enriched, attachments, {
-          collaborationMode,
-          model: turnModel,
-          reasoningEffort: reasoningLevel,
-          serviceTier,
-        });
       } catch (err) {
-        setBusy(false);
-        setError(err instanceof Error ? err.message : 'Send failed');
+        // Delivery already succeeded — a local persistence failure must not
+        // mark the accepted message as unsent.
+        console.error('[Chat] Failed to persist user message:', err);
       }
+      return true;
     },
     [
       session,
@@ -1951,6 +2179,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dbInsightArtifacts,
       dbInsightAnalysis,
       findThreadIdForSession,
+      markUserEntryDelivery,
       model,
       modelOptions,
       modelProvider,
@@ -1963,44 +2192,606 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const steer = useCallback(
-    async (message: string, attachments: ChatAttachment[] = []) => {
+    async (
+      message: string,
+      attachments: ChatAttachment[] = [],
+    ): Promise<ChatSteerResult | null> => {
       const currentSession = sessionRef.current;
-      if (!currentSession) return;
+      if (!currentSession) return null;
 
       const displayMessage = normaliseOutgoingMessage(message, attachments);
       const modelMessage = buildAttachmentPrompt(displayMessage, attachments);
       const enriched = buildEnrichedMessage(modelMessage);
       const threadId = findThreadIdForSession(currentSession.id) ?? currentSession.appThreadId;
 
+      let result: ChatSteerResult;
+      try {
+        result = await window.anvil.chat.steer(currentSession.id, enriched, attachments);
+      } catch {
+        // The provider could not accept the message (no active Codex turn,
+        // dead session, unknown queue state). The caller keeps the draft.
+        return null;
+      }
+
+      // The provider accepted the send — only now render and persist it (H2).
+      // 'queued' (ACP) is a normal user message held for the next turn, never a
+      // [steer] entry; 'sent' means the session went idle mid-call and the
+      // prompt was delivered immediately.
+      const queued = result.disposition === 'queued';
+      if (queued) {
+        setSession((prev) =>
+          prev?.id === currentSession.id ? { ...prev, queuedSendCount: result.queueDepth } : prev,
+        );
+      }
       if (threadId) {
         const timestamp = new Date().toISOString();
+        const content =
+          result.disposition === 'steered' ? `[steer] ${displayMessage}` : displayMessage;
         const userEntry: ChatEntry = {
           kind: 'user',
-          content: `[steer] ${displayMessage}`,
+          content,
           attachments,
           id: generateId(),
+          ...(queued ? { delivery: 'queued' as const } : {}),
         };
         setEntries((prev) => [...prev, userEntry]);
-        await window.anvil.chat.saveEntry(
-          threadId,
-          currentSession.repoId ?? null,
-          currentSession.id,
-          {
-            id: userEntry.id!,
-            role: 'user',
-            content: `[steer] ${displayMessage}`,
-            timestamp,
-            personaId: currentSession.personaId,
+        try {
+          await window.anvil.chat.saveEntry(
             threadId,
+            currentSession.repoId ?? null,
+            currentSession.id,
+            {
+              id: userEntry.id!,
+              role: 'user',
+              content,
+              timestamp,
+              personaId: currentSession.personaId,
+              threadId,
+              attachments,
+            },
+          );
+          bumpThreadSummary(threadId, content, timestamp);
+        } catch (err) {
+          // The provider already accepted the message — keep it rendered even
+          // if the local history write fails.
+          console.error('[Chat] Failed to persist accepted message:', err);
+        }
+      }
+      return result;
+    },
+    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession],
+  );
+
+  const followUp = useCallback(
+    async (
+      intent: ChatFollowUpIntent,
+      message: string,
+      attachments: ChatAttachment[] = [],
+      requestId: string,
+    ): Promise<ChatFollowUpResult> => {
+      let attempt = followUpAttemptsRef.current.get(requestId);
+      const retryingUncertainAttempt = !!attempt;
+      if (!attempt && retiredFollowUpRequestIdsRef.current.has(requestId)) {
+        throw new Error('This delivery ID has expired. Reuse the prompt with a new delivery ID.');
+      }
+      if (attempt) {
+        const requestedDisplayMessage = normaliseOutgoingMessage(message, attachments);
+        if (
+          attempt.request.intent !== intent ||
+          attempt.displayMessage !== requestedDisplayMessage ||
+          JSON.stringify(attempt.request.attachments ?? []) !== JSON.stringify(attachments)
+        ) {
+          throw new Error('This delivery ID is already tied to a different follow-up.');
+        }
+      } else {
+        const currentSession = sessionRef.current;
+        if (!currentSession) throw new Error('There is no active chat session.');
+        if (currentSession.capabilities?.followUp[intent] !== true) {
+          throw new Error(
+            `This provider cannot ${intent === 'guide' ? 'guide' : 'queue'} a follow-up.`,
+          );
+        }
+
+        const threadId = findThreadIdForSession(currentSession.id) ?? currentSession.appThreadId;
+        if (!threadId) throw new Error('The active session is not attached to a chat thread.');
+
+        if (followUpAttemptsRef.current.size >= 64) {
+          const settledRequestId = [...followUpAttemptsRef.current].find(
+            ([, cachedAttempt]) =>
+              cachedAttempt.result?.status === 'delivered' ||
+              cachedAttempt.result?.status === 'failed',
+          )?.[0];
+          if (!settledRequestId) {
+            throw new Error(
+              'Too many follow-ups still have pending delivery. Wait for them to resolve before sending another.',
+            );
+          }
+          followUpAttemptsRef.current.delete(settledRequestId);
+          followUpDeliveryEventsRef.current.delete(settledRequestId);
+          retiredFollowUpRequestIdsRef.current.add(settledRequestId);
+        }
+
+        const displayMessage = normaliseOutgoingMessage(message, attachments);
+        attempt = {
+          request: {
+            sessionId: currentSession.id,
+            requestId,
+            intent,
+            message: buildEnrichedMessage(buildAttachmentPrompt(displayMessage, attachments)),
+            attachments: [...attachments],
+          },
+          threadId,
+          displayMessage,
+          repoId: currentSession.repoId ?? null,
+          personaId: currentSession.personaId,
+          timestamp: new Date().toISOString(),
+        };
+        followUpAttemptsRef.current.set(requestId, attempt);
+      }
+
+      const { request, threadId, displayMessage, repoId, personaId } = attempt;
+      const requestAttachments = request.attachments ?? [];
+      const userEntry: ChatEntry = {
+        kind: 'user',
+        content: displayMessage,
+        attachments: requestAttachments,
+        id: requestId,
+        requestId,
+        delivery: attempt.result?.status ?? 'uncertain',
+        deliveryIntent: request.intent,
+        ...(attempt.result?.error ? { deliveryError: attempt.result.error } : {}),
+      };
+      if (retryingUncertainAttempt && attempt.result) {
+        if (activeThreadRef.current?.id === threadId) {
+          setEntries((previous) => upsertFollowUpEntry(previous, userEntry));
+        }
+        return attempt.result;
+      }
+      if (
+        retryingUncertainAttempt &&
+        !Object.values(liveSessionsByThreadIdRef.current).some(
+          (liveSession) => liveSession.id === request.sessionId,
+        ) &&
+        sessionRef.current?.id !== request.sessionId
+      ) {
+        const unavailableError =
+          'The original session is no longer available, so delivery cannot be confirmed. Check the conversation before sending again.';
+        if (activeThreadRef.current?.id === threadId) {
+          setEntries((previous) =>
+            updateFollowUpEntry(previous, requestId, {
+              delivery: 'uncertain',
+              deliveryIntent: request.intent,
+              deliveryError: unavailableError,
+            }),
+          );
+        }
+        throw new Error(unavailableError);
+      }
+      if (activeThreadRef.current?.id === threadId) {
+        setEntries((previous) => upsertFollowUpEntry(previous, userEntry));
+      }
+
+      let result: ChatFollowUpResult;
+      try {
+        result = await window.anvil.chat.followUp(request);
+      } catch (err) {
+        if (attempt.result) {
+          result = attempt.result;
+        } else {
+          const message = err instanceof Error ? err.message : 'Delivery could not be confirmed.';
+          if (activeThreadRef.current?.id === threadId) {
+            setEntries((previous) =>
+              updateFollowUpEntry(previous, requestId, {
+                delivery: 'uncertain',
+                deliveryIntent: request.intent,
+                deliveryError: message,
+              }),
+            );
+          }
+          throw err;
+        }
+      }
+
+      const hasCorrelatedDeliveryEvent = followUpDeliveryEventsRef.current.has(requestId);
+      if (hasCorrelatedDeliveryEvent && attempt.result) {
+        result = attempt.result;
+      } else if (result.status !== 'failed' || !retryingUncertainAttempt) {
+        attempt.result = result;
+      }
+      if (result.status === 'failed' && retryingUncertainAttempt && !hasCorrelatedDeliveryEvent) {
+        const unavailableError =
+          'The original session could not confirm this follow-up. Delivery is unknown; check the conversation before trying again.';
+        if (activeThreadRef.current?.id === threadId) {
+          setEntries((previous) =>
+            updateFollowUpEntry(previous, requestId, {
+              delivery: 'uncertain',
+              deliveryIntent: request.intent,
+              deliveryError: unavailableError,
+            }),
+          );
+        }
+        throw new Error(unavailableError);
+      }
+      if (result.status === 'failed') {
+        if (activeThreadRef.current?.id === threadId) {
+          setEntries((previous) =>
+            updateFollowUpEntry(previous, requestId, {
+              delivery: 'failed',
+              deliveryIntent: request.intent,
+              deliveryError: result.error ?? 'The provider could not confirm delivery.',
+            }),
+          );
+        }
+      } else {
+        const queued = result.status === 'queued';
+        if (activeThreadRef.current?.id === threadId) {
+          setEntries((previous) =>
+            updateFollowUpEntry(previous, requestId, {
+              delivery: queued ? 'queued' : 'delivered',
+              deliveryIntent: request.intent,
+              deliveryError: undefined,
+            }),
+          );
+        }
+        if (queued) {
+          setSession((previous) =>
+            previous?.id === request.sessionId
+              ? { ...previous, queuedSendCount: result.queueDepth }
+              : previous,
+          );
+          const liveSession = liveSessionsByThreadIdRef.current[threadId];
+          if (liveSession) {
+            liveSessionsByThreadIdRef.current[threadId] = {
+              ...liveSession,
+              queuedSendCount: result.queueDepth,
+            };
+          }
+        }
+      }
+
+      const timestamp = attempt.timestamp;
+      try {
+        await window.anvil.chat.saveEntry(threadId, repoId, request.sessionId, {
+          id: requestId,
+          role: 'user',
+          content: displayMessage,
+          timestamp,
+          personaId,
+          threadId,
+          attachments: requestAttachments,
+          ...(result.status === 'failed' && !hasCorrelatedDeliveryEvent && !retryingUncertainAttempt
+            ? {
+                event: {
+                  type: 'follow_up_delivery' as const,
+                  sessionId: request.sessionId,
+                  appThreadId: threadId,
+                  followUpRequestId: requestId,
+                  followUpIntent: request.intent,
+                  followUpStatus: 'failed' as const,
+                  followUpQueueDepth: result.queueDepth,
+                  followUpError: result.error,
+                },
+              }
+            : {}),
+        });
+        bumpThreadSummary(threadId, displayMessage, timestamp);
+      } catch (err) {
+        // The provider accepted the follow-up; a local history failure must
+        // not change the delivery status or encourage a duplicate send.
+        console.error('[Chat] Failed to persist accepted follow-up:', err);
+      }
+      return result;
+    },
+    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession],
+  );
+
+  const startSideQuestion = useCallback(
+    async (message: string, attachments: ChatAttachment[] = []): Promise<boolean> => {
+      const parentThread = activeThreadRef.current;
+      const parentSession = sessionRef.current;
+      const parentPersona = activePersona;
+      const sourceEntries = entriesRef.current
+        .filter(
+          (entry): entry is Extract<ChatEntry, { kind: 'user' | 'assistant' }> =>
+            entry.kind === 'user' || entry.kind === 'assistant',
+        )
+        .map((entry) => ({ ...entry }));
+      if (
+        !parentThread ||
+        !parentPersona ||
+        !parentSession ||
+        parentSession.capabilities?.readOnlySession !== true ||
+        parentThread.purpose === 'side-question' ||
+        scaffoldModeActive ||
+        chatLayout === 'workitems'
+      ) {
+        return false;
+      }
+
+      const requestedWorkspaceId = activeWorkspace?.id ?? null;
+      const isNavigationCurrent = navigationRequests.current.begin();
+      const isStillViewingParent = () =>
+        isNavigationCurrent() &&
+        navigationWorkspaceIdRef.current === requestedWorkspaceId &&
+        activeThreadRef.current?.id === parentThread.id;
+
+      const displayMessage = normaliseOutgoingMessage(message, attachments);
+      const prompt = buildSideQuestionContext(parentThread.title, sourceEntries);
+      const question = buildAttachmentPrompt(displayMessage, attachments);
+      const enriched = buildEnrichedMessage(`${prompt}\n\n[Side question]\n${question}`, {
+        personaId: parentPersona.id,
+      });
+      const title = buildSideQuestionTitle(displayMessage);
+      const repoSelection = parentThread.repoIds
+        .map((repoId) => repos.find((repo) => repo.id === repoId))
+        .filter((repo): repo is RepoInfo => Boolean(repo));
+      const primaryRepo =
+        repoSelection.find((repo) => repo.id === parentThread.activeRepoId) ??
+        repoSelection[0] ??
+        null;
+      const questionEntryId = generateId();
+      const snapshotStartedAt = Date.now();
+      const timestampBase = snapshotStartedAt - sourceEntries.length - 2;
+      const questionTimestamp = new Date(snapshotStartedAt - 1).toISOString();
+
+      let sideThread: ChatThread;
+      try {
+        sideThread = await window.anvil.chat.createThread({
+          workspaceId: parentThread.workspaceId ?? activeWorkspace?.id ?? null,
+          personaId: parentThread.personaId,
+          title,
+          repoIds: repoSelection.map((repo) => repo.id),
+          activeRepoId: primaryRepo?.id ?? null,
+          purpose: 'side-question',
+          sideQuestionOfThreadId: parentThread.id,
+        });
+        applyThreadState(sideThread);
+      } catch (err) {
+        if (isStillViewingParent()) {
+          setError(
+            err instanceof Error ? err.message : 'Could not create a read-only side question.',
+          );
+        }
+        return false;
+      }
+
+      if (!isStillViewingParent()) {
+        await window.anvil.chat.deleteThread(sideThread.id).catch(console.error);
+        setThreads((previous) => previous.filter((thread) => thread.id !== sideThread.id));
+        return false;
+      }
+
+      try {
+        for (const [index, entry] of sourceEntries.entries()) {
+          await window.anvil.chat.saveEntry(sideThread.id, primaryRepo?.id ?? null, null, {
+            id: generateId(),
+            role: entry.kind === 'assistant' && entry.phase === 'progress' ? 'system' : entry.kind,
+            content: entry.content,
+            timestamp: new Date(timestampBase + index).toISOString(),
+            personaId: parentPersona.id,
+            threadId: sideThread.id,
+            ...(entry.kind === 'user' && entry.attachments
+              ? { attachments: entry.attachments }
+              : {}),
+            ...(entry.kind === 'assistant'
+              ? {
+                  event: {
+                    type: 'text' as const,
+                    text: entry.content,
+                    itemId: entry.itemId,
+                    assistantPhase: entry.phase,
+                  },
+                }
+              : {}),
+          });
+        }
+      } catch (err) {
+        await window.anvil.chat.deleteThread(sideThread.id).catch(console.error);
+        setThreads((previous) => previous.filter((thread) => thread.id !== sideThread.id));
+        if (isStillViewingParent()) {
+          setError(err instanceof Error ? err.message : 'Could not copy the conversation context.');
+        }
+        return false;
+      }
+
+      if (!isStillViewingParent()) {
+        await window.anvil.chat.deleteThread(sideThread.id).catch(console.error);
+        setThreads((previous) => previous.filter((thread) => thread.id !== sideThread.id));
+        return false;
+      }
+
+      const provider = parentSession.provider ?? modelProvider;
+      let sideSession: CodexSession | null = null;
+      try {
+        const designOptions = buildDesignChatStartOptions(parentPersona.id, displayMessage);
+        const startOptions: ChatStartOptions = {
+          threadId: sideThread.id,
+          provider,
+          codexMode: 'read-only',
+          ...(activeWorkspace
+            ? {
+                workspace: {
+                  workspaceId: activeWorkspace.id,
+                  ...(repoSelection.length === 0 && workspaceChatCwd
+                    ? { cwd: workspaceChatCwd }
+                    : {}),
+                },
+              }
+            : {}),
+          ...designOptions,
+        };
+        sideSession =
+          repoSelection.length > 0
+            ? await window.anvil.chat.startSession(
+                repoSelection.map((repo) => repo.id),
+                parentPersona.id,
+                startOptions,
+              )
+            : activeWorkspace && canStartWorkspaceChat
+              ? await window.anvil.chat.startSession([], parentPersona.id, startOptions)
+              : null;
+        if (!sideSession) throw new Error('A workspace is required to start the side question.');
+        rememberLiveSession(sideThread.id, sideSession);
+
+        if (!isStillViewingParent()) {
+          await window.anvil.chat.stopSession(sideSession.id).catch(console.error);
+          forgetLiveSession(sideSession.id);
+          setLiveThreadStatus(sideThread.id, null);
+          await window.anvil.chat.deleteThread(sideThread.id).catch(console.error);
+          setThreads((previous) => previous.filter((thread) => thread.id !== sideThread.id));
+          return false;
+        }
+
+        await window.anvil.chat.saveEntry(
+          sideThread.id,
+          sideSession.repoId ?? null,
+          sideSession.id,
+          {
+            id: questionEntryId,
+            role: 'user',
+            content: displayMessage,
+            timestamp: questionTimestamp,
+            personaId: parentPersona.id,
+            threadId: sideThread.id,
             attachments,
           },
         );
-        bumpThreadSummary(threadId, `[steer] ${displayMessage}`, timestamp);
+
+        await window.anvil.chat.send(sideSession.id, enriched, attachments, {
+          collaborationMode: 'default',
+          model,
+          reasoningEffort: reasoningLevel,
+        });
+      } catch (err) {
+        if (sideSession) {
+          const latestSession = liveSessionsByThreadIdRef.current[sideThread.id] ?? sideSession;
+          liveSessionsByThreadIdRef.current[sideThread.id] = { ...latestSession, status: 'error' };
+          setLiveThreadStatus(sideThread.id, 'error');
+          await window.anvil.chat.stopSession(sideSession.id).catch(console.error);
+        }
+        if (isStillViewingParent()) {
+          setError(err instanceof Error ? err.message : 'Could not send the side question.');
+        }
+        return false;
       }
 
-      await window.anvil.chat.steer(currentSession.id, enriched, attachments);
+      bumpThreadSummary(
+        sideThread.id,
+        buildThreadPreview(displayMessage, attachments),
+        questionTimestamp,
+      );
+
+      let refreshedSideThread = sideThread;
+      try {
+        refreshedSideThread =
+          (await window.anvil.chat.updateThread(sideThread.id, {})) ?? sideThread;
+      } catch (err) {
+        console.error('[Chat] Failed to refresh the side-question thread summary:', err);
+      }
+
+      const sessionSnapshot = liveSessionsByThreadIdRef.current[sideThread.id] ?? sideSession;
+      const statusAfterSend = await window.anvil.chat.getSessionStatus(sideSession.id).catch(() => {
+        return sessionSnapshot.status;
+      });
+      liveSessionsByThreadIdRef.current[sideThread.id] = {
+        ...sessionSnapshot,
+        status: statusAfterSend,
+      };
+      persistAssistantForSession(sideSession.id, {
+        final: statusAfterSend === 'ready' || statusAfterSend === 'error',
+      });
+      await livePersistQueueBySessionIdRef.current[sideSession.id]?.catch(console.error);
+
+      let sideHistory: ChatMessage[] = [];
+      try {
+        sideHistory = await window.anvil.chat.loadHistory(sideThread.id);
+      } catch (err) {
+        console.error('[Chat] Failed to hydrate the side-question history:', err);
+      }
+      const sideEntries = chatMessagesToEntries(sideHistory);
+      const liveOutput = liveOutputBySessionIdRef.current[sideSession.id];
+      for (const segment of liveOutput?.segments ?? []) {
+        if (!segment.content.trim()) continue;
+        const existingSegment = sideEntries.findIndex(
+          (entry) => entry.kind === 'assistant' && entry.id === segment.id,
+        );
+        const liveEntry: ChatEntry = {
+          kind: 'assistant',
+          content: segment.content,
+          id: segment.id,
+          itemId: segment.itemId,
+          phase: segment.phase,
+        };
+        if (existingSegment < 0) sideEntries.push(liveEntry);
+        else sideEntries[existingSegment] = liveEntry;
+      }
+
+      const statusAfterHydration = await window.anvil.chat
+        .getSessionStatus(sideSession.id)
+        .catch(() => liveSessionsByThreadIdRef.current[sideThread.id]?.status ?? statusAfterSend);
+      const latestSideSession = liveSessionsByThreadIdRef.current[sideThread.id] ?? sideSession;
+      const activationSession = { ...latestSideSession, status: statusAfterHydration };
+      liveSessionsByThreadIdRef.current[sideThread.id] = activationSession;
+      const latestHistoryMessage = [...sideHistory]
+        .reverse()
+        .find((entry) => entry.role === 'user' || entry.role === 'assistant');
+      const latestLiveSegment = [...(liveOutput?.segments ?? [])]
+        .reverse()
+        .find((segment) => segment.content.trim());
+      const summaryContent =
+        latestLiveSegment?.content.trim() ??
+        latestHistoryMessage?.content ??
+        buildThreadPreview(displayMessage, attachments);
+      const summaryTimestamp =
+        latestLiveSegment?.createdAt ?? latestHistoryMessage?.timestamp ?? questionTimestamp;
+      const sideMessageCount = sideHistory.filter(
+        (entry) => entry.role === 'user' || entry.role === 'assistant',
+      ).length;
+      applyThreadState({
+        ...refreshedSideThread,
+        preview: summaryContent,
+        messageCount: sideMessageCount,
+        lastMessageAt: summaryTimestamp,
+      });
+      if (!isStillViewingParent()) return true;
+      setActivePersona(parentPersona);
+      setActiveThreadId(sideThread.id);
+      setThreadViewSnapshot({ threadId: sideThread.id, lastViewedAt: null });
+      setHistoryReady(true);
+      setSideQuestion({ parentThreadId: parentThread.id, sideThreadId: sideThread.id });
+      setEntries(sideEntries);
+      setActiveReposState(repoSelection);
+      setActiveRepoState(primaryRepo);
+      setSession(activationSession);
+      setBusy(statusAfterHydration === 'busy' || statusAfterHydration === 'starting');
+      setError(null);
+      setLiveThreadStatus(sideThread.id, statusAfterHydration);
+      rememberThreadSelection(
+        lastSelectedThreadIdsRef.current,
+        getClassicThreadPreferenceKey(activeWorkspace?.id ?? null),
+        sideThread.id,
+      );
+      return true;
     },
-    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession],
+    [
+      activePersona,
+      activeWorkspace,
+      applyThreadState,
+      buildEnrichedMessage,
+      bumpThreadSummary,
+      canStartWorkspaceChat,
+      chatLayout,
+      model,
+      modelProvider,
+      persistAssistantForSession,
+      reasoningLevel,
+      rememberLiveSession,
+      forgetLiveSession,
+      repos,
+      scaffoldModeActive,
+      setLiveThreadStatus,
+      workspaceChatCwd,
+    ],
   );
 
   const switchPersona = useCallback(
@@ -2179,6 +2970,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const isNavigationCurrent = navigationRequests.current.begin();
       threadLoadVersionRef.current += 1;
       const requestedWorkspaceId = activeWorkspace?.id ?? null;
+      setHistoryReady(false);
       let available = threadsRef.current;
       let target = available.find((thread) => thread.id === threadId);
       if (!target) {
@@ -2196,6 +2988,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           );
           if (!target) {
             setError('This thread is unavailable in the current workspace.');
+            setHistoryReady(true);
             return;
           }
           available = target.workItemId ? workitems : classic;
@@ -2214,9 +3007,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           if (!isNavigationCurrent() || navigationWorkspaceIdRef.current !== requestedWorkspaceId)
             return;
           setError(reason instanceof Error ? reason.message : 'Could not open the linked thread.');
+          setHistoryReady(true);
           return;
         }
       }
+      setThreadViewSnapshot({ threadId, lastViewedAt: target.lastViewedAt ?? null });
       const viewedAt = new Date().toISOString();
       setThreads((prev) =>
         prev.map((thread) =>
@@ -2238,6 +3033,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     },
     [activeWorkspace?.id, applyThreadState, loadThreadIntoState, scaffoldModeActive, setChatLayout],
   );
+
+  const returnFromSideQuestion = useCallback(async () => {
+    if (!sideQuestion) return;
+    await selectThread(sideQuestion.parentThreadId);
+  }, [selectThread, sideQuestion]);
 
   const settleThread = useCallback(
     async (threadId: string, settled: boolean) => {
@@ -2579,6 +3379,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const shareArtifact = useCallback(async (artifactId: string) => {
+    const updated = await window.anvil.chat.shareArtifact(artifactId);
+    setActiveArtifacts((prev) =>
+      prev.map((artifact) => (artifact.id === artifactId ? updated : artifact)),
+    );
+    return updated;
+  }, []);
+
+  const unshareArtifact = useCallback(async (artifactId: string) => {
+    const updated = await window.anvil.chat.unshareArtifact(artifactId);
+    setActiveArtifacts((prev) =>
+      prev.map((artifact) => (artifact.id === artifactId ? updated : artifact)),
+    );
+    return updated;
+  }, []);
+
   return (
     <ChatContext.Provider
       value={{
@@ -2603,6 +3419,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         threads: scopedThreads,
         activeThread,
         activeThreadId: activeThread?.id ?? null,
+        historyReady,
+        threadViewSnapshot,
+        sideQuestion,
         liveThreadStatuses,
         collaborationMode,
         activePlan,
@@ -2610,12 +3429,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         activeGoal,
         activeArtifacts,
         discardArtifact,
+        shareArtifact,
+        unshareArtifact,
         chatLayout,
         setActiveRepo,
         setActiveRepos,
         setSelectedGovernanceDocs,
         send,
         steer,
+        followUp,
+        startSideQuestion,
+        returnFromSideQuestion,
         switchPersona,
         interrupt,
         stopSession: stopSessionLive,
@@ -2699,8 +3523,10 @@ function upsertAgentUIIntentEntry(entries: ChatEntry[], event: CodexEvent): Chat
 function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
   if (event.type === 'command_exec') return !!event.command || !!event.output;
   if (event.type === 'subagent_update') return true;
+  if (event.type === 'thinking') return !!event.text;
   return (
-    event.type === 'file_read' ||
+    event.type === 'turn_outcome' ||
+    event.type === 'follow_up_delivery' ||
     event.type === 'file_edit' ||
     event.type === 'tool_call' ||
     event.type === 'approval_request' ||
@@ -2803,11 +3629,16 @@ function getCompletedSubagentResult(event: CodexEvent): string | null {
   return messages.length > 0 ? messages.join('\n\n') : null;
 }
 
-function removeResolvedRequestEntry(entries: ChatEntry[], requestId: string | number): ChatEntry[] {
+function removeResolvedRequestEntry(
+  entries: ChatEntry[],
+  requestId: string | number,
+  sessionId?: string,
+): ChatEntry[] {
   return entries.filter(
     (entry) =>
       !(
         entry.kind === 'event' &&
+        entry.event.sessionId === sessionId &&
         ((entry.event.type === 'approval_request' && entry.event.approvalRequestId === requestId) ||
           (entry.event.type === 'input_request' && entry.event.inputRequestId === requestId))
       ),
@@ -2825,24 +3656,117 @@ function removeResolvedAgentUIIntentEntry(entries: ChatEntry[], intentId: string
   );
 }
 
+/**
+ * H2 — when the provider queue drains, the earliest queued sends have been
+ * delivered as real prompts. Clear the 'queued' marker oldest-first so the
+ * remaining depth still renders as waiting.
+ */
+function releaseQueuedUserEntries(entries: ChatEntry[], depth: number): ChatEntry[] {
+  const queuedIndexes: number[] = [];
+  entries.forEach((entry, index) => {
+    if (entry.kind === 'user' && entry.delivery === 'queued' && !entry.requestId)
+      queuedIndexes.push(index);
+  });
+  if (queuedIndexes.length <= depth) return entries;
+  const released = new Set(queuedIndexes.slice(0, queuedIndexes.length - depth));
+  return entries.map((entry, index) => {
+    if (!released.has(index) || entry.kind !== 'user') return entry;
+    return { ...entry, delivery: undefined };
+  });
+}
+
+function followUpStatusToEntryDelivery(
+  status: ChatFollowUpStatus,
+): NonNullable<Extract<ChatEntry, { kind: 'user' }>['delivery']> {
+  return status;
+}
+
+function upsertFollowUpEntry(entries: ChatEntry[], incoming: Extract<ChatEntry, { kind: 'user' }>) {
+  const existingIndex = entries.findIndex(
+    (entry) => entry.kind === 'user' && entry.requestId === incoming.requestId,
+  );
+  if (existingIndex < 0) return [...entries, incoming];
+  return entries.map((entry, index) =>
+    index === existingIndex ? { ...entry, ...incoming } : entry,
+  );
+}
+
+function updateFollowUpEntry(
+  entries: ChatEntry[],
+  requestId: string,
+  patch: Partial<Extract<ChatEntry, { kind: 'user' }>>,
+): ChatEntry[] {
+  return entries.map((entry) =>
+    entry.kind === 'user' && (entry.requestId === requestId || entry.id === requestId)
+      ? { ...entry, requestId, ...patch }
+      : entry,
+  );
+}
+
+function buildSideQuestionContext(threadTitle: string, entries: ChatEntry[]): string {
+  const transcript = entries
+    .filter(
+      (entry): entry is Extract<ChatEntry, { kind: 'user' | 'assistant' }> =>
+        entry.kind === 'user' || entry.kind === 'assistant',
+    )
+    .map((entry) => `${entry.kind === 'user' ? 'User' : 'Assistant'}: ${entry.content.trim()}`)
+    .filter((line) => !line.endsWith(':'))
+    .join('\n\n');
+  const boundedTranscript = limitTail(transcript, 36_000);
+  return [
+    '[Read-only side question context]',
+    `Source conversation: ${threadTitle}`,
+    'Use this transcript only as context for answering the question below. Do not make changes.',
+    boundedTranscript || '(No earlier messages.)',
+  ].join('\n\n');
+}
+
+function buildSideQuestionTitle(message: string): string {
+  const firstLine = message.split(/\r?\n/, 1)[0].trim();
+  const title = firstLine.length > 48 ? `${firstLine.slice(0, 45).trimEnd()}…` : firstLine;
+  return `Side question · ${title || 'Conversation context'}`;
+}
+
 export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
   const entries: ChatEntry[] = [];
+  const followUpDeliveries = new Map<
+    string,
+    { status: ChatFollowUpStatus; intent?: ChatFollowUpIntent; error?: string }
+  >();
 
   for (const message of history) {
-    if (
-      message.event?.type === 'request_resolved' &&
-      message.event.resolvedRequestId !== undefined
-    ) {
-      const remaining = removeResolvedRequestEntry(entries, message.event.resolvedRequestId);
+    const event =
+      message.event && message.sessionId && !message.event.sessionId
+        ? { ...message.event, sessionId: message.sessionId }
+        : message.event;
+    if (event?.type === 'request_resolved' && event.resolvedRequestId !== undefined) {
+      const remaining = removeResolvedRequestEntry(
+        entries,
+        event.resolvedRequestId,
+        event.sessionId,
+      );
       entries.splice(0, entries.length, ...remaining);
       continue;
     }
 
-    if (message.event?.type === 'agent_ui_intent_resolved' && message.event.agentUIIntentId) {
-      const remaining = removeResolvedAgentUIIntentEntry(entries, message.event.agentUIIntentId);
+    if (event?.type === 'agent_ui_intent_resolved' && event.agentUIIntentId) {
+      const remaining = removeResolvedAgentUIIntentEntry(entries, event.agentUIIntentId);
       entries.splice(0, entries.length, ...remaining);
       continue;
     }
+
+    if (event?.type === 'follow_up_delivery' && event.followUpRequestId && event.followUpStatus) {
+      followUpDeliveries.set(event.followUpRequestId, {
+        status: event.followUpStatus,
+        intent: event.followUpIntent,
+        error: event.followUpError,
+      });
+      if (message.role !== 'user') continue;
+    }
+
+    // H14 — `file_read` is a dead renderer surface; legacy persisted rows are
+    // dropped at load instead of rendering as ghost activity.
+    if (event?.type === 'file_read') continue;
 
     if (message.role === 'user') {
       entries.push({
@@ -2854,13 +3778,13 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
       continue;
     }
 
-    if (message.event?.type === 'text') {
+    if (event?.type === 'text') {
       entries.push({
         kind: 'assistant',
-        content: message.event.text ?? message.content,
+        content: event.text ?? message.content,
         id: message.id,
-        itemId: message.event.itemId,
-        phase: message.event.assistantPhase,
+        itemId: event.itemId,
+        phase: event.assistantPhase,
       });
       continue;
     }
@@ -2871,28 +3795,47 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
       continue;
     }
 
-    if (message.event?.type === 'tool_call') {
-      const next = upsertToolCallEntry(entries, message.event);
+    if (event?.type === 'thinking' && event.text) {
+      // Persisted reasoning reloads as the same coalescing 'thinking' entry
+      // kind the live stream produces.
+      const next = appendLiveStreamEntry(entries, 'thinking', event.text);
       entries.splice(0, entries.length, ...next);
       continue;
     }
 
-    if (message.event?.type === 'subagent_update') {
-      const next = upsertSubagentEntry(entries, message.event);
+    if (event?.type === 'tool_call') {
+      const next = upsertToolCallEntry(entries, event);
       entries.splice(0, entries.length, ...next);
       continue;
     }
 
-    if (message.event?.type === 'agent_ui_intent') {
-      const next = upsertAgentUIIntentEntry(entries, message.event);
+    if (event?.type === 'subagent_update') {
+      const next = upsertSubagentEntry(entries, event);
       entries.splice(0, entries.length, ...next);
       continue;
     }
 
-    if (message.event) entries.push({ kind: 'event', event: message.event });
+    if (event?.type === 'agent_ui_intent') {
+      const next = upsertAgentUIIntentEntry(entries, event);
+      entries.splice(0, entries.length, ...next);
+      continue;
+    }
+
+    if (event) entries.push({ kind: 'event', event });
   }
 
-  return entries;
+  return entries.map((entry) => {
+    if (entry.kind !== 'user' || !entry.id) return entry;
+    const delivery = followUpDeliveries.get(entry.id);
+    if (!delivery) return entry;
+    return {
+      ...entry,
+      requestId: entry.id,
+      delivery: followUpStatusToEntryDelivery(delivery.status),
+      deliveryIntent: delivery.intent,
+      deliveryError: delivery.error,
+    };
+  });
 }
 
 function appendLiveStreamEntry(

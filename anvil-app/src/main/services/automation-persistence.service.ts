@@ -477,11 +477,13 @@ export function listAutomationTriageItems(workspaceId: string): AutomationTriage
        ORDER BY r.started_at DESC
        LIMIT 40`,
     )
-    .all(workspaceId) as Array<AutomationRunRow & {
+    .all(workspaceId) as Array<
+    AutomationRunRow & {
       automation_name: string;
       workflow_run_id: string | null;
       workflow_status: import('../../shared/types.js').WorkflowRunStatus | null;
-    }>;
+    }
+  >;
 
   return rows
     .map((row) => {
@@ -489,7 +491,11 @@ export function listAutomationTriageItems(workspaceId: string): AutomationTriage
       const retainedWorktreeCount = run.worktrees.filter(
         (worktree) => worktree.kept && worktree.path,
       ).length;
-      const action = deliveryNextAction(run.status, retainedWorktreeCount, row.workflow_status ?? undefined);
+      const action = deliveryNextAction(
+        run.status,
+        retainedWorktreeCount,
+        row.workflow_status ?? undefined,
+      );
 
       return {
         id: run.id,

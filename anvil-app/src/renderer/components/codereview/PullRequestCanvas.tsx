@@ -323,7 +323,7 @@ export function PullRequestCanvas({
               setMode('map');
               void generate(false);
             }}
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85"
+            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
           >
             <Sparkles size={13} /> Visualise PR
           </button>
@@ -390,7 +390,7 @@ export function PullRequestCanvas({
             <button
               type="button"
               onClick={() => void generate(true)}
-              className="mt-4 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-4 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={generating}
             >
               {generating ? 'Retrying…' : 'Try again'}
@@ -566,7 +566,7 @@ export function PullRequestCanvas({
                         <span
                           className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md font-mono text-xs font-semibold tabular-nums ${
                             selected
-                              ? 'bg-accent text-white'
+                              ? 'bg-accent text-accent-foreground'
                               : 'bg-bg-primary text-text-tertiary group-hover:text-text-secondary'
                           }`}
                         >
@@ -619,7 +619,7 @@ export function PullRequestCanvas({
                     aria-pressed={changeState === state}
                     className={`rounded-md px-3 py-1.5 text-xs font-medium capitalize ${
                       changeState === state
-                        ? 'bg-accent text-white'
+                        ? 'bg-accent text-accent-foreground'
                         : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
                     }`}
                   >
@@ -689,7 +689,7 @@ export function PullRequestCanvas({
                       <button
                         type="button"
                         onClick={() => openNode(selectedNode)}
-                        className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85"
+                        className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
                       >
                         <FileCode2 size={13} className="shrink-0" />
                         <span>Open source</span>

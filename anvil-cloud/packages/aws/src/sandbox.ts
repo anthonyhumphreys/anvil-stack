@@ -99,6 +99,20 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentExecutionProvider {
       options.executionFetch ?? (fetch as unknown as AwsAgentExecutionFetch);
   }
 
+  describe() {
+    const imageIdentifier =
+      this.options.imageIdentifier ?? process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+
+    return imageIdentifier
+      ? { configured: true, reasons: [] }
+      : {
+          configured: false,
+          reasons: [
+            "AWS Agent Sandbox image is not configured. Set ANVIL_AWS_AGENT_SANDBOX_IMAGE or provider imageIdentifier.",
+          ],
+        };
+  }
+
   get executionCapabilities() {
     const subscriptionProviders = this.subscriptionProviders();
 

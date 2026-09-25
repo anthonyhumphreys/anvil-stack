@@ -3,9 +3,9 @@ title: Security and review
 navTitle: Security and review
 description: How Anvil Desktop approaches code review, security review, dependency risk, and evidence capture.
 product: Anvil Desktop
-section: Assurance
-journey: reference
-order: 118
+section: Guides
+journey: build
+order: 140
 ---
 
 # Security and review

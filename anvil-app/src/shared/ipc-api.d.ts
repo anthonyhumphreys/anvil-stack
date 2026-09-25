@@ -1,4 +1,5 @@
 import type { ChatThreadPullRequestInput, ChatThreadPullRequestLink } from './types.js';
+import type { RepoIndexJob } from './index-jobs';
 import type { ChangeReviewApi } from './change-review-types.js';
 import type {
   DojoAnalytics,
@@ -47,6 +48,8 @@ import type {
   BaRepoLink,
   BaSession,
   ChatAttachment,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
   ChatNavigationTarget,
   WorkflowNavigationTarget,
   ChatAttachmentInput,
@@ -59,13 +62,14 @@ import type {
   ChatFileMentionSearchInput,
   ChatFileMentionSearchResult,
   ChatGoalSnapshot,
-  ChatTurnSummary,
   BrowserBridgeStatus,
   ChatMessage,
   ChatPlanSnapshot,
   ChatSendOptions,
   ChatThread,
+  ChatThreadPurpose,
   ChatStartOptions,
+  ChatSteerResult,
   CicdCreatePipelineInput,
   CicdCreatePipelineResult,
   CicdPipelineAnalysis,
@@ -143,7 +147,17 @@ import type {
   WorkItemCreateInput,
   WorkItemFilters,
   WorkItemProvider,
+  EditableAgent,
+  EditableAgentInput,
   WorkspaceCreateOptions,
+  WorkspaceRepoDefinition,
+  WorkspaceBootstrapApprovalSummary,
+  WorkspaceBootstrapStatus,
+  WorkspaceCloneRequest,
+  WorkspaceCloneResult,
+  WorkspaceLinkResult,
+  WorkspaceMaterializationOpSummary,
+  WorkspaceRemoveCheckoutResult,
   WorkspaceScaffoldMaybeCompleteResult,
   WorkspaceScaffoldSession,
   WorkspaceScaffoldStartResult,
@@ -152,6 +166,9 @@ import type {
   LifecycleStageDefinition,
   LifecycleStageUpdate,
   LicenseAuditResult,
+  CompanionEnrollmentPolicy,
+  CompanionEvent,
+  CompanionPolicyState,
   MobileCompanionDevice,
   MobileCompanionStatus,
   MobilePairingTicket,
@@ -176,6 +193,47 @@ import type {
   TerminalSessionSummary,
 } from './types';
 import type { Brand } from './branding';
+import type { SyncBackendDiscovery, SyncBackendPinInput, SyncBackendStatus } from './sync-backend';
+import type {
+  ApprovalDecision,
+  ApprovalRecord,
+  CloudEnvironmentProviderConnection,
+  CloudEnvironmentRecord,
+  EnvironmentProviderId,
+  ExecutionAttempt,
+  HandoffRecord,
+  JobSummary,
+  SessionMeshState,
+  SyncAdoptionPreviewItem,
+  MeshWorkerStatus,
+  SyncAttemptActivity,
+  SyncAuthPublicSnapshot,
+  SyncConflictResolutionChoice,
+  SyncConflictView,
+  SyncDashboardGrantApproval,
+  SyncDashboardGrantWorkspace,
+  SyncDashboardRequest,
+  SyncDataExportFileResult,
+  SyncDataImportCommitResult,
+  SyncDataImportFilePreview,
+  SyncDevice,
+  SyncDeviceRenameResult,
+  SyncDeviceRevokeResult,
+  SyncDeviceVerification,
+  SyncDiagnostics,
+  SyncHostedStatus,
+  SyncInitiateHandoffResult,
+  SyncIssuedEnrollmentCode,
+  LocalCloudEnvironment,
+  SyncRuntimeStatus,
+  SyncSpikeEnrollInput,
+} from './sync-runtime';
+import type {
+  SyncDeviceRecoveryResult,
+  SyncDeviceSecurityStatus,
+  SyncDeviceTrustPolicy,
+  SyncEncryptedSyncAccountResetConfirmation,
+} from './sync-device-security';
 
 export interface AnvilAPI {
   appWindow: {
@@ -191,6 +249,11 @@ export interface AnvilAPI {
     getSnapshot: () => Promise<DiagnosticsSnapshot>;
   };
 
+  metrics: {
+    /** Local-only activation funnel event — recorded in SQLite, never sent. */
+    track: (event: string, payload?: Record<string, unknown>) => Promise<{ ok: boolean }>;
+  };
+
   mobileCompanion: {
     getStatus: () => Promise<MobileCompanionStatus>;
     setEnabled: (enabled: boolean) => Promise<MobileCompanionStatus>;
@@ -198,6 +261,13 @@ export interface AnvilAPI {
     createRaycastToken: () => Promise<RaycastCompanionToken>;
     listDevices: () => Promise<MobileCompanionDevice[]>;
     revokeDevice: (deviceId: string) => Promise<void>;
+    listEnrollmentPolicies: () => Promise<CompanionEnrollmentPolicy[]>;
+    setEnrollmentPolicy: (
+      enrollmentId: string,
+      tier: CompanionPolicyState,
+    ) => Promise<CompanionEnrollmentPolicy | null>;
+    removeEnrollmentPolicy: (enrollmentId: string) => Promise<void>;
+    onEvent: (callback: (event: CompanionEvent) => void) => () => void;
   };
 
   workspaceNotes: {
@@ -210,7 +280,16 @@ export interface AnvilAPI {
   repo: {
     list: () => Promise<RepoInfo[]>;
     connect: (repoPath: string) => Promise<RepoInfo>;
-    index: (repoId: string) => Promise<void>;
+    index: (repoId: string) => Promise<RepoIndexJob[]>;
+    /** Hydrate index job state; live updates arrive via onIndexProgress (jobId/jobTier/jobState). */
+    listIndexJobs: (repoId?: string) => Promise<RepoIndexJob[]>;
+    cancelIndex: (repoId: string) => Promise<void>;
+    /**
+     * Delete the repos row and its index data (summaries, map graph, jobs).
+     * Refuses while any workspace still references the repo; never touches
+     * files on disk. Reviews/audits are kept orphaned.
+     */
+    forget: (repoId: string) => Promise<void>;
     getStatus: (repoId: string) => Promise<RepoInfo['status']>;
     resetStatus: (repoId: string) => Promise<void>;
     getSummary: (repoId: string) => Promise<RepoSummary | null>;
@@ -266,7 +345,12 @@ export interface AnvilAPI {
     onEvent: (callback: (event: CodexEvent) => void) => () => void;
     stopSession: (sessionId: string) => Promise<void>;
     interrupt: (sessionId: string) => Promise<void>;
-    steer: (sessionId: string, message: string, attachments?: ChatAttachment[]) => Promise<void>;
+    steer: (
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+    ) => Promise<ChatSteerResult>;
+    followUp: (request: ChatFollowUpRequest) => Promise<ChatFollowUpResult>;
     forkProviderThread: (
       sourceThreadId: string,
       targetThreadId: string,
@@ -286,11 +370,14 @@ export interface AnvilAPI {
     getPersonas: () => Promise<Persona[]>;
     getSessionStatus: (sessionId: string) => Promise<CodexSession['status']>;
     listActiveSessions: () => Promise<CodexSession[]>;
-    listTurnSummaries: (threadId: string) => Promise<ChatTurnSummary[]>;
+
     listArtifacts: (threadId: string) => Promise<ChatArtifact[]>;
     upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
     discardArtifact: (id: string) => Promise<boolean>;
     readArtifactFile: (id: string) => Promise<ChatArtifactFile>;
+    shareArtifact: (id: string) => Promise<ChatArtifact>;
+    unshareArtifact: (id: string) => Promise<ChatArtifact>;
+    artifactSharingAvailable: () => Promise<boolean>;
     listArtifactAnnotations: (artifactId: string) => Promise<ChatArtifactAnnotation[]>;
     createArtifactAnnotation: (
       input: ChatArtifactAnnotationInput,
@@ -306,6 +393,8 @@ export interface AnvilAPI {
       pullRequest?: ChatThreadPullRequestInput;
       workspaceId?: string | null;
       personaId: string;
+      purpose?: ChatThreadPurpose;
+      sideQuestionOfThreadId?: string;
       title?: string;
       workItemId?: string;
       workItemProvider?: WorkItemProvider;
@@ -376,6 +465,8 @@ export interface AnvilAPI {
     pauseRun: (runId: string) => Promise<WorkflowRun>;
     resumeRun: (runId: string) => Promise<WorkflowRun>;
     retryNode: (runId: string, nodeId: string) => Promise<WorkflowRun>;
+    inspectNode: (runId: string, nodeId: string) => Promise<WorkflowRun>;
+    convergeRun: (runId: string, verification?: string[]) => Promise<WorkflowRun>;
     decideNode: (
       runId: string,
       nodeId: string,
@@ -655,6 +746,159 @@ export interface AnvilAPI {
     snapshot: () => Promise<CodexUsageSnapshot>;
   };
 
+  syncBackend: {
+    discover: (url: string) => Promise<SyncBackendDiscovery>;
+    pin: (input: SyncBackendPinInput) => Promise<SyncBackendStatus>;
+    status: () => Promise<SyncBackendStatus>;
+    disconnect: () => Promise<SyncBackendStatus>;
+    resolveReview: (backendId: string) => Promise<SyncBackendStatus>;
+    integrationPrompt: () => Promise<string>;
+  };
+
+  syncRuntime: {
+    status: () => Promise<SyncRuntimeStatus>;
+    listCloudProviderConnections: () => Promise<CloudEnvironmentProviderConnection[]>;
+    addCloudProviderConnection: (input: {
+      provider: EnvironmentProviderId;
+      displayName?: string;
+      config: Record<string, unknown>;
+      secret?: string;
+    }) => Promise<CloudEnvironmentProviderConnection>;
+    removeCloudProviderConnection: (connectionId: string) => Promise<boolean>;
+    listLocalCloudEnvironments: () => Promise<LocalCloudEnvironment[]>;
+    listCloudEnvironments: (
+      includeTerminal?: boolean,
+    ) => Promise<{ environments: CloudEnvironmentRecord[] }>;
+    requestCloudEnvironment: (input: {
+      provider: EnvironmentProviderId;
+      ttlSeconds: number;
+      environmentId?: string;
+      imageRef?: string;
+      networkPolicy?: string[];
+      resources?: { vcpus?: number; memoryMb?: number };
+      displayName?: string;
+      connectionId?: string;
+    }) => Promise<{ environmentId: string; job: JobSummary }>;
+    reapCloudEnvironment: (environmentId: string) => Promise<CloudEnvironmentRecord>;
+    preview: () => Promise<SyncAdoptionPreviewItem[]>;
+    /** Production sign-in: system-browser OIDC + PKCE at the pinned backend. */
+    signIn: () => Promise<SyncAuthPublicSnapshot>;
+    enrollWithCode: (code: string) => Promise<SyncAuthPublicSnapshot>;
+    issueEnrollmentCode: () => Promise<SyncIssuedEnrollmentCode>;
+    spikeEnroll: (input: SyncSpikeEnrollInput) => Promise<SyncAuthPublicSnapshot>;
+    enable: () => Promise<SyncRuntimeStatus>;
+    signOut: () => Promise<SyncRuntimeStatus>;
+    conflicts: () => Promise<SyncConflictView[]>;
+    resolveConflict: (
+      conflictId: string,
+      resolution: SyncConflictResolutionChoice,
+    ) => Promise<SyncRuntimeStatus>;
+    /** Redacted sync diagnostics bundle; safe to share with an operator. */
+    diagnostics: () => Promise<SyncDiagnostics>;
+    /**
+     * BILL-05: re-check hosted access via session.describe and return the
+     * current renderer-safe view. Null when the backend reports no hosted
+     * entitlement (self-host) or the session is signed out.
+     */
+    refreshHostedEntitlement: () => Promise<SyncHostedStatus | null>;
+    /**
+     * Opens the fixed hosted account page (https://anvil.dev/account) in the
+     * system browser. Payment state is never read back from a URL — the
+     * backend remains the only source of truth.
+     */
+    openHostedAccount: () => Promise<void>;
+    /**
+     * Device-local mesh worker opt-in (MESH-02). Publishes the device policy
+     * and connects a leased worker incarnation when enabled; requires sync.
+     */
+    setMeshWorker: (enabled: boolean) => Promise<MeshWorkerStatus>;
+    /** All enrollments on the account, including revoked rows and self. */
+    listDevices: () => Promise<SyncDevice[]>;
+    /** Rename any same-account enrollment; empty string clears the name. */
+    renameDevice: (enrollmentId: string, displayName: string) => Promise<SyncDeviceRenameResult>;
+    /** Revoke an enrollment; idempotent and severs its live sessions. */
+    revokeDevice: (enrollmentId: string) => Promise<SyncDeviceRevokeResult>;
+    /** Short authentication string for out-of-band device verification. */
+    verifyDevice: (enrollmentId: string) => Promise<SyncDeviceVerification>;
+    /** Read the current enrollment's trust and recovery state. */
+    getDeviceSecurityStatus: () => Promise<SyncDeviceSecurityStatus>;
+    /** Configure recovery and the new-device trust policy for a new account. */
+    setupDeviceRecovery: (policy: SyncDeviceTrustPolicy) => Promise<SyncDeviceRecoveryResult>;
+    /** Unlock this enrollment's local account key with the saved recovery code. */
+    unlockDeviceRecovery: (code: string) => Promise<SyncDeviceSecurityStatus>;
+    /** Change how future authenticated enrollments are trusted. */
+    setNewDeviceTrustPolicy: (policy: SyncDeviceTrustPolicy) => Promise<SyncDeviceSecurityStatus>;
+    /** Replace the recovery secret; the new code is returned exactly once. */
+    replaceDeviceRecovery: () => Promise<SyncDeviceRecoveryResult>;
+    /** Permanently discard encrypted account data after an explicit acknowledgement. */
+    resetEncryptedSyncAccount: (
+      confirmation: SyncEncryptedSyncAccountResetConfirmation,
+    ) => Promise<void>;
+    /** Approve a pending enrollment after the user compares its verification code. */
+    approveDeviceTrust: (enrollmentId: string, verificationCode: string) => Promise<void>;
+    /**
+     * DASH-01: browser dashboard authorization requests and live grants —
+     * pending rows await a trusted-device decision.
+     */
+    listDashboardRequests: () => Promise<SyncDashboardRequest[]>;
+    /** Workspaces and repositories available for an explicit browser grant. */
+    listDashboardWorkspaces: () => Promise<SyncDashboardGrantWorkspace[]>;
+    /**
+     * Approve or deny a pending request. Approval mints a scoped DSK, seals
+     * it to the browser's public key, and starts the snapshot stream.
+     */
+    decideDashboardRequest: (
+      requestId: string,
+      decision: 'approved' | 'denied',
+      approval?: SyncDashboardGrantApproval,
+    ) => Promise<void>;
+    /** Revoke a live grant — the sealed snapshot stream ends immediately. */
+    revokeDashboardAccess: (requestId: string) => Promise<void>;
+    /** Export the account's synced entities to a user-chosen JSON file. */
+    exportDataToFile: () => Promise<SyncDataExportFileResult>;
+    /** Pick an export file and stage an import plan; nothing applies yet. */
+    previewDataImportFromFile: () => Promise<SyncDataImportFilePreview>;
+    /** Apply a staged import plan. */
+    commitDataImport: (operationId: string) => Promise<SyncDataImportCommitResult>;
+    /** Account-wide mesh jobs (most recent 100). */
+    listMeshJobs: () => Promise<JobSummary[]>;
+    /** One job plus its execution attempts. */
+    getMeshJob: (jobId: string) => Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }>;
+    /**
+     * Request cancellation — the job sits in `cancel-requested` until
+     * stopping is verified; it never masks as `cancelled` early.
+     */
+    cancelMeshJob: (jobId: string) => Promise<JobSummary>;
+    /** Approval records for a job (pending and decided). */
+    getMeshApprovals: (jobId: string) => Promise<ApprovalRecord[]>;
+    decideMeshApproval: (
+      approvalId: string,
+      decision: ApprovalDecision,
+      reason?: string,
+    ) => Promise<{ approval: ApprovalRecord; job: JobSummary; duplicate: boolean }>;
+    /** Handoffs this device participated in, refreshed against the backend. */
+    listMeshHandoffs: () => Promise<HandoffRecord[]>;
+    /** Local ownership mirror + live handoff rows for a chat session. */
+    getSessionMeshState: (sessionId: string) => Promise<SessionMeshState>;
+    /**
+     * Move a chat session to another device (SESSION-03). Runs the
+     * readiness gate first — `{ok:false}` returns remediations, never a
+     * half-moved session.
+     */
+    initiateSessionHandoff: (
+      sessionId: string,
+      targetEnrollmentId: string,
+    ) => Promise<SyncInitiateHandoffResult>;
+    /**
+     * Subscribe to an attempt's activity stream (live socket + durable
+     * replay). Returns the unsubscribe function.
+     */
+    observeAttemptActivity: (
+      attemptId: string,
+      listener: (item: SyncAttemptActivity) => void,
+    ) => () => void;
+  };
+
   anvilCloud: {
     snapshot: () => Promise<AnvilCloudWorkbenchSnapshot>;
     run: (commandId: AnvilCloudCommandId, cwd: string) => Promise<AnvilCloudCommandResult>;
@@ -731,6 +975,43 @@ export interface AnvilAPI {
     ) => Promise<WorkspacePreferences>;
     exportVSCodeWorkspace: (workspaceId: string) => Promise<void>;
     openInNewWindow: (workspaceId: string) => Promise<void>;
+    repoDefinitions: (workspaceId: string) => Promise<WorkspaceRepoDefinition[]>;
+    mapRepo: (workspaceId: string, portableId: string, repoId: string) => Promise<void>;
+    /** WS-02: journalled clone of unmapped repo definitions under a root. */
+    startClone: (input: WorkspaceCloneRequest) => Promise<WorkspaceCloneResult>;
+    /** WS-02: link an existing local checkout to a portable definition entry. */
+    linkRepo: (
+      workspaceId: string,
+      portableId: string,
+      checkoutPath: string,
+      options?: { allowRemoteDivergence?: boolean },
+    ) => Promise<WorkspaceLinkResult>;
+    /** WS-02: detach a checkout mapping; optionally quarantine Anvil-created files. */
+    removeCheckout: (
+      workspaceId: string,
+      portableId: string,
+      options?: { deleteCheckout?: boolean },
+    ) => Promise<WorkspaceRemoveCheckoutResult>;
+    /** WS-02: second explicit irreversible purge of a quarantined checkout. */
+    purgeQuarantine: (quarantineId: string) => Promise<void>;
+    materializationOps: (workspaceId: string) => Promise<WorkspaceMaterializationOpSummary[]>;
+    /** WS-03: recipe, current digest, approval state, and run history. */
+    bootstrapStatus: (workspaceId: string) => Promise<WorkspaceBootstrapStatus>;
+    /** WS-03: pin a local approval to the current digest and start the run. */
+    bootstrapApprove: (
+      workspaceId: string,
+      options?: { shellApproved?: boolean },
+    ) => Promise<{ approval: WorkspaceBootstrapApprovalSummary; runId: string | null }>;
+    /** WS-03: journal + start a run; parks in awaiting-approval without a pin. */
+    bootstrapRun: (workspaceId: string) => Promise<string>;
+    bootstrapApprovals: (workspaceId: string) => Promise<WorkspaceBootstrapApprovalSummary[]>;
+    bootstrapRevokeApproval: (approvalId: string) => Promise<{ revoked: boolean }>;
+  };
+
+  agents: {
+    list: () => Promise<EditableAgent[]>;
+    save: (input: EditableAgentInput, agentId?: string) => Promise<EditableAgent>;
+    delete: (agentId: string) => Promise<void>;
   };
 
   workspaceScaffold: {

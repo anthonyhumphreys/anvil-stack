@@ -1,6 +1,6 @@
 // src/shared/design-types.ts
 
-import type { AgentProvider } from './types.js';
+import type { AgentProvider, CodexMode } from './types.js';
 
 export type DesignMode = 'design' | 'implement';
 
@@ -24,7 +24,11 @@ export interface DesignReadiness {
 
 export interface ChatStartOptions {
   changeReviewId?: string;
+  /** Surface that owns persistence for streamed chat output. */
+  origin?: 'desktop' | 'browser';
   provider?: AgentProvider;
+  /** Per-session access override, used for provider-enforced read-only sessions. */
+  codexMode?: CodexMode;
   threadId?: string;
   providerThreadId?: string;
   forkFromProviderThreadId?: string;

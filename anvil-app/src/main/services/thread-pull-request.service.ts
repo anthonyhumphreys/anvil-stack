@@ -271,9 +271,7 @@ const PR_WATCH_INTERVAL_MS = 5 * 60_000;
  * closes settle the thread without waiting for a manual refresh. Only links
  * whose last observed state is still open are re-queried.
  */
-export function startThreadPullRequestWatcher(
-  intervalMs = PR_WATCH_INTERVAL_MS,
-): () => void {
+export function startThreadPullRequestWatcher(intervalMs = PR_WATCH_INTERVAL_MS): () => void {
   const tick = async () => {
     const rows = getDb()
       .prepare(

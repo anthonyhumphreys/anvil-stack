@@ -3,15 +3,18 @@ import { registerChangeReviewHandlers } from './ipc/change-review.ipc.js';
 import { fixPath } from './utils/fix-path.js';
 fixPath();
 
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, session } from 'electron';
 import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from './db/database.js';
 import { registerSettingsHandlers } from './ipc/settings.ipc.js';
+import { registerSyncBackendHandlers } from './ipc/sync-backend.ipc.js';
+import { registerSyncRuntimeHandlers } from './ipc/sync-runtime.ipc.js';
 import { registerCodexRegistryHandlers } from './ipc/codex-registry.ipc.js';
 import { registerCodexUsageHandlers } from './ipc/codex-usage.ipc.js';
 import { registerAnvilCloudHandlers } from './ipc/anvil-cloud.ipc.js';
 import { registerDiagnosticsHandlers } from './ipc/diagnostics.ipc.js';
+import { registerMetricsHandlers } from './ipc/metrics.ipc.js';
 import { registerMobileCompanionHandlers } from './ipc/mobile-companion.ipc.js';
 import { registerRepoHandlers, handleStaleIndexingRepos } from './ipc/repo.ipc.js';
 import { ensureRepobaseMcp } from './services/repobase.service.js';
@@ -25,6 +28,12 @@ import { registerSecurityHandlers } from './ipc/security.ipc.js';
 import { registerCodeReviewHandlers } from './ipc/codereview.ipc.js';
 import { registerDiagramFileHandlers, cleanupDiagramServices } from './ipc/diagram-file.ipc.js';
 import { registerWorkspaceHandlers } from './ipc/workspace.ipc.js';
+import { recoverWorkspaceMaterializations } from './services/workspace-materialization.service.js';
+import {
+  recoverBootstrapRuns,
+  workspaceCheckoutRoot,
+} from './services/bootstrap-policy.service.js';
+import { registerAgentHandlers } from './ipc/agents.ipc.js';
 import { registerWorkspaceNotesHandlers } from './ipc/workspace-notes.ipc.js';
 import { registerWorkspaceScaffoldHandlers } from './ipc/workspace-scaffold.ipc.js';
 import { registerLaunchHandlers } from './ipc/launch.ipc.js';
@@ -74,12 +83,13 @@ import { isTelemetryEnabled } from './services/settings.service.js';
 import { initializeTelemetry } from './services/telemetry.service.js';
 import { initializeAppUpdater } from './services/app-updater.service.js';
 import { registerExternalLinkHandling } from './services/external-link.service.js';
+import { initSyncRuntime, onAppFocus, onSystemResume } from './services/sync-runtime.service.js';
+import { disposeBrowserWorkspaceExecutor } from './services/browser-workspace-executor.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
-const isolatedDevProfileActive = Boolean(
-  process.env.ELECTRON_RENDERER_URL && process.env.ANVIL_DEV_USER_DATA_PATH?.trim(),
-);
+const isolatedDevUserDataPath = process.env.ANVIL_DEV_USER_DATA_PATH?.trim() ?? '';
+const isolatedDevProfileActive = isolatedDevUserDataPath.length > 0;
 
 function getAppIconPath(): string {
   return app.isPackaged
@@ -96,7 +106,7 @@ function configureUserDataPath(): void {
     return;
   }
   const isolatedDevPath = process.env.ANVIL_DEV_USER_DATA_PATH?.trim();
-  if (process.env.ELECTRON_RENDERER_URL && isolatedDevPath) {
+  if (isolatedDevPath) {
     app.setPath('userData', path.resolve(isolatedDevPath));
     return;
   }
@@ -115,11 +125,18 @@ app.setName(
   previewBuild
     ? `${brand.appName} Preview PR ${previewBuild.pullRequestNumber} (${previewBuild.headSha.slice(0, 8)})`
     : isolatedDevProfileActive
-      ? `${brand.appName} UI Lab`
+      ? `${brand.appName} (${path.basename(path.resolve(isolatedDevUserDataPath))})`
       : brand.appName,
 );
 configureUserDataPath();
 initDatabase(brand.defaultTheme);
+// The spike enrollment fixture is deliberately opt-in. Development builds
+// may enable it for a focused local fixture run, but unpackaged status alone
+// must never expose the enrollment path in the normal desktop UI.
+// Sleep/wake: the sync socket may have died silently while suspended.
+powerMonitor.on('resume', () => {
+  onSystemResume();
+});
 initializeTelemetry({
   enabled: isTelemetryEnabled(),
   release: `anvil@${app.getVersion()}`,
@@ -221,6 +238,13 @@ function createWindow(
 
   registerExternalLinkHandling(createdWindow.webContents);
 
+  // BILL-05: returning from the hosted account page re-checks hosted access
+  // via session.describe (throttled in the service). Nothing about billing
+  // state is ever read from a URL — the backend remains the source of truth.
+  createdWindow.on('focus', () => {
+    onAppFocus();
+  });
+
   createdWindow.on('enter-full-screen', () => sendWindowChromeState(createdWindow));
   createdWindow.on('leave-full-screen', () => sendWindowChromeState(createdWindow));
 
@@ -265,7 +289,7 @@ function createWindow(
     const rendererUrl = new URL(process.env.ELECTRON_RENDERER_URL);
     if (options.workspaceId || options.route) {
       rendererUrl.hash = getWindowHash(
-        options.route ?? '/repos',
+        options.route ?? '/workspace',
         options.workspaceId,
         options.toolWindow,
       );
@@ -275,7 +299,7 @@ function createWindow(
     const loadOptions =
       options.workspaceId || options.route
         ? {
-            hash: getWindowHash(options.route ?? '/repos', options.workspaceId, options.toolWindow),
+            hash: getWindowHash(options.route ?? '/workspace', options.workspaceId, options.toolWindow),
           }
         : undefined;
     createdWindow.loadFile(path.join(__dirname, '../renderer/index.html'), loadOptions);
@@ -326,6 +350,10 @@ if (!gotSingleInstanceLock) {
 }
 
 app.whenReady().then(() => {
+  // Startup reads the saved session. macOS safeStorage needs Electron ready first.
+  initSyncRuntime(app.getPath('userData'), {
+    devSpikeEnabled: !app.isPackaged && process.env.ANVIL_ENABLE_SYNC_SPIKE === '1',
+  });
   app.setAppUserModelId(brand.appId);
   if (process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(getAppIconPath());
@@ -341,11 +369,14 @@ app.whenReady().then(() => {
   if (!previewBuild) initializeAppUpdater();
 
   registerSettingsHandlers();
+  registerSyncBackendHandlers();
+  registerSyncRuntimeHandlers();
   registerMobileCompanionHandlers();
   registerCodexRegistryHandlers();
   registerCodexUsageHandlers();
   registerAnvilCloudHandlers();
   registerDiagnosticsHandlers();
+  registerMetricsHandlers();
   registerRepoHandlers();
   registerChatHandlers();
   startThreadPullRequestWatcher();
@@ -366,6 +397,7 @@ app.whenReady().then(() => {
   });
   registerWorkspaceNotesHandlers();
   registerWorkspaceScaffoldHandlers();
+  registerAgentHandlers();
   registerLaunchHandlers();
   registerTerminalHandlers();
   registerGovernanceHandlers();
@@ -389,6 +421,16 @@ app.whenReady().then(() => {
   registerVoiceHandlers(mainWindow!);
   void syncMobileCompanionServer().catch((err) => {
     console.error('[Mobile Companion] Failed to start server:', err);
+  });
+  // WS-02: resume/wipe journalled materialisation ops interrupted by a crash.
+  // Only journal-authorised, operation-owned paths are touched.
+  void recoverWorkspaceMaterializations().catch((err) => {
+    console.error('[Workspace] Materialisation recovery failed:', err);
+  });
+  // WS-03: interrupted bootstrap runs re-verify postconditions; anything
+  // unproven is unknown-outcome — never silently replayed.
+  void recoverBootstrapRuns(workspaceCheckoutRoot).catch((err) => {
+    console.error('[Workspace] Bootstrap recovery failed:', err);
   });
   handleOrphanedBaSessions();
   handleStaleIndexingRepos();
@@ -436,6 +478,7 @@ app.on('before-quit', () => {
   cleanupBaSessions();
   cleanupDiagramServices();
   cleanupTerminals();
+  disposeBrowserWorkspaceExecutor();
   cleanupBrowser();
   cleanupChangeReviews();
   cleanupSimulatorPreview();

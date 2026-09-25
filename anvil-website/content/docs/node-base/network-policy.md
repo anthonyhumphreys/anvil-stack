@@ -5,7 +5,7 @@ description: Configure allowed hosts, blocked hosts, ports, and severity levels 
 product: Anvil Node Base
 section: Guides
 journey: build
-order: 10
+order: 50
 ---
 
 # Network policy

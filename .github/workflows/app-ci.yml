@@ -26,6 +26,7 @@ concurrency:
 
 env:
   CI: true
+  ANVIL_DEPLOYMENT_ENV: staging
 
 defaults:
   run:
@@ -65,5 +66,49 @@ jobs:
         working-directory: .
         run: node --test .github/scripts/publish-r2-immutable.test.mjs
 
+      - name: Verify hosted config validator
+        working-directory: anvil-app/cloud/backend
+        run: node scripts/verify-hosted-config.mjs --self-check
+
+      - name: Test hosted deployment isolation
+        working-directory: anvil-app/cloud/backend
+        run: pnpm test:hosted-deploy
+
       - name: Build
         run: pnpm build
+
+  backend:
+    name: Sync backend tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-app/cloud/backend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: anvil-app/cloud/backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        working-directory: anvil-app/cloud/backend
+        run: pnpm test
+
+      - name: Typecheck
+        working-directory: anvil-app/cloud/backend
+        run: pnpm typecheck
+
+      - name: Verify hosted config validator
+        working-directory: anvil-app/cloud/backend
+        run: node scripts/verify-hosted-config.mjs --self-check

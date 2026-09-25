@@ -6,7 +6,9 @@ import {
   Code,
   Compass,
   Database,
+  FileDiff,
   FileText,
+  FolderMinus,
   GitBranch,
   GitFork,
   GitPullRequest,
@@ -33,6 +35,7 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { getNextListboxIndex } from '../../utils/list-navigation';
 import { slugForDomId } from '../../utils/dom-id';
+import { isEditableShortcutTarget } from '../../utils/keyboard';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,7 +92,7 @@ export function buildNewChatThreadCommandMetadata() {
 }
 
 export function buildToggleChatLayoutCommandMetadata(currentLayout: ChatLayout) {
-  const nextLayout = currentLayout === 'workitems' ? 'classic' : 'workitems';
+  const nextLayout: ChatLayout = currentLayout === 'workitems' ? 'classic' : 'workitems';
   return {
     id: 'act-toggle-chat-layout',
     label: nextLayout === 'workitems' ? 'Switch to Work-Item Chat' : 'Switch to Classic Chat',
@@ -118,13 +121,31 @@ export function CommandPalette({
   onCreateWorkspace,
 }: CommandPaletteProps) {
   const navigate = useNavigate();
-  const { activeWorkspace } = useWorkspace();
-  const { startNewSession } = useChatContext();
+  const { activeWorkspace, workspaces, switchWorkspace, removeRepos } = useWorkspace();
+  const { startNewSession, threads } = useChatContext();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [chatLayout, setChatLayout] = useState<ChatLayout>('classic');
+  // WS4: two-step "Remove repository" picker — null = normal command mode.
+  const [repoRemoval, setRepoRemoval] = useState<{ confirmRepoId?: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // ⌃1–9 switches workspaces from anywhere in the shell (WS4). The palette is
+  // always mounted, so the listener lives here even when the palette is closed.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      if (event.key < '1' || event.key > '9') return;
+      if (isEditableShortcutTarget(event.target)) return;
+      const workspace = workspaces[Number(event.key) - 1];
+      if (!workspace || workspace.id === activeWorkspace?.id) return;
+      event.preventDefault();
+      void switchWorkspace(workspace.id);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [workspaces, activeWorkspace?.id, switchWorkspace]);
 
   const go = useCallback(
     (path: string) => {
@@ -198,6 +219,50 @@ export function CommandPalette({
           ]
         : []),
 
+      // Switch workspace (WS4) — ⌃1–9 matches the WorkspaceRail order.
+      ...workspaces.map((workspace) => {
+        const position = workspaces.indexOf(workspace) + 1;
+        const isActive = workspace.id === activeWorkspace?.id;
+        return {
+          id: `workspace-switch-${workspace.id}`,
+          label: `Switch to ${workspace.name}`,
+          description: isActive
+            ? 'Current workspace'
+            : `${workspace.repoCount} repo${workspace.repoCount === 1 ? '' : 's'}`,
+          section: 'Workspace',
+          icon: <FolderOpen size={16} />,
+          shortcut: position <= 9 ? `Ctrl+${position}` : undefined,
+          keywords: ['workspace', 'switch', workspace.name.toLowerCase()],
+          action: () => {
+            if (!isActive) void switchWorkspace(workspace.id);
+            onClose();
+          },
+        };
+      }),
+
+      // Jump to thread — recent active threads from the chat rail (CH6).
+      ...threads
+        .filter((thread) => !thread.settledAt)
+        .sort(
+          (a, b) =>
+            dateValueForSort(b.lastMessageAt ?? b.updatedAt) -
+            dateValueForSort(a.lastMessageAt ?? a.updatedAt),
+        )
+        .slice(0, 8)
+        .map((thread) => ({
+          id: `thread-${thread.id}`,
+          label: `Jump to thread: ${thread.title}`,
+          description: thread.preview || 'Open this conversation in Chat.',
+          section: 'Threads',
+          icon: <MessageSquare size={16} />,
+          feature: 'chat' as Feature,
+          keywords: ['thread', 'chat', 'jump', thread.title.toLowerCase()],
+          action: () =>
+            go(
+              `/chat?thread=${encodeURIComponent(thread.id)}&persona=${encodeURIComponent(thread.personaId)}`,
+            ),
+        })),
+
       // Navigation
       {
         id: 'nav-inbox',
@@ -217,7 +282,7 @@ export function CommandPalette({
         icon: <Code size={16} />,
         feature: 'repos',
         keywords: ['repos', 'code'],
-        action: () => go('/repos'),
+        action: () => go('/workspace'),
       },
       {
         id: 'nav-chat',
@@ -261,11 +326,12 @@ export function CommandPalette({
       },
       {
         id: 'nav-onboard',
-        label: 'Go to Onboarding',
+        label: 'Go to Repo Setup',
+        description: 'AGENTS.md, devcontainer, and environment readiness checks per repo.',
         section: 'Navigation',
         icon: <Compass size={16} />,
         feature: 'onboard',
-        keywords: ['onboard', 'setup', 'wizard'],
+        keywords: ['onboard', 'repo setup', 'agents.md', 'devcontainer', 'wizard'],
         action: () => go('/onboard'),
       },
       {
@@ -297,12 +363,23 @@ export function CommandPalette({
         action: () => go('/security'),
       },
       {
+        id: 'nav-changes',
+        label: 'Go to Changes',
+        description: 'Review uncommitted working-tree changes.',
+        section: 'Navigation',
+        icon: <FileDiff size={16} />,
+        feature: 'codereview',
+        keywords: ['changes', 'review', 'diff', 'working tree', 'uncommitted'],
+        action: () => go('/review'),
+      },
+      {
         id: 'nav-codereview',
-        label: 'Go to Code Review',
+        label: 'Go to PR Review',
+        description: 'Review pull requests across workspace repos.',
         section: 'Navigation',
         icon: <GitPullRequest size={16} />,
         feature: 'codereview',
-        keywords: ['code', 'review', 'pr'],
+        keywords: ['code', 'review', 'pr', 'pull request'],
         action: () => go('/codereview'),
       },
       {
@@ -422,8 +499,26 @@ export function CommandPalette({
         icon: <Code size={16} />,
         feature: 'repos',
         keywords: ['connect', 'add', 'repository', 'repo'],
-        action: () => go('/repos'),
+        action: () => go('/workspace'),
       },
+      ...(activeWorkspace && activeWorkspace.repos.length > 0
+        ? [
+            {
+              id: 'act-remove-repo',
+              label: 'Remove Repository from Workspace…',
+              description: `Detach a repository from ${activeWorkspace.name}.`,
+              section: 'Actions',
+              icon: <FolderMinus size={16} />,
+              feature: 'repos' as Feature,
+              keywords: ['remove', 'detach', 'repository', 'repo', 'workspace'],
+              action: () => {
+                setQuery('');
+                setSelectedIndex(0);
+                setRepoRemoval({});
+              },
+            },
+          ]
+        : []),
       {
         ...buildNewChatThreadCommandMetadata(),
         section: 'Actions',
@@ -465,11 +560,11 @@ export function CommandPalette({
       },
       {
         id: 'act-run-review',
-        label: 'Run Code Review',
+        label: 'Run PR Review',
         section: 'Actions',
         icon: <GitPullRequest size={16} />,
         feature: 'codereview',
-        keywords: ['run', 'code', 'review'],
+        keywords: ['run', 'code', 'review', 'pr', 'pull request'],
         action: () => go('/codereview'),
       },
       {
@@ -600,6 +695,9 @@ export function CommandPalette({
     ],
     [
       activeWorkspace,
+      workspaces,
+      switchWorkspace,
+      threads,
       go,
       navigate,
       onClose,
@@ -612,9 +710,59 @@ export function CommandPalette({
     ],
   );
 
+  // Repo-removal picker commands (WS4): step one picks a repo, step two
+  // confirms. The actual removal goes through WorkspaceContext.removeRepos.
+  const pickerCommands = useMemo<Command[]>(() => {
+    if (!repoRemoval || !activeWorkspace) return [];
+
+    if (repoRemoval.confirmRepoId) {
+      const repo = activeWorkspace.repos.find((r) => r.id === repoRemoval.confirmRepoId);
+      if (!repo) return [];
+      return [
+        {
+          id: `remove-repo-confirm-${repo.id}`,
+          label: `Remove ${repo.name} from ${activeWorkspace.name}`,
+          description:
+            'The repository stays connected in Anvil; it is only detached from this workspace.',
+          section: 'Confirm removal',
+          icon: <FolderMinus size={16} />,
+          action: () => {
+            void removeRepos([repo.id]);
+            setRepoRemoval(null);
+            onClose();
+          },
+        },
+        {
+          id: 'remove-repo-cancel',
+          label: 'Keep repository',
+          section: 'Confirm removal',
+          icon: <Code size={16} />,
+          action: () => {
+            setRepoRemoval({});
+            setSelectedIndex(0);
+          },
+        },
+      ];
+    }
+
+    return activeWorkspace.repos.map((repo) => ({
+      id: `remove-repo-${repo.id}`,
+      label: `Remove ${repo.name}`,
+      description: repo.path,
+      section: 'Remove repository',
+      icon: <FolderMinus size={16} />,
+      keywords: ['remove', 'repo', repo.name.toLowerCase()],
+      action: () => {
+        setRepoRemoval({ confirmRepoId: repo.id });
+        setQuery('');
+        setSelectedIndex(0);
+      },
+    }));
+  }, [repoRemoval, activeWorkspace, removeRepos, onClose]);
+
   // Filter by role and query
   const filtered = useMemo(() => {
-    const allowed = commands.filter(
+    const allowed = (repoRemoval ? pickerCommands : commands).filter(
       (cmd) => !cmd.feature || ROLE_FEATURES[userRole].includes(cmd.feature),
     );
     if (!query.trim()) return allowed;
@@ -627,6 +775,8 @@ export function CommandPalette({
         .toLowerCase();
       return haystack.includes(q);
     });
+
+    if (repoRemoval) return matches;
 
     const trimmedQuery = query.trim();
     const chatAvailable = ROLE_FEATURES[userRole].includes('chat');
@@ -644,7 +794,7 @@ export function CommandPalette({
     }
 
     return matches;
-  }, [activeWorkspace, commands, promptChat, query, userRole]);
+  }, [activeWorkspace, commands, pickerCommands, promptChat, query, repoRemoval, userRole]);
 
   // Group by section
   const sections = useMemo(() => {
@@ -661,6 +811,7 @@ export function CommandPalette({
     if (open) {
       setQuery('');
       setSelectedIndex(0);
+      setRepoRemoval(null);
       requestAnimationFrame(() => inputRef.current?.focus());
       window.anvil.settings
         .get()
@@ -708,11 +859,17 @@ export function CommandPalette({
           break;
         case 'Escape':
           e.preventDefault();
-          onClose();
+          if (repoRemoval) {
+            setRepoRemoval(null);
+            setQuery('');
+            setSelectedIndex(0);
+          } else {
+            onClose();
+          }
           break;
       }
     },
-    [filtered, selectedIndex, onClose],
+    [filtered, selectedIndex, onClose, repoRemoval],
   );
 
   if (!open) return null;
@@ -722,7 +879,7 @@ export function CommandPalette({
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" onClick={onClose}>
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60" />
+      <div className="absolute inset-0 bg-scrim" />
 
       {/* Palette */}
       <div
@@ -741,7 +898,13 @@ export function CommandPalette({
               setQuery(e.target.value);
               setSelectedIndex(0);
             }}
-            placeholder="Search commands, workflows, prompts..."
+            placeholder={
+              repoRemoval
+                ? repoRemoval.confirmRepoId
+                  ? 'Confirm removal…'
+                  : 'Remove which repository from this workspace?'
+                : 'Search commands, workflows, prompts...'
+            }
             role="combobox"
             aria-label="Search commands"
             aria-autocomplete="list"
@@ -777,7 +940,7 @@ export function CommandPalette({
             <div key={section}>
               <div className="flex items-center justify-between px-3 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-text-tertiary">
                 {section}
-                <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[10px] normal-case tracking-normal text-text-muted">
+                <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-xs normal-case tracking-normal text-text-muted">
                   {cmds.length}
                 </span>
               </div>
@@ -816,7 +979,7 @@ export function CommandPalette({
                       )}
                     </span>
                     {cmd.shortcut && (
-                      <kbd className="shrink-0 rounded border border-border-subtle bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-tertiary">
+                      <kbd className="shrink-0 rounded border border-border-subtle bg-bg-tertiary px-1.5 py-0.5 text-eyebrow text-text-tertiary">
                         {cmd.shortcut}
                       </kbd>
                     )}
@@ -848,4 +1011,10 @@ export function CommandPalette({
       </div>
     </div>
   );
+}
+
+function dateValueForSort(value?: string): number {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }

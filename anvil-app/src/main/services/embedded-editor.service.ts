@@ -407,7 +407,7 @@ async function cleanupStaleEmbeddedEditorProcesses(): Promise<void> {
 
 function cleanupStaleRuntimeDirs(): void {
   const tempDir = app.getPath('temp');
-  let entries: ReturnType<typeof readdirSync>;
+  let entries: import('node:fs').Dirent<string>[];
   try {
     entries = readdirSync(tempDir, { withFileTypes: true });
   } catch {
@@ -927,7 +927,7 @@ export function createWorkspaceSnapshotFile(
     runtimeDir,
     `${workspace.name.replace(/[^a-z0-9-_]+/gi, '-')}.code-workspace`,
   );
-  let folders = workspace.repos.map((repo) => ({ path: repo.path }));
+  let folders: Record<string, string>[] = workspace.repos.map((repo) => ({ path: repo.path }));
   let settings: Record<string, unknown> = {};
 
   if (sourceWorkspaceFilePath) {
@@ -1013,7 +1013,7 @@ export function buildEmbeddedEditorUserSettings(
           'workbench.preferredDarkColorTheme': 'Default Dark Modern',
         };
 
-  const settings = {
+  const settings: Record<string, unknown> = {
     ...existingSettings,
     ...EMBEDDED_EDITOR_DEFAULT_USER_SETTINGS,
     ...themeSettings,
@@ -1035,7 +1035,7 @@ function writeEmbeddedEditorUserProfile(
 
   const settingsPath = join(userDir, 'settings.json');
   const existingSettings = readJsonObject(settingsPath);
-  if (!existingSettings) return;
+  if (!existingSettings) return null;
   const settings = buildEmbeddedEditorUserSettings({ ...seedSettings, ...existingSettings });
 
   writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');

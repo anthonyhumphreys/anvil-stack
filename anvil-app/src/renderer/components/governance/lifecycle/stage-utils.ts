@@ -1,5 +1,7 @@
 import type { LifecycleStage, LifecycleStageDefinition } from '../../../../shared/types';
 
+/* eslint-disable no-restricted-syntax -- categorical stage hues assigned by
+   position, not semantic states; the raw palette is intentional here. */
 const STAGE_BADGE_CLASSES = [
   'bg-blue-500/10 text-blue-400',
   'bg-purple-500/10 text-purple-400',
@@ -17,6 +19,7 @@ const STAGE_DOT_CLASSES = [
   'bg-cyan-500',
   'bg-rose-500',
 ];
+/* eslint-enable no-restricted-syntax */
 
 export function stageLabel(stageId: LifecycleStage, stages: LifecycleStageDefinition[]): string {
   return stages.find((stage) => stage.id === stageId)?.label ?? humanizeStageId(stageId);

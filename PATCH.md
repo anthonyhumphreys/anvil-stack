@@ -204,6 +204,10 @@ contract later.
     uploads a committed Git archive with `.git`, ignored/untracked files,
     working-tree changes, and known secret-file paths excluded; remote launch
     remains read-only and behind the existing Cloud feature flag.
+14. The control plane exposes registered execution providers and their
+    capability/configuration descriptors without starting a sandbox. A provider
+    can be registered but not configured, and clients must show its reason and
+    still perform the request-level support check before launch.
 
 #### Verification
 
@@ -215,7 +219,7 @@ pnpm --filter @anvil-cloud/control-plane test
 pnpm --filter @anvil-cloud/aws test -- agent.test.ts
 pnpm --filter @anvilstack/cloud-cli test -- cli.test.ts
 anvil-cloud executions conformance --json
-cd ../anvil-app && pnpm exec tsc --noEmit && pnpm lint && pnpm test
+cd ../anvil-app && pnpm exec tsc --noEmit -p tsconfig.node.json && pnpm exec tsc --noEmit -p tsconfig.web.json && pnpm lint && pnpm test
 ```
 
 #### Upstream break risks
@@ -225,6 +229,9 @@ cd ../anvil-app && pnpm exec tsc --noEmit && pnpm lint && pnpm test
   agent OAuth state is `reject`.
 - Treating a worker image as subscription-capable without an explicit
   capability advertisement is `reject`.
+- Treating a provider descriptor as proof that a particular execution request
+  is supported is `reject`; callers must still use the provider's support
+  result when selecting a target.
 - Making the hosted handler authentication-optional or returning the encrypted
   Desktop bearer to the renderer is `reject`.
 - Replacing cursor reads with an unresumable stream is `adapt`: preserve the

@@ -1,6 +1,5 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import type {
-  RepoIndexProgress,
   RepoInfo,
   RepoMapRefreshMode,
   RepositoryMapGraph,
@@ -15,27 +14,27 @@ import {
   checkGhAuthStatus,
 } from '../services/remote-repo.service.js';
 import { connectRepoPath } from '../services/repo-connect.service.js';
-import { indexRepo } from '../services/repo-index.service.js';
 import { getCurrentCommitSha } from '../services/code-review-git.service.js';
+import {
+  cancelIndexJobs,
+  enqueueIndexJobs,
+  listRepoIndexJobs,
+  recoverInterruptedIndexJobs,
+} from '../services/repo-index-queue.service.js';
+import { forgetRepo } from '../services/workspace.service.js';
+import type { RepoIndexJob } from '../../shared/index-jobs.js';
 
 const MAP_REFRESH_INTERVAL_MS = 15_000;
 let mapRefreshTimer: ReturnType<typeof setInterval> | undefined;
 let checkingMapRefreshes = false;
 
-/** On startup, reset repos stuck in 'indexing' from a previous crash back to 'connected'. */
+/**
+ * On startup, re-queue index jobs that were running when the app exited and
+ * clear 'indexing' on repos with no surviving jobs (replaces the old blanket
+ * reset — the job table is the crash fence now).
+ */
 export function handleStaleIndexingRepos(): void {
-  const db = getDb();
-  const stale = db.prepare(`SELECT id FROM repos WHERE status = 'indexing'`).all() as {
-    id: string;
-  }[];
-
-  if (stale.length === 0) return;
-
-  db.prepare(
-    `UPDATE repos SET status = 'connected', updated_at = datetime('now') WHERE status = 'indexing'`,
-  ).run();
-
-  console.log(`[Repo] Reset ${stale.length} repo(s) stuck in 'indexing' from previous run.`);
+  recoverInterruptedIndexJobs();
 }
 
 export function registerRepoHandlers(): void {
@@ -62,26 +61,26 @@ export function registerRepoHandlers(): void {
     return connectRepoPath(repoPath);
   });
 
-  ipcMain.handle('repo:index', async (event, repoId: string): Promise<void> => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    await indexRepo(
-      repoId,
-      (message: string, percent: number, stage: RepoIndexProgress['stage'], detail?: string) => {
-        win?.webContents.send('repo:index-progress', { repoId, message, percent, stage, detail });
-      },
-    );
+  ipcMain.handle('repo:index', (_event, repoId: string): RepoIndexJob[] => {
+    // Manual re-index is an explicit full refresh: mapped + enriched tiers.
+    // Progress is broadcast to all windows via 'repo:index-progress'.
+    return enqueueIndexJobs(repoId, { reason: 'manual' });
+  });
+
+  ipcMain.handle('repo:index-jobs', (_event, repoId?: string): RepoIndexJob[] => {
+    return listRepoIndexJobs(repoId);
+  });
+
+  ipcMain.handle('repo:cancel-index', (_event, repoId: string): void => {
+    cancelIndexJobs(repoId);
+  });
+
+  ipcMain.handle('repo:forget', (_event, repoId: string): void => {
+    forgetRepo(repoId);
   });
 
   ipcMain.handle('repo:status', (_event, repoId: string): RepoInfo['status'] => {
     const db = getDb();
-
-    // Clean up repos stuck in 'indexing' for over 30 minutes
-    const staleThreshold = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-    db.prepare(
-      `UPDATE repos SET status = 'error', updated_at = datetime('now')
-       WHERE id = ? AND status = 'indexing' AND updated_at < ?`,
-    ).run(repoId, staleThreshold);
-
     const row = db.prepare('SELECT status FROM repos WHERE id = ?').get(repoId) as
       | { status: string }
       | undefined;
@@ -250,17 +249,9 @@ async function refreshStaleRepositoryMaps(): Promise<void> {
       if (!currentCommitSha || currentCommitSha === repo.generated_commit_sha) continue;
 
       try {
-        await indexRepo(repo.id, (message, percent, stage, detail) => {
-          for (const win of BrowserWindow.getAllWindows()) {
-            win.webContents.send('repo:index-progress', {
-              repoId: repo.id,
-              message,
-              percent,
-              stage,
-              detail,
-            });
-          }
-        });
+        // Commit refresh re-maps structurally and re-enriches incrementally —
+        // unchanged modules are skipped via their content hashes (§4.3).
+        enqueueIndexJobs(repo.id, { reason: 'commit', tiers: ['mapped', 'enriched'] });
       } catch (error) {
         console.error(`[Repo] Automatic map refresh failed for ${repo.id}:`, error);
       }
@@ -279,6 +270,7 @@ interface DbRepoRow {
   remote_url: string | null;
   default_branch: string;
   status: string;
+  index_tier: string | null;
   last_indexed: string | null;
   file_count: number;
   branch_count: number;
@@ -338,6 +330,8 @@ function rowToRepoInfo(row: DbRepoRow): RepoInfo {
     defaultBranch: row.default_branch,
     languages: safeParseJson(summaryRow?.language_breakdown ?? null, []),
     status: row.status as RepoInfo['status'],
+    indexTier:
+      row.index_tier === 'mapped' || row.index_tier === 'enriched' ? row.index_tier : 'connected',
     lastIndexed: row.last_indexed ?? undefined,
     fileCount: row.file_count,
     branchCount: row.branch_count,

@@ -41,7 +41,9 @@ export function TerminalTabs({
                 title="Close terminal process"
                 onClick={() => onCloseTab(repo.id)}
                 className={`mr-1 rounded p-1 transition-opacity hover:bg-bg-tertiary hover:text-text-primary ${
-                  active ? 'opacity-70' : 'opacity-0 group-hover:opacity-70 focus:opacity-70'
+                  active
+                    ? 'opacity-70'
+                    : 'opacity-0 group-focus-within:opacity-70 group-hover:opacity-70 focus:opacity-70'
                 }`}
               >
                 <X size={11} />

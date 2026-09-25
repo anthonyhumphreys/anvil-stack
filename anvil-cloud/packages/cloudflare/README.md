@@ -30,6 +30,36 @@ anvil-cloud review --adapter cloudflare --temporary --env preview --json
 Temporary mode records provider requirements and compatibility diagnostics. It
 does not create an account or expose temporary API tokens or claim URLs.
 
+## Sync/Mesh backend deployment
+
+The package also deploys the existing Anvil Sync/Mesh Worker directly from its
+source project. `anvil-cloud mesh` supports `--mode self-hosted` and
+`--mode hosted`, resource provisioning, hosted D1 migrations, secret installation,
+and an optional Sandbox provisioner deployment. Hosted mode retains billing
+vars, D1, cron triggers and service bindings from `wrangler.hosted.jsonc`.
+
+```sh
+anvil-cloud mesh plan --backend <path> --name <worker> --mode hosted --json
+anvil-cloud mesh provision <target-options> --json
+anvil-cloud mesh migrate <target-options> --json
+anvil-cloud mesh apply <target-options> --dry-run --json
+anvil-cloud mesh apply <target-options> --stage staging --test-deployment --json
+anvil-cloud mesh secrets <target-options> --from-file <secret-json> --json
+anvil-cloud mesh provisioner plan --provisioner <path> --name <worker> --json
+```
+
+Use the [deployment runbook](../../../anvil-app/docs/runbooks/hosted-sync/deploy.md)
+from the monorepo for complete target options and the branch-testing sequence.
+The [recipe architecture](../../docs/architecture/cloudflare-mesh-recipe.md)
+documents config generation, target isolation and lifecycle behavior.
+
+Production apply requires a provider evidence reference. Remove requires a
+live evidence JSON artifact matching the Worker, stage and generated config.
+Explicit `--test-deployment` is available only for a non-production stage;
+dry-runs need no evidence. With `--enrollment-admin`, apply reads the required
+secret from `ANVIL_MESH_ADMIN_TOKEN` and installs it after deploy. The generic
+Cell adapter's plan-only gate remains unchanged.
+
 From the workspace root, compile the generated Worker through Wrangler without
 making provider calls:
 

@@ -3,9 +3,9 @@ title: Chat personas, reasoning, and LLM providers
 navTitle: Chat and LLM
 description: Configure AI providers, switch chat personas, tune reasoning effort, and understand how Anvil Desktop grounds sessions in repository context.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 111
+order: 60
 ---
 
 # Chat personas, reasoning, and LLM providers

@@ -6,6 +6,7 @@ import type {
   TerminalOutputChunk,
   TerminalSessionSummary,
 } from '../../shared/types.js';
+import { providerSpawnEnv } from './agent-spawn-env.js';
 import { getDefaultShell } from '../utils/shell.js';
 
 export const TERMINAL_REPLAY_CHAR_LIMIT = 500_000;
@@ -27,6 +28,51 @@ const terminals = new Map<string, ManagedTerminal>();
 let totalReplayChars = 0;
 let totalReplayChunks = 0;
 const eventListeners = new Set<(event: TerminalServiceEvent) => void>();
+
+export interface TerminalCreateOptions {
+  /**
+   * Optional owner-specific suffix. The legacy workspace/repository terminal
+   * remains the default; scoped callers can request an isolated PTY without
+   * changing the existing renderer contract.
+   */
+  sessionKey?: string;
+  /** Explicit spawn environment for scoped callers. */
+  env?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Environment for a browser-owned shell. It keeps normal shell ergonomics but
+ * strips provider credentials and git/SSH authentication variables from the
+ * ambient Electron process. This is not a filesystem sandbox: the shell still
+ * runs with the Desktop user's OS permissions.
+ */
+export function getTerminalSpawnEnv(
+  extra?: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const env = providerSpawnEnv(extra);
+  for (const name of [
+    'OPENAI_API_KEY',
+    'AZURE_OPENAI_API_KEY',
+    'CODEX_API_KEY',
+    'CURSOR_API_KEY',
+    'SSH_AUTH_SOCK',
+    'GIT_SSH',
+    'GIT_SSH_COMMAND',
+    'GIT_EDITOR',
+    'GIT_CONFIG_NOSYSTEM',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'no_proxy',
+  ]) {
+    delete env[name];
+  }
+  return env;
+}
 
 function toSummary(terminal: ManagedTerminal): TerminalSessionSummary {
   return {
@@ -96,8 +142,11 @@ export function createTerminal(
   workspaceId: string,
   repoId: string,
   cwd: string,
+  options?: TerminalCreateOptions,
 ): TerminalSessionSummary {
-  const terminalId = `${workspaceId}-${repoId}`;
+  const terminalId = options?.sessionKey
+    ? `${workspaceId}-${repoId}-${options.sessionKey}`
+    : `${workspaceId}-${repoId}`;
   const existing = terminals.get(terminalId);
   if (existing) return toSummary(existing);
 
@@ -107,7 +156,7 @@ export function createTerminal(
     cols: 80,
     rows: 24,
     cwd,
-    env: process.env as Record<string, string>,
+    env: options?.env ? { ...options.env } : (process.env as Record<string, string>),
   });
   const terminal: ManagedTerminal = {
     pty: ptyProcess,

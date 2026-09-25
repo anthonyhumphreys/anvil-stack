@@ -1,6 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  Code,
   Cloud,
   Database,
   MessageSquare,
@@ -8,6 +7,7 @@ import {
   TicketCheck,
   Shield,
   GitPullRequest,
+  FileDiff,
   FileText,
   BookOpen,
   Settings,
@@ -32,8 +32,19 @@ import {
   GripVertical,
   PictureInPicture2,
   Target,
+  Layers,
+  Pin,
+  PinOff,
 } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { useBrand } from '../../contexts/BrandContext';
 import { RunButton } from './RunButton';
@@ -48,14 +59,20 @@ import {
 } from './SidebarActivityCenter';
 import {
   getAvailableSidebarNavigation,
+  isPinnableNavItem,
   isSidebarNavItemActive,
+  MAX_PINNED_NAV_TOOLS,
+  navItemGateReason,
+  readPinnedNavTools,
+  togglePinnedNavTool,
+  writePinnedNavTools,
   type SidebarNavItemDefinition,
 } from '../../utils/sidebar-navigation';
 
 const NAV_ICONS: Record<string, ReactNode> = {
   '/inbox': <Bell size={19} />,
   '/chat': <MessageSquare size={19} />,
-  '/repos': <Code size={19} />,
+  '/workspace': <Layers size={19} />,
   '/automations': <RadioTower size={19} />,
   '/dojo': <Target size={19} />,
   '/workflows': <GitFork size={18} />,
@@ -67,7 +84,7 @@ const NAV_ICONS: Record<string, ReactNode> = {
   '/workitems': <TicketCheck size={18} />,
   '/dependencies': <Boxes size={18} />,
   '/security': <Shield size={18} />,
-  '/review': <GitPullRequest size={18} />,
+  '/review': <FileDiff size={18} />,
   '/codereview': <GitPullRequest size={18} />,
   '/cicd': <Workflow size={18} />,
   '/cloud': <Cloud size={18} />,
@@ -80,6 +97,12 @@ const NAV_ICONS: Record<string, ReactNode> = {
   '/git': <GitBranch size={18} />,
   '/compliance': <Scale size={18} />,
 };
+
+interface NavContextMenuState {
+  x: number;
+  y: number;
+  item: SidebarNavItemDefinition;
+}
 
 interface SidebarProps {
   userRole: UserRole;
@@ -109,6 +132,9 @@ export function Sidebar({
   const [narrowExpansion, setNarrowExpansion] = useState(false);
   const [automateOpen, setAutomateOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [pinnedPaths, setPinnedPaths] = useState<string[]>([]);
+  const [navMenu, setNavMenu] = useState<NavContextMenuState | null>(null);
+  const navMenuRef = useRef<HTMLDivElement>(null);
   const compact = collapsed || (autoCompact && !narrowExpansion);
 
   useEffect(() => {
@@ -123,7 +149,21 @@ export function Sidebar({
     return () => window.removeEventListener('resize', updateCompactMode);
   }, [location.pathname]);
 
-  const navigation = getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled);
+  const navigation = useMemo(
+    () => getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled),
+    [userRole, cloudFeaturesEnabled],
+  );
+  const pinnableItems = useMemo(
+    () => [...navigation.automate, ...navigation.tools.flatMap((group) => group.items)],
+    [navigation],
+  );
+  const pinnedItems = useMemo(
+    () =>
+      pinnedPaths
+        .map((path) => pinnableItems.find((item) => item.path === path))
+        .filter((item): item is SidebarNavItemDefinition => !!item),
+    [pinnedPaths, pinnableItems],
+  );
   const automateActive = navigation.automate.some((item) =>
     isSidebarNavItemActive(location.pathname, item),
   );
@@ -143,6 +183,56 @@ export function Sidebar({
   useEffect(() => {
     if (toolsActive) setToolsOpen(true);
   }, [toolsActive]);
+
+  // Hydrate pinned tools once the available items are known (NV2). Paths whose
+  // feature is role-hidden are dropped from rendering but kept in storage so
+  // they come back if the role changes.
+  useEffect(() => {
+    setPinnedPaths((current) => {
+      if (current.length > 0) return current;
+      return readPinnedNavTools(new Set(pinnableItems.map((item) => item.path)));
+    });
+  }, [pinnableItems]);
+
+  const togglePinned = useCallback((path: string) => {
+    setPinnedPaths((current) => {
+      const next = togglePinnedNavTool(current, path);
+      if (next !== current) writePinnedNavTools(next);
+      return next;
+    });
+  }, []);
+
+  const openNavContextMenu = useCallback(
+    (event: ReactMouseEvent, item: SidebarNavItemDefinition) => {
+      event.preventDefault();
+      setNavMenu({ x: event.clientX, y: event.clientY, item });
+    },
+    [],
+  );
+
+  // Close the nav context menu on outside pointer, Escape, or scroll elsewhere.
+  useEffect(() => {
+    if (!navMenu) return;
+
+    navMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+
+    const closeOnPointer = (event: globalThis.MouseEvent) => {
+      if (!navMenuRef.current?.contains(event.target as Node)) setNavMenu(null);
+    };
+    const closeOnKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setNavMenu(null);
+      }
+    };
+    document.addEventListener('mousedown', closeOnPointer);
+    document.addEventListener('keydown', closeOnKeyDown, true);
+    return () => {
+      document.removeEventListener('mousedown', closeOnPointer);
+      document.removeEventListener('keydown', closeOnKeyDown, true);
+    };
+  }, [navMenu]);
 
   const handleCollapseToggle = () => {
     if (autoCompact) {
@@ -219,9 +309,7 @@ export function Sidebar({
       <div className="flex min-h-0 flex-1 flex-col border-r border-border">
         {/* Branding + workspace rail */}
         <div className="shrink-0 px-3 pb-3 pt-2.5">
-          <div
-            className={`flex items-center pb-2 ${compact ? 'justify-center' : 'gap-2.5 px-1'}`}
-          >
+          <div className={`flex items-center pb-2 ${compact ? 'justify-center' : 'gap-2.5 px-1'}`}>
             <AnvilLogo size={compact ? 34 : 26} showGlow />
             {!compact && (
               <span className="truncate text-sm font-semibold text-text-primary">
@@ -257,9 +345,29 @@ export function Sidebar({
                   }
                   onNavigate={navigate}
                   onOpenInNewWindow={openToolWindow}
+                  onContextMenu={openNavContextMenu}
                   prominent={item.path === '/chat'}
                 />
               ))}
+
+              {pinnedItems.length > 0 && (
+                <div className={compact ? 'mt-1 flex flex-col gap-1' : 'mt-1 flex flex-col gap-1'}>
+                  {pinnedItems.map((item) => (
+                    <SidebarNavButton
+                      key={item.path}
+                      item={item}
+                      active={isSidebarNavItemActive(location.pathname, item)}
+                      compact={compact}
+                      featureAvailability={featureAvailability}
+                      indicator={activityIndicators[item.feature]}
+                      onNavigate={navigate}
+                      onOpenInNewWindow={openToolWindow}
+                      onContextMenu={openNavContextMenu}
+                      pinned
+                    />
+                  ))}
+                </div>
+              )}
 
               {navigation.automate.length > 0 && (
                 <div className={compact ? 'mt-1' : 'mt-2 border-t border-border-subtle pt-2'}>
@@ -318,6 +426,7 @@ export function Sidebar({
                           indicator={activityIndicators[item.feature]}
                           onNavigate={navigate}
                           onOpenInNewWindow={openToolWindow}
+                          onContextMenu={openNavContextMenu}
                           compactDensity
                         />
                       ))}
@@ -376,7 +485,9 @@ export function Sidebar({
                                 indicator={activityIndicators[item.feature]}
                                 onNavigate={navigate}
                                 onOpenInNewWindow={openToolWindow}
+                                onContextMenu={openNavContextMenu}
                                 compactDensity
+                                pinned={pinnedPaths.includes(item.path)}
                               />
                             ))}
                           </div>
@@ -447,6 +558,72 @@ export function Sidebar({
           </span>
         </div>
       )}
+
+      {/* Right-click context menu for nav destinations (DS5/NV2). */}
+      {navMenu && (
+        <div
+          ref={navMenuRef}
+          role="menu"
+          aria-label={`${navMenu.item.label} actions`}
+          className="fixed z-50 w-56 overflow-hidden rounded-xl border border-border bg-bg-elevated p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.32)]"
+          style={{
+            left: Math.min(navMenu.x, window.innerWidth - 240),
+            top: Math.min(navMenu.y, window.innerHeight - 120),
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+              event.preventDefault();
+              const items = Array.from(
+                navMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
+              ).filter((element) => !element.hasAttribute('disabled'));
+              const index = items.indexOf(document.activeElement as HTMLElement);
+              const next =
+                event.key === 'ArrowDown'
+                  ? index < 0
+                    ? 0
+                    : (index + 1) % items.length
+                  : index <= 0
+                    ? items.length - 1
+                    : index - 1;
+              items[next]?.focus();
+            }
+          }}
+        >
+          {isPinnableNavItem(navMenu.item) &&
+            (() => {
+              const isPinned = pinnedPaths.includes(navMenu.item.path);
+              const atCap = !isPinned && pinnedPaths.length >= MAX_PINNED_NAV_TOOLS;
+              return (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={atCap}
+                  title={atCap ? `Up to ${MAX_PINNED_NAV_TOOLS} tools can be pinned` : undefined}
+                  onClick={() => {
+                    togglePinned(navMenu.item.path);
+                    setNavMenu(null);
+                  }}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus:bg-bg-tertiary focus:text-text-primary focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
+                  {isPinned ? 'Unpin from navigation' : 'Pin to navigation'}
+                </button>
+              );
+            })()}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              openToolWindow(navMenu.item.path);
+              setNavMenu(null);
+            }}
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus:bg-bg-tertiary focus:text-text-primary focus:outline-none"
+          >
+            <PictureInPicture2 size={14} />
+            Open in new window
+          </button>
+        </div>
+      )}
     </aside>
   );
 }
@@ -459,8 +636,10 @@ function SidebarNavButton({
   indicator,
   onNavigate,
   onOpenInNewWindow,
+  onContextMenu,
   prominent = false,
   compactDensity = false,
+  pinned = false,
 }: {
   item: SidebarNavItemDefinition;
   active: boolean;
@@ -469,46 +648,51 @@ function SidebarNavButton({
   indicator?: ReturnType<typeof buildAggregateActivityIndicator>;
   onNavigate: (path: string) => void;
   onOpenInNewWindow: (path: string) => void;
+  onContextMenu: (event: ReactMouseEvent, item: SidebarNavItemDefinition) => void;
   prominent?: boolean;
   compactDensity?: boolean;
+  pinned?: boolean;
 }) {
-  const disabled = item.requiresChat
-    ? !featureAvailability.chatEnabled
-    : item.requiresRepoFeature
-      ? !featureAvailability.repoFeaturesEnabled
-      : false;
+  // NV3: gated items stay focusable via aria-disabled and still navigate — the
+  // destination renders its own empty state with the unblock CTA.
+  const gateReason = navItemGateReason(item, featureAvailability);
+  const gated = gateReason !== undefined;
+  const tooltip =
+    gateReason ?? (item.description ? `${item.label} — ${item.description}` : item.label);
 
   return (
     <div className="group/nav relative flex min-w-0 items-center">
       <button
         type="button"
-        onClick={() => {
-          if (!disabled) onNavigate(item.path);
-        }}
-        disabled={disabled}
+        onClick={() => onNavigate(item.path)}
+        onContextMenu={(event) => onContextMenu(event, item)}
+        aria-disabled={gated || undefined}
         className={`titlebar-no-drag relative flex min-w-0 flex-1 items-center rounded-lg border text-sm transition-colors ${
           compactDensity ? 'py-1.5' : 'py-2'
         } ${
           active
             ? 'border-accent/30 bg-accent/12 font-medium text-text-primary'
-            : disabled
-              ? 'cursor-not-allowed border-transparent text-text-tertiary opacity-50'
+            : gated
+              ? 'border-transparent text-text-tertiary opacity-50 hover:bg-bg-tertiary hover:text-text-secondary'
               : prominent
                 ? 'border-border-subtle bg-bg-tertiary/45 font-medium text-text-primary hover:border-border hover:bg-bg-tertiary'
                 : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
         } ${compact ? 'justify-center px-2.5' : 'gap-3 pl-3 pr-9'}`}
         aria-label={item.label}
-        title={disabled ? featureAvailability.repoFeatureReason : item.label}
+        title={tooltip}
       >
         {NAV_ICONS[item.path]}
         {!compact && <span className="truncate">{item.label}</span>}
+        {!compact && pinned && (
+          <Pin size={11} className="shrink-0 text-text-tertiary" aria-hidden="true" />
+        )}
         <SidebarActivityBadge indicator={indicator} collapsed={compact} />
       </button>
-      {!compact && !disabled && (
+      {!compact && (
         <button
           type="button"
           onClick={() => onOpenInNewWindow(item.path)}
-          className="titlebar-no-drag absolute right-1.5 rounded-md p-1 text-text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-bg-elevated hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 group-hover/nav:opacity-100"
+          className="titlebar-no-drag absolute right-1.5 rounded-md p-1 text-text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-bg-elevated hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 group-focus-within/nav:opacity-100 group-hover/nav:opacity-100"
           title={`Open ${item.label} in new window`}
           aria-label={`Open ${item.label} in new window`}
         >
@@ -558,7 +742,7 @@ function SidebarFooterButton({
         <button
           type="button"
           onClick={() => onOpenInNewWindow(path)}
-          className="titlebar-no-drag absolute right-1.5 rounded-md p-1 text-text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-bg-elevated hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 group-hover/footer:opacity-100"
+          className="titlebar-no-drag absolute right-1.5 rounded-md p-1 text-text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-bg-elevated hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 group-focus-within/footer:opacity-100 group-hover/footer:opacity-100"
           title={`Open ${label} in new window`}
           aria-label={`Open ${label} in new window`}
         >

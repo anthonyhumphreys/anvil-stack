@@ -1,0 +1,21 @@
+{
+  "descriptorVersion": 1,
+  "deploymentId": "b98d55a2-8615-46e4-b2bd-182826ee83f1",
+  "displayName": "Anth's Anvil",
+  "protocols": ["anvil-backend/1"],
+  "profiles": ["sync/1", "mesh/1"],
+  "apiPath": "v1",
+  "socketPath": "v1/connect",
+  "authModes": ["oidc-pkce", "enrollment-code"],
+  "auth": {
+    "issuer": "https://identity.example.org",
+    "publicClientId": "anvil-desktop",
+    "scopes": ["openid", "profile"]
+  },
+  "limits": {
+    "entityBytes": 65536,
+    "pageBytes": 262144,
+    "batchChanges": 50,
+    "liveFrameBytes": 16384
+  }
+}

@@ -3,9 +3,9 @@ title: Settings and diagnostics
 navTitle: Settings and diagnostics
 description: Configure roles, providers, connectors, companion access, Codex extensions, telemetry, and runtime diagnostics.
 product: Anvil Desktop
-section: Operations
+section: Reference
 journey: reference
-order: 122
+order: 280
 ---
 
 # Settings and diagnostics
@@ -53,6 +53,12 @@ Documentation settings support Confluence directly and Notion through MCP. Git a
 Mobile companion settings start or stop the local companion service, create a short-lived pairing ticket, issue a Raycast token, list paired devices, and revoke a device. Pairing data is a credential.
 
 Cloud features are off by default. Enabling them reveals the Cloud Workbench; it does not configure a Cloud execution endpoint for you.
+
+## Sync & Mesh
+
+The Sync & Mesh settings section chooses the backend mode — local only, Anvil-hosted (disabled in this build), your own Cloudflare deployment, or a compatible third-party backend — and handles sign-in and device enrollment. Signed-in accounts get device management (rename, revoke), remote execution supervision (jobs, attempts, approvals, live activity, handoffs), a mesh worker opt-in that stays device-local, and data portability (export to file, staged import with conflict preview, account deletion).
+
+The panel itself is covered in [Sync and Mesh](/docs/desktop/sync-and-mesh); the encryption, sync, job, handoff, and self-deploy mechanics behind it are in the [Sync & Mesh docs](/docs/sync/overview).
 
 ## Updates and crash reporting
 

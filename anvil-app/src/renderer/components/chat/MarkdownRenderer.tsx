@@ -1,4 +1,6 @@
-import { isValidElement, cloneElement, memo } from 'react';
+import { isValidElement, cloneElement, memo, useState } from 'react';
+import type { ComponentProps } from 'react';
+import { AlertTriangle, LoaderCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CodeBlock } from './CodeBlock';
@@ -112,6 +114,9 @@ const components: Components = {
     <td className="border-t border-border-subtle px-3 py-1.5 text-text-secondary">{children}</td>
   ),
 
+  // Keep markdown images inside the reader's width and make loading failures legible.
+  img: ({ src, alt, ...props }) => <MarkdownImage key={src} src={src} alt={alt ?? ''} {...props} />,
+
   // Horizontal rule
   hr: () => <hr className="my-4 border-border-subtle" />,
 
@@ -128,7 +133,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: Mark
   const displayContent = linkifyBareFileReferences(content);
 
   return (
-    <div className="markdown-body overflow-visible text-sm leading-relaxed text-text-primary [&>*:last-child]:mb-0">
+    <div className="markdown-body overflow-visible text-sm leading-relaxed text-text-primary [overflow-wrap:anywhere] [&>*:last-child]:mb-0">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {displayContent}
       </ReactMarkdown>
@@ -136,10 +141,65 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: Mark
   );
 });
 
+function MarkdownImage({ src, alt, ...props }: ComponentProps<'img'>) {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const width = Number(props.width);
+  const height = Number(props.height);
+  const aspectRatio = width > 0 && height > 0 ? `${width} / ${height}` : '16 / 9';
+
+  if (!src) return alt ? <span>{alt}</span> : null;
+
+  return (
+    <span
+      style={{ aspectRatio }}
+      className="relative my-2 inline-flex aspect-video max-h-96 w-full max-w-xl items-center justify-center overflow-hidden rounded-md border border-border-subtle bg-bg-tertiary align-middle"
+      role={failed ? 'img' : undefined}
+      aria-label={
+        failed
+          ? alt
+            ? `${alt}: image could not be loaded`
+            : 'Image could not be loaded'
+          : undefined
+      }
+      aria-busy={!loaded && !failed}
+    >
+      {failed ? (
+        <span className="absolute inset-0 flex items-center justify-center gap-2 overflow-auto px-3 py-2 text-xs text-text-tertiary">
+          <AlertTriangle size={14} className="shrink-0 text-warning" />
+          <span className="break-words">
+            {alt ? `${alt} — image could not be loaded.` : 'Image could not be loaded.'}
+          </span>
+        </span>
+      ) : !loaded ? (
+        <span
+          role="status"
+          className="absolute inset-0 inline-flex items-center justify-center gap-2 px-3 py-2 text-xs text-text-tertiary"
+        >
+          <LoaderCircle size={14} className="shrink-0 animate-spin" />
+          Loading image…
+        </span>
+      ) : null}
+      <img
+        {...props}
+        src={src}
+        alt={alt ?? ''}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+        className={`absolute inset-0 h-full w-full object-contain ${loaded && !failed ? 'opacity-100' : 'opacity-0'}`}
+      />
+    </span>
+  );
+}
+
 export function linkifyBareFileReferences(content: string): string {
   const segments = splitMarkdownCodeSegments(content);
   return segments
-    .map((segment) => (segment.code ? segment.value : linkifyBareFileReferencesInText(segment.value)))
+    .map((segment) =>
+      segment.code ? segment.value : linkifyBareFileReferencesInText(segment.value),
+    )
     .join('');
 }
 

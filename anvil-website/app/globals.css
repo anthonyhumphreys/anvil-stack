@@ -24,6 +24,14 @@
     --input: 0.895 0.013 205;
     --ring: 0.74 0.18 58;
     --radius: 0.5rem;
+    /* Forge-dark artifact surfaces — fixed regardless of site theme */
+    --forge-bg: 0.145 0.015 205;
+    --forge-raised: 0.185 0.016 205;
+    --forge-line: 0.34 0.02 205;
+    --forge-faint: 0.42 0.022 205;
+    --forge-text: 0.9 0.01 205;
+    --forge-dim: 0.68 0.02 205;
+    --forge-ember: 0.78 0.17 58;
     color-scheme: light;
   }
 
@@ -47,6 +55,10 @@
     --border: 0.34 0.018 205;
     --input: 0.34 0.018 205;
     --ring: 0.78 0.17 58;
+    --forge-bg: 0.115 0.014 205;
+    --forge-raised: 0.16 0.015 205;
+    --forge-line: 0.36 0.02 205;
+    --forge-faint: 0.46 0.022 205;
     color-scheme: dark;
   }
 
@@ -78,6 +90,50 @@
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
+  ::selection {
+    background: color-mix(in oklch, oklch(var(--accent)) 30%, oklch(var(--background)));
+    color: oklch(var(--foreground));
+  }
+
+  input,
+  textarea,
+  [contenteditable="true"] {
+    caret-color: oklch(var(--accent));
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, oklch(var(--foreground)) 22%, transparent) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, oklch(var(--foreground)) 18%, transparent);
+    border: 3px solid transparent;
+    border-radius: 8px;
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklch, oklch(var(--foreground)) 30%, transparent);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid oklch(var(--ring));
+    outline-offset: 2px;
+  }
+
   h1, h2, h3 {
     text-wrap: balance;
   }
@@ -89,6 +145,11 @@
   button, a, summary {
     touch-action: manipulation;
   }
+
+  table[data-numerals],
+  .tabular-data {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
 @layer components {
@@ -96,91 +157,224 @@
     @apply fixed left-4 top-3 z-50 -translate-y-20 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-transform focus:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2;
   }
 
-  .hero-proof {
-    position: relative;
-    display: grid;
-    gap: 1rem;
-  }
+  /* --- Forge-dark artifact surfaces ------------------------------------ */
 
-  .hero-proof::before {
-    position: absolute;
-    inset: 8% -5% 18% 14%;
-    border: 1px solid oklch(var(--border));
-    background: color-mix(in oklch, oklch(var(--accent)) 7%, oklch(var(--background)));
-    content: "";
-    opacity: 0.72;
-    pointer-events: none;
-    transform: translate(1rem, 1rem);
-  }
-
-  .hero-proof-main {
+  .forge-panel {
     position: relative;
-    z-index: 1;
-    aspect-ratio: 16 / 10;
     overflow: hidden;
-    border: 1px solid oklch(var(--border));
+    border: 1px solid color-mix(in oklch, oklch(var(--forge-line)) 60%, transparent);
     border-radius: var(--radius);
-    background: oklch(0.13 0.014 205);
-    box-shadow: 0 12px 30px color-mix(in oklch, oklch(var(--foreground)) 9%, transparent);
-  }
-
-  .hero-window-bar {
-    position: absolute;
-    inset: 0 0 auto 0;
-    z-index: 2;
-    display: flex;
-    height: 2.25rem;
-    align-items: center;
-    gap: 0.42rem;
-    border-bottom: 1px solid color-mix(in oklch, oklch(var(--border)) 72%, transparent);
-    background: color-mix(in oklch, oklch(0.11 0.014 205) 88%, transparent);
-    padding: 0 0.9rem;
-  }
-
-  .hero-window-bar span {
-    width: 0.52rem;
-    height: 0.52rem;
-    border-radius: 999px;
-    background: oklch(var(--accent));
-  }
-
-  .hero-window-bar span:nth-child(2) {
-    background: oklch(0.78 0.13 145);
-  }
-
-  .hero-window-bar span:nth-child(3) {
-    background: oklch(0.69 0.16 27);
-  }
-
-  .hero-window-bar p {
-    margin-left: 0.35rem;
-    font-size: 0.72rem;
-    color: oklch(0.8 0.018 205);
-  }
-
-  .hero-proof-command {
-    position: relative;
-    z-index: 2;
-    margin: -3.25rem clamp(1rem, 5vw, 3rem) 0 auto;
-    width: min(88%, 34rem);
-    overflow: hidden;
-    border: 1px solid oklch(var(--border));
-    border-radius: var(--radius);
-    background: oklch(var(--card));
-    box-shadow: 0 10px 24px color-mix(in oklch, oklch(var(--foreground)) 10%, transparent);
-  }
-
-  .product-card {
-    display: flex;
-    min-height: 100%;
-    flex-direction: column;
-  }
-
-  .code-window {
     background:
-      radial-gradient(circle at 18% 10%, color-mix(in oklch, oklch(var(--accent)) 20%, transparent), transparent 30%),
-      linear-gradient(135deg, oklch(0.22 0.018 205) 0%, oklch(0.13 0.014 205) 100%);
+      radial-gradient(ellipse 120% 90% at 50% -20%, oklch(var(--forge-raised)) 0%, transparent 60%),
+      oklch(var(--forge-bg));
+    box-shadow:
+      0 1px 0 color-mix(in oklch, white 4%, transparent) inset,
+      0 18px 44px color-mix(in oklch, oklch(var(--foreground)) 14%, transparent);
+    color: oklch(var(--forge-text));
   }
+
+  .forge-grid {
+    background-image: radial-gradient(circle, color-mix(in oklch, oklch(var(--forge-text)) 9%, transparent) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-position: center;
+  }
+
+  .forge-window-bar {
+    display: flex;
+    height: 2.5rem;
+    align-items: center;
+    gap: 0.45rem;
+    border-bottom: 1px solid color-mix(in oklch, oklch(var(--forge-line)) 55%, transparent);
+    padding: 0 1rem;
+  }
+
+  .forge-window-bar .dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 999px;
+    background: oklch(var(--forge-faint));
+  }
+
+  .forge-window-bar .dot--ember {
+    background: oklch(var(--forge-ember));
+  }
+
+  /* --- Schematic diagram ------------------------------------------------ */
+
+  .schematic-node {
+    fill: oklch(var(--forge-raised));
+    stroke: oklch(var(--forge-faint));
+    stroke-width: 1.25;
+  }
+
+  .schematic-node-label {
+    fill: oklch(var(--forge-dim));
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+  }
+
+  .schematic-node-title {
+    fill: oklch(var(--forge-text));
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .schematic-route {
+    fill: none;
+    stroke: color-mix(in oklch, oklch(var(--forge-faint)) 80%, transparent);
+    stroke-width: 1.25;
+  }
+
+  .schematic-route--live {
+    stroke-dasharray: 5 5;
+    stroke: oklch(var(--forge-faint));
+  }
+
+  .schematic-annotation {
+    fill: oklch(var(--forge-dim));
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 9.5px;
+    letter-spacing: 0.04em;
+  }
+
+  .schematic-annotation--ember {
+    fill: oklch(var(--forge-ember));
+  }
+
+  .schematic-caption {
+    fill: oklch(var(--forge-dim));
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+  }
+
+  .schematic-tick {
+    stroke: oklch(var(--forge-faint));
+    stroke-width: 1;
+  }
+
+  .schematic-screen {
+    fill: color-mix(in oklch, oklch(var(--forge-text)) 7%, transparent);
+    stroke: color-mix(in oklch, oklch(var(--forge-faint)) 70%, transparent);
+    stroke-width: 1;
+  }
+
+  .schematic-relay-ring {
+    fill: none;
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.25;
+    stroke-dasharray: 4 7;
+    opacity: 0.7;
+    animation: relay-spin 40s linear infinite;
+    transform-origin: 320px 208px;
+  }
+
+  @keyframes relay-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .schematic-relay-core {
+    fill: oklch(var(--forge-raised));
+    stroke: oklch(var(--forge-faint));
+    stroke-width: 1.25;
+  }
+
+  .schematic-relay-mark {
+    fill: none;
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+  }
+
+  .schematic-packet {
+    fill: oklch(var(--forge-raised));
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.25;
+  }
+
+  .schematic-packet-flap {
+    fill: none;
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.1;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .schematic-packet-job {
+    fill: color-mix(in oklch, oklch(var(--forge-ember)) 22%, oklch(var(--forge-raised)));
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.1;
+  }
+
+  .schematic-packet-checkpoint {
+    fill: oklch(var(--forge-raised));
+    stroke: oklch(var(--forge-text));
+    stroke-width: 1.1;
+  }
+
+  /* --- Terminal panel ---------------------------------------------------- */
+
+  .terminal-body {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.75;
+  }
+
+  .terminal-line {
+    display: block;
+    min-height: 1.5em;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .terminal-cursor {
+    display: inline-block;
+    width: 0.55em;
+    height: 1.05em;
+    margin-left: 0.15em;
+    vertical-align: text-bottom;
+    background: oklch(var(--forge-ember));
+    animation: terminal-blink 1.1s steps(1) infinite;
+  }
+
+  @keyframes terminal-blink {
+    50% { opacity: 0; }
+  }
+
+  /* --- Sealed packet chip ------------------------------------------------ */
+
+  .sealed-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border: 1px solid color-mix(in oklch, oklch(var(--forge-ember)) 45%, transparent);
+    border-radius: 999px;
+    background: color-mix(in oklch, oklch(var(--forge-ember)) 10%, transparent);
+    padding: 0.15rem 0.65rem;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.6875rem;
+    letter-spacing: 0.03em;
+    color: oklch(var(--forge-ember));
+    white-space: nowrap;
+  }
+
+  /* --- Section structure -------------------------------------------------- */
+
+  .section-shell {
+    @apply border-b;
+  }
+
+  .section-inner {
+    @apply mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-20;
+  }
+
+  .proof-check {
+    @apply mt-0.5 size-4 shrink-0 text-accent;
+  }
+
+  /* --- Documentation markdown --------------------------------------------- */
 
   .doc-markdown {
     @apply text-base leading-7 text-foreground;
@@ -198,8 +392,16 @@
     @apply mt-9 scroll-mt-24 text-xl font-semibold tracking-[-0.01em];
   }
 
+  .doc-markdown h4 {
+    @apply mt-7 scroll-mt-24 text-base font-semibold;
+  }
+
   .doc-markdown p {
     @apply mt-4 text-muted-foreground;
+  }
+
+  .doc-markdown strong {
+    @apply font-semibold text-foreground;
   }
 
   .doc-markdown ul,
@@ -215,8 +417,12 @@
     @apply list-decimal;
   }
 
+  .doc-markdown li::marker {
+    color: oklch(var(--muted-foreground));
+  }
+
   .doc-markdown a {
-    @apply font-medium text-foreground underline underline-offset-4;
+    @apply font-medium text-foreground underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground;
   }
 
   .doc-markdown .doc-heading-anchor {
@@ -249,6 +455,10 @@
     @apply mt-5 rounded-md border bg-muted px-4 py-3 text-muted-foreground;
   }
 
+  .doc-markdown hr {
+    @apply mt-10 border-t;
+  }
+
   .doc-markdown table {
     @apply mt-6 block w-full max-w-full border-collapse overflow-x-auto rounded-lg border text-sm md:table md:overflow-hidden;
   }
@@ -262,8 +472,19 @@
     @apply bg-muted font-semibold text-foreground;
   }
 
+  .doc-markdown kbd {
+    @apply rounded border bg-muted px-1.5 py-0.5 font-mono text-[0.8125em] text-foreground;
+  }
+
   .docs-search-dialog[open] {
     animation: docs-dialog-in 150ms ease-out;
+  }
+
+  .docs-search-dialog mark {
+    background: color-mix(in oklch, oklch(var(--accent)) 24%, transparent);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
   }
 }
 
@@ -272,19 +493,24 @@
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-@media (max-width: 1023px) {
-  @layer components {
-    .hero-proof::before {
-      inset: 12% 0 20% 18%;
-    }
-  }
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-@media (max-width: 640px) {
-  @layer components {
-    .hero-proof-command {
-      margin: -1.25rem 0 0;
-      width: 100%;
+@keyframes pulse-seal {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Scroll-driven section entrances — only where supported, always with a
+   fully-visible default state. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal-block {
+      animation: rise-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 32%;
     }
   }
 }

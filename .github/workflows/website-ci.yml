@@ -54,5 +54,8 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Test deployment environment isolation
+        run: pnpm test:deployment-env
+
       - name: Build
         run: pnpm build

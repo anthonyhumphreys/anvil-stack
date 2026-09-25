@@ -1,0 +1,8 @@
+{
+  "requestId": "e672c524-bc21-4b24-8646-0e9ee7bdd79e",
+  "error": {
+    "code": "payload-too-large",
+    "retryable": false,
+    "details": { "limitBytes": 65536, "actualBytes": 70123, "entityType": "workflow" }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "reference": "iac02-rehearsal-mesh-rehearsal-live1-mu146f0r",
+  "recordedAt": "2026-09-14T10:43:05.889Z",
+  "live": true,
+  "workerName": "mesh-rehearsal-live1",
+  "backendDir": "/Users/anthonyhumphreys/Code/anvil/anvil-app/cloud/backend",
+  "baseUrl": "https://mesh-rehearsal-live1.anthony-humphreys.workers.dev",
+  "steps": [
+    {
+      "name": "plan: first-deploy production plan is clean",
+      "ok": true,
+      "detail": {
+        "migrationMode": "create",
+        "secrets": ["ENROLLMENT_ADMIN_TOKEN"]
+      }
+    },
+    {
+      "name": "apply: dry-run compiles without provider mutation",
+      "ok": true,
+      "detail": {
+        "dryRun": true
+      }
+    },
+    {
+      "name": "apply: provision ENROLLMENT_ADMIN_TOKEN secret",
+      "ok": true,
+      "detail": {
+        "provisioned": true
+      }
+    },
+    {
+      "name": "apply: deploy to the clean account",
+      "ok": false,
+      "error": "mesh apply failed (exit 5): {\"ok\":false,\"schemaVersion\":\"0.1\",\"command\":\"mesh apply\",\"result\":{\"ok\":false,\"operation\":\"apply\",\"gated\":false,\"workerName\":\"mesh-rehearsal-live1\",\"diagnostics\":[],\"exitCode\":1,\"stdout\":\"Total Upload: 290.65 KiB / gzip: 59.53 KiB\\n\\nThe following bindings need to be provisioned:\\nBinding               Resource       \\nenv.ARTIFACTS         R2 Bucket      \\n\\n\\nProvisioning ARTIFACTS (R2 Bucket)...\\nResource name found in config: anvil-spike-artifacts\\n🌀 Creating new R2 Bucket \\\"anvil-spike-artifacts\\\"...\\n✨ ARTIFACTS provisioned 🎉\\n\\n🎉 Resources provisioned, continuing with deployment...\\n\\nYour Worker has access to the following bindings:\\nBinding                                    Resource            \\nenv.ACCOUNT (AccountCoordinator)           Durable Object      \\nenv.SESSIONS (SessionCoordinator)          Durable Object      \\nenv.ARTIFACTS (anvil-spike-artifacts)      R2 Bucket           \\n\\n\\n\",\"stderr\":\"\\u001b[33m▲ \\u001b[43;33m[\\u001b[43;30mWARNING\\u001b[43;33m]\\u001b[0m \\u001b[1mProcessing wrangler.mesh.jsonc configuration:\\u001b[0m\\n\\n    - In your wrangler.jsonc file, you have configured `durable_objects` exported by this Worker (AccountCoordinator, SessionCoordinator), but no live `exports` entry for them. This may not work as expected until you add a live `durable-object` entry to `exports` for each. Add the following configuration:\\n  \\n      ```\\n      {\\n        \\\"exports\\\": {\\n          \\\"AccountCoordinator\\\": {\\n            \\\"type\\\": \\\"durable-object\\\",\\n            \\\"storage\\\": \\\"sqlite\\\"\\n          },\\n          \\\"SessionCoordinator\\\": {\\n            \\\"type\\\": \\\"durable-object\\\",\\n            \\\"storage\\\": \\\"sqlite\\\"\\n          }\\n        }\\n      }\\n      ```\\n\\n\\n\\u001b[31m✘ \\u001b[41;31m[\\u001b[41;97mERROR\\u001b[41;31m]\\u001b[0m \\u001b[1mA request to the Cloudflare API (/accounts/3912de858294103946fb12ab35b95947/workers/scripts/mesh-rehearsal-live1/versions) failed.\\u001b[0m\\n\\n  Cannot create binding for class 'AccountCoordinator' because it is not currently configured to implement Durable Objects. Configure a migration in your configuration to add this class. [code: 10061]\\n  To learn more about this error, visit: \\u001b[4mhttps://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/\\u001b[0m\\n\\n  \\n  If you think this is a bug, please open an issue at: \\u001b[4mhttps://github.com/cloudflare/workers-sdk/issues/new/choose\\u001b[0m\\n\\n\\n🪵  Logs were written to \\\"/Users/anthonyhumphreys/Library/Preferences/.wrangler/logs/wrangler-2026-09-14_10-42-52_799.log\\\"\\n\",\"connection\":{\"schemaVersion\":\"0.1\",\"kind\":\"anvil-mesh-backend\",\"workerName\":\"mesh-rehearsal-live1\",\"stage\":\"production\",\"baseUrl\":\"https://mesh-rehearsal-live1.anthony-humphreys.workers.dev\",\"descriptorUrl\":\"https://mesh-rehearsal-live1.anthony-humphreys.workers.dev/.well-known/anvil-backend\"},\"evidence\":{\"reference\":\"iac02-rehearsal-mesh-rehearsal-live1-mu146f0r\"}}}\n"
+    }
+  ]
+}

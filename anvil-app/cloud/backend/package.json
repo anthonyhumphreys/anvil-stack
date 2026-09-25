@@ -1,0 +1,24 @@
+{
+  "name": "anvil-backend-spike",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Anvil Cloud backend Worker with SQLite Durable Objects, sync, hosted identity, and Mesh lifecycle support.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "conformance": "node conformance/suite.mjs",
+    "conformance:fixture": "node conformance/suite.mjs --fixture",
+    "verify:hosted-config": "node scripts/verify-hosted-config.mjs",
+    "hosted:deploy": "node scripts/hosted-deploy.mjs",
+    "test:hosted-deploy": "node --test scripts/hosted-deploy.node-test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.7",
+    "@cloudflare/workers-types": "^5.20260918.1",
+    "typescript": "^5.9.2",
+    "vitest": "4.1.0",
+    "wrangler": "^4.135.0"
+  }
+}

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useId } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FileText,
@@ -27,7 +27,12 @@ import {
   ShieldAlert,
   XCircle,
 } from 'lucide-react';
-import type { ChatAttachment, ChatPlanStep, CodexEvent } from '../../../shared/types';
+import type {
+  ChatAttachment,
+  ChatFollowUpIntent,
+  ChatPlanStep,
+  CodexEvent,
+} from '../../../shared/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { DiffViewer } from './DiffViewer';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -35,20 +40,43 @@ import { buildEditorUrl } from '../../utils/editor-link';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { isAbsoluteEditorPath } from '../../../shared/editor-file-link';
 import type { ChatTurnWorkItem } from './chat-turns';
+import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
+import { FileEditReviewGrid } from './TurnChangesFooter';
+import { buildChatRequestTargetDomId, getChatQuestionTargetId } from './chat-run-outcome';
 
 interface ChatEventProps {
   event: CodexEvent & { sessionId?: string };
 }
 
 export function ChatEventRenderer({ event }: ChatEventProps) {
+  const requestTarget = getChatQuestionTargetId(event);
+  if (requestTarget) {
+    return (
+      <div
+        id={buildChatRequestTargetDomId(requestTarget)}
+        tabIndex={-1}
+        className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        <ChatEventContent event={event} />
+      </div>
+    );
+  }
+  return <ChatEventContent event={event} />;
+}
+
+function ChatEventContent({ event }: ChatEventProps) {
   switch (event.type) {
     case 'text':
       return <TextEvent text={event.text ?? ''} />;
-    case 'file_read':
-      return <FileReadEvent filePath={event.filePath ?? ''} lineRange={event.lineRange} />;
     case 'file_edit':
-      return <FileEditEvent filePath={event.filePath ?? ''} diff={event.diff ?? ''} />;
+      return (
+        <FileEditEvent
+          filePath={event.filePath ?? ''}
+          diff={event.diff ?? ''}
+          agentLabel={agentEventLabel(event)}
+        />
+      );
     case 'command_exec':
       return (
         <CommandExecEvent
@@ -93,8 +121,12 @@ export function ActivityGroupMessage({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [selectedEditIndex, setSelectedEditIndex] = useState(0);
+  const detailsId = useId();
   const summary = summarizeActivityEvents(events);
+  const surfaceEvents = events.flatMap((event, index) =>
+    isSurfaceEvent(event) ? [{ event, index }] : [],
+  );
+  const surfaceEventIndexes = new Set(surfaceEvents.map(({ index }) => index));
   const fileEdits = events.filter((event) => event.type === 'file_edit' && event.filePath);
   const failedCommands = events.filter(
     (event) =>
@@ -104,7 +136,6 @@ export function ActivityGroupMessage({
       (event.type === 'tool_call' && event.toolStatus === 'failed') ||
       event.type === 'error',
   );
-  const selectedEdit = fileEdits[Math.min(selectedEditIndex, Math.max(fileEdits.length - 1, 0))];
   const preview = events
     .slice(-3)
     .map(formatActivityPreview)
@@ -113,11 +144,13 @@ export function ActivityGroupMessage({
 
   return (
     <div className="message-bubble flex justify-start">
-      <div className="w-full rounded-lg border border-border-subtle bg-bg-secondary/45">
+      <div className="w-full border-y border-border-subtle bg-bg-secondary/25">
         <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45"
-          aria-label={expanded ? 'Collapse activity details' : 'Expand activity details'}
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
           <span className="mt-0.5 shrink-0 text-text-tertiary">
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -128,7 +161,7 @@ export function ActivityGroupMessage({
               <span className="text-xs font-medium text-text-secondary">Activity</span>
               <span className="text-xs text-text-tertiary">{summary}</span>
               {failedCommands.length > 0 && (
-                <span className="rounded-full bg-error/10 px-2 py-0.5 text-[11px] font-medium text-error">
+                <span className="rounded-full bg-error/10 px-2 py-0.5 text-eyebrow font-medium text-error">
                   {failedCommands.length} failed
                 </span>
               )}
@@ -138,6 +171,17 @@ export function ActivityGroupMessage({
             )}
           </div>
         </button>
+        {surfaceEvents.length > 0 && (
+          <div
+            className="space-y-2 border-t border-border-subtle px-3 py-3"
+            role="region"
+            aria-label="Requests and structured updates"
+          >
+            {surfaceEvents.map(({ event, index }) => (
+              <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
+            ))}
+          </div>
+        )}
         {fileEdits.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 border-t border-border-subtle px-4 py-2">
             <button
@@ -153,44 +197,26 @@ export function ActivityGroupMessage({
             </span>
           </div>
         )}
-        {reviewOpen && selectedEdit && (
-          <div className="grid min-h-0 grid-cols-[220px_minmax(0,1fr)] border-t border-border-subtle">
-            <div className="max-h-96 overflow-auto border-r border-border-subtle bg-bg-secondary/40 p-2">
-              {fileEdits.map((event, index) => (
-                <button
-                  key={`${event.filePath}-${index}`}
-                  type="button"
-                  onClick={() => setSelectedEditIndex(index)}
-                  className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
-                    index === selectedEditIndex
-                      ? 'bg-info/10 text-info'
-                      : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                  }`}
-                  title={event.filePath}
-                >
-                  <FileDiff size={12} className="shrink-0" />
-                  <span className="min-w-0 truncate">{event.filePath}</span>
-                </button>
-              ))}
-            </div>
-            <div className="max-h-96 overflow-auto">
-              {selectedEdit.diff?.trim() ? (
-                <DiffViewer filePath={selectedEdit.filePath ?? ''} diff={selectedEdit.diff} />
-              ) : (
-                <p className="px-4 py-3 text-xs text-text-tertiary">
-                  Change applied, but Codex did not provide a renderable patch for this file.
-                </p>
+        {reviewOpen && (
+          <FileEditReviewGrid
+            edits={fileEdits.map((event) => ({
+              filePath: event.filePath ?? '',
+              diff: event.diff ?? '',
+            }))}
+            agentLabel={fileEdits[0]?.agentLabel ?? events[0]?.agentLabel}
+          />
+        )}
+        <div id={detailsId} hidden={!expanded}>
+          {expanded && (
+            <div className="max-h-96 space-y-2 overflow-auto border-t border-border-subtle p-3">
+              {events.map((event, index) =>
+                surfaceEventIndexes.has(index) ? null : (
+                  <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
+                ),
               )}
             </div>
-          </div>
-        )}
-        {expanded && (
-          <div className="max-h-96 space-y-2 overflow-auto border-t border-border-subtle p-3">
-            {events.map((event, index) => (
-              <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
-            ))}
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
@@ -204,8 +230,8 @@ export function TurnWorkMessage({
   active?: boolean;
 }) {
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
-  const wasActiveRef = useRef(active);
   const showDetails = shouldShowTurnWorkDetails(active, expandedOverride);
+  const detailsId = useId();
   const progressCount = items.filter((item) => item.kind === 'progress').length;
   const activityEvents = items
     .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
@@ -233,15 +259,10 @@ export function TurnWorkMessage({
       ? `${activityEvents.length} action${activityEvents.length === 1 ? '' : 's'}`
       : null,
   ].filter((part): part is string => Boolean(part));
-  const latestActivity = describeWorkItem(items[items.length - 1]);
+  const latestActivity = formatTurnWorkItemSummary(items[items.length - 1]);
 
-  useEffect(() => {
-    if (wasActiveRef.current && !active && expandedOverride === null) {
-      setExpandedOverride(true);
-    }
-    wasActiveRef.current = active;
-  }, [active, expandedOverride]);
-
+  // Keep operational detail folded while the concise latest activity and any
+  // requests for the user remain visible.
   if (items.length === 0) return null;
 
   return (
@@ -252,7 +273,7 @@ export function TurnWorkMessage({
           onClick={() => setExpandedOverride(!showDetails)}
           className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:bg-bg-secondary/35 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-expanded={showDetails}
-          aria-label={showDetails ? 'Collapse work details' : 'Expand work details'}
+          aria-controls={detailsId}
         >
           <span className="shrink-0 text-text-tertiary">
             {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -275,7 +296,11 @@ export function TurnWorkMessage({
         </button>
 
         {surfaceItems.length > 0 && (
-          <div className="space-y-2 border-t border-border-subtle px-3 py-3">
+          <div
+            className="space-y-2 border-t border-border-subtle px-3 py-3"
+            role="region"
+            aria-label="Requests and structured updates"
+          >
             {surfaceItems.map((item, index) => (
               <ChatEventRenderer
                 key={buildActivityEventKey(item.event, index)}
@@ -285,44 +310,46 @@ export function TurnWorkMessage({
           </div>
         )}
 
-        {showDetails && (
-          <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
-            {items.map((item, index) => {
-              if (surfaceSourceIndexes.has(item.sourceIndex)) return null;
-              if (item.kind === 'progress') {
-                return (
-                  <div key={`progress-${item.sourceIndex}`} className="pr-2">
-                    <p className="mb-1 text-[11px] font-medium text-text-muted">Progress update</p>
-                    <div className="text-text-secondary">
-                      <MarkdownRenderer content={item.content} />
+        <div id={detailsId} hidden={!showDetails}>
+          {showDetails && (
+            <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
+              {items.map((item, index) => {
+                if (surfaceSourceIndexes.has(item.sourceIndex)) return null;
+                if (item.kind === 'progress') {
+                  return (
+                    <div key={`progress-${item.sourceIndex}`} className="pr-2">
+                      <p className="mb-1 text-xs font-medium text-text-muted">Progress update</p>
+                      <div className="max-w-[72ch] break-words text-text-secondary">
+                        <MarkdownRenderer content={item.content} />
+                      </div>
                     </div>
-                  </div>
-                );
-              }
+                  );
+                }
 
-              if (item.kind === 'thinking') {
+                if (item.kind === 'thinking') {
+                  return (
+                    <div
+                      key={`thinking-${item.sourceIndex}`}
+                      className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
+                    >
+                      <p className="mb-1 text-xs font-medium not-italic text-text-muted">
+                        Reasoning
+                      </p>
+                      <p className="whitespace-pre-wrap break-words">{item.content}</p>
+                    </div>
+                  );
+                }
+
                 return (
-                  <div
-                    key={`thinking-${item.sourceIndex}`}
-                    className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
-                  >
-                    <p className="mb-1 text-[11px] font-medium not-italic text-text-muted">
-                      Reasoning
-                    </p>
-                    <p className="whitespace-pre-wrap">{item.content}</p>
-                  </div>
+                  <ChatEventRenderer
+                    key={buildActivityEventKey(item.event, index)}
+                    event={item.event}
+                  />
                 );
-              }
-
-              return (
-                <ChatEventRenderer
-                  key={buildActivityEventKey(item.event, index)}
-                  event={item.event}
-                />
-              );
-            })}
-          </div>
-        )}
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -344,7 +371,7 @@ export function TurnActivityStatus({
       ? 'Preparing the next step'
       : state === 'responding'
         ? 'Writing the response'
-        : describeWorkItem(latestItem) || 'Running the next action';
+        : formatTurnWorkItemSummary(latestItem) || 'Running the next action';
 
   useEffect(() => {
     const update = () => {
@@ -372,7 +399,7 @@ export function TurnActivityStatus({
         </div>
         <span
           ref={timerRef}
-          className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted"
+          className="shrink-0 font-mono text-xs tabular-nums text-text-muted"
           aria-hidden="true"
         >
           0s
@@ -383,10 +410,10 @@ export function TurnActivityStatus({
 }
 
 export function shouldShowTurnWorkDetails(
-  active: boolean,
+  _active: boolean,
   expandedOverride: boolean | null,
 ): boolean {
-  return expandedOverride ?? active;
+  return expandedOverride ?? false;
 }
 
 function WorkingDots({ compact = false }: { compact?: boolean }) {
@@ -399,21 +426,31 @@ function WorkingDots({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
+export function formatTurnWorkItemSummary(item: ChatTurnWorkItem | undefined): string {
   if (!item) return '';
-  if (item.kind === 'progress') return 'Processing the latest update';
+  if (item.kind === 'progress') return summarizeProgress(item.content);
   if (item.kind === 'thinking') return 'Reasoning through the next step';
 
   switch (item.event.type) {
     case 'command_exec':
-      return item.event.command ? 'Running a command' : 'Reading command output';
-    case 'file_read':
-      return 'Reading files';
+      if (item.event.command && typeof item.event.exitCode === 'number') {
+        return item.event.exitCode === 0
+          ? `Completed ${compactWorkValue(item.event.command, 84)}`
+          : `Command failed (${item.event.exitCode}): ${compactWorkValue(item.event.command, 72)}`;
+      }
+      return item.event.command
+        ? `Running ${compactWorkValue(item.event.command, 84)}`
+        : 'Reading command output';
     case 'file_edit':
-      return 'Applying changes';
+      return item.event.filePath
+        ? `Edited ${compactWorkValue(item.event.filePath, 84)}`
+        : 'Edited files';
     case 'tool_call':
       if (item.event.toolStatus === 'failed') {
         return item.event.toolName ? `Tool failed: ${item.event.toolName}` : 'Tool failed';
+      }
+      if (item.event.toolStatus === 'completed') {
+        return item.event.toolName ? `Finished ${item.event.toolName}` : 'Finished a tool call';
       }
       return item.event.toolName ? `Using ${item.event.toolName}` : 'Using a tool';
     case 'approval_request':
@@ -421,7 +458,17 @@ function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
     case 'input_request':
       return 'Waiting for your input';
     case 'subagent_update':
-      return 'Coordinating agent work';
+      return item.event.subagent?.status === 'failed'
+        ? 'Agent work failed'
+        : item.event.subagent?.status === 'completed'
+          ? 'Agent work completed'
+          : 'Coordinating agent work';
+    case 'thread_status':
+      if (item.event.threadActiveFlags?.includes('waitingOnUserInput'))
+        return 'Waiting for your input';
+      if (item.event.threadActiveFlags?.includes('waitingOnApproval'))
+        return 'Waiting for approval';
+      return 'Thread status updated';
     case 'plan_update':
       return 'Updating the plan';
     case 'agent_ui_intent':
@@ -430,14 +477,57 @@ function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
         : 'Updating the plan';
     case 'agent_ui_intent_resolved':
       return 'Resuming after input';
+    case 'status':
+      return item.event.status === 'complete'
+        ? 'Work complete'
+        : item.event.status === 'error'
+          ? 'Work stopped with an error'
+          : item.event.status === 'thinking'
+            ? 'Preparing the next step'
+            : 'Running the next action';
     case 'goal_update':
+      return item.event.goal?.objective
+        ? `Goal: ${compactWorkValue(item.event.goal.objective, 84)}`
+        : 'Updating the goal';
     case 'goal_cleared':
-      return 'Updating the goal';
+      return 'Goal cleared';
     case 'error':
-      return 'Handling an error';
+      return item.event.errorMessage
+        ? `Error: ${compactWorkValue(item.event.errorMessage, 84)}`
+        : 'Handling an error';
     default:
       return 'Processing the latest activity';
   }
+}
+
+function summarizeProgress(content: string): string {
+  const plainText = content
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+    .replace(/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+)/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return compactWorkValue(plainText, 110) || 'Processing the latest update';
+}
+
+function compactWorkValue(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  const prefix = compact.slice(0, maxLength - 1);
+  const lastSpace = prefix.lastIndexOf(' ');
+  return `${prefix.slice(0, lastSpace > maxLength * 0.6 ? lastSpace : prefix.length).trimEnd()}…`;
+}
+
+function isSurfaceEvent(event: CodexEvent): boolean {
+  return (
+    event.type === 'approval_request' ||
+    event.type === 'input_request' ||
+    event.type === 'agent_ui_intent'
+  );
 }
 
 function formatElapsedTime(elapsedMs: number): string {
@@ -456,70 +546,6 @@ function TextEvent({ text }: { text: string }) {
   return <MarkdownRenderer content={text} />;
 }
 
-function FileReadEvent({
-  filePath,
-  lineRange,
-}: {
-  filePath: string;
-  lineRange?: [number, number];
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [copiedReference, setCopiedReference] = useState(false);
-  const rangeStr = lineRange ? `:${lineRange[0]}-${lineRange[1]}` : '';
-  const openInEditor = useOpenEventFileInEditor(filePath, lineRange?.[0]);
-  const fileReference = buildChatFileReference(filePath, lineRange);
-
-  const copyReference = useCallback(() => {
-    if (!fileReference) return;
-    void copyTextToClipboard(fileReference).then(() => {
-      setCopiedReference(true);
-      window.setTimeout(() => setCopiedReference(false), 1600);
-    });
-  }, [fileReference]);
-
-  return (
-    <div className="rounded-xl border border-border-subtle bg-bg-tertiary/60 shadow-sm overflow-hidden">
-      <div className="flex items-center gap-1 px-2 py-1">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/80"
-          aria-label={expanded ? 'Collapse file read details' : 'Expand file read details'}
-        >
-          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          <FileText size={12} className="text-info" />
-          <span className="min-w-0 truncate">
-            Read{' '}
-            <span className="font-mono text-text-primary">
-              {filePath}
-              {rangeStr}
-            </span>
-          </span>
-        </button>
-        {filePath && (
-          <button
-            onClick={openInEditor}
-            className="rounded-lg p-2 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title="Open in editor"
-            aria-label={`Open ${filePath} in editor`}
-          >
-            <ExternalLink size={12} />
-          </button>
-        )}
-        {fileReference && (
-          <button
-            onClick={copyReference}
-            className="rounded-lg p-2 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title={copiedReference ? 'Copied reference' : 'Copy file reference'}
-            aria-label={copiedReference ? 'Copied file reference' : 'Copy file reference'}
-          >
-            {copiedReference ? <Check size={12} className="text-success" /> : <Copy size={12} />}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export function buildChatFileReference(
   filePath: string,
   lineRange?: [number, number],
@@ -529,9 +555,18 @@ export function buildChatFileReference(
   return `${filePath}:${lineRange[0]}-${lineRange[1]}`;
 }
 
-function FileEditEvent({ filePath, diff }: { filePath: string; diff: string }) {
+function FileEditEvent({
+  filePath,
+  diff,
+  agentLabel = 'The agent',
+}: {
+  filePath: string;
+  diff: string;
+  agentLabel?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [copiedDiff, setCopiedDiff] = useState(false);
+  const detailsId = useId();
   const openInEditor = useOpenEventFileInEditor(filePath);
   const hasDiff = diff.trim().length > 0;
 
@@ -544,12 +579,15 @@ function FileEditEvent({ filePath, diff }: { filePath: string; diff: string }) {
   }, [diff, hasDiff]);
 
   return (
-    <div className="rounded-xl border border-info/20 bg-bg-tertiary/60 shadow-sm overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-info/20 bg-bg-tertiary/60">
       <div className="flex items-center gap-1 px-2 py-1">
         <button
-          onClick={() => setExpanded(!expanded)}
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
           className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/80"
-          aria-label={expanded ? 'Collapse file edit details' : 'Expand file edit details'}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} edit details for ${filePath}`}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <FileDiff size={12} className="text-info" />
@@ -578,17 +616,19 @@ function FileEditEvent({ filePath, diff }: { filePath: string; diff: string }) {
           </button>
         )}
       </div>
-      {expanded && (
-        <div className="border-t border-border-subtle">
-          {hasDiff ? (
-            <DiffViewer filePath={filePath} diff={diff} />
-          ) : (
-            <p className="px-4 py-3 text-xs text-text-tertiary">
-              Change applied. Codex did not provide a renderable patch for this event.
-            </p>
-          )}
-        </div>
-      )}
+      <div id={detailsId} hidden={!expanded}>
+        {expanded && (
+          <div className="border-t border-border-subtle">
+            {hasDiff ? (
+              <DiffViewer filePath={filePath} diff={diff} />
+            ) : (
+              <p className="px-4 py-3 text-xs text-text-tertiary">
+                Change applied. {agentLabel} did not provide a renderable patch for this event.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -619,22 +659,28 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
   const isCommand = event.approvalKind === 'command';
   const isPermissions = event.approvalKind === 'permissions';
   const cursorOptions = isPermissions ? getCursorPermissionOptions(event.approvalPermissions) : [];
+  const label = agentEventLabel(event);
   const title = isCommand
     ? 'Approve command'
     : isPermissions
       ? event.toolName
         ? 'Approve ' + event.toolName
         : 'Approve additional permissions'
-      : 'Approve file change';
-  const detail = isCommand
-    ? event.approvalCommand
-    : isPermissions
-      ? event.toolInput
-        ? formatApprovalInput(event.toolInput)
-        : formatRequestedPermissions(event.approvalPermissions)
+      : event.approvalKind === 'file_change'
+        ? 'Approve file change'
+        : `${label} requests approval`;
+  // H8 — prefer the normalized fields the protocol layer extracted (command,
+  // structured tool input like {command|path|url}, grant root) and only fall
+  // back to a JSON blob when nothing readable exists.
+  const toolInputSummary = event.toolInput ? formatApprovalToolInput(event.toolInput) : null;
+  const detail =
+    event.approvalCommand ??
+    toolInputSummary ??
+    (isPermissions
+      ? formatRequestedPermissions(event.approvalPermissions, label)
       : event.approvalGrantRoot
         ? `Allow writes under ${event.approvalGrantRoot}`
-        : 'Codex wants permission to apply a file change.';
+        : `${label} wants permission to apply a change.`);
 
   const decide = async (decision: 'accept' | 'acceptForSession' | 'decline', optionId?: string) => {
     if (!event.sessionId || event.approvalRequestId === undefined) return;
@@ -653,7 +699,7 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
   };
 
   return (
-    <div className="rounded-xl border border-warning/30 bg-warning/5 shadow-sm overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
       <div className="flex items-start gap-2.5 px-4 py-3">
         <AlertCircle size={14} className="mt-0.5 shrink-0 text-warning" />
         <div className="min-w-0 flex-1">
@@ -661,8 +707,8 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
           {detail && (
             <p className="mt-1 truncate font-mono text-xs text-text-secondary">{detail}</p>
           )}
-          {isPermissions && event.toolInput && (
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-bg-primary/60 p-2 font-mono text-[11px] text-text-secondary">
+          {isPermissions && event.toolInput && !toolInputSummary && (
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-bg-primary/60 p-2 font-mono text-xs text-text-secondary">
               {JSON.stringify(event.toolInput, null, 2)}
             </pre>
           )}
@@ -740,7 +786,8 @@ function InputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string
 }
 
 function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
-  const questions = event.inputRequest?.questions ?? [];
+  const request = event.inputRequest?.kind === 'user_input' ? event.inputRequest : undefined;
+  const questions = request?.questions ?? [];
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [activeIndex, setActiveIndex] = useState(0);
   const [resolved, setResolved] = useState(false);
@@ -803,13 +850,15 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
           <MessageSquare size={14} />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-text-primary">Codex needs your input</p>
+          <p className="text-sm font-semibold text-text-primary">
+            {agentEventLabel(event)} needs your input
+          </p>
           <p className="mt-0.5 text-xs text-text-tertiary">
             {questions.length > 0
               ? `Question ${activeIndex + 1} of ${questions.length}`
               : 'No questions were provided'}
-            {event.inputRequest?.autoResolutionMs
-              ? ` · may continue after ${Math.ceil(event.inputRequest.autoResolutionMs / 1000)}s`
+            {request?.autoResolutionMs
+              ? ` · may continue after ${Math.ceil(request.autoResolutionMs / 1000)}s`
               : ''}
           </p>
         </div>
@@ -860,7 +909,7 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
                   <span
                     className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border font-mono text-xs ${
                       selected
-                        ? 'border-accent bg-accent text-white'
+                        ? 'border-accent bg-accent text-accent-foreground'
                         : 'border-border text-text-tertiary group-hover:text-text-primary'
                     }`}
                   >
@@ -916,7 +965,9 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
           {error && <p className="mt-3 text-xs text-error">{error}</p>}
         </fieldset>
       ) : (
-        <p className="p-4 text-sm text-error">Codex sent an empty input request.</p>
+        <p className="p-4 text-sm text-error">
+          {agentEventLabel(event)} sent an empty input request.
+        </p>
       )}
 
       {activeQuestion && (
@@ -937,7 +988,7 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
               submitting ||
               (activeIndex === questions.length - 1 && !complete)
             }
-            className="ml-auto inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-40"
+            className="ml-auto inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground transition-colors hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting && <Loader2 size={13} className="animate-spin" />}
             {activeIndex < questions.length - 1 ? 'Next question' : 'Send answers'}
@@ -1030,7 +1081,7 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
             type="button"
             onClick={() => void submit('submit')}
             disabled={questions.some((question) => (answers[question.id] ?? []).length === 0)}
-            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
           >
             Send answer
           </button>
@@ -1111,7 +1162,7 @@ function CursorPlanRequestEvent({ event }: { event: CodexEvent & { sessionId?: s
 }
 
 function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
-  const request = event.inputRequest;
+  const request = event.inputRequest?.kind === 'mcp_elicitation' ? event.inputRequest : undefined;
   const [content, setContent] = useState('{}');
   const [resolved, setResolved] = useState<'accepted' | 'declined' | 'cancelled' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1152,7 +1203,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
   };
 
   return (
-    <div className="overflow-hidden rounded-xl border border-warning/30 bg-warning/5 shadow-sm">
+    <div className="overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
       <div className="flex items-start gap-2.5 px-4 py-3">
         <ShieldAlert size={14} className="mt-0.5 shrink-0 text-warning" />
         <div className="min-w-0 flex-1">
@@ -1166,7 +1217,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
           )}
           {request?.mode === 'url' && request.url ? (
             <div className="mt-2 flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-primary/50 p-2">
-              <code className="min-w-0 flex-1 truncate text-[11px] text-text-secondary">
+              <code className="min-w-0 flex-1 truncate text-xs text-text-secondary">
                 {request.url}
               </code>
               <button
@@ -1191,7 +1242,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
               {request?.requestedSchema !== undefined && (
                 <details className="mt-2 text-xs text-text-tertiary">
                   <summary className="cursor-pointer">Requested schema</summary>
-                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-bg-primary/60 p-2 text-[11px]">
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-bg-primary/60 p-2 text-xs">
                     {JSON.stringify(request.requestedSchema, null, 2)}
                   </pre>
                 </details>
@@ -1254,10 +1305,10 @@ function SubagentUpdateEvent({ event }: { event: CodexEvent }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-xs font-medium text-text-primary">{label}</p>
-            <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[10px] text-text-tertiary">
+            <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-eyebrow text-text-tertiary">
               {formatSubagentStatus(update.status, update.agents)}
             </span>
-            {update.model && <span className="text-[10px] text-text-muted">{update.model}</span>}
+            {update.model && <span className="text-xs text-text-muted">{update.model}</span>}
           </div>
           {update.prompt && (
             <details className="mt-1 text-xs text-text-tertiary">
@@ -1310,8 +1361,11 @@ function ThreadStatusEvent({ event }: { event: CodexEvent }) {
   );
 }
 
-function formatRequestedPermissions(permissions: Record<string, unknown> | undefined): string {
-  if (!permissions) return 'Codex requested additional runtime permissions.';
+function formatRequestedPermissions(
+  permissions: Record<string, unknown> | undefined,
+  agentLabel: string,
+): string {
+  if (!permissions) return `${agentLabel} requested additional runtime permissions.`;
   const scopes = [
     permissions.fileSystem ? 'filesystem' : null,
     permissions.network ? 'network' : null,
@@ -1321,11 +1375,18 @@ function formatRequestedPermissions(permissions: Record<string, unknown> | undef
   return scopes ? `Additional ${scopes} access requested.` : 'Additional permissions requested.';
 }
 
-function formatApprovalInput(input: Record<string, unknown>): string {
-  const serialised = JSON.stringify(input);
-  return serialised && serialised.length <= 1_000
-    ? serialised
-    : 'Cursor requested a tool operation.';
+/**
+ * H8 — pull a human-readable summary out of an ACP tool call's input before
+ * anyone reaches for JSON.stringify. ACP permission requests carry the raw
+ * tool input ({command}, {path}, {url}, …); the common scalar fields describe
+ * the action far better than a blob.
+ */
+function formatApprovalToolInput(input: Record<string, unknown>): string | null {
+  for (const key of ['command', 'cmd', 'path', 'file_path', 'filePath', 'url', 'query']) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return null;
 }
 
 type CursorPermissionOption = {
@@ -1420,6 +1481,7 @@ function CommandExecEvent({
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedOutput, setCopiedOutput] = useState(false);
+  const detailsId = useId();
   const success = exitCode === 0 || exitCode === undefined;
 
   const copyCommand = useCallback(() => {
@@ -1439,12 +1501,15 @@ function CommandExecEvent({
   }, [output]);
 
   return (
-    <div className="rounded-xl border border-border-subtle bg-bg-tertiary/60 shadow-sm overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-border-subtle bg-bg-tertiary/60">
       <div className="flex items-center gap-1 px-2 py-1">
         <button
-          onClick={() => setExpanded(!expanded)}
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
           className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/80"
-          aria-label={expanded ? 'Collapse command output' : 'Expand command output'}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} command output for ${command || 'command'}`}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <Terminal size={12} className={success ? 'text-success' : 'text-error'} />
@@ -1476,33 +1541,44 @@ function CommandExecEvent({
           </button>
         )}
       </div>
-      {expanded && output && (
-        <pre className="max-h-60 overflow-auto border-t border-border-subtle p-4 text-xs font-mono text-text-secondary leading-relaxed">
-          {output}
-        </pre>
-      )}
+      <div id={detailsId} hidden={!expanded}>
+        {expanded && output && (
+          <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-border-subtle p-4 text-xs font-mono leading-relaxed text-text-secondary">
+            {output}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }
 
 function ToolCallEvent({ event }: { event: CodexEvent }) {
   const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
   const status = event.toolStatus ?? 'running';
   const toolName = event.toolName ?? 'Tool';
   const hasDetails = Boolean(event.toolOutput) || Boolean(event.toolInput);
 
   return (
     <div
-      className={`rounded-xl border shadow-sm overflow-hidden ${
+      className={`overflow-hidden rounded-lg border ${
         status === 'failed'
           ? 'border-error/30 bg-error/5'
           : 'border-border-subtle bg-bg-tertiary/60'
       }`}
     >
       <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/80"
-        aria-label={expanded ? 'Collapse tool call details' : 'Expand tool call details'}
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        disabled={!hasDetails}
+        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/80 disabled:cursor-default disabled:hover:bg-transparent"
+        aria-label={
+          hasDetails
+            ? `${expanded ? 'Collapse' : 'Expand'} details for ${toolName}`
+            : `${toolName} tool call`
+        }
+        aria-expanded={hasDetails ? expanded : undefined}
+        aria-controls={hasDetails ? detailsId : undefined}
       >
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         {status === 'failed' ? (
@@ -1519,15 +1595,20 @@ function ToolCallEvent({ event }: { event: CodexEvent }) {
           </span>
         </span>
         {status === 'failed' && (
-          <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 text-[11px] font-medium text-error">
+          <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 text-eyebrow font-medium text-error">
             failed
           </span>
         )}
       </button>
-      {expanded && hasDetails && (
-        <pre className="max-h-40 overflow-auto border-t border-border-subtle p-4 text-xs font-mono text-text-tertiary leading-relaxed whitespace-pre-wrap">
-          {event.toolOutput ?? (event.toolInput ? JSON.stringify(event.toolInput, null, 2) : '')}
-        </pre>
+      {hasDetails && (
+        <div id={detailsId} hidden={!expanded}>
+          {expanded && (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words border-t border-border-subtle p-4 text-xs font-mono leading-relaxed text-text-tertiary">
+              {event.toolOutput ??
+                (event.toolInput ? JSON.stringify(event.toolInput, null, 2) : '')}
+            </pre>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1537,7 +1618,7 @@ export function PlanUpdateEvent({ plan }: { plan: NonNullable<CodexEvent['plan']
   const completed = plan.steps.filter((step) => step.status === 'completed').length;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-info/25 bg-info/5 shadow-sm">
+    <div className="overflow-hidden rounded-lg border border-info/25 bg-info/5">
       <div className="flex items-start gap-2.5 border-b border-info/15 px-4 py-3">
         <ListChecks size={14} className="mt-0.5 shrink-0 text-info" />
         <div className="min-w-0 flex-1">
@@ -1574,7 +1655,7 @@ export function PlanUpdateEvent({ plan }: { plan: NonNullable<CodexEvent['plan']
 
 function GoalUpdateEvent({ goal }: { goal: NonNullable<CodexEvent['goal']> }) {
   return (
-    <div className="rounded-xl border border-success/20 bg-success/5 px-4 py-3 shadow-sm">
+    <div className="rounded-lg border border-success/20 bg-success/5 px-4 py-3">
       <div className="flex items-start gap-2.5">
         <Target size={14} className="mt-0.5 shrink-0 text-success" />
         <div className="min-w-0">
@@ -1594,7 +1675,7 @@ function GoalUpdateEvent({ goal }: { goal: NonNullable<CodexEvent['goal']> }) {
 
 function GoalClearedEvent() {
   return (
-    <div className="rounded-xl border border-border-subtle bg-bg-tertiary/50 px-4 py-3 text-sm text-text-tertiary shadow-sm">
+    <div className="rounded-lg border border-border-subtle bg-bg-tertiary/50 px-4 py-3 text-sm text-text-tertiary">
       Goal cleared
     </div>
   );
@@ -1621,7 +1702,7 @@ function formatGoalStatus(status: NonNullable<CodexEvent['goal']>['status']): st
 
 function ErrorEvent({ message }: { message: string }) {
   return (
-    <div className="flex items-start gap-2.5 rounded-xl border border-error/20 bg-error/5 px-4 py-3 shadow-sm">
+    <div className="flex items-start gap-2.5 rounded-lg border border-error/20 bg-error/5 px-4 py-3">
       <AlertCircle size={14} className="mt-0.5 shrink-0 text-error" />
       <p className="text-sm text-error leading-relaxed">{message}</p>
     </div>
@@ -1647,26 +1728,32 @@ function StatusEvent({ status }: { status: string }) {
 
 export function ThinkingMessage({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
 
   return (
     <div className="message-bubble flex justify-start">
-      <div className="w-full max-w-4xl overflow-hidden rounded-xl border border-border-subtle bg-bg-tertiary/30 shadow-sm">
+      <div className="w-full max-w-4xl overflow-hidden rounded-lg border border-border-subtle bg-bg-tertiary/30">
         <button
-          onClick={() => setExpanded(!expanded)}
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
           className="flex w-full items-center gap-2.5 px-4 py-3 text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/50"
           aria-label={expanded ? 'Collapse thinking' : 'Expand thinking'}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <Sparkles size={12} className={content ? 'text-warning' : ''} />
           <span className="font-medium">Reasoning...</span>
         </button>
-        {expanded && content && (
-          <div className="border-t border-border-subtle px-4 py-3">
-            <p className="whitespace-pre-wrap text-sm leading-relaxed italic text-text-tertiary">
-              {content}
-            </p>
-          </div>
-        )}
+        <div id={detailsId} hidden={!expanded}>
+          {expanded && content && (
+            <div className="border-t border-border-subtle px-4 py-3">
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed italic text-text-tertiary">
+                {content}
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1690,7 +1777,7 @@ function MessageActionsToolbar({
   isUser,
 }: MessageActionsProps) {
   return (
-    <div className="message-actions flex items-center gap-0.5 rounded-lg border border-border-subtle bg-bg-secondary/90 px-1 py-0.5 shadow-sm backdrop-blur-sm">
+    <div className="message-actions flex items-center gap-0.5 rounded-lg border border-border-subtle bg-bg-secondary px-1 py-0.5 shadow-sm">
       <ActionButton
         onClick={onCopy}
         title={copied ? 'Copied!' : 'Copy to clipboard'}
@@ -1784,7 +1871,7 @@ export function AssistantMessage({
           <span>{label}</span>
           {active && <span className="font-normal text-text-tertiary">Responding</span>}
         </div>
-        <div className="px-1 text-sm leading-6 text-text-primary/90">
+        <div className="max-w-[72ch] break-words px-1 text-sm leading-[1.7] text-text-primary/90">
           <MarkdownRenderer content={display} />
         </div>
         <div className="message-actions left-0 mt-1">
@@ -1803,11 +1890,18 @@ export function AssistantMessage({
 export function UserMessage({
   content,
   attachments,
+  delivery,
+  deliveryError,
+  deliveryIntent,
   onEdit,
   onBranch,
 }: {
   content: string;
   attachments?: ChatAttachment[];
+  /** Delivery is separate from whether the agent completed the requested work. */
+  delivery?: 'queued' | 'delivered' | 'failed' | 'uncertain';
+  deliveryError?: string;
+  deliveryIntent?: ChatFollowUpIntent;
   onEdit?: () => void;
   onBranch?: () => void;
 }) {
@@ -1824,10 +1918,52 @@ export function UserMessage({
 
   return (
     <div className="message-bubble group flex justify-end">
-      <div
-        className={`relative ${collapsible ? 'w-full max-w-[50%]' : 'w-fit max-w-[50%] min-w-0'}`}
-      >
-        <p className="mb-1.5 text-right text-xs font-medium text-text-tertiary">You</p>
+      <div className="relative w-fit min-w-0 max-w-[72ch]">
+        <p className="mb-1.5 flex items-center justify-end gap-1.5 text-right text-xs font-medium text-text-tertiary">
+          You
+          {deliveryIntent && (
+            <span className="font-normal">
+              · {deliveryIntent === 'guide' ? 'Guidance' : 'Next task'}
+            </span>
+          )}
+          {delivery === 'delivered' && (
+            <span
+              className="text-text-tertiary"
+              title="Sent to the agent process. This does not confirm the work is complete."
+            >
+              Sent to agent
+            </span>
+          )}
+          {delivery === 'queued' && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-info/10 px-1.5 py-0.5 text-eyebrow font-medium text-info"
+              title="The agent is mid-turn; this message will be sent next"
+            >
+              Queued
+            </span>
+          )}
+          {delivery === 'uncertain' && (
+            <span
+              className="text-warning"
+              title="Delivery could not be confirmed. Check the conversation before sending again."
+            >
+              Delivery unknown
+            </span>
+          )}
+          {delivery === 'failed' && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-error/10 px-1.5 py-0.5 text-eyebrow font-medium text-error"
+              title="The message was rejected. You can edit it before sending again."
+            >
+              Not sent
+            </span>
+          )}
+        </p>
+        {deliveryError && (
+          <p role="status" className="mb-2 text-right text-xs text-warning">
+            {deliveryError}
+          </p>
+        )}
         <div
           className={`overflow-hidden rounded-xl border px-4 py-3 text-sm text-text-primary transition-colors ${
             collapsible
@@ -1839,7 +1975,9 @@ export function UserMessage({
             {attachments && attachments.length > 0 && (
               <MessageAttachmentList attachments={attachments} />
             )}
-            <p className="whitespace-pre-wrap break-words leading-relaxed">{content}</p>
+            <p className="whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">
+              {content}
+            </p>
           </div>
           {collapsible && (
             <button
@@ -1898,7 +2036,7 @@ function MessageAttachmentChip({ attachment }: { attachment: ChatAttachment }) {
       )}
       <div className="min-w-0">
         <p className="max-w-56 truncate text-xs font-medium text-text-primary">{attachment.name}</p>
-        <p className="text-[11px] text-text-tertiary">{formatAttachmentBytes(attachment.size)}</p>
+        <p className="text-xs text-text-tertiary">{formatAttachmentBytes(attachment.size)}</p>
       </div>
       <button
         type="button"
@@ -1924,7 +2062,6 @@ function summarizeActivityEvents(events: Array<CodexEvent & { sessionId?: string
   const labels = [
     summarizeActivityCount(events, 'tool_call', 'tool'),
     summarizeActivityCount(events, 'command_exec', 'command'),
-    summarizeActivityCount(events, 'file_read', 'file read'),
     summarizeActivityCount(events, 'file_edit', 'file edit'),
     summarizeActivityCount(events, 'approval_request', 'approval'),
     summarizeActivityCount(events, 'input_request', 'input request'),
@@ -1957,8 +2094,6 @@ function formatActivityPreview(event: CodexEvent & { sessionId?: string }): stri
       return event.toolName ? `Tool: ${event.toolName}` : 'Tool call';
     case 'command_exec':
       return event.command?.trim() || 'Command output';
-    case 'file_read':
-      return event.filePath ? `Read ${event.filePath}` : 'File read';
     case 'file_edit':
       return event.filePath ? `Edit ${event.filePath}` : 'File edit';
     case 'approval_request':

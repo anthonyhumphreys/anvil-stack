@@ -71,6 +71,15 @@ describe('shouldSendChatMessageFromKey', () => {
     expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: true })).toBe(false);
   });
 
+  it('does not send while an input method editor is composing text', () => {
+    expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, isComposing: true })).toBe(
+      false,
+    );
+    expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, keyCode: 229 })).toBe(
+      false,
+    );
+  });
+
   it('ignores non-send keys', () => {
     expect(shouldSendChatMessageFromKey({ key: 'Tab', shiftKey: false })).toBe(false);
     expect(shouldSendChatMessageFromKey({ key: 'a', shiftKey: false })).toBe(false);

@@ -1,5 +1,5 @@
 import { BrowserWindow, ipcMain } from 'electron';
-import type { WorkspaceCreateOptions } from '../../shared/types.js';
+import type { WorkspaceCloneRequest, WorkspaceCreateOptions } from '../../shared/types.js';
 import {
   listWorkspaces,
   getWorkspace,
@@ -8,14 +8,53 @@ import {
   deleteWorkspace,
   addReposToWorkspace,
   removeReposFromWorkspace,
+  listWorkspaceRepoDefinitions,
+  mapWorkspaceRepoToCheckout,
   getWorkspacePreferences,
   updateWorkspacePreferences,
   clearWorkspacePreferences,
   exportVSCodeWorkspace,
 } from '../services/workspace.service.js';
+import {
+  linkWorkspaceRepo,
+  listWorkspaceMaterializationOps,
+  purgeQuarantinedCheckout,
+  removeWorkspaceCheckout,
+  startWorkspaceClone,
+} from '../services/workspace-materialization.service.js';
+import {
+  computeBootstrapDigest,
+  explainBootstrapRecipe,
+  getWorkspaceBootstrap,
+  isBootstrapApproved,
+  listBootstrapApprovals,
+  listBootstrapRuns,
+  recordBootstrapApproval,
+  resolveWorkspaceCommits,
+  revokeBootstrapApproval,
+  startBootstrapRun,
+  workspaceCheckoutRoot,
+} from '../services/bootstrap-policy.service.js';
+import { buildDevicePolicy } from '../services/mesh-worker.service.js';
+import type {
+  WorkspaceBootstrapApprovalSummary,
+  WorkspaceBootstrapStatus,
+} from '../../shared/types.js';
 import { scanForReposAsync, cancelScan } from '../services/repo-scan.service.js';
 import { ensureGateTemplates } from '../services/lifecycle.service.js';
 import { getWorkspaceActivityFeed } from '../services/workspace-activity.service.js';
+import { enqueueIndexJobs } from '../services/repo-index-queue.service.js';
+
+/** Kick off tiered indexing (mapped → enriched) for repos joining a workspace. */
+function enqueueIndexJobsForRepos(repoIds: string[] | undefined): void {
+  for (const repoId of repoIds ?? []) {
+    try {
+      enqueueIndexJobs(repoId, { reason: 'connect' });
+    } catch (err) {
+      console.error(`[Workspace IPC] Failed to enqueue index jobs for ${repoId}:`, err);
+    }
+  }
+}
 
 interface WorkspaceHandlersOptions {
   openWorkspaceWindow?: (workspaceId: string) => void;
@@ -53,6 +92,9 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
     try {
       const workspace = createWorkspace(opts);
       ensureGateTemplates(workspace.id);
+      // Repos are usable once the fast structural tier lands; enrichment
+      // continues in the background (fixes J1 — no manual Index click needed).
+      enqueueIndexJobsForRepos(opts.repoIds);
       return workspace;
     } catch (err) {
       console.error('[Workspace IPC] Error creating workspace:', err);
@@ -121,7 +163,9 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
 
   ipcMain.handle('workspace:add-repos', (_event, workspaceId: string, repoIds: string[]) => {
     try {
-      return addReposToWorkspace(workspaceId, repoIds);
+      const result = addReposToWorkspace(workspaceId, repoIds);
+      enqueueIndexJobsForRepos(repoIds);
+      return result;
     } catch (err) {
       console.error('[Workspace IPC] Error adding repos to workspace:', err);
       throw err;
@@ -136,6 +180,190 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
       throw err;
     }
   });
+
+  ipcMain.handle('workspace:repo-definitions', (_event, workspaceId: string) => {
+    try {
+      return listWorkspaceRepoDefinitions(workspaceId);
+    } catch (err) {
+      console.error('[Workspace IPC] Error listing repo definitions:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle(
+    'workspace:map-repo',
+    (_event, workspaceId: string, portableId: string, repoId: string) => {
+      try {
+        if (typeof portableId !== 'string' || portableId.length === 0) {
+          throw new Error('portableId is required');
+        }
+        if (typeof repoId !== 'string' || repoId.length === 0) {
+          throw new Error('repoId is required');
+        }
+        return mapWorkspaceRepoToCheckout(workspaceId, portableId, repoId);
+      } catch (err) {
+        console.error('[Workspace IPC] Error mapping repo definition:', err);
+        throw err;
+      }
+    },
+  );
+
+  ipcMain.handle('workspace:start-clone', async (_event, input: WorkspaceCloneRequest) => {
+    try {
+      if (typeof input !== 'object' || input === null) {
+        throw new Error('clone request is required');
+      }
+      return await startWorkspaceClone(input);
+    } catch (err) {
+      console.error('[Workspace IPC] Error starting workspace clone:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle(
+    'workspace:link-repo',
+    async (
+      _event,
+      workspaceId: string,
+      portableId: string,
+      checkoutPath: string,
+      options?: { allowRemoteDivergence?: boolean },
+    ) => {
+      try {
+        if (typeof checkoutPath !== 'string' || checkoutPath.length === 0) {
+          throw new Error('checkoutPath is required');
+        }
+        return await linkWorkspaceRepo(workspaceId, portableId, checkoutPath, options ?? {});
+      } catch (err) {
+        console.error('[Workspace IPC] Error linking repo:', err);
+        throw err;
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:remove-checkout',
+    async (
+      _event,
+      workspaceId: string,
+      portableId: string,
+      options?: { deleteCheckout?: boolean },
+    ) => {
+      try {
+        if (typeof portableId !== 'string' || portableId.length === 0) {
+          throw new Error('portableId is required');
+        }
+        return await removeWorkspaceCheckout(workspaceId, portableId, options ?? {});
+      } catch (err) {
+        console.error('[Workspace IPC] Error removing checkout:', err);
+        throw err;
+      }
+    },
+  );
+
+  ipcMain.handle('workspace:purge-quarantine', async (_event, quarantineId: string) => {
+    try {
+      if (typeof quarantineId !== 'string' || quarantineId.length === 0) {
+        throw new Error('quarantineId is required');
+      }
+      return await purgeQuarantinedCheckout(quarantineId);
+    } catch (err) {
+      console.error('[Workspace IPC] Error purging quarantined checkout:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('workspace:materialization-ops', (_event, workspaceId: string) => {
+    try {
+      return listWorkspaceMaterializationOps(workspaceId);
+    } catch (err) {
+      console.error('[Workspace IPC] Error listing materialisation ops:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle(
+    'workspace:bootstrap-status',
+    async (_event, workspaceId: string): Promise<WorkspaceBootstrapStatus> => {
+      const recipe = getWorkspaceBootstrap(workspaceId);
+      if (recipe === null) {
+        return { recipe: null, digest: null, approved: false, explanation: null, runs: [] };
+      }
+      const input = {
+        recipe,
+        repositoryCommits: await resolveWorkspaceCommits(workspaceId),
+        executionPolicy: buildDevicePolicy(),
+      };
+      const digest = computeBootstrapDigest(input);
+      return {
+        recipe,
+        digest,
+        approved: isBootstrapApproved(workspaceId, digest, recipe),
+        explanation: explainBootstrapRecipe(recipe),
+        runs: listBootstrapRuns(workspaceId),
+      };
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:bootstrap-approve',
+    async (
+      _event,
+      workspaceId: string,
+      options?: { shellApproved?: boolean },
+    ): Promise<{ approval: WorkspaceBootstrapApprovalSummary; runId: string | null }> => {
+      const recipe = getWorkspaceBootstrap(workspaceId);
+      if (recipe === null) throw new Error('workspace has no bootstrap recipe');
+      const input = {
+        recipe,
+        repositoryCommits: await resolveWorkspaceCommits(workspaceId),
+        executionPolicy: buildDevicePolicy(),
+      };
+      const approval = recordBootstrapApproval(workspaceId, {
+        ...input,
+        shellApproved: options?.shellApproved === true,
+      });
+      // Approving implies intent to run — start immediately when a checkout
+      // exists; otherwise the run stays a pending record the materialisation
+      // flow can trigger after cloning.
+      const checkoutRoot = workspaceCheckoutRoot(workspaceId);
+      const runId = checkoutRoot
+        ? startBootstrapRun({ workspaceId, ...input, checkoutRoot }).runId
+        : null;
+      return { approval, runId };
+    },
+  );
+
+  ipcMain.handle('workspace:bootstrap-run', async (_event, workspaceId: string) => {
+    const recipe = getWorkspaceBootstrap(workspaceId);
+    if (recipe === null) throw new Error('workspace has no bootstrap recipe');
+    const checkoutRoot = workspaceCheckoutRoot(workspaceId);
+    if (checkoutRoot === null) throw new Error('workspace has no mapped checkout');
+    return startBootstrapRun({
+      workspaceId,
+      recipe,
+      repositoryCommits: await resolveWorkspaceCommits(workspaceId),
+      executionPolicy: buildDevicePolicy(),
+      checkoutRoot,
+    }).runId;
+  });
+
+  ipcMain.handle(
+    'workspace:bootstrap-revoke-approval',
+    (_event, approvalId: string): { revoked: boolean } => {
+      if (typeof approvalId !== 'string' || approvalId.length === 0) {
+        throw new Error('approvalId is required');
+      }
+      revokeBootstrapApproval(approvalId);
+      return { revoked: true };
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:bootstrap-approvals',
+    (_event, workspaceId: string): WorkspaceBootstrapApprovalSummary[] =>
+      listBootstrapApprovals(workspaceId),
+  );
 
   ipcMain.handle('workspace:export-vscode', async (_event, workspaceId: string) => {
     try {

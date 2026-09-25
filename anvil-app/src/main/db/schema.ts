@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 69;
+export const SCHEMA_VERSION = 98;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS repos (
   remote_url TEXT,
   default_branch TEXT DEFAULT 'main',
   status TEXT DEFAULT 'connected',
+  index_tier TEXT NOT NULL DEFAULT 'connected',
   last_indexed TEXT,
   file_count INTEGER DEFAULT 0,
   branch_count INTEGER DEFAULT 0,
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS module_summaries (
   file_count INTEGER,
   key_files TEXT,
   dependencies TEXT,
+  content_hash TEXT,
   generated_at TEXT,
   UNIQUE(repo_id, path)
 );
@@ -76,11 +78,31 @@ CREATE TABLE IF NOT EXISTS repository_map_graphs (
   generated_at TEXT NOT NULL
 );
 
+-- Tiered index queue: one row per repo per tier target. 'running' rows are
+-- crash fences — startup recovery re-queues them instead of resetting repos.
+CREATE TABLE IF NOT EXISTS repo_index_jobs (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  tier TEXT NOT NULL CHECK (tier IN ('mapped', 'enriched')),
+  state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+  reason TEXT NOT NULL DEFAULT 'manual',
+  progress INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  error TEXT,
+  queued_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_repo_index_jobs_repo ON repo_index_jobs (repo_id, state);
+CREATE INDEX IF NOT EXISTS idx_repo_index_jobs_state ON repo_index_jobs (state, queued_at);
+
 CREATE TABLE IF NOT EXISTS chat_threads (
   id TEXT PRIMARY KEY,
   workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
   persona_id TEXT NOT NULL,
   title TEXT NOT NULL,
+  purpose TEXT NOT NULL DEFAULT 'normal' CHECK (purpose IN ('normal', 'side-question')),
+  side_question_of_thread_id TEXT REFERENCES chat_threads(id) ON DELETE SET NULL,
   work_item_id TEXT,
   work_item_provider TEXT,
   work_item_title TEXT,
@@ -136,6 +158,9 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_workspace_persona
 
 CREATE INDEX IF NOT EXISTS idx_chat_threads_workspace_work_item
   ON chat_threads(workspace_id, work_item_provider, work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_chat_threads_side_question_parent
+  ON chat_threads(side_question_of_thread_id);
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_timestamp
   ON chat_messages(thread_id, timestamp ASC);
@@ -244,6 +269,9 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
   source TEXT NOT NULL DEFAULT 'assistant',
   model TEXT,
   reasoning_effort TEXT,
+  share_id TEXT,
+  shared_url TEXT,
+  shared_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(thread_id, relative_path)
@@ -404,6 +432,16 @@ CREATE TABLE IF NOT EXISTS mobile_companion_devices (
   created_at TEXT NOT NULL,
   last_seen_at TEXT,
   revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS companion_enrollment_policies (
+  enrollment_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  display_name TEXT,
+  tier TEXT NOT NULL DEFAULT 'pending',
+  first_seen_at TEXT NOT NULL,
+  decided_at TEXT,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workspace_notes (
@@ -637,6 +675,8 @@ CREATE INDEX IF NOT EXISTS idx_run_commands_repo ON run_commands(repo_id);
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  definition_state TEXT NOT NULL DEFAULT 'ready',
+  bootstrap_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -647,6 +687,226 @@ CREATE TABLE IF NOT EXISTS workspace_repos (
   added_at TEXT NOT NULL,
   PRIMARY KEY (workspace_id, repo_id)
 );
+
+-- Portable repo membership in a synced workspace definition. repo_id in
+-- workspace_repos is a device-local checkout reference; portable_id is the
+-- stable cross-device identity a definition carries. mapped_repo_id stays
+-- null until the device maps the entry to a local checkout (WS-01).
+CREATE TABLE IF NOT EXISTS workspace_repo_definitions (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  portable_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  remote_url TEXT,
+  default_branch TEXT,
+  mapped_repo_id TEXT REFERENCES repos(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, portable_id)
+);
+
+-- WS-03: local bootstrap approval records. A record pins the sha256 digest
+-- of recipe content + repository commits + effective execution policy —
+-- a changed input can never silently reuse an old approval. Approvals are
+-- device-local and NEVER sync; each target approves for itself.
+CREATE TABLE IF NOT EXISTS bootstrap_approvals (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  digest TEXT NOT NULL,
+  recipe_json TEXT NOT NULL,
+  repository_commits_json TEXT NOT NULL,
+  policy_json TEXT NOT NULL,
+  shell_approved INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE (workspace_id, digest)
+);
+
+-- WS-03: bootstrap run journal — step outcomes + bounded evidence per
+-- workspace replica. state 'awaiting-approval' parks a run whose digest
+-- no current approval covers.
+CREATE TABLE IF NOT EXISTS bootstrap_runs (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  definition_revision TEXT,
+  digest TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK (state IN ('awaiting-approval', 'running', 'verified', 'failed', 'unknown-outcome')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bootstrap_runs_workspace
+  ON bootstrap_runs(workspace_id, state);
+
+CREATE TABLE IF NOT EXISTS bootstrap_run_steps (
+  run_id TEXT NOT NULL REFERENCES bootstrap_runs(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK (state IN ('pending', 'running', 'verified', 'failed', 'unknown-outcome')),
+  log_tail TEXT,
+  exit_code INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, step_id)
+);
+
+CREATE TABLE IF NOT EXISTS editable_agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  icon TEXT NOT NULL DEFAULT 'Bot',
+  colour TEXT NOT NULL DEFAULT '#64748b',
+  prompt_body TEXT NOT NULL DEFAULT '',
+  can_write_files INTEGER NOT NULL DEFAULT 1,
+  can_run_commands INTEGER NOT NULL DEFAULT 1,
+  can_read_files INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- MESH-02: device-local worker opt-in + incarnation bookkeeping (never synced).
+CREATE TABLE IF NOT EXISTS mesh_worker_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  incarnation TEXT,
+  lease_expires_at TEXT,
+  connected_at TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL
+);
+
+-- Local attempt journal, written before any process/work starts.
+CREATE TABLE IF NOT EXISTS mesh_attempts (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  incarnation TEXT NOT NULL,
+  fence INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  journal_json TEXT NOT NULL DEFAULT '[]',
+  sealed_inputs_json TEXT,
+  result_json TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_attempts_state ON mesh_attempts(state);
+
+-- SESSION-03: local session-ownership mirror of the backend's generation
+-- authority. 'relinquished' is written BEFORE the backend advance so a
+-- restart honours it; absence of a row means an ordinary local-only
+-- session that needs no lease (spec §11).
+CREATE TABLE IF NOT EXISTS mesh_session_ownership (
+  session_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  owner_enrollment_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('owned', 'relinquished')),
+  updated_at TEXT NOT NULL
+);
+
+-- Local mirror of handoff participation for boot reconciliation: role is
+-- this device's side; state is the last durably observed backend state.
+CREATE TABLE IF NOT EXISTS mesh_handoff_journal (
+  handoff_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('source', 'target')),
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_handoff_journal_session
+  ON mesh_handoff_journal(session_id);
+
+-- FLOW-02: parent-side node dispatch records. The dispatch id is the
+-- stable identity — a parent restart re-adopts the recorded job rather
+-- than recreating one (spec §449).
+CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
+  dispatch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  job_id TEXT,
+  request_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  request_json TEXT,
+  state TEXT NOT NULL,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  output_json TEXT,
+  placement_explanation TEXT,
+  resolved_enrollment_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_node_dispatches_state
+  ON mesh_node_dispatches(state);
+
+-- FLOW-03: durable integration runs. An integration applies adopted node
+-- results in declared dependency order inside its own worktree; the row
+-- records the outcome — integrated commit, visible conflicts, or failure —
+-- and the working state for resume/inspection (spec §457).
+CREATE TABLE IF NOT EXISTS mesh_integrations (
+  integration_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  dispatch_ids_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('integrated', 'conflicted', 'failed')),
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- WS-02: durable workspace materialisation journal. The op row and its
+-- per-repo stage rows are written BEFORE the matching filesystem mutation so
+-- a crash mid-clone/link/remove is reconstructable. request_key is the
+-- canonical hash of pinned inputs; concurrent identical requests attach to
+-- the same running op (partial unique index below).
+CREATE TABLE IF NOT EXISTS workspace_materialization_ops (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('clone', 'link', 'remove')),
+  definition_revision TEXT,
+  request_key TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'running'
+    CHECK (state IN ('running', 'completed', 'failed', 'awaiting-review')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_ops_running_request
+  ON workspace_materialization_ops(request_key) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS idx_wm_ops_workspace
+  ON workspace_materialization_ops(workspace_id, state);
+
+-- stage records the last PROVEN step; recovery only trusts these values plus
+-- the journaled paths — never a matching directory name.
+CREATE TABLE IF NOT EXISTS workspace_materialization_repo_stages (
+  op_id TEXT NOT NULL REFERENCES workspace_materialization_ops(id) ON DELETE CASCADE,
+  portable_id TEXT NOT NULL,
+  remote_url TEXT,
+  requested_ref TEXT,
+  requested_commit TEXT,
+  destination TEXT,
+  staging_path TEXT,
+  ownership_intent TEXT NOT NULL DEFAULT 'anvil-created'
+    CHECK (ownership_intent IN ('anvil-created', 'linked')),
+  stage TEXT NOT NULL DEFAULT 'pending' CHECK (stage IN (
+    'pending', 'destination-reserved', 'cloned-to-staging', 'checkout-verified',
+    'commit-recorded', 'checks-recorded', 'mapping-published', 'detached',
+    'quarantined', 'failed', 'unsupported'
+  )),
+  stage_reason TEXT,
+  resolved_commit TEXT,
+  repo_id TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (op_id, portable_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_repo_stages_active_destination
+  ON workspace_materialization_repo_stages(destination)
+  WHERE stage NOT IN ('failed', 'unsupported', 'mapping-published', 'detached', 'quarantined')
+    AND destination IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS workspace_preferences (
   workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -956,6 +1216,386 @@ CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
   applied_at TEXT,
   PRIMARY KEY (report_id, recommendation_key)
 );
+CREATE TABLE IF NOT EXISTS device_enrollments (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  installation_id TEXT NOT NULL,
+  enrollment_generation INTEGER NOT NULL DEFAULT 1,
+  next_sequence INTEGER NOT NULL DEFAULT 1,
+  display_name TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('active', 'revoked', 'pending')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_device_enrollments_scope
+  ON device_enrollments(backend_id, account_id, dataset_epoch);
+CREATE TABLE IF NOT EXISTS sync_bindings (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_revision INTEGER,
+  base_payload_json TEXT,
+  local_edit_generation INTEGER NOT NULL DEFAULT 0,
+  acknowledged_generation INTEGER NOT NULL DEFAULT 0,
+  quarantine_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_bindings_scope_entity
+  ON sync_bindings(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS sync_outbox (
+  change_id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  enrollment_sequence INTEGER,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  base_revision INTEGER,
+  operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'delete')),
+  payload_json TEXT,
+  payload_hash TEXT NOT NULL,
+  local_edit_generation INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'dispatched', 'acknowledged', 'conflict', 'rejected')),
+  created_at TEXT NOT NULL,
+  dispatched_at TEXT,
+  result_json TEXT,
+  sealed_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_scope_state
+  ON sync_outbox(backend_id, account_id, dataset_epoch, state, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_outbox_dispatched_entity
+  ON sync_outbox(backend_id, account_id, dataset_epoch, entity_type, entity_id)
+  WHERE state = 'dispatched';
+CREATE TABLE IF NOT EXISTS sync_state (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  cursor TEXT,
+  last_pull_at TEXT,
+  last_push_at TEXT,
+  consumed_sequence_high_water INTEGER NOT NULL DEFAULT 0,
+  retention_floor_sequence INTEGER,
+  protocol_version TEXT,
+  server_limits_json TEXT,
+  reset_required INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch)
+);
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_payload_json TEXT,
+  local_payload_json TEXT,
+  remote_payload_json TEXT,
+  base_revision INTEGER,
+  remote_revision INTEGER,
+  kind TEXT NOT NULL CHECK (kind IN ('edit-edit', 'edit-delete', 'delete-edit')),
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT CHECK (resolution IN ('keep-local', 'use-remote', 'save-copy'))
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_scope_entity
+  ON sync_conflicts(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS sync_backends (
+  id TEXT PRIMARY KEY,
+  base_url TEXT NOT NULL,
+  deployment_id TEXT,
+  display_name TEXT,
+  profiles_json TEXT NOT NULL,
+  auth_modes_json TEXT NOT NULL,
+  pinned_descriptor_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('active','paused','disconnected')),
+  connection_mode TEXT NOT NULL DEFAULT 'compatible'
+    CHECK (connection_mode IN ('hosted','cloudflare','compatible')),
+  identity_review_required INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_backends_one_active
+  ON sync_backends(state) WHERE state = 'active';
+CREATE TABLE IF NOT EXISTS sync_installation (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  installation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_scan_runs (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  scan_id TEXT NOT NULL,
+  watermark_start INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch)
+);
+CREATE TABLE IF NOT EXISTS sync_scan_staging (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL,
+  payload_json TEXT,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
+-- BILL-05: last-known hosted entitlement per (backend, account). Self-host
+-- backends never write a row; restricted pauses sync writes only — pulls,
+-- outbox, cursors, and conflicts are untouched. No secrets or tokens.
+CREATE TABLE IF NOT EXISTS sync_entitlement (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  source TEXT NOT NULL,
+  plan_key TEXT,
+  preview_ends_at TEXT,
+  access_until TEXT,
+  grace_until TEXT,
+  checked_at TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL,
+  restricted INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id)
+);
+-- E2E key material. Keyed by (backend, account) — the account data key
+-- survives dataset-epoch rotation. key_wrapped is safeStorage-encrypted
+-- ADK bytes; nothing here is ever sent to the backend.
+CREATE TABLE IF NOT EXISTS sync_keyring (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  source TEXT NOT NULL DEFAULT 'minted' CHECK (source IN ('minted', 'wrap', 'pairing', 'rotation', 'recovery')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, key_version)
+);
+-- Client-only recovery secret custody. secret_wrapped is safeStorage
+-- encrypted and is never serialized into sync entities or sent to a backend.
+CREATE TABLE IF NOT EXISTS sync_recovery_secrets (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  recovery_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  invalidated_at TEXT,
+  PRIMARY KEY (backend_id, account_id)
+);
+-- Server-authorized first-device bootstrap eligibility. A keyless device may
+-- mint ADK v1 only after security.get confirms this enrollment is the durable
+-- first-device authority; the row is local and scoped to backend/account.
+CREATE TABLE IF NOT EXISTS sync_key_bootstrap_eligibility (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  eligible INTEGER NOT NULL DEFAULT 0 CHECK (eligible IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+-- Per-enrollment X25519 device identities. identity_priv_wrapped is set
+-- only on this device's own enrollment row; other rows are pubkey-only
+-- caches learned from device-identity entities.
+CREATE TABLE IF NOT EXISTS sync_device_keys (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  identity_pub TEXT NOT NULL,
+  identity_priv_wrapped BLOB,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+-- Out-of-band pairing secrets. secret_wrapped is safeStorage-encrypted;
+-- role 'issuer' minted the pairing payload, 'redeemer' typed it in and is
+-- awaiting the matching keyring-pairing entity. Scoped by
+-- (backend, account) so a nonce can never resolve across accounts.
+-- proof_nonce (migration 85) is the redemption proof the new device
+-- echoes in its keyring-paired entity so the issuer promotes it to
+-- trusted membership.
+CREATE TABLE IF NOT EXISTS sync_pairing (
+  nonce TEXT NOT NULL,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('issuer', 'redeemer')),
+  proof_nonce TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, nonce)
+);
+-- Per-enrollment decrypt membership (migration 85). Enrollment is
+-- authentication only — 'trusted' marks permission to receive ADK
+-- deliveries; 'pending' devices sync metadata but get no wraps; 'revoked'
+-- is sticky and survives identity re-announcement.
+CREATE TABLE IF NOT EXISTS sync_device_trust (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'trusted', 'revoked')),
+  decided_at TEXT,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+-- Local rotation ledger (migration 85): records rotations this device
+-- minted so keyring.report can mark them completed account-side.
+CREATE TABLE IF NOT EXISTS sync_keyring_rotations (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  rotation_id TEXT NOT NULL,
+  rotor_enrollment_id TEXT NOT NULL DEFAULT '',
+  from_version INTEGER NOT NULL,
+  to_version INTEGER NOT NULL,
+  revoked_json TEXT NOT NULL DEFAULT '[]',
+  local_origin INTEGER NOT NULL DEFAULT 0 CHECK (local_origin IN (0, 1)),
+  reported_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, rotation_id)
+);
+-- Local-only completion fence for account revocations. Backend rotation
+-- entities are evidence, not proof that this device completed its own
+-- post-revocation ADK rotation.
+CREATE TABLE IF NOT EXISTS sync_revocation_rotations (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  rotated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+-- Task content keys this device holds — as job source or designated
+-- result recipient. key_wrapped is safeStorage-encrypted.
+CREATE TABLE IF NOT EXISTS mesh_task_keys (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, job_id)
+);
+-- Dashboard grants this device issued (or pending requests it observed):
+-- the wrapped DSK it must reuse to publish follow-up snapshots, plus the
+-- granted scopes and latest seq. state 'pending' rows are observed
+-- requests awaiting a local decision — they have no DSK yet.
+CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  browser_pub TEXT NOT NULL,
+  dsk_wrapped BLOB,
+  scopes_json TEXT NOT NULL DEFAULT '[]',
+  workspace_id TEXT,
+  repo_ids_json TEXT NOT NULL DEFAULT '[]',
+  enrollment_id TEXT,
+  expires_at TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'pending',
+  request_json TEXT,
+  last_published_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, request_id)
+);
+-- Browser workspace command receipts. An executing row is a crash fence:
+-- recovery marks it uncertain and never re-runs the command automatically.
+-- Result bytes are safeStorage-wrapped and never exposed to the renderer.
+CREATE TABLE IF NOT EXISTS mesh_browser_command_receipts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  repo_id TEXT,
+  expires_at TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  command_envelope_json TEXT,
+  claim_fence INTEGER,
+  state TEXT NOT NULL CHECK (state IN ('executing', 'completed', 'failed', 'uncertain')),
+  result_wrapped BLOB,
+  result_envelope_json TEXT,
+  result_published INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY (backend_id, account_id, grant_id, command_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_browser_command_receipts_state
+  ON mesh_browser_command_receipts (backend_id, account_id, state, updated_at);
+-- Delivery ledger: which ADK versions this device has wrapped to which
+-- enrollment, so re-wraps on rotation are idempotent.
+CREATE TABLE IF NOT EXISTS sync_keyring_deliveries (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  delivered_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id, key_version)
+);
+-- Authenticated keyring wraps that arrived before the sender was locally
+-- verified. The ciphertext remains local-only until SAS approval permits
+-- retry; no plaintext ADK is stored here.
+CREATE TABLE IF NOT EXISTS sync_keyring_pending_wraps (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  recipient_enrollment_id TEXT NOT NULL,
+  sender_enrollment_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, recipient_enrollment_id, payload_hash)
+);
+-- ENV-01 cloud environments. Keep in sync with the migration 84 copies.
+CREATE TABLE IF NOT EXISTS cloud_provider_connections (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  display_name TEXT,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  secret_blob BLOB,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_provider_connections_scope
+  ON cloud_provider_connections (backend_id, account_id, provider);
+CREATE TABLE IF NOT EXISTS cloud_environments (
+  environment_id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  state TEXT NOT NULL,
+  handle_json TEXT,
+  enrollment_id TEXT,
+  job_id TEXT,
+  connection_id TEXT,
+  created_by TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_environments_scope
+  ON cloud_environments (backend_id, account_id, state);
+-- Local-first activation funnel events (§7 Measurement). Rows are never
+-- transmitted; they exist only for local funnel analysis.
+CREATE TABLE IF NOT EXISTS activation_events (
+  id INTEGER PRIMARY KEY,
+  event TEXT NOT NULL,
+  payload TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activation_events_event_created
+  ON activation_events (event, created_at);
 `;
 
 /**
@@ -2104,6 +2744,619 @@ ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
 ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
 `,
   68: `
+CREATE TABLE IF NOT EXISTS device_enrollments (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  installation_id TEXT NOT NULL,
+  enrollment_generation INTEGER NOT NULL DEFAULT 1,
+  display_name TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('active', 'revoked', 'pending')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_device_enrollments_scope
+  ON device_enrollments(backend_id, account_id, dataset_epoch);
+CREATE TABLE IF NOT EXISTS sync_bindings (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_revision INTEGER,
+  base_payload_json TEXT,
+  local_edit_generation INTEGER NOT NULL DEFAULT 0,
+  acknowledged_generation INTEGER NOT NULL DEFAULT 0,
+  quarantine_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_bindings_scope_entity
+  ON sync_bindings(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS sync_outbox (
+  change_id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  enrollment_sequence INTEGER,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  base_revision INTEGER,
+  operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'delete')),
+  payload_json TEXT,
+  payload_hash TEXT NOT NULL,
+  local_edit_generation INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'dispatched', 'acknowledged', 'conflict', 'rejected')),
+  created_at TEXT NOT NULL,
+  dispatched_at TEXT,
+  result_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_scope_state
+  ON sync_outbox(backend_id, account_id, dataset_epoch, state, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_outbox_dispatched_entity
+  ON sync_outbox(backend_id, account_id, dataset_epoch, entity_type, entity_id)
+  WHERE state = 'dispatched';
+CREATE TABLE IF NOT EXISTS sync_state (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  cursor TEXT,
+  last_pull_at TEXT,
+  last_push_at TEXT,
+  consumed_sequence_high_water INTEGER NOT NULL DEFAULT 0,
+  retention_floor_sequence INTEGER,
+  protocol_version TEXT,
+  server_limits_json TEXT,
+  reset_required INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch)
+);
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_payload_json TEXT,
+  local_payload_json TEXT,
+  remote_payload_json TEXT,
+  base_revision INTEGER,
+  remote_revision INTEGER,
+  kind TEXT NOT NULL CHECK (kind IN ('edit-edit', 'edit-delete', 'delete-edit')),
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT CHECK (resolution IN ('keep-local', 'use-remote', 'save-copy'))
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_scope_entity
+  ON sync_conflicts(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+`,
+  69: `
+CREATE TABLE IF NOT EXISTS sync_backends (
+  id TEXT PRIMARY KEY,
+  base_url TEXT NOT NULL,
+  deployment_id TEXT,
+  display_name TEXT,
+  profiles_json TEXT NOT NULL,
+  auth_modes_json TEXT NOT NULL,
+  pinned_descriptor_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('active','paused','disconnected')),
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_backends_one_active
+  ON sync_backends(state) WHERE state = 'active';
+`,
+  70: `
+ALTER TABLE device_enrollments ADD COLUMN next_sequence INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE sync_backends ADD COLUMN identity_review_required INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS sync_installation (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  installation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_scan_runs (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  scan_id TEXT NOT NULL,
+  watermark_start INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch)
+);
+CREATE TABLE IF NOT EXISTS sync_scan_staging (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL,
+  payload_json TEXT,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
+`,
+  71: `
+ALTER TABLE workspaces ADD COLUMN definition_state TEXT NOT NULL DEFAULT 'ready';
+CREATE TABLE IF NOT EXISTS workspace_repo_definitions (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  portable_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  remote_url TEXT,
+  default_branch TEXT,
+  mapped_repo_id TEXT REFERENCES repos(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, portable_id)
+);
+CREATE TABLE IF NOT EXISTS editable_agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  icon TEXT NOT NULL DEFAULT 'Bot',
+  colour TEXT NOT NULL DEFAULT '#64748b',
+  prompt_body TEXT NOT NULL DEFAULT '',
+  can_write_files INTEGER NOT NULL DEFAULT 1,
+  can_run_commands INTEGER NOT NULL DEFAULT 1,
+  can_read_files INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+  72: `
+-- MESH-02: device-local worker opt-in + incarnation bookkeeping. The policy
+-- is a LOCAL consent record; it is never a synced entity and never enters
+-- the outbox. Single-row table (id = 1).
+CREATE TABLE IF NOT EXISTS mesh_worker_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  incarnation TEXT,
+  lease_expires_at TEXT,
+  connected_at TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL
+);
+-- Local attempt journal (spec §9): written BEFORE any process/work starts
+-- so a crash between spawn and recording is reconstructable. journal_json
+-- is an appendable array of {at, event, detail?} entries.
+CREATE TABLE IF NOT EXISTS mesh_attempts (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  incarnation TEXT NOT NULL,
+  fence INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  journal_json TEXT NOT NULL DEFAULT '[]',
+  result_json TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_attempts_state ON mesh_attempts(state);
+`,
+  73: `
+-- WS-02: durable workspace materialisation journal (spec §7). Written before
+-- each filesystem mutation so an interrupted clone/link/remove is
+-- reconstructable. Keep in sync with the SCHEMA_SQL copy of these tables.
+CREATE TABLE IF NOT EXISTS workspace_materialization_ops (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('clone', 'link', 'remove')),
+  definition_revision TEXT,
+  request_key TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'running'
+    CHECK (state IN ('running', 'completed', 'failed', 'awaiting-review')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_ops_running_request
+  ON workspace_materialization_ops(request_key) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS idx_wm_ops_workspace
+  ON workspace_materialization_ops(workspace_id, state);
+CREATE TABLE IF NOT EXISTS workspace_materialization_repo_stages (
+  op_id TEXT NOT NULL REFERENCES workspace_materialization_ops(id) ON DELETE CASCADE,
+  portable_id TEXT NOT NULL,
+  remote_url TEXT,
+  requested_ref TEXT,
+  requested_commit TEXT,
+  destination TEXT,
+  staging_path TEXT,
+  ownership_intent TEXT NOT NULL DEFAULT 'anvil-created'
+    CHECK (ownership_intent IN ('anvil-created', 'linked')),
+  stage TEXT NOT NULL DEFAULT 'pending' CHECK (stage IN (
+    'pending', 'destination-reserved', 'cloned-to-staging', 'checkout-verified',
+    'commit-recorded', 'checks-recorded', 'mapping-published', 'detached',
+    'quarantined', 'failed', 'unsupported'
+  )),
+  stage_reason TEXT,
+  resolved_commit TEXT,
+  repo_id TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (op_id, portable_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_repo_stages_active_destination
+  ON workspace_materialization_repo_stages(destination)
+  WHERE stage NOT IN ('failed', 'unsupported', 'mapping-published', 'detached', 'quarantined')
+    AND destination IS NOT NULL;
+`,
+  74: `
+-- WS-03: bootstrap recipe on the workspace + local-only approval records
+-- and the run journal (step outcomes + bounded evidence). Approvals pin a
+-- sha256 digest of recipe + commits + effective policy and NEVER sync.
+-- Keep in sync with the SCHEMA_SQL copies of these tables.
+ALTER TABLE workspaces ADD COLUMN bootstrap_json TEXT;
+CREATE TABLE IF NOT EXISTS bootstrap_approvals (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  digest TEXT NOT NULL,
+  recipe_json TEXT NOT NULL,
+  repository_commits_json TEXT NOT NULL,
+  policy_json TEXT NOT NULL,
+  shell_approved INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE (workspace_id, digest)
+);
+CREATE TABLE IF NOT EXISTS bootstrap_runs (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  definition_revision TEXT,
+  digest TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK (state IN ('awaiting-approval', 'running', 'verified', 'failed', 'unknown-outcome')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bootstrap_runs_workspace
+  ON bootstrap_runs(workspace_id, state);
+CREATE TABLE IF NOT EXISTS bootstrap_run_steps (
+  run_id TEXT NOT NULL REFERENCES bootstrap_runs(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK (state IN ('pending', 'running', 'verified', 'failed', 'unknown-outcome')),
+  log_tail TEXT,
+  exit_code INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, step_id)
+);
+`,
+  75: `
+-- SESSION-03: local session-ownership mirror + handoff participation
+-- journal. Keep in sync with the SCHEMA_SQL copies of these tables.
+CREATE TABLE IF NOT EXISTS mesh_session_ownership (
+  session_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  owner_enrollment_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('owned', 'relinquished')),
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mesh_handoff_journal (
+  handoff_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('source', 'target')),
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_handoff_journal_session
+  ON mesh_handoff_journal(session_id);
+`,
+  76: `
+-- FLOW-02: parent-side node dispatch records. The dispatch id is the
+-- stable identity — a parent restart re-adopts the recorded job rather
+-- than recreating one (spec §449). Keep in sync with SCHEMA_SQL.
+CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
+  dispatch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  output_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_node_dispatches_state
+  ON mesh_node_dispatches(state);
+`,
+  77: `
+-- FLOW-03: durable integration runs. Keep in sync with SCHEMA_SQL.
+CREATE TABLE IF NOT EXISTS mesh_integrations (
+  integration_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  dispatch_ids_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('integrated', 'conflicted', 'failed')),
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+  78: `
+ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
+ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
+`,
+  79: `
+-- BILL-05: last-known hosted entitlement per (backend, account). Keep in
+-- sync with the SCHEMA_SQL copy of this table.
+CREATE TABLE IF NOT EXISTS sync_entitlement (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  source TEXT NOT NULL,
+  plan_key TEXT,
+  preview_ends_at TEXT,
+  access_until TEXT,
+  grace_until TEXT,
+  checked_at TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL,
+  restricted INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id)
+);
+`,
+  80: `
+-- MOB-01: per-enrollment companion authorization on this host. tier is
+-- 'pending' (first contact, awaiting host decision), 'observe', 'approve',
+-- 'steer', or 'denied'. Keep in sync with the SCHEMA_SQL copy.
+CREATE TABLE IF NOT EXISTS companion_enrollment_policies (
+  enrollment_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  display_name TEXT,
+  tier TEXT NOT NULL DEFAULT 'pending',
+  first_seen_at TEXT NOT NULL,
+  decided_at TEXT,
+  updated_at TEXT NOT NULL
+);
+`,
+  81: `
+-- Hosted artifact sharing: the backend share id and public URL stamped
+-- on a chat artifact when the user publishes it (share.* ops on the
+-- session object). Keep in sync with the SCHEMA_SQL copy of chat_artifacts.
+ALTER TABLE chat_artifacts ADD COLUMN share_id TEXT;
+ALTER TABLE chat_artifacts ADD COLUMN shared_url TEXT;
+ALTER TABLE chat_artifacts ADD COLUMN shared_at TEXT;
+`,
+  82: `
+-- E2E sealing: sealed_json stores the exact wire payload produced at
+-- dispatch (sealed envelope for domain entities, passthrough for
+-- crypto-boundary entities) so replays reuse a stable payload_hash.
+-- Keep the new tables in sync with the SCHEMA_SQL copies.
+ALTER TABLE sync_outbox ADD COLUMN sealed_json TEXT;
+CREATE TABLE IF NOT EXISTS sync_keyring (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, key_version)
+);
+CREATE TABLE IF NOT EXISTS sync_device_keys (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  identity_pub TEXT NOT NULL,
+  identity_priv_wrapped BLOB,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+CREATE TABLE IF NOT EXISTS sync_pairing (
+  nonce TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('issuer', 'redeemer')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_keyring_deliveries (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  delivered_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id, key_version)
+);
+`,
+  83: `
+-- ADK provenance + scoped pairing. sync_keyring.source records where a
+-- key came from ('minted' = provisional self-mint, 'wrap'/'pairing' =
+-- delivered by a peer, 'rotation' = authoritative local rotation);
+-- pre-existing rows are treated as 'minted' so a divergent first-use v1
+-- can still be healed by the authoritative wrap when it arrives.
+-- sync_pairing gains a composite scope key so a nonce can never resolve
+-- or be replaced across backends/accounts. Keep both tables in sync with
+-- the SCHEMA_SQL copies.
+ALTER TABLE sync_keyring ADD COLUMN source TEXT NOT NULL DEFAULT 'minted'
+  CHECK (source IN ('minted', 'wrap', 'pairing', 'rotation'));
+CREATE TABLE sync_pairing_scoped (
+  nonce TEXT NOT NULL,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('issuer', 'redeemer')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, nonce)
+);
+INSERT INTO sync_pairing_scoped (nonce, backend_id, account_id, secret_wrapped, role, created_at)
+  SELECT nonce, backend_id, account_id, secret_wrapped, role, created_at FROM sync_pairing;
+DROP TABLE sync_pairing;
+ALTER TABLE sync_pairing_scoped RENAME TO sync_pairing;
+`,
+  84: `
+-- ENV-01 cloud environments: provider connections hold non-secret config
+-- plus a secret_ref indirection into OS credential storage (credentials
+-- never land in SQLite); cloud_environments is the local registry mirror
+-- of backend environment records.
+CREATE TABLE IF NOT EXISTS cloud_provider_connections (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  display_name TEXT,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  secret_blob BLOB,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_provider_connections_scope
+  ON cloud_provider_connections (backend_id, account_id, provider);
+CREATE TABLE IF NOT EXISTS cloud_environments (
+  environment_id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  state TEXT NOT NULL,
+  handle_json TEXT,
+  enrollment_id TEXT,
+  job_id TEXT,
+  connection_id TEXT,
+  created_by TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_environments_scope
+  ON cloud_environments (backend_id, account_id, state);
+`,
+  85: `
+-- E2EE trust model: per-enrollment decrypt membership, rotation ledger,
+-- task-scoped keys, dashboard grants, and the pairing redemption proof.
+-- Keep in sync with the base-schema copies of these tables.
+CREATE TABLE IF NOT EXISTS sync_device_trust (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'trusted', 'revoked')),
+  decided_at TEXT,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+-- Seed trust for existing enrollments: a device's own active enrollment is
+-- trusted; every other known device starts pending (fail closed — peers
+-- re-earn decrypt membership via pairing or explicit approval).
+INSERT OR IGNORE INTO sync_device_trust (backend_id, account_id, enrollment_id, state, decided_at)
+  SELECT backend_id, account_id, enrollment_id, 'pending', NULL FROM sync_device_keys;
+CREATE TABLE IF NOT EXISTS sync_keyring_rotations (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  rotation_id TEXT NOT NULL,
+  rotor_enrollment_id TEXT NOT NULL DEFAULT '',
+  from_version INTEGER NOT NULL,
+  to_version INTEGER NOT NULL,
+  revoked_json TEXT NOT NULL DEFAULT '[]',
+  local_origin INTEGER NOT NULL DEFAULT 0 CHECK (local_origin IN (0, 1)),
+  reported_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, rotation_id)
+);
+ALTER TABLE sync_pairing ADD COLUMN proof_nonce TEXT;
+-- Persisted task envelopes: the attempt keeps the job's sealedInputs so a
+-- restarted worker can unseal without re-claiming; the dispatch keeps the
+-- byte-exact job.create request so a crash between persist and submit
+-- replays identically.
+ALTER TABLE mesh_attempts ADD COLUMN sealed_inputs_json TEXT;
+-- Dispatches persist BEFORE job.create, so job_id must admit NULL and the
+-- byte-exact job.create request is stored for deterministic replay.
+ALTER TABLE mesh_node_dispatches RENAME TO mesh_node_dispatches_old;
+CREATE TABLE mesh_node_dispatches (
+  dispatch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  job_id TEXT,
+  request_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  request_json TEXT,
+  state TEXT NOT NULL,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  output_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO mesh_node_dispatches (
+  dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
+  manifest_json, state, cancel_requested, output_json, created_at, updated_at
+) SELECT
+  dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
+  manifest_json, state, cancel_requested, output_json, created_at, updated_at
+FROM mesh_node_dispatches_old;
+DROP TABLE mesh_node_dispatches_old;
+CREATE INDEX idx_mesh_node_dispatches_state ON mesh_node_dispatches(state);
+CREATE TABLE IF NOT EXISTS mesh_task_keys (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, job_id)
+);
+CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  browser_pub TEXT NOT NULL,
+  dsk_wrapped BLOB,
+  scopes_json TEXT NOT NULL DEFAULT '[]',
+  workspace_id TEXT,
+  repo_ids_json TEXT NOT NULL DEFAULT '[]',
+  enrollment_id TEXT,
+  expires_at TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'pending',
+  request_json TEXT,
+  last_published_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, request_id)
+);
+CREATE TABLE IF NOT EXISTS mesh_browser_command_receipts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  repo_id TEXT,
+  expires_at TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  command_envelope_json TEXT,
+  claim_fence INTEGER,
+  state TEXT NOT NULL CHECK (state IN ('executing', 'completed', 'failed', 'uncertain')),
+  result_wrapped BLOB,
+  result_envelope_json TEXT,
+  result_published INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY (backend_id, account_id, grant_id, command_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_browser_command_receipts_state
+  ON mesh_browser_command_receipts (backend_id, account_id, state, updated_at);
+`,
+  86: `
+-- FLOW-02: retain the backend placement decision on the durable dispatch so
+-- workflow recovery and the run view can explain automatic/environment
+-- placement without querying a terminal job again.
+ALTER TABLE mesh_node_dispatches ADD COLUMN placement_explanation TEXT;
+ALTER TABLE mesh_node_dispatches ADD COLUMN resolved_enrollment_id TEXT;
+`,
+  87: `
 ALTER TABLE settings ADD COLUMN thread_assist_provider TEXT DEFAULT 'off';
 ALTER TABLE settings ADD COLUMN ollama_endpoint TEXT;
 ALTER TABLE settings ADD COLUMN ollama_model TEXT;
@@ -2111,8 +3364,170 @@ ALTER TABLE settings ADD COLUMN lm_studio_endpoint TEXT;
 ALTER TABLE settings ADD COLUMN lm_studio_model TEXT;
 ALTER TABLE chat_threads ADD COLUMN summary TEXT;
 ALTER TABLE chat_threads ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0;
-`,
-  69: `
 ALTER TABLE settings ADD COLUMN thread_assist_model TEXT;
 `,
+  88: `
+ALTER TABLE sync_backends ADD COLUMN connection_mode TEXT NOT NULL DEFAULT 'compatible';
+`,
+  89: `
+-- Device recovery-code secret custody. Existing recovery material is local
+-- only and safeStorage-wrapped; no recovery code or plaintext secret is part
+-- of a sync payload.
+ALTER TABLE sync_keyring RENAME TO sync_keyring_recovery_old;
+CREATE TABLE sync_keyring (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  source TEXT NOT NULL DEFAULT 'minted' CHECK (source IN ('minted', 'wrap', 'pairing', 'rotation', 'recovery')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, key_version)
+);
+INSERT INTO sync_keyring (backend_id, account_id, key_version, key_wrapped, source, created_at)
+  SELECT backend_id, account_id, key_version, key_wrapped, source, created_at
+  FROM sync_keyring_recovery_old;
+DROP TABLE sync_keyring_recovery_old;
+CREATE TABLE IF NOT EXISTS sync_recovery_secrets (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  recovery_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id)
+);
+`,
+  90: `
+-- Persist the server-authorized first-device bootstrap gate locally. A
+-- keyless device remains unable to mint an ADK until security.get reports
+-- canConfigure and names this enrollment as bootstrapEnrollmentId.
+CREATE TABLE IF NOT EXISTS sync_key_bootstrap_eligibility (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  eligible INTEGER NOT NULL DEFAULT 0 CHECK (eligible IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+`,
+  91: `
+-- A revoked device may retain its old recovery signer for an explicitly
+-- authorized replacement flow, but its old code may not refresh ciphertext
+-- containing post-revocation keys.
+ALTER TABLE sync_recovery_secrets ADD COLUMN invalidated_at TEXT;
+`,
+  92: `
+-- Mark locally minted rotations separately from opaque rotation entities pulled
+-- from the backend. Remote metadata cannot prove this device completed a key
+-- rotation after a revoke.
+ALTER TABLE sync_keyring_rotations ADD COLUMN local_origin INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS sync_revocation_rotations (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  rotated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+`,
+  93: `
+-- Cache authenticated sender wraps until this device verifies the sender
+-- identity locally; the cache contains ciphertext only.
+CREATE TABLE IF NOT EXISTS sync_keyring_pending_wraps (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  recipient_enrollment_id TEXT NOT NULL,
+  sender_enrollment_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, recipient_enrollment_id, payload_hash)
+);
+`,
+  94: `
+-- DASH-02: bind every newly-approved browser grant to an explicit local
+-- workspace/repository selection and approving enrollment. Existing grants
+-- remain readable but cannot execute workspace commands without these fields.
+ALTER TABLE mesh_dashboard_grants ADD COLUMN workspace_id TEXT;
+ALTER TABLE mesh_dashboard_grants ADD COLUMN repo_ids_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE mesh_dashboard_grants ADD COLUMN enrollment_id TEXT;
+CREATE TABLE IF NOT EXISTS mesh_browser_command_receipts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  repo_id TEXT,
+  expires_at TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('executing', 'completed', 'failed', 'uncertain')),
+  result_wrapped BLOB,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY (backend_id, account_id, grant_id, command_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_browser_command_receipts_state
+  ON mesh_browser_command_receipts (backend_id, account_id, state, updated_at);
+`,
+  95: `
+-- DASH-03: durable relay result publication. The original command envelope,
+-- claim fence, and exact sealed result are retained so an acknowledged
+-- execution is never replayed after a lost completion response.
+ALTER TABLE mesh_browser_command_receipts ADD COLUMN command_envelope_json TEXT;
+ALTER TABLE mesh_browser_command_receipts ADD COLUMN claim_fence INTEGER;
+ALTER TABLE mesh_browser_command_receipts ADD COLUMN result_envelope_json TEXT;
+ALTER TABLE mesh_browser_command_receipts ADD COLUMN result_published INTEGER NOT NULL DEFAULT 0;
+`,
+  96: `
+-- Tiered repo indexing: readiness tier on repos, per-module content hashes for
+-- incremental enrichment, and the persistent repo_index_jobs queue table.
+-- Existing fully-indexed repos are treated as enriched.
+ALTER TABLE repos ADD COLUMN index_tier TEXT NOT NULL DEFAULT 'connected';
+ALTER TABLE module_summaries ADD COLUMN content_hash TEXT;
+CREATE TABLE IF NOT EXISTS repo_index_jobs (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  tier TEXT NOT NULL CHECK (tier IN ('mapped', 'enriched')),
+  state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+  reason TEXT NOT NULL DEFAULT 'manual',
+  progress INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  error TEXT,
+  queued_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_repo_index_jobs_repo ON repo_index_jobs (repo_id, state);
+CREATE INDEX IF NOT EXISTS idx_repo_index_jobs_state ON repo_index_jobs (state, queued_at);
+UPDATE repos SET index_tier = 'enriched' WHERE status = 'indexed';
+`,
+  97: `
+-- Local-first activation funnel events (§7 Measurement). Rows are never
+-- transmitted; they exist only for local funnel analysis.
+CREATE TABLE IF NOT EXISTS activation_events (
+  id INTEGER PRIMARY KEY,
+  event TEXT NOT NULL,
+  payload TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activation_events_event_created
+  ON activation_events (event, created_at);
+`,
+  98: `
+-- Side questions are retained threads with a durable read-only purpose. The
+-- parent link may be cleared if the parent is deleted; purpose remains intact.
+ALTER TABLE chat_threads ADD COLUMN purpose TEXT NOT NULL DEFAULT 'normal'
+  CHECK (purpose IN ('normal', 'side-question'));
+ALTER TABLE chat_threads ADD COLUMN side_question_of_thread_id TEXT
+  REFERENCES chat_threads(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_threads_side_question_parent
+  ON chat_threads(side_question_of_thread_id);
+`,
 };
+
+// Development builds could stamp v68 or v69 without the sync table migration.
+// Replay its idempotent table/index creation before later migrations alter them.
+export const LEGACY_SCHEMA_REPAIR_SQL = `${MIGRATIONS[68]}
+${MIGRATIONS[69]}`;

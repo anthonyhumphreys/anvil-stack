@@ -1,6 +1,9 @@
 import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.js';
 import type { WorkItemReference } from './change-review-types.js';
 import type { AgentUIIntent } from './agent-ui-intents.js';
+import type { RepoIndexJobState, RepoIndexJobTier, RepoIndexTier } from './index-jobs.js';
+import type { BootstrapRecipe } from '../../cloud/contract/bootstrap.js';
+import type { EnvironmentProviderId } from '../../cloud/contract/environment.js';
 
 export interface RepoInfo {
   id: string; // SHA256 of repo path
@@ -10,6 +13,8 @@ export interface RepoInfo {
   defaultBranch: string;
   languages: LanguageBreakdown[];
   status: 'connected' | 'indexing' | 'indexed' | 'error';
+  /** Tiered readiness: connected → mapped → enriched. `status` is derived from this. */
+  indexTier?: RepoIndexTier;
   lastIndexed?: string; // ISO timestamp
   fileCount: number;
   branchCount: number;
@@ -205,6 +210,10 @@ export interface RepoIndexProgress {
   percent: number;
   stage: RepoIndexStage;
   detail?: string;
+  /** Queue job driving this progress, when one exists. */
+  jobId?: string;
+  jobTier?: RepoIndexJobTier;
+  jobState?: RepoIndexJobState;
 }
 
 export interface ModuleSummary {
@@ -517,6 +526,11 @@ export interface ChatArtifact {
   source: 'assistant' | 'user' | 'imported';
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  /** Backend share id once published via share.* (hosted deployments). */
+  shareId?: string;
+  /** Public URL (anvilstack.dev/artifacts/{shareId}) while shared. */
+  sharedUrl?: string;
+  sharedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -650,7 +664,14 @@ export interface WorkflowAttempt {
   id: string;
   startedAt: string;
   completedAt?: string;
-  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  status:
+    | 'running'
+    | 'waiting'
+    | 'attention'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'interrupted';
   provider: AgentProvider;
   model: string;
   reasoningEffort: ReasoningEffort;
@@ -658,6 +679,49 @@ export interface WorkflowAttempt {
   sessionId?: string;
   output?: string;
   error?: string;
+  remote?: WorkflowRemoteExecution;
+}
+
+export interface WorkflowCapabilityRequirements {
+  capabilities: string[];
+  os?: string;
+  cpu?: string;
+  memoryMb?: number;
+}
+
+export type WorkflowTargetPolicy =
+  | { kind: 'local' }
+  | { kind: 'device'; enrollmentId: string }
+  | { kind: 'auto'; requirements: WorkflowCapabilityRequirements }
+  | { kind: 'existing-environment'; environmentId: string }
+  | {
+      kind: 'provisioned-environment';
+      provider: EnvironmentProviderId;
+      ttlSeconds: number;
+      /** Optional device-local connection; omitted uses the first matching provisioner. */
+      connectionId?: string;
+      resources?: { vcpus?: number; memoryMb?: number };
+      requirements?: WorkflowCapabilityRequirements;
+    };
+
+export interface WorkflowRemoteExecution {
+  dispatchId: string;
+  jobId?: string;
+  target?: WorkflowTargetPolicy;
+  resolvedEnrollmentId?: string;
+  placementExplanation?: string;
+  state:
+    | 'submitting'
+    | 'queued'
+    | 'awaiting-key-delivery'
+    | 'awaiting-approval'
+    | 'claimed'
+    | 'running'
+    | 'cancel-requested'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'unknown-outcome';
 }
 
 export interface WorkflowNode {
@@ -676,6 +740,10 @@ export interface WorkflowNode {
   teamProfileIds?: string[];
   parentNodeId?: string;
   depth?: number;
+  /** Optional remote target. Omitted nodes continue to run locally. */
+  target?: WorkflowTargetPolicy;
+  repositoryIds?: string[];
+  verification?: string[];
 }
 
 export interface WorkflowEdge {
@@ -730,10 +798,48 @@ export interface WorkflowNodeRun {
   status: WorkflowNodeRunStatus;
   threadId?: string;
   sessionId?: string;
+  /**
+   * Honesty marker: 'acp-print' means the step ran through a one-shot print
+   * CLI (Cursor `cursor-agent -p` / Devin `devin --print`) and no tool-call,
+   * diff, or reasoning events were captured — only the final text output.
+   */
+  executionMode?: 'app-server' | 'acp-print';
   output?: string;
   error?: string;
   startedAt?: string;
   completedAt?: string;
+  remote?: WorkflowRemoteExecution;
+}
+
+export interface WorkflowRepositoryPin {
+  repositoryId: string;
+  commit: string;
+}
+
+export interface WorkflowRunInputManifest {
+  workspaceDefinitionRevision: string;
+  repositories: WorkflowRepositoryPin[];
+  bootstrapDigest: string;
+  configVersions: Record<string, string>;
+  trigger?: { kind: string; headSha?: string };
+}
+
+export interface WorkflowConvergence {
+  integrationId: string;
+  state: 'integrated' | 'conflicted' | 'failed';
+  repositories: Array<{
+    repositoryId: string;
+    baseCommit: string;
+    integratedCommit: string | null;
+    conflicts: Array<{ dispatchId: string; ref: string; conflictedFiles: string[] }>;
+  }>;
+  verification: Array<{
+    repositoryId: string;
+    command: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    durationMs: number;
+  }>;
 }
 
 export interface WorkflowRun {
@@ -759,6 +865,8 @@ export interface WorkflowRun {
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  inputManifest?: WorkflowRunInputManifest;
+  convergence?: WorkflowConvergence;
 }
 
 export interface ChatSendOptions {
@@ -766,6 +874,33 @@ export interface ChatSendOptions {
   reasoningEffort?: ReasoningEffort;
   model?: string;
   serviceTier?: string | null;
+}
+
+/** Explicit intent for a composer send made while a chat session is running. */
+export type ChatFollowUpIntent = 'guide' | 'queue';
+
+export type ChatFollowUpStatus = 'queued' | 'delivered' | 'failed';
+
+export interface ChatFollowUpRequest {
+  sessionId: string;
+  /** Stable identity for retries of the same logical send. */
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  message: string;
+  attachments?: ChatAttachment[];
+}
+
+export interface ChatFollowUpResult {
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  /**
+   * `delivered` means the request was written to provider stdin. A later
+   * JSON-RPC rejection can change it to `failed`; it does not claim that the
+   * provider accepted or completed the task.
+   */
+  status: ChatFollowUpStatus;
+  queueDepth: number;
+  error?: string;
 }
 
 export interface ChatFileMentionSearchInput {
@@ -801,8 +936,12 @@ export interface ChatThreadPullRequestLink {
   observedAt: string;
 }
 
+export type ChatThreadPurpose = 'normal' | 'side-question';
+
 export interface ChatThread {
   pullRequestLinks?: ChatThreadPullRequestLink[];
+  purpose?: ChatThreadPurpose;
+  sideQuestionOfThreadId?: string;
   id: string;
   personaId: string;
   title: string;
@@ -899,22 +1038,6 @@ export interface TurnEvidenceItem {
   failed?: boolean;
   diff?: string;
   timestamp: string;
-}
-
-export interface ChatTurnSummary {
-  id: string;
-  threadId: string;
-  userMessageId: string;
-  userPrompt: string;
-  startedAt: string;
-  completedAt?: string;
-  assistantMessageId?: string;
-  assistantPreview?: string;
-  changedFiles: string[];
-  commands: TurnEvidenceItem[];
-  tests: TurnEvidenceItem[];
-  errors: TurnEvidenceItem[];
-  evidence: TurnEvidenceItem[];
 }
 
 export type AgentRunSource = 'chat' | 'automation' | 'code_review';
@@ -1087,6 +1210,8 @@ export interface CodexEvent {
     | 'agent_ui_intent_resolved'
     | 'goal_update'
     | 'goal_cleared'
+    | 'queue_update'
+    | 'follow_up_delivery'
     | 'error'
     | 'status'
     | 'usage'
@@ -1094,9 +1219,25 @@ export interface CodexEvent {
     | 'context_compaction'
     | 'usage_context'
     | 'thread_metadata';
+  /** Browser-owned sessions are persisted by the main process before broadcast. */
+  persistedBy?: 'main';
   /** App routing metadata attached to live provider events. */
   sessionId?: string;
   appThreadId?: string;
+  /** Display name of the agent that produced the event (e.g. 'Cursor', 'Devin'). */
+  agentLabel?: string;
+  /**
+   * `queue_update` events: number of user sends still queued behind the active
+   * turn (ACP providers have no mid-turn steer; sends flush via session/prompt
+   * when the turn completes). 0 means the queue drained.
+   */
+  queuedSendCount?: number;
+  /** `follow_up_delivery` events carry the stable ID used by chat.followUp. */
+  followUpRequestId?: string;
+  followUpIntent?: ChatFollowUpIntent;
+  followUpStatus?: ChatFollowUpStatus;
+  followUpQueueDepth?: number;
+  followUpError?: string;
   contextUsage?: { used: number; size: number };
   observedCostUsd?: number;
   usage?: DojoTokenUsage;
@@ -1152,12 +1293,53 @@ export interface Persona {
   colour: string;
   description: string;
   systemPromptTemplate: string;
+  /** Inline prompt body for user-defined agents; builtins use the template file. */
+  promptBody?: string;
+  /** True for user-defined agents stored in SQLite and synced; false for compiled-in personas. */
+  editable?: boolean;
   capabilities: {
     canWriteFiles: boolean;
     canRunCommands: boolean;
     canReadFiles: boolean;
   };
 }
+
+/** Provider-truthful capability surface for a live chat session. */
+export interface CodexSessionCapabilities {
+  /** True when a later session can continue this provider thread (native resume). */
+  resumable: boolean;
+  /**
+   * How a mid-turn composer send is delivered: 'steer' = in-band turn/steer
+   * (Codex app-server), 'queue' = held and sent as a new prompt when the turn
+   * finishes (ACP providers have no steer).
+   */
+  midTurnSend: 'steer' | 'queue';
+  /** Provider-aware options for explicit follow-ups while a turn is active. */
+  followUp: {
+    /** Can add guidance to the currently running turn in-band. */
+    guide: boolean;
+    /** Can hold a separate task locally and send it after the current turn. */
+    queue: boolean;
+  };
+  /** True only when the provider can enforce a read-only session sandbox. */
+  readOnlySession: boolean;
+  /** Provider emits thread/goal lifecycle events (Codex-only today). */
+  goals: boolean;
+  /**
+   * Distinct provider-side access modes when the provider collapses Anvil's
+   * four CodexMode levels — e.g. Cursor exposes ask/agent/plan only. Undefined
+   * for Codex-family providers where all four CodexModes are distinct.
+   */
+  accessModes?: string[];
+}
+
+/** How this session's provider thread came to be — honest lifecycle reporting. */
+export type CodexSessionContinuity =
+  | 'new'
+  | 'resumed'
+  | 'forked'
+  /** ACP providers cannot fork; a "fork" starts a fresh provider thread. */
+  | 'transcript-seeded';
 
 export interface CodexSession {
   id: string;
@@ -1170,9 +1352,37 @@ export interface CodexSession {
   status: 'starting' | 'ready' | 'busy' | 'error';
   startedAt: string;
   mode?: CodexMode;
+  /**
+   * Provider-side mode actually applied for the current turn — ACP
+   * session/set_mode id ('ask' | 'agent' | 'plan' | 'accept-edits' | 'smart' |
+   * 'bypass') for Cursor/Devin, the Codex sandbox id for Codex-family. Lets the
+   * renderer label the effective access level honestly when it differs from
+   * `mode` (persona clamps, provider mode collapse).
+   */
+  appliedMode?: string;
   providerThreadId?: string;
   currentTurnId?: string;
+  /** True only when the provider can natively continue `providerThreadId`. */
   resumable?: boolean;
+  /** Number of composer sends queued behind the active turn (ACP providers). */
+  queuedSendCount?: number;
+  continuity?: CodexSessionContinuity;
+  capabilities?: CodexSessionCapabilities;
+  origin?: 'desktop' | 'browser';
+}
+
+/** Result of a mid-turn composer send (`chat:steer`). */
+export interface ChatSteerResult {
+  /**
+   * 'steered' — delivered in-band via Codex turn/steer.
+   * 'sent' — session was idle; delivered immediately as a new prompt.
+   * 'queued' — provider cannot accept mid-turn input; held and sent via
+   * session/prompt when the active turn finishes. The renderer should render
+   * the message as queued, not delivered.
+   */
+  disposition: 'steered' | 'sent' | 'queued';
+  /** Sends still waiting behind the active turn after this call. */
+  queueDepth: number;
 }
 
 export type CodexMode = 'read-only' | 'on-request' | 'workspace-auto' | 'full-access';
@@ -1230,11 +1440,42 @@ export interface MobileCompanionDevice {
   revokedAt?: string;
 }
 
+/** Cumulative per-enrollment capability tiers (MOB-01). */
+export type CompanionPolicyTier = 'observe' | 'approve' | 'steer';
+
+/** Per-enrollment authorization state on a host. */
+export type CompanionPolicyState = 'pending' | 'denied' | CompanionPolicyTier;
+
+export interface CompanionEnrollmentPolicy {
+  enrollmentId: string;
+  accountId: string;
+  displayName: string | null;
+  tier: CompanionPolicyState;
+  firstSeenAt: string;
+  decidedAt: string | null;
+  updatedAt: string;
+}
+
+export type CompanionEventType =
+  | 'overview'
+  | 'approvals'
+  | 'sessions'
+  | 'settings'
+  | 'notes'
+  | 'carplay'
+  | 'handover';
+
+export interface CompanionEvent {
+  type: CompanionEventType;
+  generatedAt: string;
+}
+
 export interface MobileApprovalRequest {
   sessionId: string;
   requestKey: string;
   requestId: JsonRpcRequestId;
-  kind: 'command' | 'file_change';
+  /** 'permissions' covers ACP session/request_permission (Cursor/Devin). */
+  kind: 'command' | 'file_change' | 'permissions';
   reason?: string;
   command?: string;
   cwd?: string;
@@ -1806,8 +2047,179 @@ export type WorkspaceScaffoldStatus =
 export interface Workspace {
   id: string;
   name: string;
+  /** Synced-definition readiness: needs-setup until portable repos map to local checkouts. */
+  definitionState?: 'ready' | 'needs-setup';
   createdAt: string;
   updatedAt: string;
+}
+
+/** User-defined agent stored in SQLite and synced; surfaced as a Persona. */
+export interface EditableAgent {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  colour: string;
+  promptBody: string;
+  capabilities: {
+    canWriteFiles: boolean;
+    canRunCommands: boolean;
+    canReadFiles: boolean;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EditableAgentInput {
+  name: string;
+  description?: string;
+  icon?: string;
+  colour?: string;
+  promptBody: string;
+  capabilities?: {
+    canWriteFiles?: boolean;
+    canRunCommands?: boolean;
+    canReadFiles?: boolean;
+  };
+}
+
+/** A portable repo entry in a synced workspace definition (WS-01 mapping surface). */
+export interface WorkspaceRepoDefinition {
+  portableId: string;
+  name: string;
+  remoteUrl?: string;
+  defaultBranch?: string;
+  /** Local checkout this entry maps to; null until mapped on this device. */
+  mappedRepoId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// WS-02: workspace materialisation (journalled clone / link / safe removal)
+// ---------------------------------------------------------------------------
+
+export type WorkspaceMaterializationKind = 'clone' | 'link' | 'remove';
+
+/**
+ * Last proven journal step for one repo inside a materialisation operation.
+ * Terminal states: 'mapping-published' | 'detached' | 'quarantined' (success),
+ * 'failed' | 'unsupported' (with a machine-readable stageReason).
+ */
+export type WorkspaceMaterializationStage =
+  | 'pending'
+  | 'destination-reserved'
+  | 'cloned-to-staging'
+  | 'checkout-verified'
+  | 'commit-recorded'
+  | 'checks-recorded'
+  | 'mapping-published'
+  | 'detached'
+  | 'quarantined'
+  | 'failed'
+  | 'unsupported';
+
+export interface WorkspaceCloneRepoRequest {
+  portableId: string;
+  /** Branch/tag preference — a floating ref is a setup preference only. */
+  ref?: string;
+  /** Pinned commit SHA; takes precedence over ref when both are given. */
+  commit?: string;
+}
+
+export interface WorkspaceCloneRequest {
+  workspaceId: string;
+  /** Existing directory under which checkouts are created (one child per repo). */
+  destinationRoot: string;
+  /** Defaults to every unmapped repo definition in the workspace. */
+  repos?: WorkspaceCloneRepoRequest[];
+}
+
+export interface WorkspaceMaterializationRepoResult {
+  portableId: string;
+  stage: WorkspaceMaterializationStage;
+  /** Machine-readable failure/unsupported reason when stage is terminal-bad. */
+  reason?: string;
+  destination?: string;
+  resolvedCommit?: string;
+  repoId?: string;
+}
+
+export interface WorkspaceCloneResult {
+  opId: string;
+  /** 'partial' when some repos published and others failed/unsupported. */
+  status: 'completed' | 'partial' | 'failed' | 'running';
+  repos: WorkspaceMaterializationRepoResult[];
+}
+
+export interface WorkspaceLinkResult {
+  opId: string;
+  status: 'linked' | 'divergence' | 'failed';
+  repoId?: string;
+  /** Recorded for review when the checkout remote differs from the definition. */
+  expectedRemoteUrl?: string;
+  actualRemoteUrl?: string;
+  error?: string;
+}
+
+export interface WorkspaceRemoveCheckoutResult {
+  opId?: string;
+  status: 'detached' | 'quarantined' | 'refused' | 'not-mapped';
+  /** Machine-readable refusal reasons when status is 'refused'. */
+  refusals?: string[];
+  quarantineId?: string;
+  quarantinePath?: string;
+}
+
+export interface WorkspaceMaterializationOpSummary {
+  id: string;
+  workspaceId: string;
+  kind: WorkspaceMaterializationKind;
+  state: 'running' | 'completed' | 'failed' | 'awaiting-review';
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  repos: WorkspaceMaterializationRepoResult[];
+}
+
+/** Renderer-facing bootstrap recipe summary (WS-03 approval surface). */
+export interface WorkspaceBootstrapStatus {
+  /** The synced recipe, or null when the workspace definition has none. */
+  recipe: BootstrapRecipe | null;
+  /** Digest over recipe + resolved commits + effective policy. */
+  digest: string | null;
+  /** Whether a matching local approval covers the current digest. */
+  approved: boolean;
+  explanation: {
+    stepCount: number;
+    usesShell: boolean;
+    requiresLocalCodeConsent: boolean;
+    installsPackages: boolean;
+    envNames: string[];
+    steps: Array<{
+      id: string;
+      kind: string;
+      summary: string;
+      workingDirectory: string;
+      shell: boolean;
+      requiresLocalCodeConsent: boolean;
+      timeoutMs: number;
+      retry: string;
+    }>;
+  } | null;
+  runs: WorkspaceBootstrapRunSummary[];
+}
+
+export interface WorkspaceBootstrapRunSummary {
+  id: string;
+  digest: string;
+  state: 'awaiting-approval' | 'running' | 'verified' | 'failed' | 'unknown-outcome';
+  steps: Array<{ stepId: string; state: string; exitCode: number | null }>;
+}
+
+export interface WorkspaceBootstrapApprovalSummary {
+  id: string;
+  digest: string;
+  shellApproved: boolean;
+  createdAt: string;
 }
 
 export interface WorkspaceCreateOptions {
@@ -1834,11 +2246,24 @@ export interface WorkspaceLaunchPreferences {
   requestedAt?: string;
 }
 
+/**
+ * J10: per-workspace defaults. `defaultAccessLevel` is the CodexMode new
+ * threads in this workspace start with; the Settings → Workspace panel (a
+ * later wave) edits it. Storage seam: `WorkspaceContext` exposes
+ * `workspaceAccessDefault` / `setWorkspaceAccessDefault` today; the durable
+ * home is a future `workspace_preferences.access` section.
+ */
+export interface WorkspaceAccessPreferences {
+  defaultAccessLevel?: CodexMode;
+}
+
 export interface WorkspacePreferences {
   workspaceId: string;
   workitems: WorkspaceWorkItemsPreferences;
   docs: WorkspaceDocsPreferences;
   launch: WorkspaceLaunchPreferences;
+  /** J10 seam — populated once the `access` preferences section lands. */
+  access?: WorkspaceAccessPreferences;
   updatedAt: string;
 }
 
@@ -1858,7 +2283,17 @@ export interface WorkspaceScaffoldSession {
 }
 
 export interface WorkspaceFeatureAvailability {
-  statusLabel: 'empty' | 'scaffolding' | 'indexing' | 'ready';
+  /**
+   * Truthful workspace status (first-run remediation §4.1):
+   * - `empty` — no repos
+   * - `scaffolding` — a scaffold session is active/syncing/failed
+   * - `preparing` — an index job is queued or running (replaces the old
+   *   catch-all `indexing`, which is retained in the union for consumers that
+   *   haven't been updated yet)
+   * - `needs-attention` — indexing failed or never ran for any repo
+   * - `ready` — at least one repo is `mapped` or better
+   */
+  statusLabel: 'empty' | 'scaffolding' | 'indexing' | 'preparing' | 'ready' | 'needs-attention';
   chatEnabled: boolean;
   repoFeaturesEnabled: boolean;
   repoFeatureReason?: string;
@@ -2344,6 +2779,15 @@ export interface AppSettings {
   telemetryEnabled: boolean;
   theme: AppTheme;
   userRole?: UserRole;
+  /** ST8: keep every tool visible/openable regardless of the chosen role. */
+  showAllTools?: boolean;
+  /**
+   * J9/3.3: first-run step persistence so a relaunch resumes where onboarding
+   * left off (`welcome` → `workspace` → `done`). The renderer persists this in
+   * localStorage today because `updateSettings` whitelists known columns —
+   * wire to a real column when the settings service grows a generic field.
+   */
+  onboardingStep?: 'welcome' | 'workspace' | 'done';
 }
 
 // ---------------------------------------------------------------------------
@@ -2540,6 +2984,19 @@ export interface AnvilCloudExecutionConnectionInput {
   token?: string;
 }
 
+export interface AnvilCloudExecutionProviderDescriptor {
+  id: string;
+  capabilities: {
+    modes: string[];
+    modelAuth: string[];
+    subscriptionProviders?: string[];
+  };
+  availability: {
+    configured: boolean;
+    reasons: string[];
+  };
+}
+
 export type AnvilCloudExecutionStatus =
   | 'queued'
   | 'starting'
@@ -2627,6 +3084,7 @@ export interface AnvilCloudExecutionConnectionTest {
   ok: boolean;
   endpoint: string;
   executionCount?: number;
+  providers?: AnvilCloudExecutionProviderDescriptor[];
   error?: string;
 }
 

@@ -3,9 +3,9 @@ title: Work items and planning
 navTitle: Work items
 description: How Anvil Desktop brings Linear, Jira, Azure DevOps, BA notes, acceptance criteria, and implementation planning into repo-aware work.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 114
+order: 90
 ---
 
 # Work items and planning

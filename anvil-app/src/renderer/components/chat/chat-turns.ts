@@ -25,12 +25,32 @@ export type ChatTurnWorkItem =
       sourceIndex: number;
     };
 
+/**
+ * H5 — per-turn usage/context/cost rollup, aggregated from `usage` deltas
+ * (Codex token totals, deduplicated by `usageId`) and `usage_context`
+ * snapshots (ACP context window + observed USD cost).
+ */
+export interface ChatTurnUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  /** Latest context-window snapshot, when the provider reports one. */
+  contextUsed?: number;
+  contextSize?: number;
+  /** USD cost — observed (ACP) or priced from `usagePrice` (Codex). */
+  costUsd?: number;
+  model?: string;
+}
+
 export interface ComposedChatTurn {
   key: string;
   user: IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | null;
   work: ChatTurnWorkItem[];
   answer: IndexedChatEntry<AssistantEntry> | null;
   trailingWork: ChatTurnWorkItem[];
+  usage?: ChatTurnUsage;
+  /** Provider-reported turn lifecycle. Missing means the provider supplied no terminal outcome. */
+  runOutcome?: NonNullable<CodexEvent['turnOutcome']>;
 }
 
 interface AssistantSegment {
@@ -91,8 +111,33 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
 
   const work: ChatTurnWorkItem[] = [];
   const trailingWork: ChatTurnWorkItem[] = [];
+  const usage = emptyTurnUsage();
+  const seenUsageIds = new Set<string>();
+  let sawUsage = false;
+  let runOutcome: ComposedChatTurn['runOutcome'];
+
   for (const entry of entries) {
     if (entry.kind === 'user' || answerSourceIndexes.has(entry.sourceIndex)) continue;
+
+    // H5 — usage telemetry belongs to the turn footer, not the work log.
+    if (
+      entry.kind === 'event' &&
+      (entry.event.type === 'usage' || entry.event.type === 'usage_context')
+    ) {
+      sawUsage = accumulateTurnUsage(usage, seenUsageIds, entry.event) || sawUsage;
+      continue;
+    }
+
+    // H14 — `file_read` is a dead renderer surface; drop any legacy persisted
+    // rows instead of rendering or counting them.
+    if (entry.kind === 'event' && entry.event.type === 'file_read') continue;
+
+    // The outcome belongs to the turn summary rather than the operational
+    // activity list. Providers that do not report it leave it undefined.
+    if (entry.kind === 'event' && entry.event.type === 'turn_outcome') {
+      runOutcome = entry.event.turnOutcome;
+      continue;
+    }
 
     const target = entry.sourceIndex > answerEndSourceIndex ? trailingWork : work;
 
@@ -130,7 +175,75 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     work,
     answer: answerSegment?.entry ?? null,
     trailingWork,
+    usage: sawUsage ? usage : undefined,
+    runOutcome,
   };
+}
+
+function emptyTurnUsage(): ChatTurnUsage {
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+}
+
+/**
+ * Fold one usage-family event into the running turn totals. Mirrors the
+ * accumulation rules in dojo-analytics.service.ts (`usage` deltas dedupe by
+ * `usageId`; `usage_context` context is a snapshot, `observedCostUsd` is a
+ * delta). Returns whether the event contributed anything worth rendering.
+ */
+function accumulateTurnUsage(
+  turn: ChatTurnUsage,
+  seenUsageIds: Set<string>,
+  event: CodexEvent,
+): boolean {
+  if (event.model) turn.model = event.model;
+
+  if (event.type === 'usage') {
+    const usage = event.usage;
+    if (!usage) return false;
+    if (event.usageId) {
+      if (seenUsageIds.has(event.usageId)) return false;
+      seenUsageIds.add(event.usageId);
+    }
+    if (
+      ![usage.input, usage.cachedInput, usage.output].every((n) => Number.isFinite(n) && n >= 0)
+    ) {
+      return false;
+    }
+    turn.inputTokens += usage.input;
+    turn.cachedInputTokens += usage.cachedInput;
+    turn.outputTokens += usage.output;
+    const price = event.usagePrice;
+    if (
+      price &&
+      [price.input, price.cachedInput, price.output].every((n) => Number.isFinite(n) && n >= 0)
+    ) {
+      turn.costUsd =
+        (turn.costUsd ?? 0) +
+        ((usage.input - usage.cachedInput) * price.input +
+          usage.cachedInput * price.cachedInput +
+          usage.output * price.output) /
+          1_000_000;
+    }
+    return true;
+  }
+
+  // usage_context
+  const context = event.contextUsage;
+  let contributed = false;
+  if (context && Number.isFinite(context.size) && context.size > 0) {
+    turn.contextUsed = context.used;
+    turn.contextSize = context.size;
+    contributed = true;
+  }
+  if (
+    typeof event.observedCostUsd === 'number' &&
+    Number.isFinite(event.observedCostUsd) &&
+    event.observedCostUsd >= 0
+  ) {
+    turn.costUsd = (turn.costUsd ?? 0) + event.observedCostUsd;
+    contributed = true;
+  }
+  return contributed;
 }
 
 function coalesceAssistantSegments(entries: Array<IndexedChatEntry>): AssistantSegment[] {

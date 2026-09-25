@@ -8,12 +8,13 @@ import { DiagramChat } from './DiagramChat';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { RepoSelector } from '../shared/RepoSelector';
 import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 
 type ViewMode = 'gallery' | 'viewer';
 
 export function DiagramsView() {
   const { repoId: routeRepoId } = useParams<{ repoId?: string }>();
-  const { repos } = useWorkspace();
+  const { repos, featureAvailability } = useWorkspace();
   const [selectedRepoId, setSelectedRepoId] = useState<string>(routeRepoId ?? '');
   const [diagrams, setDiagrams] = useState<DiagramFile[]>([]);
   const [dirExists, setDirExists] = useState(false);
@@ -133,6 +134,16 @@ export function DiagramsView() {
 
   const selectedRepo = repos.find((r) => r.id === selectedRepoId);
   const hasLocalPath = selectedRepo?.path;
+
+  if (!featureAvailability.repoFeaturesEnabled) {
+    return (
+      <RepoFeatureEmptyState
+        icon={GitFork}
+        featureLabel="Diagrams"
+        description="Diagram generation and editing need a repository in this workspace."
+      />
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">

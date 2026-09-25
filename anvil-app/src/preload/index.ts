@@ -18,7 +18,10 @@ import type {
   ChatArtifactAnnotationInput,
   ChatArtifactAnnotationPatch,
   ChatAttachment,
+  ChatFollowUpRequest,
   ChatNavigationTarget,
+  CompanionEvent,
+  CompanionPolicyState,
   WorkflowNavigationTarget,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
@@ -26,6 +29,7 @@ import type {
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatSendOptions,
+  ChatThreadPurpose,
   CodexInputResponse,
   CodeReviewMode,
   CodeReviewScopeRef,
@@ -45,9 +49,49 @@ import type {
   TerminalDataEvent,
   TerminalExitEvent,
   WorkItemProvider,
+  EditableAgentInput,
+  WorkspaceCloneRequest,
   WorkspaceCreateOptions,
 } from '../shared/types.js';
+import type { RepoIndexJob } from '../shared/index-jobs.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
+import type { SyncBackendPinInput } from '../shared/sync-backend.js';
+import type {
+  ApprovalDecision,
+  ApprovalRecord,
+  CloudEnvironmentProviderConnection,
+  CloudEnvironmentRecord,
+  EnvironmentProviderId,
+  ExecutionAttempt,
+  HandoffRecord,
+  JobSummary,
+  MeshWorkerStatus,
+  SessionMeshState,
+  SyncAttemptActivity,
+  SyncConflictResolutionChoice,
+  SyncDashboardGrantApproval,
+  SyncDashboardGrantWorkspace,
+  SyncDashboardRequest,
+  SyncDataExportFileResult,
+  SyncDataImportCommitResult,
+  SyncDataImportFilePreview,
+  SyncDevice,
+  SyncDeviceRenameResult,
+  SyncDeviceRevokeResult,
+  SyncDeviceVerification,
+  SyncDiagnostics,
+  SyncHostedStatus,
+  SyncInitiateHandoffResult,
+  SyncIssuedEnrollmentCode,
+  SyncSpikeEnrollInput,
+  LocalCloudEnvironment,
+} from '../shared/sync-runtime.js';
+import type {
+  SyncDeviceRecoveryResult,
+  SyncDeviceSecurityStatus,
+  SyncDeviceTrustPolicy,
+  SyncEncryptedSyncAccountResetConfirmation,
+} from '../shared/sync-device-security.js';
 import type {
   AgentUIIntentPresentationPatch,
   AgentUIPlanPatch,
@@ -84,6 +128,12 @@ const api: AnvilAPI = {
     getSnapshot: () => ipcRenderer.invoke('diagnostics:get-snapshot'),
   },
 
+  metrics: {
+    // Local-only activation funnel events — recorded in SQLite, never sent.
+    track: (event: string, payload?: Record<string, unknown>) =>
+      ipcRenderer.invoke('metrics:track', event, payload),
+  },
+
   mobileCompanion: {
     getStatus: () => ipcRenderer.invoke('mobile-companion:get-status'),
     setEnabled: (enabled: boolean) => ipcRenderer.invoke('mobile-companion:set-enabled', enabled),
@@ -92,6 +142,16 @@ const api: AnvilAPI = {
     listDevices: () => ipcRenderer.invoke('mobile-companion:list-devices'),
     revokeDevice: (deviceId: string) =>
       ipcRenderer.invoke('mobile-companion:revoke-device', deviceId),
+    listEnrollmentPolicies: () => ipcRenderer.invoke('mobile-companion:list-enrollment-policies'),
+    setEnrollmentPolicy: (enrollmentId: string, tier: CompanionPolicyState) =>
+      ipcRenderer.invoke('mobile-companion:set-enrollment-policy', enrollmentId, tier),
+    removeEnrollmentPolicy: (enrollmentId: string) =>
+      ipcRenderer.invoke('mobile-companion:remove-enrollment-policy', enrollmentId),
+    onEvent: (callback: (event: CompanionEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, evt: CompanionEvent) => callback(evt);
+      ipcRenderer.on('mobile-companion:event', handler);
+      return () => ipcRenderer.removeListener('mobile-companion:event', handler);
+    },
   },
 
   workspaceNotes: {
@@ -106,6 +166,10 @@ const api: AnvilAPI = {
     list: () => ipcRenderer.invoke('repo:list'),
     connect: (repoPath: string) => ipcRenderer.invoke('repo:connect', repoPath),
     index: (repoId: string) => ipcRenderer.invoke('repo:index', repoId),
+    listIndexJobs: (repoId?: string): Promise<RepoIndexJob[]> =>
+      ipcRenderer.invoke('repo:index-jobs', repoId),
+    cancelIndex: (repoId: string) => ipcRenderer.invoke('repo:cancel-index', repoId),
+    forget: (repoId: string) => ipcRenderer.invoke('repo:forget', repoId),
     getStatus: (repoId: string) => ipcRenderer.invoke('repo:status', repoId),
     resetStatus: (repoId: string) => ipcRenderer.invoke('repo:reset-status', repoId),
     getSummary: (repoId: string) => ipcRenderer.invoke('repo:summary', repoId),
@@ -191,6 +255,7 @@ const api: AnvilAPI = {
     interrupt: (sessionId: string) => ipcRenderer.invoke('chat:interrupt', sessionId),
     steer: (sessionId: string, message: string, attachments?: ChatAttachment[]) =>
       ipcRenderer.invoke('chat:steer', sessionId, message, attachments),
+    followUp: (request: ChatFollowUpRequest) => ipcRenderer.invoke('chat:follow-up', request),
     forkProviderThread: (sourceThreadId: string, targetThreadId: string) =>
       ipcRenderer.invoke('chat:fork-provider-thread', sourceThreadId, targetThreadId),
     resolveApproval: (
@@ -209,12 +274,13 @@ const api: AnvilAPI = {
     getPersonas: () => ipcRenderer.invoke('chat:get-personas'),
     getSessionStatus: (sessionId: string) => ipcRenderer.invoke('chat:session-status', sessionId),
     listActiveSessions: () => ipcRenderer.invoke('chat:list-active-sessions'),
-    listTurnSummaries: (threadId: string) =>
-      ipcRenderer.invoke('chat:list-turn-summaries', threadId),
     listArtifacts: (threadId: string) => ipcRenderer.invoke('chat:list-artifacts', threadId),
     upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
     discardArtifact: (id: string) => ipcRenderer.invoke('chat:discard-artifact', id),
     readArtifactFile: (id: string) => ipcRenderer.invoke('chat:read-artifact-file', id),
+    shareArtifact: (id: string) => ipcRenderer.invoke('chat:share-artifact', id),
+    unshareArtifact: (id: string) => ipcRenderer.invoke('chat:unshare-artifact', id),
+    artifactSharingAvailable: () => ipcRenderer.invoke('chat:artifact-sharing-available'),
     listArtifactAnnotations: (artifactId: string) =>
       ipcRenderer.invoke('chat:list-artifact-annotations', artifactId),
     createArtifactAnnotation: (input: ChatArtifactAnnotationInput) =>
@@ -230,6 +296,8 @@ const api: AnvilAPI = {
     createThread: (input: {
       workspaceId?: string | null;
       personaId: string;
+      purpose?: ChatThreadPurpose;
+      sideQuestionOfThreadId?: string;
       title?: string;
       workItemId?: string;
       workItemProvider?: WorkItemProvider;
@@ -305,6 +373,10 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('workflow:retry-node', id, nodeId),
     decideNode: (id: string, nodeId: string, approved: boolean, note: string) =>
       ipcRenderer.invoke('workflow:decide-node', id, nodeId, approved, note),
+    inspectNode: (id: string, nodeId: string) =>
+      ipcRenderer.invoke('workflow:inspect-node', id, nodeId),
+    convergeRun: (id: string, verification?: string[]) =>
+      ipcRenderer.invoke('workflow:converge-run', id, verification),
     listTemplates: () => ipcRenderer.invoke('workflow:list-templates'),
     draftTemplate: (request: string) => ipcRenderer.invoke('workflow:draft-template', request),
     saveTemplate: (input: import('../shared/types.js').WorkflowTemplateInput, id?: string) =>
@@ -695,6 +767,160 @@ const api: AnvilAPI = {
     snapshot: () => ipcRenderer.invoke('codex-usage:snapshot') as Promise<CodexUsageSnapshot>,
   },
 
+  syncBackend: {
+    discover: (url: string) => ipcRenderer.invoke('sync-backend:discover', url),
+    pin: (input: SyncBackendPinInput) => ipcRenderer.invoke('sync-backend:pin', input),
+    status: () => ipcRenderer.invoke('sync-backend:status'),
+    disconnect: () => ipcRenderer.invoke('sync-backend:disconnect'),
+    resolveReview: (backendId: string) =>
+      ipcRenderer.invoke('sync-backend:resolve-review', { backendId }),
+    integrationPrompt: () => ipcRenderer.invoke('sync-backend:integration-prompt'),
+  },
+
+  syncRuntime: {
+    status: () => ipcRenderer.invoke('sync-runtime:status'),
+    listCloudProviderConnections: (): Promise<CloudEnvironmentProviderConnection[]> =>
+      ipcRenderer.invoke('sync-runtime:cloud-provider-connections-list'),
+    addCloudProviderConnection: (input: {
+      provider: EnvironmentProviderId;
+      displayName?: string;
+      config: Record<string, unknown>;
+      secret?: string;
+    }): Promise<CloudEnvironmentProviderConnection> =>
+      ipcRenderer.invoke('sync-runtime:cloud-provider-connection-add', input),
+    removeCloudProviderConnection: (connectionId: string): Promise<boolean> =>
+      ipcRenderer.invoke('sync-runtime:cloud-provider-connection-remove', connectionId),
+    listLocalCloudEnvironments: (): Promise<LocalCloudEnvironment[]> =>
+      ipcRenderer.invoke('sync-runtime:cloud-environments-local-list'),
+    listCloudEnvironments: (
+      includeTerminal = false,
+    ): Promise<{ environments: CloudEnvironmentRecord[] }> =>
+      ipcRenderer.invoke('sync-runtime:cloud-environments-list', includeTerminal),
+    requestCloudEnvironment: (input: {
+      provider: EnvironmentProviderId;
+      ttlSeconds: number;
+      environmentId?: string;
+      imageRef?: string;
+      networkPolicy?: string[];
+      resources?: { vcpus?: number; memoryMb?: number };
+      displayName?: string;
+      connectionId?: string;
+    }): Promise<{ environmentId: string; job: JobSummary }> =>
+      ipcRenderer.invoke('sync-runtime:cloud-environment-request', input),
+    reapCloudEnvironment: (environmentId: string): Promise<CloudEnvironmentRecord> =>
+      ipcRenderer
+        .invoke('sync-runtime:cloud-environment-reap', environmentId)
+        .then((result: { environment: CloudEnvironmentRecord }) => result.environment),
+    preview: () => ipcRenderer.invoke('sync-runtime:preview'),
+    signIn: () => ipcRenderer.invoke('sync-runtime:sign-in'),
+    enrollWithCode: (code: string) => ipcRenderer.invoke('sync-runtime:enroll-with-code', { code }),
+    issueEnrollmentCode: (): Promise<SyncIssuedEnrollmentCode> =>
+      ipcRenderer.invoke('sync-runtime:issue-enrollment-code'),
+    spikeEnroll: (input: SyncSpikeEnrollInput) =>
+      ipcRenderer.invoke('sync-runtime:spike-enroll', input),
+    enable: () => ipcRenderer.invoke('sync-runtime:enable'),
+    signOut: () => ipcRenderer.invoke('sync-runtime:sign-out'),
+    conflicts: () => ipcRenderer.invoke('sync-runtime:conflicts'),
+    resolveConflict: (conflictId: string, resolution: SyncConflictResolutionChoice) =>
+      ipcRenderer.invoke('sync-runtime:resolve-conflict', { conflictId, resolution }),
+    diagnostics: (): Promise<SyncDiagnostics> => ipcRenderer.invoke('sync-runtime:diagnostics'),
+    refreshHostedEntitlement: (): Promise<SyncHostedStatus | null> =>
+      ipcRenderer.invoke('sync-runtime:hosted-refresh'),
+    openHostedAccount: (): Promise<void> => ipcRenderer.invoke('sync-runtime:open-hosted-account'),
+    setMeshWorker: (enabled: boolean): Promise<MeshWorkerStatus> =>
+      ipcRenderer.invoke('sync-runtime:mesh-worker-set', { enabled }),
+    listDevices: (): Promise<SyncDevice[]> => ipcRenderer.invoke('sync-runtime:devices-list'),
+    renameDevice: (enrollmentId: string, displayName: string): Promise<SyncDeviceRenameResult> =>
+      ipcRenderer.invoke('sync-runtime:device-rename', { enrollmentId, displayName }),
+    revokeDevice: (enrollmentId: string): Promise<SyncDeviceRevokeResult> =>
+      ipcRenderer.invoke('sync-runtime:device-revoke', { enrollmentId }),
+    verifyDevice: (enrollmentId: string): Promise<SyncDeviceVerification> =>
+      ipcRenderer.invoke('sync-runtime:device-verify', { enrollmentId }),
+    getDeviceSecurityStatus: (): Promise<SyncDeviceSecurityStatus> =>
+      ipcRenderer.invoke('sync-runtime:device-security-status'),
+    setupDeviceRecovery: (policy: SyncDeviceTrustPolicy): Promise<SyncDeviceRecoveryResult> =>
+      ipcRenderer.invoke('sync-runtime:device-recovery-setup', { policy }),
+    unlockDeviceRecovery: (code: string): Promise<SyncDeviceSecurityStatus> =>
+      ipcRenderer.invoke('sync-runtime:device-recovery-unlock', { code }),
+    setNewDeviceTrustPolicy: (policy: SyncDeviceTrustPolicy): Promise<SyncDeviceSecurityStatus> =>
+      ipcRenderer.invoke('sync-runtime:device-trust-policy-set', { policy }),
+    replaceDeviceRecovery: (): Promise<SyncDeviceRecoveryResult> =>
+      ipcRenderer.invoke('sync-runtime:device-recovery-replace'),
+    resetEncryptedSyncAccount: (
+      confirmation: SyncEncryptedSyncAccountResetConfirmation,
+    ): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:encrypted-account-reset', { confirmation }),
+    approveDeviceTrust: (enrollmentId: string, verificationCode: string): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:device-approve', { enrollmentId, verificationCode }),
+    listDashboardRequests: (): Promise<SyncDashboardRequest[]> =>
+      ipcRenderer.invoke('sync-runtime:dashboard-requests'),
+    listDashboardWorkspaces: (): Promise<SyncDashboardGrantWorkspace[]> =>
+      ipcRenderer.invoke('sync-runtime:dashboard-workspaces'),
+    decideDashboardRequest: (
+      requestId: string,
+      decision: 'approved' | 'denied',
+      approval?: SyncDashboardGrantApproval,
+    ): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:dashboard-decide', {
+        requestId,
+        decision,
+        ...(approval === undefined ? {} : { approval }),
+      }),
+    revokeDashboardAccess: (requestId: string): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:dashboard-revoke', { requestId }),
+    exportDataToFile: (): Promise<SyncDataExportFileResult> =>
+      ipcRenderer.invoke('sync-runtime:data-export-file'),
+    previewDataImportFromFile: (): Promise<SyncDataImportFilePreview> =>
+      ipcRenderer.invoke('sync-runtime:data-import-preview-file'),
+    commitDataImport: (operationId: string): Promise<SyncDataImportCommitResult> =>
+      ipcRenderer.invoke('sync-runtime:data-import-commit', { operationId }),
+    listMeshJobs: (): Promise<JobSummary[]> => ipcRenderer.invoke('sync-runtime:mesh-jobs-list'),
+    getMeshJob: (jobId: string): Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }> =>
+      ipcRenderer.invoke('sync-runtime:mesh-job-get', { jobId }),
+    cancelMeshJob: (jobId: string): Promise<JobSummary> =>
+      ipcRenderer.invoke('sync-runtime:mesh-job-cancel', { jobId }),
+    getMeshApprovals: (jobId: string): Promise<ApprovalRecord[]> =>
+      ipcRenderer.invoke('sync-runtime:mesh-approvals', { jobId }),
+    decideMeshApproval: (
+      approvalId: string,
+      decision: ApprovalDecision,
+      reason?: string,
+    ): Promise<{ approval: ApprovalRecord; job: JobSummary; duplicate: boolean }> =>
+      ipcRenderer.invoke('sync-runtime:mesh-approval-decide', {
+        approvalId,
+        decision,
+        ...(reason === undefined ? {} : { reason }),
+      }),
+    listMeshHandoffs: (): Promise<HandoffRecord[]> =>
+      ipcRenderer.invoke('sync-runtime:mesh-handoffs'),
+    getSessionMeshState: (sessionId: string): Promise<SessionMeshState> =>
+      ipcRenderer.invoke('sync-runtime:session-mesh-state', { sessionId }),
+    initiateSessionHandoff: (
+      sessionId: string,
+      targetEnrollmentId: string,
+    ): Promise<SyncInitiateHandoffResult> =>
+      ipcRenderer.invoke('sync-runtime:session-handoff', { sessionId, targetEnrollmentId }),
+    observeAttemptActivity: (
+      attemptId: string,
+      listener: (item: SyncAttemptActivity) => void,
+    ): (() => void) => {
+      const channel = 'sync-runtime:attempt-activity';
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        id: string,
+        item: SyncAttemptActivity,
+      ) => {
+        if (id === attemptId) listener(item);
+      };
+      ipcRenderer.on(channel, handler);
+      void ipcRenderer.invoke('sync-runtime:attempt-observe', { attemptId });
+      return () => {
+        ipcRenderer.removeListener(channel, handler);
+        void ipcRenderer.invoke('sync-runtime:attempt-unobserve', { attemptId });
+      };
+    },
+  },
+
   anvilCloud: {
     snapshot: () => ipcRenderer.invoke('anvil-cloud:snapshot'),
     run: (commandId, cwd) => ipcRenderer.invoke('anvil-cloud:run', commandId, cwd),
@@ -764,6 +990,44 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('workspace:export-vscode', workspaceId),
     openInNewWindow: (workspaceId: string) =>
       ipcRenderer.invoke('workspace:open-in-new-window', workspaceId),
+    repoDefinitions: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:repo-definitions', workspaceId),
+    mapRepo: (workspaceId: string, portableId: string, repoId: string) =>
+      ipcRenderer.invoke('workspace:map-repo', workspaceId, portableId, repoId),
+    startClone: (input: WorkspaceCloneRequest) =>
+      ipcRenderer.invoke('workspace:start-clone', input),
+    linkRepo: (
+      workspaceId: string,
+      portableId: string,
+      checkoutPath: string,
+      options?: { allowRemoteDivergence?: boolean },
+    ) => ipcRenderer.invoke('workspace:link-repo', workspaceId, portableId, checkoutPath, options),
+    removeCheckout: (
+      workspaceId: string,
+      portableId: string,
+      options?: { deleteCheckout?: boolean },
+    ) => ipcRenderer.invoke('workspace:remove-checkout', workspaceId, portableId, options),
+    purgeQuarantine: (quarantineId: string) =>
+      ipcRenderer.invoke('workspace:purge-quarantine', quarantineId),
+    materializationOps: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:materialization-ops', workspaceId),
+    bootstrapStatus: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:bootstrap-status', workspaceId),
+    bootstrapApprove: (workspaceId: string, options?: { shellApproved?: boolean }) =>
+      ipcRenderer.invoke('workspace:bootstrap-approve', workspaceId, options),
+    bootstrapRun: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:bootstrap-run', workspaceId),
+    bootstrapApprovals: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:bootstrap-approvals', workspaceId),
+    bootstrapRevokeApproval: (approvalId: string) =>
+      ipcRenderer.invoke('workspace:bootstrap-revoke-approval', approvalId),
+  },
+
+  agents: {
+    list: () => ipcRenderer.invoke('agents:list'),
+    save: (input: EditableAgentInput, agentId?: string) =>
+      ipcRenderer.invoke('agents:save', input, agentId),
+    delete: (agentId: string) => ipcRenderer.invoke('agents:delete', agentId),
   },
 
   workspaceScaffold: {

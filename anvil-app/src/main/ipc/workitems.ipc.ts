@@ -115,7 +115,7 @@ function getActiveRepoContext(): { name: string; overview: string; modules: stri
   const db = getDb();
   const repo = db
     .prepare(
-      "SELECT id, name FROM repos WHERE status = 'indexed' ORDER BY last_indexed DESC LIMIT 1",
+      "SELECT id, name FROM repos WHERE index_tier IN ('mapped','enriched') ORDER BY last_indexed DESC LIMIT 1",
     )
     .get() as { id: string; name: string } | undefined;
 
@@ -140,11 +140,32 @@ function getActiveRepoContext(): { name: string; overview: string; modules: stri
 
 /** Strip HTML tags from ADO rich text fields */
 function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, '')
+  return decodeHtmlEntities(stripHtmlTags(html)).trim();
+}
+
+/**
+ * Remove tags iteratively so a tag split across another tag (e.g. `<scr<script>ipt>`)
+ * cannot survive a single-pass replace.
+ */
+function stripHtmlTags(value: string): string {
+  let result = value;
+  let previous: string;
+  do {
+    previous = result;
+    result = result.replace(/<[^>]*>/g, '');
+  } while (result !== previous);
+  return result;
+}
+
+/** Decode HTML entities; `&amp;` must be decoded last so encoded entities are not double-decoded */
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .trim();
+    .replace(/&amp;/g, '&');
 }
 
 function rankWorkItems(items: WorkItem[], query: string): WorkItem[] {

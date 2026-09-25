@@ -3,9 +3,9 @@ title: Dojo analytics and coaching
 navTitle: Dojo
 description: Inspect workspace agent activity, usage coverage, failures, and coaching recommendations grounded in conversation history.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 115
+order: 170
 ---
 
 # Dojo analytics and coaching

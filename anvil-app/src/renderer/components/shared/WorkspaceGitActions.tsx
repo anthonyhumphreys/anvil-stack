@@ -95,7 +95,7 @@ export function WorkspaceGitActions({
         {loading ? <Loader2 size={13} className="animate-spin" /> : <FileDiff size={13} />}
         {!compact && <span>Diff</span>}
         {status.totalFiles > 0 && (
-          <span className="rounded-full bg-bg-primary px-1.5 text-[10px] text-text-primary">
+          <span className="rounded-full bg-bg-primary px-1.5 text-eyebrow text-text-primary">
             {status.totalFiles}
           </span>
         )}

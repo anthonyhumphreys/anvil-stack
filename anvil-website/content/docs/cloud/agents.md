@@ -3,9 +3,9 @@ title: Anvil Agents
 navTitle: Agents
 description: Define contract-first agents, mount them in Cells, compile provider-neutral manifests, and run them locally through Anvil Runtime.
 product: Anvil Cloud
-section: Runtime
+section: Concepts
 journey: build
-order: 124
+order: 120
 ---
 
 # Anvil Agents

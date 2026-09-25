@@ -1,0 +1,106 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "anvil-backend-hosted",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // BILL-01 hosted deployment: same Worker + Durable Objects + R2 surface as
+  // wrangler.jsonc, plus the D1 billing store that unlocks /v1/hosted/link
+  // and the /internal/hosted/* service channel. Self-host deploys keep using
+  // wrangler.jsonc and never provision D1.
+  //
+  // HOSTED_SERVICE_KEYS is a `wrangler secret put` value — a JSON map of
+  // {"keyId":"secret"} for the website -> backend HMAC channel. Never a var.
+  //
+  // Deploy this template through `anvil-cloud mesh --mode hosted`.
+  // The CLI provisions D1/R2, applies migrations and installs secrets.
+  // See docs/runbooks/hosted-sync/deploy.md in anvil-app for the complete
+  // branch-testing sequence and per-target generated configuration.
+  //
+  // BILL-02 hosted billing config — every value is optional and absence
+  // fails closed (no hosted surface on self-host, unavailable/not-found
+  // on hosted). Secrets via `wrangler secret put`, never in vars:
+  //   STRIPE_SECRET_KEY       Stripe secret key for the REST client
+  //   STRIPE_WEBHOOK_SECRET   endpoint secret for /v1/hosted/stripe-webhook
+  //   HOSTED_SERVICE_KEYS     website -> backend HMAC map (BILL-01)
+  // Vars, when billing is enabled for the deployment:
+  //   HOSTED_CHECKOUT_ENABLED       literal 'true' to publish checkout
+  //   HOSTED_CHECKOUT_SUCCESS_URL   fixed same-origin return target
+  //   HOSTED_CHECKOUT_CANCEL_URL    fixed same-origin return target
+  //   HOSTED_PORTAL_RETURN_URL      fixed portal return target
+  //   STRIPE_PRICE_SYNC_MONTHLY     allowlisted Price id, monthly
+  //   STRIPE_PRICE_SYNC_ANNUAL      allowlisted Price id, annual
+  //   STRIPE_API_BASE               test-only API base override
+  //   HOSTED_SYNC_LIMITS            JSON partial override of default quotas
+  //
+  // BILL-03: HOSTED_BILLING_ENFORCEMENT is the kill switch for hosted
+  // write gating inside AccountCoordinator — 'true' denies mutating
+  // operations on restricted/unknown entitlements; anything else (or
+  // absence) leaves every operation allowed while session.describe still
+  // surfaces entitlement state.
+  //
+  // ENV-09: MANAGED_PROVISIONER binds the anvil-mesh-provisioner worker
+  // (cloud/provisioner) so `anvil-managed` environments run on Anvil-operated
+  // Cloudflare Sandbox capacity. Absence fails closed — job.create rejects
+  // managed provisions with provider-unavailable. Secrets:
+  //   MANAGED_PROVISIONER_TOKEN   bearer sent on the service-binding channel
+  // Vars:
+  //   ANVIL_PUBLIC_API_URL        public backend URL injected into env bootstrap
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACCOUNT",
+        "class_name": "AccountCoordinator",
+      },
+      {
+        "name": "SESSIONS",
+        "class_name": "SessionCoordinator",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AccountCoordinator"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SessionCoordinator"],
+    },
+  ],
+  // BILL-06: hourly reconcile + metrics sweep. Off-the-hour to avoid the
+  // top-of-hour cron pile-up; per-account staleness and batch limits are
+  // in src/hosted/reconciler.ts.
+  "triggers": {
+    "crons": ["17 * * * *"],
+  },
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "anvil-spike-artifacts",
+    },
+  ],
+  // ENV-09: the managed provisioner is a separate worker (cloud/provisioner)
+  // reached over a service binding — uncomment once it is deployed in the
+  // same account, and `wrangler secret put MANAGED_PROVISIONER_TOKEN`.
+  // "services": [
+  //   {
+  //     "binding": "MANAGED_PROVISIONER",
+  //     "service": "anvil-mesh-provisioner",
+  //   },
+  // ],
+  "d1_databases": [
+    {
+      "binding": "HOSTED_DB",
+      "database_name": "anvil-hosted-billing",
+      "database_id": "<placeholder-not-created>",
+      "migrations_dir": "migrations/hosted-billing",
+    },
+  ],
+  "vars": {
+    // See wrangler.jsonc for OIDC_* / ENROLLMENT_ADMIN_TOKEN notes. The dev
+    // spike flag stays absent here exactly as it does in the self-host
+    // config — production must fail closed.
+    // BILL-03: mutating-work enforcement is on for hosted deployments.
+    "HOSTED_BILLING_ENFORCEMENT": "true",
+  },
+}

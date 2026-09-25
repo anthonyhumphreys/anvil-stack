@@ -1,167 +1,33 @@
-import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
-import {
-  AlertTriangle,
-  BarChart3,
-  Bot,
-  CheckCircle,
-  Clock3,
-  ClipboardCheck,
-  Code2,
-  Cloud,
-  Compass,
-  FolderGit2,
-  Gauge,
-  Loader2,
-  MonitorSmartphone,
-  Palette,
-  Plus,
-  Puzzle,
-  RefreshCcw,
-  Save,
-  Settings,
-  ShieldAlert,
-  ShieldCheck,
-  Smartphone,
-  Trash2,
-  UserRound,
-  XCircle,
-} from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
-import type {
-  AgentProvider,
-  AppSettings,
-  AppTheme,
-  CodexCliStatus,
-  CodexUsageSnapshot,
-  CursorCliStatus,
-  DevinCliStatus,
-  DocsProvider,
-  LocalLlmCapabilities,
-  LocalLlmProvider,
-  LlmGatewayBillingMode,
-  LlmGatewayStatus,
-  MobileCompanionDevice,
-  MobileCompanionStatus,
-  MobilePairingTicket,
-  RaycastCompanionToken,
-  ReasoningEffort,
-  UserRole,
-  WorkItemConnection,
-} from '../../../shared/types';
-import {
-  CODEX_MODEL_OPTIONS,
-  CODEX_REASONING_EFFORTS,
-  DEFAULT_CODEX_MODEL,
-  resolveCodexReasoningEffort,
-  type CodexModelOption,
-} from '../../../shared/codex-models';
-import { useBrand } from '../../contexts/BrandContext';
-import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
-import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
-import { buildProviderModelOptions } from '../../utils/chat-model-options';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { CheckCircle, Loader2, Save, Search, Settings, X } from 'lucide-react';
+import type { AppSettings, AppTheme, UserRole } from '../../../shared/types';
+import { ROLE_FEATURES } from '../../../shared/types';
 import { InlineNotice } from '../layout/ViewScaffold';
-import { CodexRuntimeSetup } from './CodexRuntimeSetup';
+import { RoleHiddenNotice } from '../shared/RoleHiddenNotice';
+import { Button, ConfirmDialog, cx } from '../ui';
+import { SettingsContextProvider } from './SettingsContext';
+import { useSettingsDraft, CREDENTIAL_SETTING_KEYS } from './useSettingsDraft';
+import {
+  SETTINGS_CATEGORIES,
+  getSettingsCategory,
+  resolveSettingsCategoryId,
+} from './settings-registry';
+import { parseSettingsLocation, settingsPanelDomId } from './settings-route';
+import { searchSettings } from './settings-search';
 
-type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
-type SettingsCategoryId =
-  | 'profile'
-  | 'ai'
-  | 'delivery'
-  | 'review'
-  | 'devices'
-  | 'privacy'
-  | 'danger';
-type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
-type CodexModelPickerOption = CodexModelOption & { source: 'docs' | 'cli' };
-
-const AGENT_PROVIDER_OPTIONS: Array<{
-  id: AgentProvider;
-  label: string;
-  description: string;
-}> = [
-  {
-    id: 'codex',
-    label: 'Codex CLI',
-    description: 'Local Codex login, tools, skills, and app-server sessions.',
-  },
-  {
-    id: 'cursor',
-    label: 'Cursor CLI',
-    description: 'Cursor models and agent tools through cursor-agent.',
-  },
-  {
-    id: 'devin',
-    label: 'Devin CLI',
-    description: 'Devin models and agent tools through the local Devin CLI.',
-  },
-  {
-    id: 'openai',
-    label: 'OpenAI API',
-    description: 'Direct API-key route for app utilities and Codex sessions.',
-  },
-  {
-    id: 'azure',
-    label: 'Azure AI Foundry',
-    description: 'Azure-hosted models registered through your Codex configuration.',
-  },
-  {
-    id: 'llmgateway',
-    label: 'LLMGateway',
-    description: 'DevPass or pay-as-you-go models through one gateway connection.',
-  },
-];
-
-const SETTINGS_CATEGORIES: Array<{
-  id: SettingsCategoryId;
-  label: string;
-  description: string;
-  icon: LucideIcon;
-}> = [
-  {
-    id: 'profile',
-    label: 'Profile & appearance',
-    description: 'Role, visible tools, and theme.',
-    icon: UserRound,
-  },
-  {
-    id: 'ai',
-    label: 'AI & agents',
-    description: 'Primary agent, active providers, models, skills, and MCPs.',
-    icon: Bot,
-  },
-  {
-    id: 'delivery',
-    label: 'Delivery integrations',
-    description: 'Work items, docs, Git, and remote credentials.',
-    icon: FolderGit2,
-  },
-  {
-    id: 'review',
-    label: 'Review defaults',
-    description: 'Rubrics used by code review workflows.',
-    icon: ClipboardCheck,
-  },
-  {
-    id: 'devices',
-    label: 'Devices & system',
-    description: 'Repo defaults and mobile companion access.',
-    icon: MonitorSmartphone,
-  },
-  {
-    id: 'privacy',
-    label: 'Privacy',
-    description: 'Optional crash reporting.',
-    icon: ShieldCheck,
-  },
-  {
-    id: 'danger',
-    label: 'Danger area',
-    description: 'Reset setup state and workspace selections.',
-    icon: ShieldAlert,
-  },
-];
+/**
+ * Settings shell (ST3/ST4/ST6/ST7).
+ *
+ * - One lazily-mounted component per category from `settings-registry`; hidden
+ *   categories no longer mount at all.
+ * - Deep-linkable: `/settings/:category#panel` (route param lands via the
+ *   integration pass; `?category=` works today) — see `settings-route.ts`.
+ * - Save state derives from the draft's per-field `dirtyKeys`; the badge can
+ *   never claim "Saved" while unrelated edits are pending (ST1/ST3).
+ * - Switching away from a category with unsaved credential edits asks first
+ *   (ST5); simple fields autosave so there is nothing to lose.
+ */
 
 interface SettingsViewProps {
   onSettingsSaved?: () => void;
@@ -169,77 +35,8 @@ interface SettingsViewProps {
   onThemeChange?: (theme: AppTheme) => void;
   onPreviewOnboarding?: () => void;
   userRole?: UserRole;
-}
-
-const THEME_OPTIONS: Array<{
-  id: AppTheme;
-  label: string;
-  description: string;
-  swatches: [string, string, string];
-}> = [
-  {
-    id: 'system',
-    label: 'System',
-    description: 'Follows your device appearance, light or dark.',
-    swatches: ['#fbfbfc', '#111318', '#4f46e5'],
-  },
-  {
-    id: 'light',
-    label: 'Anvil Light',
-    description: 'Minimal, bright, stays out of the way.',
-    swatches: ['#fbfbfc', '#ffffff', '#4f46e5'],
-  },
-  {
-    id: 'dark',
-    label: 'Anvil Dark',
-    description: 'Minimal dark workspace for low-light sessions.',
-    swatches: ['#0b1020', '#14213d', '#ff8a3d'],
-  },
-  {
-    id: 'prompt-whisperer',
-    label: 'Prompt Whisperer',
-    description: 'Soft teal for calm context herding.',
-    swatches: ['#071b1f', '#12343b', '#3ddbd9'],
-  },
-  {
-    id: 'merge-conflict',
-    label: 'Merge Conflict',
-    description: 'Red and cyan, but on speaking terms.',
-    swatches: ['#120d18', '#2d1736', '#ff5c8a'],
-  },
-  {
-    id: 'token-bender',
-    label: 'Token Bender',
-    description: 'High-energy violet for long reasoning loops.',
-    swatches: ['#100f2a', '#211a4f', '#9f7aea'],
-  },
-  {
-    id: 'agent-after-hours',
-    label: 'Agent After Hours',
-    description: 'Late-night graphite with laser green signal.',
-    swatches: ['#07110d', '#17241d', '#6ee7b7'],
-  },
-];
-
-function buildCodexModelOptions(status: CodexCliStatus | null): CodexModelPickerOption[] {
-  const detected = status?.models
-    ?.filter((model) => !model.hidden)
-    .map<CodexModelPickerOption>((model) => ({
-      id: model.id,
-      label: model.displayName ?? model.id,
-      tier: 'preview',
-      description: model.description ?? 'Detected from the local Codex CLI model catalog.',
-      defaultReasoningEffort: model.defaultReasoningEffort ?? 'medium',
-      supportedReasoningEfforts: model.supportedReasoningEfforts,
-      recommended: model.id === DEFAULT_CODEX_MODEL,
-      source: 'cli',
-    }));
-
-  if (detected?.length) {
-    return detected;
-  }
-
-  return CODEX_MODEL_OPTIONS.map((model) => ({ ...model, source: 'docs' }));
+  /** Controlled category override (e.g. a route param passed down by App.tsx). */
+  category?: string;
 }
 
 export function SettingsView({
@@ -248,3216 +45,410 @@ export function SettingsView({
   onThemeChange,
   onPreviewOnboarding,
   userRole,
+  category: categoryProp,
 }: SettingsViewProps) {
   const navigate = useNavigate();
-  const brand = useBrand();
-  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>('profile');
-  const [settings, setSettings] = useState<Partial<AppSettings>>({});
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [llmStatus, setLlmStatus] = useState<TestStatus>('idle');
-  const [localLlmStatus, setLocalLlmStatus] = useState<TestStatus>('idle');
-  const [localLlmCapabilities, setLocalLlmCapabilities] = useState<LocalLlmCapabilities | null>(
-    null,
+  const location = useLocation();
+  const [activeCategory, setActiveCategory] = useState<string>(() => {
+    const fromLocation = parseSettingsLocation(
+      location.pathname,
+      location.search,
+      location.hash,
+    ).category;
+    return categoryProp ?? fromLocation ?? 'profile';
+  });
+  const [pendingPanel, setPendingPanel] = useState<string | null>(
+    () => parseSettingsLocation(location.pathname, location.search, location.hash).panel ?? null,
   );
-  const [wiStatus, setWiStatus] = useState<TestStatus>('idle');
-  const [confluenceStatus, setConfluenceStatus] = useState<TestStatus>('idle');
-  const [testError, setTestError] = useState<string | null>(null);
-  const [linearTeams, setLinearTeams] = useState<Array<{ id: string; name: string; key: string }>>(
-    [],
-  );
-  const [loadingTeams, setLoadingTeams] = useState(false);
-  const [gitProvider, setGitProvider] = useState<'github' | 'ado'>('github');
-  const [gitStatus, setGitStatus] = useState<TestStatus>('idle');
-  const [ghUsername, setGhUsername] = useState<string | null>(null);
-  const [ghError, setGhError] = useState<string | null>(null);
-  const [docsProvider, setDocsProvider] = useState<DocsProvider | 'none'>('confluence');
-  const [docsStatus, setDocsStatus] = useState<TestStatus>('idle');
-  const [notionMcpInstalled, setNotionMcpInstalled] = useState(false);
-  const [notionInstalling, setNotionInstalling] = useState(false);
-  const [notionConnecting, setNotionConnecting] = useState(false);
-  const [resetting, setResetting] = useState(false);
-  const [resetDone, setResetDone] = useState(false);
-  const [mobileStatus, setMobileStatus] = useState<MobileCompanionStatus | null>(null);
-  const [mobileDevices, setMobileDevices] = useState<MobileCompanionDevice[]>([]);
-  const [pairingTicket, setPairingTicket] = useState<MobilePairingTicket | null>(null);
-  const [raycastToken, setRaycastToken] = useState<RaycastCompanionToken | null>(null);
-  const [mobileBusy, setMobileBusy] = useState(false);
-  const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
-  const [codexUsageLoading, setCodexUsageLoading] = useState(false);
-  const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
-  const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
-  const [devinStatus, setDevinStatus] = useState<DevinCliStatus | null>(null);
-  const [devinSigningIn, setDevinSigningIn] = useState(false);
-  const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
-  const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
-  const llmGatewayRequestId = useRef(0);
-  const [agentMaxThreads, setAgentMaxThreads] = useState(6);
-  const [agentMaxThreadsSaving, setAgentMaxThreadsSaving] = useState(false);
-  const [agentMaxThreadsError, setAgentMaxThreadsError] = useState<string | null>(null);
-  const [codexAgentsContent, setCodexAgentsContent] = useState('');
-  const [codexAgentsPath, setCodexAgentsPath] = useState('~/.codex/AGENTS.md');
-  const [codexAgentsExists, setCodexAgentsExists] = useState(false);
-  const [codexAgentsUpdatedAt, setCodexAgentsUpdatedAt] = useState<string | null>(null);
-  const [codexAgentsLoading, setCodexAgentsLoading] = useState(false);
-  const [codexAgentsSaving, setCodexAgentsSaving] = useState(false);
-  const [codexAgentsStatus, setCodexAgentsStatus] = useState<CodexAgentsStatus | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [discardTarget, setDiscardTarget] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
+  const draft = useSettingsDraft({
+    onSaved: () => onSettingsSaved?.(),
+    onError: (message) => setStatusError(message),
+  });
+
+  // React to deep links: `/settings/:category#panel` (or `?category=` until
+  // the param route lands in App.tsx).
   useEffect(() => {
-    window.anvil.settings.get().then((s) => {
-      setSettings(s);
-      if (s.adoPat || s.adoOrganizationUrl) {
-        setGitProvider('ado');
+    const parsed = parseSettingsLocation(location.pathname, location.search, location.hash);
+    const target = categoryProp ?? parsed.category;
+    if (target && target !== activeCategory) setActiveCategory(target);
+    if (parsed.panel) setPendingPanel(parsed.panel);
+  }, [location.pathname, location.search, location.hash, categoryProp, activeCategory]);
+
+  // Scroll to a deep-linked panel once its (lazy) category has mounted —
+  // retry on frames for a short window since Suspense resolves async.
+  useEffect(() => {
+    if (!pendingPanel) return;
+    let frame = 0;
+    const deadline = Date.now() + 2000;
+    const tryScroll = () => {
+      const element = document.getElementById(settingsPanelDomId(pendingPanel));
+      if (element) {
+        element.scrollIntoView({ block: 'start' });
+        setPendingPanel(null);
+        return;
       }
-      setDocsProvider(s.docsProvider ?? 'confluence');
-    });
-    // Check gh CLI auth on mount
-    window.anvil.repo.ghAuthStatus().then((status) => {
-      if (status.authenticated) {
-        setGhUsername(status.username ?? null);
-        setGitStatus('ok');
-      } else {
-        setGhError(status.error ?? null);
+      if (Date.now() < deadline) frame = requestAnimationFrame(tryScroll);
+    };
+    frame = requestAnimationFrame(tryScroll);
+    return () => cancelAnimationFrame(frame);
+  }, [pendingPanel, activeCategory]);
+
+  // ⌘F / Ctrl+F focuses the settings search (ST7).
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
       }
-    });
-    // Check Notion MCP status
-    window.anvil.settings.getNotionMcpStatus().then((s) => {
-      setNotionMcpInstalled(s.installed);
-    });
-    window.anvil.settings
-      .getCodexStatus()
-      .then((status) => {
-        setCodexStatus(status);
-        setAgentMaxThreads(status.agentMaxThreads ?? 6);
-      })
-      .catch(console.warn);
-    window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
-    window.anvil.settings.getDevinStatus().then(setDevinStatus).catch(console.warn);
-    window.anvil.settings.getLlmGatewayStatus().then(setLlmGatewayStatus).catch(console.warn);
-    window.anvil.settings
-      .getLocalLlmCapabilities()
-      .then(setLocalLlmCapabilities)
-      .catch(console.warn);
-    refreshMobileCompanion().catch(console.error);
-    refreshCodexUsage().catch(console.error);
-    refreshCodexAgentsFile().catch(console.error);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
   }, []);
 
-  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
-    setSettings((prev) => ({ ...prev, [key]: value }));
-    setSaved(false);
-  };
-
-  const activateWorkItemConnection = (connection: WorkItemConnection) => {
-    setSettings((prev) => ({
-      ...prev,
-      activeWorkItemConnectionId: connection.id,
-      workItemProvider: connection.provider,
-      adoOrganizationUrl: connection.adoOrganizationUrl ?? '',
-      adoProject: connection.adoProject ?? '',
-      adoTeam: connection.adoTeam,
-      adoPat: connection.adoPat,
-      linearApiKey: connection.linearApiKey,
-      linearTeamId: connection.linearTeamId,
-      jiraHost: connection.jiraHost,
-      jiraAuthMode: connection.jiraAuthMode,
-      jiraProject: connection.jiraProject,
-      jiraBoardId: connection.jiraBoardId,
-      jiraAcceptanceCriteriaField: connection.jiraAcceptanceCriteriaField,
-      jiraEmail: connection.jiraEmail,
-      jiraApiToken: connection.jiraApiToken,
-    }));
-    setWiStatus('idle');
-    setSaved(false);
-  };
-
-  const addWorkItemConnection = () => {
-    const connection: WorkItemConnection = {
-      id: crypto.randomUUID(),
-      name: `Work items ${(settings.workItemConnections?.length ?? 0) + 1}`,
-      provider: 'ado',
-      jiraAuthMode: 'cloud',
+  // Warn before closing the window with unsaved credential edits (ST5).
+  const activeCredentialKeys = useMemo(
+    () => getSettingsCategory(activeCategory)?.credentialKeys ?? [],
+    [activeCategory],
+  );
+  const dirtyCredentials = useMemo(
+    () =>
+      [...draft.dirtyKeys].filter(
+        (key): key is keyof AppSettings =>
+          CREDENTIAL_SETTING_KEYS.has(key as keyof AppSettings) &&
+          activeCredentialKeys.includes(key as keyof AppSettings),
+      ),
+    [draft.dirtyKeys, activeCredentialKeys],
+  );
+  useEffect(() => {
+    if (draft.dirtyKeys.size === 0) return;
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
     };
-    setSettings((prev) => ({
-      ...prev,
-      workItemConnections: [...(prev.workItemConnections ?? []), connection],
-    }));
-    activateWorkItemConnection(connection);
-  };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [draft.dirtyKeys.size]);
 
-  const updateWorkItemConnection = <K extends keyof WorkItemConnection>(
-    key: K,
-    value: WorkItemConnection[K],
-  ) => {
-    setSettings((prev) => {
-      const activeId = prev.activeWorkItemConnectionId;
-      const connections = (prev.workItemConnections ?? []).map((connection) =>
-        connection.id === activeId ? { ...connection, [key]: value } : connection,
-      );
-      const active = connections.find((connection) => connection.id === activeId);
-      return active
-        ? {
-            ...prev,
-            workItemConnections: connections,
-            workItemProvider: active.provider,
-            adoOrganizationUrl: active.adoOrganizationUrl ?? '',
-            adoProject: active.adoProject ?? '',
-            adoTeam: active.adoTeam,
-            adoPat: active.adoPat,
-            linearApiKey: active.linearApiKey,
-            linearTeamId: active.linearTeamId,
-            jiraHost: active.jiraHost,
-            jiraAuthMode: active.jiraAuthMode,
-            jiraProject: active.jiraProject,
-            jiraBoardId: active.jiraBoardId,
-            jiraAcceptanceCriteriaField: active.jiraAcceptanceCriteriaField,
-            jiraEmail: active.jiraEmail,
-            jiraApiToken: active.jiraApiToken,
-          }
-        : { ...prev, workItemConnections: connections };
-    });
-    setWiStatus('idle');
-    setSaved(false);
-  };
-
-  const removeActiveWorkItemConnection = () => {
-    const remaining = (settings.workItemConnections ?? []).filter(
-      (connection) => connection.id !== settings.activeWorkItemConnectionId,
-    );
-    setSettings((prev) => ({ ...prev, workItemConnections: remaining }));
-    if (remaining[0]) {
-      activateWorkItemConnection(remaining[0]);
-    } else {
-      setSettings((prev) => ({
-        ...prev,
-        workItemConnections: [],
-        activeWorkItemConnectionId: undefined,
-        workItemProvider: 'none',
-      }));
-      setSaved(false);
-    }
-  };
-
-  const saveAgentMaxThreads = async () => {
-    setAgentMaxThreadsSaving(true);
-    setAgentMaxThreadsError(null);
-    try {
-      const status = await window.anvil.settings.setCodexAgentMaxThreads(agentMaxThreads);
-      setCodexStatus(status);
-      setAgentMaxThreads(status.agentMaxThreads ?? agentMaxThreads);
-    } catch (err) {
-      setAgentMaxThreadsError(
-        err instanceof Error ? err.message : 'Failed to update the Codex agent limit.',
-      );
-    } finally {
-      setAgentMaxThreadsSaving(false);
-    }
-  };
-
-  const updateCloudFeatures = async (enabled: boolean) => {
-    setSettings((prev) => ({ ...prev, cloudFeaturesEnabled: enabled }));
-    setSaved(false);
-    try {
-      await window.anvil.settings.update({ cloudFeaturesEnabled: enabled });
-      window.dispatchEvent(new CustomEvent('anvil:cloud-feature-changed', { detail: { enabled } }));
-      setSaved(true);
-      onSettingsSaved?.();
-    } catch (err) {
-      setTestError(err instanceof Error ? err.message : 'Failed to update Anvil Cloud access');
-    }
-  };
-
-  const updateTheme = async (theme: AppTheme) => {
-    setSettings((prev) => ({ ...prev, theme }));
-    setSaved(false);
-    onThemeChange?.(theme);
-
-    try {
-      await window.anvil.settings.update({ theme });
-      setSaved(true);
-      onSettingsSaved?.();
-    } catch (err) {
-      setTestError(err instanceof Error ? err.message : 'Failed to update theme');
-    }
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const isGateway = settings.llmProvider === 'llmgateway';
-      const model = settings.openaiModel ?? (isGateway ? '' : DEFAULT_CODEX_MODEL);
-      const reasoningEffort = resolveCodexReasoningEffort(
-        model,
-        settings.reasoningLevel,
-        settings.llmProvider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
-      );
-      const settingsToSave = {
-        ...settings,
-        ...(model ? { openaiModel: model, reasoningLevel: reasoningEffort } : {}),
-      };
-      await window.anvil.settings.update(settingsToSave);
-      if (settingsToSave.enabledLlmProviders?.includes('llmgateway')) {
-        setLlmGatewayStatus(await window.anvil.settings.getLlmGatewayStatus(true));
-      }
-      setSettings(settingsToSave);
-      if (settingsToSave.chatLayout === 'classic' || settingsToSave.chatLayout === 'workitems') {
-        window.dispatchEvent(
-          new CustomEvent('anvil:chat-layout-changed', { detail: settingsToSave.chatLayout }),
-        );
-      }
-      if (model) dispatchCodexSelectionChanged({ model, reasoningEffort });
-      setSaved(true);
-      onSettingsSaved?.();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const saveBeforeTest = async () => {
-    try {
-      await window.anvil.settings.update(settings);
-    } catch (err) {
-      // Persisting must not block connection tests (e.g. a settings save
-      // hitting a stale local DB should still let the test itself run).
-      console.warn('[Settings] save before test failed, continuing with test', err);
-    }
-  };
-
-  const refreshMobileCompanion = async () => {
-    const [status, devices] = await Promise.all([
-      window.anvil.mobileCompanion.getStatus(),
-      window.anvil.mobileCompanion.listDevices(),
-    ]);
-    setMobileStatus(status);
-    setMobileDevices(devices);
-  };
-
-  const refreshCodexUsage = async () => {
-    setCodexUsageLoading(true);
-    try {
-      setCodexUsage(await window.anvil.codexUsage.snapshot());
-    } finally {
-      setCodexUsageLoading(false);
-    }
-  };
-
-  const refreshCodexAgentsFile = async () => {
-    setCodexAgentsLoading(true);
-    setCodexAgentsStatus(null);
-    try {
-      const file = await window.anvil.settings.getCodexAgentsFile();
-      setCodexAgentsContent(file.content);
-      setCodexAgentsPath(file.path);
-      setCodexAgentsExists(file.exists);
-      setCodexAgentsUpdatedAt(file.updatedAt ?? null);
-    } catch (err) {
-      setCodexAgentsStatus({
-        tone: 'error',
-        message: err instanceof Error ? err.message : 'Failed to read Codex AGENTS.md',
-      });
-    } finally {
-      setCodexAgentsLoading(false);
-    }
-  };
-
-  const saveCodexAgentsFile = async () => {
-    setCodexAgentsSaving(true);
-    setCodexAgentsStatus(null);
-    try {
-      const result = await window.anvil.settings.saveCodexAgentsFile(codexAgentsContent);
-      setCodexAgentsPath(result.path);
-      setCodexAgentsExists(true);
-      setCodexAgentsUpdatedAt(result.savedAt);
-      setCodexAgentsStatus({
-        tone: 'success',
-        message: `Saved ${new Intl.NumberFormat().format(result.bytes)} bytes.`,
-      });
-    } catch (err) {
-      setCodexAgentsStatus({
-        tone: 'error',
-        message: err instanceof Error ? err.message : 'Failed to save Codex AGENTS.md',
-      });
-    } finally {
-      setCodexAgentsSaving(false);
-    }
-  };
-
-  const toggleMobileCompanion = async () => {
-    setMobileBusy(true);
-    setTestError(null);
-    try {
-      const status = await window.anvil.mobileCompanion.setEnabled(!mobileStatus?.enabled);
-      setMobileStatus(status);
-      if (!status.enabled) setPairingTicket(null);
-      await refreshMobileCompanion();
-    } catch (err) {
-      setTestError(err instanceof Error ? err.message : 'Failed to update mobile companion');
-    } finally {
-      setMobileBusy(false);
-    }
-  };
-
-  const createPairingTicket = async () => {
-    setMobileBusy(true);
-    setTestError(null);
-    try {
-      const ticket = await window.anvil.mobileCompanion.createPairingTicket();
-      setPairingTicket(ticket);
-      await refreshMobileCompanion();
-    } catch (err) {
-      setTestError(err instanceof Error ? err.message : 'Failed to create pairing QR code');
-    } finally {
-      setMobileBusy(false);
-    }
-  };
-
-  const createRaycastToken = async () => {
-    setMobileBusy(true);
-    setTestError(null);
-    try {
-      const token = await window.anvil.mobileCompanion.createRaycastToken();
-      setRaycastToken(token);
-      await refreshMobileCompanion();
-    } catch (err) {
-      setTestError(err instanceof Error ? err.message : 'Failed to create Raycast token');
-    } finally {
-      setMobileBusy(false);
-    }
-  };
-
-  const revokeMobileDevice = async (deviceId: string) => {
-    setMobileBusy(true);
-    try {
-      await window.anvil.mobileCompanion.revokeDevice(deviceId);
-      await refreshMobileCompanion();
-    } finally {
-      setMobileBusy(false);
-    }
-  };
-
-  const testLlm = async () => {
-    setLlmStatus('testing');
-    setTestError(null);
-    await saveBeforeTest();
-    const result = await window.anvil.settings.testFoundryConnection();
-    setLlmStatus(result.ok ? 'ok' : 'error');
-    if (result.error) setTestError(result.error);
-  };
-
-  const connectLlmGateway = async (billingMode: LlmGatewayBillingMode) => {
-    const requestId = ++llmGatewayRequestId.current;
-    setLlmGatewayConnecting(true);
-    setTestError(null);
-    update('llmGatewayBillingMode', billingMode);
-    try {
-      const status = await window.anvil.settings.connectLlmGateway(billingMode);
-      if (requestId !== llmGatewayRequestId.current) return;
-      setLlmGatewayStatus(status);
-      setSettings((current) => ({
-        ...current,
-        llmGatewayApiKey: '••••••••',
-        llmGatewayBillingMode: billingMode,
-      }));
-      setSaved(true);
-    } catch (error) {
-      if (requestId === llmGatewayRequestId.current) {
-        setTestError(error instanceof Error ? error.message : 'Failed to connect LLMGateway');
-      }
-    } finally {
-      if (requestId === llmGatewayRequestId.current) setLlmGatewayConnecting(false);
-    }
-  };
-
-  const selectLlmGatewayBillingMode = (billingMode: LlmGatewayBillingMode) => {
-    if (llmGatewayConnecting) return;
-    const requestId = ++llmGatewayRequestId.current;
-    setSettings((current) => ({
-      ...current,
-      llmGatewayBillingMode: billingMode,
-      openaiModel: undefined,
-    }));
-    setSaved(false);
-    setLlmGatewayStatus(null);
-    void window.anvil.settings
-      .getLlmGatewayStatus(true, billingMode)
-      .then((status) => {
-        if (requestId === llmGatewayRequestId.current) setLlmGatewayStatus(status);
-      })
-      .catch((error) => {
-        if (requestId === llmGatewayRequestId.current) {
-          setTestError(error instanceof Error ? error.message : 'Failed to load LLMGateway models');
-        }
-      });
-  };
-
-  const disconnectLlmGateway = async () => {
-    const requestId = ++llmGatewayRequestId.current;
-    setLlmGatewayConnecting(true);
-    setTestError(null);
-    try {
-      const status = await window.anvil.settings.disconnectLlmGateway();
-      if (requestId !== llmGatewayRequestId.current) return;
-      setLlmGatewayStatus(status);
-      setSettings((current) => ({ ...current, llmGatewayApiKey: undefined }));
-    } catch (error) {
-      if (requestId === llmGatewayRequestId.current) {
-        setTestError(error instanceof Error ? error.message : 'Failed to disconnect LLMGateway');
-      }
-    } finally {
-      if (requestId === llmGatewayRequestId.current) setLlmGatewayConnecting(false);
-    }
-  };
-
-  const testLocalLlm = async () => {
-    setLocalLlmStatus('testing');
-    setTestError(null);
-    await saveBeforeTest();
-    const result = await window.anvil.settings.testLocalLlm();
-    setLocalLlmStatus(result.ok ? 'ok' : 'error');
-    if (result.error) setTestError(result.error);
-    // Re-probe capabilities so backend/license state stays current after a test.
-    window.anvil.settings
-      .getLocalLlmCapabilities()
-      .then(setLocalLlmCapabilities)
-      .catch(console.warn);
-  };
-
-  const testWi = async () => {
-    setWiStatus('testing');
-    setTestError(null);
-    try {
-      await saveBeforeTest();
-      const result = await window.anvil.settings.testWorkItemProviderConnection();
-      setWiStatus(result.ok ? 'ok' : 'error');
-      if (result.error) setTestError(result.error);
-    } catch (err) {
-      setWiStatus('error');
-      setTestError(err instanceof Error ? err.message : 'Connection test failed');
-    }
-  };
-
-  const testConfluence = async () => {
-    setConfluenceStatus('testing');
-    setTestError(null);
-    await saveBeforeTest();
-    try {
-      const result = await window.anvil.settings.testConfluenceConnection();
-      setConfluenceStatus(result.ok ? 'ok' : 'error');
-      if (result.error) setTestError(result.error);
-    } catch (err) {
-      setConfluenceStatus('error');
-      setTestError(err instanceof Error ? err.message : 'Connection test failed');
-    }
-  };
-
-  const testGit = async () => {
-    setGitStatus('testing');
-    setTestError(null);
-    setGhError(null);
-    await saveBeforeTest();
-    try {
-      if (gitProvider === 'github') {
-        const status = await window.anvil.repo.ghAuthStatus();
-        if (status.authenticated) {
-          setGitStatus('ok');
-          setGhUsername(status.username ?? null);
-        } else {
-          setGitStatus('error');
-          setGhError(status.error ?? 'Not authenticated');
-          setTestError(status.error ?? 'Not authenticated');
-        }
-      } else {
-        const result = await window.anvil.settings.testGitConnection();
-        setGitStatus(result.ok ? 'ok' : 'error');
-        if (result.error) setTestError(result.error);
-      }
-    } catch (err) {
-      setGitStatus('error');
-      setTestError(err instanceof Error ? err.message : 'Connection test failed');
-    }
-  };
-
-  const testDocs = async () => {
-    setDocsStatus('testing');
-    setTestError(null);
-    await saveBeforeTest();
-    try {
-      const result = await window.anvil.settings.testDocsProviderConnection();
-      setDocsStatus(result.ok ? 'ok' : 'error');
-      if (result.error) setTestError(result.error);
-    } catch (err) {
-      setDocsStatus('error');
-      setTestError(err instanceof Error ? err.message : 'Connection test failed');
-    }
-  };
-
-  const installNotionMcp = async () => {
-    setNotionInstalling(true);
-    setTestError(null);
-    try {
-      const result = await window.anvil.settings.installNotionMcp();
-      if (result.success) {
-        setNotionMcpInstalled(true);
-      } else {
-        setTestError(result.error ?? 'Failed to install Notion MCP');
-      }
-    } catch (err) {
-      setTestError(err instanceof Error ? err.message : 'Failed to install Notion MCP');
-    } finally {
-      setNotionInstalling(false);
-    }
-  };
-
-  const connectNotion = async () => {
-    setNotionConnecting(true);
-    setTestError(null);
-    try {
-      const { authUrl } = await window.anvil.settings.startNotionOAuthFlow();
-      if (authUrl) {
-        window.open(authUrl, '_blank');
-      }
-    } catch (err) {
-      setTestError(err instanceof Error ? err.message : 'Failed to start Notion OAuth');
-    } finally {
-      setNotionConnecting(false);
-    }
-  };
-
-  const handleResetOnboarding = async () => {
-    setResetting(true);
-    setTestError(null);
-    try {
-      const result = await window.anvil.settings.resetOnboarding();
-      if (result.success) {
-        setResetDone(true);
-        setTimeout(() => setResetDone(false), 3000);
-      } else {
-        setTestError(result.error ?? 'Failed to reset onboarding');
-      }
-    } catch (err) {
-      setTestError(err instanceof Error ? err.message : 'Failed to reset onboarding');
-    } finally {
-      setResetting(false);
-    }
-  };
-
-  const provider = settings.llmProvider ?? 'codex';
-  const enabledProviders = [
-    ...new Set<AgentProvider>([provider, ...(settings.enabledLlmProviders ?? [])]),
-  ];
-  const setPrimaryProvider = (nextProvider: AgentProvider) => {
-    setSettings((current) =>
-      selectPrimaryAgentProvider(current, nextProvider, {
-        cursor: cursorStatus?.models.map((model) => model.id) ?? [],
-        devin: devinStatus?.models.map((model) => model.id) ?? [],
-      }),
-    );
-    setSaved(false);
-  };
-  const startDevinLogin = () => {
-    setDevinSigningIn(true);
-    void window.anvil.settings
-      .startDevinLogin()
-      .then(() => window.anvil.settings.getDevinStatus())
-      .then(setDevinStatus)
-      .catch(console.warn)
-      .finally(() => setDevinSigningIn(false));
-  };
-  const toggleProvider = (providerId: AgentProvider) => {
-    if (providerId === provider) return;
-    setSettings((prev) => {
-      const current = new Set(prev.enabledLlmProviders ?? [provider]);
-      if (current.has(providerId)) current.delete(providerId);
-      else current.add(providerId);
-      current.add(provider);
-      return { ...prev, enabledLlmProviders: [...current] };
-    });
-    setSaved(false);
-  };
-  const workItemConnections = settings.workItemConnections ?? [];
-  const activeWorkItemConnection = workItemConnections.find(
-    (connection) => connection.id === settings.activeWorkItemConnectionId,
+  const commitCategory = useCallback(
+    (id: string, panel?: string) => {
+      setActiveCategory(id);
+      if (panel) setPendingPanel(panel);
+      // Reflect the deep link in the URL — `/settings/:category?` is routed in
+      // App.tsx, so every category switch is addressable.
+      navigate(`/settings/${id}${panel ? `#${panel}` : ''}`);
+    },
+    [navigate],
   );
-  const wiProvider = activeWorkItemConnection?.provider ?? 'none';
-  const selectedDocsProvider = docsProvider;
-  const themeOptions = THEME_OPTIONS;
-  const persistedTheme = settings.theme ?? brand.defaultTheme;
-  const selectedTheme = themeOptions.some((theme) => theme.id === persistedTheme)
-    ? persistedTheme
-    : brand.defaultTheme;
-  const selectedChatLayout = settings.chatLayout ?? 'classic';
-  const assistProvider = settings.threadAssistProvider ?? 'off';
-  const assistAgentProvider = AGENT_PROVIDER_OPTIONS.some((option) => option.id === assistProvider)
-    ? (assistProvider as AgentProvider)
-    : null;
-  const assistModelOptions = assistAgentProvider
-    ? buildProviderModelOptions(
-        assistAgentProvider,
-        settings.threadAssistModel || null,
-        codexStatus,
-        cursorStatus,
-        llmGatewayStatus,
-        devinStatus,
-      )
-    : [];
-  const codexModelOptions = buildCodexModelOptions(codexStatus);
-  const selectedModelId =
-    settings.openaiModel ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL);
-  const selectedModel = codexModelOptions.find((model) => model.id === selectedModelId);
-  const selectedLlmGatewayModel = llmGatewayStatus?.models.find(
-    (model) => model.id === selectedModelId,
-  );
-  const reasoningOptions = selectedModel?.supportedReasoningEfforts?.length
-    ? selectedModel.supportedReasoningEfforts
-    : selectedLlmGatewayModel?.supportedReasoningEfforts.length
-      ? selectedLlmGatewayModel.supportedReasoningEfforts
-      : CODEX_REASONING_EFFORTS;
-  const selectedReasoningEffort = resolveCodexReasoningEffort(
-    selectedModelId,
-    settings.reasoningLevel,
-    provider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
-  );
-  const updateCodexModel = (modelId: string) => {
-    const reasoningEffort = resolveCodexReasoningEffort(
-      modelId,
-      settings.reasoningLevel,
-      provider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
-    );
-    setSettings((prev) => ({ ...prev, openaiModel: modelId, reasoningLevel: reasoningEffort }));
-    setSaved(false);
-  };
-  const deliverySummary = [
-    activeWorkItemConnection?.name ?? 'No work items',
-    selectedDocsProvider === 'none' ? 'No docs' : selectedDocsProvider,
-    gitProvider === 'ado' ? 'ADO Git' : 'GitHub',
-  ];
-  const saveStateLabel = saving ? 'Saving' : saved ? 'Saved' : 'Unsaved changes';
 
-  const jumpToCategory = (id: SettingsCategoryId) => {
-    setActiveCategory(id);
+  const selectCategory = useCallback(
+    (id: string, panel?: string) => {
+      if (id === activeCategory) {
+        if (panel) setPendingPanel(panel);
+        return;
+      }
+      if (dirtyCredentials.length > 0) {
+        setDiscardTarget(panel ? `${id}#${panel}` : id);
+        return;
+      }
+      commitCategory(id, panel);
+    },
+    [activeCategory, dirtyCredentials.length, commitCategory],
+  );
+
+  const searchResults = useMemo(() => searchSettings(searchQuery), [searchQuery]);
+
+  const activeMeta = getSettingsCategory(activeCategory) ?? SETTINGS_CATEGORIES[0];
+  const ActiveComponent = activeMeta.component;
+  // ST8: a category wholly backed by a role-gated feature shows an explanatory
+  // notice instead of its panels — "Show anyway" enables the Show all tools
+  // setting; "Change role" deep-links to the profile panel.
+  const categoryHiddenByRole =
+    activeMeta.feature !== undefined &&
+    !draft.settings.showAllTools &&
+    (!userRole || !ROLE_FEATURES[userRole].includes(activeMeta.feature));
+  const dirtyCount = draft.dirtyKeys.size;
+  const allSaved = draft.loaded && dirtyCount === 0;
+  const saveStateLabel = draft.saving
+    ? 'Saving…'
+    : !draft.loaded
+      ? 'Loading…'
+      : dirtyCount === 0
+        ? 'All changes saved'
+        : `${dirtyCount} unsaved ${dirtyCount === 1 ? 'change' : 'changes'}`;
+
+  const categoryDescription = (id: string): string => {
+    // Keep the live delivery summary from the old layout.
+    if (id === 'delivery') {
+      const active = (draft.settings.workItemConnections ?? []).find(
+        (connection) => connection.id === draft.settings.activeWorkItemConnectionId,
+      );
+      return [
+        active?.name ?? 'No work items',
+        (draft.settings.docsProvider ?? 'confluence') === 'none'
+          ? 'No docs'
+          : (draft.settings.docsProvider ?? 'confluence'),
+        draft.settings.adoPat || draft.settings.adoOrganizationUrl ? 'ADO Git' : 'GitHub',
+      ].join(' / ');
+    }
+    return activeMeta.description;
   };
 
   return (
-    <div className="h-full overflow-auto p-4 md:p-6">
-      <div className="mx-auto max-w-7xl space-y-5">
-        <header className="border-b border-border pb-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0">
-              <div className="flex items-center gap-3">
-                <Settings size={18} className="shrink-0 text-accent" />
-                <div>
-                  <h1 className="text-base font-semibold text-text-primary">Settings</h1>
-                  <p className="text-sm text-text-secondary">
-                    Configure identity, AI backends, delivery tools, and local devices.
-                  </p>
+    <SettingsContextProvider
+      value={{
+        draft,
+        userRole,
+        onSettingsSaved,
+        onRoleChange,
+        onThemeChange,
+        onPreviewOnboarding,
+        reportError: setStatusError,
+      }}
+    >
+      <div className="h-full overflow-auto p-4 md:p-6">
+        <div className="mx-auto max-w-7xl space-y-5">
+          <header className="border-b border-border pb-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-3">
+                  <Settings size={18} className="shrink-0 text-accent" />
+                  <div>
+                    <h1 className="text-base font-semibold text-text-primary">Settings</h1>
+                    <p className="text-sm text-text-secondary">
+                      Configure identity, AI backends, delivery tools, and local devices.
+                    </p>
+                  </div>
                 </div>
+              </div>
+
+              <div className="flex shrink-0 items-center gap-3">
+                <div className="relative">
+                  <Search
+                    size={13}
+                    className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary"
+                  />
+                  <input
+                    ref={searchInputRef}
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') setSearchQuery('');
+                    }}
+                    placeholder="Search settings (⌘F)"
+                    aria-label="Search settings"
+                    className="w-56 rounded-md border border-border bg-bg-secondary py-1.5 pl-8 pr-7 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      aria-label="Clear settings search"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+                <span
+                  className={cx(
+                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs',
+                    allSaved
+                      ? 'border-success/30 bg-success/10 text-success'
+                      : 'border-border-subtle bg-bg-primary text-text-tertiary',
+                  )}
+                >
+                  {draft.saving ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : allSaved ? (
+                    <CheckCircle size={12} />
+                  ) : (
+                    <Save size={12} />
+                  )}
+                  {saveStateLabel}
+                </span>
+                {dirtyCount > 0 && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={draft.saving}
+                    onClick={() => void draft.saveAllDirty()}
+                  >
+                    Save all
+                  </Button>
+                )}
               </div>
             </div>
 
-            <div className="flex shrink-0 items-center gap-3">
-              <span
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-                  saved
-                    ? 'border-success/30 bg-success/10 text-success'
-                    : 'border-border-subtle bg-bg-primary text-text-tertiary'
-                }`}
-              >
-                {saving ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : saved ? (
-                  <CheckCircle size={12} />
-                ) : (
-                  <Save size={12} />
-                )}
-                {saveStateLabel}
-              </span>
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
-                aria-label={saving ? 'Saving settings' : 'Save settings'}
-              >
-                {saving && <Loader2 size={14} className="animate-spin" />}
-                {saving ? 'Saving...' : 'Save'}
-              </button>
-            </div>
-          </div>
+            {statusError && (
+              <InlineNotice tone="error" className="mt-4">
+                {statusError}
+              </InlineNotice>
+            )}
+          </header>
 
-          {testError && (
-            <InlineNotice tone="error" className="mt-4">
-              {testError}
-            </InlineNotice>
-          )}
-        </header>
-
-        <nav className="flex gap-2 overflow-x-auto pb-1 lg:hidden" aria-label="Settings sections">
-          {SETTINGS_CATEGORIES.map((category) => {
-            const Icon = category.icon;
-            return (
-              <button
-                key={category.id}
-                onClick={() => jumpToCategory(category.id)}
-                aria-current={activeCategory === category.id ? 'page' : undefined}
-                className={`inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
-                  activeCategory === category.id
-                    ? 'border-accent/40 bg-accent/10 text-accent'
-                    : 'border-border bg-bg-secondary text-text-secondary hover:border-text-tertiary hover:text-text-primary'
-                }`}
-              >
-                <Icon size={14} />
-                {category.label}
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
-          <aside className="hidden lg:block">
-            <nav
-              className="sticky top-6 space-y-1 rounded-lg border border-border bg-bg-secondary p-2"
-              aria-label="Settings sections"
+          {searchQuery.trim() !== '' && (
+            <div
+              className="rounded-lg border border-border bg-bg-secondary p-2"
+              role="listbox"
+              aria-label="Settings search results"
             >
-              {SETTINGS_CATEGORIES.map((category) => {
-                const Icon = category.icon;
-                return (
+              {searchResults.length === 0 ? (
+                <p className="px-3 py-2 text-sm text-text-tertiary">
+                  No settings match &ldquo;{searchQuery.trim()}&rdquo;.
+                </p>
+              ) : (
+                searchResults.map((result) => (
                   <button
-                    key={category.id}
-                    onClick={() => jumpToCategory(category.id)}
-                    aria-current={activeCategory === category.id ? 'page' : undefined}
-                    className={`flex w-full items-start gap-3 rounded-md px-3 py-2 text-left transition-colors ${
-                      activeCategory === category.id ? 'bg-accent/10' : 'hover:bg-bg-tertiary'
-                    }`}
+                    key={`${result.category.id}:${result.panel?.id ?? 'category'}`}
+                    type="button"
+                    role="option"
+                    aria-selected={false}
+                    onClick={() => {
+                      selectCategory(result.category.id, result.panel?.id);
+                      setSearchQuery('');
+                    }}
+                    className="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-bg-tertiary"
                   >
-                    <Icon size={16} className="mt-0.5 shrink-0 text-accent" />
                     <span className="min-w-0">
                       <span className="block text-sm font-medium text-text-primary">
-                        {category.label}
+                        {result.panel?.title ?? result.category.label}
                       </span>
-                      <span className="block text-xs text-text-tertiary">
-                        {category.description}
-                      </span>
+                      {result.panel?.description && (
+                        <span className="block truncate text-xs text-text-tertiary">
+                          {result.panel.description}
+                        </span>
+                      )}
                     </span>
+                    <span className="shrink-0 text-xs text-text-tertiary">{result.breadcrumb}</span>
                   </button>
-                );
-              })}
-            </nav>
-          </aside>
-
-          <main className="space-y-6">
-            <SettingsCategory
-              id="profile"
-              hidden={activeCategory !== 'profile'}
-              title="Profile & appearance"
-              description="Choose who the workspace is optimised for and how the app presents itself."
-              icon={Palette}
-            >
-              <SettingsPanel
-                title="Role"
-                description="Controls which tools are visible in the sidebar."
-              >
-                <ButtonGrid>
-                  <ProviderButton
-                    label="Developer"
-                    description="Build, review, and operate software"
-                    active={userRole === 'developer'}
-                    onClick={async () => {
-                      try {
-                        await window.anvil.settings.update({ userRole: 'developer' });
-                        onRoleChange?.('developer');
-                      } catch (err) {
-                        console.error('[Settings] Failed to update role:', err);
-                      }
-                    }}
-                  />
-                  <ProviderButton
-                    label="BA / BRM"
-                    description="Shape delivery work and decisions"
-                    active={userRole === 'ba-brm'}
-                    onClick={async () => {
-                      try {
-                        await window.anvil.settings.update({ userRole: 'ba-brm' });
-                        onRoleChange?.('ba-brm');
-                      } catch (err) {
-                        console.error('[Settings] Failed to update role:', err);
-                      }
-                    }}
-                  />
-                  <ProviderButton
-                    label="Design"
-                    description="Explore and communicate product intent"
-                    active={userRole === 'design'}
-                    onClick={async () => {
-                      try {
-                        await window.anvil.settings.update({ userRole: 'design' });
-                        onRoleChange?.('design');
-                      } catch (err) {
-                        console.error('[Settings] Failed to update role:', err);
-                      }
-                    }}
-                  />
-                  <ProviderButton
-                    label="ITSM"
-                    description="Coordinate service work and improvement"
-                    active={userRole === 'itsm'}
-                    onClick={async () => {
-                      try {
-                        await window.anvil.settings.update({ userRole: 'itsm' });
-                        onRoleChange?.('itsm');
-                      } catch (err) {
-                        console.error('[Settings] Failed to update role:', err);
-                      }
-                    }}
-                  />
-                </ButtonGrid>
-                {onPreviewOnboarding && (
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-text-primary">
-                        Preview first-run setup
-                      </p>
-                      <p className="mt-0.5 text-xs text-text-tertiary">
-                        Replay the role and connector screens without changing saved settings.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={onPreviewOnboarding}
-                      className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
-                    >
-                      <Compass size={14} aria-hidden="true" />
-                      Preview onboarding
-                    </button>
-                  </div>
-                )}
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Theme"
-                description="Pick the colour mood for the app. The names are not ISO-certified, which is frankly for the best."
-              >
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {themeOptions.map((theme) => (
-                    <ThemeButton
-                      key={theme.id}
-                      label={theme.label}
-                      description={theme.description}
-                      swatches={theme.swatches}
-                      active={selectedTheme === theme.id}
-                      onClick={() => updateTheme(theme.id)}
-                    />
-                  ))}
-                </div>
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Chat layout"
-                description="Choose how Chat organises conversations."
-              >
-                <ButtonGrid>
-                  <ProviderButton
-                    label="Classic threads"
-                    description="Threads are grouped by persona"
-                    active={selectedChatLayout === 'classic'}
-                    onClick={() => update('chatLayout', 'classic')}
-                  />
-                  <ProviderButton
-                    label="Work-item threads"
-                    description="Left panel tickets own the threads"
-                    active={selectedChatLayout === 'workitems'}
-                    onClick={() => update('chatLayout', 'workitems')}
-                  />
-                </ButtonGrid>
-              </SettingsPanel>
-            </SettingsCategory>
-
-            <SettingsCategory
-              id="ai"
-              hidden={activeCategory !== 'ai'}
-              title="AI & agents"
-              description="Primary-agent routing, provider availability, models, skills, and MCP access."
-              icon={Bot}
-            >
-              <SettingsPanel
-                title="Agent providers"
-                description="Choose the primary agent for new chats, then activate any additional providers that workflows may use."
-              >
-                <AgentProviderManager
-                  primaryProvider={provider}
-                  enabledProviders={enabledProviders}
-                  onSetPrimary={setPrimaryProvider}
-                  onToggle={toggleProvider}
-                />
-                <p className="text-xs text-text-tertiary">
-                  Primary controls new chats and app-level AI tasks. Active providers can be
-                  assigned independently to workflow steps; agents can also invoke their CLIs from
-                  prompts when appropriate.
-                </p>
-
-                {enabledProviders.includes('codex') && (
-                  <p className="text-sm text-text-secondary">
-                    Codex CLI uses your local ChatGPT sign-in and app-server configuration.
-                  </p>
-                )}
-
-                {enabledProviders.includes('cursor') && (
-                  <p className="text-sm text-text-secondary">
-                    Cursor CLI uses <code>cursor-agent acp</code> for chat and the local Cursor
-                    login. Install Cursor CLI and run <code>cursor-agent login</code> before use.
-                  </p>
-                )}
-
-                {enabledProviders.includes('devin') && (
-                  <div className="space-y-3 rounded-md border border-border bg-bg-primary p-4">
-                    <p className="text-sm text-text-secondary">
-                      Devin runs locally through the installed Devin CLI (<code>devin acp</code>)
-                      and your Devin sign-in.
-                    </p>
-                    <div className="flex flex-wrap items-center gap-3">
-                      {devinStatus?.installed && devinStatus.authenticated === false && (
-                        <button
-                          type="button"
-                          disabled={devinSigningIn}
-                          onClick={startDevinLogin}
-                          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50"
-                        >
-                          {devinSigningIn && <Loader2 size={14} className="animate-spin" />}
-                          Sign in with Devin
-                        </button>
-                      )}
-                      {!devinStatus?.installed && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void window.anvil.settings
-                              .getDevinStatus()
-                              .then(setDevinStatus)
-                              .catch(console.warn)
-                          }
-                          className="rounded-md border border-border px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary"
-                        >
-                          Check again
-                        </button>
-                      )}
-                      <span className="text-xs text-text-tertiary">
-                        {!devinStatus
-                          ? 'Checking for the Devin CLI…'
-                          : !devinStatus.installed
-                            ? 'Devin CLI was not detected. Install it, then check again.'
-                            : devinStatus.authenticated === false
-                              ? `${devinStatus.version ?? 'Devin CLI installed'} · sign-in required — the button opens a browser login (equivalent to devin auth login).`
-                              : `${devinStatus.version ?? 'Devin CLI installed'} · ${
-                                  devinStatus.models.length
-                                } models detected`}
-                      </span>
-                    </div>
-                    {devinStatus?.error && (
-                      <p className="text-xs text-error">{devinStatus.error}</p>
-                    )}
-                  </div>
-                )}
-
-                {enabledProviders.includes('openai') && (
-                  <>
-                    <Field
-                      label="API Key"
-                      value={settings.openaiApiKey ?? ''}
-                      onChange={(v) => update('openaiApiKey', v)}
-                      type="password"
-                      placeholder="sk-..."
-                    />
-                  </>
-                )}
-
-                {enabledProviders.includes('llmgateway') && (
-                  <div className="space-y-4 rounded-md border border-border bg-bg-primary p-4">
-                    <div>
-                      <p className="text-sm font-medium text-text-primary">LLMGateway account</p>
-                      <p className="mt-1 text-xs text-text-tertiary">
-                        Browser login mints a gateway key for Anvil and stores it with Electron's
-                        encrypted credential storage.
-                      </p>
-                    </div>
-                    <ButtonGrid>
-                      <ProviderButton
-                        label="DevPass"
-                        description="Use subscription billing and canonical model IDs"
-                        active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
-                        disabled={llmGatewayConnecting}
-                        onClick={() => selectLlmGatewayBillingMode('devpass')}
-                      />
-                      <ProviderButton
-                        label="Pay as you go"
-                        description="Use gateway credits and provider-pinned model IDs"
-                        active={settings.llmGatewayBillingMode === 'payg'}
-                        disabled={llmGatewayConnecting}
-                        onClick={() => selectLlmGatewayBillingMode('payg')}
-                      />
-                    </ButtonGrid>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <button
-                        type="button"
-                        disabled={llmGatewayConnecting}
-                        onClick={() =>
-                          void connectLlmGateway(settings.llmGatewayBillingMode ?? 'devpass')
-                        }
-                        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50"
-                      >
-                        {llmGatewayConnecting && <Loader2 size={14} className="animate-spin" />}
-                        {llmGatewayStatus?.connected ? 'Reconnect' : 'Connect in browser'}
-                      </button>
-                      {llmGatewayStatus && llmGatewayStatus.credentialStatus !== 'missing' && (
-                        <button
-                          type="button"
-                          disabled={llmGatewayConnecting}
-                          onClick={() => void disconnectLlmGateway()}
-                          className="rounded-md border border-border px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
-                        >
-                          Remove from Anvil
-                        </button>
-                      )}
-                      <span className="text-xs text-text-tertiary">
-                        {llmGatewayStatus?.connected &&
-                        llmGatewayStatus.credentialStatus === 'valid'
-                          ? `Connected · ${llmGatewayStatus.models.length} available models`
-                          : llmGatewayStatus?.credentialStatus === 'invalid'
-                            ? 'Credentials need attention'
-                            : 'Not connected'}
-                      </span>
-                    </div>
-                    <CodexRuntimeSetup />
-                    <Field
-                      label="API key (alternative)"
-                      value={settings.llmGatewayApiKey ?? ''}
-                      onChange={(value) => update('llmGatewayApiKey', value)}
-                      type="password"
-                      placeholder="llmgtwy_..."
-                    />
-                    {llmGatewayStatus?.error && (
-                      <p className="text-xs text-error">{llmGatewayStatus.error}</p>
-                    )}
-                  </div>
-                )}
-
-                {provider === 'cursor' && (
-                  <div className="space-y-2 rounded-md border border-border bg-bg-primary p-4">
-                    <label className="block text-sm text-text-secondary">
-                      Primary Cursor model
-                    </label>
-                    <input
-                      list="settings-cursor-models"
-                      value={settings.openaiModel ?? 'auto'}
-                      onChange={(event) => update('openaiModel', event.target.value)}
-                      className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
-                    />
-                    <datalist id="settings-cursor-models">
-                      {(cursorStatus?.models ?? []).map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.label}
-                        </option>
-                      ))}
-                    </datalist>
-                    <p className="text-xs text-text-tertiary">
-                      {cursorStatus?.installed
-                        ? `${cursorStatus.version ?? 'Cursor CLI installed'} · ${
-                            cursorStatus.models.length
-                          } models detected`
-                        : 'Cursor CLI was not detected. Install it or enter a model id manually.'}
-                    </p>
-                  </div>
-                )}
-
-                {provider === 'devin' && (
-                  <div className="space-y-2 rounded-md border border-border bg-bg-primary p-4">
-                    <label className="block text-sm text-text-secondary">Primary Devin model</label>
-                    <input
-                      list="settings-devin-models"
-                      value={settings.openaiModel ?? 'auto'}
-                      onChange={(event) => update('openaiModel', event.target.value)}
-                      className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
-                    />
-                    <datalist id="settings-devin-models">
-                      <option value="auto">Auto (Devin default)</option>
-                      {(devinStatus?.models ?? []).map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.label}
-                        </option>
-                      ))}
-                    </datalist>
-                    <p className="text-xs text-text-tertiary">
-                      {devinStatus?.installed
-                        ? `${devinStatus.version ?? 'Devin CLI installed'} · ${
-                            devinStatus.models.length
-                          } models detected${
-                            devinStatus.defaultModel
-                              ? ` · default: ${devinStatus.defaultModel}`
-                              : ''
-                          }`
-                        : 'Devin CLI was not detected. Install it or enter a model id manually.'}
-                    </p>
-                  </div>
-                )}
-
-                {(provider === 'codex' || provider === 'openai') && (
-                  <div className="space-y-4 rounded-md border border-border bg-bg-primary p-4">
-                    <div className="space-y-1">
-                      <label className="block text-sm text-text-secondary">Codex Model</label>
-                      <select
-                        value={selectedModelId}
-                        onChange={(event) => updateCodexModel(event.target.value)}
-                        className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
-                      >
-                        {codexModelOptions.map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.label} - {model.id}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-xs text-text-tertiary">
-                        {codexStatus?.installed
-                          ? `Codex CLI ${codexStatus.version ?? 'installed'}${
-                              codexStatus.models?.length
-                                ? ` · ${codexStatus.models.length} models detected`
-                                : ' · using docs-backed defaults'
-                            }`
-                          : 'Using docs-backed model defaults until Codex CLI is available.'}
-                      </p>
-                      {codexStatus?.features && (
-                        <div className="flex flex-wrap gap-2 pt-1">
-                          <CapabilityChip
-                            label="Computer use"
-                            active={Boolean(codexStatus.features.computer_use?.enabled)}
-                          />
-                          <CapabilityChip
-                            label="Browser use"
-                            active={Boolean(codexStatus.features.browser_use?.enabled)}
-                          />
-                          <CapabilityChip
-                            label="Multi-agent"
-                            active={Boolean(codexStatus.features.multi_agent?.enabled)}
-                          />
-                          <CapabilityChip
-                            label="Voice"
-                            active={Boolean(codexStatus.features.realtime_conversation?.enabled)}
-                          />
-                          <CapabilityChip
-                            label={`Web search: ${codexStatus.webSearchMode ?? 'unknown'}`}
-                            active={
-                              Boolean(codexStatus.webSearchMode) &&
-                              codexStatus.webSearchMode !== 'disabled'
-                            }
-                          />
-                        </div>
-                      )}
-                      <div className="mt-4 flex items-end gap-3">
-                        <div className="min-w-0 flex-1">
-                          <label
-                            htmlFor="codex-agent-max-threads"
-                            className="block text-sm text-text-secondary"
-                          >
-                            Maximum concurrent agents
-                          </label>
-                          <input
-                            id="codex-agent-max-threads"
-                            type="number"
-                            min={1}
-                            max={64}
-                            step={1}
-                            value={agentMaxThreads}
-                            onChange={(event) => setAgentMaxThreads(Number(event.target.value))}
-                            className="mt-1 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={saveAgentMaxThreads}
-                          disabled={
-                            agentMaxThreadsSaving ||
-                            !Number.isInteger(agentMaxThreads) ||
-                            agentMaxThreads < 1 ||
-                            agentMaxThreads > 64
-                          }
-                          className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-tertiary disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {agentMaxThreadsSaving ? (
-                            <Loader2 size={14} className="animate-spin" />
-                          ) : (
-                            <Save size={14} />
-                          )}
-                          Apply
-                        </button>
-                      </div>
-                      <p className="mt-1 text-xs text-text-tertiary">
-                        Writes <code>[agents].max_threads</code> in the active Codex config.toml.
-                        The primary agent counts toward this limit.
-                      </p>
-                      {agentMaxThreadsError && (
-                        <p className="mt-1 text-xs text-danger">{agentMaxThreadsError}</p>
-                      )}
-                    </div>
-
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {codexModelOptions.map((model) => (
-                        <button
-                          key={model.id}
-                          type="button"
-                          onClick={() => updateCodexModel(model.id)}
-                          className={`rounded-lg border p-3 text-left transition-colors ${
-                            selectedModelId === model.id
-                              ? 'border-accent bg-accent/10'
-                              : 'border-border bg-bg-secondary hover:bg-bg-tertiary'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span
-                              className={`text-sm font-medium ${
-                                selectedModelId === model.id ? 'text-accent' : 'text-text-primary'
-                              }`}
-                            >
-                              {model.label}
-                            </span>
-                            {model.recommended && (
-                              <span className="rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-success">
-                                Recommended
-                              </span>
-                            )}
-                          </div>
-                          <p className="mt-1 text-xs text-text-tertiary">{model.description}</p>
-                          {model.source === 'cli' && (
-                            <p className="mt-2 text-[10px] font-medium uppercase tracking-wide text-text-tertiary">
-                              Detected from Codex CLI
-                            </p>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block text-sm text-text-secondary">Reasoning Effort</label>
-                      <div className="grid gap-2 sm:grid-cols-4">
-                        {reasoningOptions.map((effort) => (
-                          <ReasoningButton
-                            key={effort}
-                            label={formatReasoningLabel(effort)}
-                            description={describeReasoningEffort(effort)}
-                            active={selectedReasoningEffort === effort}
-                            onClick={() => update('reasoningLevel', effort)}
-                          />
-                        ))}
-                      </div>
-                      <p className="text-xs text-text-tertiary">
-                        Max gives one task more depth. Ultra uses subagents for work that can split
-                        into meaningful parts.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {provider === 'llmgateway' && (
-                  <div className="space-y-4 rounded-md border border-border bg-bg-primary p-4">
-                    <div className="space-y-1">
-                      <label className="block text-sm text-text-secondary">LLMGateway model</label>
-                      <select
-                        value={selectedModelId}
-                        onChange={(event) => updateCodexModel(event.target.value)}
-                        className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
-                      >
-                        {!selectedModelId && (
-                          <option value="" disabled>
-                            Select a gateway model
-                          </option>
-                        )}
-                        {!llmGatewayStatus?.models.some(
-                          (model) => model.id === selectedModelId,
-                        ) && <option value={selectedModelId}>{selectedModelId}</option>}
-                        {(llmGatewayStatus?.models ?? []).map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.displayName} - {model.id}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-xs text-text-tertiary">
-                        Models come from the{' '}
-                        {settings.llmGatewayBillingMode === 'payg'
-                          ? 'provider-pinned pay-as-you-go'
-                          : 'canonical DevPass'}{' '}
-                        catalog. Only models with tool calling are shown.
-                      </p>
-                      {selectedLlmGatewayModel && (
-                        <div className="space-y-1 text-xs text-text-tertiary">
-                          {selectedLlmGatewayModel.description && (
-                            <p>{selectedLlmGatewayModel.description}</p>
-                          )}
-                          <p>
-                            {selectedLlmGatewayModel.contextWindow
-                              ? `${formatModelTokenLimit(selectedLlmGatewayModel.contextWindow)} context`
-                              : 'Context limit unavailable'}
-                            {selectedLlmGatewayModel.maxOutputTokens
-                              ? ` · ${formatModelTokenLimit(selectedLlmGatewayModel.maxOutputTokens)} max output`
-                              : ''}
-                            {selectedLlmGatewayModel.inputPrice !== undefined &&
-                            selectedLlmGatewayModel.outputPrice !== undefined
-                              ? ` · $${formatModelPrice(selectedLlmGatewayModel.inputPrice)} input / $${formatModelPrice(selectedLlmGatewayModel.outputPrice)} output per 1M tokens`
-                              : ''}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                    <div className="space-y-1">
-                      <label className="block text-sm text-text-secondary">Reasoning effort</label>
-                      <div className="grid gap-2 sm:grid-cols-4">
-                        {reasoningOptions.map((effort) => (
-                          <ReasoningButton
-                            key={effort}
-                            label={formatReasoningLabel(effort)}
-                            description={describeReasoningEffort(effort)}
-                            active={selectedReasoningEffort === effort}
-                            onClick={() => update('reasoningLevel', effort)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {enabledProviders.includes('azure') && (
-                  <div className="rounded-md border border-border bg-bg-primary p-4 space-y-3">
-                    <p className="text-sm text-text-primary">
-                      Azure AI Foundry is configured through the Codex CLI's{' '}
-                      <code className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs font-mono text-text-primary">
-                        ~/.codex/config.toml
-                      </code>
-                    </p>
-                    <div className="rounded-md bg-bg-tertiary p-3 font-mono text-xs leading-relaxed space-y-0.5 overflow-x-auto">
-                      <p className="text-text-tertiary select-none"># ~/.codex/config.toml</p>
-                      <p>
-                        <span className="text-text-secondary">model</span>{' '}
-                        <span className="text-text-tertiary">=</span>{' '}
-                        <span className="text-success">"gpt-5.6-sol"</span>{' '}
-                        <span className="text-text-tertiary">
-                          # Replace with your actual Azure model deployment name
-                        </span>
-                      </p>
-                      <p>
-                        <span className="text-text-secondary">model_provider</span>{' '}
-                        <span className="text-text-tertiary">=</span>{' '}
-                        <span className="text-success">"azure"</span>
-                      </p>
-                      <p>
-                        <span className="text-text-secondary">model_reasoning_effort</span>{' '}
-                        <span className="text-text-tertiary">=</span>{' '}
-                        <span className="text-success">"medium"</span>
-                      </p>
-                      <p />
-                      <p>
-                        <span className="text-text-tertiary">[model_providers.azure]</span>
-                      </p>
-                      <p>
-                        <span className="text-text-secondary">name</span>{' '}
-                        <span className="text-text-tertiary">=</span>{' '}
-                        <span className="text-success">"Azure OpenAI"</span>
-                      </p>
-                      <p>
-                        <span className="text-text-secondary">base_url</span>{' '}
-                        <span className="text-text-tertiary">=</span>{' '}
-                        <span className="text-success">
-                          "https://your-resource.cognitiveservices.azure.com/openai/v1"
-                        </span>
-                      </p>
-                      <p>
-                        <span className="text-text-secondary">env_key</span>{' '}
-                        <span className="text-text-tertiary">=</span>{' '}
-                        <span className="text-success">"AZURE_OPENAI_API_KEY"</span>
-                      </p>
-                      <p>
-                        <span className="text-text-secondary">wire_api</span>{' '}
-                        <span className="text-text-tertiary">=</span>{' '}
-                        <span className="text-success">"responses"</span>
-                      </p>
-                    </div>
-                    <p className="text-sm text-text-secondary">
-                      Set{' '}
-                      <code className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs font-mono text-text-primary">
-                        AZURE_OPENAI_API_KEY
-                      </code>{' '}
-                      to your Azure API key in your shell profile, then restart {brand.appName}.
-                    </p>
-                    <a
-                      href="https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/codex?tabs=npm"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-sm text-info hover:underline"
-                    >
-                      Full setup guide — Microsoft Learn ↗
-                    </a>
-                  </div>
-                )}
-
-                <div className="rounded-md border border-border bg-bg-primary p-4 space-y-4">
-                  <div className="space-y-1">
-                    <label className="block text-sm text-text-secondary">Local model</label>
-                    <p className="text-sm text-text-secondary">
-                      Route simple, self-contained prompts through a local model, then fall back to
-                      the selected backend when the classifier decides tools or deeper reasoning are
-                      needed.
-                    </p>
-                  </div>
-                  <ButtonGrid>
-                    <ProviderButton
-                      label="Off"
-                      description="Always use selected backend"
-                      active={(settings.localLlmMode ?? 'off') === 'off'}
-                      onClick={() => update('localLlmMode', 'off')}
-                    />
-                    <ProviderButton
-                      label="Prefer simple"
-                      description="Try local model for small helper prompts"
-                      active={settings.localLlmMode === 'prefer-simple'}
-                      onClick={() => update('localLlmMode', 'prefer-simple')}
-                    />
-                  </ButtonGrid>
-
-                  <div className="space-y-2">
-                    <label className="block text-sm text-text-secondary">Provider</label>
-                    <ButtonGrid>
-                      {(localLlmCapabilities?.providers ?? ['ollama', 'lm-studio']).map(
-                        (providerId) => (
-                          <ProviderButton
-                            key={providerId}
-                            label={
-                              providerId === 'apple'
-                                ? 'Apple Intelligence'
-                                : providerId === 'ollama'
-                                  ? 'Ollama'
-                                  : 'LM Studio'
-                            }
-                            description={
-                              providerId === 'apple'
-                                ? 'Private on-device Foundation Models'
-                                : providerId === 'ollama'
-                                  ? 'OpenAI-compatible Ollama server'
-                                  : 'OpenAI-compatible LM Studio server'
-                            }
-                            active={settings.localLlmProvider === providerId}
-                            onClick={() => {
-                              update('localLlmProvider', providerId as LocalLlmProvider);
-                              setLocalLlmStatus('idle');
-                            }}
-                          />
-                        ),
-                      )}
-                    </ButtonGrid>
-                  </div>
-
-                  {settings.localLlmProvider === 'apple' && localLlmCapabilities?.apple && (
-                    <div className="rounded-md border border-border bg-bg-secondary p-3 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-medium text-text-primary">
-                          {localLlmCapabilities.apple.available
-                            ? 'Apple Intelligence is ready'
-                            : 'Apple Intelligence is not available'}
-                        </span>
-                        {localLlmCapabilities.apple.backend && (
-                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs font-mono text-text-tertiary">
-                            {localLlmCapabilities.apple.backend === 'fm-cli'
-                              ? 'fm CLI'
-                              : localLlmCapabilities.apple.backend === 'swift-helper-27'
-                                ? 'Swift helper (macOS 27)'
-                                : 'Swift helper'}
-                          </span>
-                        )}
-                      </div>
-                      {!localLlmCapabilities.apple.available &&
-                        localLlmCapabilities.apple.reason && (
-                          <p className="text-xs text-text-secondary">
-                            {localLlmCapabilities.apple.reason === 'deviceNotEligible'
-                              ? 'This Mac is not eligible for Apple Intelligence.'
-                              : localLlmCapabilities.apple.reason === 'appleIntelligenceNotEnabled'
-                                ? 'Apple Intelligence is disabled. Enable it in System Settings → Apple Intelligence.'
-                                : localLlmCapabilities.apple.reason === 'modelNotReady'
-                                  ? 'The on-device model is still downloading or preparing. Try again shortly.'
-                                  : localLlmCapabilities.apple.reason === 'licenseRequired'
-                                    ? 'fm CLI is installed but its legal notice has not been accepted.'
-                                    : `Reason: ${localLlmCapabilities.apple.reason}`}
-                          </p>
-                        )}
-                      {localLlmCapabilities.apple.fmCli?.installed &&
-                        !localLlmCapabilities.apple.fmCli.licenseAccepted && (
-                          <p className="text-xs text-text-secondary">
-                            macOS 27 ships the <code className="font-mono">fm</code> CLI, a faster
-                            backend that also supports image prompts. Run{' '}
-                            <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono">
-                              sudo fm license
-                            </code>{' '}
-                            once to enable it.
-                          </p>
-                        )}
-                      <div className="flex flex-wrap gap-1.5">
-                        {localLlmCapabilities.apple.features.streaming && (
-                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
-                            streaming
-                          </span>
-                        )}
-                        {localLlmCapabilities.apple.features.images && (
-                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
-                            image prompts
-                          </span>
-                        )}
-                        {localLlmCapabilities.apple.features.tokenCounting && (
-                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
-                            token counting
-                          </span>
-                        )}
-                        {localLlmCapabilities.apple.contextSize && (
-                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
-                            {localLlmCapabilities.apple.contextSize.toLocaleString()}-token context
-                          </span>
-                        )}
-                        {localLlmCapabilities.apple.osVersion && (
-                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-tertiary">
-                            macOS {localLlmCapabilities.apple.osVersion}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <div className="space-y-3">
-                    <label className="block text-sm text-text-secondary">Local model servers</label>
-                    <p className="text-xs text-text-tertiary">
-                      Endpoint and model are stored per server, so you can point Ollama at a remote
-                      host (a DGX Spark cluster, a LAN box) while keeping LM Studio local — or vice
-                      versa. Leave an endpoint empty to use the provider&apos;s localhost default.
-                    </p>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <Field
-                        label="Ollama endpoint"
-                        value={settings.ollamaEndpoint ?? ''}
-                        onChange={(value) => update('ollamaEndpoint', value)}
-                        placeholder="http://127.0.0.1:11434/v1"
-                      />
-                      <Field
-                        label="Ollama model (optional)"
-                        value={settings.ollamaModel ?? ''}
-                        onChange={(value) => update('ollamaModel', value)}
-                        placeholder="Use the first loaded model"
-                      />
-                      <Field
-                        label="LM Studio endpoint"
-                        value={settings.lmStudioEndpoint ?? ''}
-                        onChange={(value) => update('lmStudioEndpoint', value)}
-                        placeholder="http://127.0.0.1:1234/v1"
-                      />
-                      <Field
-                        label="LM Studio model (optional)"
-                        value={settings.lmStudioModel ?? ''}
-                        onChange={(value) => update('lmStudioModel', value)}
-                        placeholder="Use the first loaded model"
-                      />
-                    </div>
-                  </div>
-                  <p className="text-xs text-text-tertiary">
-                    Apple Intelligence is offered only on macOS. Ollama and LM Studio work on any
-                    supported desktop platform. Repository work, tools, code edits, and long-context
-                    tasks stay on the configured backend.
-                  </p>
-                  <TestButton
-                    status={localLlmStatus}
-                    onClick={testLocalLlm}
-                    label="Test Local Model"
-                  />
-                </div>
-
-                <div className="rounded-md border border-border bg-bg-primary p-4 space-y-4">
-                  <div className="space-y-1">
-                    <label className="block text-sm text-text-secondary">Thread assistance</label>
-                    <p className="text-sm text-text-secondary">
-                      Generate a short title and a rolling one-line summary for each thread after a
-                      turn completes. Summaries appear under the thread title in the sidebar.
-                    </p>
-                  </div>
-                  <ButtonGrid>
-                    <ProviderButton
-                      label="Off"
-                      description="Keep first-message titles"
-                      active={assistProvider === 'off'}
-                      onClick={() => update('threadAssistProvider', 'off')}
-                    />
-                    <ProviderButton
-                      label="Primary provider"
-                      description="Use the configured agent model"
-                      active={assistProvider === 'configured'}
-                      onClick={() => update('threadAssistProvider', 'configured')}
-                    />
-                    {localLlmCapabilities?.providers.includes('apple') && (
-                      <ProviderButton
-                        label="Apple Intelligence"
-                        description="On-device, free and private"
-                        active={assistProvider === 'apple'}
-                        onClick={() => update('threadAssistProvider', 'apple')}
-                      />
-                    )}
-                    {AGENT_PROVIDER_OPTIONS.filter((option) =>
-                      enabledProviders.includes(option.id),
-                    ).map((option) => (
-                      <ProviderButton
-                        key={option.id}
-                        label={option.label}
-                        description={option.description}
-                        active={assistProvider === option.id}
-                        onClick={() => update('threadAssistProvider', option.id)}
-                      />
-                    ))}
-                  </ButtonGrid>
-                  {assistAgentProvider && (
-                    <div className="space-y-1">
-                      <label className="block text-sm text-text-secondary">
-                        Thread assistance model
-                      </label>
-                      <select
-                        value={settings.threadAssistModel ?? ''}
-                        onChange={(event) => update('threadAssistModel', event.target.value)}
-                        className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
-                      >
-                        <option value="">Provider default</option>
-                        {assistModelOptions.map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.label} - {model.id}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-xs text-text-tertiary">
-                        {assistModelOptions.length
-                          ? `${assistModelOptions.length} models detected for ${assistAgentProvider}.`
-                          : 'No model catalog detected — the provider default will be used.'}
-                      </p>
-                    </div>
-                  )}
-                  {(assistProvider === 'ollama' || assistProvider === 'lm-studio') && (
-                    <p className="text-xs text-text-tertiary">
-                      Currently using the legacy{' '}
-                      {assistProvider === 'ollama' ? 'Ollama' : 'LM Studio'} server selection. Pick
-                      a provider above to switch.
-                    </p>
-                  )}
-                  <p className="text-xs text-text-tertiary">
-                    Threads are refreshed periodically as turns complete. Renaming a thread manually
-                    locks its title so assistance never overwrites it.
-                  </p>
-                </div>
-
-                {provider !== 'azure' && <TestButton status={llmStatus} onClick={testLlm} />}
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Codex Registry"
-                description="Inspect registered Codex skills and MCP servers, then install new skills from skills.sh."
-              >
-                <button
-                  onClick={() => navigate('/settings/codex-registry')}
-                  className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
-                >
-                  <Puzzle size={14} />
-                  Manage Skills & MCPs
-                </button>
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Codex Usage"
-                description="Live account usage and quota windows from Codex app-server when the local CLI exposes them."
-              >
-                <CodexUsagePanel
-                  snapshot={codexUsage}
-                  loading={codexUsageLoading}
-                  onRefresh={refreshCodexUsage}
-                />
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Personal Codex instructions"
-                description="Edit the global AGENTS.md that Codex reads from your home configuration."
-              >
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-border bg-bg-primary p-3">
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
-                        <Code2 size={15} className="text-accent" />
-                        <span className="truncate font-mono text-xs">{codexAgentsPath}</span>
-                      </div>
-                      <p className="text-xs text-text-tertiary">
-                        {codexAgentsExists
-                          ? codexAgentsUpdatedAt
-                            ? `Last saved ${new Date(codexAgentsUpdatedAt).toLocaleString()}`
-                            : 'Existing personal instructions file.'
-                          : 'File does not exist yet. Saving here will create it.'}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 flex-wrap gap-2">
-                      <button
-                        onClick={refreshCodexAgentsFile}
-                        disabled={codexAgentsLoading || codexAgentsSaving}
-                        className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
-                      >
-                        {codexAgentsLoading ? (
-                          <Loader2 size={13} className="animate-spin" />
-                        ) : (
-                          <RefreshCcw size={13} />
-                        )}
-                        Reload
-                      </button>
-                      <button
-                        onClick={saveCodexAgentsFile}
-                        disabled={codexAgentsLoading || codexAgentsSaving}
-                        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
-                      >
-                        {codexAgentsSaving ? (
-                          <Loader2 size={13} className="animate-spin" />
-                        ) : (
-                          <Save size={13} />
-                        )}
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                  <textarea
-                    value={codexAgentsContent}
-                    onChange={(event) => {
-                      setCodexAgentsContent(event.target.value);
-                      setCodexAgentsStatus(null);
-                    }}
-                    disabled={codexAgentsLoading}
-                    placeholder="# Personal Codex Instructions"
-                    rows={12}
-                    className="min-h-72 w-full resize-y rounded-md border border-border bg-bg-primary px-3 py-2 font-mono text-sm leading-relaxed text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none disabled:opacity-60"
-                  />
-                  {codexAgentsStatus && (
-                    <p
-                      className={`text-sm ${
-                        codexAgentsStatus.tone === 'success' ? 'text-success' : 'text-error'
-                      }`}
-                    >
-                      {codexAgentsStatus.message}
-                    </p>
-                  )}
-                </div>
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Anvil Cloud"
-                description="Expose Cell checks, local runtime inspection, and Lens from inside the app."
-              >
-                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-bg-primary p-4 transition-colors hover:bg-bg-tertiary">
-                  <input
-                    type="checkbox"
-                    checked={settings.cloudFeaturesEnabled ?? false}
-                    onChange={(event) => void updateCloudFeatures(event.target.checked)}
-                    className="mt-1 h-4 w-4 accent-accent"
-                  />
-                  <span className="min-w-0">
-                    <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
-                      <Cloud size={15} className="text-accent" />
-                      Enable Cloud workbench
-                    </span>
-                    <span className="mt-1 block text-sm leading-relaxed text-text-secondary">
-                      Adds a workspace tool for Anvil Cloud CLI diagnostics, local Cell artifacts,
-                      workflows, services, agents, logs, and Anvil Lens. Nothing is enabled until
-                      this box is checked.
-                    </span>
-                  </span>
-                </label>
-              </SettingsPanel>
-            </SettingsCategory>
-
-            <SettingsCategory
-              id="delivery"
-              hidden={activeCategory !== 'delivery'}
-              title="Delivery integrations"
-              description={deliverySummary.join(' / ')}
-              icon={FolderGit2}
-            >
-              <SettingsPanel
-                title="Work Items"
-                description="Keep multiple named backlog and issue connections, with one active at a time."
-              >
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-end gap-2">
-                    <div className="min-w-52 flex-1 space-y-1">
-                      <label className="block text-sm text-text-secondary">Active connection</label>
-                      <select
-                        value={settings.activeWorkItemConnectionId ?? ''}
-                        onChange={(event) => {
-                          const connection = workItemConnections.find(
-                            (candidate) => candidate.id === event.target.value,
-                          );
-                          if (connection) activateWorkItemConnection(connection);
-                        }}
-                        className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
-                      >
-                        {workItemConnections.length === 0 && (
-                          <option value="">No connections configured</option>
-                        )}
-                        {workItemConnections.map((connection) => (
-                          <option key={connection.id} value={connection.id}>
-                            {connection.name} · {connection.provider.toUpperCase()}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={addWorkItemConnection}
-                      className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
-                    >
-                      <Plus size={14} /> Add
-                    </button>
-                    {activeWorkItemConnection && (
-                      <button
-                        type="button"
-                        onClick={removeActiveWorkItemConnection}
-                        className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:border-error hover:text-error"
-                      >
-                        <Trash2 size={14} /> Remove
-                      </button>
-                    )}
-                  </div>
-
-                  {activeWorkItemConnection && (
-                    <Field
-                      label="Connection name"
-                      value={activeWorkItemConnection.name}
-                      onChange={(value) => updateWorkItemConnection('name', value)}
-                      placeholder="e.g. Product Linear"
-                    />
-                  )}
-
-                  {activeWorkItemConnection && (
-                    <>
-                      <label className="block text-sm text-text-secondary">Provider</label>
-                      <ButtonGrid>
-                        <ProviderButton
-                          label="Azure DevOps"
-                          description="ADO boards and backlogs"
-                          active={wiProvider === 'ado'}
-                          onClick={() => updateWorkItemConnection('provider', 'ado')}
-                        />
-                        <ProviderButton
-                          label="Linear"
-                          description="Modern issue tracking"
-                          active={wiProvider === 'linear'}
-                          onClick={() => updateWorkItemConnection('provider', 'linear')}
-                        />
-                        <ProviderButton
-                          label="JIRA"
-                          description="Atlassian project tracking"
-                          active={wiProvider === 'jira'}
-                          onClick={() => updateWorkItemConnection('provider', 'jira')}
-                        />
-                      </ButtonGrid>
-                    </>
-                  )}
-                </div>
-
-                {wiProvider === 'ado' && (
-                  <>
-                    <Field
-                      label="Organisation URL"
-                      value={activeWorkItemConnection?.adoOrganizationUrl ?? ''}
-                      onChange={(v) => updateWorkItemConnection('adoOrganizationUrl', v)}
-                      placeholder="https://dev.azure.com/your-org"
-                    />
-                    <Field
-                      label="Project"
-                      value={activeWorkItemConnection?.adoProject ?? ''}
-                      onChange={(v) => updateWorkItemConnection('adoProject', v)}
-                    />
-                    <Field
-                      label="Team (optional)"
-                      value={activeWorkItemConnection?.adoTeam ?? ''}
-                      onChange={(v) => updateWorkItemConnection('adoTeam', v)}
-                    />
-                    <Field
-                      label="Personal Access Token"
-                      value={activeWorkItemConnection?.adoPat ?? ''}
-                      onChange={(v) => updateWorkItemConnection('adoPat', v)}
-                      type="password"
-                    />
-                  </>
-                )}
-
-                {wiProvider === 'linear' && (
-                  <>
-                    <Field
-                      label="API Key"
-                      value={activeWorkItemConnection?.linearApiKey ?? ''}
-                      onChange={(v) => updateWorkItemConnection('linearApiKey', v)}
-                      type="password"
-                      placeholder="lin_api_..."
-                    />
-                    <div className="space-y-1">
-                      <label className="block text-sm text-text-secondary">Team (optional)</label>
-                      <div className="flex gap-2">
-                        <select
-                          value={activeWorkItemConnection?.linearTeamId ?? ''}
-                          onChange={(e) => updateWorkItemConnection('linearTeamId', e.target.value)}
-                          className="flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
-                        >
-                          <option value="">All teams</option>
-                          {linearTeams.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name} ({t.key})
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={async () => {
-                            setLoadingTeams(true);
-                            await saveBeforeTest();
-                            try {
-                              const teams = await window.anvil.settings.listLinearTeams();
-                              setLinearTeams(teams);
-                            } catch {
-                              setTestError('Failed to fetch teams — check your API key');
-                            } finally {
-                              setLoadingTeams(false);
-                            }
-                          }}
-                          disabled={loadingTeams || !activeWorkItemConnection?.linearApiKey}
-                          className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:text-text-primary disabled:opacity-50"
-                        >
-                          {loadingTeams && <Loader2 size={12} className="animate-spin" />}
-                          Fetch Teams
-                        </button>
-                      </div>
-                      <p className="text-sm text-text-tertiary">
-                        Save your API key first, then click Fetch Teams to discover available teams.
-                      </p>
-                    </div>
-                  </>
-                )}
-
-                {wiProvider === 'jira' && (
-                  <>
-                    <Field
-                      label="Host"
-                      value={activeWorkItemConnection?.jiraHost ?? ''}
-                      onChange={(v) => updateWorkItemConnection('jiraHost', v)}
-                      placeholder="mycompany.atlassian.net"
-                    />
-                    <div className="space-y-1">
-                      <label className="block text-sm text-text-secondary">Auth Mode</label>
-                      <div className="flex gap-2">
-                        <ProviderButton
-                          label="Cloud"
-                          description="Atlassian Cloud"
-                          active={(activeWorkItemConnection?.jiraAuthMode ?? 'cloud') === 'cloud'}
-                          onClick={() => updateWorkItemConnection('jiraAuthMode', 'cloud')}
-                        />
-                        <ProviderButton
-                          label="Server"
-                          description="Data Center / Server"
-                          active={activeWorkItemConnection?.jiraAuthMode === 'server'}
-                          onClick={() => updateWorkItemConnection('jiraAuthMode', 'server')}
-                        />
-                      </div>
-                    </div>
-                    <Field
-                      label="Project Key"
-                      value={activeWorkItemConnection?.jiraProject ?? ''}
-                      onChange={(v) => updateWorkItemConnection('jiraProject', v)}
-                      placeholder="ENG"
-                    />
-                    <Field
-                      label="Board ID (optional)"
-                      value={activeWorkItemConnection?.jiraBoardId ?? ''}
-                      onChange={(v) => updateWorkItemConnection('jiraBoardId', v)}
-                      placeholder="Auto-discovered if blank"
-                    />
-                    <Field
-                      label="Acceptance criteria field, optional"
-                      value={activeWorkItemConnection?.jiraAcceptanceCriteriaField ?? ''}
-                      onChange={(v) => updateWorkItemConnection('jiraAcceptanceCriteriaField', v)}
-                      placeholder="customfield_12345"
-                    />
-                    {(activeWorkItemConnection?.jiraAuthMode ?? 'cloud') === 'cloud' && (
-                      <Field
-                        label="Email"
-                        value={activeWorkItemConnection?.jiraEmail ?? ''}
-                        onChange={(v) => updateWorkItemConnection('jiraEmail', v)}
-                        placeholder="you@company.com"
-                      />
-                    )}
-                    <Field
-                      label="API Token"
-                      value={activeWorkItemConnection?.jiraApiToken ?? ''}
-                      onChange={(v) => updateWorkItemConnection('jiraApiToken', v)}
-                      type="password"
-                    />
-                  </>
-                )}
-
-                {wiProvider !== 'none' && <TestButton status={wiStatus} onClick={testWi} />}
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Documentation"
-                description="Configure documentation providers for generated and retrieved project knowledge."
-              >
-                <div className="space-y-3">
-                  <label className="block text-sm text-text-secondary">Provider</label>
-                  <ButtonGrid>
-                    <ProviderButton
-                      label="None"
-                      description="No documentation integration"
-                      active={selectedDocsProvider === 'none'}
-                      onClick={() => {
-                        setDocsProvider('none');
-                        update('docsProvider', 'none');
-                      }}
-                    />
-                    <ProviderButton
-                      label="Confluence"
-                      description="Confluence Data Center"
-                      active={selectedDocsProvider === 'confluence'}
-                      onClick={() => {
-                        setDocsProvider('confluence');
-                        update('docsProvider', 'confluence');
-                      }}
-                    />
-                    <ProviderButton
-                      label="Notion"
-                      description="Notion via MCP"
-                      active={selectedDocsProvider === 'notion'}
-                      onClick={() => {
-                        setDocsProvider('notion');
-                        update('docsProvider', 'notion');
-                      }}
-                    />
-                  </ButtonGrid>
-                </div>
-
-                {selectedDocsProvider === 'confluence' && (
-                  <>
-                    <Field
-                      label="Base URL"
-                      value={settings.confluenceBaseUrl ?? ''}
-                      onChange={(v) => update('confluenceBaseUrl', v)}
-                      placeholder="https://confluence.internal.lancs.ac.uk"
-                    />
-                    <Field
-                      label="Space Key"
-                      value={settings.confluenceSpaceKey ?? ''}
-                      onChange={(v) => update('confluenceSpaceKey', v)}
-                    />
-                    <Field
-                      label="Personal Access Token"
-                      value={settings.confluencePat ?? ''}
-                      onChange={(v) => update('confluencePat', v)}
-                      type="password"
-                    />
-                    <TestButton status={confluenceStatus} onClick={testConfluence} />
-                  </>
-                )}
-
-                {selectedDocsProvider === 'notion' && (
-                  <div className="space-y-4">
-                    <div className="rounded-md border border-border bg-bg-primary p-4 space-y-3">
-                      <h4 className="text-sm font-medium text-text-primary">Notion MCP Server</h4>
-                      <p className="text-xs text-text-tertiary">
-                        Notion integration requires the MCP server to be installed for Codex CLI.
-                      </p>
-                      {notionMcpInstalled ? (
-                        <div className="flex items-center gap-2 text-sm text-success">
-                          <CheckCircle size={14} />
-                          MCP server installed
-                        </div>
-                      ) : (
-                        <button
-                          onClick={installNotionMcp}
-                          disabled={notionInstalling}
-                          className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:text-text-primary disabled:opacity-50"
-                        >
-                          {notionInstalling && <Loader2 size={12} className="animate-spin" />}
-                          Install MCP Server
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="rounded-md border border-border bg-bg-primary p-4 space-y-3">
-                      <h4 className="text-sm font-medium text-text-primary">
-                        Notion Authentication
-                      </h4>
-                      <p className="text-xs text-text-tertiary">
-                        Connect your Notion account via OAuth to access and create pages.
-                      </p>
-                      {settings.notionOauthToken ? (
-                        <div className="flex items-center gap-2 text-sm text-success">
-                          <CheckCircle size={14} />
-                          Connected to Notion
-                        </div>
-                      ) : (
-                        <button
-                          onClick={connectNotion}
-                          disabled={notionConnecting}
-                          className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:text-text-primary disabled:opacity-50"
-                        >
-                          {notionConnecting && <Loader2 size={12} className="animate-spin" />}
-                          Connect Notion
-                        </button>
-                      )}
-                    </div>
-
-                    <Field
-                      label="Database ID (optional)"
-                      value={settings.notionDatabaseId ?? ''}
-                      onChange={(v) => update('notionDatabaseId', v)}
-                      placeholder="Used as default parent for new pages"
-                    />
-                  </div>
-                )}
-
-                {selectedDocsProvider !== 'none' && (
-                  <TestButton status={docsStatus} onClick={testDocs} />
-                )}
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Git Provider"
-                description="Credentials used to browse and clone remote repositories."
-              >
-                <div className="space-y-3">
-                  <label className="block text-sm text-text-secondary">Provider</label>
-                  <ButtonGrid>
-                    <ProviderButton
-                      label="GitHub"
-                      description="GitHub.com or Enterprise"
-                      active={gitProvider === 'github'}
-                      onClick={() => setGitProvider('github')}
-                    />
-                    <ProviderButton
-                      label="Azure DevOps"
-                      description="ADO repositories"
-                      active={gitProvider === 'ado'}
-                      onClick={() => setGitProvider('ado')}
-                    />
-                  </ButtonGrid>
-                </div>
-
-                {gitProvider === 'github' && (
-                  <div className="rounded-md border border-border bg-bg-primary p-3">
-                    {ghUsername ? (
-                      <div className="flex items-center gap-2">
-                        <CheckCircle size={14} className="text-success" />
-                        <span className="text-sm text-text-primary">
-                          Authenticated as{' '}
-                          <span className="font-medium text-accent">{ghUsername}</span>
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <p className="text-sm text-text-secondary">
-                          GitHub uses the{' '}
-                          <code className="rounded bg-bg-tertiary px-1 py-0.5 text-xs font-mono text-accent">
-                            gh
-                          </code>{' '}
-                          CLI for authentication.
-                        </p>
-                        {ghError && (
-                          <div className="flex items-center gap-2 text-sm text-warning">
-                            <XCircle size={14} />
-                            {ghError}
-                          </div>
-                        )}
-                        <p className="text-xs text-text-tertiary">
-                          Run{' '}
-                          <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-accent">
-                            gh auth login
-                          </code>{' '}
-                          in your terminal, then check again.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {gitProvider === 'ado' && (
-                  <>
-                    <Field
-                      label="Organisation URL"
-                      value={settings.adoOrganizationUrl ?? ''}
-                      onChange={(v) => update('adoOrganizationUrl', v)}
-                      placeholder="https://dev.azure.com/your-org"
-                    />
-                    <Field
-                      label="Personal Access Token"
-                      value={settings.adoPat ?? ''}
-                      onChange={(v) => update('adoPat', v)}
-                      type="password"
-                    />
-                    <p className="text-xs text-text-tertiary">
-                      These credentials are shared with Work Items if you also use ADO there.
-                    </p>
-                  </>
-                )}
-
-                <TestButton status={gitStatus} onClick={testGit} />
-              </SettingsPanel>
-            </SettingsCategory>
-
-            <SettingsCategory
-              id="review"
-              hidden={activeCategory !== 'review'}
-              title="Review defaults"
-              description="Custom rubrics used when the app asks an agent to inspect code."
-              icon={Code2}
-            >
-              <SettingsPanel
-                title="Code Review Rubrics"
-                description="Leave a rubric empty to use the built-in default for that review mode."
-              >
-                <div className="space-y-1">
-                  <label className="block text-sm text-text-secondary">Quick Glance Rubric</label>
-                  <p className="text-xs text-text-tertiary">
-                    Custom review criteria for quick reviews. Leave empty to use the default.
-                  </p>
-                  <textarea
-                    value={settings.codeReviewQuickGlanceRubric ?? ''}
-                    onChange={(e) => update('codeReviewQuickGlanceRubric', e.target.value)}
-                    placeholder="e.g. Focus on naming conventions, unused imports, and obvious null checks..."
-                    rows={4}
-                    className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="block text-sm text-text-secondary">
-                    Senior Dev Review Rubric
-                  </label>
-                  <p className="text-xs text-text-tertiary">
-                    Custom review criteria for thorough reviews. Leave empty to use the default.
-                  </p>
-                  <textarea
-                    value={settings.codeReviewSeniorDevRubric ?? ''}
-                    onChange={(e) => update('codeReviewSeniorDevRubric', e.target.value)}
-                    placeholder="e.g. Check for SOLID violations, test coverage gaps, race conditions, N+1 queries..."
-                    rows={4}
-                    className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-                  />
-                </div>
-              </SettingsPanel>
-            </SettingsCategory>
-
-            <SettingsCategory
-              id="devices"
-              hidden={activeCategory !== 'devices'}
-              title="Devices & system"
-              description="Local defaults, companion devices, and network pairing."
-              icon={MonitorSmartphone}
-            >
-              <SettingsPanel
-                title="General"
-                description="Defaults used when the app needs a local repository location."
-              >
-                <Field
-                  label="Default Repo Path"
-                  value={settings.defaultRepoPath ?? ''}
-                  onChange={(v) => update('defaultRepoPath', v)}
-                  placeholder="/Users/you/repos"
-                />
-              </SettingsPanel>
-
-              <SettingsPanel
-                title="Mobile Companion"
-                description="Control this Anvil instance from phone, widgets, Raycast, watch, and the macOS menu bar over your local network or Tailscale."
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0 space-y-1">
-                    <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
-                      <Smartphone size={16} className="text-accent" />
-                      Control this Anvil instance from companion surfaces
-                    </div>
-                    <p className="text-sm text-text-secondary">
-                      Pair over your local network or Tailscale. Companion surfaces can resolve
-                      approvals, launch status sweeps, review changes, hunt missing tests, draft
-                      handoffs, publish live widget status, and interrupt active sessions without
-                      exposing a tiny remote shell.
-                    </p>
-                    {mobileStatus?.baseUrl && (
-                      <p className="truncate font-mono text-xs text-text-tertiary">
-                        {mobileStatus.baseUrl}
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    onClick={toggleMobileCompanion}
-                    disabled={mobileBusy}
-                    className={`shrink-0 rounded-md border px-3 py-1.5 text-sm transition-colors disabled:opacity-50 ${
-                      mobileStatus?.enabled
-                        ? 'border-success/50 text-success hover:bg-success/10'
-                        : 'border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                    }`}
-                  >
-                    {mobileStatus?.enabled ? 'Enabled' : 'Enable'}
-                  </button>
-                </div>
-
-                {mobileStatus?.enabled && (
-                  <div className="space-y-4">
-                    <div className="rounded-md border border-border bg-bg-primary p-3">
-                      <p className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
-                        Command deck workflows
-                      </p>
-                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                        {[
-                          'Status sweep',
-                          'Review current change',
-                          'Find missing tests',
-                          'Ship handoff',
-                        ].map((item) => (
-                          <div
-                            key={item}
-                            className="rounded-md border border-border-subtle bg-bg-secondary px-3 py-2 text-sm font-medium text-text-primary"
-                          >
-                            {item}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="rounded-md border border-border bg-bg-primary p-3">
-                      <p className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
-                        Available addresses
-                      </p>
-                      <div className="mt-2 space-y-1">
-                        {mobileStatus.advertisedAddresses.map((address) => (
-                          <div
-                            key={address.url}
-                            className="flex items-center justify-between gap-3"
-                          >
-                            <span className="text-sm text-text-secondary">{address.label}</span>
-                            <span className="truncate font-mono text-xs text-text-tertiary">
-                              {address.url}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-start gap-4">
-                      <button
-                        onClick={createPairingTicket}
-                        disabled={mobileBusy}
-                        className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
-                      >
-                        {pairingTicket ? 'Refresh QR code' : 'Create QR code'}
-                      </button>
-                      {pairingTicket && (
-                        <div className="rounded-lg border border-border bg-white p-3">
-                          <div
-                            className="h-48 w-48"
-                            dangerouslySetInnerHTML={{ __html: pairingTicket.qrSvg }}
-                          />
-                        </div>
-                      )}
-                      {pairingTicket && (
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <p className="text-sm text-text-secondary">
-                            Scan this in the mobile app. Expires{' '}
-                            {new Date(pairingTicket.expiresAt).toLocaleTimeString()}.
-                          </p>
-                          <p className="break-all font-mono text-xs text-text-tertiary">
-                            {pairingTicket.pairingUrl}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="rounded-md border border-border bg-bg-primary p-3">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0 space-y-1">
-                          <p className="text-sm font-medium text-text-primary">Raycast access</p>
-                          <p className="text-sm text-text-secondary">
-                            Create a bearer token for the internal Raycast extension. The token is
-                            shown once, because secrets should not become decorative UI.
-                          </p>
-                        </div>
-                        <button
-                          onClick={createRaycastToken}
-                          disabled={mobileBusy}
-                          className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
-                        >
-                          Create Raycast token
-                        </button>
-                      </div>
-                      {raycastToken && (
-                        <div className="mt-3 space-y-2 rounded-md border border-warning/30 bg-warning/5 p-3">
-                          <p className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
-                            Copy into Raycast extension preferences
-                          </p>
-                          <p className="break-all font-mono text-xs text-text-secondary">
-                            Base URL: {raycastToken.baseUrl}
-                          </p>
-                          <p className="break-all font-mono text-xs text-text-secondary">
-                            Token: {raycastToken.token}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
-                        Paired devices
-                      </p>
-                      {mobileDevices.length === 0 ? (
-                        <p className="text-sm text-text-tertiary">No paired devices yet.</p>
-                      ) : (
-                        <div className="space-y-2">
-                          {mobileDevices.map((device) => (
-                            <div
-                              key={device.id}
-                              className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-primary px-3 py-2"
-                            >
-                              <div className="min-w-0">
-                                <p className="truncate text-sm font-medium text-text-primary">
-                                  {device.name}
-                                </p>
-                                <p className="text-xs text-text-tertiary">
-                                  {formatCompanionClientType(device.clientType)} -{' '}
-                                  {device.revokedAt
-                                    ? `Revoked ${new Date(device.revokedAt).toLocaleString()}`
-                                    : device.lastSeenAt
-                                      ? `Last seen ${new Date(device.lastSeenAt).toLocaleString()}`
-                                      : `Paired ${new Date(device.createdAt).toLocaleString()}`}
-                                </p>
-                              </div>
-                              {!device.revokedAt && (
-                                <button
-                                  onClick={() => void revokeMobileDevice(device.id)}
-                                  disabled={mobileBusy}
-                                  className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-error/10 hover:text-error disabled:opacity-50"
-                                  title="Revoke device"
-                                  aria-label={`Revoke ${device.name}`}
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </SettingsPanel>
-            </SettingsCategory>
-
-            <SettingsCategory
-              id="privacy"
-              hidden={activeCategory !== 'privacy'}
-              title="Privacy"
-              description="Choose whether Anvil may send crash reports when something breaks."
-              icon={ShieldCheck}
-            >
-              <SettingsPanel
-                title="Help improve Anvil"
-                description="Crash reports help identify failures that are difficult to reproduce locally."
-              >
-                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-bg-primary p-4 transition-colors hover:bg-bg-tertiary">
-                  <input
-                    type="checkbox"
-                    checked={settings.telemetryEnabled ?? false}
-                    onChange={(event) => update('telemetryEnabled', event.target.checked)}
-                    className="mt-1 h-4 w-4 accent-accent"
-                  />
-                  <span className="min-w-0">
-                    <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
-                      <ShieldCheck size={15} className="text-accent" />
-                      Send crash reports
-                    </span>
-                    <span className="mt-1 block text-sm leading-relaxed text-text-secondary">
-                      Sends error stack traces, the Anvil version, and operating-system details to
-                      Sentry. Reports do not include screenshots, interaction history, or attached
-                      repository files.
-                    </span>
-                  </span>
-                </label>
-                <p className="text-xs leading-relaxed text-text-tertiary">
-                  Off by default. Save this setting, then restart Anvil for the change to take
-                  effect. Error stack traces may contain local file paths.
-                </p>
-              </SettingsPanel>
-            </SettingsCategory>
-
-            <SettingsCategory
-              id="danger"
-              hidden={activeCategory !== 'danger'}
-              title="Danger area"
-              description="Reset first-run setup and workspace selections. Handle with tongs."
-              icon={ShieldAlert}
-            >
-              <SettingsPanel
-                title="Reset onboarding"
-                description="Start the MissionControl wizard again. This clears workspace selections and preferences."
-                tone="danger"
-              >
-                <div className="flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={handleResetOnboarding}
-                    disabled={resetting}
-                    className="flex items-center gap-2 rounded-md border border-error/50 px-3 py-1.5 text-sm text-error transition-colors hover:bg-error/10 disabled:opacity-50"
-                  >
-                    {resetting && <Loader2 size={12} className="animate-spin" />}
-                    {resetting ? 'Resetting...' : 'Reset MissionControl'}
-                  </button>
-                  {resetDone && (
-                    <span className="flex items-center gap-1 text-sm text-success">
-                      <CheckCircle size={14} /> Onboarding state cleared
-                    </span>
-                  )}
-                </div>
-              </SettingsPanel>
-            </SettingsCategory>
-          </main>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CodexUsagePanel({
-  snapshot,
-  loading,
-  onRefresh,
-}: {
-  snapshot: CodexUsageSnapshot | null;
-  loading: boolean;
-  onRefresh: () => void;
-}) {
-  const defaultLimit = snapshot?.defaultLimit;
-  const additionalLimits =
-    snapshot?.limits.filter((limit) => limit.id !== defaultLimit?.id).slice(0, 3) ?? [];
-  const recentBuckets = snapshot?.tokenUsage?.recentDailyBuckets ?? [];
-  const peakRecentTokens = Math.max(1, ...recentBuckets.map((bucket) => bucket.tokens));
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          <SummaryChip
-            label="CLI"
-            value={
-              snapshot?.cliInstalled
-                ? snapshot.cliVersion || 'Installed'
-                : loading
-                  ? 'Checking'
-                  : 'Missing'
-            }
-          />
-          {defaultLimit?.planType && <SummaryChip label="Plan" value={defaultLimit.planType} />}
-          {snapshot?.resetCreditsAvailable !== null &&
-            snapshot?.resetCreditsAvailable !== undefined && (
-              <SummaryChip label="Resets" value={String(snapshot.resetCreditsAvailable)} />
-            )}
-        </div>
-        <button
-          onClick={onRefresh}
-          disabled={loading}
-          className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
-        >
-          {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCcw size={13} />}
-          Refresh
-        </button>
-      </div>
-
-      {snapshot?.status === 'unavailable' && (
-        <div className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
-          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">
-            {snapshot.error ||
-              'Codex usage is not available from the local CLI. Run codex login, then refresh.'}
-          </span>
-        </div>
-      )}
-
-      {!snapshot && loading && (
-        <div className="flex items-center gap-2 rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-secondary">
-          <Loader2 size={14} className="animate-spin" />
-          Reading Codex account usage
-        </div>
-      )}
-
-      {defaultLimit && (
-        <div className="rounded-md border border-border bg-bg-primary p-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-2">
-              <Gauge size={16} className="shrink-0 text-accent" />
-              <h5 className="truncate text-sm font-semibold text-text-primary">
-                {defaultLimit.label} quota
-              </h5>
+                ))
+              )}
             </div>
-            {defaultLimit.rateLimitReachedType && (
-              <span className="rounded-full border border-error/30 bg-error/10 px-2 py-0.5 text-xs text-error">
-                Limited
-              </span>
-            )}
-          </div>
-          <div className="space-y-3">
-            {defaultLimit.primary && (
-              <CodexQuotaRow label="Session" window={defaultLimit.primary} />
-            )}
-            {defaultLimit.secondary && (
-              <CodexQuotaRow label="Weekly" window={defaultLimit.secondary} />
-            )}
-          </div>
-          {defaultLimit.credits && (
-            <p className="mt-3 text-xs text-text-tertiary">
-              Credits:{' '}
-              {defaultLimit.credits.unlimited
-                ? 'unlimited'
-                : defaultLimit.credits.hasCredits
-                  ? defaultLimit.credits.balance || 'available'
-                  : 'none available'}
-            </p>
           )}
-        </div>
-      )}
 
-      {snapshot?.tokenUsage && (
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-          <div className="rounded-md border border-border bg-bg-primary p-4">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
-              <BarChart3 size={16} className="text-accent" />
-              Token usage
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <MetricTile
-                label="Lifetime"
-                value={formatTokenCount(snapshot.tokenUsage.lifetimeTokens)}
-              />
-              <MetricTile
-                label="Peak day"
-                value={formatTokenCount(snapshot.tokenUsage.peakDailyTokens)}
-              />
-              <MetricTile
-                label="Current streak"
-                value={formatDays(snapshot.tokenUsage.currentStreakDays)}
-              />
-              <MetricTile
-                label="Longest turn"
-                value={formatSeconds(snapshot.tokenUsage.longestRunningTurnSec)}
-              />
-            </div>
-          </div>
-
-          <div className="rounded-md border border-border bg-bg-primary p-4">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
-              <Clock3 size={16} className="text-accent" />
-              Recent daily tokens
-            </div>
-            {recentBuckets.length === 0 ? (
-              <p className="text-sm text-text-tertiary">No recent token buckets reported.</p>
-            ) : (
-              <div className="flex h-28 items-end gap-1">
-                {recentBuckets.map((bucket) => (
-                  <div
-                    key={bucket.startDate}
-                    className="flex min-w-0 flex-1 flex-col items-center gap-1"
-                    title={`${bucket.startDate}: ${formatTokenCount(bucket.tokens)}`}
-                  >
-                    <div className="flex h-20 w-full items-end rounded-sm bg-bg-tertiary">
-                      <div
-                        className="w-full rounded-sm bg-accent/80"
-                        style={{
-                          height: `${Math.max(4, (bucket.tokens / peakRecentTokens) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                    <span className="max-w-full truncate text-[10px] text-text-tertiary">
-                      {formatShortDate(bucket.startDate)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {additionalLimits.length > 0 && (
-        <div className="rounded-md border border-border bg-bg-primary p-4">
-          <h5 className="mb-3 text-sm font-semibold text-text-primary">Model-specific limits</h5>
-          <div className="space-y-3">
-            {additionalLimits.map((limit) => (
-              <div key={limit.id} className="space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="truncate text-sm font-medium text-text-primary">
-                    {limit.label}
-                  </span>
-                  {limit.primary && (
-                    <span className="shrink-0 text-xs text-text-tertiary">
-                      {limit.primary.remainingPercent}% left
-                    </span>
+          <nav className="flex gap-2 overflow-x-auto pb-1 lg:hidden" aria-label="Settings sections">
+            {SETTINGS_CATEGORIES.map((category) => {
+              const Icon = category.icon;
+              return (
+                <button
+                  key={category.id}
+                  onClick={() => selectCategory(category.id)}
+                  aria-current={activeCategory === category.id ? 'page' : undefined}
+                  className={cx(
+                    'inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                    activeCategory === category.id
+                      ? 'border-accent/40 bg-accent/10 text-accent'
+                      : 'border-border bg-bg-secondary text-text-secondary hover:border-text-tertiary hover:text-text-primary',
                   )}
-                </div>
-                {limit.primary && <ProgressBar percent={limit.primary.usedPercent} />}
-              </div>
-            ))}
+                >
+                  <Icon size={14} />
+                  {category.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
+            <aside className="hidden lg:block">
+              <nav
+                className="sticky top-6 space-y-1 rounded-lg border border-border bg-bg-secondary p-2"
+                aria-label="Settings sections"
+              >
+                {SETTINGS_CATEGORIES.map((category) => {
+                  const Icon = category.icon;
+                  return (
+                    <button
+                      key={category.id}
+                      onClick={() => selectCategory(category.id)}
+                      aria-current={activeCategory === category.id ? 'page' : undefined}
+                      className={cx(
+                        'flex w-full items-start gap-3 rounded-md px-3 py-2 text-left transition-colors',
+                        activeCategory === category.id ? 'bg-accent/10' : 'hover:bg-bg-tertiary',
+                      )}
+                    >
+                      <Icon size={16} className="mt-0.5 shrink-0 text-accent" />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium text-text-primary">
+                          {category.label}
+                        </span>
+                        <span className="block text-xs text-text-tertiary">
+                          {category.description}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </nav>
+            </aside>
+
+            <main className="space-y-6">
+              <Suspense
+                fallback={
+                  <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-secondary p-5 text-sm text-text-secondary">
+                    <Loader2 size={14} className="animate-spin" />
+                    Loading {activeMeta.label}…
+                  </div>
+                }
+              >
+                <section
+                  id={`settings-${activeMeta.id}`}
+                  className="space-y-3"
+                  aria-label={activeMeta.label}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="rounded-md border border-border-subtle bg-bg-secondary p-2 text-accent">
+                      <activeMeta.icon size={18} />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-lg font-semibold text-text-primary">
+                        {activeMeta.label}
+                      </h3>
+                      <p className="text-sm text-text-secondary">
+                        {categoryDescription(activeMeta.id)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    {categoryHiddenByRole && activeMeta.feature ? (
+                      <RoleHiddenNotice
+                        feature={activeMeta.feature}
+                        userRole={userRole}
+                        onShowAnyway={() => draft.update('showAllTools', true)}
+                      />
+                    ) : (
+                      <ActiveComponent />
+                    )}
+                  </div>
+                </section>
+              </Suspense>
+            </main>
           </div>
         </div>
-      )}
-
-      {snapshot?.refreshedAt && (
-        <p className="text-xs text-text-tertiary">
-          Last checked {new Date(snapshot.refreshedAt).toLocaleString()}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function CodexQuotaRow({
-  label,
-  window,
-}: {
-  label: string;
-  window: NonNullable<CodexUsageSnapshot['defaultLimit']>['primary'];
-}) {
-  if (!window) return null;
-
-  return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        <span className="font-medium text-text-primary">{label}</span>
-        <span className="text-text-secondary">
-          {window.remainingPercent}% left
-          {window.resetsAt ? ` - resets ${formatResetTime(window.resetsAt)}` : ''}
-        </span>
       </div>
-      <ProgressBar percent={window.usedPercent} />
-      <p className="text-xs text-text-tertiary">
-        {formatDurationMins(window.windowDurationMins)} window, {window.usedPercent}% used
-      </p>
-    </div>
-  );
-}
 
-function ProgressBar({ percent }: { percent: number }) {
-  return (
-    <div className="h-2 overflow-hidden rounded-full bg-bg-tertiary">
-      <div className="h-full rounded-full bg-accent" style={{ width: `${percent}%` }} />
-    </div>
-  );
-}
-
-function MetricTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-border-subtle bg-bg-secondary px-3 py-2">
-      <div className="text-xs text-text-tertiary">{label}</div>
-      <div className="mt-0.5 truncate text-sm font-semibold text-text-primary">{value}</div>
-    </div>
-  );
-}
-
-function ThemeButton({
-  label,
-  description,
-  swatches,
-  active,
-  onClick,
-}: {
-  label: string;
-  description: string;
-  swatches: [string, string, string];
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`rounded-lg border p-3 text-left transition-colors ${
-        active ? 'border-accent bg-accent/10' : 'border-border bg-bg-primary hover:bg-bg-tertiary'
-      }`}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className={`text-sm font-medium ${active ? 'text-accent' : 'text-text-primary'}`}>
-          {label}
-        </div>
-        <div className="flex shrink-0 overflow-hidden rounded-full border border-border-subtle">
-          {swatches.map((swatch) => (
-            <span
-              key={swatch}
-              className="h-5 w-5"
-              style={{ backgroundColor: swatch }}
-              aria-hidden="true"
-            />
-          ))}
-        </div>
-      </div>
-      <div className="mt-1 text-sm text-text-tertiary">{description}</div>
-    </button>
-  );
-}
-
-function ProviderButton({
-  label,
-  description,
-  active,
-  disabled = false,
-  onClick,
-}: {
-  label: string;
-  description: string;
-  active: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`min-w-0 flex-1 rounded-lg border p-3 text-left transition-colors sm:min-w-[10rem] ${
-        active ? 'border-accent bg-accent/10' : 'border-border bg-bg-primary hover:bg-bg-tertiary'
-      } disabled:cursor-not-allowed disabled:opacity-50`}
-    >
-      <div className={`text-sm font-medium ${active ? 'text-accent' : 'text-text-primary'}`}>
-        {label}
-      </div>
-      <div className="mt-0.5 text-sm text-text-tertiary">{description}</div>
-    </button>
-  );
-}
-
-function AgentProviderManager({
-  primaryProvider,
-  enabledProviders,
-  onSetPrimary,
-  onToggle,
-}: {
-  primaryProvider: AgentProvider;
-  enabledProviders: AgentProvider[];
-  onSetPrimary: (provider: AgentProvider) => void;
-  onToggle: (provider: AgentProvider) => void;
-}) {
-  return (
-    <div
-      role="radiogroup"
-      aria-label="Primary agent provider"
-      className="overflow-hidden rounded-lg border border-border bg-bg-primary"
-    >
-      <div className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center border-b border-border-subtle bg-bg-secondary px-3 py-2 text-xs font-medium text-text-tertiary">
-        <span>Provider</span>
-        <span className="text-center">Primary</span>
-        <span className="text-center">Available</span>
-      </div>
-      {AGENT_PROVIDER_OPTIONS.map((option, index) => {
-        const isPrimary = primaryProvider === option.id;
-        const isEnabled = enabledProviders.includes(option.id);
-        return (
-          <div
-            key={option.id}
-            className={`grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center gap-2 px-3 py-3 ${
-              index > 0 ? 'border-t border-border-subtle' : ''
-            }`}
-          >
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-text-primary">{option.label}</div>
-              <div className="mt-0.5 text-xs text-text-tertiary">{option.description}</div>
-            </div>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={isPrimary}
-              onClick={() => onSetPrimary(option.id)}
-              className={`mx-auto inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors ${
-                isPrimary
-                  ? 'bg-accent/12 text-accent'
-                  : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-              }`}
-            >
-              <span
-                className={`h-3 w-3 rounded-full border ${
-                  isPrimary ? 'border-accent bg-accent' : 'border-text-tertiary'
-                }`}
-                aria-hidden="true"
-              />
-              {isPrimary ? 'Primary' : 'Make primary'}
-            </button>
-            <button
-              type="button"
-              aria-pressed={isEnabled}
-              disabled={isPrimary}
-              onClick={() => onToggle(option.id)}
-              className={`mx-auto min-h-8 rounded-md px-2.5 text-xs font-medium transition-colors ${
-                isEnabled
-                  ? 'bg-success/10 text-success'
-                  : 'bg-bg-secondary text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-              } disabled:cursor-default`}
-              title={isPrimary ? 'The primary provider is always available.' : undefined}
-            >
-              {isPrimary ? 'Required' : isEnabled ? 'Active' : 'Inactive'}
-            </button>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function formatReasoningLabel(effort: ReasoningEffort): string {
-  if (effort === 'xhigh') return 'Extra High';
-  return effort.charAt(0).toUpperCase() + effort.slice(1);
-}
-
-function formatModelTokenLimit(tokens: number): string {
-  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(
-    tokens,
-  );
-}
-
-function formatModelPrice(price: number): string {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(price);
-}
-
-function describeReasoningEffort(effort: ReasoningEffort): string {
-  switch (effort) {
-    case 'none':
-      return 'No extended reasoning';
-    case 'minimal':
-      return 'Tiny prompts';
-    case 'low':
-      return 'Quick scoped work';
-    case 'medium':
-      return 'Default coding';
-    case 'high':
-      return 'Complex changes';
-    case 'xhigh':
-      return 'Hard tradeoffs';
-    case 'max':
-      return 'Deep single task';
-    case 'ultra':
-      return 'Subagent work';
-  }
-}
-
-function ReasoningButton({
-  label,
-  description,
-  active,
-  onClick,
-}: {
-  label: string;
-  description: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`min-w-0 flex-1 rounded-lg border p-3 text-left transition-colors sm:min-w-[9rem] ${
-        active ? 'border-accent bg-accent/10' : 'border-border bg-bg-primary hover:bg-bg-tertiary'
-      }`}
-    >
-      <div className={`text-sm font-medium ${active ? 'text-accent' : 'text-text-primary'}`}>
-        {label}
-      </div>
-      <div className="mt-0.5 text-sm text-text-tertiary">{description}</div>
-    </button>
-  );
-}
-
-function CapabilityChip({ label, active }: { label: string; active: boolean }) {
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-        active
-          ? 'border-success/40 bg-success/10 text-success'
-          : 'border-border-subtle bg-bg-secondary text-text-tertiary'
-      }`}
-    >
-      <span
-        className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-success' : 'bg-text-tertiary/50'}`}
+      <ConfirmDialog
+        open={discardTarget !== null}
+        title="Discard changes?"
+        description="You have unsaved credential changes. Discarding restores the last saved values."
+        confirmLabel="Discard changes"
+        cancelLabel="Keep editing"
+        tone="danger"
+        onConfirm={() => {
+          if (!discardTarget) return;
+          draft.discardKeys(dirtyCredentials as Array<keyof AppSettings>);
+          const [id, panel] = discardTarget.split('#');
+          setDiscardTarget(null);
+          const resolved = resolveSettingsCategoryId(id);
+          if (resolved) commitCategory(resolved, panel);
+        }}
+        onCancel={() => setDiscardTarget(null)}
       />
-      {label}
-    </span>
-  );
-}
-
-function SummaryChip({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-md bg-bg-primary px-2.5 py-1 text-xs text-text-secondary">
-      <span className="text-text-tertiary">{label}</span>
-      <span className="font-medium text-text-primary">{value}</span>
-    </span>
-  );
-}
-
-function formatTokenCount(value: number | null): string {
-  if (value === null) return 'Unknown';
-  return new Intl.NumberFormat(undefined, {
-    notation: value >= 1_000_000 ? 'compact' : 'standard',
-    maximumFractionDigits: value >= 1_000_000 ? 1 : 0,
-  }).format(value);
-}
-
-function formatDays(value: number | null): string {
-  if (value === null) return 'Unknown';
-  return `${value}d`;
-}
-
-function formatSeconds(value: number | null): string {
-  if (value === null) return 'Unknown';
-  if (value < 60) return `${value}s`;
-  const minutes = Math.floor(value / 60);
-  const seconds = value % 60;
-  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-}
-
-function formatDurationMins(value: number | null): string {
-  if (value === null) return 'Unknown';
-  if (value < 60) return `${value} min`;
-  const hours = value / 60;
-  if (Number.isInteger(hours)) return `${hours} hr`;
-  return `${hours.toFixed(1)} hr`;
-}
-
-function formatResetTime(value: string): string {
-  return new Date(value).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function formatShortDate(value: string): string {
-  return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
-function ButtonGrid({ children }: { children: ReactNode }) {
-  return <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">{children}</div>;
-}
-
-function formatCompanionClientType(type: MobileCompanionDevice['clientType']): string {
-  switch (type) {
-    case 'raycast':
-      return 'Raycast';
-    case 'watch':
-      return 'Watch';
-    case 'widget':
-      return 'Widget';
-    case 'menubar':
-      return 'Menu bar';
-    case 'mobile':
-    default:
-      return 'Mobile';
-  }
-}
-
-function SettingsCategory({
-  id,
-  title,
-  description,
-  icon: Icon,
-  hidden = false,
-  children,
-}: {
-  id: SettingsCategoryId;
-  title: string;
-  description: string;
-  icon: LucideIcon;
-  hidden?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <section id={`settings-${id}`} className={hidden ? 'hidden' : 'space-y-3'} aria-hidden={hidden}>
-      <div className="flex items-start gap-3">
-        <div className="rounded-md border border-border-subtle bg-bg-secondary p-2 text-accent">
-          <Icon size={18} />
-        </div>
-        <div className="min-w-0">
-          <h3 className="text-lg font-semibold text-text-primary">{title}</h3>
-          <p className="text-sm text-text-secondary">{description}</p>
-        </div>
-      </div>
-      <div className="space-y-3">{children}</div>
-    </section>
-  );
-}
-
-function SettingsPanel({
-  title,
-  description,
-  tone = 'default',
-  children,
-}: {
-  title: string;
-  description?: string;
-  tone?: 'default' | 'danger';
-  children: ReactNode;
-}) {
-  return (
-    <section
-      className={`space-y-4 rounded-lg border p-5 ${
-        tone === 'danger' ? 'border-error/30 bg-error/5' : 'border-border bg-bg-secondary'
-      }`}
-    >
-      <div>
-        <h4 className="text-base font-semibold text-text-primary">{title}</h4>
-        {description && <p className="mt-1 text-sm text-text-secondary">{description}</p>}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Field({
-  label,
-  value,
-  onChange,
-  placeholder,
-  type = 'text',
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  type?: 'text' | 'password';
-}) {
-  return (
-    <div className="space-y-1">
-      <label className="block text-sm text-text-secondary">{label}</label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-      />
-    </div>
-  );
-}
-
-function TestButton({
-  status,
-  onClick,
-  label = 'Test Connection',
-}: {
-  status: TestStatus;
-  onClick: () => void;
-  label?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={status === 'testing'}
-      className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:text-text-primary disabled:opacity-50"
-    >
-      {status === 'testing' && <Loader2 size={12} className="animate-spin" />}
-      {status === 'ok' && <CheckCircle size={12} className="text-success" />}
-      {status === 'error' && <XCircle size={12} className="text-error" />}
-      {label}
-    </button>
+    </SettingsContextProvider>
   );
 }

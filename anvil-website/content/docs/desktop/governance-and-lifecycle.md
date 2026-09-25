@@ -3,9 +3,9 @@ title: Governance and lifecycle
 navTitle: Governance and lifecycle
 description: Organise governance documents, track delivery stages and gates, run impact analysis, and export handover packs.
 product: Anvil Desktop
-section: Governance
+section: Concepts
 journey: reference
-order: 120
+order: 270
 ---
 
 # Governance and lifecycle

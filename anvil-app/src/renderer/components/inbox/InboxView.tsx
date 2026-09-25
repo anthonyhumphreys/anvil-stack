@@ -142,11 +142,7 @@ export function InboxView() {
                 </div>
                 <div className="divide-y divide-border-subtle rounded-lg border border-border-subtle">
                   {group.items.map((item) => (
-                    <ActivityItemRow
-                      key={item.id}
-                      item={item}
-                      onOpen={() => openItem(item)}
-                    />
+                    <ActivityItemRow key={item.id} item={item} onOpen={() => openItem(item)} />
                   ))}
                 </div>
               </section>

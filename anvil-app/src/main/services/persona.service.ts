@@ -2,166 +2,53 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Persona, WorkItem, DesignMode } from '../../shared/types.js';
 import { PRIMARY_SCAFFOLD_COMPLETE_MARKER } from '../../shared/app-identity.js';
-import { loadPromptTemplate } from '../utils/prompt-templates.js';
+import { loadPromptTemplate, renderPromptTemplate } from '../utils/prompt-templates.js';
 import { getDb } from '../db/database.js';
 import { getDbInsightsPersonaSummary } from './db-insights.service.js';
+import {
+  editableAgentToPersona,
+  getEditableAgent,
+  listEditableAgents,
+} from './editable-agent.service.js';
+import { PERSONAS } from './persona-catalog.js';
 
-const PERSONAS: Persona[] = [
-  {
-    id: 'coder',
-    name: 'Coder',
-    icon: 'Code',
-    colour: '#22c55e',
-    description: 'General purpose coding agent. Writes, edits, and runs code.',
-    systemPromptTemplate: 'personas/coder.md',
-    capabilities: { canWriteFiles: true, canRunCommands: true, canReadFiles: true },
-  },
-  {
-    id: 'mentor',
-    name: 'Dev Mentor',
-    icon: 'GraduationCap',
-    colour: '#0f766e',
-    description:
-      'Guides junior developers through multiple approaches, optimisation tradeoffs, and debugging steps.',
-    systemPromptTemplate: 'personas/mentor.md',
-    capabilities: { canWriteFiles: true, canRunCommands: true, canReadFiles: true },
-  },
-  {
-    id: 'architect',
-    name: 'Architect',
-    icon: 'Building2',
-    colour: '#3b82f6',
-    description: 'Analyses structure and design. Does not modify code.',
-    systemPromptTemplate: 'personas/architect.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'security',
-    name: 'Security',
-    icon: 'Shield',
-    colour: '#ef4444',
-    description: 'Scans for vulnerabilities. Can run analysis tools but does not edit code.',
-    systemPromptTemplate: 'personas/security.md',
-    capabilities: { canWriteFiles: false, canRunCommands: true, canReadFiles: true },
-  },
-  {
-    id: 'reviewer',
-    name: 'Code Reviewer',
-    icon: 'Eye',
-    colour: '#eab308',
-    description: 'Reviews code against conventions and best practices.',
-    systemPromptTemplate: 'personas/reviewer.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'docs',
-    name: 'Documentation',
-    icon: 'BookOpen',
-    colour: '#8b5cf6',
-    description: 'Writes and updates documentation files only.',
-    systemPromptTemplate: 'personas/docs.md',
-    capabilities: { canWriteFiles: true, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'ba',
-    name: 'Business Analyst',
-    icon: 'ClipboardList',
-    colour: '#7c3aed',
-    description:
-      'Analyse requirements, assess feasibility, flag compliance concerns, create spikes.',
-    systemPromptTemplate: 'personas/ba.md',
-    capabilities: { canWriteFiles: true, canRunCommands: true, canReadFiles: true },
-  },
-  {
-    id: 'workshop-planner',
-    name: 'Workshop Planner',
-    icon: 'Presentation',
-    colour: '#f97316',
-    description:
-      'Plans discovery sessions, stakeholder workshops, agendas, decision framing, and facilitation outputs.',
-    systemPromptTemplate: 'personas/workshop-planner.md',
-    capabilities: { canWriteFiles: true, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'service-desk',
-    name: 'Service Desk Analyst',
-    icon: 'Headphones',
-    colour: '#38bdf8',
-    description: 'Structures first-line intake, troubleshooting, classification, and handover.',
-    systemPromptTemplate: 'personas/service-desk.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'technical-support',
-    name: 'Technical Support Analyst',
-    icon: 'Wrench',
-    colour: '#2dd4bf',
-    description: 'Investigates technical evidence and prepares clear second-line escalations.',
-    systemPromptTemplate: 'personas/technical-support.md',
-    capabilities: { canWriteFiles: false, canRunCommands: true, canReadFiles: true },
-  },
-  {
-    id: 'incident-manager',
-    name: 'Incident Manager',
-    icon: 'Radio',
-    colour: '#fb7185',
-    description: 'Coordinates restoration, decisions, timelines, ownership, and communications.',
-    systemPromptTemplate: 'personas/incident-manager.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'problem-manager',
-    name: 'Problem Manager',
-    icon: 'SearchCheck',
-    colour: '#c084fc',
-    description: 'Separates symptoms from causes and develops evidence-backed corrective actions.',
-    systemPromptTemplate: 'personas/problem-manager.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'change-manager',
-    name: 'Change Manager',
-    icon: 'GitPullRequest',
-    colour: '#fbbf24',
-    description: 'Assesses change risk, dependencies, validation, approvals, and backout plans.',
-    systemPromptTemplate: 'personas/change-manager.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'service-manager',
-    name: 'Service Manager',
-    icon: 'Gauge',
-    colour: '#a3e635',
-    description: 'Prepares service reviews, measures outcomes, and shapes continual improvement.',
-    systemPromptTemplate: 'personas/service-manager.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'design',
-    name: 'Design Companion',
-    icon: 'Palette',
-    colour: '#ec4899',
-    description: 'Design with Figma or implement designs into code.',
-    systemPromptTemplate: 'personas/design.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-  {
-    id: 'db-expert',
-    name: 'DB Expert',
-    icon: 'Database',
-    colour: '#14b8a6',
-    description: 'Explains schemas, stored procedures, and SQL Server database design.',
-    systemPromptTemplate: 'personas/db-expert.md',
-    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
-  },
-];
+function safeParseStringList(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Structural stand-in for a module purpose before LLM enrichment lands. */
+function structuralModuleNote(module: {
+  file_count: number | null;
+  key_files: string | null;
+}): string {
+  const files = `${module.file_count ?? 0} files`;
+  const keyFiles = safeParseStringList(module.key_files).slice(0, 5);
+  return keyFiles.length > 0 ? `${files}; key files: ${keyFiles.join(', ')}` : files;
+}
 
 export function getPersonas(): Persona[] {
-  return PERSONAS;
+  return [...PERSONAS, ...listEditableAgents().map(editableAgentToPersona)];
 }
 
 export function getPersonaById(id: string): Persona | undefined {
-  return PERSONAS.find((p) => p.id === id);
+  const builtin = PERSONAS.find((p) => p.id === id);
+  if (builtin) return builtin;
+  const agent = getEditableAgent(id);
+  return agent ? editableAgentToPersona(agent) : undefined;
+}
+
+/** Builtin personas load a prompt file; editable agents render their inline body. */
+function renderPersonaPrompt(persona: Persona, variables: Record<string, string>): string {
+  if (persona.promptBody !== undefined) {
+    return renderPromptTemplate(persona.promptBody, variables);
+  }
+  return loadPromptTemplate(persona.systemPromptTemplate, variables);
 }
 
 /**
@@ -183,7 +70,7 @@ export function buildSystemPrompt(
 
   const ids = Array.isArray(repoIds) ? repoIds : [repoIds];
   if (ids.length === 0) {
-    return loadPromptTemplate(persona.systemPromptTemplate, {
+    return renderPersonaPrompt(persona, {
       repoName: 'Workspace documents and requirements',
       primaryLanguage: 'Unknown',
       architectureDescription:
@@ -208,17 +95,35 @@ export function buildSystemPrompt(
 
   for (const repoId of ids) {
     const repoRow = db.prepare('SELECT * FROM repos WHERE id = ?').get(repoId) as
-      | { name: string; path: string; default_branch: string }
+      | {
+          name: string;
+          path: string;
+          default_branch: string;
+          index_tier?: string | null;
+          file_count?: number | null;
+        }
       | undefined;
     if (!repoRow) continue;
 
     const summaryRow = db.prepare('SELECT * FROM repo_summaries WHERE repo_id = ?').get(repoId) as
-      | { overview: string | null; language_breakdown: string | null }
+      | {
+          overview: string | null;
+          language_breakdown: string | null;
+          frameworks: string | null;
+          entry_points: string | null;
+        }
       | undefined;
 
     const moduleRows = db
-      .prepare('SELECT path, purpose FROM module_summaries WHERE repo_id = ?')
-      .all(repoId) as { path: string; purpose: string | null }[];
+      .prepare(
+        'SELECT path, purpose, file_count, key_files FROM module_summaries WHERE repo_id = ?',
+      )
+      .all(repoId) as {
+      path: string;
+      purpose: string | null;
+      file_count: number | null;
+      key_files: string | null;
+    }[];
 
     let primaryLanguage = 'Unknown';
     if (summaryRow?.language_breakdown) {
@@ -246,8 +151,10 @@ export function buildSystemPrompt(
       }
     }
 
+    // Before the enriched tier lands, module purposes are empty — prefer the
+    // structural data (file counts, key files) so early chat stays grounded.
     const moduleSummaries = moduleRows
-      .map((m) => `- **${m.path}**: ${m.purpose ?? 'No description'}`)
+      .map((m) => `- **${m.path}**: ${m.purpose?.trim() || structuralModuleNote(m)}`)
       .join('\n');
 
     // Store first repo values for template variables (backwards compatibility)
@@ -261,9 +168,17 @@ export function buildSystemPrompt(
 
     // Build per-repo context block
     const overview = summaryRow?.overview ?? 'Not indexed yet.';
+    const structuralNote =
+      repoRow.index_tier === 'enriched'
+        ? ''
+        : `Structural context (LLM enrichment pending): ${repoRow.file_count ?? 0} files; ` +
+          `languages: ${primaryLanguage}; ` +
+          `frameworks: ${safeParseStringList(summaryRow?.frameworks).join(', ') || 'none detected'}; ` +
+          `entry points: ${safeParseStringList(summaryRow?.entry_points).join(', ') || 'none detected'}\n`;
     repoContexts.push(
       `### ${repoRow.name} (${primaryLanguage})\n` +
         `Path: ${repoPathOverrides?.[repoId] ?? repoRow.path}\n` +
+        structuralNote +
         `Overview: ${overview}\n` +
         (moduleSummaries ? `Modules:\n${moduleSummaries}` : ''),
     );
@@ -295,14 +210,14 @@ export function buildSystemPrompt(
     dbInsightsSummary,
   };
 
-  return loadPromptTemplate(persona.systemPromptTemplate, variables);
+  return renderPersonaPrompt(persona, variables);
 }
 
 export function buildScaffoldSystemPrompt(personaId: string, rootPath: string): string {
   const persona = getPersonaById(personaId);
   if (!persona) throw new Error(`Unknown persona: ${personaId}`);
 
-  const basePrompt = loadPromptTemplate(persona.systemPromptTemplate, {
+  const basePrompt = renderPersonaPrompt(persona, {
     repoName: 'Workspace scaffold root',
     primaryLanguage: 'Unknown',
     architectureDescription: `You are scaffolding new repositories under this root path: ${rootPath}`,
@@ -351,8 +266,13 @@ export function buildBaSystemPrompt(repoId: string, workItem: WorkItem): string 
 
   // Fetch module summaries
   const moduleRows = db
-    .prepare('SELECT path, purpose FROM module_summaries WHERE repo_id = ?')
-    .all(repoId) as { path: string; purpose: string | null }[];
+    .prepare('SELECT path, purpose, file_count, key_files FROM module_summaries WHERE repo_id = ?')
+    .all(repoId) as {
+    path: string;
+    purpose: string | null;
+    file_count: number | null;
+    key_files: string | null;
+  }[];
 
   // Detect primary language from breakdown
   let primaryLanguage = 'Unknown';
@@ -382,7 +302,7 @@ export function buildBaSystemPrompt(repoId: string, workItem: WorkItem): string 
   }
 
   const moduleSummariesText = moduleRows
-    .map((m) => `- **${m.path}**: ${m.purpose ?? 'No description'}`)
+    .map((m) => `- **${m.path}**: ${m.purpose?.trim() || structuralModuleNote(m)}`)
     .join('\n');
 
   const architectureDescription =
@@ -464,8 +384,15 @@ export function buildDesignSystemPrompt(
       | undefined;
 
     const moduleRows = db
-      .prepare('SELECT path, purpose FROM module_summaries WHERE repo_id = ?')
-      .all(repoId) as { path: string; purpose: string | null }[];
+      .prepare(
+        'SELECT path, purpose, file_count, key_files FROM module_summaries WHERE repo_id = ?',
+      )
+      .all(repoId) as {
+      path: string;
+      purpose: string | null;
+      file_count: number | null;
+      key_files: string | null;
+    }[];
 
     let primaryLanguage = 'Unknown';
     if (summaryRow?.language_breakdown) {
@@ -493,7 +420,7 @@ export function buildDesignSystemPrompt(
     }
 
     const moduleSummaries = moduleRows
-      .map((m) => `- **${m.path}**: ${m.purpose ?? 'No description'}`)
+      .map((m) => `- **${m.path}**: ${m.purpose?.trim() || structuralModuleNote(m)}`)
       .join('\n');
 
     if (!firstRepoName) {

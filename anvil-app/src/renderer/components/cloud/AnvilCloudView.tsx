@@ -24,7 +24,8 @@ import type {
   RepoInfo,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
-import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { RemoteExecutionsPanel } from './RemoteExecutionsPanel';
 
 const CATEGORY_LABELS: Record<AnvilCloudCommandDefinition['category'], string> = {
@@ -42,7 +43,7 @@ const CATEGORY_ICONS: Record<AnvilCloudCommandDefinition['category'], React.Reac
 };
 
 export function AnvilCloudView() {
-  const { repos, activeWorkspace } = useWorkspace();
+  const { repos, activeWorkspace, featureAvailability } = useWorkspace();
   const [snapshot, setSnapshot] = useState<AnvilCloudWorkbenchSnapshot | null>(null);
   const [selectedRepoId, setSelectedRepoId] = useState(repos[0]?.id ?? '');
   const [runningCommand, setRunningCommand] = useState<AnvilCloudCommandId | null>(null);
@@ -135,13 +136,12 @@ export function AnvilCloudView() {
     }
   }
 
-  if (repos.length === 0) {
+  if (!featureAvailability.repoFeaturesEnabled) {
     return (
-      <EmptyState
+      <RepoFeatureEmptyState
         icon={Cloud}
-        title="Connect a repository for Anvil Cloud"
+        featureLabel="Anvil Cloud"
         description="Cloud commands need a workspace repository as their source and working directory."
-        className="h-full"
       />
     );
   }
@@ -181,7 +181,7 @@ export function AnvilCloudView() {
             <button
               onClick={() => void openLens()}
               disabled={openingLens || !snapshot?.status.available || runningCommand !== null}
-              className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-60"
             >
               {openingLens ? (
                 <Loader2 size={16} className="animate-spin" />

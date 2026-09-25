@@ -8,6 +8,7 @@ import type {
   ChatPlanSnapshot,
   ChatThread,
   ChatThreadAttentionState,
+  ChatThreadPurpose,
   WorkItemProvider,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
@@ -16,6 +17,8 @@ interface CreateChatThreadInput {
   workspaceId?: string | null;
   personaId: string;
   title?: string;
+  purpose?: ChatThreadPurpose;
+  sideQuestionOfThreadId?: string;
   workItemId?: string;
   workItemProvider?: WorkItemProvider;
   workItemTitle?: string;
@@ -51,6 +54,8 @@ interface ChatThreadRow {
   workspace_id: string | null;
   persona_id: string;
   title: string;
+  purpose: ChatThreadPurpose;
+  side_question_of_thread_id: string | null;
   work_item_id: string | null;
   work_item_provider: string | null;
   work_item_title: string | null;
@@ -209,6 +214,8 @@ function mapThreadRow(row: ChatThreadRow): ChatThread {
     workspaceId: row.workspace_id ?? undefined,
     personaId: row.persona_id,
     title: row.title,
+    purpose: row.purpose,
+    sideQuestionOfThreadId: row.side_question_of_thread_id ?? undefined,
     workItemId: row.work_item_id ?? undefined,
     workItemProvider: parseWorkItemProvider(row.work_item_provider),
     workItemTitle: row.work_item_title ?? undefined,
@@ -255,6 +262,8 @@ export function listChatThreads(workspaceId: string | null, personaId?: string):
          t.workspace_id,
          t.persona_id,
          t.title,
+         t.purpose,
+         t.side_question_of_thread_id,
          t.work_item_id,
          t.work_item_provider,
          t.work_item_title,
@@ -311,6 +320,8 @@ export function listWorkItemChatThreads(workspaceId: string | null): ChatThread[
          t.workspace_id,
          t.persona_id,
          t.title,
+         t.purpose,
+         t.side_question_of_thread_id,
          t.work_item_id,
          t.work_item_provider,
          t.work_item_title,
@@ -366,6 +377,8 @@ export function getChatThread(threadId: string): ChatThread | null {
          t.workspace_id,
          t.persona_id,
          t.title,
+         t.purpose,
+         t.side_question_of_thread_id,
          t.work_item_id,
          t.work_item_provider,
          t.work_item_title,
@@ -416,6 +429,8 @@ export function findWorkItemChatThread(
          t.workspace_id,
          t.persona_id,
          t.title,
+         t.purpose,
+         t.side_question_of_thread_id,
          t.work_item_id,
          t.work_item_provider,
          t.work_item_title,
@@ -466,6 +481,28 @@ export function createChatThread(input: CreateChatThreadInput, threadId?: string
   const repoIds = input.repoIds ?? [];
   const activeRepoId = input.activeRepoId ?? repoIds[0] ?? null;
   const now = new Date().toISOString();
+  const purpose = input.purpose ?? 'normal';
+  const sideQuestionOfThreadId = input.sideQuestionOfThreadId?.trim() || null;
+
+  if (purpose === 'side-question') {
+    if (!sideQuestionOfThreadId) {
+      throw new Error('Side-question threads must reference their parent thread.');
+    }
+
+    const parent = db
+      .prepare('SELECT workspace_id FROM chat_threads WHERE id = ?')
+      .get(sideQuestionOfThreadId) as { workspace_id: string | null } | undefined;
+    if (!parent) {
+      throw new Error('The parent thread for this side question does not exist.');
+    }
+    if (parent.workspace_id !== (input.workspaceId ?? null)) {
+      throw new Error(
+        'Side-question threads must be created in the same workspace as their parent.',
+      );
+    }
+  } else if (sideQuestionOfThreadId) {
+    throw new Error('Only side-question threads can reference a parent thread.');
+  }
 
   db.prepare(
     `INSERT INTO chat_threads (
@@ -473,6 +510,8 @@ export function createChatThread(input: CreateChatThreadInput, threadId?: string
        workspace_id,
        persona_id,
        title,
+       purpose,
+       side_question_of_thread_id,
        work_item_id,
        work_item_provider,
        work_item_title,
@@ -481,12 +520,14 @@ export function createChatThread(input: CreateChatThreadInput, threadId?: string
        created_at,
        updated_at,
        last_message_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).run(
     id,
     input.workspaceId ?? null,
     input.personaId,
     title,
+    purpose,
+    sideQuestionOfThreadId,
     input.workItemId ?? null,
     input.workItemProvider ?? null,
     input.workItemTitle ?? null,

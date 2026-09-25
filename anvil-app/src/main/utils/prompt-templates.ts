@@ -15,11 +15,15 @@ export function loadPromptTemplate(
     : path.join(app.getAppPath(), 'prompts');
 
   const templatePath = path.join(promptsDir, templateName);
-  let template = fs.readFileSync(templatePath, 'utf-8');
+  const template = fs.readFileSync(templatePath, 'utf-8');
+  return renderPromptTemplate(template, variables);
+}
 
+/** Substitute {{variables}} into raw template text (used by editable agents). */
+export function renderPromptTemplate(template: string, variables: Record<string, string>): string {
+  let rendered = template;
   for (const [key, value] of Object.entries(variables)) {
-    template = template.replaceAll(`{{${key}}}`, value);
+    rendered = rendered.replaceAll(`{{${key}}}`, value);
   }
-
-  return template;
+  return rendered;
 }

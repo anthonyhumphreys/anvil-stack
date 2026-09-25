@@ -13,7 +13,7 @@ interface Props {
 
 function SourceBadge({ source }: { source: string }) {
   return (
-    <span className="rounded bg-bg-primary px-1 py-0.5 text-[10px] text-text-tertiary">
+    <span className="rounded bg-bg-primary px-1 py-0.5 text-eyebrow text-text-tertiary">
       {source}
     </span>
   );

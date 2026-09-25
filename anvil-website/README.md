@@ -55,6 +55,25 @@ NEXT_PUBLIC_ANVIL_REGISTRY_REPO_URL=https://github.com/your-org/anvil-registry
 NEXT_PUBLIC_ANVIL_CLOUD_REPO_URL=https://github.com/your-org/anvil-cloud
 ```
 
+## Staging and Production
+
+`ANVIL_DEPLOYMENT_ENV` selects the WorkOS and hosted backend used by the site. It accepts only
+`staging` or `production`; when unset it defaults to `staging` for existing local and staging
+deployments. It is independent of `NODE_ENV` and `VERCEL_ENV`, so a Vercel production slot can
+continue serving the staging WorkOS and Cloudflare backend until the production services are ready.
+
+Configure the selected environment's `ANVIL_STAGING_*` or `ANVIL_PRODUCTION_*` variables from
+`.env.example`. Production builds require all production WorkOS and backend values, reject WorkOS
+staging API keys, and never fall back to the legacy unscoped or staging variables. The production
+WorkOS redirect URI and backend origin must use HTTPS. Keep separate build-time values per
+environment: Next.js embeds the public WorkOS redirect URI when the site is built.
+
+The existing unscoped variables (`WORKOS_API_KEY`, `WORKOS_CLIENT_ID`,
+`WORKOS_COOKIE_PASSWORD`, `NEXT_PUBLIC_WORKOS_REDIRECT_URI`, `ANVIL_BACKEND_ORIGIN`,
+`ANVIL_HOSTED_KEY_ID`, and `ANVIL_HOSTED_SERVICE_SECRET`) remain staging-only fallbacks for older
+local and staging deployments. Migrate the current WorkOS and Cloudflare credentials into the
+staging-scoped names when convenient.
+
 ## Status
 
 The website is the public home for Anvil's OSS work. Keep it sharp, readable, and allergic to vendor theatre.

@@ -3,9 +3,9 @@ title: Chat, canvas, and agent runs
 navTitle: Chat and agent runs
 description: Threads, providers, permissions, attachments, plans, canvas artifacts, agent activity, and handoffs in Anvil Desktop Chat.
 product: Anvil Desktop
-section: Core workspace
+section: Guides
 journey: build
-order: 110
+order: 50
 ---
 
 # Chat, canvas, and agent runs

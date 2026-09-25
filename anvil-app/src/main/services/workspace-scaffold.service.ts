@@ -11,7 +11,7 @@ import {
 import { getDb } from '../db/database.js';
 import { scanForRepos } from './repo-scan.service.js';
 import { connectRepoPath } from './repo-connect.service.js';
-import { indexRepo } from './repo-index.service.js';
+import { enqueueIndexJobs, waitForRepoIndexJobs } from './repo-index-queue.service.js';
 import { addReposToWorkspace } from './workspace.service.js';
 
 interface WorkspaceScaffoldSessionRow {
@@ -183,14 +183,26 @@ async function syncWorkspaceScaffoldRepos(
     errorMessage: failures.length > 0 ? failures.join('\n') : null,
   });
 
-  const indexFailures: string[] = [];
+  // Indexing goes through the shared queue: mapped lands fast, enrichment
+  // continues on the LLM pool. The session stays 'indexing' until the jobs
+  // settle so the scaffold gate reflects real work.
   for (const repoId of connectedRepoIds) {
     try {
-      await indexRepo(repoId);
+      enqueueIndexJobs(repoId, { reason: 'scaffold' });
     } catch (err) {
-      indexFailures.push(
-        `${repoId}: ${err instanceof Error ? err.message : 'Failed to index repository.'}`,
+      failures.push(
+        `${repoId}: ${err instanceof Error ? err.message : 'Failed to queue indexing.'}`,
       );
+    }
+  }
+
+  const indexFailures: string[] = [];
+  for (const repoId of connectedRepoIds) {
+    const jobs = await waitForRepoIndexJobs(repoId);
+    for (const job of jobs) {
+      if (job.state === 'failed') {
+        indexFailures.push(`${repoId}: ${job.error ?? 'Indexing failed.'}`);
+      }
     }
   }
 

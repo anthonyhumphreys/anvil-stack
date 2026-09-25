@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle, XCircle, Loader2, ExternalLink } from 'lucide-react';
 import type { DocsProvider } from '../../../shared/types';
+import { SettingsLink } from '../shared/SettingsLink';
 
 interface ConnectorsStepProps {
   onNext: () => void;
@@ -65,7 +66,10 @@ export function ConnectorsStep({ onNext }: ConnectorsStepProps) {
                 ? 'Confluence Data Center'
                 : docsProvider === 'notion'
                   ? 'Notion via MCP'
-                  : 'Configure in Settings'}
+                  : null}
+              {docsProvider === 'none' && (
+                <SettingsLink to="delivery#docs">Configure in Settings</SettingsLink>
+              )}
             </p>
           </div>
           {isConfigured && (
@@ -93,7 +97,9 @@ export function ConnectorsStep({ onNext }: ConnectorsStepProps) {
 
         {!isConfigured && (
           <p className="text-xs text-text-tertiary">
-            You can configure your docs provider later in Settings.
+            You can{' '}
+            <SettingsLink to="delivery#docs">configure your docs provider in Settings</SettingsLink>{' '}
+            later.
           </p>
         )}
       </div>
@@ -101,7 +107,7 @@ export function ConnectorsStep({ onNext }: ConnectorsStepProps) {
       <div className="flex justify-end gap-3">
         <button
           onClick={onNext}
-          className="flex items-center gap-1 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90"
+          className="flex items-center gap-1 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90"
         >
           Continue
           <ExternalLink size={12} className="rotate-180" />

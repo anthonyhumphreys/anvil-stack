@@ -148,6 +148,14 @@ Anvil is flat by default. Tonal layering and one-pixel borders establish structu
 - **Focus:** visible accent ring and border shift.
 - **Error / Disabled:** semantic colour plus plain-language state; preserve entered content.
 
+#### Save model
+
+Settings and preference forms **autosave** — changes persist on change/blur
+with a quiet tick/spinner indicator ("Saved", "Saving…") rather than a page-level
+Save button. The exception is credential/secret forms, which use an explicit
+Save action so secrets are only transmitted deliberately. Do not add "Save"
+buttons to ordinary settings panels; do not autosave raw secrets on keystroke.
+
 ### Navigation
 
 Use familiar desktop rails and toolbars. Active workspace, route, and thread must remain unambiguous. Collapse lower-priority actions before shrinking labels into ambiguity.

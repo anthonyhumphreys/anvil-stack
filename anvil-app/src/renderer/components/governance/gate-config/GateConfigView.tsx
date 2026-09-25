@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2, Save } from 'lucide-react';
 import type { GateCriterion, GateId, GateCriterionType } from '../../../../shared/types';
 import { useWorkspace } from '../../../contexts/WorkspaceContext';
+import { ConfirmDialog } from '../../ui';
 import { GATE_ORDER } from '../gate-utils';
 import { getGateFallbackLabel } from '../../../../shared/types';
 
@@ -33,6 +34,7 @@ export function GateConfigView() {
   );
   const [expandedGates, setExpandedGates] = useState<Set<GateId>>(new Set(GATE_ORDER));
   const [dirty, setDirty] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   const fetchTemplates = useCallback(async () => {
     if (!workspaceId) return;
@@ -127,7 +129,6 @@ export function GateConfigView() {
 
   const handleReset = useCallback(async () => {
     if (!workspaceId) return;
-    if (!confirm('Clear all gate names and criteria? This cannot be undone.')) return;
     try {
       await window.anvil.lifecycle.resetGateTemplates(workspaceId);
       await fetchTemplates();
@@ -151,7 +152,7 @@ export function GateConfigView() {
       <div className="flex shrink-0 items-center justify-between border-b border-border bg-bg-secondary px-4 py-3">
         <h2 className="text-base font-semibold text-text-primary">Gate Templates</h2>
         <button
-          onClick={handleReset}
+          onClick={() => setConfirmingReset(true)}
           className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
         >
           <Trash2 size={14} />
@@ -249,7 +250,7 @@ export function GateConfigView() {
                             }
                             className={
                               criterion.required
-                                ? 'rounded-full bg-accent px-2 py-0.5 text-xs font-medium text-white'
+                                ? 'rounded-full bg-accent px-2 py-0.5 text-xs font-medium text-accent-foreground'
                                 : 'rounded-full border border-border px-2 py-0.5 text-xs font-medium text-text-secondary'
                             }
                           >
@@ -259,7 +260,7 @@ export function GateConfigView() {
                           {/* Delete button */}
                           <button
                             onClick={() => handleDeleteCriterion(gate, criterion.id)}
-                            className="rounded p-1 text-text-tertiary hover:text-red-400"
+                            className="rounded p-1 text-text-tertiary hover:text-error"
                             aria-label="Delete criterion"
                           >
                             <Trash2 size={14} />
@@ -289,12 +290,24 @@ export function GateConfigView() {
         <button
           onClick={handleSave}
           disabled={!dirty}
-          className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="flex items-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Save size={14} />
           Save Changes
         </button>
       </div>
+      <ConfirmDialog
+        open={confirmingReset}
+        title="Clear all gate names and criteria?"
+        description="This resets every gate template to its defaults and cannot be undone."
+        confirmLabel="Clear all"
+        tone="danger"
+        onConfirm={() => {
+          setConfirmingReset(false);
+          void handleReset();
+        }}
+        onCancel={() => setConfirmingReset(false)}
+      />
     </div>
   );
 }

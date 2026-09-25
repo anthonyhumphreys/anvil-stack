@@ -1,0 +1,23 @@
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  caret-color: var(--color-accent);
+  color-scheme: dark;
+}
+
+::selection {
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-accent) 34%, transparent);
+}
+
+* {
+  scrollbar-color: var(--color-border) transparent;
+  scrollbar-width: thin;
+}

@@ -194,7 +194,7 @@ function useSidebarActivityData(): SidebarActivityValue {
         nextItems.push({
           id: `scaffold-${activeScaffoldSession.id}`,
           feature: activeScaffoldSession.status === 'indexing' ? 'repos' : 'chat',
-          route: activeScaffoldSession.status === 'indexing' ? '/repos' : '/chat',
+          route: activeScaffoldSession.status === 'indexing' ? '/workspace' : '/chat',
           title:
             activeScaffoldSession.status === 'indexing'
               ? 'Workspace indexing'
@@ -214,7 +214,7 @@ function useSidebarActivityData(): SidebarActivityValue {
       nextItems.push({
         id: 'repos-indexing',
         feature: 'repos',
-        route: '/repos',
+        route: '/workspace',
         title: `${indexingRepos.length} repo${indexingRepos.length === 1 ? '' : 's'} indexing`,
         detail: indexingRepos.map((repo) => repo.name).join(', '),
         status: 'running',
@@ -223,7 +223,7 @@ function useSidebarActivityData(): SidebarActivityValue {
       nextItems.push({
         id: 'workspace-indexing',
         feature: 'repos',
-        route: '/repos',
+        route: '/workspace',
         title: 'Repository indexing pending',
         detail: featureAvailability.repoFeatureReason ?? 'Index repositories to unlock features.',
         status: 'warning',
@@ -235,7 +235,7 @@ function useSidebarActivityData(): SidebarActivityValue {
       nextItems.push({
         id: 'repos-error',
         feature: 'repos',
-        route: '/repos',
+        route: '/workspace',
         title: `${erroredRepos.length} repo${erroredRepos.length === 1 ? '' : 's'} need attention`,
         detail: erroredRepos.map((repo) => repo.name).join(', '),
         status: 'error',
@@ -387,7 +387,7 @@ export function SidebarActivityBadge({
 
   return (
     <span
-      className={`ml-auto inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${colour} ${
+      className={`ml-auto inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-eyebrow font-semibold ${colour} ${
         indicator.status === 'running' ? 'animate-pulse' : ''
       }`}
       title={indicator.label}
