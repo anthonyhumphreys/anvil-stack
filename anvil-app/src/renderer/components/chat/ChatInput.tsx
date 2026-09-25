@@ -40,6 +40,7 @@ const FILE_MENTION_SEARCH_LIMIT = 24;
 const FILE_MENTION_MENU_ID = 'chat-file-mention-menu';
 const SLASH_COMMAND_MENU_ID = 'chat-slash-command-menu';
 const SKILL_MENTION_MENU_ID = 'chat-skill-mention-menu';
+const COMPACT_FOOTER_MAX_WIDTH = 760;
 
 interface ActiveFileMention {
   start: number;
@@ -72,6 +73,8 @@ interface ChatComposerKeyEvent {
   shiftKey: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
+  isComposing?: boolean;
+  keyCode?: number;
 }
 
 interface ChatInputProps {
@@ -174,6 +177,7 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [sendFeedback, setSendFeedback] = useState('');
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [preparingAttachments, setPreparingAttachments] = useState(false);
   const [fileMention, setFileMention] = useState<ActiveFileMention | null>(null);
@@ -192,7 +196,9 @@ export function ChatInput({
   const [dragDepth, setDragDepth] = useState(0);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [syntaxHelpOpen, setSyntaxHelpOpen] = useState(false);
+  const [compactFooter, setCompactFooter] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerWidthRef = useRef<HTMLDivElement>(null);
   // Mirrors `value` for the async send path — lets the deferred clear bail out
   // when the user kept typing while the provider was deciding (H2).
   const valueRef = useRef(value);
@@ -201,6 +207,21 @@ export function ChatInput({
   const skipNextDraftSaveRef = useRef(false);
   const mentionRepoKey = mentionRepoIds.join('\0');
   const draggingFiles = dragDepth > 0;
+
+  useEffect(() => {
+    const composer = composerWidthRef.current;
+    if (!composer) return;
+
+    const updateLayout = (width: number) => setCompactFooter(width < COMPACT_FOOTER_MAX_WIDTH);
+    updateLayout(composer.getBoundingClientRect().width);
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) updateLayout(entry.contentRect.width);
+    });
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!contextMenuOpen) return;
@@ -267,22 +288,33 @@ export function ChatInput({
   const handleSend = useCallback(() => {
     const trimmed = value.trim();
     if ((!trimmed && attachments.length === 0) || disabled || preparingAttachments) return;
+    setSendFeedback('');
     const result = onSend(trimmed, attachments);
     if (result && typeof (result as Promise<unknown>).then === 'function') {
       // H2 — keep the draft until the provider accepts (or queues) the send;
       // a `false` resolution means the message was rejected.
       void Promise.resolve(result)
         .then((accepted) => {
-          if (accepted === false) return;
+          if (accepted === false) {
+            if (busy) setSendFeedback('The message was not accepted. Your draft is still here.');
+            return;
+          }
+          if (busy) setSendFeedback('Message added while the agent is working.');
           if (valueRef.current.trim() !== trimmed) return;
           clearComposer();
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (busy) setSendFeedback('Could not send the message. Your draft is still here.');
+        });
       return;
     }
-    if (result === false) return;
+    if (result === false) {
+      if (busy) setSendFeedback('The message was not accepted. Your draft is still here.');
+      return;
+    }
     clearComposer();
-  }, [value, attachments, disabled, preparingAttachments, onSend, clearComposer]);
+    if (busy) setSendFeedback('Message added while the agent is working.');
+  }, [value, attachments, disabled, preparingAttachments, onSend, clearComposer, busy]);
 
   const refreshComposerTriggers = useCallback(
     (nextValue: string, selectionStart: number | null) => {
@@ -305,6 +337,7 @@ export function ChatInput({
   const handleTextChange = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       const nextValue = event.target.value;
+      setSendFeedback('');
       setValue(nextValue);
       refreshComposerTriggers(nextValue, event.target.selectionStart);
     },
@@ -497,6 +530,8 @@ export function ChatInput({
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) return;
+
     if (fileMention && fileMentionResults.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -571,7 +606,16 @@ export function ChatInput({
       return;
     }
 
-    if (shouldSendChatMessageFromKey(e)) {
+    if (
+      shouldSendChatMessageFromKey({
+        key: e.key,
+        shiftKey: e.shiftKey,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        isComposing: e.nativeEvent.isComposing,
+        keyCode: e.nativeEvent.keyCode,
+      })
+    ) {
       e.preventDefault();
       handleSend();
     }
@@ -825,9 +869,9 @@ export function ChatInput({
 
   return (
     <div className="bg-transparent px-3 pb-3 pt-2 xl:px-5 xl:pb-4 xl:pt-3">
-      <div className="mx-auto w-full max-w-[1040px]">
+      <div ref={composerWidthRef} className="mx-auto w-full max-w-[1040px]">
         <div
-          className={`relative rounded-xl border bg-bg-secondary shadow-lg shadow-text-primary/10 transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
+          className={`relative rounded-xl border bg-bg-secondary transition-[border-color,background-color] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
             disabled && !busy ? 'opacity-60' : ''
           } ${
             draggingFiles
@@ -865,7 +909,7 @@ export function ChatInput({
                 </div>
               )}
               {attachmentError && (
-                <p className="mt-2 flex items-center gap-1.5 text-xs text-warning">
+                <p role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-warning">
                   <AlertCircle size={12} />
                   {attachmentError}
                 </p>
@@ -955,20 +999,25 @@ export function ChatInput({
                     : 'Ask anything, paste images, or drop files here...'
             }
             rows={1}
-            className="chat-composer-textarea block w-full resize-none bg-transparent px-4 pb-3 pt-4 text-[15px] leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
+            className="chat-composer-textarea block w-full resize-none bg-transparent px-4 pb-3 pt-4 text-sm leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
             style={{ maxHeight: '200px', minHeight: '72px' }}
           />
 
-          <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 px-2.5 pb-2 pt-1">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          <div
+            className={`flex min-h-12 flex-wrap items-center gap-x-2 gap-y-1 px-2.5 pb-2 pt-1 ${
+              compactFooter ? 'flex-col items-stretch' : 'justify-between'
+            }`}
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
               {leadingControls}
               <button
                 type="button"
                 onClick={() => void handleSelectAttachments()}
                 disabled={disabled || preparingAttachments}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
-                title="Attach files"
-                aria-label="Attach files"
+                title={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
+                aria-label={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
+                aria-busy={preparingAttachments}
               >
                 {preparingAttachments ? (
                   <Loader2 size={15} className="animate-spin" />
@@ -1010,25 +1059,33 @@ export function ChatInput({
               )}
             </div>
 
-            <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5">
-              {/* CH1 — the thread's access level is always visible here. */}
-              {(onCodexModeChange || onAccessOptionSelect) && (
-                <ChatAccessLevelChip
-                  value={codexMode}
-                  options={accessOptions}
-                  appliedMode={accessAppliedMode}
-                  onChange={onCodexModeChange}
-                  onSelectOption={onAccessOptionSelect}
-                  disabled={codexModeDisabled}
-                />
-              )}
+            <div
+              className={`flex min-w-0 flex-wrap items-center justify-end gap-1.5 ${
+                compactFooter ? 'w-full flex-col items-stretch' : 'ml-auto'
+              }`}
+            >
+              <div
+                className={`flex min-w-0 flex-wrap items-center gap-1.5 ${
+                  compactFooter ? 'w-full' : 'flex-none'
+                }`}
+              >
+                {/* CH1 — the thread's access level is always visible here. */}
+                {(onCodexModeChange || onAccessOptionSelect) && (
+                  <ChatAccessLevelChip
+                    value={codexMode}
+                    options={accessOptions}
+                    appliedMode={accessAppliedMode}
+                    onChange={onCodexModeChange}
+                    onSelectOption={onAccessOptionSelect}
+                    disabled={codexModeDisabled}
+                  />
+                )}
 
-              {(onModelChange ||
-                onExecutionStrategyChange ||
-                onReasoningChange ||
-                onCollaborationModeChange ||
-                onFastModeChange) &&
-                !busy && (
+                {(onModelChange ||
+                  onExecutionStrategyChange ||
+                  onReasoningChange ||
+                  onCollaborationModeChange ||
+                  onFastModeChange) && (
                   <RunSettingsDropdown
                     model={model}
                     modelProvider={modelProvider}
@@ -1044,46 +1101,59 @@ export function ChatInput({
                     fastMode={fastMode}
                     fastModeAvailable={fastModeAvailable}
                     onFastModeChange={onFastModeChange}
+                    compact={compactFooter}
                   />
                 )}
+              </div>
 
-              <VoiceInputButton
-                onTranscript={(text) => {
-                  setVoiceError(null);
-                  handleVoiceTranscript(text);
-                }}
-                onError={setVoiceError}
-                disabled={disabled}
-                colour={personaColour}
-              />
-
-              {busy ? (
-                <button
-                  type="button"
-                  onClick={onStop}
-                  className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80"
-                  title="Stop generation"
-                  aria-label="Stop generation"
-                >
-                  <Square size={12} fill="currentColor" />
-                  Stop
-                </button>
-              ) : (
+              <div className="ml-auto flex shrink-0 items-center justify-end gap-1.5">
+                <VoiceInputButton
+                  onTranscript={(text) => {
+                    setVoiceError(null);
+                    handleVoiceTranscript(text);
+                  }}
+                  onError={setVoiceError}
+                  disabled={disabled}
+                  colour={personaColour}
+                />
                 <button
                   type="button"
                   onClick={handleSend}
                   disabled={disabled || !hasContent || preparingAttachments}
-                  className="composer-send flex h-8 w-8 items-center justify-center rounded-lg transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
+                  className={`composer-send flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-[transform,filter,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30 ${
+                    busy
+                      ? 'border border-border bg-bg-tertiary text-text-primary'
+                      : 'text-bg-primary'
+                  }`}
                   style={{
-                    backgroundColor: hasContent
-                      ? personaColour
-                      : `color-mix(in srgb, ${personaColour} 25%, transparent)`,
+                    backgroundColor: busy
+                      ? undefined
+                      : hasContent
+                        ? personaColour
+                        : `color-mix(in srgb, ${personaColour} 25%, transparent)`,
                   }}
-                  aria-label="Send message"
+                  aria-label={
+                    busy ? 'Send a follow-up message while the agent is working' : 'Send message'
+                  }
+                  title={busy ? 'Send a message while the agent is working' : 'Send message'}
                 >
-                  <Send size={16} style={{ color: 'var(--color-bg-primary)' }} />
+                  <Send size={14} />
+                  {busy ? 'Follow up' : 'Send'}
                 </button>
-              )}
+                {busy && (
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    disabled={!onStop}
+                    className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/70 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Stop generation"
+                    aria-label="Stop current run"
+                  >
+                    <Square size={12} fill="currentColor" />
+                    Stop
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1100,70 +1170,77 @@ export function ChatInput({
         </div>
 
         <p id="chat-composer-keyboard-hint" className="sr-only">
-          Enter sends. Shift plus Enter adds a line.
+          {busy
+            ? 'Enter sends a follow-up message while the agent is working. Shift plus Enter adds a line.'
+            : 'Enter sends. Shift plus Enter adds a line.'}
           {mentionRepoIds.length > 0
             ? ' Type slash for commands, at for files, or dollar for skills.'
             : ' Type slash for commands or dollar for skills.'}
         </p>
-      </div>
 
-      {/* CH8 — syntax hint under the composer on empty threads. */}
-      {showSyntaxHint && (
-        <div className="mt-1.5 flex items-center justify-between gap-2 px-1">
-          <p className="text-xs text-text-tertiary">
-            <span className="font-mono">/</span> commands
-            {mentionRepoIds.length > 0 && (
-              <>
-                {' · '}
-                <span className="font-mono">@</span> files
-              </>
-            )}
-            {' · '}
-            <span className="font-mono">$</span> skills
-          </p>
-          <div ref={syntaxHelpRef} className="relative">
-            <button
-              type="button"
-              onClick={() => setSyntaxHelpOpen((open) => !open)}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-              aria-label="Composer syntax help"
-              aria-expanded={syntaxHelpOpen}
-            >
-              <CircleHelp size={13} />
-            </button>
-            {syntaxHelpOpen && (
-              <div
-                role="dialog"
-                aria-label="Composer syntax"
-                className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-overlay"
+        {/* CH8 — syntax hint under the composer on empty threads. */}
+        {showSyntaxHint && (
+          <div className="mt-1.5 flex items-center justify-between gap-2 px-1">
+            <p className="text-xs text-text-tertiary">
+              <span className="font-mono">/</span> commands
+              {mentionRepoIds.length > 0 && (
+                <>
+                  {' · '}
+                  <span className="font-mono">@</span> files
+                </>
+              )}
+              {' · '}
+              <span className="font-mono">$</span> skills
+            </p>
+            <div ref={syntaxHelpRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setSyntaxHelpOpen((open) => !open)}
+                className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                aria-label="Composer syntax help"
+                aria-expanded={syntaxHelpOpen}
               >
-                <p className="text-xs font-semibold text-text-primary">Composer shortcuts</p>
-                <ul className="mt-2 space-y-2 text-xs leading-5 text-text-secondary">
-                  <li>
-                    <span className="font-mono text-text-primary">/</span> — quick commands like{' '}
-                    <span className="font-mono">/new</span> or{' '}
-                    <span className="font-mono">/plan</span>
-                  </li>
-                  {mentionRepoIds.length > 0 && (
+                <CircleHelp size={13} />
+              </button>
+              {syntaxHelpOpen && (
+                <div
+                  role="dialog"
+                  aria-label="Composer syntax"
+                  className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-overlay"
+                >
+                  <p className="text-xs font-semibold text-text-primary">Composer shortcuts</p>
+                  <ul className="mt-2 space-y-2 text-xs leading-5 text-text-secondary">
                     <li>
-                      <span className="font-mono text-text-primary">@</span> — mention files in the
-                      selected repositories
+                      <span className="font-mono text-text-primary">/</span> — quick commands like{' '}
+                      <span className="font-mono">/new</span> or{' '}
+                      <span className="font-mono">/plan</span>
                     </li>
-                  )}
-                  <li>
-                    <span className="font-mono text-text-primary">$</span> — invoke a registered
-                    skill
-                  </li>
-                  <li>
-                    <span className="font-mono text-text-primary">Enter</span> sends,{' '}
-                    <span className="font-mono text-text-primary">Shift+Enter</span> adds a line
-                  </li>
-                </ul>
-              </div>
-            )}
+                    {mentionRepoIds.length > 0 && (
+                      <li>
+                        <span className="font-mono text-text-primary">@</span> — mention files in
+                        the selected repositories
+                      </li>
+                    )}
+                    <li>
+                      <span className="font-mono text-text-primary">$</span> — invoke a registered
+                      skill
+                    </li>
+                    <li>
+                      <span className="font-mono text-text-primary">Enter</span>{' '}
+                      {busy ? 'sends a follow-up message,' : 'sends,'}{' '}
+                      <span className="font-mono text-text-primary">Shift+Enter</span> adds a line
+                    </li>
+                  </ul>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {preparingAttachments ? 'Preparing attachments. ' : ''}
+        {sendFeedback}
+      </p>
     </div>
   );
 }
@@ -1209,7 +1286,7 @@ function ComposerAttachmentChip({
   onRemove: () => void;
 }) {
   return (
-    <div className="flex max-w-full items-center gap-2 rounded-lg border border-border-subtle bg-bg-tertiary/60 py-1 pl-1 pr-1.5 shadow-sm">
+    <div className="flex max-w-full items-center gap-2 rounded-lg border border-border-subtle bg-bg-tertiary/60 py-1 pl-1 pr-1.5">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md bg-bg-secondary">
         {previewDataUrl ? (
           <img src={previewDataUrl} alt="" className="h-full w-full object-cover" />
@@ -1669,7 +1746,7 @@ export function getSkillMentionResults(
 }
 
 export function shouldSendChatMessageFromKey(event: ChatComposerKeyEvent): boolean {
-  return event.key === 'Enter' && !event.shiftKey;
+  return event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229;
 }
 
 export function buildFileMentionOptionId(result: ChatFileMentionSearchResult): string {
@@ -1770,6 +1847,7 @@ function RunSettingsDropdown({
   fastMode,
   fastModeAvailable,
   onFastModeChange,
+  compact,
 }: {
   model: string;
   modelProvider: AgentProvider;
@@ -1785,6 +1863,7 @@ function RunSettingsDropdown({
   fastMode: boolean;
   fastModeAvailable: boolean;
   onFastModeChange?: (enabled: boolean) => void;
+  compact: boolean;
 }) {
   const availableOptions = REASONING_EFFORT_OPTIONS.filter((option) =>
     reasoningOptions.includes(option.level),
@@ -1829,20 +1908,32 @@ function RunSettingsDropdown({
   );
 
   return (
-    <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
+    <div
+      ref={containerRef}
+      className={`relative min-w-0 ${compact ? 'flex-1' : ''}`}
+      onKeyDown={handleKeyDown}
+    >
       <button
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="flex h-8 max-w-52 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-        title="Run settings"
+        className={`flex min-h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
+          compact ? 'w-full py-1' : 'h-8 max-w-64'
+        }`}
+        title={`Run settings: ${label}`}
         aria-label={`Run settings: ${label}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? RUN_SETTINGS_MENU_ID : undefined}
       >
         <SlidersHorizontal size={13} className="shrink-0 text-text-tertiary" />
-        <span className="truncate">{label}</span>
+        <span
+          className={
+            compact ? 'min-w-0 flex-1 whitespace-normal break-words text-left' : 'truncate'
+          }
+        >
+          {label}
+        </span>
         <ChevronDown
           size={12}
           className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}

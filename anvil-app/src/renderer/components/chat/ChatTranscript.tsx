@@ -84,10 +84,14 @@ export function ChatTranscript({
     <div className="relative min-h-0 flex-1">
       <div
         ref={messagesContainerRef}
-        className={`h-full overflow-y-auto ${centered ? 'flex' : ''}`}
+        role="region"
+        aria-label="Chat transcript"
+        tabIndex={0}
+        className={`h-full overflow-y-auto [scrollbar-gutter:stable] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${centered ? 'flex' : ''}`}
       >
         <div
-          className={`mx-auto w-full max-w-[1120px] px-4 xl:px-6 ${
+          data-chat-transcript-content
+          className={`mx-auto w-full max-w-[1040px] px-4 xl:px-6 ${
             centered
               ? 'flex min-h-full flex-1 items-center justify-center py-6'
               : 'flex flex-col pb-8 pt-6'

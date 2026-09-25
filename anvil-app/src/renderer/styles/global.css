@@ -545,6 +545,20 @@ html[data-theme='light'] {
   --shiki-token-link: #99c4de;
 }
 
+html[data-theme='light'] {
+  --shiki-color-text: #24292f;
+  --shiki-color-background: #f3f4f6;
+  --shiki-token-constant: #6639ba;
+  --shiki-token-string: #116329;
+  --shiki-token-comment: #57606a;
+  --shiki-token-keyword: #cf222e;
+  --shiki-token-parameter: #953800;
+  --shiki-token-function: #0550ae;
+  --shiki-token-string-expression: #116329;
+  --shiki-token-punctuation: #57606a;
+  --shiki-token-link: #0550ae;
+}
+
 /* Diff viewer overrides */
 .diff-viewer {
   --diff-added-bg: color-mix(in srgb, var(--color-bg-tertiary) 85%, var(--color-success));

@@ -85,6 +85,10 @@ export function ChatThreadRail({
     () => partitionThreads(visibleThreads),
     [visibleThreads],
   );
+  const { needsUserThreads, otherActiveThreads } = useMemo(
+    () => partitionNeedsUserThreads(activeThreads),
+    [activeThreads],
+  );
   const filtering = filter.trim().length > 0;
 
   useEffect(() => {
@@ -100,6 +104,7 @@ export function ChatThreadRail({
 
   const renderThread = (thread: ChatThread, compact: boolean) => {
     const active = thread.id === activeThreadId;
+    const editing = editingThreadId === thread.id;
     const liveStatus = liveThreadStatuses[thread.id];
     const displayState = getThreadDisplayState(thread, liveStatus, active);
     const settleAllowed = canSettleThread(thread, liveStatus);
@@ -109,120 +114,126 @@ export function ChatThreadRail({
       (thread.activeRepoId ? searchContext.repoNames.get(thread.activeRepoId) : undefined) ??
       searchContext.personaNames.get(thread.personaId);
 
+    const rowContent = (
+      <>
+        <ThreadStatusIcon state={displayState} />
+        <div className="min-w-0 flex-1">
+          {editing ? (
+            <input
+              autoFocus
+              value={draftTitle}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              onClick={(event) => event.stopPropagation()}
+              aria-label={`Rename ${thread.title}`}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  commitRename();
+                } else if (event.key === 'Escape') {
+                  event.preventDefault();
+                  setEditingThreadId(null);
+                }
+              }}
+              className="w-full rounded-lg border border-border bg-bg-secondary px-2 py-1 text-sm text-text-primary outline-none focus:border-accent/40 focus-visible:ring-2 focus-visible:ring-accent/40"
+            />
+          ) : (
+            <p
+              className="line-clamp-2 text-sm font-medium leading-snug text-text-primary"
+              title={thread.title}
+            >
+              {thread.title}
+            </p>
+          )}
+          {!compact && thread.summary && (
+            <p className="mt-1 line-clamp-1 text-xs leading-snug text-text-tertiary">
+              {thread.summary}
+            </p>
+          )}
+          {!compact && (
+            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              <span className={threadStateTextClass(displayState)}>
+                {threadStateLabel(displayState)}
+              </span>
+              {context && (
+                <>
+                  <span className="text-text-tertiary/60">·</span>
+                  <span className="max-w-full truncate text-text-tertiary">{context}</span>
+                </>
+              )}
+              {accessLevels && <ChatAccessLevelBadge level={accessLevel} />}
+            </div>
+          )}
+        </div>
+      </>
+    );
+
     return (
       <div
         key={thread.id}
-        className={`group relative rounded-lg transition-colors ${
+        className={`group flex min-w-0 rounded-lg transition-colors ${
           active ? 'bg-accent/10' : 'hover:bg-bg-tertiary/55'
         }`}
       >
-        <div
-          role="button"
-          tabIndex={0}
-          aria-current={active ? 'true' : undefined}
-          onClick={() => onSelectThread(thread.id)}
-          onKeyDown={(event) => {
-            if (!shouldSelectThreadFromKey(event)) return;
-            event.preventDefault();
-            onSelectThread(thread.id);
-          }}
-          className={`w-full cursor-pointer text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
-            compact ? 'px-2.5 py-2' : 'px-2.5 py-2.5'
-          }`}
-        >
-          <div className="flex items-start gap-2">
-            <ThreadStatusIcon state={displayState} />
-            <div className="min-w-0 flex-1">
-              {editingThreadId === thread.id ? (
-                <input
-                  autoFocus
-                  value={draftTitle}
-                  onChange={(event) => setDraftTitle(event.target.value)}
-                  onClick={(event) => event.stopPropagation()}
-                  aria-label="Thread title"
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      commitRename();
-                    } else if (event.key === 'Escape') {
-                      event.preventDefault();
-                      setEditingThreadId(null);
-                    }
-                  }}
-                  className="w-full rounded-lg border border-border bg-bg-secondary px-2 py-1 text-sm text-text-primary outline-none focus:border-accent/40"
-                />
-              ) : (
-                <p
-                  className={`truncate font-medium leading-snug text-text-primary ${
-                    compact ? 'text-xs' : 'text-sm'
-                  }`}
-                >
-                  {thread.title}
-                </p>
-              )}
-              {!compact && thread.summary && (
-                <p className="mt-0.5 line-clamp-1 text-xs leading-snug text-text-tertiary">
-                  {thread.summary}
-                </p>
-              )}
-              {!compact && (
-                <div className="mt-1.5 flex min-w-0 items-center gap-2 text-xs">
-                  <span className={threadStateTextClass(displayState)}>
-                    {threadStateLabel(displayState)}
-                  </span>
-                  {context && (
-                    <>
-                      <span className="text-text-tertiary/60">·</span>
-                      <span className="truncate text-text-tertiary">{context}</span>
-                    </>
-                  )}
-                  {accessLevels && <ChatAccessLevelBadge level={accessLevel} />}
-                </div>
-              )}
-            </div>
-            <div className={getThreadActionVisibilityClass()}>
-              {editingThreadId === thread.id ? (
-                <>
-                  <ThreadAction
-                    label="Save title"
-                    className="text-success hover:bg-success/10"
-                    onClick={commitRename}
-                  >
-                    <Check size={13} />
-                  </ThreadAction>
-                  <ThreadAction label="Cancel rename" onClick={() => setEditingThreadId(null)}>
-                    <X size={13} />
-                  </ThreadAction>
-                </>
-              ) : (
-                <>
-                  <ThreadAction
-                    label={compact ? 'Return to active threads' : 'Archive thread'}
-                    disabled={!compact && !settleAllowed}
-                    onClick={() => onSettleThread(thread.id, compact ? false : true)}
-                  >
-                    {compact ? <ArchiveRestore size={13} /> : <Archive size={13} />}
-                  </ThreadAction>
-                  <ThreadAction
-                    label="Rename thread"
-                    onClick={() => {
-                      setEditingThreadId(thread.id);
-                      setDraftTitle(thread.title);
-                    }}
-                  >
-                    <Pencil size={13} />
-                  </ThreadAction>
-                  <ThreadAction
-                    label="Delete thread"
-                    className="hover:bg-error/10 hover:text-error"
-                    onClick={() => setDeleteTarget(thread)}
-                  >
-                    <Trash2 size={13} />
-                  </ThreadAction>
-                </>
-              )}
-            </div>
+        {editing ? (
+          <div
+            className={`flex min-w-0 flex-1 items-start gap-2 ${compact ? 'px-2.5 py-2' : 'px-2.5 py-2.5'}`}
+          >
+            {rowContent}
           </div>
+        ) : (
+          <button
+            type="button"
+            aria-current={active ? 'true' : undefined}
+            title={thread.title}
+            onClick={() => onSelectThread(thread.id)}
+            className={`flex min-w-0 flex-1 cursor-pointer items-start gap-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 ${
+              compact ? 'px-2.5 py-2' : 'px-2.5 py-2.5'
+            }`}
+          >
+            {rowContent}
+          </button>
+        )}
+        <div className={getThreadActionVisibilityClass()}>
+          {editing ? (
+            <>
+              <ThreadAction
+                label="Save title"
+                className="text-success hover:bg-success/10"
+                onClick={commitRename}
+              >
+                <Check size={13} />
+              </ThreadAction>
+              <ThreadAction label="Cancel rename" onClick={() => setEditingThreadId(null)}>
+                <X size={13} />
+              </ThreadAction>
+            </>
+          ) : (
+            <>
+              <ThreadAction
+                label={compact ? 'Return to active threads' : 'Archive thread'}
+                disabled={!compact && !settleAllowed}
+                onClick={() => onSettleThread(thread.id, compact ? false : true)}
+              >
+                {compact ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+              </ThreadAction>
+              <ThreadAction
+                label="Rename thread"
+                onClick={() => {
+                  setEditingThreadId(thread.id);
+                  setDraftTitle(thread.title);
+                }}
+              >
+                <Pencil size={13} />
+              </ThreadAction>
+              <ThreadAction
+                label="Delete thread"
+                className="hover:bg-error/10 hover:text-error"
+                onClick={() => setDeleteTarget(thread)}
+              >
+                <Trash2 size={13} />
+              </ThreadAction>
+            </>
+          )}
         </div>
       </div>
     );
@@ -308,9 +319,27 @@ export function ChatThreadRail({
             </p>
           </div>
         ) : (
-          <div className="space-y-0.5">
-            {activeThreads.map((thread) => renderThread(thread, false))}
-          </div>
+          <>
+            {needsUserThreads.length > 0 && (
+              <section
+                className="mb-2 border-b border-border/60 pb-2"
+                aria-label="Threads waiting for you"
+              >
+                <div className="mb-1.5 flex items-center justify-between px-1">
+                  <h4 className="text-xs font-semibold text-text-primary">Waiting for you</h4>
+                  <span className="rounded-full bg-warning/10 px-1.5 py-0.5 text-xs font-medium tabular-nums text-warning">
+                    {needsUserThreads.length}
+                  </span>
+                </div>
+                <div className="space-y-0.5">
+                  {needsUserThreads.map((thread) => renderThread(thread, false))}
+                </div>
+              </section>
+            )}
+            <div className="space-y-0.5">
+              {otherActiveThreads.map((thread) => renderThread(thread, false))}
+            </div>
+          </>
         )}
 
         {settledThreads.length > 0 && (
@@ -362,12 +391,13 @@ function ThreadAction({
   const accessibleLabel = disabled ? 'Finish or resolve this thread before archiving it' : label;
   return (
     <button
+      type="button"
       onClick={(event) => {
         event.stopPropagation();
         onClick();
       }}
       disabled={disabled}
-      className={`rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
+      className={`rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:opacity-40 ${className}`}
       title={accessibleLabel}
       aria-label={accessibleLabel}
     >
@@ -413,6 +443,20 @@ export function partitionThreads(threads: ChatThread[]): {
   };
 }
 
+export function partitionNeedsUserThreads(threads: ChatThread[]): {
+  needsUserThreads: ChatThread[];
+  otherActiveThreads: ChatThread[];
+} {
+  return {
+    needsUserThreads: threads.filter(
+      (thread) => thread.attentionState === 'approval' || thread.attentionState === 'input',
+    ),
+    otherActiveThreads: threads.filter(
+      (thread) => thread.attentionState !== 'approval' && thread.attentionState !== 'input',
+    ),
+  };
+}
+
 export function getThreadDisplayState(
   thread: ChatThread,
   liveStatus: CodexSession['status'] | undefined,
@@ -446,7 +490,7 @@ export function shouldSelectThreadFromKey(event: Pick<KeyboardEvent, 'key' | 'ta
 }
 
 export function getThreadActionVisibilityClass(): string {
-  // Absolute overlay: keeping the buttons in flow would reserve ~80px of row
-  // width even while invisible, truncating every thread title.
-  return 'absolute right-1.5 top-1.5 flex items-center gap-0.5 rounded-lg border border-border/60 bg-bg-secondary/95 p-0.5 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover:opacity-100 group-focus-within:opacity-100';
+  // Reveal actions only while the row is hovered or keyboard-focused so titles
+  // keep their full width during scanning and never sit underneath the controls.
+  return 'pointer-events-none flex min-w-0 max-w-0 shrink-0 items-center gap-0.5 self-start overflow-hidden whitespace-nowrap p-0 opacity-0 transition-all group-hover:pointer-events-auto group-hover:max-w-[6.5rem] group-hover:rounded-lg group-hover:border group-hover:border-border/60 group-hover:bg-bg-secondary group-hover:p-0.5 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-w-[6.5rem] group-focus-within:rounded-lg group-focus-within:border group-focus-within:border-border/60 group-focus-within:bg-bg-secondary group-focus-within:p-0.5 group-focus-within:opacity-100';
 }

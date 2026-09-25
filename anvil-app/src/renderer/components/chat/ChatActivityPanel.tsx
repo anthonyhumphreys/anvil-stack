@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Bot, CheckCircle2, Target, X } from 'lucide-react';
 import type { AgentRunSummary, ChatGoalSnapshot } from '../../../shared/types';
 import type { ExecutionTopology } from '../../utils/execution-topology';
 import { ExecutionTopologyPanel } from './ExecutionTopologyPanel';
 import { formatGoalStatus } from './chat-view-utils';
+
+type ActivitySection = 'current' | 'history';
 
 /**
  * Right-rail "Activity" panel — extracted from ChatView (Phase 5 split).
@@ -43,8 +45,20 @@ export function AgentActivitySidebar({
   /** H13 — provider display name for goal copy. */
   agentLabel?: string;
 }) {
-  const [section, setSection] = useState<'current' | 'history'>('current');
+  const [section, setSection] = useState<ActivitySection>('current');
   const panelRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<Record<ActivitySection, HTMLButtonElement | null>>({
+    current: null,
+    history: null,
+  });
+
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const next = getActivitySectionForKey(section, event.key);
+    if (!next) return;
+    event.preventDefault();
+    setSection(next);
+    tabRefs.current[next]?.focus();
+  };
 
   useEffect(() => {
     panelRef.current?.focus();
@@ -53,6 +67,7 @@ export function AgentActivitySidebar({
   return (
     <div
       ref={panelRef}
+      id="chat-activity-panel"
       className="flex min-h-0 flex-1 flex-col focus:outline-none"
       role="region"
       aria-label="Agent activity"
@@ -87,15 +102,26 @@ export function AgentActivitySidebar({
           </button>
         </div>
         <div className="mt-3 flex items-center justify-between gap-2">
-          <div className="flex gap-1 rounded-lg bg-bg-primary/60 p-0.5" role="tablist">
+          <div
+            className="flex gap-1 rounded-lg bg-bg-primary/60 p-0.5"
+            role="tablist"
+            aria-label="Activity views"
+          >
             {(['current', 'history'] as const).map((item) => (
               <button
                 key={item}
+                ref={(element) => {
+                  tabRefs.current[item] = element;
+                }}
                 type="button"
                 role="tab"
+                id={`activity-${item}-tab`}
+                aria-controls="activity-panel-content"
                 aria-selected={section === item}
+                tabIndex={section === item ? 0 : -1}
                 onClick={() => setSection(item)}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
+                onKeyDown={handleTabKeyDown}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${
                   section === item
                     ? 'bg-bg-tertiary text-text-primary'
                     : 'text-text-tertiary hover:text-text-primary'
@@ -117,60 +143,85 @@ export function AgentActivitySidebar({
           />
         </div>
       </div>
-      {section === 'current' ? (
-        <ExecutionTopologyPanel topology={topology} onOpenThread={onOpenThread} onStop={onStop} />
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto py-2">
-          <p className="px-3 pb-2 text-xs text-text-tertiary">Recent in {workspaceName}</p>
-          {runs.length === 0 ? (
-            <p className="px-2 py-4 text-center text-sm text-text-tertiary">
-              No run history captured yet.
-            </p>
-          ) : (
-            runs.map((run) => (
-              <div
-                key={run.id}
-                className="mb-1 border-b border-border-subtle px-3 py-2.5 last:border-b-0"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium text-text-primary">
-                      {run.title}
+      <div
+        id="activity-panel-content"
+        role="tabpanel"
+        aria-labelledby={`activity-${section}-tab`}
+        tabIndex={0}
+        className="flex min-h-0 flex-1 flex-col focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+      >
+        {section === 'current' ? (
+          <ExecutionTopologyPanel topology={topology} onOpenThread={onOpenThread} onStop={onStop} />
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto py-2">
+            <p className="px-3 pb-2 text-xs text-text-tertiary">Recent in {workspaceName}</p>
+            {runs.length === 0 ? (
+              <p className="px-2 py-4 text-center text-sm text-text-tertiary">
+                No run history captured yet.
+              </p>
+            ) : (
+              runs.map((run) => (
+                <div
+                  key={run.id}
+                  className="mb-1 border-b border-border-subtle px-3 py-2.5 last:border-b-0"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-text-primary">
+                        {run.title}
+                      </div>
+                      <div className="mt-0.5 text-xs text-text-tertiary">
+                        {formatAgentRunSource(run.source)} · {formatTimestamp(run.startedAt)}
+                      </div>
                     </div>
-                    <div className="mt-0.5 text-xs text-text-tertiary">
-                      {formatAgentRunSource(run.source)} · {formatTimestamp(run.startedAt)}
-                    </div>
+                    <span className={`shrink-0 text-xs ${statusTone(run.status)}`}>
+                      {run.status}
+                    </span>
                   </div>
-                  <span className={`shrink-0 text-xs ${statusTone(run.status)}`}>{run.status}</span>
-                </div>
-                {run.summary && (
-                  <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-text-secondary">
-                    {run.summary}
-                  </p>
-                )}
-                <div className="mt-2 flex items-center gap-2 text-xs text-text-tertiary">
-                  <span>{run.changedFileCount} files</span>
-                  <span>{run.evidenceCount} evidence</span>
-                  {run.threadId && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenThread(run.threadId!);
-                        onClose();
-                      }}
-                      className="ml-auto font-medium text-accent hover:underline"
-                    >
-                      Open thread
-                    </button>
+                  {run.summary && (
+                    <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-text-secondary">
+                      {run.summary}
+                    </p>
                   )}
+                  <div className="mt-2 flex items-center gap-2 text-xs text-text-tertiary">
+                    <span>{run.changedFileCount} files</span>
+                    <span>{run.evidenceCount} evidence</span>
+                    {run.threadId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onOpenThread(run.threadId!);
+                          onClose();
+                        }}
+                        className="ml-auto font-medium text-accent hover:underline"
+                      >
+                        Open thread
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
+              ))
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
+}
+
+export function getActivitySectionForKey(
+  current: ActivitySection,
+  key: string,
+): ActivitySection | null {
+  if (key === 'ArrowRight' || key === 'ArrowDown') {
+    return current === 'current' ? 'history' : 'current';
+  }
+  if (key === 'ArrowLeft' || key === 'ArrowUp') {
+    return current === 'history' ? 'current' : 'history';
+  }
+  if (key === 'Home') return 'current';
+  if (key === 'End') return 'history';
+  return null;
 }
 
 function formatAgentRunSource(source: AgentRunSummary['source']): string {

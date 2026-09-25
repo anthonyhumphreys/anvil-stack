@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useId } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FileText,
@@ -99,7 +99,12 @@ export function ActivityGroupMessage({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const detailsId = useId();
   const summary = summarizeActivityEvents(events);
+  const surfaceEvents = events.flatMap((event, index) =>
+    isSurfaceEvent(event) ? [{ event, index }] : [],
+  );
+  const surfaceEventIndexes = new Set(surfaceEvents.map(({ index }) => index));
   const fileEdits = events.filter((event) => event.type === 'file_edit' && event.filePath);
   const failedCommands = events.filter(
     (event) =>
@@ -117,11 +122,13 @@ export function ActivityGroupMessage({
 
   return (
     <div className="message-bubble flex justify-start">
-      <div className="w-full rounded-lg border border-border-subtle bg-bg-secondary/45">
+      <div className="w-full border-y border-border-subtle bg-bg-secondary/25">
         <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45"
-          aria-label={expanded ? 'Collapse activity details' : 'Expand activity details'}
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
           <span className="mt-0.5 shrink-0 text-text-tertiary">
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -142,6 +149,17 @@ export function ActivityGroupMessage({
             )}
           </div>
         </button>
+        {surfaceEvents.length > 0 && (
+          <div
+            className="space-y-2 border-t border-border-subtle px-3 py-3"
+            role="region"
+            aria-label="Requests and structured updates"
+          >
+            {surfaceEvents.map(({ event, index }) => (
+              <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
+            ))}
+          </div>
+        )}
         {fileEdits.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 border-t border-border-subtle px-4 py-2">
             <button
@@ -166,13 +184,17 @@ export function ActivityGroupMessage({
             agentLabel={fileEdits[0]?.agentLabel ?? events[0]?.agentLabel}
           />
         )}
-        {expanded && (
-          <div className="max-h-96 space-y-2 overflow-auto border-t border-border-subtle p-3">
-            {events.map((event, index) => (
-              <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
-            ))}
-          </div>
-        )}
+        <div id={detailsId} hidden={!expanded}>
+          {expanded && (
+            <div className="max-h-96 space-y-2 overflow-auto border-t border-border-subtle p-3">
+              {events.map((event, index) =>
+                surfaceEventIndexes.has(index) ? null : (
+                  <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
+                ),
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -187,6 +209,7 @@ export function TurnWorkMessage({
 }) {
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
   const showDetails = shouldShowTurnWorkDetails(active, expandedOverride);
+  const detailsId = useId();
   const progressCount = items.filter((item) => item.kind === 'progress').length;
   const activityEvents = items
     .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
@@ -214,11 +237,10 @@ export function TurnWorkMessage({
       ? `${activityEvents.length} action${activityEvents.length === 1 ? '' : 's'}`
       : null,
   ].filter((part): part is string => Boolean(part));
-  const latestActivity = describeWorkItem(items[items.length - 1]);
+  const latestActivity = formatTurnWorkItemSummary(items[items.length - 1]);
 
-  // CH3: the work block stays collapsed when a turn finishes — the one-line
-  // summary (counts + latest activity) plus surfaced approvals/inputs carry
-  // the signal; expanding is the user's choice.
+  // Keep operational detail folded while the concise latest activity and any
+  // requests for the user remain visible.
   if (items.length === 0) return null;
 
   return (
@@ -229,7 +251,7 @@ export function TurnWorkMessage({
           onClick={() => setExpandedOverride(!showDetails)}
           className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:bg-bg-secondary/35 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-expanded={showDetails}
-          aria-label={showDetails ? 'Collapse work details' : 'Expand work details'}
+          aria-controls={detailsId}
         >
           <span className="shrink-0 text-text-tertiary">
             {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -252,7 +274,11 @@ export function TurnWorkMessage({
         </button>
 
         {surfaceItems.length > 0 && (
-          <div className="space-y-2 border-t border-border-subtle px-3 py-3">
+          <div
+            className="space-y-2 border-t border-border-subtle px-3 py-3"
+            role="region"
+            aria-label="Requests and structured updates"
+          >
             {surfaceItems.map((item, index) => (
               <ChatEventRenderer
                 key={buildActivityEventKey(item.event, index)}
@@ -262,42 +288,46 @@ export function TurnWorkMessage({
           </div>
         )}
 
-        {showDetails && (
-          <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
-            {items.map((item, index) => {
-              if (surfaceSourceIndexes.has(item.sourceIndex)) return null;
-              if (item.kind === 'progress') {
-                return (
-                  <div key={`progress-${item.sourceIndex}`} className="pr-2">
-                    <p className="mb-1 text-xs font-medium text-text-muted">Progress update</p>
-                    <div className="text-text-secondary">
-                      <MarkdownRenderer content={item.content} />
+        <div id={detailsId} hidden={!showDetails}>
+          {showDetails && (
+            <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
+              {items.map((item, index) => {
+                if (surfaceSourceIndexes.has(item.sourceIndex)) return null;
+                if (item.kind === 'progress') {
+                  return (
+                    <div key={`progress-${item.sourceIndex}`} className="pr-2">
+                      <p className="mb-1 text-xs font-medium text-text-muted">Progress update</p>
+                      <div className="max-w-[72ch] break-words text-text-secondary">
+                        <MarkdownRenderer content={item.content} />
+                      </div>
                     </div>
-                  </div>
-                );
-              }
+                  );
+                }
 
-              if (item.kind === 'thinking') {
+                if (item.kind === 'thinking') {
+                  return (
+                    <div
+                      key={`thinking-${item.sourceIndex}`}
+                      className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
+                    >
+                      <p className="mb-1 text-xs font-medium not-italic text-text-muted">
+                        Reasoning
+                      </p>
+                      <p className="whitespace-pre-wrap break-words">{item.content}</p>
+                    </div>
+                  );
+                }
+
                 return (
-                  <div
-                    key={`thinking-${item.sourceIndex}`}
-                    className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
-                  >
-                    <p className="mb-1 text-xs font-medium not-italic text-text-muted">Reasoning</p>
-                    <p className="whitespace-pre-wrap">{item.content}</p>
-                  </div>
+                  <ChatEventRenderer
+                    key={buildActivityEventKey(item.event, index)}
+                    event={item.event}
+                  />
                 );
-              }
-
-              return (
-                <ChatEventRenderer
-                  key={buildActivityEventKey(item.event, index)}
-                  event={item.event}
-                />
-              );
-            })}
-          </div>
-        )}
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -319,7 +349,7 @@ export function TurnActivityStatus({
       ? 'Preparing the next step'
       : state === 'responding'
         ? 'Writing the response'
-        : describeWorkItem(latestItem) || 'Running the next action';
+        : formatTurnWorkItemSummary(latestItem) || 'Running the next action';
 
   useEffect(() => {
     const update = () => {
@@ -358,10 +388,10 @@ export function TurnActivityStatus({
 }
 
 export function shouldShowTurnWorkDetails(
-  active: boolean,
+  _active: boolean,
   expandedOverride: boolean | null,
 ): boolean {
-  return expandedOverride ?? active;
+  return expandedOverride ?? false;
 }
 
 function WorkingDots({ compact = false }: { compact?: boolean }) {
@@ -374,19 +404,31 @@ function WorkingDots({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
+export function formatTurnWorkItemSummary(item: ChatTurnWorkItem | undefined): string {
   if (!item) return '';
-  if (item.kind === 'progress') return 'Processing the latest update';
+  if (item.kind === 'progress') return summarizeProgress(item.content);
   if (item.kind === 'thinking') return 'Reasoning through the next step';
 
   switch (item.event.type) {
     case 'command_exec':
-      return item.event.command ? 'Running a command' : 'Reading command output';
+      if (item.event.command && typeof item.event.exitCode === 'number') {
+        return item.event.exitCode === 0
+          ? `Completed ${compactWorkValue(item.event.command, 84)}`
+          : `Command failed (${item.event.exitCode}): ${compactWorkValue(item.event.command, 72)}`;
+      }
+      return item.event.command
+        ? `Running ${compactWorkValue(item.event.command, 84)}`
+        : 'Reading command output';
     case 'file_edit':
-      return 'Applying changes';
+      return item.event.filePath
+        ? `Edited ${compactWorkValue(item.event.filePath, 84)}`
+        : 'Edited files';
     case 'tool_call':
       if (item.event.toolStatus === 'failed') {
         return item.event.toolName ? `Tool failed: ${item.event.toolName}` : 'Tool failed';
+      }
+      if (item.event.toolStatus === 'completed') {
+        return item.event.toolName ? `Finished ${item.event.toolName}` : 'Finished a tool call';
       }
       return item.event.toolName ? `Using ${item.event.toolName}` : 'Using a tool';
     case 'approval_request':
@@ -394,7 +436,17 @@ function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
     case 'input_request':
       return 'Waiting for your input';
     case 'subagent_update':
-      return 'Coordinating agent work';
+      return item.event.subagent?.status === 'failed'
+        ? 'Agent work failed'
+        : item.event.subagent?.status === 'completed'
+          ? 'Agent work completed'
+          : 'Coordinating agent work';
+    case 'thread_status':
+      if (item.event.threadActiveFlags?.includes('waitingOnUserInput'))
+        return 'Waiting for your input';
+      if (item.event.threadActiveFlags?.includes('waitingOnApproval'))
+        return 'Waiting for approval';
+      return 'Thread status updated';
     case 'plan_update':
       return 'Updating the plan';
     case 'agent_ui_intent':
@@ -403,14 +455,57 @@ function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
         : 'Updating the plan';
     case 'agent_ui_intent_resolved':
       return 'Resuming after input';
+    case 'status':
+      return item.event.status === 'complete'
+        ? 'Work complete'
+        : item.event.status === 'error'
+          ? 'Work stopped with an error'
+          : item.event.status === 'thinking'
+            ? 'Preparing the next step'
+            : 'Running the next action';
     case 'goal_update':
+      return item.event.goal?.objective
+        ? `Goal: ${compactWorkValue(item.event.goal.objective, 84)}`
+        : 'Updating the goal';
     case 'goal_cleared':
-      return 'Updating the goal';
+      return 'Goal cleared';
     case 'error':
-      return 'Handling an error';
+      return item.event.errorMessage
+        ? `Error: ${compactWorkValue(item.event.errorMessage, 84)}`
+        : 'Handling an error';
     default:
       return 'Processing the latest activity';
   }
+}
+
+function summarizeProgress(content: string): string {
+  const plainText = content
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+    .replace(/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+)/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return compactWorkValue(plainText, 110) || 'Processing the latest update';
+}
+
+function compactWorkValue(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  const prefix = compact.slice(0, maxLength - 1);
+  const lastSpace = prefix.lastIndexOf(' ');
+  return `${prefix.slice(0, lastSpace > maxLength * 0.6 ? lastSpace : prefix.length).trimEnd()}…`;
+}
+
+function isSurfaceEvent(event: CodexEvent): boolean {
+  return (
+    event.type === 'approval_request' ||
+    event.type === 'input_request' ||
+    event.type === 'agent_ui_intent'
+  );
 }
 
 function formatElapsedTime(elapsedMs: number): string {
@@ -449,6 +544,7 @@ function FileEditEvent({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [copiedDiff, setCopiedDiff] = useState(false);
+  const detailsId = useId();
   const openInEditor = useOpenEventFileInEditor(filePath);
   const hasDiff = diff.trim().length > 0;
 
@@ -461,12 +557,15 @@ function FileEditEvent({
   }, [diff, hasDiff]);
 
   return (
-    <div className="rounded-xl border border-info/20 bg-bg-tertiary/60 shadow-sm overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-info/20 bg-bg-tertiary/60">
       <div className="flex items-center gap-1 px-2 py-1">
         <button
-          onClick={() => setExpanded(!expanded)}
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
           className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/80"
-          aria-label={expanded ? 'Collapse file edit details' : 'Expand file edit details'}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} edit details for ${filePath}`}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <FileDiff size={12} className="text-info" />
@@ -495,17 +594,19 @@ function FileEditEvent({
           </button>
         )}
       </div>
-      {expanded && (
-        <div className="border-t border-border-subtle">
-          {hasDiff ? (
-            <DiffViewer filePath={filePath} diff={diff} />
-          ) : (
-            <p className="px-4 py-3 text-xs text-text-tertiary">
-              Change applied. {agentLabel} did not provide a renderable patch for this event.
-            </p>
-          )}
-        </div>
-      )}
+      <div id={detailsId} hidden={!expanded}>
+        {expanded && (
+          <div className="border-t border-border-subtle">
+            {hasDiff ? (
+              <DiffViewer filePath={filePath} diff={diff} />
+            ) : (
+              <p className="px-4 py-3 text-xs text-text-tertiary">
+                Change applied. {agentLabel} did not provide a renderable patch for this event.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -576,7 +677,7 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
   };
 
   return (
-    <div className="rounded-xl border border-warning/30 bg-warning/5 shadow-sm overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
       <div className="flex items-start gap-2.5 px-4 py-3">
         <AlertCircle size={14} className="mt-0.5 shrink-0 text-warning" />
         <div className="min-w-0 flex-1">
@@ -1080,7 +1181,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
   };
 
   return (
-    <div className="overflow-hidden rounded-xl border border-warning/30 bg-warning/5 shadow-sm">
+    <div className="overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
       <div className="flex items-start gap-2.5 px-4 py-3">
         <ShieldAlert size={14} className="mt-0.5 shrink-0 text-warning" />
         <div className="min-w-0 flex-1">
@@ -1358,6 +1459,7 @@ function CommandExecEvent({
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedOutput, setCopiedOutput] = useState(false);
+  const detailsId = useId();
   const success = exitCode === 0 || exitCode === undefined;
 
   const copyCommand = useCallback(() => {
@@ -1377,12 +1479,15 @@ function CommandExecEvent({
   }, [output]);
 
   return (
-    <div className="rounded-xl border border-border-subtle bg-bg-tertiary/60 shadow-sm overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-border-subtle bg-bg-tertiary/60">
       <div className="flex items-center gap-1 px-2 py-1">
         <button
-          onClick={() => setExpanded(!expanded)}
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
           className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/80"
-          aria-label={expanded ? 'Collapse command output' : 'Expand command output'}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} command output for ${command || 'command'}`}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <Terminal size={12} className={success ? 'text-success' : 'text-error'} />
@@ -1414,33 +1519,44 @@ function CommandExecEvent({
           </button>
         )}
       </div>
-      {expanded && output && (
-        <pre className="max-h-60 overflow-auto border-t border-border-subtle p-4 text-xs font-mono text-text-secondary leading-relaxed">
-          {output}
-        </pre>
-      )}
+      <div id={detailsId} hidden={!expanded}>
+        {expanded && output && (
+          <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-border-subtle p-4 text-xs font-mono leading-relaxed text-text-secondary">
+            {output}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }
 
 function ToolCallEvent({ event }: { event: CodexEvent }) {
   const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
   const status = event.toolStatus ?? 'running';
   const toolName = event.toolName ?? 'Tool';
   const hasDetails = Boolean(event.toolOutput) || Boolean(event.toolInput);
 
   return (
     <div
-      className={`rounded-xl border shadow-sm overflow-hidden ${
+      className={`overflow-hidden rounded-lg border ${
         status === 'failed'
           ? 'border-error/30 bg-error/5'
           : 'border-border-subtle bg-bg-tertiary/60'
       }`}
     >
       <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/80"
-        aria-label={expanded ? 'Collapse tool call details' : 'Expand tool call details'}
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        disabled={!hasDetails}
+        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/80 disabled:cursor-default disabled:hover:bg-transparent"
+        aria-label={
+          hasDetails
+            ? `${expanded ? 'Collapse' : 'Expand'} details for ${toolName}`
+            : `${toolName} tool call`
+        }
+        aria-expanded={hasDetails ? expanded : undefined}
+        aria-controls={hasDetails ? detailsId : undefined}
       >
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         {status === 'failed' ? (
@@ -1462,10 +1578,15 @@ function ToolCallEvent({ event }: { event: CodexEvent }) {
           </span>
         )}
       </button>
-      {expanded && hasDetails && (
-        <pre className="max-h-40 overflow-auto border-t border-border-subtle p-4 text-xs font-mono text-text-tertiary leading-relaxed whitespace-pre-wrap">
-          {event.toolOutput ?? (event.toolInput ? JSON.stringify(event.toolInput, null, 2) : '')}
-        </pre>
+      {hasDetails && (
+        <div id={detailsId} hidden={!expanded}>
+          {expanded && (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words border-t border-border-subtle p-4 text-xs font-mono leading-relaxed text-text-tertiary">
+              {event.toolOutput ??
+                (event.toolInput ? JSON.stringify(event.toolInput, null, 2) : '')}
+            </pre>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1475,7 +1596,7 @@ export function PlanUpdateEvent({ plan }: { plan: NonNullable<CodexEvent['plan']
   const completed = plan.steps.filter((step) => step.status === 'completed').length;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-info/25 bg-info/5 shadow-sm">
+    <div className="overflow-hidden rounded-lg border border-info/25 bg-info/5">
       <div className="flex items-start gap-2.5 border-b border-info/15 px-4 py-3">
         <ListChecks size={14} className="mt-0.5 shrink-0 text-info" />
         <div className="min-w-0 flex-1">
@@ -1512,7 +1633,7 @@ export function PlanUpdateEvent({ plan }: { plan: NonNullable<CodexEvent['plan']
 
 function GoalUpdateEvent({ goal }: { goal: NonNullable<CodexEvent['goal']> }) {
   return (
-    <div className="rounded-xl border border-success/20 bg-success/5 px-4 py-3 shadow-sm">
+    <div className="rounded-lg border border-success/20 bg-success/5 px-4 py-3">
       <div className="flex items-start gap-2.5">
         <Target size={14} className="mt-0.5 shrink-0 text-success" />
         <div className="min-w-0">
@@ -1532,7 +1653,7 @@ function GoalUpdateEvent({ goal }: { goal: NonNullable<CodexEvent['goal']> }) {
 
 function GoalClearedEvent() {
   return (
-    <div className="rounded-xl border border-border-subtle bg-bg-tertiary/50 px-4 py-3 text-sm text-text-tertiary shadow-sm">
+    <div className="rounded-lg border border-border-subtle bg-bg-tertiary/50 px-4 py-3 text-sm text-text-tertiary">
       Goal cleared
     </div>
   );
@@ -1559,7 +1680,7 @@ function formatGoalStatus(status: NonNullable<CodexEvent['goal']>['status']): st
 
 function ErrorEvent({ message }: { message: string }) {
   return (
-    <div className="flex items-start gap-2.5 rounded-xl border border-error/20 bg-error/5 px-4 py-3 shadow-sm">
+    <div className="flex items-start gap-2.5 rounded-lg border border-error/20 bg-error/5 px-4 py-3">
       <AlertCircle size={14} className="mt-0.5 shrink-0 text-error" />
       <p className="text-sm text-error leading-relaxed">{message}</p>
     </div>
@@ -1585,26 +1706,32 @@ function StatusEvent({ status }: { status: string }) {
 
 export function ThinkingMessage({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
 
   return (
     <div className="message-bubble flex justify-start">
-      <div className="w-full max-w-4xl overflow-hidden rounded-xl border border-border-subtle bg-bg-tertiary/30 shadow-sm">
+      <div className="w-full max-w-4xl overflow-hidden rounded-lg border border-border-subtle bg-bg-tertiary/30">
         <button
-          onClick={() => setExpanded(!expanded)}
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
           className="flex w-full items-center gap-2.5 px-4 py-3 text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/50"
           aria-label={expanded ? 'Collapse thinking' : 'Expand thinking'}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <Sparkles size={12} className={content ? 'text-warning' : ''} />
           <span className="font-medium">Reasoning...</span>
         </button>
-        {expanded && content && (
-          <div className="border-t border-border-subtle px-4 py-3">
-            <p className="whitespace-pre-wrap text-sm leading-relaxed italic text-text-tertiary">
-              {content}
-            </p>
-          </div>
-        )}
+        <div id={detailsId} hidden={!expanded}>
+          {expanded && content && (
+            <div className="border-t border-border-subtle px-4 py-3">
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed italic text-text-tertiary">
+                {content}
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1628,7 +1755,7 @@ function MessageActionsToolbar({
   isUser,
 }: MessageActionsProps) {
   return (
-    <div className="message-actions flex items-center gap-0.5 rounded-lg border border-border-subtle bg-bg-secondary/90 px-1 py-0.5 shadow-sm backdrop-blur-sm">
+    <div className="message-actions flex items-center gap-0.5 rounded-lg border border-border-subtle bg-bg-secondary px-1 py-0.5 shadow-sm">
       <ActionButton
         onClick={onCopy}
         title={copied ? 'Copied!' : 'Copy to clipboard'}
@@ -1722,7 +1849,7 @@ export function AssistantMessage({
           <span>{label}</span>
           {active && <span className="font-normal text-text-tertiary">Responding</span>}
         </div>
-        <div className="px-1 text-sm leading-6 text-text-primary/90">
+        <div className="max-w-[72ch] break-words px-1 text-sm leading-[1.7] text-text-primary/90">
           <MarkdownRenderer content={display} />
         </div>
         <div className="message-actions left-0 mt-1">
@@ -1765,9 +1892,7 @@ export function UserMessage({
 
   return (
     <div className="message-bubble group flex justify-end">
-      <div
-        className={`relative ${collapsible ? 'w-full max-w-[50%]' : 'w-fit max-w-[50%] min-w-0'}`}
-      >
+      <div className="relative w-fit min-w-0 max-w-[72ch]">
         <p className="mb-1.5 flex items-center justify-end gap-1.5 text-right text-xs font-medium text-text-tertiary">
           You
           {delivery === 'queued' && (
@@ -1798,7 +1923,9 @@ export function UserMessage({
             {attachments && attachments.length > 0 && (
               <MessageAttachmentList attachments={attachments} />
             )}
-            <p className="whitespace-pre-wrap break-words leading-relaxed">{content}</p>
+            <p className="whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">
+              {content}
+            </p>
           </div>
           {collapsible && (
             <button

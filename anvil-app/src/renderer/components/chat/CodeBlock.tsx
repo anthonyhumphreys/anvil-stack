@@ -75,21 +75,28 @@ class CodeBlockErrorBoundary extends Component<
 }
 
 function FencedCodeBlock({ language, children }: { language: string; children: ReactNode }) {
-  const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null);
+  const [highlightedResult, setHighlightedResult] = useState<{
+    code: string;
+    language: string;
+    html: string;
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const code = extractText(children).trimEnd();
   const lineCount = code.split('\n').length;
   const isLong = lineCount > COLLAPSE_THRESHOLD;
+  const highlightedHtml =
+    highlightedResult?.code === code && highlightedResult.language === language
+      ? highlightedResult.html
+      : null;
 
   useEffect(() => {
     let cancelled = false;
-    setHighlightedHtml(null);
 
     const timeout = window.setTimeout(() => {
       highlightCode(code, language).then((html) => {
-        if (!cancelled) setHighlightedHtml(html);
+        if (!cancelled) setHighlightedResult({ code, language, html });
       });
     }, HIGHLIGHT_DEBOUNCE_MS);
 
@@ -132,26 +139,29 @@ function FencedCodeBlock({ language, children }: { language: string; children: R
       <div
         className={`overflow-auto bg-bg-tertiary ${isLong && !expanded ? 'max-h-[calc(1.5rem*20+1.5rem)]' : ''}`}
       >
-        {highlightedHtml ? (
-          <div className="flex text-xs leading-relaxed">
-            {/* Line numbers */}
-            <div className="select-none border-r border-border-subtle px-3 py-3 text-right font-mono text-text-tertiary">
-              {code.split('\n').map((_, i) => (
-                <div key={i}>{i + 1}</div>
-              ))}
-            </div>
-            {/* Highlighted code — HTML is pre-sanitized by highlightCode() with DOMPurify */}
-            <div
-              className="flex-1 overflow-auto px-3 py-3 font-mono [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0 [&_code]:!bg-transparent"
-              dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-            />
+        <div className="flex text-xs leading-relaxed">
+          {/* Keep the gutter mounted while code is streaming and syntax highlighting catches up. */}
+          <div
+            aria-hidden="true"
+            data-line-number-gutter
+            className="select-none whitespace-nowrap border-r border-border-subtle px-3 py-3 text-right font-mono leading-relaxed text-text-tertiary"
+          >
+            {Array.from({ length: lineCount }, (_, i) => (
+              <div key={i}>{i + 1}</div>
+            ))}
           </div>
-        ) : (
-          // Fallback while loading
-          <pre className="overflow-auto px-3 py-3 text-xs font-mono text-text-secondary">
-            <code>{code}</code>
-          </pre>
-        )}
+          <div className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden px-3 py-3 font-mono leading-relaxed [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!leading-relaxed [&_code]:!bg-transparent [&_code]:!leading-relaxed">
+            {/* Highlighted code — HTML is pre-sanitized by highlightCode() with DOMPurify */}
+            {highlightedHtml ? (
+              <div dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
+            ) : (
+              // Fallback while loading
+              <pre className="overflow-visible whitespace-pre bg-transparent p-0 text-xs font-mono leading-relaxed text-text-secondary">
+                <code>{code}</code>
+              </pre>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Collapse/expand footer */}

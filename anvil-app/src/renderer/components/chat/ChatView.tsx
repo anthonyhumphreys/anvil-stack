@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
 import type {
@@ -178,6 +178,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const panelsGroupRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
+  const scrollThreadRef = useRef(activeThreadId);
   const appliedItsmDefaultRef = useRef(false);
 
   const focusPanelsControl = useCallback(() => {
@@ -311,29 +312,48 @@ export function ChatView({ userRole }: ChatViewProps) {
       setShowJumpToLatest(!nearBottom);
     };
 
-    updateStickiness();
-    container.addEventListener('scroll', updateStickiness);
-    return () => container.removeEventListener('scroll', updateStickiness);
+    // Code highlighting, images, and the composer can resize after a stream
+    // update. Follow that growth only while the reader remains at the bottom.
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (shouldStickToBottomRef.current) {
+          container.scrollTop = container.scrollHeight;
+        }
+        setShowJumpToLatest(!isNearChatBottom(container));
+      });
+    });
+    observer.observe(container);
+    const content = container.querySelector('[data-chat-transcript-content]');
+    if (content) observer.observe(content);
+    container.addEventListener('scroll', updateStickiness, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      container.removeEventListener('scroll', updateStickiness);
+    };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (scrollThreadRef.current !== activeThreadId) {
+      scrollThreadRef.current = activeThreadId;
+      shouldStickToBottomRef.current = true;
+      setShowJumpToLatest(false);
+    }
     if (!shouldStickToBottomRef.current) return;
-    messagesEndRef.current?.scrollIntoView({
-      behavior: busy ? 'auto' : 'smooth',
-      block: 'end',
-    });
-  }, [busy, entries]);
-
-  useEffect(() => {
-    shouldStickToBottomRef.current = true;
-    setShowJumpToLatest(false);
-    messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
-  }, [activeThreadId]);
+    const container = messagesContainerRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [activeThreadId, busy, entries]);
 
   const handleJumpToLatest = useCallback(() => {
     shouldStickToBottomRef.current = true;
     setShowJumpToLatest(false);
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    const container = messagesContainerRef.current;
+    container?.scrollTo({
+      top: container.scrollHeight,
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
   }, []);
 
   useEffect(() => {
@@ -786,17 +806,22 @@ export function ChatView({ userRole }: ChatViewProps) {
                 : null);
             if (!composerNotice) return null;
             return (
-              <div className="mx-auto w-full max-w-[1120px] px-4 pb-2 xl:px-6">
-                <div className="flex items-center justify-between gap-3 rounded-lg border border-info/25 bg-info/5 px-3 py-2 text-xs text-text-secondary">
+              <div className="mx-auto w-full max-w-[1040px] px-4 pb-2 xl:px-6">
+                <div
+                  role="status"
+                  className="flex items-center justify-between gap-3 rounded-lg border border-info/25 bg-info/5 px-3 py-2 text-xs text-text-secondary"
+                >
                   <span className="min-w-0">{composerNotice}</span>
-                  <button
-                    type="button"
-                    onClick={() => setSendNotice(null)}
-                    className="shrink-0 rounded-md px-1.5 py-0.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                    aria-label="Dismiss notice"
-                  >
-                    Dismiss
-                  </button>
+                  {sendNotice && (
+                    <button
+                      type="button"
+                      onClick={() => setSendNotice(null)}
+                      className="shrink-0 rounded-md px-1.5 py-0.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                      aria-label="Dismiss notice"
+                    >
+                      Dismiss
+                    </button>
+                  )}
                 </div>
               </div>
             );

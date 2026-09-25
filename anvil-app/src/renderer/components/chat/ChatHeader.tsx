@@ -62,11 +62,16 @@ export function ChatHeader({
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
+            <h2
+              title={title}
+              className="truncate text-sm font-semibold tracking-tight text-text-primary"
+            >
               {title}
             </h2>
           </div>
-          <p className="truncate text-xs text-text-tertiary">{workspaceName}</p>
+          <p title={workspaceName} className="truncate text-xs text-text-tertiary">
+            {workspaceName}
+          </p>
         </div>
 
         {pullRequestThread && !scaffoldModeActive ? (
@@ -79,7 +84,18 @@ export function ChatHeader({
         ) : null}
 
         {scaffoldModeActive && (
-          <span className="rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
+          <span
+            title={
+              scaffoldStatus === 'indexing'
+                ? 'Indexing repos'
+                : scaffoldStatus === 'syncing'
+                  ? 'Syncing repos'
+                  : scaffoldStatus === 'failed'
+                    ? 'Scaffold needs attention'
+                    : 'Scaffolding'
+            }
+            className="max-w-40 truncate rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent"
+          >
             {scaffoldStatus === 'indexing'
               ? 'Indexing repos'
               : scaffoldStatus === 'syncing'
@@ -98,6 +114,7 @@ export function ChatHeader({
             onClick={onToggleItsmWorkbench}
             className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             title={itsmWorkbenchActive ? 'Hide ITSM workbench' : 'Show ITSM workbench'}
+            aria-label={itsmWorkbenchActive ? 'Hide ITSM workbench' : 'Show ITSM workbench'}
             aria-pressed={itsmWorkbenchActive}
           >
             <LifeBuoy size={13} />
@@ -120,7 +137,7 @@ export function ChatHeader({
                   value: 'activity',
                   label: (
                     <>
-                      Activity
+                      <span className="hidden min-[900px]:inline">Activity</span>
                       {activityRunningCount > 0 && (
                         <span className="rounded-full bg-bg-primary px-1.5 py-0.5 text-eyebrow font-semibold text-text-primary">
                           {activityRunningCount}
@@ -129,6 +146,7 @@ export function ChatHeader({
                     </>
                   ),
                   icon: Bot,
+                  title: 'Activity panel',
                   ariaLabel:
                     activityRunningCount > 0
                       ? `Activity panel, ${activityRunningCount} running`
@@ -138,7 +156,9 @@ export function ChatHeader({
                   value: 'canvas',
                   label: (
                     <>
-                      {canvasDetached ? 'Canvas (detached)' : 'Canvas'}
+                      <span className="hidden min-[900px]:inline">
+                        {canvasDetached ? 'Canvas (detached)' : 'Canvas'}
+                      </span>
                       {canvasCount > 0 && (
                         <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-eyebrow font-semibold text-accent">
                           {canvasCount}
@@ -153,8 +173,9 @@ export function ChatHeader({
                 },
                 {
                   value: 'preview',
-                  label: 'Preview',
+                  label: <span className="hidden min-[900px]:inline">Preview</span>,
                   icon: Globe,
+                  title: 'Preview panel',
                   disabled: !previewAvailable,
                   ariaLabel: 'Preview panel',
                 },
