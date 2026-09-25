@@ -6,28 +6,28 @@ import type { ChatErrorProviderOption } from './ChatErrorNotice';
 
 /**
  * CH5 — recovery wiring for ChatErrorNotice, extracted from ChatView.
- * Retry resends the last user message; provider switch picks the first
- * registered model option for the chosen provider.
+ * Recovery stages the last prompt in the composer for review; it never
+ * resends a command after a partial or uncertain run.
  */
 export function useChatErrorRecovery({
   entries,
   modelOptions,
   modelProvider,
-  onSend,
+  onReusePrompt,
   onModelChange,
 }: {
   entries: ChatEntry[];
   modelOptions: ChatModelOption[];
   modelProvider: AgentProvider;
-  onSend: (message: string, attachments?: ChatAttachment[]) => void;
+  onReusePrompt?: (message: string, attachments?: ChatAttachment[]) => void;
   onModelChange: (model: string, provider: AgentProvider) => void;
 }) {
   const onRetry = useCallback(() => {
     const lastUser = [...entries].reverse().find((entry) => entry.kind === 'user');
-    if (lastUser && lastUser.kind === 'user') {
-      onSend(lastUser.content, lastUser.attachments ?? []);
+    if (lastUser?.kind === 'user') {
+      onReusePrompt?.(lastUser.content, lastUser.attachments ?? []);
     }
-  }, [entries, onSend]);
+  }, [entries, onReusePrompt]);
 
   const onSwitchProvider = useCallback(
     (provider: AgentProvider) => {
@@ -48,5 +48,5 @@ export function useChatErrorRecovery({
     return options;
   }, [modelOptions, modelProvider]);
 
-  return { providers, onRetry, onSwitchProvider };
+  return { providers, onRetry, retryLabel: 'Reuse prompt', onSwitchProvider };
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
 import type {
@@ -18,10 +18,17 @@ import { ChatTranscript } from './ChatTranscript';
 import { deriveChatPaneState, type ChatPaneKind } from './ChatPaneState';
 import { ChatPersonaPicker } from './ChatPersonaPicker';
 import { ChatSidePanels } from './ChatSidePanels';
+import { ChatReviewFeedbackProvider } from './ChatReviewFeedbackContext';
+import {
+  formatChatReviewFeedbackPrompt,
+  type ChatReviewFeedbackDraft,
+} from './chat-review-feedback';
+import { useChatScroll } from './useChatScroll';
 import { buildFindingFollowUpPrompt } from './ChatFindingCard';
 import { PendingQuestionPrompt, WorkflowActionConfirmation } from './ChatPromptOverlays';
 import { useChatErrorRecovery } from './useChatErrorRecovery';
 import { composeChatTurns } from './chat-turns';
+import { buildChatRequestTargetDomId, getPendingQuestionTarget } from './chat-run-outcome';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
 import { WorkspaceReadinessStrip } from '../workspace/WorkspaceReadinessStrip';
@@ -47,11 +54,7 @@ import {
 } from './thread-access';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { agentProviderLabel } from '../../utils/agent-display';
-import {
-  buildMessageReusePrefill,
-  isNearChatBottom,
-  shouldFocusChatComposerFromKey,
-} from './chat-view-utils';
+import { buildMessageReusePrefill, shouldFocusChatComposerFromKey } from './chat-view-utils';
 
 // Re-exported for the existing `../ChatView` import path used by tests.
 export {
@@ -136,7 +139,12 @@ export function ChatView({ userRole }: ChatViewProps) {
     unshareArtifact,
     chatLayout,
     send,
-    steer,
+    followUp,
+    startSideQuestion,
+    returnFromSideQuestion,
+    sideQuestion,
+    historyReady,
+    threadViewSnapshot,
     setActiveRepos,
     switchPersona,
     interrupt,
@@ -166,10 +174,13 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const [showFindings, setShowFindings] = useState(true);
   const [dismissedFindings, setDismissedFindings] = useState<Set<number>>(new Set());
-  const [composerPrefill, setComposerPrefill] = useState<{ id: string; text: string } | null>(null);
+  const [composerPrefill, setComposerPrefill] = useState<{
+    id: string;
+    text: string;
+    attachments?: ChatAttachment[];
+  } | null>(null);
   const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
   const [fastMode, setFastMode] = useState(false);
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   // H2 — transient composer notice (queued-send ack / rejected send).
   const [sendNotice, setSendNotice] = useState<string | null>(null);
@@ -177,8 +188,6 @@ export function ChatView({ userRole }: ChatViewProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const panelsGroupRef = useRef<HTMLDivElement>(null);
-  const shouldStickToBottomRef = useRef(true);
-  const scrollThreadRef = useRef(activeThreadId);
   const appliedItsmDefaultRef = useRef(false);
 
   const focusPanelsControl = useCallback(() => {
@@ -211,6 +220,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   );
 
   const panels = useChatPanels({
+    threadId: activeThreadId,
     artifacts: activeArtifacts,
     hasVisiblePlanIntent: Boolean(visiblePlanIntent),
     planIntentCount: planIntents.length,
@@ -223,6 +233,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const {
     pendingWorkflowAction,
     confirmingWorkflowAction,
+    workflowActionError,
     handleComposerSend,
     confirmWorkflowAction,
     keepWorkflowPromptInChat,
@@ -300,60 +311,38 @@ export function ChatView({ userRole }: ChatViewProps) {
   const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
   const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
 
-  // --- Scroll stickiness -------------------------------------------------------
-
-  useEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-
-    const updateStickiness = () => {
-      const nearBottom = isNearChatBottom(container);
-      shouldStickToBottomRef.current = nearBottom;
-      setShowJumpToLatest(!nearBottom);
-    };
-
-    // Code highlighting, images, and the composer can resize after a stream
-    // update. Follow that growth only while the reader remains at the bottom.
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        if (shouldStickToBottomRef.current) {
-          container.scrollTop = container.scrollHeight;
-        }
-        setShowJumpToLatest(!isNearChatBottom(container));
-      });
-    });
-    observer.observe(container);
-    const content = container.querySelector('[data-chat-transcript-content]');
-    if (content) observer.observe(content);
-    container.addEventListener('scroll', updateStickiness, { passive: true });
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      container.removeEventListener('scroll', updateStickiness);
-    };
+  const pendingQuestionTarget = useMemo(
+    () => getPendingQuestionTarget(composedTurns),
+    [composedTurns],
+  );
+  const handleJumpToQuestion = useCallback((targetId: string) => {
+    const target = document.getElementById(buildChatRequestTargetDomId(targetId));
+    if (!target) return;
+    target.scrollIntoView({ block: 'center', behavior: 'auto' });
+    const control = target.querySelector<HTMLElement>(
+      'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), select:not([disabled])',
+    );
+    (control ?? target).focus({ preventScroll: true });
   }, []);
 
-  useLayoutEffect(() => {
-    if (scrollThreadRef.current !== activeThreadId) {
-      scrollThreadRef.current = activeThreadId;
-      shouldStickToBottomRef.current = true;
-      setShowJumpToLatest(false);
+  const { showJumpToLatest, jumpToLatest: handleJumpToLatest } = useChatScroll({
+    containerRef: messagesContainerRef,
+    scopeKey: activeThreadId ? `${activeWorkspace?.id ?? 'no-workspace'}:${activeThreadId}` : null,
+    contentVersion: entries,
+    contentReady: historyReady,
+  });
+  const feedbackThreadRef = useRef(activeThreadId);
+  feedbackThreadRef.current = activeThreadId;
+  const handleComposeFeedback = useCallback((draft: ChatReviewFeedbackDraft) => {
+    if (draft.threadId !== feedbackThreadRef.current) {
+      setSendNotice('Open the source conversation to add this review feedback.');
+      return;
     }
-    if (!shouldStickToBottomRef.current) return;
-    const container = messagesContainerRef.current;
-    if (container) container.scrollTop = container.scrollHeight;
-  }, [activeThreadId, busy, entries]);
-
-  const handleJumpToLatest = useCallback(() => {
-    shouldStickToBottomRef.current = true;
-    setShowJumpToLatest(false);
-    const container = messagesContainerRef.current;
-    container?.scrollTo({
-      top: container.scrollHeight,
-      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    setComposerPrefill({
+      id: `review-${crypto.randomUUID()}`,
+      text: formatChatReviewFeedbackPrompt(draft),
     });
+    setComposerFocusRequest((current) => current + 1);
   }, []);
 
   useEffect(() => {
@@ -405,27 +394,15 @@ export function ChatView({ userRole }: ChatViewProps) {
   const handleChatInputSend = useCallback(
     (message: string, attachments: ChatAttachment[] = []): Promise<boolean> => {
       if (busy) {
-        // H2 — the mid-turn path awaits the provider's disposition: 'steered'
-        // (Codex), 'sent' (ACP idle race), 'queued' (ACP busy), or null when
-        // the session could not accept the message at all. Queue depth itself
-        // renders from session.queuedSendCount below, so the notice only
-        // carries rejections.
-        return steer(message, attachments).then((result) => {
-          if (!result) {
-            setSendNotice(
-              `${agentLabel} could not accept that message — the session may have finished or stopped. Try again.`,
-            );
-            return false;
-          }
-          setSendNotice(null);
-          return true;
-        });
+        setSendNotice('Choose Guide current run or Queue next to send while the agent is working.');
+        return Promise.resolve(false);
       }
-      handleComposerSend(message, attachments);
-      setSendNotice(null);
-      return Promise.resolve(true);
+      return handleComposerSend(message, attachments).then((accepted) => {
+        if (accepted) setSendNotice(null);
+        return accepted;
+      });
     },
-    [busy, handleComposerSend, steer, agentLabel],
+    [busy, handleComposerSend],
   );
 
   const handleAccessOptionSelect = useCallback(
@@ -510,12 +487,23 @@ export function ChatView({ userRole }: ChatViewProps) {
     setComposerFocusRequest((prev) => prev + 1);
   }, []);
 
+  const availableChatModelOptions = useMemo(
+    () =>
+      activeThread?.purpose === 'side-question'
+        ? modelOptions.filter((option) => !isAcpAgentProvider(option.provider))
+        : modelOptions,
+    [activeThread?.purpose, modelOptions],
+  );
+
   // CH5 — classified error notice with retry / provider-switch recovery.
   const errorRecovery = useChatErrorRecovery({
     entries,
-    modelOptions,
+    modelOptions: availableChatModelOptions,
     modelProvider,
-    onSend: handleChatInputSend,
+    onReusePrompt: (message, attachments) => {
+      setComposerPrefill({ id: `recover-${Date.now()}`, text: message, attachments });
+      setComposerFocusRequest((current) => current + 1);
+    },
     onModelChange: handleModelChange,
   });
 
@@ -771,6 +759,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             error={error}
             errorProviders={errorRecovery.providers}
             onErrorRetry={errorRecovery.onRetry}
+            errorRetryLabel={errorRecovery.retryLabel}
             onSwitchProvider={errorRecovery.onSwitchProvider}
             messagesContainerRef={messagesContainerRef}
             messagesEndRef={messagesEndRef}
@@ -790,6 +779,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             <WorkflowActionConfirmation
               pending={pendingWorkflowAction}
               confirming={confirmingWorkflowAction}
+              error={workflowActionError}
               onConfirm={() => void confirmWorkflowAction()}
               onKeepInChat={keepWorkflowPromptInChat}
             />
@@ -826,24 +816,54 @@ export function ChatView({ userRole }: ChatViewProps) {
               </div>
             );
           })()}
+          {activeThread?.purpose === 'side-question' && (
+            <div
+              className="mx-4 mb-2 flex items-center justify-between gap-3 rounded-lg border border-border-subtle px-3 py-2 text-xs text-text-secondary"
+              role="status"
+            >
+              <span>Side question · Read-only conversation.</span>
+              {sideQuestion?.sideThreadId === activeThreadId && (
+                <button
+                  type="button"
+                  onClick={() => void returnFromSideQuestion()}
+                  className="shrink-0 rounded-md px-2 py-1 font-medium text-accent hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                >
+                  Back to main task
+                </button>
+              )}
+            </div>
+          )}
           <ChatInput
             onSend={handleChatInputSend}
+            followUpCapabilities={session?.capabilities?.followUp}
+            onFollowUp={followUp}
+            sideQuestionAvailable={
+              !scaffoldModeActive &&
+              !isWorkItemLayout &&
+              session?.capabilities?.readOnlySession === true &&
+              activeThread?.purpose !== 'side-question'
+            }
+            onSideQuestion={startSideQuestion}
             onStop={interrupt}
             disabled={chatInputDisabled || pendingWorkflowAction !== null}
             busy={busy}
             personaColour={personaColour}
             model={model}
             modelProvider={modelProvider}
-            modelOptions={modelOptions}
+            modelOptions={availableChatModelOptions}
             onModelChange={handleModelChange}
             reasoningLevel={reasoningLevel}
             reasoningOptions={reasoningOptions}
             onReasoningChange={handleReasoningChange}
             executionStrategy={executionStrategy}
             onExecutionStrategyChange={setExecutionStrategy}
-            codexMode={isItsmPersona ? 'read-only' : threadAccess.level}
+            codexMode={
+              isItsmPersona || activeThread?.purpose === 'side-question'
+                ? 'read-only'
+                : threadAccess.level
+            }
             onCodexModeChange={scaffoldModeActive ? undefined : threadAccess.setLevel}
-            codexModeDisabled={isItsmPersona}
+            codexModeDisabled={isItsmPersona || activeThread?.purpose === 'side-question'}
             accessOptions={accessOptions}
             accessAppliedMode={appliedAccessMode}
             onAccessOptionSelect={scaffoldModeActive ? undefined : handleAccessOptionSelect}
@@ -915,6 +935,14 @@ export function ChatView({ userRole }: ChatViewProps) {
             workspaceName: activeWorkspace?.name ?? 'workspace',
             runs: recentRuns,
             topology: executionTopology,
+            lastViewedAt:
+              threadViewSnapshot?.threadId === activeThreadId
+                ? threadViewSnapshot.lastViewedAt
+                : null,
+            attentionUpdatedAt: activeThread?.attentionUpdatedAt,
+            attentionState: activeThread?.attentionState,
+            pendingQuestionTarget,
+            onJumpToQuestion: handleJumpToQuestion,
             activeGoal,
             busy,
             goalOpen: panels.goalPopoverOpen,
@@ -953,8 +981,19 @@ export function ChatView({ userRole }: ChatViewProps) {
   );
 
   if (isDesignPersona) {
-    return <DesignProvider>{content}</DesignProvider>;
+    return (
+      <ChatReviewFeedbackProvider
+        threadId={activeThreadId}
+        onComposeFeedback={handleComposeFeedback}
+      >
+        <DesignProvider>{content}</DesignProvider>
+      </ChatReviewFeedbackProvider>
+    );
   }
 
-  return content;
+  return (
+    <ChatReviewFeedbackProvider threadId={activeThreadId} onComposeFeedback={handleComposeFeedback}>
+      {content}
+    </ChatReviewFeedbackProvider>
+  );
 }

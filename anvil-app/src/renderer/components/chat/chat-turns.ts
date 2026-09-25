@@ -49,6 +49,8 @@ export interface ComposedChatTurn {
   answer: IndexedChatEntry<AssistantEntry> | null;
   trailingWork: ChatTurnWorkItem[];
   usage?: ChatTurnUsage;
+  /** Provider-reported turn lifecycle. Missing means the provider supplied no terminal outcome. */
+  runOutcome?: NonNullable<CodexEvent['turnOutcome']>;
 }
 
 interface AssistantSegment {
@@ -112,6 +114,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
   const usage = emptyTurnUsage();
   const seenUsageIds = new Set<string>();
   let sawUsage = false;
+  let runOutcome: ComposedChatTurn['runOutcome'];
 
   for (const entry of entries) {
     if (entry.kind === 'user' || answerSourceIndexes.has(entry.sourceIndex)) continue;
@@ -128,6 +131,13 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     // H14 — `file_read` is a dead renderer surface; drop any legacy persisted
     // rows instead of rendering or counting them.
     if (entry.kind === 'event' && entry.event.type === 'file_read') continue;
+
+    // The outcome belongs to the turn summary rather than the operational
+    // activity list. Providers that do not report it leave it undefined.
+    if (entry.kind === 'event' && entry.event.type === 'turn_outcome') {
+      runOutcome = entry.event.turnOutcome;
+      continue;
+    }
 
     const target = entry.sourceIndex > answerEndSourceIndex ? trailingWork : work;
 
@@ -166,6 +176,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     answer: answerSegment?.entry ?? null,
     trailingWork,
     usage: sawUsage ? usage : undefined,
+    runOutcome,
   };
 }
 

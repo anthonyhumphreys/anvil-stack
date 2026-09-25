@@ -18,6 +18,7 @@ import type {
   ChatArtifactAnnotationInput,
   ChatArtifactAnnotationPatch,
   ChatAttachment,
+  ChatFollowUpRequest,
   ChatNavigationTarget,
   CompanionEvent,
   CompanionPolicyState,
@@ -28,6 +29,7 @@ import type {
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatSendOptions,
+  ChatThreadPurpose,
   CodexInputResponse,
   CodeReviewMode,
   CodeReviewScopeRef,
@@ -253,6 +255,7 @@ const api: AnvilAPI = {
     interrupt: (sessionId: string) => ipcRenderer.invoke('chat:interrupt', sessionId),
     steer: (sessionId: string, message: string, attachments?: ChatAttachment[]) =>
       ipcRenderer.invoke('chat:steer', sessionId, message, attachments),
+    followUp: (request: ChatFollowUpRequest) => ipcRenderer.invoke('chat:follow-up', request),
     forkProviderThread: (sourceThreadId: string, targetThreadId: string) =>
       ipcRenderer.invoke('chat:fork-provider-thread', sourceThreadId, targetThreadId),
     resolveApproval: (
@@ -293,6 +296,8 @@ const api: AnvilAPI = {
     createThread: (input: {
       workspaceId?: string | null;
       personaId: string;
+      purpose?: ChatThreadPurpose;
+      sideQuestionOfThreadId?: string;
       title?: string;
       workItemId?: string;
       workItemProvider?: WorkItemProvider;

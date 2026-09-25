@@ -102,6 +102,7 @@ describe('chat thread persistence', () => {
 
     expect(thread.title).toBe('Impact review');
     expect(thread.personaId).toBe('ba');
+    expect(thread.purpose).toBe('normal');
     expect(thread.repoIds).toEqual(['repo-1']);
 
     const listed = listChatThreads('ws-1', 'ba');
@@ -117,6 +118,107 @@ describe('chat thread persistence', () => {
     expect(updated?.title).toBe('Renamed impact review');
     expect(updated?.repoIds).toEqual([]);
     expect(updated?.activeRepoId).toBeUndefined();
+  });
+
+  it('persists side-question purpose and parent metadata through thread reads', () => {
+    const parent = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+    const sideQuestion = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Explain this implementation',
+      purpose: 'side-question',
+      sideQuestionOfThreadId: parent.id,
+    });
+
+    expect(sideQuestion).toMatchObject({
+      purpose: 'side-question',
+      sideQuestionOfThreadId: parent.id,
+    });
+    expect(getChatThread(sideQuestion.id)).toMatchObject({
+      purpose: 'side-question',
+      sideQuestionOfThreadId: parent.id,
+    });
+    expect(updateChatThread(sideQuestion.id, { title: 'What does this code do?' })).toMatchObject({
+      purpose: 'side-question',
+      sideQuestionOfThreadId: parent.id,
+    });
+    expect(listChatThreads('ws-1').find((thread) => thread.id === sideQuestion.id)).toMatchObject({
+      purpose: 'side-question',
+      sideQuestionOfThreadId: parent.id,
+    });
+  });
+
+  it('requires a same-workspace parent and preserves read-only purpose if that parent is deleted', () => {
+    inMemoryDb
+      .prepare(
+        `INSERT INTO workspaces (id, name, created_at, updated_at)
+         VALUES (?, ?, datetime('now'), datetime('now'))`,
+      )
+      .run('ws-2', 'Other workspace');
+
+    const parent = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+    const otherWorkspaceParent = createChatThread({ workspaceId: 'ws-2', personaId: 'coder' });
+    const titleOnlySideQuestion = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Side question',
+    });
+    expect(titleOnlySideQuestion.purpose).toBe('normal');
+
+    expect(() =>
+      createChatThread({
+        workspaceId: 'ws-1',
+        personaId: 'coder',
+        purpose: 'side-question',
+      }),
+    ).toThrow('must reference their parent thread');
+    expect(() =>
+      createChatThread({
+        workspaceId: 'ws-1',
+        personaId: 'coder',
+        purpose: 'side-question',
+        sideQuestionOfThreadId: 'missing-parent',
+      }),
+    ).toThrow('does not exist');
+    expect(() =>
+      createChatThread({
+        workspaceId: 'ws-1',
+        personaId: 'coder',
+        purpose: 'side-question',
+        sideQuestionOfThreadId: otherWorkspaceParent.id,
+      }),
+    ).toThrow('same workspace');
+    expect(() =>
+      createChatThread({
+        workspaceId: 'ws-1',
+        personaId: 'coder',
+        sideQuestionOfThreadId: parent.id,
+      }),
+    ).toThrow('Only side-question threads');
+
+    const sideQuestion = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      purpose: 'side-question',
+      sideQuestionOfThreadId: parent.id,
+    });
+
+    inMemoryDb.pragma('foreign_keys = ON');
+    try {
+      deleteChatThread(parent.id);
+    } finally {
+      inMemoryDb.pragma('foreign_keys = OFF');
+    }
+
+    expect(getChatThread(sideQuestion.id)).toMatchObject({
+      purpose: 'side-question',
+      sideQuestionOfThreadId: undefined,
+    });
+    expect(
+      inMemoryDb
+        .prepare('SELECT purpose, side_question_of_thread_id FROM chat_threads WHERE id = ?')
+        .get(sideQuestion.id),
+    ).toEqual({ purpose: 'side-question', side_question_of_thread_id: null });
   });
 
   it('persists generated summaries and locks titles on manual rename', () => {

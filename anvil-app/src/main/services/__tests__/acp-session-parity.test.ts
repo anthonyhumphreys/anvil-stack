@@ -61,6 +61,8 @@ const mocks = vi.hoisted(() => ({
     { capabilities: { canWriteFiles: boolean; canRunCommands: boolean; canReadFiles: boolean } }
   >,
   spawnResults: [] as FakeAcpProcess[],
+  timeline: [] as string[],
+  persistedEventTypes: [] as string[],
 }));
 
 vi.mock('node:child_process', () => ({
@@ -91,7 +93,20 @@ vi.mock('../dojo-analytics.service.js', () => ({
   recordDojoExecutionEvent: () => undefined,
 }));
 vi.mock('../companion-events.service.js', () => ({ emitCompanionEvent: () => undefined }));
-vi.mock('../chat-persistence.service.js', () => ({ updateChatThreadAttention: () => undefined }));
+vi.mock('../chat-persistence.service.js', () => ({
+  getChatThread: () => null,
+  updateChatThreadAttention: () => undefined,
+}));
+vi.mock('../chat-evidence.service.js', () => ({
+  saveChatEvent: vi.fn((_threadId, _repoId, _sessionId, event) => {
+    mocks.persistedEventTypes.push(event.type);
+    mocks.timeline.push(`persist:${event.type}`);
+  }),
+}));
+vi.mock('../agent-ui-intent.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../agent-ui-intent.service.js')>();
+  return { ...actual, getAgentUIIntent: vi.fn(() => null) };
+});
 vi.mock('../thread-assist.service.js', () => ({ scheduleThreadMetadataRefresh: () => undefined }));
 vi.mock('../notification.service.js', () => ({ notifyChatActivity: () => undefined }));
 vi.mock('../llm-gateway.service.js', () => ({
@@ -110,6 +125,9 @@ import {
   startSession,
   steerTurn,
   sendMessage,
+  followUpTurn,
+  interruptTurn,
+  stopSession,
   stopAllSessions,
   subscribeToCodexEvents,
   type CodexEventSubscription,
@@ -148,13 +166,26 @@ async function startAcpSession(
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+async function acknowledgeLastRequest(proc: FakeAcpProcess, method: string): Promise<void> {
+  await vi.waitFor(() => expect(writtenRequests(proc, method).length).toBeGreaterThan(0));
+  const request = writtenRequests(proc, method).at(-1);
+  expect(request?.id).toBeDefined();
+  emit(proc, { jsonrpc: '2.0', id: request?.id, result: {} });
+  await tick();
+}
+
 describe('ACP session parity (cursor/devin)', () => {
   let events: CodexEventSubscription[];
   let unsubscribe: () => void;
 
   beforeEach(() => {
     events = [];
-    unsubscribe = subscribeToCodexEvents((payload) => events.push(payload));
+    mocks.timeline = [];
+    mocks.persistedEventTypes = [];
+    unsubscribe = subscribeToCodexEvents((payload) => {
+      events.push(payload);
+      mocks.timeline.push(`event:${payload.event.type}`);
+    });
     mocks.settings.llmProvider = 'cursor';
     mocks.settings.codexMode = 'workspace-auto';
     mocks.personas['coder'] = {
@@ -178,6 +209,8 @@ describe('ACP session parity (cursor/devin)', () => {
     expect(session.capabilities).toMatchObject({
       resumable: true,
       midTurnSend: 'queue',
+      followUp: { guide: false, queue: true },
+      readOnlySession: false,
       goals: false,
       accessModes: ['ask', 'agent', 'plan'],
     });
@@ -262,6 +295,8 @@ describe('ACP session parity (cursor/devin)', () => {
 
     // Turn completes → queued message is delivered as a new prompt.
     emit(proc, { jsonrpc: '2.0', id: 't1', result: { stopReason: 'end_turn' } });
+    await acknowledgeLastRequest(proc, 'session/set_mode');
+    await acknowledgeLastRequest(proc, 'session/set_config_option');
     await tick();
     await tick();
 
@@ -272,6 +307,268 @@ describe('ACP session parity (cursor/devin)', () => {
     expect(
       events.some((e) => e.event.type === 'queue_update' && e.event.queuedSendCount === 0),
     ).toBe(true);
+  });
+
+  it('deduplicates explicit queue retries and rejects a reused requestId with changed content', async () => {
+    const proc = createFakeAcpProcess();
+    const session = await startAcpSession(proc);
+    await sendMessage(session.id, 'active work', [], {});
+
+    const request = {
+      sessionId: session.id,
+      requestId: 'follow-up-1',
+      intent: 'queue' as const,
+      message: 'run the next task',
+      attachments: [],
+    };
+    expect(await followUpTurn(request)).toMatchObject({ status: 'queued', queueDepth: 1 });
+    expect(await followUpTurn(request)).toMatchObject({ status: 'queued', queueDepth: 1 });
+    expect(await followUpTurn({ ...request, message: 'different content' })).toMatchObject({
+      status: 'failed',
+      queueDepth: 1,
+    });
+    expect(writtenRequests(proc, 'session/prompt')).toHaveLength(1);
+
+    emit(proc, { jsonrpc: '2.0', id: 't-follow-up', result: { stopReason: 'end_turn' } });
+    await acknowledgeLastRequest(proc, 'session/set_mode');
+    await acknowledgeLastRequest(proc, 'session/set_config_option');
+    await tick();
+    await tick();
+
+    const prompts = writtenRequests(proc, 'session/prompt');
+    expect(prompts).toHaveLength(2);
+    expect(JSON.stringify(prompts[1].params)).toContain('run the next task');
+    expect(
+      events
+        .filter((item) => item.event.type === 'follow_up_delivery')
+        .map((item) => item.event.followUpStatus),
+    ).toEqual(['queued', 'delivered']);
+
+    expect(await followUpTurn(request)).toMatchObject({ status: 'delivered', queueDepth: 0 });
+    expect(writtenRequests(proc, 'session/prompt')).toHaveLength(2);
+  });
+
+  it('fails queued work on interruption and does not start it automatically', async () => {
+    const proc = createFakeAcpProcess();
+    const session = await startAcpSession(proc);
+    await sendMessage(session.id, 'active work', [], {});
+    const request = {
+      sessionId: session.id,
+      requestId: 'follow-up-after-interrupt',
+      intent: 'queue' as const,
+      message: 'next task',
+    };
+    await followUpTurn(request);
+
+    emit(proc, { jsonrpc: '2.0', id: 't-cancelled', result: { stopReason: 'cancelled' } });
+    await tick();
+
+    expect(writtenRequests(proc, 'session/prompt')).toHaveLength(1);
+    expect(
+      events.find(
+        (item) =>
+          item.event.type === 'follow_up_delivery' &&
+          item.event.followUpRequestId === request.requestId &&
+          item.event.followUpStatus === 'failed',
+      )?.event.followUpError,
+    ).toContain('interrupted');
+  });
+
+  it('fails queued follow-ups when the active ACP prompt is rejected', async () => {
+    const proc = createFakeAcpProcess();
+    const session = await startAcpSession(proc);
+    await sendMessage(session.id, 'active work', [], {});
+    const activePrompt = writtenRequests(proc, 'session/prompt').at(-1);
+    expect(activePrompt?.id).toBeDefined();
+    const request = {
+      sessionId: session.id,
+      requestId: 'follow-up-active-prompt-rejected',
+      intent: 'queue' as const,
+      message: 'next task',
+    };
+    await followUpTurn(request);
+
+    emit(proc, {
+      jsonrpc: '2.0',
+      id: activePrompt?.id,
+      error: { message: 'active prompt rejected' },
+    });
+
+    expect(await followUpTurn(request)).toMatchObject({ status: 'failed' });
+    expect(writtenRequests(proc, 'session/prompt')).toHaveLength(1);
+    expect(
+      events.some(
+        (item) => item.event.type === 'turn_outcome' && item.event.turnOutcome === 'failed',
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps queued work if an interrupt could not be sent and drains it after completion', async () => {
+    const proc = createFakeAcpProcess();
+    const session = await startAcpSession(proc);
+    await sendMessage(session.id, 'active work', [], {});
+    const request = {
+      sessionId: session.id,
+      requestId: 'follow-up-cancel-write-failed',
+      intent: 'queue' as const,
+      message: 'next task',
+    };
+    await followUpTurn(request);
+
+    proc.stdin.writable = false;
+    expect(() => interruptTurn(session.id)).toThrow('could not accept the cancel request');
+    expect(await followUpTurn(request)).toMatchObject({ status: 'queued', queueDepth: 1 });
+
+    proc.stdin.writable = true;
+    emit(proc, { jsonrpc: '2.0', id: 't-not-cancelled', result: { stopReason: 'end_turn' } });
+    await acknowledgeLastRequest(proc, 'session/set_mode');
+    await acknowledgeLastRequest(proc, 'session/set_config_option');
+    await tick();
+    expect(writtenRequests(proc, 'session/prompt')).toHaveLength(2);
+    expect(await followUpTurn(request)).toMatchObject({ status: 'delivered' });
+  });
+
+  it('fails queued follow-up without sending it when ACP rejects mode setup', async () => {
+    const proc = createFakeAcpProcess();
+    const session = await startAcpSession(proc);
+    await sendMessage(session.id, 'active work', [], {});
+    const request = {
+      sessionId: session.id,
+      requestId: 'follow-up-mode-rejected',
+      intent: 'queue' as const,
+      message: 'next task',
+    };
+    await followUpTurn(request);
+
+    emit(proc, {
+      jsonrpc: '2.0',
+      id: 't-before-mode-rejection',
+      result: { stopReason: 'end_turn' },
+    });
+    await vi.waitFor(() => expect(writtenRequests(proc, 'session/set_mode').length).toBe(2));
+    const modeRequest = writtenRequests(proc, 'session/set_mode').at(-1);
+    expect(modeRequest?.id).toBeDefined();
+    emit(proc, {
+      jsonrpc: '2.0',
+      id: modeRequest?.id,
+      error: { message: 'mode cannot be changed' },
+    });
+    await tick();
+
+    expect(await followUpTurn(request)).toMatchObject({ status: 'failed' });
+    expect(writtenRequests(proc, 'session/prompt')).toHaveLength(1);
+  });
+
+  it('settles a dequeued follow-up if the session stops while provider setup awaits an ack', async () => {
+    const proc = createFakeAcpProcess();
+    const session = await startAcpSession(proc);
+    await sendMessage(session.id, 'active work', [], {});
+    const request = {
+      sessionId: session.id,
+      requestId: 'follow-up-stop-race',
+      intent: 'queue' as const,
+      message: 'next task',
+    };
+    await followUpTurn(request);
+
+    emit(proc, { jsonrpc: '2.0', id: 't-before-stop', result: { stopReason: 'end_turn' } });
+    await vi.waitFor(() => expect(writtenRequests(proc, 'session/set_mode').length).toBe(2));
+    stopSession(session.id);
+    await tick();
+
+    expect(
+      events.some(
+        (item) =>
+          item.event.type === 'follow_up_delivery' &&
+          item.event.followUpRequestId === request.requestId &&
+          item.event.followUpStatus === 'failed' &&
+          item.event.followUpError?.includes('session stopped'),
+      ),
+    ).toBe(true);
+    expect(writtenRequests(proc, 'session/prompt')).toHaveLength(1);
+  });
+
+  it('updates a delivered receipt if the provider later rejects its prompt', async () => {
+    const proc = createFakeAcpProcess();
+    const session = await startAcpSession(proc);
+    await sendMessage(session.id, 'active work', [], {});
+    const request = {
+      sessionId: session.id,
+      requestId: 'follow-up-provider-error',
+      intent: 'queue' as const,
+      message: 'next task',
+    };
+    await followUpTurn(request);
+    const laterRequest = {
+      ...request,
+      requestId: 'follow-up-after-provider-error',
+      message: 'task after that',
+    };
+    await followUpTurn(laterRequest);
+
+    emit(proc, { jsonrpc: '2.0', id: 't-complete', result: { stopReason: 'end_turn' } });
+    await acknowledgeLastRequest(proc, 'session/set_mode');
+    await acknowledgeLastRequest(proc, 'session/set_config_option');
+    await tick();
+    await tick();
+    const queuedPrompt = writtenRequests(proc, 'session/prompt').at(-1);
+    expect(queuedPrompt?.id).toBeDefined();
+    emit(proc, {
+      jsonrpc: '2.0',
+      id: queuedPrompt?.id,
+      error: { message: 'prompt rejected' },
+    });
+
+    expect(await followUpTurn(request)).toMatchObject({ status: 'failed' });
+    expect(await followUpTurn(laterRequest)).toMatchObject({ status: 'failed' });
+    expect(writtenRequests(proc, 'session/prompt')).toHaveLength(2);
+    expect(
+      events.some(
+        (item) =>
+          item.event.type === 'follow_up_delivery' &&
+          item.event.followUpRequestId === request.requestId &&
+          item.event.followUpStatus === 'failed' &&
+          item.event.followUpError?.includes('prompt rejected'),
+      ),
+    ).toBe(true);
+  });
+
+  it('persists terminal outcomes before the next queued task is dispatched', async () => {
+    const proc = createFakeAcpProcess();
+    const session = await startAcpSession(proc, { threadId: 'thread-terminal' });
+    await sendMessage(session.id, 'active work', [], {});
+    await followUpTurn({
+      sessionId: session.id,
+      requestId: 'follow-up-terminal-order',
+      intent: 'queue',
+      message: 'next task',
+    });
+
+    emit(proc, { jsonrpc: '2.0', id: 't-terminal-order', result: { stopReason: 'end_turn' } });
+    await acknowledgeLastRequest(proc, 'session/set_mode');
+    await acknowledgeLastRequest(proc, 'session/set_config_option');
+    await tick();
+    await tick();
+
+    const persistedAt = mocks.timeline.indexOf('persist:turn_outcome');
+    const deliveredAt = mocks.timeline.indexOf('event:turn_outcome');
+    const followUpAt = mocks.timeline.lastIndexOf('event:follow_up_delivery');
+    expect(persistedAt).toBeGreaterThanOrEqual(0);
+    expect(persistedAt).toBeLessThan(deliveredAt);
+    expect(deliveredAt).toBeLessThan(followUpAt);
+    expect(mocks.persistedEventTypes).toContain('follow_up_delivery');
+    expect(events.find((item) => item.event.type === 'follow_up_delivery')?.event.persistedBy).toBe(
+      'main',
+    );
+  });
+
+  it('rejects read-only ACP sessions because ask mode cannot enforce the contract', async () => {
+    const start = startSession(['/repo'], ['r1'], 'coder', {
+      provider: 'cursor',
+      codexMode: 'read-only',
+    });
+    await expect(start).rejects.toThrow('cannot guarantee a provider-enforced read-only session');
+    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
   });
 
   it('sends immediately when the ACP session is idle', async () => {

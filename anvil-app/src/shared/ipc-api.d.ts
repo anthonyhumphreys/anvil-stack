@@ -48,6 +48,8 @@ import type {
   BaRepoLink,
   BaSession,
   ChatAttachment,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
   ChatNavigationTarget,
   WorkflowNavigationTarget,
   ChatAttachmentInput,
@@ -65,6 +67,7 @@ import type {
   ChatPlanSnapshot,
   ChatSendOptions,
   ChatThread,
+  ChatThreadPurpose,
   ChatStartOptions,
   ChatSteerResult,
   CicdCreatePipelineInput,
@@ -347,6 +350,7 @@ export interface AnvilAPI {
       message: string,
       attachments?: ChatAttachment[],
     ) => Promise<ChatSteerResult>;
+    followUp: (request: ChatFollowUpRequest) => Promise<ChatFollowUpResult>;
     forkProviderThread: (
       sourceThreadId: string,
       targetThreadId: string,
@@ -389,6 +393,8 @@ export interface AnvilAPI {
       pullRequest?: ChatThreadPullRequestInput;
       workspaceId?: string | null;
       personaId: string;
+      purpose?: ChatThreadPurpose;
+      sideQuestionOfThreadId?: string;
       title?: string;
       workItemId?: string;
       workItemProvider?: WorkItemProvider;

@@ -1,4 +1,4 @@
-import type { RefObject } from 'react';
+import { useRef, useState, type RefObject } from 'react';
 import { AlertTriangle, ArrowDown } from 'lucide-react';
 import type { AgentProvider, RepoInfo } from '../../../shared/types';
 import type { ComposedChatTurn } from './chat-turns';
@@ -7,6 +7,8 @@ import { ChatErrorNotice, type ChatErrorProviderOption } from './ChatErrorNotice
 import { ChatPaneState, type ChatPaneKind } from './ChatPaneState';
 import { TurnChangesFooter, TurnUsageFooter } from './TurnChangesFooter';
 import { getChatTurnLiveState, shouldShowTurnActivityStatus } from './chat-view-utils';
+import { ChatRunOutcomeFooter } from './ChatRunOutcomeFooter';
+import { getPendingQuestionTarget, summarizeChatTurnRun } from './chat-run-outcome';
 import { stripFindingMarkers } from '../../utils/finding-parser';
 import type { StarterPrompt } from '../../utils/starter-prompts';
 
@@ -39,6 +41,7 @@ export function ChatTranscript({
   changesRepos,
   changesPreferredRepoId,
   error,
+  errorRetryLabel,
   errorProviders,
   onErrorRetry,
   onSwitchProvider,
@@ -70,6 +73,7 @@ export function ChatTranscript({
   changesRepos: RepoInfo[];
   changesPreferredRepoId?: string | null;
   error: string | null;
+  errorRetryLabel?: string;
   errorProviders: ChatErrorProviderOption[];
   onErrorRetry?: () => void;
   onSwitchProvider?: (provider: AgentProvider) => void;
@@ -78,7 +82,25 @@ export function ChatTranscript({
   showJumpToLatest: boolean;
   onJumpToLatest: () => void;
 }) {
+  const [reviewRequest, setReviewRequest] = useState<{
+    threadId: string | null;
+    turnKey: string;
+    filePath: string;
+    requestId: number;
+  } | null>(null);
+  const reviewRequestSequence = useRef(0);
+  const pendingQuestionTarget = getPendingQuestionTarget(turns);
   const centered = paneKind !== 'transcript';
+
+  const requestFileReview = (turnKey: string, filePath: string) => {
+    reviewRequestSequence.current += 1;
+    setReviewRequest({
+      threadId: activeThreadId,
+      turnKey,
+      filePath,
+      requestId: reviewRequestSequence.current,
+    });
+  };
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -128,10 +150,15 @@ export function ChatTranscript({
                   hasTrailingWork: turn.trailingWork.length > 0,
                 });
                 const turnComplete = liveState === null;
+                const runSummary = summarizeChatTurnRun(turn, {
+                  busy: busy && turnIndex === turns.length - 1,
+                  pendingTarget: pendingQuestionTarget,
+                });
 
                 return (
                   <section
                     key={`${activeThreadId ?? 'new'}:${turn.key}`}
+                    data-chat-turn-key={turn.key}
                     className="w-full space-y-4"
                     aria-label={`Turn ${turnIndex + 1}`}
                   >
@@ -140,6 +167,8 @@ export function ChatTranscript({
                         content={turn.user.content}
                         attachments={turn.user.attachments}
                         delivery={turn.user.delivery}
+                        deliveryError={turn.user.deliveryError}
+                        deliveryIntent={turn.user.deliveryIntent}
                         onEdit={() => onReuseMessage(turn.user!.sourceIndex, turn.user!.content)}
                         onBranch={onBranch ? () => onBranch(turn.user!.sourceIndex) : undefined}
                       />
@@ -162,12 +191,30 @@ export function ChatTranscript({
                     )}
                     {/* H5 — usage/context/cost rollup for the turn. */}
                     {turn.usage && <TurnUsageFooter usage={turn.usage} />}
-                    {/* CH2 — completed turns surface their file changes. */}
-                    {turn.answer && turnComplete && (
+                    {runSummary && (
+                      <ChatRunOutcomeFooter
+                        summary={runSummary}
+                        repos={changesRepos}
+                        preferredRepoId={changesPreferredRepoId}
+                        onReviewFile={
+                          turnComplete
+                            ? (filePath) => requestFileReview(turn.key, filePath)
+                            : undefined
+                        }
+                      />
+                    )}
+                    {/* CH2 — settled turns surface their file changes. */}
+                    {turnComplete && (turn.answer || turn.runOutcome || runSummary?.changes) && (
                       <TurnChangesFooter
                         workItems={[...turn.work, ...turn.trailingWork]}
                         repos={changesRepos}
                         preferredRepoId={changesPreferredRepoId}
+                        reviewRequest={
+                          reviewRequest?.threadId === activeThreadId &&
+                          reviewRequest.turnKey === turn.key
+                            ? reviewRequest
+                            : undefined
+                        }
                       />
                     )}
                     {liveState && shouldShowTurnActivityStatus(liveState) && (
@@ -188,6 +235,7 @@ export function ChatTranscript({
           {error && (
             <ChatErrorNotice
               error={error}
+              retryLabel={errorRetryLabel}
               providers={errorProviders}
               onRetry={onErrorRetry}
               onSwitchProvider={onSwitchProvider}

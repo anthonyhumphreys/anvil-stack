@@ -24,6 +24,45 @@ function applyMigration(db: Database.Database, migration: string): void {
 }
 
 describe('fresh database schema', () => {
+  it('migrates existing chat threads without losing read-only side-question purpose', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE chat_threads (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT,
+          persona_id TEXT NOT NULL,
+          title TEXT NOT NULL
+        );
+        INSERT INTO chat_threads (id, workspace_id, persona_id, title)
+        VALUES ('parent', 'workspace-1', 'coder', 'Original thread');
+      `);
+      applyMigration(db, MIGRATIONS[98]);
+
+      expect(
+        db
+          .prepare('SELECT purpose, side_question_of_thread_id FROM chat_threads WHERE id = ?')
+          .get('parent'),
+      ).toEqual({ purpose: 'normal', side_question_of_thread_id: null });
+
+      db.pragma('foreign_keys = ON');
+      db.prepare(
+        `INSERT INTO chat_threads (
+           id, workspace_id, persona_id, title, purpose, side_question_of_thread_id
+         ) VALUES ('side', 'workspace-1', 'coder', 'Question', 'side-question', 'parent')`,
+      ).run();
+      db.prepare('DELETE FROM chat_threads WHERE id = ?').run('parent');
+
+      expect(
+        db
+          .prepare('SELECT purpose, side_question_of_thread_id FROM chat_threads WHERE id = ?')
+          .get('side'),
+      ).toEqual({ purpose: 'side-question', side_question_of_thread_id: null });
+    } finally {
+      db.close();
+    }
+  });
+
   it('contains every settings column required by the settings service', () => {
     const db = new Database(':memory:');
     try {
@@ -168,7 +207,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(97);
+      expect(SCHEMA_VERSION).toBe(98);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',

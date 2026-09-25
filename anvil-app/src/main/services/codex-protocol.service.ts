@@ -82,6 +82,8 @@ export interface CodexProtocolCallbacks {
     code?: number;
     message: string;
   }) => boolean | void;
+  /** Called for successful responses to requests sent by the local client. */
+  onResponse?: (response: { requestId: JsonRpcRequestId; result: unknown }) => void;
   onLog?: (message: string) => void;
 }
 
@@ -113,11 +115,20 @@ export function sendCodexJsonRpc(
   method: string,
   params: Record<string, unknown>,
 ): boolean {
+  return sendCodexJsonRpcWithId(proc, method, params, randomUUID());
+}
+
+export function sendCodexJsonRpcWithId(
+  proc: ChildProcess,
+  method: string,
+  params: Record<string, unknown>,
+  requestId: JsonRpcRequestId,
+): boolean {
   return writeCodexJsonRpcLine(proc, {
     jsonrpc: '2.0',
     method,
     params,
-    id: randomUUID(),
+    id: requestId,
   });
 }
 
@@ -211,6 +222,7 @@ export function handleCodexServerLine(
       return;
     }
 
+    callbacks.onResponse?.({ requestId, result: msg.result });
     const result = msg.result as Record<string, unknown> | undefined;
     const thread = result?.thread as Record<string, unknown> | undefined;
     const threadId = (thread?.id ?? result?.threadId ?? result?.sessionId) as string | null;
@@ -862,8 +874,7 @@ function emitAcpToolCallUpdate(
 ): void {
   const toolCallId = typeof update?.toolCallId === 'string' ? update.toolCallId : undefined;
   const tracked = getAcpToolCallTracking(state, toolCallId);
-  const kind =
-    typeof update?.kind === 'string' ? update.kind : tracked?.kind;
+  const kind = typeof update?.kind === 'string' ? update.kind : tracked?.kind;
   if (tracked && typeof update?.kind === 'string') tracked.kind = update.kind;
 
   const rawInput = isRecord(update?.rawInput) ? update.rawInput : undefined;
@@ -1016,9 +1027,7 @@ function extractAcpCommandResult(update: Record<string, unknown> | undefined): {
 
   return {
     output:
-      parts.length > 0
-        ? limitTail(parts.join('\n'), MAX_RENDERED_COMMAND_OUTPUT_CHARS)
-        : undefined,
+      parts.length > 0 ? limitTail(parts.join('\n'), MAX_RENDERED_COMMAND_OUTPUT_CHARS) : undefined,
     exitCode,
   };
 }
@@ -1055,11 +1064,7 @@ function extractAcpDiffBlocks(
  * common prefix/suffix. Interleaved changes collapse into one larger hunk —
  * correct but less minimal than a full Myers diff.
  */
-function buildUnifiedDiffFromTexts(
-  filePath: string,
-  oldText: unknown,
-  newText: unknown,
-): string {
+function buildUnifiedDiffFromTexts(filePath: string, oldText: unknown, newText: unknown): string {
   if (typeof newText !== 'string') return '';
   const isNewFile = oldText === null || oldText === undefined;
   const oldString = typeof oldText === 'string' ? oldText : '';

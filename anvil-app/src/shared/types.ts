@@ -876,6 +876,33 @@ export interface ChatSendOptions {
   serviceTier?: string | null;
 }
 
+/** Explicit intent for a composer send made while a chat session is running. */
+export type ChatFollowUpIntent = 'guide' | 'queue';
+
+export type ChatFollowUpStatus = 'queued' | 'delivered' | 'failed';
+
+export interface ChatFollowUpRequest {
+  sessionId: string;
+  /** Stable identity for retries of the same logical send. */
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  message: string;
+  attachments?: ChatAttachment[];
+}
+
+export interface ChatFollowUpResult {
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  /**
+   * `delivered` means the request was written to provider stdin. A later
+   * JSON-RPC rejection can change it to `failed`; it does not claim that the
+   * provider accepted or completed the task.
+   */
+  status: ChatFollowUpStatus;
+  queueDepth: number;
+  error?: string;
+}
+
 export interface ChatFileMentionSearchInput {
   repoIds: string[];
   query?: string;
@@ -909,8 +936,12 @@ export interface ChatThreadPullRequestLink {
   observedAt: string;
 }
 
+export type ChatThreadPurpose = 'normal' | 'side-question';
+
 export interface ChatThread {
   pullRequestLinks?: ChatThreadPullRequestLink[];
+  purpose?: ChatThreadPurpose;
+  sideQuestionOfThreadId?: string;
   id: string;
   personaId: string;
   title: string;
@@ -1180,6 +1211,7 @@ export interface CodexEvent {
     | 'goal_update'
     | 'goal_cleared'
     | 'queue_update'
+    | 'follow_up_delivery'
     | 'error'
     | 'status'
     | 'usage'
@@ -1200,6 +1232,12 @@ export interface CodexEvent {
    * when the turn completes). 0 means the queue drained.
    */
   queuedSendCount?: number;
+  /** `follow_up_delivery` events carry the stable ID used by chat.followUp. */
+  followUpRequestId?: string;
+  followUpIntent?: ChatFollowUpIntent;
+  followUpStatus?: ChatFollowUpStatus;
+  followUpQueueDepth?: number;
+  followUpError?: string;
   contextUsage?: { used: number; size: number };
   observedCostUsd?: number;
   usage?: DojoTokenUsage;
@@ -1276,6 +1314,15 @@ export interface CodexSessionCapabilities {
    * finishes (ACP providers have no steer).
    */
   midTurnSend: 'steer' | 'queue';
+  /** Provider-aware options for explicit follow-ups while a turn is active. */
+  followUp: {
+    /** Can add guidance to the currently running turn in-band. */
+    guide: boolean;
+    /** Can hold a separate task locally and send it after the current turn. */
+    queue: boolean;
+  };
+  /** True only when the provider can enforce a read-only session sandbox. */
+  readOnlySession: boolean;
   /** Provider emits thread/goal lifecycle events (Codex-only today). */
   goals: boolean;
   /**

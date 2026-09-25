@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Braces,
   Check,
@@ -31,6 +31,8 @@ import type {
   ChatPlanSnapshot,
   ChatPlanStep,
 } from '../../../shared/types';
+import type { ChatReviewFeedbackDraft } from './chat-review-feedback';
+import { useChatReviewFeedback } from './ChatReviewFeedbackContext';
 import { ConfirmDialog } from '../ui';
 import { PlanIntentSurface } from './AgentUIIntentSurface';
 import { ArtifactAnnotationsPanel } from './ArtifactAnnotationsPanel';
@@ -43,8 +45,8 @@ import { clampCanvasZoom, formatGoalStatus } from './chat-view-utils';
  * Destructive artifact actions go through ConfirmDialog (CH12 sweep).
  */
 export function ChatCanvasSidebar({
-  artifacts,
-  selectedArtifact,
+  artifacts: availableArtifacts,
+  selectedArtifact: requestedSelectedArtifact,
   activePlan,
   planIntents,
   activeGoal,
@@ -57,6 +59,7 @@ export function ChatCanvasSidebar({
   zoom,
   onZoomChange,
   presentation,
+  onComposeFeedback,
   onExpand,
   onDetach,
 }: {
@@ -74,14 +77,61 @@ export function ChatCanvasSidebar({
   zoom: number;
   onZoomChange: (zoom: number) => void;
   presentation: 'sidebar' | 'expanded' | 'detached';
+  onComposeFeedback?: (draft: ChatReviewFeedbackDraft) => void;
   onExpand: () => void;
   onDetach: () => void;
 }) {
-  const [mode, setMode] = useState<'preview' | 'source'>('preview');
+  const [mode, setModeState] = useState<'preview' | 'source'>('preview');
   const [copied, setCopied] = useState(false);
-  const [planOpen, setPlanOpen] = useState(!selectedArtifact && Boolean(activePlan));
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmUnshare, setConfirmUnshare] = useState(false);
+  const reviewContext = useChatReviewFeedback();
+  const composeFeedback = onComposeFeedback ?? reviewContext?.onComposeFeedback;
+  const artifacts = useMemo(
+    () =>
+      reviewContext?.threadId
+        ? availableArtifacts.filter((artifact) => artifact.threadId === reviewContext.threadId)
+        : availableArtifacts,
+    [availableArtifacts, reviewContext?.threadId],
+  );
+  const selectedArtifact =
+    (requestedSelectedArtifact &&
+    artifacts.some((artifact) => artifact.id === requestedSelectedArtifact.id)
+      ? requestedSelectedArtifact
+      : null) ??
+    artifacts[0] ??
+    null;
+  const [planOpen, setPlanOpen] = useState(!selectedArtifact && Boolean(activePlan));
+  const reviewScrollRef = useRef<HTMLDivElement>(null);
+  const localReviewPositions = useRef(
+    new Map<string, { mode: 'preview' | 'source'; scrollTop: number }>(),
+  );
+  const selectedReviewKey = selectedArtifact
+    ? `${selectedArtifact.threadId}:${selectedArtifact.id}`
+    : null;
+
+  const changeMode = useCallback(
+    (nextMode: 'preview' | 'source') => {
+      setModeState(nextMode);
+      if (!selectedReviewKey) return;
+      const position = {
+        mode: nextMode,
+        scrollTop: reviewScrollRef.current?.scrollTop ?? 0,
+      };
+      reviewContext?.setArtifactReviewPosition(selectedReviewKey, position);
+      localReviewPositions.current.set(selectedReviewKey, position);
+    },
+    [reviewContext, selectedReviewKey],
+  );
+
+  useLayoutEffect(() => {
+    if (!selectedReviewKey) return;
+    const position =
+      reviewContext?.getArtifactReviewPosition(selectedReviewKey) ??
+      localReviewPositions.current.get(selectedReviewKey);
+    setModeState(position?.mode ?? 'preview');
+    if (reviewScrollRef.current) reviewScrollRef.current.scrollTop = position?.scrollTop ?? 0;
+  }, [reviewContext?.threadId, selectedReviewKey]);
 
   useEffect(() => {
     if (!selectedArtifact && activePlan) setPlanOpen(true);
@@ -325,7 +375,7 @@ export function ChatCanvasSidebar({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMode('preview')}
+                  onClick={() => changeMode('preview')}
                   className={`rounded-md p-1.5 transition-colors ${
                     mode === 'preview'
                       ? 'bg-accent/10 text-accent'
@@ -339,7 +389,7 @@ export function ChatCanvasSidebar({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMode('source')}
+                  onClick={() => changeMode('source')}
                   className={`rounded-md p-1.5 transition-colors ${
                     mode === 'source'
                       ? 'bg-accent/10 text-accent'
@@ -437,7 +487,17 @@ export function ChatCanvasSidebar({
           </div>
 
           <div
+            ref={reviewScrollRef}
             className="min-h-0 flex-1 overflow-auto bg-bg-primary/40"
+            data-artifact-review-source
+            data-artifact-exact-lines={mode === 'source' ? 'true' : 'false'}
+            onScroll={() => {
+              if (selectedReviewKey && reviewScrollRef.current) {
+                const position = { mode, scrollTop: reviewScrollRef.current.scrollTop };
+                reviewContext?.setArtifactReviewPosition(selectedReviewKey, position);
+                localReviewPositions.current.set(selectedReviewKey, position);
+              }
+            }}
             onWheel={(event) => {
               if (!event.metaKey && !event.ctrlKey) return;
               event.preventDefault();
@@ -448,10 +508,15 @@ export function ChatCanvasSidebar({
               className="min-h-full origin-top-left"
               style={{ zoom: zoom / 100, width: `${10_000 / zoom}%` }}
             >
-              <ArtifactBody artifact={selectedArtifact} mode={mode} />
+              <ArtifactBody key={selectedArtifact.id} artifact={selectedArtifact} mode={mode} />
             </div>
           </div>
-          <ArtifactAnnotationsPanel artifact={selectedArtifact} />
+          <ArtifactAnnotationsPanel
+            key={selectedArtifact.id}
+            artifact={selectedArtifact}
+            mode={mode}
+            onComposeFeedback={composeFeedback}
+          />
         </div>
       ) : (
         <PlanGoalSidebar

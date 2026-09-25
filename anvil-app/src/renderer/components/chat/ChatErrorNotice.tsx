@@ -1,4 +1,4 @@
-import { AlertTriangle, RefreshCw, Settings, Stethoscope } from 'lucide-react';
+import { AlertTriangle, Copy, Settings, Stethoscope } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { AgentProvider } from '../../../shared/types';
 import { Button, Menu, MenuItem, MenuLabel } from '../ui';
@@ -10,18 +10,20 @@ export interface ChatErrorProviderOption {
 }
 
 /**
- * CH5 — classified error notice with recovery actions: Retry, Switch
+ * CH5 — classified error notice with recovery actions: reuse prompt, Switch
  * provider, Open diagnostics, and a link into the relevant Settings section.
  */
 export function ChatErrorNotice({
   error,
   providers,
   onRetry,
+  retryLabel = 'Retry',
   onSwitchProvider,
 }: {
   error: string;
   providers: ChatErrorProviderOption[];
   onRetry?: () => void;
+  retryLabel?: string;
   onSwitchProvider?: (provider: AgentProvider) => void;
 }) {
   const navigate = useNavigate();
@@ -42,8 +44,8 @@ export function ChatErrorNotice({
       <div className="mt-3 flex flex-wrap items-center gap-2 pl-6">
         {onRetry && (
           <Button variant="secondary" size="sm" onClick={onRetry}>
-            <RefreshCw size={12} />
-            Retry
+            <Copy size={12} />
+            {retryLabel}
           </Button>
         )}
         {onSwitchProvider &&

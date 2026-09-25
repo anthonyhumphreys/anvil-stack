@@ -1,12 +1,5 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import type { AgentUIPlanIntent } from '../../../shared/agent-ui-intents';
-import type {
-  AgentRunSummary,
-  ChatArtifact,
-  ChatGoalSnapshot,
-  ChatPlanSnapshot,
-} from '../../../shared/types';
-import type { ExecutionTopology } from '../../utils/execution-topology';
+import type { ComponentProps } from 'react';
 import type { ExtractedFinding } from '../../utils/finding-parser';
 import type { PreviewMode } from '../browser/BrowserPanel';
 import { BrowserPanel } from '../browser/BrowserPanel';
@@ -25,21 +18,10 @@ import { ItsmWorkbench } from './ItsmWorkbench';
  * canvas presentations.
  */
 
-interface CanvasProps {
-  artifacts: ChatArtifact[];
-  selectedArtifact: ChatArtifact | null;
-  activePlan: ChatPlanSnapshot | null;
-  planIntents: AgentUIPlanIntent[];
-  activeGoal: ChatGoalSnapshot | null;
-  planSelected: boolean;
-  onSelectPlan: () => void;
-  onSelectArtifact: (artifactId: string) => void;
-  onDiscardArtifact: (artifactId: string) => Promise<void>;
-  onShareArtifact: (artifactId: string) => Promise<ChatArtifact>;
-  onUnshareArtifact: (artifactId: string) => Promise<ChatArtifact>;
-  zoom: number;
-  onZoomChange: (zoom: number) => void;
-}
+type CanvasProps = Omit<
+  ComponentProps<typeof ChatCanvasSidebar>,
+  'presentation' | 'onExpand' | 'onDetach'
+>;
 
 export function ChatSidePanels({
   previewMode,
@@ -88,24 +70,7 @@ export function ChatSidePanels({
   workspaceId: string | null;
   onItsmPrompt: (prompt: string) => void;
   showActivitySidebar: boolean;
-  activity: {
-    workspaceName: string;
-    runs: AgentRunSummary[];
-    topology: ExecutionTopology;
-    activeGoal: ChatGoalSnapshot | null;
-    busy: boolean;
-    goalOpen: boolean;
-    onGoalOpenChange: (open: boolean) => void;
-    onSetGoal: (objective: string, tokenBudget: string) => void;
-    onCompleteGoal: () => void;
-    onClose: () => void;
-    onOpenThread: (threadId: string) => void;
-    onStop: (sessionId: string) => void;
-    /** H12 — Codex-only capability; ACP sessions disable the goal control. */
-    goalsSupported?: boolean;
-    /** H13 — provider display name for goal copy. */
-    agentLabel?: string;
-  };
+  activity: ComponentProps<typeof AgentActivitySidebar>;
   showCanvasSidebar: boolean;
   canvas: CanvasProps;
   canvasExpanded: boolean;
@@ -228,22 +193,7 @@ export function ChatSidePanels({
           collapsible={false}
           className="border-l border-border/60 bg-bg-secondary/50"
         >
-          <AgentActivitySidebar
-            workspaceName={activity.workspaceName}
-            runs={activity.runs}
-            topology={activity.topology}
-            activeGoal={activity.activeGoal}
-            busy={activity.busy}
-            goalOpen={activity.goalOpen}
-            onGoalOpenChange={activity.onGoalOpenChange}
-            onSetGoal={activity.onSetGoal}
-            onCompleteGoal={activity.onCompleteGoal}
-            onClose={activity.onClose}
-            onOpenThread={activity.onOpenThread}
-            onStop={activity.onStop}
-            goalsSupported={activity.goalsSupported}
-            agentLabel={activity.agentLabel}
-          />
+          <AgentActivitySidebar {...activity} />
         </ResizableSidebarPanel>
       )}
 

@@ -235,6 +235,8 @@ function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
     event.type === 'agent_ui_intent_resolved' ||
     event.type === 'goal_update' ||
     event.type === 'goal_cleared' ||
+    event.type === 'turn_outcome' ||
+    event.type === 'follow_up_delivery' ||
     event.type === 'error'
   );
 }

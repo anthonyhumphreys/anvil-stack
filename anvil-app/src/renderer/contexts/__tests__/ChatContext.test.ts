@@ -130,6 +130,129 @@ describe('chatMessagesToEntries', () => {
     ).toEqual([]);
   });
 
+  it('resolves approval and input requests only within the originating session', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'approval-a',
+        role: 'system',
+        content: 'Approval needed',
+        timestamp: '2026-04-27T10:00:00.000Z',
+        sessionId: 'session-a',
+        event: { type: 'approval_request', approvalRequestId: 7 },
+      },
+      {
+        id: 'approval-b',
+        role: 'system',
+        content: 'Approval needed in another session',
+        timestamp: '2026-04-27T10:00:01.000Z',
+        sessionId: 'session-b',
+        event: { type: 'approval_request', approvalRequestId: 7 },
+      },
+      {
+        id: 'resolved-a',
+        role: 'system',
+        content: 'Request resolved',
+        timestamp: '2026-04-27T10:00:02.000Z',
+        sessionId: 'session-a',
+        event: { type: 'request_resolved', resolvedRequestId: 7 },
+      },
+    ]);
+
+    expect(entries).toEqual([
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 7, sessionId: 'session-b' },
+      },
+    ]);
+  });
+
+  it('reconstructs follow-up delivery state by request ID across event ordering and transitions', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'delivery-queued',
+        role: 'system',
+        content: 'Follow-up queued',
+        timestamp: '2026-08-20T10:00:00.000Z',
+        sessionId: 'session-1',
+        event: {
+          type: 'follow_up_delivery',
+          followUpRequestId: 'request-1',
+          followUpIntent: 'queue',
+          followUpStatus: 'queued',
+          followUpQueueDepth: 1,
+        },
+      },
+      {
+        id: 'request-1',
+        role: 'user',
+        content: 'Add a summary after the current task',
+        timestamp: '2026-08-20T10:00:01.000Z',
+        sessionId: 'session-1',
+      },
+      {
+        id: 'delivery-failed',
+        role: 'system',
+        content: 'Follow-up rejected',
+        timestamp: '2026-08-20T10:00:02.000Z',
+        sessionId: 'session-1',
+        event: {
+          type: 'follow_up_delivery',
+          followUpRequestId: 'request-1',
+          followUpIntent: 'queue',
+          followUpStatus: 'failed',
+          followUpQueueDepth: 0,
+          followUpError: 'The provider rejected the request.',
+        },
+      },
+    ]);
+
+    expect(entries).toEqual([
+      {
+        kind: 'user',
+        id: 'request-1',
+        requestId: 'request-1',
+        content: 'Add a summary after the current task',
+        delivery: 'failed',
+        deliveryIntent: 'queue',
+        deliveryError: 'The provider rejected the request.',
+        attachments: undefined,
+      },
+    ]);
+  });
+
+  it('restores explicit failed follow-up results saved on the user row', () => {
+    expect(
+      chatMessagesToEntries([
+        {
+          id: 'request-local-failure',
+          role: 'user',
+          content: 'Explain the current output',
+          timestamp: '2026-08-20T10:00:00.000Z',
+          sessionId: 'session-1',
+          event: {
+            type: 'follow_up_delivery',
+            followUpRequestId: 'request-local-failure',
+            followUpIntent: 'guide',
+            followUpStatus: 'failed',
+            followUpQueueDepth: 0,
+            followUpError: 'Session no longer exists.',
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        kind: 'user',
+        id: 'request-local-failure',
+        requestId: 'request-local-failure',
+        content: 'Explain the current output',
+        delivery: 'failed',
+        deliveryIntent: 'guide',
+        deliveryError: 'Session no longer exists.',
+        attachments: undefined,
+      },
+    ]);
+  });
+
   it('restores persisted thinking events as coalescing reasoning entries', () => {
     expect(
       chatMessagesToEntries([

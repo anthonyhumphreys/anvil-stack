@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 97;
+export const SCHEMA_VERSION = 98;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS chat_threads (
   workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
   persona_id TEXT NOT NULL,
   title TEXT NOT NULL,
+  purpose TEXT NOT NULL DEFAULT 'normal' CHECK (purpose IN ('normal', 'side-question')),
+  side_question_of_thread_id TEXT REFERENCES chat_threads(id) ON DELETE SET NULL,
   work_item_id TEXT,
   work_item_provider TEXT,
   work_item_title TEXT,
@@ -156,6 +158,9 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_workspace_persona
 
 CREATE INDEX IF NOT EXISTS idx_chat_threads_workspace_work_item
   ON chat_threads(workspace_id, work_item_provider, work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_chat_threads_side_question_parent
+  ON chat_threads(side_question_of_thread_id);
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_timestamp
   ON chat_messages(thread_id, timestamp ASC);
@@ -3509,6 +3514,16 @@ CREATE TABLE IF NOT EXISTS activation_events (
 );
 CREATE INDEX IF NOT EXISTS idx_activation_events_event_created
   ON activation_events (event, created_at);
+`,
+  98: `
+-- Side questions are retained threads with a durable read-only purpose. The
+-- parent link may be cleared if the parent is deleted; purpose remains intact.
+ALTER TABLE chat_threads ADD COLUMN purpose TEXT NOT NULL DEFAULT 'normal'
+  CHECK (purpose IN ('normal', 'side-question'));
+ALTER TABLE chat_threads ADD COLUMN side_question_of_thread_id TEXT
+  REFERENCES chat_threads(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_threads_side_question_parent
+  ON chat_threads(side_question_of_thread_id);
 `,
 };
 

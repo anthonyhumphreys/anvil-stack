@@ -20,12 +20,20 @@ import {
 export function FileEditReviewGrid({
   edits,
   agentLabel = 'The agent',
+  selectedFilePath,
+  onSelectFile,
 }: {
   edits: Array<{ filePath: string; diff: string }>;
   agentLabel?: string;
+  selectedFilePath?: string;
+  onSelectFile?: (filePath: string) => void;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const selected = edits[Math.min(selectedIndex, Math.max(edits.length - 1, 0))];
+  const requestedIndex = selectedFilePath
+    ? edits.findIndex((edit) => edit.filePath === selectedFilePath)
+    : -1;
+  const activeIndex = requestedIndex >= 0 ? requestedIndex : selectedIndex;
+  const selected = edits[Math.min(activeIndex, Math.max(edits.length - 1, 0))];
   if (!selected) return null;
 
   return (
@@ -35,12 +43,16 @@ export function FileEditReviewGrid({
           <button
             key={`${edit.filePath}-${index}`}
             type="button"
-            onClick={() => setSelectedIndex(index)}
+            onClick={() => {
+              setSelectedIndex(index);
+              onSelectFile?.(edit.filePath);
+            }}
             className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
-              index === Math.min(selectedIndex, edits.length - 1)
+              index === Math.min(activeIndex, edits.length - 1)
                 ? 'bg-info/10 text-info'
                 : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
             }`}
+            aria-pressed={index === activeIndex}
             title={edit.filePath}
           >
             <FileDiff size={12} className="shrink-0" />
@@ -70,13 +82,16 @@ export function TurnChangesFooter({
   workItems,
   repos,
   preferredRepoId,
+  reviewRequest,
 }: {
   workItems: ChatTurnWorkItem[];
   repos: RepoInfo[];
   preferredRepoId?: string | null;
+  reviewRequest?: { requestId: number; filePath: string };
 }) {
   const navigate = useNavigate();
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [selectedFilePath, setSelectedFilePath] = useState<string>();
   const [commitPromptOpen, setCommitPromptOpen] = useState(false);
   const [commitMessage, setCommitMessage] = useState('');
   const [actionBusy, setActionBusy] = useState<'commit' | 'pr' | null>(null);
@@ -85,8 +100,24 @@ export function TurnChangesFooter({
     text: string;
     url?: string;
   } | null>(null);
+  const appliedReviewRequestRef = useRef<number | null>(null);
+  const reviewGridRef = useRef<HTMLDivElement>(null);
 
   const summary = useMemo(() => summarizeTurnChanges(workItems), [workItems]);
+  useEffect(() => {
+    if (!reviewRequest || appliedReviewRequestRef.current === reviewRequest.requestId) return;
+    appliedReviewRequestRef.current = reviewRequest.requestId;
+    const fileIndex =
+      summary?.files.findIndex((file) => file.filePath === reviewRequest.filePath) ?? -1;
+    if (fileIndex >= 0) setSelectedFilePath(reviewRequest.filePath);
+    setReviewOpen(true);
+    window.requestAnimationFrame(() => {
+      reviewGridRef.current?.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        block: 'nearest',
+      });
+    });
+  }, [reviewRequest, summary]);
   // §7 funnel — a rendered change summary means the agent produced a diff.
   const diffProposedTrackedRef = useRef(false);
   useEffect(() => {
@@ -268,10 +299,14 @@ export function TurnChangesFooter({
         )}
 
         {reviewOpen && (
-          <FileEditReviewGrid
-            edits={summary.files.map((file) => ({ filePath: file.filePath, diff: file.diff }))}
-            agentLabel={agentLabel ?? undefined}
-          />
+          <div ref={reviewGridRef}>
+            <FileEditReviewGrid
+              edits={summary.files.map((file) => ({ filePath: file.filePath, diff: file.diff }))}
+              agentLabel={agentLabel ?? undefined}
+              selectedFilePath={selectedFilePath}
+              onSelectFile={setSelectedFilePath}
+            />
+          </div>
         )}
       </div>
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Bot, CheckCircle2, Target, X } from 'lucide-react';
-import type { AgentRunSummary, ChatGoalSnapshot } from '../../../shared/types';
+import type { AgentRunSummary, ChatGoalSnapshot, ChatThread } from '../../../shared/types';
 import type { ExecutionTopology } from '../../utils/execution-topology';
 import { ExecutionTopologyPanel } from './ExecutionTopologyPanel';
 import { formatGoalStatus } from './chat-view-utils';
@@ -25,6 +25,11 @@ export function AgentActivitySidebar({
   onClose,
   onOpenThread,
   onStop,
+  lastViewedAt,
+  attentionUpdatedAt,
+  attentionState,
+  pendingQuestionTarget,
+  onJumpToQuestion,
   goalsSupported = true,
   agentLabel = 'The agent',
 }: {
@@ -40,6 +45,14 @@ export function AgentActivitySidebar({
   onClose: () => void;
   onOpenThread: (threadId: string) => void;
   onStop: (sessionId: string) => void;
+  /** Persisted thread view marker, captured before the parent marks it viewed. */
+  lastViewedAt?: string | null;
+  /** Persisted status-change time used to describe only real unseen changes. */
+  attentionUpdatedAt?: string | null;
+  attentionState?: ChatThread['attentionState'];
+  /** Parent-selected unresolved request, targeted by its stable transcript ID. */
+  pendingQuestionTarget?: { id: string; label: string } | null;
+  onJumpToQuestion?: (id: string) => void;
   /** H12 — goals are a Codex capability; ACP sessions disable the control. */
   goalsSupported?: boolean;
   /** H13 — provider display name for goal copy. */
@@ -50,6 +63,11 @@ export function AgentActivitySidebar({
   const tabRefs = useRef<Record<ActivitySection, HTMLButtonElement | null>>({
     current: null,
     history: null,
+  });
+  const sinceLastLookMessage = getAttentionSummarySinceLastLook({
+    lastViewedAt,
+    attentionUpdatedAt,
+    attentionState,
   });
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -151,7 +169,14 @@ export function AgentActivitySidebar({
         className="flex min-h-0 flex-1 flex-col focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
       >
         {section === 'current' ? (
-          <ExecutionTopologyPanel topology={topology} onOpenThread={onOpenThread} onStop={onStop} />
+          <ExecutionTopologyPanel
+            topology={topology}
+            onOpenThread={onOpenThread}
+            onStop={onStop}
+            sinceLastLookMessage={sinceLastLookMessage}
+            pendingQuestionTarget={pendingQuestionTarget}
+            onJumpToQuestion={onJumpToQuestion}
+          />
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto py-2">
             <p className="px-3 pb-2 text-xs text-text-tertiary">Recent in {workspaceName}</p>
@@ -207,6 +232,38 @@ export function AgentActivitySidebar({
       </div>
     </div>
   );
+}
+
+export function getAttentionSummarySinceLastLook({
+  lastViewedAt,
+  attentionUpdatedAt,
+  attentionState,
+}: {
+  lastViewedAt?: string | null;
+  attentionUpdatedAt?: string | null;
+  attentionState?: ChatThread['attentionState'];
+}): string | null {
+  if (!lastViewedAt || !attentionUpdatedAt || !attentionState) return null;
+  const viewedAt = Date.parse(lastViewedAt);
+  const updatedAt = Date.parse(attentionUpdatedAt);
+  if (!Number.isFinite(viewedAt) || !Number.isFinite(updatedAt) || updatedAt <= viewedAt) {
+    return null;
+  }
+
+  switch (attentionState) {
+    case 'approval':
+      return 'Approval requested since your last look.';
+    case 'input':
+      return 'The agent asked for input since your last look.';
+    case 'failed':
+      return 'The latest run failed since your last look.';
+    case 'complete':
+      return 'The latest run completed since your last look.';
+    case 'working':
+      return 'Work started since your last look.';
+    case 'idle':
+      return 'Thread status changed since your last look.';
+  }
 }
 
 export function getActivitySectionForKey(

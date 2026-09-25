@@ -27,7 +27,13 @@ import { ConfirmDialog } from '../ui';
 import { isEditableShortcutTarget } from '../../utils/keyboard';
 import { ChatAccessLevelBadge } from './ChatAccessLevelChip';
 import { ChatLayoutToggle } from './ChatLayoutToggle';
-import { filterChatThreads, type ChatThreadSearchContext } from './chat-thread-search';
+import {
+  activeChatThreadStatusFilter,
+  CHAT_THREAD_STATUS_FILTERS,
+  filterChatThreads,
+  toggleChatThreadStatusFilter,
+  type ChatThreadSearchContext,
+} from './chat-thread-search';
 
 interface ChatThreadRailProps {
   personas: Persona[];
@@ -74,8 +80,9 @@ export function ChatThreadRail({
     () => ({
       repoNames: new Map(repos.map((repo) => [repo.id, repo.name])),
       personaNames: new Map(personas.map((persona) => [persona.id, persona.name])),
+      liveThreadStatuses,
     }),
-    [personas, repos],
+    [liveThreadStatuses, personas, repos],
   );
   const visibleThreads = useMemo(
     () => filterChatThreads(threads, filter, searchContext),
@@ -90,6 +97,7 @@ export function ChatThreadRail({
     [activeThreads],
   );
   const filtering = filter.trim().length > 0;
+  const activeStatusFilter = activeChatThreadStatusFilter(filter);
 
   useEffect(() => {
     if (!editingThreadId) setDraftTitle('');
@@ -302,19 +310,55 @@ export function ChatThreadRail({
             className="w-full rounded-lg border border-border bg-bg-primary py-1.5 pl-8 pr-3 text-xs text-text-primary outline-none placeholder:text-text-tertiary focus:border-accent/50"
             placeholder="Filter threads…"
             aria-label="Filter threads"
+            aria-describedby="chat-thread-filter-help"
           />
         </div>
+        <div
+          className="mt-2 flex flex-wrap gap-1"
+          role="group"
+          aria-label="Quick thread status filters"
+        >
+          {CHAT_THREAD_STATUS_FILTERS.map((status) => {
+            const selected = activeStatusFilter === status.value;
+            return (
+              <button
+                key={status.value}
+                type="button"
+                aria-pressed={selected}
+                aria-label={`Filter threads: ${status.label}`}
+                onClick={() =>
+                  setFilter((query) => toggleChatThreadStatusFilter(query, status.value))
+                }
+                className={`rounded-md border px-1 py-1 text-xs leading-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
+                  selected
+                    ? 'border-accent/40 bg-accent/10 text-accent'
+                    : 'border-border/70 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+                }`}
+              >
+                {status.label}
+              </button>
+            );
+          })}
+        </div>
+        <p id="chat-thread-filter-help" className="mt-1.5 text-xs leading-4 text-text-muted">
+          Search text, <span className="font-mono">repo:name</span>,{' '}
+          <span className="font-mono">persona:name</span>, or{' '}
+          <span className="font-mono">status:done</span> /{' '}
+          <span className="font-mono">status:archived</span>.
+        </p>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
         {activeThreads.length === 0 ? (
           <div className="px-3 py-6 text-center">
             <p className="text-sm font-medium text-text-primary">
-              {filtering ? 'No matching threads' : 'No active threads'}
+              {filtering ? 'No matching active threads' : 'No active threads'}
             </p>
             <p className="mt-1 text-xs text-text-tertiary">
               {filtering
-                ? 'Try a different title, repo, or persona.'
+                ? settledThreads.length > 0
+                  ? 'Matching archived threads appear below.'
+                  : 'Try another search or clear a status filter.'
                 : 'Start a thread or restore one below.'}
             </p>
           </div>

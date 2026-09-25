@@ -32,7 +32,7 @@ export function useChatWorkflowAction({
     attachments: ChatAttachment[],
     executionStrategyPrompt?: string,
     fastMode?: boolean,
-  ) => Promise<void> | void;
+  ) => Promise<boolean>;
   startNewSession: () => Promise<void> | void;
 }) {
   const navigate = useNavigate();
@@ -40,56 +40,34 @@ export function useChatWorkflowAction({
     null,
   );
   const [confirmingWorkflowAction, setConfirmingWorkflowAction] = useState(false);
+  const [workflowActionError, setWorkflowActionError] = useState<string | null>(null);
 
   const handleComposerSend = useCallback(
-    (message: string, attachments: ChatAttachment[] = []) => {
+    async (message: string, attachments: ChatAttachment[] = []): Promise<boolean> => {
       if (attachments.length === 0 && message.trim().toLowerCase() === '/new') {
-        void startNewSession();
-        return;
+        await startNewSession();
+        return true;
       }
-
-      const mayBeWorkflowIntent = hasExplicitWorkflowCommand(message);
-      if (attachments.length === 0 && activeWorkspace && mayBeWorkflowIntent) {
-        void window.anvil.workflow
-          .listTemplates()
-          .then((templates) => {
-            const intent = parseWorkflowChatIntent(message, templates);
-            if (!intent) {
-              void send(
-                message,
-                attachments,
-                buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
-                fastMode,
-              );
-              return;
-            }
-            setPendingWorkflowAction({
-              message,
-              intent,
-              workspaceId: activeWorkspace.id,
-              workspaceName: activeWorkspace.name,
-              repoIds: activeWorkspace.repos.map((repo) => repo.id),
-              executionStrategyPrompt: buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
-              fastMode,
-            });
-          })
-          .catch(() => {
-            void send(
-              message,
-              attachments,
-              buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
-              fastMode,
-            );
+      const strategyPrompt = buildExecutionStrategyPrompt(executionStrategy) ?? undefined;
+      if (attachments.length === 0 && activeWorkspace && hasExplicitWorkflowCommand(message)) {
+        // Only discovery failures fall back to chat. A failed send must never be sent twice.
+        const templates = await window.anvil.workflow.listTemplates().catch(() => null);
+        const intent = templates ? parseWorkflowChatIntent(message, templates) : null;
+        if (intent) {
+          setWorkflowActionError(null);
+          setPendingWorkflowAction({
+            message,
+            intent,
+            workspaceId: activeWorkspace.id,
+            workspaceName: activeWorkspace.name,
+            repoIds: activeWorkspace.repos.map((repo) => repo.id),
+            executionStrategyPrompt: strategyPrompt,
+            fastMode,
           });
-        return;
+          return true;
+        }
       }
-
-      void send(
-        message,
-        attachments,
-        buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
-        fastMode,
-      );
+      return send(message, attachments, strategyPrompt, fastMode);
     },
     [activeWorkspace, executionStrategy, fastMode, send, startNewSession],
   );
@@ -97,6 +75,7 @@ export function useChatWorkflowAction({
   const confirmWorkflowAction = useCallback(async () => {
     if (!pendingWorkflowAction || confirmingWorkflowAction) return;
     setConfirmingWorkflowAction(true);
+    setWorkflowActionError(null);
     try {
       const { intent } = pendingWorkflowAction;
       if (intent.kind === 'run') {
@@ -116,24 +95,38 @@ export function useChatWorkflowAction({
       setPendingWorkflowAction(null);
       navigate(`/workflows?${params.toString()}`);
     } catch {
-      const pending = pendingWorkflowAction;
-      setPendingWorkflowAction(null);
-      await send(pending.message, [], pending.executionStrategyPrompt, pending.fastMode);
+      setWorkflowActionError(
+        'The workflow request could not be confirmed. Check Workflows before trying again; it may already have started.',
+      );
     } finally {
       setConfirmingWorkflowAction(false);
     }
-  }, [confirmingWorkflowAction, navigate, pendingWorkflowAction, send]);
+  }, [confirmingWorkflowAction, navigate, pendingWorkflowAction]);
 
-  const keepWorkflowPromptInChat = useCallback(() => {
+  const keepWorkflowPromptInChat = useCallback(async () => {
     if (!pendingWorkflowAction || confirmingWorkflowAction) return;
     const pending = pendingWorkflowAction;
-    setPendingWorkflowAction(null);
-    void send(pending.message, [], pending.executionStrategyPrompt, pending.fastMode);
+    setConfirmingWorkflowAction(true);
+    setWorkflowActionError(null);
+    try {
+      if (await send(pending.message, [], pending.executionStrategyPrompt, pending.fastMode)) {
+        setPendingWorkflowAction(null);
+      } else {
+        setWorkflowActionError('The message was not accepted. Your workflow prompt is still here.');
+      }
+    } catch {
+      setWorkflowActionError(
+        'Delivery could not be confirmed. Check the conversation before sending again.',
+      );
+    } finally {
+      setConfirmingWorkflowAction(false);
+    }
   }, [confirmingWorkflowAction, pendingWorkflowAction, send]);
 
   return {
     pendingWorkflowAction,
     confirmingWorkflowAction,
+    workflowActionError,
     handleComposerSend,
     confirmWorkflowAction,
     keepWorkflowPromptInChat,

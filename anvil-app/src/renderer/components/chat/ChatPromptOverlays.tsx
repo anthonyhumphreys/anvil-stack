@@ -66,11 +66,13 @@ export function PendingQuestionPrompt({
 export function WorkflowActionConfirmation({
   pending,
   confirming,
+  error,
   onConfirm,
   onKeepInChat,
 }: {
   pending: PendingWorkflowAction;
   confirming: boolean;
+  error?: string | null;
   onConfirm: () => void;
   onKeepInChat: () => void;
 }) {
@@ -107,6 +109,11 @@ export function WorkflowActionConfirmation({
       <div className="min-w-0 flex-1">
         <p className="text-xs font-semibold text-text-primary">{title}</p>
         <p className="mt-0.5 truncate text-xs text-text-tertiary">{detail}</p>
+        {error && (
+          <p role="alert" className="mt-1 text-xs text-error">
+            {error}
+          </p>
+        )}
       </div>
       <button
         type="button"

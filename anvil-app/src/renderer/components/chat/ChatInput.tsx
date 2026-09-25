@@ -22,6 +22,8 @@ import type {
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchResult,
+  ChatFollowUpIntent,
+  ChatFollowUpResult,
   CodexRegisteredSkill,
   CodexMode,
   ReasoningEffort,
@@ -33,6 +35,12 @@ import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { slugForDomId } from '../../utils/dom-id';
 import { getNextListboxIndex } from '../../utils/list-navigation';
 import { EXECUTION_STRATEGIES, type ExecutionStrategy } from '../../utils/execution-strategy';
+import {
+  appendComposerPrefill,
+  getFollowUpFeedback,
+  isCurrentComposerDraft,
+  type ComposerDraftVersion,
+} from './chat-composer-intent';
 
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_RENDERER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -52,6 +60,18 @@ interface ActiveTextTrigger {
   start: number;
   end: number;
   query: string;
+}
+
+interface FollowUpSubmission extends ComposerDraftVersion {
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  message: string;
+  attachments?: ChatAttachment[];
+}
+
+interface FollowUpComposerFeedback {
+  kind: 'success' | 'error' | 'uncertain';
+  message: string;
 }
 
 export interface ChatQuickPrompt {
@@ -90,6 +110,15 @@ interface ChatInputProps {
   onStop?: () => void;
   disabled: boolean;
   busy?: boolean;
+  followUpCapabilities?: { guide: boolean; queue: boolean };
+  onFollowUp?: (
+    intent: ChatFollowUpIntent,
+    message: string,
+    attachments: ChatAttachment[] | undefined,
+    requestId: string,
+  ) => Promise<ChatFollowUpResult>;
+  sideQuestionAvailable?: boolean;
+  onSideQuestion?: (message: string, attachments?: ChatAttachment[]) => Promise<boolean>;
   personaColour: string;
   model?: string;
   modelProvider?: AgentProvider;
@@ -117,7 +146,7 @@ interface ChatInputProps {
   contextControls?: ReactNode;
   /** Leading controls rendered in the composer footer before attachments. */
   leadingControls?: ReactNode;
-  prefill?: { id: string; text: string } | null;
+  prefill?: { id: string; text: string; attachments?: ChatAttachment[] } | null;
   draftKey?: string;
   mentionRepoIds?: string[];
   quickPrompts?: ChatQuickPrompt[];
@@ -142,6 +171,10 @@ export function ChatInput({
   onStop,
   disabled,
   busy,
+  followUpCapabilities,
+  onFollowUp,
+  sideQuestionAvailable = false,
+  onSideQuestion,
   personaColour,
   model = 'gpt-5.6-sol',
   modelProvider = 'codex',
@@ -175,9 +208,19 @@ export function ChatInput({
 }: ChatInputProps) {
   const [value, setValue] = useState(() => loadDraft(draftKey));
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  const [sendFeedback, setSendFeedback] = useState('');
+  const [standardFeedback, setStandardFeedback] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [followUpFeedback, setFollowUpFeedback] = useState<FollowUpComposerFeedback | null>(null);
+  const [uncertainFollowUps, setUncertainFollowUps] = useState<FollowUpSubmission[]>([]);
+  const [pendingFollowUpId, setPendingFollowUpId] = useState<string | null>(null);
+  const [standardSendPending, setStandardSendPending] = useState(false);
+  const [sideQuestionPending, setSideQuestionPending] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [preparingAttachments, setPreparingAttachments] = useState(false);
   const [fileMention, setFileMention] = useState<ActiveFileMention | null>(null);
@@ -199,6 +242,15 @@ export function ChatInput({
   const [compactFooter, setCompactFooter] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerWidthRef = useRef<HTMLDivElement>(null);
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
+  const draftRevisionRef = useRef(0);
+  const followUpPendingRef = useRef<{ requestId: string; draftKey?: string } | null>(null);
+  const uncertainFollowUpsRef = useRef<FollowUpSubmission[]>(uncertainFollowUps);
+  uncertainFollowUpsRef.current = uncertainFollowUps;
+  const standardSendPendingRef = useRef<string | null>(null);
+  const sideQuestionPendingRef = useRef<string | null>(null);
+  const prefillAppliedRef = useRef<string | null>(null);
   // Mirrors `value` for the async send path — lets the deferred clear bail out
   // when the user kept typing while the provider was deciding (H2).
   const valueRef = useRef(value);
@@ -207,6 +259,30 @@ export function ChatInput({
   const skipNextDraftSaveRef = useRef(false);
   const mentionRepoKey = mentionRepoIds.join('\0');
   const draggingFiles = dragDepth > 0;
+
+  const markDraftChanged = useCallback(() => {
+    draftRevisionRef.current += 1;
+  }, []);
+  const currentDraftVersion = useCallback(
+    (): ComposerDraftVersion => ({
+      draftKey: draftKeyRef.current,
+      revision: draftRevisionRef.current,
+    }),
+    [],
+  );
+  const rememberUncertainFollowUp = useCallback((submission: FollowUpSubmission) => {
+    const next = [
+      ...uncertainFollowUpsRef.current.filter((item) => item.requestId !== submission.requestId),
+      submission,
+    ];
+    uncertainFollowUpsRef.current = next;
+    setUncertainFollowUps(next);
+  }, []);
+  const resolveUncertainFollowUp = useCallback((requestId: string) => {
+    const next = uncertainFollowUpsRef.current.filter((item) => item.requestId !== requestId);
+    uncertainFollowUpsRef.current = next;
+    setUncertainFollowUps(next);
+  }, []);
 
   useEffect(() => {
     const composer = composerWidthRef.current;
@@ -271,7 +347,9 @@ export function ChatInput({
   }, []);
 
   const clearComposer = useCallback(() => {
+    markDraftChanged();
     setValue('');
+    valueRef.current = '';
     setAttachments([]);
     setAttachmentPreviews({});
     setAttachmentError(null);
@@ -283,38 +361,244 @@ export function ChatInput({
     setSkillMentionError(null);
     clearDraft(draftKey);
     window.requestAnimationFrame(resizeTextarea);
-  }, [draftKey, resizeTextarea]);
+  }, [draftKey, markDraftChanged, resizeTextarea]);
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     const trimmed = value.trim();
-    if ((!trimmed && attachments.length === 0) || disabled || preparingAttachments) return;
-    setSendFeedback('');
-    const result = onSend(trimmed, attachments);
-    if (result && typeof (result as Promise<unknown>).then === 'function') {
-      // H2 — keep the draft until the provider accepts (or queues) the send;
-      // a `false` resolution means the message was rejected.
-      void Promise.resolve(result)
-        .then((accepted) => {
-          if (accepted === false) {
-            if (busy) setSendFeedback('The message was not accepted. Your draft is still here.');
-            return;
-          }
-          if (busy) setSendFeedback('Message added while the agent is working.');
-          if (valueRef.current.trim() !== trimmed) return;
-          clearComposer();
-        })
-        .catch(() => {
-          if (busy) setSendFeedback('Could not send the message. Your draft is still here.');
+    if (
+      (!trimmed && attachments.length === 0) ||
+      disabled ||
+      busy ||
+      preparingAttachments ||
+      standardSendPendingRef.current
+    ) {
+      return;
+    }
+
+    const sendId = crypto.randomUUID();
+    const submittedVersion: ComposerDraftVersion = {
+      draftKey: draftKeyRef.current,
+      revision: draftRevisionRef.current,
+    };
+    standardSendPendingRef.current = sendId;
+    setStandardSendPending(true);
+    setStandardFeedback(null);
+
+    try {
+      const accepted = await onSend(
+        trimmed,
+        attachments.length ? copyAttachments(attachments) : undefined,
+      );
+      if (draftKeyRef.current !== submittedVersion.draftKey) return;
+      if (accepted === false) {
+        setStandardFeedback({
+          kind: 'error',
+          message: 'The message was not accepted. Your draft is still here.',
         });
+        return;
+      }
+      if (isCurrentComposerDraft(submittedVersion, currentDraftVersion())) clearComposer();
+    } catch {
+      if (draftKeyRef.current === submittedVersion.draftKey) {
+        setStandardFeedback({
+          kind: 'error',
+          message: 'Could not confirm that the message was sent. Your draft is still here.',
+        });
+      }
+    } finally {
+      if (standardSendPendingRef.current === sendId) {
+        standardSendPendingRef.current = null;
+        if (draftKeyRef.current === submittedVersion.draftKey) setStandardSendPending(false);
+      }
+    }
+  }, [
+    value,
+    attachments,
+    disabled,
+    busy,
+    preparingAttachments,
+    onSend,
+    clearComposer,
+    currentDraftVersion,
+  ]);
+
+  const handleFollowUp = useCallback(
+    async (intent: ChatFollowUpIntent, retry?: FollowUpSubmission) => {
+      if (
+        disabled ||
+        !onFollowUp ||
+        followUpPendingRef.current ||
+        (!retry &&
+          (!busy ||
+            preparingAttachments ||
+            !followUpCapabilities?.[intent] ||
+            uncertainFollowUpsRef.current.some((submission) =>
+              isCurrentComposerDraft(submission, currentDraftVersion()),
+            )))
+      ) {
+        return;
+      }
+
+      const message = retry?.message ?? value.trim();
+      const submittedAttachments = retry ? (retry.attachments ?? []) : copyAttachments(attachments);
+      if (!retry && !message && submittedAttachments.length === 0) return;
+
+      const submission: FollowUpSubmission = retry ?? {
+        requestId: `chat-follow-up-${crypto.randomUUID()}`,
+        intent,
+        message,
+        attachments: submittedAttachments.length > 0 ? submittedAttachments : undefined,
+        draftKey: draftKeyRef.current,
+        revision: draftRevisionRef.current,
+      };
+
+      followUpPendingRef.current = {
+        requestId: submission.requestId,
+        draftKey: submission.draftKey,
+      };
+      setPendingFollowUpId(submission.requestId);
+      setFollowUpFeedback({
+        kind: 'success',
+        message: retry
+          ? 'Checking the previous send with the same request ID…'
+          : 'Sending follow-up…',
+      });
+      setStandardFeedback(null);
+
+      try {
+        const result = await onFollowUp(
+          submission.intent,
+          submission.message,
+          submission.attachments ? copyAttachments(submission.attachments) : undefined,
+          submission.requestId,
+        );
+        if (draftKeyRef.current !== submission.draftKey) return;
+
+        if (result.requestId !== submission.requestId || result.intent !== submission.intent) {
+          rememberUncertainFollowUp(submission);
+          setFollowUpFeedback({
+            kind: 'uncertain',
+            message: 'Delivery could not be confirmed. Retry this exact message safely.',
+          });
+          return;
+        }
+
+        const feedback = getFollowUpFeedback(result);
+        resolveUncertainFollowUp(submission.requestId);
+        if (feedback.kind === 'error') {
+          setFollowUpFeedback({
+            ...feedback,
+            message: `${feedback.message} Your draft is still here.`,
+          });
+          return;
+        }
+
+        const sameDraft = isCurrentComposerDraft(submission, currentDraftVersion());
+        setFollowUpFeedback({
+          ...feedback,
+          message: sameDraft
+            ? feedback.message
+            : `${feedback.message} Your newer draft is unchanged.`,
+        });
+        if (sameDraft) clearComposer();
+      } catch {
+        if (draftKeyRef.current !== submission.draftKey) return;
+        rememberUncertainFollowUp(submission);
+        setFollowUpFeedback({
+          kind: 'uncertain',
+          message: 'Delivery could not be confirmed. Retry this exact message safely.',
+        });
+      } finally {
+        if (
+          followUpPendingRef.current?.requestId === submission.requestId &&
+          followUpPendingRef.current.draftKey === submission.draftKey
+        ) {
+          followUpPendingRef.current = null;
+          if (draftKeyRef.current === submission.draftKey) setPendingFollowUpId(null);
+        }
+      }
+    },
+    [
+      attachments,
+      busy,
+      clearComposer,
+      disabled,
+      followUpCapabilities,
+      onFollowUp,
+      preparingAttachments,
+      value,
+      currentDraftVersion,
+      rememberUncertainFollowUp,
+      resolveUncertainFollowUp,
+    ],
+  );
+
+  const handleSideQuestion = useCallback(async () => {
+    const message = value.trim();
+    if (
+      disabled ||
+      !sideQuestionAvailable ||
+      !onSideQuestion ||
+      sideQuestionPendingRef.current ||
+      (!message && attachments.length === 0) ||
+      preparingAttachments
+    ) {
       return;
     }
-    if (result === false) {
-      if (busy) setSendFeedback('The message was not accepted. Your draft is still here.');
-      return;
+
+    const requestId = crypto.randomUUID();
+    const submittedVersion: ComposerDraftVersion = {
+      draftKey: draftKeyRef.current,
+      revision: draftRevisionRef.current,
+    };
+    sideQuestionPendingRef.current = requestId;
+    setSideQuestionPending(true);
+    setStandardFeedback(null);
+
+    try {
+      const accepted = await onSideQuestion(
+        message,
+        attachments.length ? copyAttachments(attachments) : undefined,
+      );
+      if (draftKeyRef.current !== submittedVersion.draftKey) return;
+      if (!accepted) {
+        setStandardFeedback({
+          kind: 'error',
+          message: 'The read-only side question was not started. Your draft is still here.',
+        });
+        return;
+      }
+      const sameDraft = isCurrentComposerDraft(submittedVersion, currentDraftVersion());
+      setStandardFeedback({
+        kind: 'success',
+        message: sameDraft
+          ? 'Read-only side question started.'
+          : 'Read-only side question started. Your newer draft is unchanged.',
+      });
+      if (sameDraft) clearComposer();
+    } catch {
+      if (draftKeyRef.current === submittedVersion.draftKey) {
+        setStandardFeedback({
+          kind: 'error',
+          message: 'Could not start the side question. Your draft is still here.',
+        });
+      }
+    } finally {
+      if (sideQuestionPendingRef.current === requestId) {
+        sideQuestionPendingRef.current = null;
+        if (draftKeyRef.current === submittedVersion.draftKey) setSideQuestionPending(false);
+      }
     }
-    clearComposer();
-    if (busy) setSendFeedback('Message added while the agent is working.');
-  }, [value, attachments, disabled, preparingAttachments, onSend, clearComposer, busy]);
+  }, [
+    attachments,
+    clearComposer,
+    disabled,
+    onSideQuestion,
+    preparingAttachments,
+    sideQuestionAvailable,
+    value,
+    currentDraftVersion,
+  ]);
 
   const refreshComposerTriggers = useCallback(
     (nextValue: string, selectionStart: number | null) => {
@@ -337,11 +621,13 @@ export function ChatInput({
   const handleTextChange = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       const nextValue = event.target.value;
-      setSendFeedback('');
+      markDraftChanged();
+      setStandardFeedback(null);
+      setFollowUpFeedback(null);
       setValue(nextValue);
       refreshComposerTriggers(nextValue, event.target.selectionStart);
     },
-    [refreshComposerTriggers],
+    [markDraftChanged, refreshComposerTriggers],
   );
 
   const handleTextareaSelection = useCallback(() => {
@@ -374,6 +660,7 @@ export function ChatInput({
           return acc;
         }, {});
 
+        markDraftChanged();
         setAttachments((prev) => mergeAttachments(prev, prepared));
         setAttachmentPreviews((prev) => ({ ...prev, ...previews }));
       } catch (err) {
@@ -382,7 +669,7 @@ export function ChatInput({
         setPreparingAttachments(false);
       }
     },
-    [attachments.length, disabled],
+    [attachments.length, disabled, markDraftChanged],
   );
 
   const handlePaste = useCallback(
@@ -407,6 +694,7 @@ export function ChatInput({
     setAttachmentError(null);
     try {
       const selected = await window.anvil.chat.selectAttachments();
+      markDraftChanged();
       setAttachments((prev) => mergeAttachments(prev, selected.slice(0, remainingSlots)));
       if (selected.length > remainingSlots) {
         setAttachmentError('Some files were skipped.');
@@ -416,16 +704,20 @@ export function ChatInput({
     } finally {
       setPreparingAttachments(false);
     }
-  }, [attachments.length, disabled]);
+  }, [attachments.length, disabled, markDraftChanged]);
 
-  const removeAttachment = useCallback((attachmentId: string) => {
-    setAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId));
-    setAttachmentPreviews((prev) => {
-      const next = { ...prev };
-      delete next[attachmentId];
-      return next;
-    });
-  }, []);
+  const removeAttachment = useCallback(
+    (attachmentId: string) => {
+      markDraftChanged();
+      setAttachments((prev) => prev.filter((attachment) => attachment.id !== attachmentId));
+      setAttachmentPreviews((prev) => {
+        const next = { ...prev };
+        delete next[attachmentId];
+        return next;
+      });
+    },
+    [markDraftChanged],
+  );
 
   const handleSelectFileMention = useCallback(
     async (result: ChatFileMentionSearchResult) => {
@@ -441,6 +733,7 @@ export function ChatInput({
         const prepared = await window.anvil.chat.prepareAttachments([
           { name: result.name, path: result.path },
         ]);
+        markDraftChanged();
         setAttachments((prev) => mergeAttachments(prev, prepared));
 
         const insert = `@${buildFileMentionLabel(result, mentionRepoIds.length > 1)} `;
@@ -474,6 +767,7 @@ export function ChatInput({
       disabled,
       fileMention,
       mentionRepoIds.length,
+      markDraftChanged,
       preparingAttachments,
       resizeTextarea,
       value,
@@ -490,6 +784,7 @@ export function ChatInput({
         .replace(/^\s+/, '')}`;
       const nextCaretPosition = slashCommand.start + insert.length;
 
+      markDraftChanged();
       setValue(nextValue);
       setSlashCommand(null);
 
@@ -501,7 +796,7 @@ export function ChatInput({
         resizeTextarea();
       });
     },
-    [disabled, resizeTextarea, slashCommand, value],
+    [disabled, markDraftChanged, resizeTextarea, slashCommand, value],
   );
 
   const handleSelectSkillMention = useCallback(
@@ -514,6 +809,7 @@ export function ChatInput({
         .replace(/^\s+/, '')}`;
       const nextCaretPosition = skillMention.start + insert.length;
 
+      markDraftChanged();
       setValue(nextValue);
       setSkillMention(null);
       setSkillMentionError(null);
@@ -526,7 +822,7 @@ export function ChatInput({
         resizeTextarea();
       });
     },
-    [disabled, resizeTextarea, skillMention, value],
+    [disabled, markDraftChanged, resizeTextarea, skillMention, value],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -628,6 +924,7 @@ export function ChatInput({
   const handleVoiceTranscript = useCallback(
     (text: string) => {
       if (text.trim()) {
+        markDraftChanged();
         setValue((prev) => (prev ? `${prev} ${text}` : text));
         setTimeout(() => {
           if (textareaRef.current) {
@@ -637,11 +934,12 @@ export function ChatInput({
         }, 0);
       }
     },
-    [resizeTextarea],
+    [markDraftChanged, resizeTextarea],
   );
 
   const handleQuickPrompt = useCallback(
     (prompt: string) => {
+      markDraftChanged();
       setValue(prompt);
       setFileMention(null);
       setFileMentionResults([]);
@@ -655,7 +953,7 @@ export function ChatInput({
         resizeTextarea();
       });
     },
-    [resizeTextarea],
+    [markDraftChanged, resizeTextarea],
   );
 
   const handleDragEnter = useCallback(
@@ -703,18 +1001,55 @@ export function ChatInput({
   }, [disabled, focusRequest]);
 
   useEffect(() => {
+    markDraftChanged();
     skipNextDraftSaveRef.current = true;
-    setValue(loadDraft(draftKey));
+    const nextDraft = loadDraft(draftKey);
+    setValue(nextDraft);
+    valueRef.current = nextDraft;
+    setAttachments([]);
+    setAttachmentPreviews({});
+    setAttachmentError(null);
+    setStandardFeedback(null);
+    setFollowUpFeedback(null);
+    setUncertainFollowUps([]);
+    setPendingFollowUpId(null);
+    setStandardSendPending(false);
+    setSideQuestionPending(false);
+    followUpPendingRef.current = null;
+    uncertainFollowUpsRef.current = [];
+    standardSendPendingRef.current = null;
+    sideQuestionPendingRef.current = null;
     setFileMention(null);
     setFileMentionResults([]);
     setSlashCommand(null);
     setSkillMention(null);
-  }, [draftKey]);
+  }, [draftKey, markDraftChanged]);
 
   useEffect(() => {
-    if (!prefill) return;
+    if (!prefill) {
+      prefillAppliedRef.current = null;
+      return;
+    }
+    if (prefillAppliedRef.current === prefill.id) return;
+    prefillAppliedRef.current = prefill.id;
 
-    setValue((prev) => (prev.trim() ? `${prev}\n\n${prefill.text}` : prefill.text));
+    markDraftChanged();
+    setStandardFeedback(null);
+    setValue((prev) => appendComposerPrefill(prev, prefill.text));
+    if (prefill.attachments?.length) {
+      const current = attachmentsRef.current;
+      const next = mergeAttachments(current, prefill.attachments);
+      const uniqueIncoming = prefill.attachments.filter(
+        (attachment) =>
+          !current.some(
+            (item) => getAttachmentDedupKey(item) === getAttachmentDedupKey(attachment),
+          ),
+      );
+      if (next.length < current.length + uniqueIncoming.length) {
+        setAttachmentError('Some files were skipped.');
+      }
+      setAttachments(next);
+    }
 
     setTimeout(() => {
       const el = textareaRef.current;
@@ -723,7 +1058,7 @@ export function ChatInput({
       resizeTextarea();
       el.setSelectionRange(el.value.length, el.value.length);
     }, 0);
-  }, [prefill, resizeTextarea]);
+  }, [markDraftChanged, prefill, resizeTextarea]);
 
   useEffect(() => {
     if (disabled || !fileMention || mentionRepoIds.length === 0) {
@@ -815,6 +1150,15 @@ export function ChatInput({
   }, [draftKey, resizeTextarea, value]);
 
   const hasContent = value.trim().length > 0 || attachments.length > 0;
+  const canGuide = Boolean(followUpCapabilities?.guide && onFollowUp);
+  const canQueue = Boolean(followUpCapabilities?.queue && onFollowUp);
+  const followUpBlocked = uncertainFollowUps.some((submission) =>
+    isCurrentComposerDraft(submission, currentDraftVersion()),
+  );
+  const followUpButtonDisabled =
+    disabled || !hasContent || preparingAttachments || !!pendingFollowUpId || followUpBlocked;
+  const sideQuestionButtonDisabled =
+    disabled || !hasContent || preparingAttachments || sideQuestionPending;
   const showQuickPrompts =
     !busy &&
     !disabled &&
@@ -991,7 +1335,13 @@ export function ChatInput({
             aria-activedescendant={activeDescendant}
             placeholder={
               busy
-                ? 'Add guidance while Anvil keeps working...'
+                ? canGuide && canQueue
+                  ? 'Write a message, then choose Guide current run or Queue next...'
+                  : canGuide
+                    ? 'Write guidance for the current run...'
+                    : canQueue
+                      ? 'Write a message to queue for the next run...'
+                      : 'Follow-up sending is unavailable for this session...'
                 : disabled
                   ? 'Chat is not ready yet...'
                   : mentionRepoIds.length > 0
@@ -1106,7 +1456,7 @@ export function ChatInput({
                 )}
               </div>
 
-              <div className="ml-auto flex shrink-0 items-center justify-end gap-1.5">
+              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
                 <VoiceInputButton
                   onTranscript={(text) => {
                     setVoiceError(null);
@@ -1116,30 +1466,84 @@ export function ChatInput({
                   disabled={disabled}
                   colour={personaColour}
                 />
-                <button
-                  type="button"
-                  onClick={handleSend}
-                  disabled={disabled || !hasContent || preparingAttachments}
-                  className={`composer-send flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-[transform,filter,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30 ${
-                    busy
-                      ? 'border border-border bg-bg-tertiary text-text-primary'
-                      : 'text-bg-primary'
-                  }`}
-                  style={{
-                    backgroundColor: busy
-                      ? undefined
-                      : hasContent
+                {busy ? (
+                  <>
+                    {canGuide && (
+                      <button
+                        type="button"
+                        onClick={() => void handleFollowUp('guide')}
+                        disabled={followUpButtonDisabled}
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                        style={{ backgroundColor: personaColour }}
+                        aria-label="Guide the current run"
+                        title="Send guidance to the agent’s current run"
+                      >
+                        <Send size={13} />
+                        Guide current run
+                      </button>
+                    )}
+                    {canQueue && (
+                      <button
+                        type="button"
+                        onClick={() => void handleFollowUp('queue')}
+                        disabled={followUpButtonDisabled}
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-tertiary px-2.5 text-xs font-medium text-text-primary transition-colors hover:bg-bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                        aria-label="Queue for the next run"
+                        title="Send this message after the current run finishes"
+                      >
+                        <ListChecks size={13} />
+                        Queue next
+                      </button>
+                    )}
+                    {!canGuide && !canQueue && (
+                      <span className="px-2 text-xs text-text-tertiary">
+                        Follow-up sending is unavailable for this session.
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleSend()}
+                    disabled={
+                      disabled || !hasContent || preparingAttachments || standardSendPending
+                    }
+                    className="composer-send flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-[transform,filter,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-30"
+                    style={{
+                      backgroundColor: hasContent
                         ? personaColour
                         : `color-mix(in srgb, ${personaColour} 25%, transparent)`,
-                  }}
-                  aria-label={
-                    busy ? 'Send a follow-up message while the agent is working' : 'Send message'
-                  }
-                  title={busy ? 'Send a message while the agent is working' : 'Send message'}
-                >
-                  <Send size={14} />
-                  {busy ? 'Follow up' : 'Send'}
-                </button>
+                    }}
+                    aria-label={standardSendPending ? 'Sending message' : 'Send message'}
+                    aria-busy={standardSendPending}
+                    title={standardSendPending ? 'Sending message' : 'Send message'}
+                  >
+                    {standardSendPending ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Send size={14} />
+                    )}
+                    Send
+                  </button>
+                )}
+                {sideQuestionAvailable && onSideQuestion && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSideQuestion()}
+                    disabled={sideQuestionButtonDisabled}
+                    className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border-subtle bg-transparent px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                    aria-label="Ask a read-only side question"
+                    aria-busy={sideQuestionPending}
+                    title="Start a separate read-only conversation. The main run continues."
+                  >
+                    {sideQuestionPending ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <CircleHelp size={13} />
+                    )}
+                    Side question
+                  </button>
+                )}
                 {busy && (
                   <button
                     type="button"
@@ -1167,11 +1571,58 @@ export function ChatInput({
               {voiceError}
             </p>
           )}
+          {standardFeedback && (
+            <div
+              role={standardFeedback.kind === 'error' ? 'alert' : 'status'}
+              className={`border-t border-border-subtle px-4 py-2 text-xs leading-5 ${
+                standardFeedback.kind === 'error' ? 'text-error' : 'text-text-secondary'
+              }`}
+            >
+              {standardFeedback.message}
+            </div>
+          )}
+          {followUpFeedback && (
+            <div
+              role={followUpFeedback.kind === 'success' ? 'status' : 'alert'}
+              className={`flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle px-4 py-2 text-xs leading-5 ${
+                followUpFeedback.kind === 'success' ? 'text-text-secondary' : 'text-error'
+              }`}
+            >
+              <span className="min-w-0 flex-1">{followUpFeedback.message}</span>
+            </div>
+          )}
+          {uncertainFollowUps.map((submission) => (
+            <div
+              key={submission.requestId}
+              className="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle px-4 py-2 text-xs leading-5 text-warning"
+            >
+              <span className="min-w-0 flex-1">
+                An earlier follow-up has uncertain delivery. Retry will use the same message and
+                request ID.
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleFollowUp(submission.intent, submission)}
+                disabled={disabled || !!pendingFollowUpId}
+                className="shrink-0 rounded-md border border-border px-2 py-1 font-medium text-text-primary transition-colors hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Retry same message
+              </button>
+            </div>
+          ))}
         </div>
 
         <p id="chat-composer-keyboard-hint" className="sr-only">
           {busy
-            ? 'Enter sends a follow-up message while the agent is working. Shift plus Enter adds a line.'
+            ? `Enter does not send while the agent is working. Choose ${
+                [
+                  canGuide ? 'Guide current run' : null,
+                  canQueue ? 'Queue next' : null,
+                  sideQuestionAvailable ? 'Side question' : null,
+                ]
+                  .filter(Boolean)
+                  .join(', ') || 'Stop or wait'
+              }. Shift plus Enter adds a line.`
             : 'Enter sends. Shift plus Enter adds a line.'}
           {mentionRepoIds.length > 0
             ? ' Type slash for commands, at for files, or dollar for skills.'
@@ -1227,7 +1678,17 @@ export function ChatInput({
                     </li>
                     <li>
                       <span className="font-mono text-text-primary">Enter</span>{' '}
-                      {busy ? 'sends a follow-up message,' : 'sends,'}{' '}
+                      {busy
+                        ? `does not send; choose ${
+                            [
+                              canGuide ? 'Guide current run' : null,
+                              canQueue ? 'Queue next' : null,
+                              sideQuestionAvailable ? 'Side question' : null,
+                            ]
+                              .filter(Boolean)
+                              .join(', ') || 'wait'
+                          },`
+                        : 'sends,'}{' '}
                       <span className="font-mono text-text-primary">Shift+Enter</span> adds a line
                     </li>
                   </ul>
@@ -1238,8 +1699,7 @@ export function ChatInput({
         )}
       </div>
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {preparingAttachments ? 'Preparing attachments. ' : ''}
-        {sendFeedback}
+        {preparingAttachments ? 'Preparing attachments.' : ''}
       </p>
     </div>
   );
@@ -1252,6 +1712,10 @@ function loadDraft(draftKey: string | undefined): string {
   } catch {
     return '';
   }
+}
+
+function copyAttachments(attachments: ChatAttachment[]): ChatAttachment[] {
+  return attachments.map((attachment) => ({ ...attachment }));
 }
 
 function saveDraft(draftKey: string | undefined, value: string): void {

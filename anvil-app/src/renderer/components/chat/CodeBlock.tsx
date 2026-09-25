@@ -4,15 +4,20 @@ import {
   useEffect,
   useRef,
   useCallback,
+  useId,
   type ReactNode,
   type ErrorInfo,
 } from 'react';
 import { Check, Copy, ChevronDown, ChevronRight } from 'lucide-react';
 import { highlightCode } from './shiki';
 import { copyTextToClipboard } from '../../utils/clipboard';
+import { StreamedMermaidPreview } from './StreamedMermaidPreview';
 
 const COLLAPSE_THRESHOLD = 20;
 const HIGHLIGHT_DEBOUNCE_MS = 120;
+const MAX_HIGHLIGHTED_CODE_CHARS = 12_000;
+const MAX_COLLAPSED_CODE_CHARS = 8_000;
+const MAX_NUMBERED_LINES = 500;
 
 interface CodeBlockProps {
   children?: ReactNode;
@@ -39,9 +44,15 @@ export function CodeBlock({ children, className, 'data-fenced': isFenced }: Code
 
   // Fenced if explicitly marked OR if has a language class
   if (isFenced || language) {
+    const code = extractText(children).trimEnd();
+
+    if (language === 'mermaid') {
+      return <MermaidCodeBlock source={code} />;
+    }
+
     return (
-      <CodeBlockErrorBoundary code={extractText(children)}>
-        <FencedCodeBlock language={language || 'text'}>{children}</FencedCodeBlock>
+      <CodeBlockErrorBoundary code={code}>
+        <FencedCodeBlock language={language || 'text'}>{code}</FencedCodeBlock>
       </CodeBlockErrorBoundary>
     );
   }
@@ -82,12 +93,17 @@ function FencedCodeBlock({ language, children }: { language: string; children: R
   } | null>(null);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const codeBodyId = useId();
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const code = extractText(children).trimEnd();
-  const lineCount = code.split('\n').length;
-  const isLong = lineCount > COLLAPSE_THRESHOLD;
+  const lineCount = countLines(code);
+  const isLong = lineCount > COLLAPSE_THRESHOLD || code.length > MAX_COLLAPSED_CODE_CHARS;
+  const visibleCode =
+    isLong && !expanded ? createCollapsedCodePreview(code, MAX_COLLAPSED_CODE_CHARS) : code;
+  const visibleLineCount = countLines(visibleCode);
+  const numberedLineCount = Math.min(visibleLineCount, MAX_NUMBERED_LINES);
   const highlightedHtml =
-    highlightedResult?.code === code && highlightedResult.language === language
+    highlightedResult?.code === visibleCode && highlightedResult.language === language
       ? highlightedResult.html
       : null;
 
@@ -95,16 +111,18 @@ function FencedCodeBlock({ language, children }: { language: string; children: R
     let cancelled = false;
 
     const timeout = window.setTimeout(() => {
-      highlightCode(code, language).then((html) => {
-        if (!cancelled) setHighlightedResult({ code, language, html });
-      });
+      if (visibleCode.length <= MAX_HIGHLIGHTED_CODE_CHARS) {
+        highlightCode(visibleCode, language).then((html) => {
+          if (!cancelled) setHighlightedResult({ code: visibleCode, language, html });
+        });
+      }
     }, HIGHLIGHT_DEBOUNCE_MS);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [code, language]);
+  }, [visibleCode, language]);
 
   const handleCopy = useCallback(() => {
     void copyTextToClipboard(code);
@@ -127,7 +145,9 @@ function FencedCodeBlock({ language, children }: { language: string; children: R
       <div className="flex items-center justify-between bg-bg-elevated px-3 py-1.5">
         <span className="text-xs text-text-secondary">{language}</span>
         <button
+          type="button"
           onClick={handleCopy}
+          aria-label={copied ? 'Copied code' : 'Copy code'}
           className="flex items-center gap-1 text-xs text-text-tertiary transition-colors hover:text-text-secondary"
         >
           {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
@@ -137,6 +157,7 @@ function FencedCodeBlock({ language, children }: { language: string; children: R
 
       {/* Code body */}
       <div
+        id={codeBodyId}
         className={`overflow-auto bg-bg-tertiary ${isLong && !expanded ? 'max-h-[calc(1.5rem*20+1.5rem)]' : ''}`}
       >
         <div className="flex text-xs leading-relaxed">
@@ -144,9 +165,10 @@ function FencedCodeBlock({ language, children }: { language: string; children: R
           <div
             aria-hidden="true"
             data-line-number-gutter
-            className="select-none whitespace-nowrap border-r border-border-subtle px-3 py-3 text-right font-mono leading-relaxed text-text-tertiary"
+            aria-label={`Line numbers for ${numberedLineCount} lines`}
+            className="w-14 shrink-0 select-none whitespace-nowrap border-r border-border-subtle px-3 py-3 text-right font-mono leading-relaxed text-text-tertiary"
           >
-            {Array.from({ length: lineCount }, (_, i) => (
+            {Array.from({ length: numberedLineCount }, (_, i) => (
               <div key={i}>{i + 1}</div>
             ))}
           </div>
@@ -157,7 +179,7 @@ function FencedCodeBlock({ language, children }: { language: string; children: R
             ) : (
               // Fallback while loading
               <pre className="overflow-visible whitespace-pre bg-transparent p-0 text-xs font-mono leading-relaxed text-text-secondary">
-                <code>{code}</code>
+                <code>{visibleCode}</code>
               </pre>
             )}
           </div>
@@ -167,13 +189,97 @@ function FencedCodeBlock({ language, children }: { language: string; children: R
       {/* Collapse/expand footer */}
       {isLong && (
         <button
+          type="button"
           onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+          aria-controls={codeBodyId}
           className="flex w-full items-center justify-center gap-1 border-t border-border-subtle bg-bg-elevated px-3 py-1 text-xs text-text-tertiary hover:text-text-secondary"
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          {expanded ? 'Show less' : `Show more (${lineCount} lines)`}
+          {expanded
+            ? 'Show less'
+            : `Show more (${lineCount.toLocaleString()} ${lineCount === 1 ? 'line' : 'lines'}${code.length > MAX_COLLAPSED_CODE_CHARS ? `, ${code.length.toLocaleString()} characters` : ''})`}
         </button>
       )}
+      {expanded && visibleLineCount > MAX_NUMBERED_LINES && (
+        <p className="border-t border-border-subtle bg-bg-elevated px-3 py-1 text-center text-xs text-text-tertiary">
+          Line numbers are shown for the first {MAX_NUMBERED_LINES.toLocaleString()} lines.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function createCollapsedCodePreview(code: string, maxChars: number): string {
+  const preview: string[] = [];
+  let position = 0;
+  const limit = Math.min(code.length, maxChars);
+
+  while (position < code.length && preview.length < COLLAPSE_THRESHOLD) {
+    const newlineIndex = code.indexOf('\n', position);
+    const end = newlineIndex === -1 || newlineIndex >= limit ? limit : newlineIndex;
+    const line = code.slice(position, end);
+    const reachedLimit = end === limit && limit < code.length;
+
+    preview.push(reachedLimit ? `${line}…` : line);
+    position = newlineIndex === -1 || end === limit ? code.length : newlineIndex + 1;
+  }
+
+  return preview.join('\n');
+}
+
+function countLines(code: string): number {
+  let lines = 1;
+  let newlineIndex = code.indexOf('\n');
+  while (newlineIndex !== -1) {
+    lines += 1;
+    newlineIndex = code.indexOf('\n', newlineIndex + 1);
+  }
+  return lines;
+}
+
+function MermaidCodeBlock({ source }: { source: string }) {
+  const identity = useId();
+  const [copied, setCopied] = useState(false);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleCopy = useCallback(() => {
+    void copyTextToClipboard(source);
+    setCopied(true);
+    if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = setTimeout(() => setCopied(false), 1500);
+  }, [source]);
+
+  useEffect(
+    () => () => {
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    },
+    [],
+  );
+
+  return (
+    <div className="my-2 overflow-hidden rounded-md border border-border-subtle">
+      <div className="flex items-center justify-between bg-bg-elevated px-3 py-1.5">
+        <span className="text-xs text-text-secondary">mermaid</span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          aria-label={copied ? 'Copied Mermaid source' : 'Copy Mermaid source'}
+          className="flex items-center gap-1 text-xs text-text-tertiary transition-colors hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <StreamedMermaidPreview identity={identity} source={source} />
+      <details className="border-t border-border-subtle bg-bg-elevated">
+        <summary className="cursor-pointer px-3 py-1.5 text-xs text-text-tertiary hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
+          Show Mermaid source
+        </summary>
+        <pre className="max-h-96 overflow-auto border-t border-border-subtle bg-bg-tertiary p-3 text-xs leading-relaxed text-text-secondary">
+          <code>{source}</code>
+        </pre>
+      </details>
     </div>
   );
 }

@@ -30,12 +30,15 @@ import type {
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
   ChatFileMentionSearchResult,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatSendOptions,
   ChatStartOptions,
   ChatSteerResult,
   ChatThread,
+  ChatThreadPurpose,
   CodexEvent,
   CodexInputResponse,
   CodexSession,
@@ -47,6 +50,7 @@ import {
   startSession,
   sendMessage,
   steerTurn,
+  followUpTurn,
   stopSession,
   interruptTurn,
   emitLocalAssistantTurnStart,
@@ -405,6 +409,13 @@ export function registerChatHandlers(): void {
   );
 
   ipcMain.handle(
+    'chat:follow-up',
+    (_event, request: ChatFollowUpRequest): Promise<ChatFollowUpResult> => {
+      return followUpTurn(request);
+    },
+  );
+
+  ipcMain.handle(
     'chat:fork-provider-thread',
     async (_event, sourceThreadId: string, targetThreadId: string): Promise<ChatThread | null> => {
       assertReviewRepairForkAllowed(sourceThreadId);
@@ -549,6 +560,8 @@ export function registerChatHandlers(): void {
         workspaceId?: string | null;
         personaId: string;
         title?: string;
+        purpose?: ChatThreadPurpose;
+        sideQuestionOfThreadId?: string;
         workItemId?: string;
         workItemProvider?: WorkItemProvider;
         workItemTitle?: string;

@@ -27,7 +27,12 @@ import {
   ShieldAlert,
   XCircle,
 } from 'lucide-react';
-import type { ChatAttachment, ChatPlanStep, CodexEvent } from '../../../shared/types';
+import type {
+  ChatAttachment,
+  ChatFollowUpIntent,
+  ChatPlanStep,
+  CodexEvent,
+} from '../../../shared/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { DiffViewer } from './DiffViewer';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -38,12 +43,29 @@ import type { ChatTurnWorkItem } from './chat-turns';
 import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
 import { FileEditReviewGrid } from './TurnChangesFooter';
+import { buildChatRequestTargetDomId, getChatQuestionTargetId } from './chat-run-outcome';
 
 interface ChatEventProps {
   event: CodexEvent & { sessionId?: string };
 }
 
 export function ChatEventRenderer({ event }: ChatEventProps) {
+  const requestTarget = getChatQuestionTargetId(event);
+  if (requestTarget) {
+    return (
+      <div
+        id={buildChatRequestTargetDomId(requestTarget)}
+        tabIndex={-1}
+        className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      >
+        <ChatEventContent event={event} />
+      </div>
+    );
+  }
+  return <ChatEventContent event={event} />;
+}
+
+function ChatEventContent({ event }: ChatEventProps) {
   switch (event.type) {
     case 'text':
       return <TextEvent text={event.text ?? ''} />;
@@ -1869,13 +1891,17 @@ export function UserMessage({
   content,
   attachments,
   delivery,
+  deliveryError,
+  deliveryIntent,
   onEdit,
   onBranch,
 }: {
   content: string;
   attachments?: ChatAttachment[];
-  /** H2 — 'queued': provider accepted but holds the send behind the active turn; 'failed': provider never accepted it. */
-  delivery?: 'queued' | 'failed';
+  /** Delivery is separate from whether the agent completed the requested work. */
+  delivery?: 'queued' | 'delivered' | 'failed' | 'uncertain';
+  deliveryError?: string;
+  deliveryIntent?: ChatFollowUpIntent;
   onEdit?: () => void;
   onBranch?: () => void;
 }) {
@@ -1895,6 +1921,19 @@ export function UserMessage({
       <div className="relative w-fit min-w-0 max-w-[72ch]">
         <p className="mb-1.5 flex items-center justify-end gap-1.5 text-right text-xs font-medium text-text-tertiary">
           You
+          {deliveryIntent && (
+            <span className="font-normal">
+              · {deliveryIntent === 'guide' ? 'Guidance' : 'Next task'}
+            </span>
+          )}
+          {delivery === 'delivered' && (
+            <span
+              className="text-text-tertiary"
+              title="Sent to the agent process. This does not confirm the work is complete."
+            >
+              Sent to agent
+            </span>
+          )}
           {delivery === 'queued' && (
             <span
               className="inline-flex items-center gap-1 rounded-full bg-info/10 px-1.5 py-0.5 text-eyebrow font-medium text-info"
@@ -1903,15 +1942,28 @@ export function UserMessage({
               Queued
             </span>
           )}
+          {delivery === 'uncertain' && (
+            <span
+              className="text-warning"
+              title="Delivery could not be confirmed. Check the conversation before sending again."
+            >
+              Delivery unknown
+            </span>
+          )}
           {delivery === 'failed' && (
             <span
               className="inline-flex items-center gap-1 rounded-full bg-error/10 px-1.5 py-0.5 text-eyebrow font-medium text-error"
-              title="The agent did not accept this message — edit or retry"
+              title="The message was rejected. You can edit it before sending again."
             >
               Not sent
             </span>
           )}
         </p>
+        {deliveryError && (
+          <p role="status" className="mb-2 text-right text-xs text-warning">
+            {deliveryError}
+          </p>
+        )}
         <div
           className={`overflow-hidden rounded-xl border px-4 py-3 text-sm text-text-primary transition-colors ${
             collapsible
