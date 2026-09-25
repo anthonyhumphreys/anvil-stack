@@ -23,8 +23,8 @@ import {
 /**
  * CH1 — always-visible per-thread access chip in the composer.
  *
- * Neutral styling for "Read only"/"Approve for me"; warning styling + shield
- * for "Auto approve"/"Full access". Switching to a level whose transport value
+ * Neutral styling for "Read only"/"Ask for extra access"; warning styling + shield
+ * for "Auto in workspace"/"Full access". Switching to a level whose transport value
  * is `full-access` requires a ConfirmDialog.
  *
  * H9 — the option list is provider-truthful: Codex-family providers get the

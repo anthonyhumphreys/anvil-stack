@@ -9,8 +9,8 @@ import { agentProviderLabel } from '../../utils/agent-display';
  * differ from the enum names on purpose (see ui-surfaces-review.md CH1):
  *
  *   read-only       → "Read only"
- *   on-request      → "Approve for me"
- *   workspace-auto  → "Auto approve"
+ *   on-request      → "Ask for extra access"
+ *   workspace-auto  → "Auto in workspace"
  *   full-access     → "Full access"
  *
  * Storage is renderer-local (localStorage, keyed per workspace) because the
@@ -39,13 +39,13 @@ export function chatAccessLevelLabel(mode: CodexMode): string {
     case 'read-only':
       return 'Read only';
     case 'on-request':
-      return 'Approve for me';
+      return 'Ask for extra access';
     case 'workspace-auto':
-      return 'Auto approve';
+      return 'Auto in workspace';
     case 'full-access':
       return 'Full access';
     default:
-      return 'Approve for me';
+      return 'Ask for extra access';
   }
 }
 
@@ -55,24 +55,24 @@ export function chatAccessLevelShortLabel(mode: CodexMode): string {
     case 'read-only':
       return 'Read only';
     case 'on-request':
-      return 'Approve';
+      return 'Ask';
     case 'workspace-auto':
-      return 'Auto';
+      return 'Workspace';
     case 'full-access':
       return 'Full';
     default:
-      return 'Approve';
+      return 'Ask';
   }
 }
 
 export function chatAccessLevelDescription(mode: CodexMode): string {
   switch (mode) {
     case 'read-only':
-      return 'Anvil can read and explain, but cannot change files or run commands.';
+      return 'Anvil can read files and run read-only commands. Changes need your approval.';
     case 'on-request':
-      return 'Anvil asks before changing files or running commands.';
+      return 'Anvil can edit files and run commands in the workspace. It asks when it needs more access.';
     case 'workspace-auto':
-      return 'Anvil edits files and runs commands inside the workspace without asking.';
+      return 'Anvil edits files and runs commands in the workspace without asking. It cannot request more access.';
     case 'full-access':
       return 'Anvil can act anywhere on this machine without asking. Use with care.';
     default:
@@ -147,7 +147,7 @@ function acpAccessOption(provider: AcpAgentProvider, modeId: string): ChatAccess
       return {
         level: 'on-request',
         appliedMode: 'accept-edits',
-        label: 'Approve for me',
+        label: 'Accept edits',
         description: `${name} applies file edits without asking and still asks before other actions.`,
         elevated: false,
       };
@@ -244,7 +244,7 @@ export function chatAppliedModeLabel(modeId: string): string | null {
     case 'agent':
       return 'Agent';
     case 'accept-edits':
-      return 'Approve for me';
+      return 'Accept edits';
     case 'smart':
       return 'Auto approve';
     case 'bypass':
@@ -288,7 +288,7 @@ export function resolveChatAccessChipLabel(
       (isChatAccessLevel(appliedMode) ? chatAccessLevelLabel(appliedMode) : null);
     if (modeLabel) return modeLabel;
   }
-  return chatAccessLevelLabel(level);
+  return options.find((option) => option.level === level)?.label ?? chatAccessLevelLabel(level);
 }
 
 // ---------------------------------------------------------------------------

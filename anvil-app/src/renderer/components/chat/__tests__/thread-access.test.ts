@@ -21,8 +21,8 @@ import {
 describe('chatAccessLevelLabel', () => {
   it('maps every codex mode to the CH1 user-facing label', () => {
     expect(chatAccessLevelLabel('read-only')).toBe('Read only');
-    expect(chatAccessLevelLabel('on-request')).toBe('Approve for me');
-    expect(chatAccessLevelLabel('workspace-auto')).toBe('Auto approve');
+    expect(chatAccessLevelLabel('on-request')).toBe('Ask for extra access');
+    expect(chatAccessLevelLabel('workspace-auto')).toBe('Auto in workspace');
     expect(chatAccessLevelLabel('full-access')).toBe('Full access');
   });
 
@@ -214,7 +214,7 @@ describe('expectedAcpAppliedMode', () => {
 describe('chatAppliedModeLabel', () => {
   it('labels ACP mode ids and ignores Codex internals', () => {
     expect(chatAppliedModeLabel('ask')).toBe('Read only');
-    expect(chatAppliedModeLabel('accept-edits')).toBe('Approve for me');
+    expect(chatAppliedModeLabel('accept-edits')).toBe('Accept edits');
     expect(chatAppliedModeLabel('smart')).toBe('Auto approve');
     expect(chatAppliedModeLabel('bypass')).toBe('Full access');
     expect(chatAppliedModeLabel('plan')).toBe('Plan');
@@ -242,9 +242,9 @@ describe('chatAccessOptionSelected / resolveChatAccessChipLabel', () => {
   it('labels the chip with the applied mode when it differs', () => {
     expect(resolveChatAccessChipLabel(devinOptions, 'full-access', 'smart')).toBe('Auto approve');
     expect(resolveChatAccessChipLabel(devinOptions, 'on-request', 'accept-edits')).toBe(
-      'Approve for me',
+      'Accept edits',
     );
-    expect(resolveChatAccessChipLabel(devinOptions, 'on-request')).toBe('Approve for me');
+    expect(resolveChatAccessChipLabel(devinOptions, 'on-request')).toBe('Accept edits');
   });
 
   it('labels plan mode from either the option or the applied id', () => {
