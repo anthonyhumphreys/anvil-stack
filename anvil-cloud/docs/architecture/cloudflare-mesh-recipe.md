@@ -38,6 +38,9 @@ Additional inputs:
 - `--managed-provisioner <worker>` adds the `MANAGED_PROVISIONER` binding.
   `ANVIL_PUBLIC_API_URL` defaults to the supplied backend origin. Install
   `MANAGED_PROVISIONER_TOKEN` separately.
+- `--enrollment-admin` adds `ENROLLMENT_ADMIN_TOKEN` to the plan. A mutating
+  apply then requires `ANVIL_MESH_ADMIN_TOKEN` in the process environment and
+  installs it after the Worker deploys. Dry-runs do not need the value.
 - `--database` overrides the hosted database name; `--bucket` overrides the
   artifact bucket. Use dedicated names for staging.
 - `--env` emits and selects a named Wrangler environment. All deployment,
@@ -85,8 +88,10 @@ unprovisioned template.
 `secrets` accepts exactly one of `--from-file <json>` and `--from-stdin`.
 It validates the input, sends it to Wrangler over stdin and reports names
 only. Secret operation failures suppress provider output because a provider
-or wrapper may echo rejected values. Deploy the Worker before installing
-secrets. Reapply preserves the Worker's existing secrets.
+or wrapper may echo rejected values. For the planned enrollment admin secret,
+`apply` deploys first and installs the value from `ANVIL_MESH_ADMIN_TOKEN`
+through the same protected stdin path. Use `mesh secrets` to install or rotate
+other secrets. Reapply preserves the Worker's existing secrets.
 
 Commands resolve the backend-local Wrangler installation first. Install the
 standalone backend with `pnpm install --ignore-workspace --frozen-lockfile`.
@@ -95,10 +100,13 @@ when no payload is supplied so noninteractive commands cannot wait forever.
 
 ## Production evidence and initial test deployments
 
-The normal apply/remove path requires `--evidence <reference>` identifying
-recorded provider lifecycle evidence. Missing evidence fails closed before
-Wrangler runs. A local `apply --dry-run` needs no evidence and makes no
-provider mutation.
+The normal apply path requires `--evidence <reference>` identifying recorded
+provider lifecycle evidence. Remove takes `--evidence <path>` to a live JSON
+artifact produced by `scripts/verify-mesh-rehearsal.mjs`. The artifact must
+record a successful deployment for the same Worker and stage, and its SHA-256
+must match the exact generated Wrangler configuration. Missing, stale or
+unrelated evidence fails closed before Wrangler runs. A local
+`apply --dry-run` needs no evidence and makes no provider mutation.
 
 An initial staging test can use an explicit `--test-deployment` with a
 non-production `--stage`. This option applies the selected target without
@@ -153,7 +161,8 @@ loopback development with `--allow-insecure`.
 
 ```sh
 anvil-cloud mesh connection --name <worker> --base-url <https-origin> --out <path> --json
-anvil-cloud mesh remove <target-options> --test-deployment --json
+anvil-cloud mesh remove <target-options> --evidence <live-evidence.json> --json
+anvil-cloud mesh remove <target-options> --stage staging --test-deployment --json
 anvil-cloud mesh provisioner remove <provisioner-options> --test-deployment --json
 ```
 

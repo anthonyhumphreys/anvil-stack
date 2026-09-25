@@ -2279,7 +2279,83 @@ describe("main", () => {
         },
       });
       expect(process.exitCode).toBe(2);
+
+      process.exitCode = undefined;
+      const arbitraryEvidenceOutput = await captureStdout(() =>
+        main([
+          "mesh",
+          "remove",
+          "--backend",
+          backendDir,
+          "--name",
+          "mesh-backend",
+          "--evidence",
+          "fake-reference",
+          "--json",
+        ]),
+      );
+      const arbitraryEvidencePayload = JSON.parse(
+        arbitraryEvidenceOutput,
+      ) as Record<string, unknown>;
+      expect(arbitraryEvidencePayload).toMatchObject({
+        ok: false,
+        command: "mesh remove",
+        result: {
+          gated: true,
+          diagnostics: [
+            expect.objectContaining({
+              code: "MESH_PROVIDER_EVIDENCE_INVALID",
+            }),
+          ],
+        },
+      });
+      expect(process.exitCode).toBe(2);
     } finally {
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks an enrollment-admin apply when its operator token is missing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-mesh-"));
+    const originalExitCode = process.exitCode;
+    const originalAdminToken = process.env.ANVIL_MESH_ADMIN_TOKEN;
+
+    try {
+      process.exitCode = undefined;
+      delete process.env.ANVIL_MESH_ADMIN_TOKEN;
+      const backendDir = await writeMeshBackendFixture(rootDir);
+      const output = await captureStdout(() =>
+        main([
+          "mesh",
+          "apply",
+          "--backend",
+          backendDir,
+          "--name",
+          "mesh-backend",
+          "--enrollment-admin",
+          "--evidence",
+          "approved-smoke",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        command: "mesh apply",
+        result: {
+          gated: true,
+          diagnostics: [
+            expect.objectContaining({ code: "MESH_REQUIRED_SECRET_MISSING" }),
+          ],
+        },
+      });
+      expect(process.exitCode).toBe(2);
+    } finally {
+      if (originalAdminToken === undefined)
+        delete process.env.ANVIL_MESH_ADMIN_TOKEN;
+      else process.env.ANVIL_MESH_ADMIN_TOKEN = originalAdminToken;
       process.exitCode = originalExitCode;
       await rm(rootDir, { recursive: true, force: true });
     }

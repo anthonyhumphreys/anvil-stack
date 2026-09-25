@@ -106,6 +106,7 @@ import {
   MESH_PROVIDER_EVIDENCE_GATE_ID,
   type CreateMeshDeploymentPlanOptions,
   type MeshDeploymentPlan,
+  type MeshProviderEvidence,
   type MeshLifecycleResult,
 } from "@anvil-cloud/cloudflare";
 import {
@@ -3695,7 +3696,7 @@ async function commandMeshAccount(
 }
 
 const MESH_USAGE =
-  "Usage: anvil-cloud mesh <plan|apply|remove> --backend <path> --name <worker> [--mode hosted|self-hosted] [--stage production] [--env <name>] [--account-id <id>] [--base-url <url>|--subdomain <sub>] [--bucket <name>] [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--dev] [--temporary] [--json]";
+  "Usage: anvil-cloud mesh <plan|apply|remove> --backend <path> --name <worker> [--mode hosted|self-hosted] [--stage production] [--env <name>] [--account-id <id>] [--base-url <url>|--subdomain <sub>] [--bucket <name>] [--oidc-issuer <url> --oidc-client-id <id>] [--enrollment-admin] [--first-deploy] [--dev] [--temporary] [--json]";
 
 async function readMeshRecipeOptions(
   context: CliContext,
@@ -3836,10 +3837,27 @@ async function commandMeshLifecycle(
 
   const plan = await createMeshDeploymentPlan(options);
   const evidenceReference = context.values.get("evidence");
+  let evidence: MeshProviderEvidence | { reference: string } | undefined;
+  if (evidenceReference) {
+    if (operation === "remove") {
+      try {
+        evidence = JSON.parse(
+          await readFile(path.resolve(evidenceReference), "utf8"),
+        ) as MeshProviderEvidence;
+      } catch {
+        evidence = { reference: evidenceReference };
+      }
+    } else {
+      evidence = { reference: evidenceReference };
+    }
+  }
   const lifecycleOptions = {
     plan,
-    ...(evidenceReference
-      ? { evidence: { reference: evidenceReference } }
+    ...(evidence ? { evidence } : {}),
+    ...(operation === "apply" &&
+    options.secrets?.includes("ENROLLMENT_ADMIN_TOKEN") &&
+    process.env.ANVIL_MESH_ADMIN_TOKEN
+      ? { enrollmentAdminToken: process.env.ANVIL_MESH_ADMIN_TOKEN }
       : {}),
     ...(context.flags.has("dry-run") ? { dryRun: true } : {}),
     ...(context.flags.has("test-deployment") ? { testDeployment: true } : {}),
@@ -4064,7 +4082,7 @@ function formatMeshPlan(
   }
 
   lines.push(
-    `Gate: apply/remove require recorded provider evidence (${MESH_PROVIDER_EVIDENCE_GATE_ID}).`,
+    `Gate: apply requires a provider evidence reference; remove requires a matching live evidence artifact (${MESH_PROVIDER_EVIDENCE_GATE_ID}).`,
   );
 
   return lines.join("\n");
@@ -5938,8 +5956,8 @@ function writeHelp(): void {
       "  anvil-cloud mesh account devices|rename|revoke --url <backend-url> [--access-token-env ENV] [--enrollment <id>] [--name <name>] [--json]",
       "  anvil-cloud mesh plan|provision|migrate|secrets --backend <path> --name <worker> [--mode hosted|self-hosted] [--database <name>] [--vars-file <json>] [--from-file <json>|--from-stdin] [--json]",
       "  anvil-cloud mesh provisioner <plan|apply|remove|secrets> --provisioner <path> --name <worker> [--from-file <path>|--from-stdin] [--json]",
-      "  anvil-cloud mesh apply --backend <path> --name <worker> [--stage <name>] [--evidence <ref>] [--test-deployment] [--dry-run] [--json]",
-      "  anvil-cloud mesh remove --backend <path> --name <worker> [--stage <name>] [--evidence <ref>] [--test-deployment] [--json]",
+      "  anvil-cloud mesh apply --backend <path> --name <worker> [--stage <name>] [--evidence <ref>] [--enrollment-admin] [--test-deployment] [--dry-run] [--json]",
+      "  anvil-cloud mesh remove --backend <path> --name <worker> [--stage <name>] [--evidence <live-evidence.json>] [--test-deployment] [--json]",
       "  anvil-cloud mesh connection --name <worker> --base-url <url> [--stage production] [--out <path>] [--json]",
       "  anvil-cloud deploy --preview [--name branch] [--wait] [--wait-timeout 60] [--json]",
       "  anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run [--json]",

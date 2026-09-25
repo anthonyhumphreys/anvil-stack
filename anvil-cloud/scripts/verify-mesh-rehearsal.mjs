@@ -3,8 +3,8 @@
 // Drives the full operator journey against a scratch Cloudflare account:
 // plan → apply → descriptor → conformance suite → seeded backup → in-place
 // upgrade → remove → redeploy-to-fresh-namespace → import restore → final
-// remove. Every step is recorded into an evidence record whose reference
-// satisfies the recipe's provider-evidence gate for subsequent runs.
+// remove. Every step is recorded in a live evidence artifact scoped to the
+// target Worker, stage and generated Wrangler config.
 //
 // The deployment must stand on its own: the plan is asserted free of
 // development-only keys and no Anvil-managed identity or runtime is
@@ -25,7 +25,8 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { redactRehearsalEvidence } from "./mesh-rehearsal-redaction.mjs";
@@ -67,6 +68,11 @@ const publicBaseUrl =
   baseUrl ?? `https://${workerName}.${subdomain}.workers.dev`;
 
 const steps = [];
+let plannedTarget;
+const restoredEvidencePath = path.join(
+  tmpdir(),
+  `anvil-mesh-removal-evidence-${workerName}-${Date.now()}.json`,
+);
 function step(name, fn) {
   return fn().then(
     (detail) => {
@@ -94,7 +100,7 @@ function meshEnv() {
   };
 }
 
-function mesh(subcommand, extraArgs = []) {
+function mesh(subcommand, extraArgs = [], targetWorkerName = workerName) {
   const args = [
     cli,
     "mesh",
@@ -102,7 +108,7 @@ function mesh(subcommand, extraArgs = []) {
     "--backend",
     backendDir,
     "--name",
-    workerName,
+    targetWorkerName,
     "--json",
     ...extraArgs,
   ];
@@ -120,14 +126,46 @@ function mesh(subcommand, extraArgs = []) {
   return { code: run.status ?? 1, stdout, stderr: run.stderr ?? "", parsed };
 }
 
-function mustMesh(subcommand, extraArgs = []) {
-  const run = mesh(subcommand, extraArgs);
+function mustMesh(subcommand, extraArgs = [], targetWorkerName = workerName) {
+  const run = mesh(subcommand, extraArgs, targetWorkerName);
   if (run.code !== 0 || run.parsed?.ok !== true) {
     throw new Error(
       `mesh ${subcommand} failed (exit ${run.code}): ${run.stderr || run.stdout}`,
     );
   }
   return run.parsed;
+}
+
+function writeRemovalEvidence(
+  targetWorkerName,
+  evidencePath,
+  deploymentStepName,
+) {
+  const plan = mustMesh("plan", planArgs, targetWorkerName).plan;
+  const matchingStep = [...steps]
+    .reverse()
+    .find((item) => item.name === deploymentStepName);
+  const evidence = {
+    evidenceVersion: 1,
+    kind: "anvil-mesh-provider-evidence",
+    reference: evidenceReference,
+    recordedAt: new Date().toISOString(),
+    live: true,
+    workerName: targetWorkerName,
+    stage: plan.stage,
+    ...(plan.config.environmentName
+      ? { environmentName: plan.config.environmentName }
+      : {}),
+    configSha256: sha256Hex(plan.config.contents),
+    steps: [
+      {
+        name: deploymentStepName,
+        ok: matchingStep?.ok === true,
+      },
+    ],
+  };
+  writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+  return evidencePath;
 }
 
 const planArgs = [
@@ -277,13 +315,14 @@ try {
   await step("plan: first-deploy production plan is clean", async () => {
     const run = mustMesh("plan", ["--first-deploy", ...planArgs]);
     const plan = run.plan;
+    plannedTarget = plan;
     const serialized = JSON.stringify(plan);
     if (serialized.includes("ANVIL_DEV_SPIKE")) {
       throw new Error("development-only key leaked into the production plan");
     }
     if (
       !plan.secrets.some(
-        (s) => s.name === "ENROLLMENT_ADMIN_TOKEN" && !s.devOnly,
+        (s) => s.name === "ENROLLMENT_ADMIN_TOKEN" && !s.devOnly && s.required,
       )
     ) {
       throw new Error("deployment-admin secret missing from production plan");
@@ -348,28 +387,9 @@ try {
     let liveError = null;
     let restoredName = null;
     try {
-      // Secret after deploy: `secret put` on a never-deployed worker creates a
-      // stub version the real deploy does not carry forward — on a truly clean
-      // account that left ENROLLMENT_ADMIN_TOKEN unbound and the admin route
-      // 404'd. Provision against the deployed worker, then readiness-gate on
-      // the admin route itself (covers worker + secret-version propagation).
-      await step("apply: provision ENROLLMENT_ADMIN_TOKEN secret", async () => {
-        const put = spawnSync(
-          "pnpm",
-          [
-            "exec",
-            "wrangler",
-            "secret",
-            "put",
-            "ENROLLMENT_ADMIN_TOKEN",
-            "--name",
-            workerName,
-          ],
-          { cwd: backendDir, encoding: "utf8", input: `${adminToken}\n` },
-        );
-        if (put.status !== 0)
-          throw new Error(`secret put failed: ${put.stderr || put.stdout}`);
-
+      // `mesh apply` deploys first and then installs the planned token over
+      // stdin, avoiding a pre-deploy secret stub on a clean Worker.
+      await step("apply: admin enrollment endpoint ready", async () => {
         const deadline = Date.now() + 120_000;
         let res = null;
         do {
@@ -527,23 +547,6 @@ try {
             // Only mark the restored worker for cleanup once it actually
             // deployed — otherwise the remove step chases a phantom worker.
             restoredName = restoredWorkerName;
-            const secretPut = spawnSync(
-              "pnpm",
-              [
-                "exec",
-                "wrangler",
-                "secret",
-                "put",
-                "ENROLLMENT_ADMIN_TOKEN",
-                "--name",
-                restoredWorkerName,
-              ],
-              { cwd: backendDir, encoding: "utf8", input: `${adminToken}\n` },
-            );
-            if (secretPut.status !== 0)
-              throw new Error(
-                `restored secret put failed: ${secretPut.stderr}`,
-              );
             const ready = await waitForDescriptor(restoredUrl);
             if (!ready || !ready.ok) {
               throw new Error(
@@ -610,34 +613,32 @@ try {
         const errors = [];
         if (!keepDeployed) {
           try {
-            mustMesh("remove", ["--evidence", evidenceReference, ...planArgs]);
+            const evidencePath = writeRemovalEvidence(
+              workerName,
+              evidenceOut,
+              "apply: deploy to the clean account",
+            );
+            mustMesh("remove", ["--evidence", evidencePath, ...planArgs]);
             removed.push(workerName);
           } catch (e) {
             errors.push(`${workerName}: ${e?.message ?? e}`);
           }
         }
         if (restoredName !== null) {
-          const rm = spawnSync(
-            process.execPath,
-            [
-              cli,
-              "mesh",
-              "remove",
-              "--backend",
-              backendDir,
-              "--name",
+          try {
+            const evidencePath = writeRemovalEvidence(
               restoredName,
-              "--evidence",
-              evidenceReference,
-              "--json",
-              ...planArgs,
-            ],
-            { encoding: "utf8", env: meshEnv() },
-          );
-          if (rm.status !== 0) {
-            errors.push(`${restoredName}: ${rm.stderr || rm.stdout}`);
-          } else {
+              restoredEvidencePath,
+              "restore: redeploy to a fresh namespace and import the backup",
+            );
+            mustMesh(
+              "remove",
+              ["--evidence", evidencePath, ...planArgs],
+              restoredName,
+            );
             removed.push(restoredName);
+          } catch (e) {
+            errors.push(`${restoredName}: ${e?.message ?? e}`);
           }
         }
         if (errors.length > 0) throw new Error(errors.join("; "));
@@ -648,6 +649,12 @@ try {
       // nothing else failed.
       if (liveError === null) liveError = cleanupError;
     });
+
+    try {
+      unlinkSync(restoredEvidencePath);
+    } catch {
+      // The temporary cleanup evidence file may not have been created.
+    }
 
     if (liveError !== null) throw liveError;
   }
@@ -661,6 +668,17 @@ try {
       redactRehearsalEvidence({
         reference: evidenceReference,
         recordedAt: new Date().toISOString(),
+        ...(plannedTarget
+          ? {
+              evidenceVersion: 1,
+              kind: "anvil-mesh-provider-evidence",
+              stage: plannedTarget.stage,
+              ...(plannedTarget.config.environmentName
+                ? { environmentName: plannedTarget.config.environmentName }
+                : {}),
+              configSha256: sha256Hex(plannedTarget.config.contents),
+            }
+          : {}),
         live,
         workerName,
         backendDir,

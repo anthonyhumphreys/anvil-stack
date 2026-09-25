@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +17,8 @@ import {
   writeMeshConnectionRecord,
   writeMeshWranglerConfig,
   type CreateMeshDeploymentPlanOptions,
+  type MeshDeploymentPlan,
+  type MeshProviderEvidence,
   type WranglerCommandRunner,
 } from "../src/index.js";
 
@@ -72,6 +75,26 @@ function BACKEND_WRANGLER_PATH(root: string): string {
 
 function baseOptions(backendDir: string): CreateMeshDeploymentPlanOptions {
   return { backendDir, workerName: "mesh-backend", firstDeploy: true };
+}
+
+function removalEvidence(
+  plan: MeshDeploymentPlan,
+  overrides: Partial<MeshProviderEvidence> = {},
+): MeshProviderEvidence {
+  return {
+    evidenceVersion: 1,
+    kind: "anvil-mesh-provider-evidence",
+    reference: "smoke-run-1",
+    recordedAt: new Date().toISOString(),
+    live: true,
+    workerName: plan.workerName,
+    stage: plan.stage,
+    configSha256: createHash("sha256")
+      .update(plan.config.contents, "utf8")
+      .digest("hex"),
+    steps: [{ name: "apply: deploy to the clean account", ok: true }],
+    ...overrides,
+  };
 }
 
 describe("Mesh backend recipe planning", () => {
@@ -329,8 +352,12 @@ describe("Mesh backend recipe planning", () => {
       expect.objectContaining({
         name: "ENROLLMENT_ADMIN_TOKEN",
         devOnly: false,
-        required: false,
+        required: true,
       }),
+    ]);
+    expect(plan.operations.apply.commands).toEqual([
+      `wrangler deploy --config ${plan.config.path}`,
+      `wrangler secret bulk --config ${plan.config.path}`,
     ]);
     expect(
       plan.diagnostics.filter((item) => item.severity === "block"),
@@ -358,7 +385,7 @@ describe("Mesh backend recipe planning", () => {
       expect.objectContaining({
         name: "ENROLLMENT_ADMIN_TOKEN",
         devOnly: false,
-        required: false,
+        required: true,
       }),
     ]);
     expect(
@@ -644,7 +671,7 @@ describe("Mesh lifecycle gating", () => {
     const result = await removeMeshDeployment({
       plan,
       run,
-      evidence: { reference: "smoke-run-1" },
+      evidence: removalEvidence(plan),
     });
 
     expect(result).toMatchObject({
@@ -657,6 +684,96 @@ describe("Mesh lifecycle gating", () => {
       "--config",
       plan.config.path,
     ]);
+  });
+
+  it("rejects removal evidence for another config or an unverified reference", async () => {
+    const backendDir = await createBackendProject();
+    const plan = await createMeshDeploymentPlan(baseOptions(backendDir));
+    const run = vi.fn<WranglerCommandRunner>();
+
+    const arbitrary = await removeMeshDeployment({
+      plan,
+      run,
+      evidence: { reference: "looks-like-evidence" },
+    });
+    const wrongConfig = await removeMeshDeployment({
+      plan,
+      run,
+      evidence: removalEvidence(plan, { configSha256: "0".repeat(64) }),
+    });
+
+    expect(arbitrary.diagnostics).toContainEqual(
+      expect.objectContaining({ code: "MESH_PROVIDER_EVIDENCE_INVALID" }),
+    );
+    expect(wrongConfig.diagnostics).toContainEqual(
+      expect.objectContaining({ code: "MESH_PROVIDER_EVIDENCE_INVALID" }),
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("installs a planned enrollment admin secret after deploy without exposing it", async () => {
+    const backendDir = await createBackendProject();
+    const plan = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      secrets: ["ENROLLMENT_ADMIN_TOKEN"],
+    });
+    const secret = "sensitive-admin-token";
+    const run = vi
+      .fn<WranglerCommandRunner>()
+      .mockImplementationOnce(async ({ env }) => {
+        expect(env.ANVIL_MESH_ADMIN_TOKEN).toBeUndefined();
+        return { exitCode: 0, stdout: "wrangler 4.120.0", stderr: "" };
+      })
+      .mockImplementationOnce(async ({ env }) => {
+        expect(env.ANVIL_MESH_ADMIN_TOKEN).toBeUndefined();
+        return {
+          exitCode: 0,
+          stdout: "Uploaded https://mesh-backend.acct.workers.dev/",
+          stderr: "",
+        };
+      })
+      .mockImplementationOnce(async ({ args, input, env }) => {
+        expect(args.slice(0, 2)).toEqual(["secret", "bulk"]);
+        expect(args).not.toContain(secret);
+        expect(env.ANVIL_MESH_ADMIN_TOKEN).toBeUndefined();
+        expect(input).toBe(
+          JSON.stringify({ ENROLLMENT_ADMIN_TOKEN: secret }) + "\n",
+        );
+        return { exitCode: 0, stdout: secret, stderr: "" };
+      });
+
+    const result = await applyMeshDeployment({
+      plan,
+      run,
+      enrollmentAdminToken: secret,
+      env: { ANVIL_MESH_ADMIN_TOKEN: secret },
+      evidence: { reference: "verified-smoke" },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it("requires the planned enrollment admin secret before a mutating apply", async () => {
+    const backendDir = await createBackendProject();
+    const plan = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      secrets: ["ENROLLMENT_ADMIN_TOKEN"],
+    });
+    const run = vi.fn<WranglerCommandRunner>();
+
+    const result = await applyMeshDeployment({
+      plan,
+      run,
+      evidence: { reference: "verified-smoke" },
+    });
+
+    expect(result).toMatchObject({ gated: true, ok: false });
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ code: "MESH_REQUIRED_SECRET_MISSING" }),
+    );
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("writes the generated config before provisioning resources and keeps secret values off argv", async () => {

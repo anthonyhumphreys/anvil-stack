@@ -9,7 +9,9 @@ deployment.
 
 Set the deployment admin secret in the environment. This is the value stored
 in the Worker as `ENROLLMENT_ADMIN_TOKEN`; it is never passed as a command
-argument or printed by the CLI.
+argument, forwarded to the Wrangler subprocess environment, or printed by the
+CLI. When the plan includes `--enrollment-admin`, `mesh apply` installs it after
+deploy through Wrangler stdin.
 
 ```sh
 export ANVIL_MESH_ADMIN_TOKEN='read-from-your-secret-store'

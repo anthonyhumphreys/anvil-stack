@@ -53,9 +53,12 @@ from the monorepo for complete target options and the branch-testing sequence.
 The [recipe architecture](../../docs/architecture/cloudflare-mesh-recipe.md)
 documents config generation, target isolation and lifecycle behavior.
 
-Production apply/remove requires a provider evidence reference. Explicit
-`--test-deployment` is available only for a non-production stage; dry-runs need
-no evidence. The generic Cell adapter's plan-only gate remains unchanged.
+Production apply requires a provider evidence reference. Remove requires a
+live evidence JSON artifact matching the Worker, stage and generated config.
+Explicit `--test-deployment` is available only for a non-production stage;
+dry-runs need no evidence. With `--enrollment-admin`, apply reads the required
+secret from `ANVIL_MESH_ADMIN_TOKEN` and installs it after deploy. The generic
+Cell adapter's plan-only gate remains unchanged.
 
 From the workspace root, compile the generated Worker through Wrangler without
 making provider calls:

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -56,6 +57,9 @@ export type MeshRecipeDiagnostic = {
     | "MESH_CONNECTION_URL_INVALID"
     | "MESH_CONNECTION_URL_MISSING"
     | "MESH_PROVIDER_EVIDENCE_REQUIRED"
+    | "MESH_PROVIDER_EVIDENCE_INVALID"
+    | "MESH_REQUIRED_SECRET_MISSING"
+    | "MESH_SECRET_INSTALL_FAILED"
     | "MESH_HOSTED_D1_MISSING"
     | "MESH_HOSTED_ENFORCEMENT_MISSING"
     | "MESH_TEST_DEPLOYMENT_INVALID"
@@ -224,9 +228,18 @@ export type CreateMeshDeploymentPlanOptions = {
 };
 
 export type MeshProviderEvidence = {
-  /** Reference identifying recorded provider lifecycle evidence. */
+  evidenceVersion?: 1;
+  kind?: "anvil-mesh-provider-evidence";
+  /** Reference identifying the recorded provider lifecycle evidence. */
   reference: string;
   recordedAt?: string;
+  live?: true;
+  workerName?: string;
+  stage?: string;
+  environmentName?: string;
+  /** SHA-256 of the generated Wrangler config used by the live deployment. */
+  configSha256?: string;
+  steps?: Array<{ name: string; ok: boolean }>;
 };
 
 export type MeshLifecycleResult = {
@@ -246,11 +259,12 @@ export type MeshLifecycleResult = {
 export type MeshLifecycleOptions = {
   plan: MeshDeploymentPlan;
   /**
-   * Recorded provider lifecycle evidence that opens the apply/remove gate.
-   * Without it, mutating lifecycle calls return MESH_PROVIDER_EVIDENCE_REQUIRED
-   * and never spawn Wrangler.
+   * Recorded provider evidence that opens the apply/remove gate. Apply accepts
+   * a reference; remove requires a live artifact bound to this target/config.
    */
   evidence?: MeshProviderEvidence;
+  /** Secret value read from ANVIL_MESH_ADMIN_TOKEN by the CLI. Never serialized. */
+  enrollmentAdminToken?: string;
   /**
    * `wrangler deploy --dry-run` compiles locally without provider mutation and
    * does not require evidence, matching the package's non-live verify path.
@@ -321,6 +335,10 @@ function runMeshResource(
     ".bin",
     process.platform === "win32" ? "wrangler.cmd" : "wrangler",
   );
+  const env = { ...(options.env ?? process.env) };
+  // This operator credential is read by Anvil and sent only on stdin to
+  // Wrangler. It is not needed in the provider subprocess environment.
+  delete env.ANVIL_MESH_ADMIN_TOKEN;
   return (options.run ?? runWranglerCommand)({
     command:
       options.command ??
@@ -328,7 +346,7 @@ function runMeshResource(
     args: [...args, ...resourceConfigArgs(options.plan)],
     cwd: options.plan.backendDir,
     env: {
-      ...(options.env ?? process.env),
+      ...env,
       CI: "true",
       FORCE_COLOR: "0",
       WRANGLER_SEND_METRICS: "false",
@@ -713,7 +731,7 @@ export async function createMeshDeploymentPlan(
     }
     secrets.push({
       name,
-      required: false,
+      required: name === "ENROLLMENT_ADMIN_TOKEN",
       devOnly: DEV_ONLY_ENVIRONMENT_KEYS.includes(name),
       purpose:
         name === "ENROLLMENT_ADMIN_TOKEN"
@@ -916,6 +934,14 @@ export async function createMeshDeploymentPlan(
 
   const deployCommand = `wrangler deploy --config ${configPath}`;
   const deleteCommand = `wrangler delete --config ${configPath}`;
+  const applyCommands = [deployCommand];
+  if (
+    secrets.some(
+      (secret) => secret.name === "ENROLLMENT_ADMIN_TOKEN" && secret.required,
+    )
+  ) {
+    applyCommands.push(`wrangler secret bulk --config ${configPath}`);
+  }
 
   return {
     schemaVersion: "0.1",
@@ -953,7 +979,7 @@ export async function createMeshDeploymentPlan(
         required: true,
         severity: "block",
         reason:
-          "Mesh apply/remove stay gated until provider lifecycle smoke evidence is recorded against the generated configuration, matching the adapter's plan-only convention.",
+          "Mesh apply/remove stay gated until provider lifecycle evidence is recorded for the generated configuration, matching the adapter's plan-only convention.",
       },
     ],
     connection,
@@ -961,9 +987,17 @@ export async function createMeshDeploymentPlan(
       apply: {
         gated: true,
         gate: MESH_PROVIDER_EVIDENCE_GATE_ID,
-        commands: [deployCommand],
+        commands: applyCommands,
         notes: [
-          "Apply compiles and uploads the backend Worker through Wrangler. It stays gated until provider lifecycle smoke evidence is recorded for this recipe.",
+          "Apply compiles and uploads the backend Worker through Wrangler. It stays gated until provider lifecycle evidence is recorded for this recipe.",
+          ...(secrets.some(
+            (secret) =>
+              secret.name === "ENROLLMENT_ADMIN_TOKEN" && secret.required,
+          )
+            ? [
+                "After deploy, apply installs ENROLLMENT_ADMIN_TOKEN from ANVIL_MESH_ADMIN_TOKEN over stdin.",
+              ]
+            : []),
         ],
       },
       upgrade: {
@@ -983,7 +1017,7 @@ export async function createMeshDeploymentPlan(
         gate: MESH_PROVIDER_EVIDENCE_GATE_ID,
         commands: [deleteCommand],
         notes: [
-          "Remove deletes the Worker script through Wrangler. It stays gated until provider lifecycle smoke evidence is recorded for this recipe.",
+          "Remove deletes the Worker script through Wrangler. It requires a live evidence artifact matching the Worker, stage and generated configuration.",
         ],
       },
     },
@@ -1071,6 +1105,8 @@ export async function applyMeshDeployment(
   if (gate) return gate;
 
   await writeMeshWranglerConfig(options.plan);
+  const wranglerEnv = { ...(options.env ?? process.env) };
+  delete wranglerEnv.ANVIL_MESH_ADMIN_TOKEN;
 
   const deployment = await runCloudflareWranglerDeploy({
     artifacts: {
@@ -1087,10 +1123,35 @@ export async function applyMeshDeployment(
     ...(options.commandPrefixArgs
       ? { commandPrefixArgs: options.commandPrefixArgs }
       : {}),
-    ...(options.env ? { env: options.env } : {}),
+    env: wranglerEnv,
     ...(options.run ? { run: options.run } : {}),
     ...(options.onClaimUrl ? { onClaimUrl: options.onClaimUrl } : {}),
   });
+
+  let secretDiagnostic: MeshRecipeDiagnostic | undefined;
+  if (
+    deployment.ok &&
+    !options.dryRun &&
+    options.plan.secrets.some(
+      (secret) => secret.name === "ENROLLMENT_ADMIN_TOKEN" && secret.required,
+    )
+  ) {
+    const secretResult = await provisionMeshSecrets({
+      plan: options.plan,
+      secrets: { ENROLLMENT_ADMIN_TOKEN: options.enrollmentAdminToken! },
+      ...(options.command ? { command: options.command } : {}),
+      ...(options.env ? { env: options.env } : {}),
+      ...(options.run ? { run: options.run } : {}),
+    });
+    if (!secretResult.ok) {
+      secretDiagnostic = {
+        code: "MESH_SECRET_INSTALL_FAILED",
+        severity: "block",
+        message:
+          "The Worker deployed, but the enrollment admin secret could not be installed. Check the selected account and Worker, then retry `mesh secrets`.",
+      };
+    }
+  }
 
   const connection = resolveAppliedConnection(
     options.plan,
@@ -1104,11 +1165,11 @@ export async function applyMeshDeployment(
   }
 
   return {
-    ok: deployment.ok,
+    ok: deployment.ok && !secretDiagnostic,
     operation: "apply",
     gated: false,
     workerName: options.plan.workerName,
-    diagnostics: [],
+    diagnostics: secretDiagnostic ? [secretDiagnostic] : [],
     exitCode: deployment.exitCode,
     stdout: deployment.stdout,
     stderr: deployment.stderr,
@@ -1203,9 +1264,33 @@ function evaluateLifecycleGate(
     return undefined;
   }
 
+  if (
+    operation === "apply" &&
+    plan.secrets.some(
+      (secret) => secret.name === "ENROLLMENT_ADMIN_TOKEN" && secret.required,
+    ) &&
+    !options.enrollmentAdminToken?.trim()
+  ) {
+    return {
+      ok: false,
+      operation,
+      gated: true,
+      workerName: plan.workerName,
+      diagnostics: [
+        {
+          code: "MESH_REQUIRED_SECRET_MISSING",
+          severity: "block",
+          message:
+            "This plan requires ENROLLMENT_ADMIN_TOKEN. Set ANVIL_MESH_ADMIN_TOKEN before applying.",
+        },
+      ],
+    };
+  }
+
   if (options.testDeployment && plan.stage !== "production") return undefined;
 
-  if (!options.evidence?.reference.trim()) {
+  const evidenceReference = options.evidence?.reference;
+  if (typeof evidenceReference !== "string" || !evidenceReference.trim()) {
     return {
       ok: false,
       operation,
@@ -1216,13 +1301,84 @@ function evaluateLifecycleGate(
           code: "MESH_PROVIDER_EVIDENCE_REQUIRED",
           severity: "block",
           message: `Mesh ${operation} is gated until provider lifecycle smoke evidence is recorded against the generated configuration.`,
-          hint: `Record provider lifecycle evidence for ${plan.recipe}, then pass its reference as evidence. ${operation === "apply" ? "`wrangler deploy --dry-run` remains available without evidence." : ""}`.trim(),
+          hint:
+            operation === "apply"
+              ? `Record provider lifecycle evidence for ${plan.recipe}, then pass its reference. Wrangler dry-run remains available without evidence.`
+              : "Run the live mesh rehearsal and pass its JSON evidence artifact path.",
+        },
+      ],
+    };
+  }
+
+  if (
+    operation === "remove" &&
+    !isValidRemovalEvidence(plan, options.evidence)
+  ) {
+    return {
+      ok: false,
+      operation,
+      gated: true,
+      workerName: plan.workerName,
+      diagnostics: [
+        {
+          code: "MESH_PROVIDER_EVIDENCE_INVALID",
+          severity: "block",
+          message:
+            "Mesh remove requires a live provider evidence artifact for this Worker, stage and generated configuration.",
+          hint: "Pass the JSON evidence artifact produced by `scripts/verify-mesh-rehearsal.mjs` with --evidence.",
         },
       ],
     };
   }
 
   return undefined;
+}
+
+function isValidRemovalEvidence(
+  plan: MeshDeploymentPlan,
+  evidence: MeshProviderEvidence | undefined,
+): evidence is MeshProviderEvidence {
+  if (
+    !evidence ||
+    !Array.isArray(evidence.steps) ||
+    typeof evidence.recordedAt !== "string"
+  )
+    return false;
+  const configSha256 = createHash("sha256")
+    .update(plan.config.contents, "utf8")
+    .digest("hex");
+  const recordedAt = Date.parse(evidence.recordedAt);
+  const hasSuccessfulDeployment = evidence.steps.some(
+    (step) =>
+      typeof step === "object" &&
+      step !== null &&
+      step.ok === true &&
+      (step.name === "apply: deploy to the clean account" ||
+        step.name ===
+          "restore: redeploy to a fresh namespace and import the backup"),
+  );
+
+  return (
+    evidence.evidenceVersion === 1 &&
+    evidence.kind === "anvil-mesh-provider-evidence" &&
+    evidence.live === true &&
+    typeof evidence.reference === "string" &&
+    evidence.reference.trim().length > 0 &&
+    Number.isFinite(recordedAt) &&
+    recordedAt <= Date.now() &&
+    evidence.workerName === plan.workerName &&
+    evidence.stage === plan.stage &&
+    evidence.environmentName === plan.config.environmentName &&
+    evidence.configSha256 === configSha256 &&
+    evidence.steps.every(
+      (step) =>
+        typeof step === "object" &&
+        step !== null &&
+        typeof step.name === "string" &&
+        typeof step.ok === "boolean",
+    ) &&
+    hasSuccessfulDeployment
+  );
 }
 
 function resolveAppliedConnection(
