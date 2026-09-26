@@ -14,10 +14,14 @@ import type { EnrollmentCodeIssueResult } from '../../../contract/auth';
 import { BROWSER_WORKSPACE_MAX_RPC_BODY_BYTES } from '../../../contract/browser-workspace';
 import { parseDeviceBearer } from '../auth';
 import { isRecord, rpcErrorResponse } from '../rpc';
+import { getOrCreateAdmittedBillingAccount } from './admission';
 import {
   handleBillingOverview,
   handleCheckout,
   handleEntitlement,
+  handleOrganizationSeatChange,
+  handleOrganizationSeatQuote,
+  handleOrganizationSeatConfirm,
   handlePortal,
   handleReconcile,
   handleStripeWebhook,
@@ -42,6 +46,9 @@ import {
   type HostedIdentity,
 } from './identity';
 import { emitMetric } from './metrics';
+import { handleFairUseOperatorRequest } from './fair-use-admin';
+import { handleHostedOrganizationRequest } from './organizations';
+import { handleHostedOrganizationWebhook } from './organization-webhooks';
 import { verifyHostedServiceRequest } from './service-auth';
 import {
   HostedConflictError,
@@ -51,7 +58,6 @@ import {
   findActiveBillingBySyncAccount,
   getBillingAccountById,
   getBillingAccountByIdentity,
-  getOrCreateBillingAccount,
   issueHostedLinkCode,
   setSyncAccountLink,
 } from './store';
@@ -127,13 +133,10 @@ async function resolveDevice(
 ): Promise<{ accountId: string; enrollmentId: string } | null> {
   const bearer = parseDeviceBearer(request.headers.get('Authorization'));
   if (bearer === null) return null;
-  const response = await sessionStub(env).fetch(
-    'https://internal.anvil/internal/resolve-device',
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${bearer}` },
-    },
-  );
+  const response = await sessionStub(env).fetch('https://internal.anvil/internal/resolve-device', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${bearer}` },
+  });
   if (!response.ok) return null;
   const identity = (await response.json()) as {
     accountId?: unknown;
@@ -160,11 +163,7 @@ async function isTombstoned(env: Env, accountId: string): Promise<boolean> {
  * code is consumed atomically before any ownership check, so a rejected
  * link attempt still burns the code (never a reusable oracle).
  */
-async function handleHostedLink(
-  request: Request,
-  env: Env,
-  db: D1Database,
-): Promise<Response> {
+async function handleHostedLink(request: Request, env: Env, db: D1Database): Promise<Response> {
   const bodyBytes = await readHostedBody(request);
   if (bodyBytes === null) {
     return rpcErrorResponse(undefined, 'payload-too-large');
@@ -222,7 +221,10 @@ async function handlePairDevice(body: unknown, env: Env, db: D1Database): Promis
     workosUserId: body.workosUserId,
   };
   const displayName = typeof body['displayName'] === 'string' ? body['displayName'] : null;
-  const account = await getOrCreateBillingAccount(db, identity);
+  const account = await getOrCreateAdmittedBillingAccount(env, db, identity);
+  if (account === null) {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'waitlist-approval-required' });
+  }
   if (account.lifecycle !== 'active') {
     return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
   }
@@ -335,6 +337,9 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
     return rpcErrorResponse(undefined, 'not-found');
   }
   try {
+    if (path === '/internal/hosted/operator/fair-use') {
+      return await handleFairUseOperatorRequest(request, env);
+    }
     if (path === '/v1/hosted/link') {
       if (request.method !== 'POST') {
         return rpcErrorResponse(undefined, 'malformed-request');
@@ -348,6 +353,9 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
         return rpcErrorResponse(undefined, 'malformed-request');
       }
       return await handleStripeWebhook(request, env, db);
+    }
+    if (path === '/v1/hosted/workos-webhook') {
+      return await handleHostedOrganizationWebhook(request, env, db);
     }
     if (path.startsWith('/internal/hosted/')) {
       if (request.method !== 'POST') {
@@ -377,6 +385,8 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
         return rpcErrorResponse(undefined, 'unauthenticated');
       }
       const json = parseJsonBody(body);
+      const organizationResponse = await handleHostedOrganizationRequest(path, json, env, db);
+      if (organizationResponse !== null) return organizationResponse;
       switch (path) {
         case '/internal/hosted/pair-device':
           return await handlePairDevice(json, env, db);
@@ -394,6 +404,12 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
           return await handleEntitlement(json, env, db);
         case '/internal/hosted/reconcile':
           return await handleReconcile(json, env, db);
+        case '/internal/hosted/seats':
+          return await handleOrganizationSeatChange(json, env, db);
+        case '/internal/hosted/seats/quote':
+          return await handleOrganizationSeatQuote(json, env, db);
+        case '/internal/hosted/seats/confirm':
+          return await handleOrganizationSeatConfirm(json, env, db);
         // BILL-04: website-facing device management + data/deletion state.
         case '/internal/hosted/devices':
           return await handleHostedDevices(json, env, db);

@@ -9,12 +9,14 @@ import type {
   EnrollmentCodeIssueResult,
   SessionDescribeResult,
 } from '../../contract/auth';
+import type { DataExportBeginResult } from '../../contract/data';
 import { httpStatusForErrorCode, isRpcError } from '../../contract/envelope';
 import type { SyncPullResult } from '../../contract/sync';
+import { PREVIEW_END_MS } from '../src/hosted/policy';
 import { sha256Hex } from '../src/hash';
 import { verifyOidcPkceProof } from '../src/oidc';
 import { legacyOidcAccountId } from '../src/session-coordinator';
-import { expectSuccess, postRpc } from './helpers';
+import { expectSuccess, hashedChange, postRpc } from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
 
@@ -42,7 +44,11 @@ async function issueCode(
   accountId: string,
   authorization = `Bearer ${ADMIN_TOKEN}`,
 ): Promise<EnrollmentCodeIssueResult> {
-  const { status, body } = await postAuthRoute('/v1/enrollment-codes', { accountId }, authorization);
+  const { status, body } = await postAuthRoute(
+    '/v1/enrollment-codes',
+    { accountId },
+    authorization,
+  );
   expect(status).toBe(200);
   return body as unknown as EnrollmentCodeIssueResult;
 }
@@ -57,7 +63,51 @@ async function enrollWithCode(code: string, installationId = 'install-1'): Promi
   return body as unknown as DeviceSession;
 }
 
-async function refresh(session: DeviceSession): Promise<{ status: number; body: Record<string, unknown> }> {
+async function linkPaidBillingAccount(accountId: string): Promise<void> {
+  const db = env.HOSTED_DB;
+  if (db === undefined) throw new Error('HOSTED_DB binding missing in test environment');
+  const now = Date.now();
+  const billingAccountId = `ba_${crypto.randomUUID().replaceAll('-', '')}`;
+  await db
+    .prepare(
+      `INSERT INTO billing_accounts
+         (id, workos_client_id, workos_user_id, sync_account_id, generation,
+          lifecycle, preview_eligible, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 1, 'active', 0, ?, ?)`,
+    )
+    .bind(
+      billingAccountId,
+      `client_${billingAccountId}`,
+      `user_${billingAccountId}`,
+      accountId,
+      now,
+      now,
+    )
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO stripe_subscriptions
+         (stripe_subscription_id, stripe_customer_id, billing_account_id, status,
+          plan_key, interval, current_period_end, paid_through, paid_seat_quantity, cancel_at_period_end,
+          has_paid_invoice, first_failed_renewal_at, verified_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', 'sync_personal', 'month', ?, ?, 1, 0, 1, NULL, ?, ?, ?)`,
+    )
+    .bind(
+      `sub_${crypto.randomUUID().replaceAll('-', '')}`,
+      `cus_${crypto.randomUUID().replaceAll('-', '')}`,
+      billingAccountId,
+      PREVIEW_END_MS + 30 * 86_400_000,
+      PREVIEW_END_MS + 30 * 86_400_000,
+      now,
+      now,
+      now,
+    )
+    .run();
+}
+
+async function refresh(
+  session: DeviceSession,
+): Promise<{ status: number; body: Record<string, unknown> }> {
   return postAuthRoute('/v1/session/refresh', {
     refreshToken: session.refreshToken,
     enrollmentId: session.enrollmentId,
@@ -108,6 +158,158 @@ describe('enrollment-code authentication', () => {
     const second = await enrollWithCode(pairing.code, 'install-2');
     expect(second.accountId).toBe(accountId);
     expect(second.enrollmentId).not.toBe(first.enrollmentId);
+  });
+
+  it('caps hosted durable devices without revoking existing sessions and frees a slot on revoke', async () => {
+    const previousLimits = env.HOSTED_SYNC_LIMITS;
+    env.HOSTED_SYNC_LIMITS = JSON.stringify({ devices: 5 });
+    try {
+      env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+      const accountId = `acct-${crypto.randomUUID()}`;
+      const sessions: DeviceSession[] = [
+        await enrollWithCode((await issueCode(accountId)).code, 'install-1'),
+      ];
+      for (let index = 2; index <= 4; index += 1) {
+        const pairing = await issueCode('', bearer(sessions[0]));
+        sessions.push(await enrollWithCode(pairing.code, `install-${index}`));
+      }
+
+      const concurrentProofs = await Promise.all([
+        issueCode('', bearer(sessions[0])),
+        issueCode('', bearer(sessions[0])),
+      ]);
+      const concurrentAttempts = await Promise.all(
+        concurrentProofs.map(async (proof, index) => ({
+          installationId: `install-concurrent-${index}`,
+          ...(await postAuthRoute('/v1/enroll', {
+            proof: { method: 'enrollment-code', code: proof.code },
+            installationId: `install-concurrent-${index}`,
+          })),
+        })),
+      );
+      const accepted = concurrentAttempts.filter((attempt) => attempt.status === 200);
+      const deniedConcurrently = concurrentAttempts.filter((attempt) => attempt.status === 403);
+      expect(accepted).toHaveLength(1);
+      expect(deniedConcurrently).toHaveLength(1);
+      sessions.push(accepted[0]!.body as unknown as DeviceSession);
+      expect(deniedConcurrently[0]!.body['error']).toMatchObject({
+        code: 'device-limit',
+        retryable: false,
+        details: { limit: 5, used: 5 },
+      });
+
+      const pairing = await issueCode('', bearer(sessions[0]));
+      const denied = await postAuthRoute('/v1/enroll', {
+        proof: { method: 'enrollment-code', code: pairing.code },
+        installationId: 'install-6',
+      });
+      expect(denied.status).toBe(403);
+      expect(denied.body['error']).toMatchObject({
+        code: 'device-limit',
+        retryable: false,
+        details: { limit: 5, used: 5 },
+      });
+
+      const listed = expectSuccess<DeviceListResult>(
+        await postRpc('device.list', {}, bearer(sessions[0])),
+      ).devices;
+      expect(listed).toHaveLength(5);
+      expect(listed.every((device) => !device.revoked)).toBe(true);
+      for (const session of sessions) {
+        expect(
+          (await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(session))).status,
+        ).toBe(200);
+      }
+
+      const revoke = await postRpc(
+        'device.revoke',
+        { enrollmentId: sessions[1].enrollmentId },
+        bearer(sessions[0]),
+      );
+      expectSuccess<DeviceRevokeResult>(revoke);
+      const replacementCode = await issueCode('', bearer(sessions[0]));
+      const replacement = await enrollWithCode(replacementCode.code, 'install-6');
+      expect(replacement.accountId).toBe(accountId);
+    } finally {
+      env.HOSTED_SYNC_LIMITS = previousLimits ?? '';
+    }
+  });
+
+  it('pauses hosted mutations when paid durable devices exceed five, preserves recovery, then resumes at five', async () => {
+    const previousLimits = env.HOSTED_SYNC_LIMITS;
+    env.HOSTED_SYNC_LIMITS = JSON.stringify({ devices: 6 });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(PREVIEW_END_MS + 1));
+    try {
+      env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+      const accountId = `acct-${crypto.randomUUID()}`;
+      await linkPaidBillingAccount(accountId);
+
+      const sessions: DeviceSession[] = [
+        await enrollWithCode((await issueCode(accountId)).code, 'paid-install-1'),
+      ];
+      for (let index = 2; index <= 6; index += 1) {
+        const pairing = await issueCode('', bearer(sessions[0]));
+        sessions.push(await enrollWithCode(pairing.code, `paid-install-${index}`));
+      }
+
+      env.HOSTED_SYNC_LIMITS = JSON.stringify({ devices: 5 });
+      const descriptor = expectSuccess<SessionDescribeResult>(
+        await postRpc('session.describe', {}, bearer(sessions[0])),
+      );
+      expect(descriptor.entitlement).toMatchObject({
+        state: 'restricted',
+        reason: 'device-limit-exceeded',
+      });
+      expect(descriptor.entitlement?.capabilities).toEqual({ syncWrite: false, meshSubmit: false });
+
+      const attemptedWrite = await postRpc(
+        'sync.push',
+        { changes: [await hashedChange({ enrollmentSequence: 1, entityId: 'paid-write' })] },
+        bearer(sessions[0]),
+      );
+      expect(attemptedWrite.status).toBe(403);
+      expect(attemptedWrite.body).toMatchObject({
+        error: {
+          code: 'forbidden',
+          details: { reason: 'device-limit-exceeded', limit: 5, activeCount: 6 },
+        },
+      });
+
+      expect(
+        (await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(sessions[0]))).status,
+      ).toBe(200);
+      const exported = await postRpc('data.export.begin', {}, bearer(sessions[0]));
+      expectSuccess<DataExportBeginResult>(exported);
+      expect(exported.status).toBe(200);
+      const listed = expectSuccess<DeviceListResult>(
+        await postRpc('device.list', {}, bearer(sessions[0])),
+      );
+      expect(listed.devices.filter((device) => !device.revoked)).toHaveLength(6);
+
+      expectSuccess<DeviceRevokeResult>(
+        await postRpc(
+          'device.revoke',
+          { enrollmentId: sessions[5]!.enrollmentId },
+          bearer(sessions[0]),
+        ),
+      );
+      const resumed = expectSuccess<SessionDescribeResult>(
+        await postRpc('session.describe', {}, bearer(sessions[0])),
+      );
+      expect(resumed.entitlement).toMatchObject({ state: 'active', reason: 'paid' });
+      const admittedWrite = await postRpc(
+        'sync.push',
+        {
+          changes: [await hashedChange({ enrollmentSequence: 1, entityId: 'paid-write-resumed' })],
+        },
+        bearer(sessions[0]),
+      );
+      expect(admittedWrite.status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+      env.HOSTED_SYNC_LIMITS = previousLimits ?? '';
+    }
   });
 
   it('rejects code issuance without credentials', async () => {
@@ -243,21 +445,13 @@ describe('device.* account lifecycle', () => {
     expectSuccess<DeviceRenameResult>(renamed);
     const listed = await postRpc('device.list', {}, bearer(a));
     const devices = expectSuccess<DeviceListResult>(listed).devices;
-    expect(devices.find((d) => d.enrollmentId === b.enrollmentId)?.displayName).toBe(
-      'Office Mac',
-    );
+    expect(devices.find((d) => d.enrollmentId === b.enrollmentId)?.displayName).toBe('Office Mac');
     // Empty clears the name.
-    await postRpc(
-      'device.rename',
-      { enrollmentId: b.enrollmentId, displayName: '' },
-      bearer(a),
-    );
+    await postRpc('device.rename', { enrollmentId: b.enrollmentId, displayName: '' }, bearer(a));
     const cleared = expectSuccess<DeviceListResult>(
       await postRpc('device.list', {}, bearer(a)),
     ).devices;
-    expect(
-      cleared.find((d) => d.enrollmentId === b.enrollmentId)?.displayName,
-    ).toBeUndefined();
+    expect(cleared.find((d) => d.enrollmentId === b.enrollmentId)?.displayName).toBeUndefined();
   });
 
   it('device.rename rejects cross-account and unknown enrollments', async () => {
@@ -279,11 +473,7 @@ describe('device.* account lifecycle', () => {
 
   it('device.revoke kills the sibling session and stays listed as revoked', async () => {
     const { a, b } = await twoDevices();
-    const revoked = await postRpc(
-      'device.revoke',
-      { enrollmentId: b.enrollmentId },
-      bearer(a),
-    );
+    const revoked = await postRpc('device.revoke', { enrollmentId: b.enrollmentId }, bearer(a));
     expectSuccess<DeviceRevokeResult>(revoked);
     // The revoked device's bearer no longer authenticates.
     const dead = await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(b));
@@ -297,21 +487,13 @@ describe('device.* account lifecycle', () => {
     ).devices;
     expect(listed.find((d) => d.enrollmentId === b.enrollmentId)?.revoked).toBe(true);
     // Idempotent retry reports revoked.
-    const again = await postRpc(
-      'device.revoke',
-      { enrollmentId: b.enrollmentId },
-      bearer(a),
-    );
+    const again = await postRpc('device.revoke', { enrollmentId: b.enrollmentId }, bearer(a));
     expectSuccess<DeviceRevokeResult>(again);
   });
 
   it('device.revoke of an unknown enrollment is not-found, not silently revoked', async () => {
     const { a } = await twoDevices();
-    const missing = await postRpc(
-      'device.revoke',
-      { enrollmentId: 'enr-ghost' },
-      bearer(a),
-    );
+    const missing = await postRpc('device.revoke', { enrollmentId: 'enr-ghost' }, bearer(a));
     expect(missing.status).toBe(httpStatusForErrorCode('not-found'));
   });
 });
@@ -366,7 +548,12 @@ describe('OIDC-PKCE proof verification', () => {
 
   async function makeIssuer() {
     const keyPair = (await crypto.subtle.generateKey(
-      { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: 'SHA-256',
+      },
       true,
       ['sign', 'verify'],
     )) as CryptoKeyPair;
@@ -378,7 +565,10 @@ describe('OIDC-PKCE proof verification', () => {
     publicJwk.kid = 'test-key-1';
     publicJwk.use = 'sig';
     publicJwk.alg = 'RS256';
-    const codes = new Map<string, { redirectUri: string; verifier: string; nonce: string; sub: string }>();
+    const codes = new Map<
+      string,
+      { redirectUri: string; verifier: string; nonce: string; sub: string }
+    >();
 
     const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -517,7 +707,12 @@ describe('OIDC-PKCE proof verification', () => {
   it('rejects a token signed by an unknown key', async () => {
     const { codes, fetchFn } = await makeIssuer();
     const rogue = (await crypto.subtle.generateKey(
-      { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: 'SHA-256',
+      },
       true,
       ['sign'],
     )) as CryptoKeyPair;
@@ -536,14 +731,22 @@ describe('OIDC-PKCE proof verification', () => {
       }
       const header = base64Url(JSON.stringify({ alg: 'RS256', kid: 'rogue' }));
       const claims = base64Url(
-        JSON.stringify({ iss: issuer, sub: 'user-9', aud: clientId, exp: Math.floor(Date.now() / 1000) + 300, nonce: 'n' }),
+        JSON.stringify({
+          iss: issuer,
+          sub: 'user-9',
+          aud: clientId,
+          exp: Math.floor(Date.now() / 1000) + 300,
+          nonce: 'n',
+        }),
       );
       const sig = await crypto.subtle.sign(
         { name: 'RSASSA-PKCS1-v1_5' },
         rogue.privateKey,
         new TextEncoder().encode(`${header}.${claims}`),
       );
-      return Response.json({ id_token: `${header}.${claims}.${base64UrlBytes(new Uint8Array(sig))}` });
+      return Response.json({
+        id_token: `${header}.${claims}.${base64UrlBytes(new Uint8Array(sig))}`,
+      });
     }) as typeof fetch;
     const sub = await verifyOidcPkceProof(
       {
@@ -616,11 +819,7 @@ describe('OIDC-PKCE proof verification', () => {
 describe('account deletion (spec §140)', () => {
   /** Status via the deployment-admin credential — the post-deletion channel. */
   async function adminStatus(accountId: string) {
-    return postRpc(
-      'account.deletionStatus',
-      { accountId },
-      `Bearer ${ADMIN_TOKEN}`,
-    );
+    return postRpc('account.deletionStatus', { accountId }, `Bearer ${ADMIN_TOKEN}`);
   }
 
   it('reports none before deletion and requires auth', async () => {
@@ -702,9 +901,9 @@ describe('account deletion (spec §140)', () => {
       `Bearer ${ADMIN_TOKEN}`,
     );
     expect(issued.status).toBe(403);
-    expect(
-      (issued.body['error'] as { details?: { reason?: string } }).details?.reason,
-    ).toBe('account-deleted');
+    expect((issued.body['error'] as { details?: { reason?: string } }).details?.reason).toBe(
+      'account-deleted',
+    );
 
     // The pre-deletion outstanding code is dead with the account.
     const enroll = await postAuthRoute('/v1/enroll', {
@@ -712,9 +911,9 @@ describe('account deletion (spec §140)', () => {
       installationId: 'install-late',
     });
     expect(enroll.status).toBe(403);
-    expect(
-      (enroll.body['error'] as { details?: { reason?: string } }).details?.reason,
-    ).toBe('account-deleted');
+    expect((enroll.body['error'] as { details?: { reason?: string } }).details?.reason).toBe(
+      'account-deleted',
+    );
   });
 
   it('deletionStatus admin path requires accountId and rejects non-admin bearers', async () => {

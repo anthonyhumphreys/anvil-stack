@@ -4,6 +4,8 @@ import { SessionCoordinator } from './session-coordinator';
 import { buildDescriptor } from './descriptor';
 import { handleHostedRequest } from './hosted/routes';
 import { runHostedReconcile } from './hosted/reconciler';
+import { runHostedOrganizationReconcile } from './hosted/organization-webhooks';
+import { prepareHostedAccountDeletion } from './hosted/organizations';
 import { parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
 import type { ErrorCode } from '../../contract/envelope';
 import { validateSessionAttestParams } from '../../contract/companion';
@@ -452,6 +454,21 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'device.list':
     case 'device.rename':
     case 'device.revoke': {
+      if (envelope.request.operation === 'account.delete' && env.HOSTED_DB !== undefined) {
+        const hostedAccount = await env.HOSTED_DB.prepare(
+          "SELECT id FROM billing_accounts WHERE sync_account_id = ? AND lifecycle = 'active'",
+        )
+          .bind(auth.accountId)
+          .first<{ id: string }>();
+        if (
+          hostedAccount !== null &&
+          !(await prepareHostedAccountDeletion(env.HOSTED_DB, hostedAccount.id, Date.now()))
+        ) {
+          return rpcErrorResponse(envelope.request.requestId, 'conflict', {
+            reason: 'last-organization-owner',
+          });
+        }
+      }
       const internal =
         envelope.request.operation === 'account.delete'
           ? '/internal/account-delete'
@@ -518,9 +535,9 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
                 ? '/internal/security-recover'
                 : envelope.request.operation === 'security.approve'
                   ? '/internal/security-approve'
-                : envelope.request.operation === 'security.setPolicy'
-                  ? '/internal/security-set-policy'
-                  : '/internal/security-update-recovery';
+                  : envelope.request.operation === 'security.setPolicy'
+                    ? '/internal/security-set-policy'
+                    : '/internal/security-update-recovery';
       const response = await sessionStub(env).fetch(
         new Request(`https://internal.anvil${internal}`, {
           method: 'POST',
@@ -540,13 +557,15 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
       if (!response.ok) {
         const code =
           typeof payload === 'object' && payload !== null && 'error' in payload
-            ? (payload as {
-                error?: {
-                  code?: unknown;
-                  details?: Record<string, unknown>;
-                  retryable?: boolean;
-                };
-              }).error
+            ? (
+                payload as {
+                  error?: {
+                    code?: unknown;
+                    details?: Record<string, unknown>;
+                    retryable?: boolean;
+                  };
+                }
+              ).error
             : undefined;
         return rpcErrorResponse(
           envelope.request.requestId,
@@ -709,6 +728,10 @@ export default {
   // BILL-06: hosted cron — reconciles stale billing accounts and emits
   // the aggregate sweep. No-op on self-host (HOSTED_DB unbound).
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runHostedReconcile(env));
+    ctx.waitUntil(
+      Promise.all([runHostedReconcile(env), runHostedOrganizationReconcile(env)]).then(
+        () => undefined,
+      ),
+    );
   },
 } satisfies ExportedHandler<Env>;

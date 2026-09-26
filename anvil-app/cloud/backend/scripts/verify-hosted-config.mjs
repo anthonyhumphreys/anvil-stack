@@ -18,8 +18,8 @@
  *   node scripts/verify-hosted-config.mjs --self-check [--json]
  *
  * Exit code is 1 whenever issues exist, 0 otherwise. Warnings never
- * fail the run. Secrets (HOSTED_SERVICE_KEYS, STRIPE_SECRET_KEY,
- * STRIPE_WEBHOOK_SECRET) cannot be verified from a config file — the
+ * fail the run. Secrets (HOSTED_SERVICE_KEYS, WORKOS_API_KEY,
+ * WORKOS_WEBHOOK_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET) cannot be verified from a config file — the
  * script warns unless the file at least documents them in comments.
  */
 import { readFileSync } from 'node:fs';
@@ -31,7 +31,14 @@ const DEFAULT_CONFIG = join(BACKEND_DIR, 'wrangler.hosted.jsonc');
 const DEFAULT_BASE = join(BACKEND_DIR, 'wrangler.jsonc');
 
 const FORBIDDEN_VARS = ['ANVIL_DEV_SPIKE', 'ENROLLMENT_ADMIN_TOKEN'];
-const REQUIRED_SECRETS = ['HOSTED_SERVICE_KEYS', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'];
+const REQUIRED_SECRETS = [
+  'HOSTED_SERVICE_KEYS',
+  'WORKOS_API_KEY',
+  'WORKOS_WEBHOOK_SECRET',
+  'STRIPE_SECRET_KEY',
+  'STRIPE_WEBHOOK_SECRET',
+  'HOSTED_OPERATOR_KEYS',
+];
 
 /**
  * wrangler config files are JSONC: // and /* *\/ comments plus trailing
@@ -281,6 +288,9 @@ const FIXTURE_GOOD = `{
   //   HOSTED_SERVICE_KEYS     website -> backend HMAC map
   //   STRIPE_SECRET_KEY       Stripe secret key
   //   STRIPE_WEBHOOK_SECRET   endpoint secret for /v1/hosted/stripe-webhook
+  //   WORKOS_API_KEY          WorkOS environment key for org + invite APIs
+  //   WORKOS_WEBHOOK_SECRET   signature secret for /v1/hosted/workos-webhook
+  //   HOSTED_OPERATOR_KEYS    separate operator-only HMAC map (optional)
   "durable_objects": {
     "bindings": [
       { "name": "ACCOUNT", "class_name": "AccountCoordinator" },
@@ -302,9 +312,13 @@ const FIXTURE_GOOD = `{
   ],
   "vars": {
     "HOSTED_BILLING_ENFORCEMENT": "true",
+    "HOSTED_BILLING_ENVIRONMENT": "staging",
     "HOSTED_CHECKOUT_ENABLED": "true",
     "HOSTED_CHECKOUT_SUCCESS_URL": "https://anvil.example/account/billing?checkout=success",
     "STRIPE_PRICE_SYNC_MONTHLY": "price_1ExampleMonthly",
+    "STRIPE_PRICE_SYNC_ANNUAL": "price_1ExampleAnnual",
+    "STRIPE_PRICE_TEAM_MONTHLY": "price_1ExampleTeamMonthly",
+    "STRIPE_PRICE_TEAM_ANNUAL": "price_1ExampleTeamAnnual",
   },
 }`;
 

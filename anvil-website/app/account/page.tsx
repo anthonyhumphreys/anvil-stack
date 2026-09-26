@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 
 import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
+import { PreviewDeadlineNotice } from "@/components/account/preview-deadline-notice";
 import { EntitlementStateBadge, entitlementSummary } from "@/components/account/entitlement";
 import { PairDeviceCard } from "@/components/account/pair-device-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,6 +31,8 @@ export default async function AccountOverviewPage() {
           Your hosted sync identity, entitlement, and paired devices.
         </p>
       </header>
+
+      <PreviewDeadlineNotice />
 
       <Card>
         <CardHeader>
@@ -100,13 +103,33 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
                 <div>
                   <dt className="text-xs font-medium text-muted-foreground">Artifact storage</dt>
                   <dd className="mt-0.5 font-mono text-xs">
-                    {formatBytes(entitlement.data.limits.artifactBytes)}
+                    {entitlement.data.limits.artifactBytes === null
+                      ? "Fair use"
+                      : formatBytes(entitlement.data.limits.artifactBytes)}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs font-medium text-muted-foreground">History retention</dt>
+                  <dt className="text-xs font-medium text-muted-foreground">History storage</dt>
                   <dd className="mt-0.5 font-mono text-xs">
-                    {formatBytes(entitlement.data.limits.historyBytes)}
+                    {entitlement.data.limits.historyBytes === null
+                      ? "Fair use"
+                      : formatBytes(entitlement.data.limits.historyBytes)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium text-muted-foreground">Hosted access funded by</dt>
+                  <dd className="mt-0.5 text-sm">
+                    {entitlement.data.fundedBy === "team" ? (
+                      <Link href="/account/organizations" className="underline underline-offset-4">
+                        Organisation seat
+                      </Link>
+                    ) : entitlement.data.fundedBy === "personal" ? (
+                      "Personal subscription"
+                    ) : entitlement.data.fundedBy === "preview" ? (
+                      "Preview"
+                    ) : (
+                      "No current funding"
+                    )}
                   </dd>
                 </div>
               </dl>

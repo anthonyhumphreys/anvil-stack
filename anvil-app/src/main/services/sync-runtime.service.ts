@@ -81,6 +81,7 @@ import {
   type SyncDiagnostics,
   type MeshWorkerStatus,
   type SyncHostedStatus,
+  type SyncFairUseStatus,
   type SyncRemoteAccountStats,
   type SyncRuntimeStatus,
   type SyncScopeDiagnostics,
@@ -375,6 +376,11 @@ let runtimeGeneration = 0;
 let keyRotationBlockedScopeKey: string | null = null;
 /** Timestamp of the last attempted session.describe entitlement refresh. */
 let lastHostedRefreshAt = 0;
+let lastFairUseStatus: {
+  backendId: string;
+  accountId: string;
+  status: SyncFairUseStatus | null;
+} | null = null;
 
 type SyncSessionScopeFields = NonNullable<ReturnType<SyncAuthService['getSessionScopeFields']>>;
 
@@ -727,6 +733,7 @@ export function resetSyncRuntimeForTests(): void {
   fetchOverride = undefined;
   createSocketOverride = undefined;
   lastHostedRefreshAt = 0;
+  lastFairUseStatus = null;
   keyRotationBlockedScopeKey = null;
   pendingPairingRedemption = null;
   disposeBrowserWorkspaceExecutor();
@@ -2698,12 +2705,93 @@ function hostedStatusFor(backendId: string, accountId: string): SyncHostedStatus
     state: HOSTED_STATES.has(row.state) ? (row.state as SyncHostedStatus['state']) : 'unknown',
     source: row.source,
     planKey: row.planKey,
+    fundedBy: row.fundedBy,
+    organizationId: row.organizationId,
+    deviceLimit: row.deviceLimit,
     previewEndsAt: row.previewEndsAt,
     accessUntil: row.accessUntil,
     graceUntil: row.graceUntil,
     checkedAt: row.checkedAt,
     reason: row.reason,
     restricted: row.restricted,
+    fairUse: fairUseStatusFor(backendId, accountId),
+  };
+}
+
+function fairUseStatusFor(backendId: string, accountId: string): SyncFairUseStatus | null {
+  return lastFairUseStatus?.backendId === backendId && lastFairUseStatus.accountId === accountId
+    ? lastFairUseStatus.status
+    : null;
+}
+
+function normalizeFairUseStatus(value: unknown): SyncFairUseStatus | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const status = record['status'];
+  const usage = record['usage'];
+  if (
+    (status !== 'clear' && status !== 'notice' && status !== 'restricted') ||
+    typeof usage !== 'object' ||
+    usage === null ||
+    Array.isArray(usage)
+  ) {
+    return null;
+  }
+  const usageRecord = usage as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(usageRecord['historyBytes']) ||
+    (usageRecord['historyBytes'] as number) < 0 ||
+    !Number.isSafeInteger(usageRecord['artifactBytes']) ||
+    (usageRecord['artifactBytes'] as number) < 0
+  ) {
+    return null;
+  }
+  const rawNotice = record['notice'];
+  if (rawNotice === undefined) {
+    return {
+      status,
+      usage: {
+        historyBytes: usageRecord['historyBytes'] as number,
+        artifactBytes: usageRecord['artifactBytes'] as number,
+      },
+    };
+  }
+  if (typeof rawNotice !== 'object' || rawNotice === null || Array.isArray(rawNotice)) return null;
+  const notice = rawNotice as Record<string, unknown>;
+  const code = notice['code'];
+  const message = notice['message'];
+  const noticeAt = notice['noticeAt'];
+  const restrictAt = notice['restrictAt'];
+  const emergency = notice['emergency'];
+  if (
+    (code !== 'storage-usage' &&
+      code !== 'sustained-excessive-usage' &&
+      code !== 'service-protection') ||
+    typeof message !== 'string' ||
+    message.trim().length === 0 ||
+    message.length > 500 ||
+    typeof noticeAt !== 'string' ||
+    !Number.isFinite(Date.parse(noticeAt)) ||
+    typeof restrictAt !== 'string' ||
+    !Number.isFinite(Date.parse(restrictAt)) ||
+    typeof emergency !== 'boolean'
+  ) {
+    return null;
+  }
+  return {
+    status,
+    usage: {
+      historyBytes: usageRecord['historyBytes'] as number,
+      artifactBytes: usageRecord['artifactBytes'] as number,
+    },
+    notice: { code, message, noticeAt, restrictAt, emergency },
+  };
+}
+
+function recordFairUseStatus(pair: { backendId: string; accountId: string }, value: unknown): void {
+  lastFairUseStatus = {
+    ...pair,
+    status: value === undefined || value === null ? null : normalizeFairUseStatus(value),
   };
 }
 
@@ -2737,6 +2825,9 @@ function recordEntitlement(
       state: 'restricted',
       source: 'none',
       planKey: null,
+      fundedBy: 'none',
+      organizationId: null,
+      deviceLimit: 5,
       previewEndsAt: null,
       accessUntil: null,
       graceUntil: null,
@@ -2753,6 +2844,9 @@ function recordEntitlement(
     state: entitlement.state,
     source: entitlement.source,
     planKey: entitlement.planKey,
+    fundedBy: entitlement.fundedBy,
+    organizationId: entitlement.organizationId,
+    deviceLimit: entitlement.limits.devices,
     previewEndsAt: entitlement.previewEndsAt,
     accessUntil: entitlement.accessUntil,
     graceUntil: entitlement.graceUntil,
@@ -2794,6 +2888,10 @@ export async function refreshHostedEntitlement(): Promise<SyncHostedStatus | nul
       { fetchFn: fetchOverride },
     );
     if (generation === runtimeGeneration) {
+      recordFairUseStatus(
+        { backendId: backend.id, accountId: fields.accountId },
+        result.accountStats?.fairUse,
+      );
       recordEntitlement(
         { backendId: backend.id, accountId: fields.accountId },
         result.entitlement ?? null,
@@ -2901,6 +2999,7 @@ export async function exportSyncDiagnostics(): Promise<SyncDiagnostics> {
         fetchOverride === undefined ? {} : { fetchFn: fetchOverride },
       );
       remote = result.result.accountStats ?? null;
+      recordFairUseStatus({ backendId: backend.id, accountId: fields.accountId }, remote?.fairUse);
       // Same describe payload keeps the hosted row fresh without an extra
       // call; an omitted field (self-host) clears it.
       recordEntitlement(
@@ -2940,13 +3039,7 @@ export async function requestSync(): Promise<void> {
   const backend = getActiveBackend();
   const fields = auth?.getSessionScopeFields() ?? null;
   const token = auth?.getAccessToken() ?? null;
-  if (
-    !backend ||
-    !fields ||
-    token === null ||
-    !sessionBoundToBackend(backend, fields)
-  )
-    return;
+  if (!backend || !fields || token === null || !sessionBoundToBackend(backend, fields)) return;
   const allowLoopbackHttp = shouldAllowLoopbackHttp(backend.baseUrl);
   const paths = resolveBackendPaths(backend.baseUrl, backend.descriptor, { allowLoopbackHttp });
   const scope: SyncScope = {
@@ -3149,11 +3242,7 @@ function connectLiveChannel(): void {
   const backend = getActiveBackend();
   const fields = auth?.getSessionScopeFields() ?? null;
   const token = auth?.getAccessToken() ?? null;
-  if (
-    !backend ||
-    token === null ||
-    !sessionBoundToBackend(backend, fields)
-  ) {
+  if (!backend || token === null || !sessionBoundToBackend(backend, fields)) {
     liveState = 'offline';
     return;
   }

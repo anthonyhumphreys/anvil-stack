@@ -35,7 +35,11 @@ describe('WorkOS Device Authorization proof verification', () => {
     }) as typeof fetch;
 
     await expect(
-      verifyWorkosDeviceProof(proof(), { issuer: WORKOS_AUTHKIT_ISSUER, clientId: CLIENT_ID }, fetchFn),
+      verifyWorkosDeviceProof(
+        proof(),
+        { issuer: WORKOS_AUTHKIT_ISSUER, clientId: CLIENT_ID },
+        fetchFn,
+      ),
     ).resolves.toEqual({ status: 'success', subject: 'user_01JTESTDEVICE' });
 
     expect(request?.url).toBe(`${WORKOS_AUTHKIT_ISSUER}/authenticate`);
@@ -56,7 +60,11 @@ describe('WorkOS Device Authorization proof verification', () => {
   ] as const)('maps WorkOS %s to the stable %s result', async (error, status) => {
     const fetchFn = (async () => Response.json({ error }, { status: 400 })) as typeof fetch;
     await expect(
-      verifyWorkosDeviceProof(proof(), { issuer: WORKOS_AUTHKIT_ISSUER, clientId: CLIENT_ID }, fetchFn),
+      verifyWorkosDeviceProof(
+        proof(),
+        { issuer: WORKOS_AUTHKIT_ISSUER, clientId: CLIENT_ID },
+        fetchFn,
+      ),
     ).resolves.toEqual({ status });
   });
 
@@ -64,10 +72,15 @@ describe('WorkOS Device Authorization proof verification', () => {
     const invalidGrant = (async () =>
       Response.json({ error: 'invalid_grant' }, { status: 400 })) as typeof fetch;
     await expect(
-      verifyWorkosDeviceProof(proof(), { issuer: WORKOS_AUTHKIT_ISSUER, clientId: CLIENT_ID }, invalidGrant),
+      verifyWorkosDeviceProof(
+        proof(),
+        { issuer: WORKOS_AUTHKIT_ISSUER, clientId: CLIENT_ID },
+        invalidGrant,
+      ),
     ).resolves.toEqual({ status: 'invalid' });
 
-    const malformedUser = (async () => Response.json({ user: { id: 'acct_not_workos' } })) as typeof fetch;
+    const malformedUser = (async () =>
+      Response.json({ user: { id: 'acct_not_workos' } })) as typeof fetch;
     await expect(
       verifyWorkosDeviceProof(
         proof('device-code-2'),
@@ -116,7 +129,11 @@ describe('WorkOS Device Authorization proof verification', () => {
       ),
     ).resolves.toEqual({ status: 'invalid' });
     await expect(
-      verifyWorkosDeviceProof(null as never, { issuer: WORKOS_AUTHKIT_ISSUER, clientId: CLIENT_ID }, fetchFn),
+      verifyWorkosDeviceProof(
+        null as never,
+        { issuer: WORKOS_AUTHKIT_ISSUER, clientId: CLIENT_ID },
+        fetchFn,
+      ),
     ).resolves.toEqual({ status: 'invalid' });
     await expect(
       verifyWorkosDeviceProof(
@@ -131,26 +148,50 @@ describe('WorkOS Device Authorization proof verification', () => {
   it('resolves the same hosted account as AuthKit PKCE and consumes a device code once', async () => {
     env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
     env.OIDC_CLIENT_ID = CLIENT_ID;
+    env.HOSTED_WORKOS_CLIENT_ID = CLIENT_ID;
     const subject = `user_${crypto.randomUUID().replaceAll('-', '')}`;
     let deviceConsumed = false;
-    const fetchFn = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const params = new URLSearchParams(init?.body as string);
-      if (params.get('grant_type') === 'authorization_code') {
-        return Response.json({ user: { id: subject }, access_token: 'ignored' });
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/user_management/authenticate') {
+        const params = new URLSearchParams(init?.body as string);
+        if (params.get('grant_type') === 'authorization_code') {
+          return Response.json({ user: { id: subject }, access_token: 'ignored' });
+        }
+        if (params.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code') {
+          if (deviceConsumed) return Response.json({ error: 'invalid_grant' }, { status: 400 });
+          deviceConsumed = true;
+          return Response.json({
+            user: { id: subject },
+            access_token: 'ignored',
+            refresh_token: 'ignored',
+          });
+        }
+        return Response.json({ error: 'invalid_grant' }, { status: 400 });
       }
-      if (params.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code') {
-        if (deviceConsumed) return Response.json({ error: 'invalid_grant' }, { status: 400 });
-        deviceConsumed = true;
+      if (url.pathname === `/user_management/users/${subject}` && init?.method !== 'POST') {
         return Response.json({
-          user: { id: subject },
-          access_token: 'ignored',
-          refresh_token: 'ignored',
+          object: 'user',
+          id: subject,
+          email: 'approved@example.com',
+          email_verified: true,
         });
       }
-      return Response.json({ error: 'invalid_grant' }, { status: 400 });
+      if (url.pathname === '/user_management/waitlists/default/entries') {
+        expect(url.searchParams.get('state')).toBe('approved');
+        expect(url.searchParams.get('email')).toBe('approved@example.com');
+        return Response.json({
+          object: 'list',
+          data: [{ email: 'approved@example.com', state: 'approved' }],
+        });
+      }
+      return Response.json({ error: 'unexpected WorkOS request' }, { status: 404 });
     }) as typeof fetch;
 
-    const enroll = async (proofValue: OidcPkceProof | WorkosDeviceProof, installationId: string) => {
+    const enroll = async (
+      proofValue: OidcPkceProof | WorkosDeviceProof,
+      installationId: string,
+    ) => {
       const stub = env.SESSIONS.get(env.SESSIONS.idFromName('sessions'));
       return runInDurableObject(stub, async (instance: SessionCoordinator) => {
         const previousFetch = globalThis.fetch;
@@ -202,6 +243,69 @@ describe('WorkOS Device Authorization proof verification', () => {
     expect(security.enrollments).toHaveLength(2);
   });
 
+  it('rejects a WorkOS user who is not approved on the hosted waitlist', async () => {
+    env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
+    env.OIDC_CLIENT_ID = CLIENT_ID;
+    env.HOSTED_WORKOS_CLIENT_ID = CLIENT_ID;
+    const subject = `user_${crypto.randomUUID().replaceAll('-', '')}`;
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/user_management/authenticate') {
+        return Response.json({ user: { id: subject }, access_token: 'ignored' });
+      }
+      if (url.pathname === `/user_management/users/${subject}`) {
+        return Response.json({
+          object: 'user',
+          id: subject,
+          email: 'pending@example.com',
+          email_verified: true,
+        });
+      }
+      if (url.pathname === '/user_management/waitlists/default/entries') {
+        return Response.json({
+          object: 'list',
+          data: [{ email: 'pending@example.com', state: 'pending' }],
+        });
+      }
+      return Response.json({ error: 'unexpected WorkOS request' }, { status: 404 });
+    }) as typeof fetch;
+    const stub = env.SESSIONS.get(env.SESSIONS.idFromName(`waitlist-${subject}`));
+    const proofValue: OidcPkceProof = {
+      method: 'oidc-pkce',
+      issuer: WORKOS_AUTHKIT_ISSUER,
+      authorizationCode: 'pending-code',
+      codeVerifier: 'pending-verifier',
+      redirectUri: 'http://127.0.0.1:50000/callback',
+      nonce: 'unused-by-authkit',
+    };
+    const result = await runInDurableObject(stub, async (instance: SessionCoordinator) => {
+      const previousFetch = globalThis.fetch;
+      globalThis.fetch = fetchFn;
+      try {
+        const response = await instance.fetch(
+          new Request('https://internal.anvil/enroll', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ proof: proofValue, installationId: 'pending-install' }),
+          }),
+        );
+        return { status: response.status, body: (await response.json()) as unknown };
+      } finally {
+        globalThis.fetch = previousFetch;
+      }
+    });
+
+    expect(result.status).toBe(401);
+    expect(result.body).toMatchObject({ error: { code: 'invalid-proof' } });
+    const db = env.HOSTED_DB;
+    expect(db).toBeDefined();
+    const billingAccount = await db!
+      .prepare('SELECT id FROM billing_accounts WHERE workos_client_id = ? AND workos_user_id = ?')
+      .bind(CLIENT_ID, subject)
+      .first();
+    expect(billingAccount).toBeNull();
+  });
+
   it('applies a one-second DO-wide provider gate while preserving polling errors', async () => {
     env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
     env.OIDC_CLIENT_ID = CLIENT_ID;
@@ -249,17 +353,42 @@ describe('WorkOS Device Authorization proof verification', () => {
   it('records a successful proof and removes the session if epoch completion fails', async () => {
     env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
     env.OIDC_CLIENT_ID = CLIENT_ID;
+    env.HOSTED_WORKOS_CLIENT_ID = CLIENT_ID;
     const stub = env.SESSIONS.get(env.SESSIONS.idFromName(`device-cleanup-${crypto.randomUUID()}`));
-    const fetchFn = (async () =>
-      Response.json({ user: { id: `user_${crypto.randomUUID().replaceAll('-', '')}` } })) as typeof fetch;
+    const subject = `user_${crypto.randomUUID().replaceAll('-', '')}`;
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/user_management/authenticate') {
+        return Response.json({ user: { id: subject } });
+      }
+      if (url.pathname === `/user_management/users/${subject}`) {
+        return Response.json({
+          object: 'user',
+          id: subject,
+          email: 'cleanup@example.com',
+          email_verified: true,
+        });
+      }
+      if (url.pathname === '/user_management/waitlists/default/entries') {
+        return Response.json({
+          object: 'list',
+          data: [{ email: 'cleanup@example.com', state: 'approved' }],
+        });
+      }
+      return Response.json({ error: 'unexpected WorkOS request' }, { status: 404 });
+    }) as typeof fetch;
 
     const result = await runInDurableObject(stub, async (instance: SessionCoordinator, state) => {
-      const original = (instance as unknown as {
-        datasetEpoch: (accountId: string) => Promise<string>;
-      }).datasetEpoch;
-      (instance as unknown as {
-        datasetEpoch: (accountId: string) => Promise<string>;
-      }).datasetEpoch = async () => {
+      const original = (
+        instance as unknown as {
+          datasetEpoch: (accountId: string) => Promise<string>;
+        }
+      ).datasetEpoch;
+      (
+        instance as unknown as {
+          datasetEpoch: (accountId: string) => Promise<string>;
+        }
+      ).datasetEpoch = async () => {
         throw new Error('epoch lookup failed');
       };
       const previousFetch = globalThis.fetch;
@@ -267,9 +396,11 @@ describe('WorkOS Device Authorization proof verification', () => {
       try {
         let status = 503;
         try {
-          const response = await (instance as unknown as {
-            handleEnroll: (request: Request) => Promise<Response>;
-          }).handleEnroll(
+          const response = await (
+            instance as unknown as {
+              handleEnroll: (request: Request) => Promise<Response>;
+            }
+          ).handleEnroll(
             new Request('https://internal.anvil/enroll', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -286,9 +417,7 @@ describe('WorkOS Device Authorization proof verification', () => {
         }
         return {
           status,
-          sessions: state.storage.sql
-            .exec('SELECT enrollment_id FROM device_sessions')
-            .toArray(),
+          sessions: state.storage.sql.exec('SELECT enrollment_id FROM device_sessions').toArray(),
           proofs: state.storage.sql
             .exec('SELECT device_code_hash FROM workos_device_proofs')
             .toArray(),
@@ -296,9 +425,11 @@ describe('WorkOS Device Authorization proof verification', () => {
         };
       } finally {
         globalThis.fetch = previousFetch;
-        (instance as unknown as {
-          datasetEpoch: (accountId: string) => Promise<string>;
-        }).datasetEpoch = original;
+        (
+          instance as unknown as {
+            datasetEpoch: (accountId: string) => Promise<string>;
+          }
+        ).datasetEpoch = original;
       }
     });
 

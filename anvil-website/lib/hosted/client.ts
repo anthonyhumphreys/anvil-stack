@@ -19,6 +19,15 @@ import type {
   HostedDeviceListResult,
   HostedEntitlement,
   HostedIdentity,
+  HostedOrganizationAcceptResult,
+  HostedOrganizationCloseResult,
+  HostedOrganizationCreateResult,
+  HostedOrganizationInviteResult,
+  HostedOrganizationListResult,
+  HostedOrganizationMemberSeatResult,
+  HostedOrganizationRole,
+  HostedOrganizationSeatChangeResult,
+  HostedSeatIncreaseQuote,
   HostedLinkCodeResult,
   HostedPairDeviceResult,
   HostedPortalResult,
@@ -190,12 +199,187 @@ export function createCheckout(
   identity: HostedIdentity,
   interval: HostedBillingInterval
 ): Promise<HostedCheckoutResult> {
-  return hostedCall<HostedCheckoutResult>("/internal/hosted/checkout", { ...identity, interval });
+  return hostedCall<HostedCheckoutResult>("/internal/hosted/checkout", {
+    ...identity,
+    planKey: "sync_personal",
+    interval
+  });
 }
 
 /** POST /internal/hosted/portal — Stripe Customer Portal session. */
 export function createPortal(identity: HostedIdentity): Promise<HostedPortalResult> {
   return hostedCall<HostedPortalResult>("/internal/hosted/portal", identity);
+}
+
+/** Organization billing is scoped to the organization customer in Stripe. */
+export function createOrganizationPortal(
+  identity: HostedIdentity,
+  organizationId: string
+): Promise<HostedPortalResult> {
+  return hostedCall<HostedPortalResult>("/internal/hosted/portal", {
+    ...identity,
+    organizationId
+  });
+}
+
+export function createTeamCheckout(
+  identity: HostedIdentity,
+  organizationId: string,
+  interval: HostedBillingInterval,
+  seats = 5
+): Promise<HostedCheckoutResult> {
+  return hostedCall<HostedCheckoutResult>("/internal/hosted/checkout", {
+    ...identity,
+    planKey: "sync_team",
+    organizationId,
+    interval,
+    seats
+  });
+}
+
+export function updateOrganizationSeats(
+  identity: HostedIdentity,
+  organizationId: string,
+  seats: number
+): Promise<HostedOrganizationSeatChangeResult> {
+  return hostedCall<HostedOrganizationSeatChangeResult>("/internal/hosted/seats", {
+    ...identity,
+    organizationId,
+    seats
+  });
+}
+
+export function quoteOrganizationSeatIncrease(
+  identity: HostedIdentity,
+  organizationId: string,
+  seats: number
+): Promise<HostedSeatIncreaseQuote> {
+  return hostedCall<HostedSeatIncreaseQuote>("/internal/hosted/seats/quote", {
+    ...identity,
+    organizationId,
+    seats
+  });
+}
+
+export function confirmOrganizationSeatIncrease(
+  identity: HostedIdentity,
+  organizationId: string,
+  quoteId: string
+): Promise<HostedOrganizationSeatChangeResult> {
+  return hostedCall<HostedOrganizationSeatChangeResult>("/internal/hosted/seats/confirm", {
+    ...identity,
+    organizationId,
+    quoteId
+  });
+}
+
+export function updateOrganizationMemberSeat(
+  identity: HostedIdentity,
+  organizationId: string,
+  workosUserId: string,
+  assigned: boolean
+): Promise<HostedOrganizationMemberSeatResult> {
+  return hostedCall<HostedOrganizationMemberSeatResult>("/internal/hosted/organization-seat", {
+    identity,
+    organizationId,
+    workosUserId,
+    assigned
+  });
+}
+
+export function listOrganizations(identity: HostedIdentity): Promise<HostedOrganizationListResult> {
+  return hostedCall<HostedOrganizationListResult>("/internal/hosted/organizations", { identity });
+}
+
+export function closeOrganization(
+  identity: HostedIdentity,
+  organizationId: string
+): Promise<HostedOrganizationCloseResult> {
+  return hostedCall<HostedOrganizationCloseResult>("/internal/hosted/organization-close", {
+    identity,
+    organizationId
+  });
+}
+
+export function createOrganization(
+  identity: HostedIdentity,
+  name: string,
+  idempotencyKey: string,
+  ownerSeatAssigned = true
+): Promise<HostedOrganizationCreateResult> {
+  return hostedCall<HostedOrganizationCreateResult>("/internal/hosted/organization-create", {
+    identity,
+    name,
+    idempotencyKey,
+    ownerSeatAssigned
+  });
+}
+
+export function inviteOrganizationMember(
+  identity: HostedIdentity,
+  organizationId: string,
+  email: string
+): Promise<HostedOrganizationInviteResult> {
+  return hostedCall<HostedOrganizationInviteResult>("/internal/hosted/organization-invite", {
+    identity,
+    organizationId,
+    email
+  });
+}
+
+export function acceptOrganizationInvitation(
+  identity: HostedIdentity,
+  invitationToken: string
+): Promise<HostedOrganizationAcceptResult> {
+  return hostedCall<HostedOrganizationAcceptResult>(
+    "/internal/hosted/organization-invitation-accept",
+    { identity, invitationToken }
+  );
+}
+
+export function removeOrganizationMember(
+  identity: HostedIdentity,
+  organizationId: string,
+  workosUserId: string
+): Promise<{ removed: boolean }> {
+  return hostedCall("/internal/hosted/organization-member-remove", {
+    identity,
+    organizationId,
+    workosUserId
+  });
+}
+
+export function leaveOrganization(
+  identity: HostedIdentity,
+  organizationId: string
+): Promise<{ left: boolean }> {
+  return hostedCall("/internal/hosted/organization-leave", { identity, organizationId });
+}
+
+export function updateOrganizationRole(
+  identity: HostedIdentity,
+  organizationId: string,
+  workosUserId: string,
+  role: HostedOrganizationRole
+): Promise<{ updated: boolean }> {
+  return hostedCall("/internal/hosted/organization-role", {
+    identity,
+    organizationId,
+    workosUserId,
+    role
+  });
+}
+
+export function revokeOrganizationInvitation(
+  identity: HostedIdentity,
+  organizationId: string,
+  invitationId: string
+): Promise<{ revoked: boolean }> {
+  return hostedCall("/internal/hosted/organization-invitation-revoke", {
+    identity,
+    organizationId,
+    invitationId
+  });
 }
 
 /** POST /internal/hosted/pair-device — one-time enrollment code for a new device. */

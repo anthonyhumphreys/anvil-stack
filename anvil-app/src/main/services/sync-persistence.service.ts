@@ -1493,6 +1493,9 @@ interface EntitlementDbRow {
   state: string;
   source: string;
   plan_key: string | null;
+  funded_by: SyncEntitlementRecord['fundedBy'];
+  organization_id: string | null;
+  device_limit: number;
   preview_ends_at: string | null;
   access_until: string | null;
   grace_until: string | null;
@@ -1510,6 +1513,9 @@ function mapEntitlement(row: EntitlementDbRow): SyncEntitlementRecord {
     state: row.state,
     source: row.source,
     planKey: row.plan_key,
+    fundedBy: row.funded_by,
+    organizationId: row.organization_id,
+    deviceLimit: row.device_limit,
     previewEndsAt: row.preview_ends_at,
     accessUntil: row.access_until,
     graceUntil: row.grace_until,
@@ -1544,13 +1550,16 @@ export function upsertSyncEntitlement(input: UpsertSyncEntitlementInput): SyncEn
   getDb()
     .prepare(
       `INSERT INTO sync_entitlement
-         (backend_id, account_id, state, source, plan_key, preview_ends_at,
+         (backend_id, account_id, state, source, plan_key, funded_by, organization_id, device_limit, preview_ends_at,
           access_until, grace_until, checked_at, revision, reason, restricted, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(backend_id, account_id) DO UPDATE SET
          state = excluded.state,
          source = excluded.source,
          plan_key = excluded.plan_key,
+         funded_by = excluded.funded_by,
+         organization_id = excluded.organization_id,
+         device_limit = excluded.device_limit,
          preview_ends_at = excluded.preview_ends_at,
          access_until = excluded.access_until,
          grace_until = excluded.grace_until,
@@ -1566,6 +1575,9 @@ export function upsertSyncEntitlement(input: UpsertSyncEntitlementInput): SyncEn
       input.state,
       input.source,
       input.planKey,
+      input.fundedBy,
+      input.organizationId,
+      input.deviceLimit,
       input.previewEndsAt,
       input.accessUntil,
       input.graceUntil,

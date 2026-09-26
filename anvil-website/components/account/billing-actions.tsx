@@ -17,10 +17,22 @@ type Pending = "portal" | "month" | "year" | "reconcile" | null;
  * reconcile refreshes the stored subscription view. Errors surface inline
  * so a disabled checkout reads as a fact, not a dead button.
  */
-export function BillingActions({ hasStripeCustomer }: { hasStripeCustomer: boolean }) {
+export function BillingActions({
+  hasStripeCustomer,
+  checkoutAvailable,
+  personalSubscriptionStatus
+}: {
+  hasStripeCustomer: boolean;
+  checkoutAvailable: boolean;
+  personalSubscriptionStatus: string | null;
+}) {
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState<string | null>(null);
   const [reconciled, setReconciled] = useState<HostedReconcileResult | null>(null);
+  const hasCurrentPersonalSubscription =
+    personalSubscriptionStatus !== null &&
+    personalSubscriptionStatus !== "canceled" &&
+    personalSubscriptionStatus !== "incomplete_expired";
 
   async function run<T>(key: Exclude<Pending, null>, call: () => Promise<ActionResult<T>>, onOk: (data: T) => void) {
     setPending(key);
@@ -43,21 +55,25 @@ export function BillingActions({ hasStripeCustomer }: { hasStripeCustomer: boole
   return (
     <div className="grid gap-3">
       <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          onClick={() => startCheckout("month")}
-          disabled={pending !== null}
-        >
-          {pending === "month" ? "Starting…" : "Upgrade — monthly"}
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => startCheckout("year")}
-          disabled={pending !== null}
-        >
-          {pending === "year" ? "Starting…" : "Upgrade — annual"}
-        </Button>
+        {checkoutAvailable && !hasCurrentPersonalSubscription ? (
+          <>
+            <Button
+              type="button"
+              onClick={() => startCheckout("month")}
+              disabled={pending !== null}
+            >
+              {pending === "month" ? "Starting…" : "Personal — £8 monthly"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => startCheckout("year")}
+              disabled={pending !== null}
+            >
+              {pending === "year" ? "Starting…" : "Personal — £80 annual"}
+            </Button>
+          </>
+        ) : null}
         {hasStripeCustomer ? (
           <Button
             type="button"
@@ -85,6 +101,18 @@ export function BillingActions({ hasStripeCustomer }: { hasStripeCustomer: boole
           {pending === "reconcile" ? "Reconciling…" : "Reconcile now"}
         </Button>
       </div>
+      {!checkoutAvailable ? (
+        <p className="text-xs leading-5 text-muted-foreground">
+          Personal checkout is currently disabled for this deployment. Production paid access begins
+          1 November 2026; a staging rehearsal requires its backend test-mode flag.
+        </p>
+      ) : null}
+      {hasCurrentPersonalSubscription ? (
+        <p className="text-xs leading-5 text-muted-foreground">
+          A personal subscription is already on file. Use Manage billing to review or cancel it;
+          starting a second personal plan is unavailable.
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}

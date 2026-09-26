@@ -9,6 +9,9 @@ import { isRecord } from '../rpc';
 
 const DEFAULT_API_BASE = 'https://api.stripe.com';
 const SIGNATURE_TOLERANCE_MS = 300_000;
+const STRIPE_REQUEST_TIMEOUT_MS = 10_000;
+/** Webhook endpoints for each Stripe account must use this same API version. */
+export const STRIPE_API_VERSION = '2026-08-26.dahlia';
 
 const encoder = new TextEncoder();
 const hexOf = (bytes: ArrayBuffer): string =>
@@ -53,16 +56,17 @@ export async function stripeRequest<T>(
   const base = env.STRIPE_API_BASE ?? DEFAULT_API_BASE;
   const method = init.method ?? 'GET';
   const url = `${base}${path}`;
-  const headers: Record<string, string> = { Authorization: `Bearer ${secret}` };
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${secret}`,
+    'Stripe-Version': STRIPE_API_VERSION,
+  };
   if (init.idempotencyKey !== undefined) {
     headers['Idempotency-Key'] = init.idempotencyKey;
   }
   let response: Response;
   try {
     response = await fetch(
-      method === 'GET' && init.params !== undefined
-        ? `${url}?${formEncode(init.params)}`
-        : url,
+      method === 'GET' && init.params !== undefined ? `${url}?${formEncode(init.params)}` : url,
       {
         method,
         headers:
@@ -70,6 +74,7 @@ export async function stripeRequest<T>(
             ? { ...headers, 'content-type': 'application/x-www-form-urlencoded' }
             : headers,
         ...(method === 'POST' ? { body: formEncode(init.params ?? {}) } : {}),
+        signal: AbortSignal.timeout(STRIPE_REQUEST_TIMEOUT_MS),
       },
     );
   } catch (error) {
@@ -83,7 +88,9 @@ export async function stripeRequest<T>(
   }
   if (!response.ok) {
     const detail =
-      isRecord(parsed) && isRecord(parsed['error']) && typeof parsed['error']['message'] === 'string'
+      isRecord(parsed) &&
+      isRecord(parsed['error']) &&
+      typeof parsed['error']['message'] === 'string'
         ? parsed['error']['message']
         : `HTTP ${response.status}`;
     throw new StripeApiError(response.status, detail);
@@ -157,16 +164,24 @@ export interface StripeCheckoutSession {
   customer: string | null;
   subscription: string | null;
   client_reference_id: string | null;
+  metadata: Record<string, string>;
 }
 
 export interface StripeSubscription {
   id: string;
   status: string;
   customer: string;
+  current_period_start: number;
   current_period_end: number;
   cancel_at_period_end: boolean;
   items: {
-    data: Array<{ price: { id: string; recurring: { interval: string } | null } }>;
+    data: Array<{
+      id: string | null;
+      quantity: number | null;
+      current_period_start: number | null;
+      current_period_end: number | null;
+      price: { id: string; recurring: { interval: string } | null };
+    }>;
   };
 }
 
@@ -175,6 +190,7 @@ export interface StripeInvoice {
   subscription: string | null;
   billing_reason: string | null;
   status: string | null;
+  customer: string | null;
 }
 
 export interface StripePortalSession {
@@ -188,10 +204,52 @@ export interface StripeList<T> {
   has_more: boolean;
 }
 
+export interface StripePrice {
+  id: string;
+  active: boolean;
+  livemode: boolean;
+  currency: string;
+  unit_amount: number | null;
+  recurring: { interval: string; interval_count: number } | null;
+}
+
+export function parseStripePrice(value: unknown): StripePrice | null {
+  if (
+    !isRecord(value) ||
+    typeof value['id'] !== 'string' ||
+    typeof value['active'] !== 'boolean' ||
+    typeof value['livemode'] !== 'boolean' ||
+    typeof value['currency'] !== 'string' ||
+    (value['unit_amount'] !== null && !Number.isSafeInteger(value['unit_amount']))
+  ) {
+    return null;
+  }
+  const recurring = isRecord(value['recurring']) ? value['recurring'] : null;
+  return {
+    id: value['id'],
+    active: value['active'],
+    livemode: value['livemode'],
+    currency: value['currency'],
+    unit_amount: typeof value['unit_amount'] === 'number' ? value['unit_amount'] : null,
+    recurring:
+      recurring !== null &&
+      typeof recurring['interval'] === 'string' &&
+      Number.isSafeInteger(recurring['interval_count'])
+        ? { interval: recurring['interval'], interval_count: recurring['interval_count'] as number }
+        : null,
+  };
+}
+
 export function parseStripeCheckoutSession(value: unknown): StripeCheckoutSession | null {
   if (!isRecord(value) || typeof value['id'] !== 'string') return null;
   const opt = (key: string): string | null =>
     typeof value[key] === 'string' ? (value[key] as string) : null;
+  const metadata: Record<string, string> = {};
+  if (isRecord(value['metadata'])) {
+    for (const [key, item] of Object.entries(value['metadata'])) {
+      if (typeof item === 'string') metadata[key] = item;
+    }
+  }
   return {
     id: value['id'],
     url: opt('url'),
@@ -199,6 +257,7 @@ export function parseStripeCheckoutSession(value: unknown): StripeCheckoutSessio
     customer: opt('customer'),
     subscription: opt('subscription'),
     client_reference_id: opt('client_reference_id'),
+    metadata,
   };
 }
 
@@ -208,27 +267,58 @@ export function parseStripeSubscription(value: unknown): StripeSubscription | nu
     typeof value['id'] !== 'string' ||
     typeof value['status'] !== 'string' ||
     typeof value['customer'] !== 'string' ||
-    !Number.isSafeInteger(value['current_period_end']) ||
     typeof value['cancel_at_period_end'] !== 'boolean'
   ) {
     return null;
   }
-  const items = isRecord(value['items']) && Array.isArray(value['items']['data'])
-    ? value['items']['data']
-    : [];
-  const first = isRecord(items[0]) && isRecord(items[0]['price']) ? items[0]['price'] : null;
+  const itemList = isRecord(value['items']) ? value['items'] : null;
+  const items = itemList !== null && Array.isArray(itemList['data']) ? itemList['data'] : null;
+  // Hosted plans intentionally support one recurring line item. Truncated or
+  // multi-item objects must fail closed instead of assigning the first item.
+  if (items === null || items.length !== 1 || itemList?.['has_more'] === true) return null;
+  const firstItem = isRecord(items[0]) ? items[0] : null;
+  const first = firstItem !== null && isRecord(firstItem['price']) ? firstItem['price'] : null;
   const recurring = first !== null && isRecord(first['recurring']) ? first['recurring'] : null;
+  const itemPeriodEnd = firstItem?.['current_period_end'];
+  const itemPeriodStart = firstItem?.['current_period_start'];
+  const itemQuantity = firstItem?.['quantity'];
+  const currentPeriodEnd =
+    typeof itemPeriodEnd === 'number' && Number.isSafeInteger(itemPeriodEnd) ? itemPeriodEnd : null;
+  const currentPeriodStart =
+    typeof itemPeriodStart === 'number' && Number.isSafeInteger(itemPeriodStart)
+      ? itemPeriodStart
+      : null;
+  if (
+    currentPeriodEnd === null ||
+    currentPeriodStart === null ||
+    firstItem === null ||
+    first === null ||
+    typeof first['id'] !== 'string' ||
+    !Number.isSafeInteger(itemQuantity) ||
+    (itemQuantity as number) < 1 ||
+    recurring === null ||
+    typeof recurring['interval'] !== 'string'
+  )
+    return null;
   return {
     id: value['id'],
     status: value['status'],
     customer: value['customer'],
-    current_period_end: value['current_period_end'] as number,
+    current_period_start: currentPeriodStart,
+    current_period_end: currentPeriodEnd,
     cancel_at_period_end: value['cancel_at_period_end'],
     items: {
       data: [
         {
+          id: typeof firstItem['id'] === 'string' ? firstItem['id'] : null,
+          quantity: itemQuantity as number,
+          current_period_start: currentPeriodStart,
+          current_period_end:
+            typeof itemPeriodEnd === 'number' && Number.isSafeInteger(itemPeriodEnd)
+              ? itemPeriodEnd
+              : null,
           price: {
-            id: first !== null && typeof first['id'] === 'string' ? first['id'] : '',
+            id: first['id'],
             recurring:
               recurring !== null && typeof recurring['interval'] === 'string'
                 ? { interval: recurring['interval'] }
@@ -244,10 +334,20 @@ export function parseStripeInvoice(value: unknown): StripeInvoice | null {
   if (!isRecord(value) || typeof value['id'] !== 'string') return null;
   const opt = (key: string): string | null =>
     typeof value[key] === 'string' ? (value[key] as string) : null;
+  const parent = isRecord(value['parent']) ? value['parent'] : null;
+  const subscriptionDetails =
+    parent !== null && isRecord(parent['subscription_details'])
+      ? parent['subscription_details']
+      : null;
+  const modernSubscription =
+    subscriptionDetails !== null && typeof subscriptionDetails['subscription'] === 'string'
+      ? subscriptionDetails['subscription']
+      : null;
   return {
     id: value['id'],
-    subscription: opt('subscription'),
+    subscription: modernSubscription ?? opt('subscription'),
     billing_reason: opt('billing_reason'),
     status: opt('status'),
+    customer: opt('customer'),
   };
 }

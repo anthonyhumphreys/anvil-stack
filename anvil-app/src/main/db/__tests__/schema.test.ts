@@ -207,7 +207,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(98);
+      expect(SCHEMA_VERSION).toBe(99);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -259,6 +259,9 @@ describe('fresh database schema', () => {
       expect(tableColumns('sync_entitlement').has('account_id')).toBe(true);
       expect(tableColumns('sync_entitlement').has('state')).toBe(true);
       expect(tableColumns('sync_entitlement').has('source')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('funded_by')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('organization_id')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('device_limit')).toBe(true);
       expect(tableColumns('sync_entitlement').has('checked_at')).toBe(true);
       expect(tableColumns('sync_entitlement').has('revision')).toBe(true);
       expect(tableColumns('sync_entitlement').has('reason')).toBe(true);
@@ -462,6 +465,45 @@ describe('fresh database schema', () => {
       }
       // Re-running must be a no-op for databases that already have the table.
       applyMigration(db, MIGRATIONS[79]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates hosted entitlement funding and device-limit fields', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigration(db, MIGRATIONS[79]);
+      db.prepare(
+        `INSERT INTO sync_entitlement
+           (backend_id, account_id, state, source, plan_key, checked_at, reason, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run('backend', 'account', 'active', 'subscription', 'sync_personal', 'now', 'paid', 'now');
+      applyMigration(db, MIGRATIONS[99]);
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(sync_entitlement)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      expect(columns.has('funded_by')).toBe(true);
+      expect(columns.has('organization_id')).toBe(true);
+      expect(columns.has('device_limit')).toBe(true);
+      expect(
+        db
+          .prepare(
+            `SELECT state, source, plan_key, funded_by, organization_id, device_limit
+             FROM sync_entitlement WHERE backend_id = ? AND account_id = ?`,
+          )
+          .get('backend', 'account'),
+      ).toEqual({
+        state: 'active',
+        source: 'subscription',
+        plan_key: 'sync_personal',
+        funded_by: 'none',
+        organization_id: null,
+        device_limit: 5,
+      });
+      applyMigration(db, MIGRATIONS[99]);
     } finally {
       db.close();
     }

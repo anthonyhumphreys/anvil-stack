@@ -15,11 +15,8 @@ import type { AccountDeletionState, DeviceListResult } from '../../../contract/a
 import { isRecord, rpcErrorResponse } from '../rpc';
 import { audit } from './billing';
 import { validateHostedIdentity } from './identity';
-import {
-  getBillingAccountByIdentity,
-  markBillingLifecycle,
-  type BillingAccountRow,
-} from './store';
+import { prepareHostedAccountDeletion } from './organizations';
+import { getBillingAccountByIdentity, markBillingLifecycle, type BillingAccountRow } from './store';
 
 /** Website-supplied rename bound — tighter than the DO's own 128-char cap. */
 const MAX_HOSTED_DEVICE_NAME_CHARS = 80;
@@ -262,6 +259,10 @@ export async function handleHostedDeleteAccount(
   if (account.sync_account_id === null) {
     return rpcErrorResponse(undefined, 'not-found', { reason: 'unlinked' });
   }
+  const organizationCleanup = await prepareHostedAccountDeletion(db, account.id, Date.now());
+  if (!organizationCleanup) {
+    return rpcErrorResponse(undefined, 'conflict', { reason: 'last-organization-owner' });
+  }
   const response = await sessionStub(env).fetch(
     'https://internal.anvil/internal/delete-account-by-id',
     {
@@ -278,10 +279,7 @@ export async function handleHostedDeleteAccount(
   }
   // First request transitions the billing row and leaves the audit mark;
   // repeats land zero rows on the lifecycle guard and stay silent.
-  if (
-    account.lifecycle === 'active' &&
-    (await markBillingLifecycle(db, account.id, 'deleting'))
-  ) {
+  if (account.lifecycle === 'active' && (await markBillingLifecycle(db, account.id, 'deleting'))) {
     await audit(db, account.id, 'account.delete-requested', {
       syncAccountId: account.sync_account_id,
     });

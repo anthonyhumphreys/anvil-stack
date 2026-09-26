@@ -40,7 +40,12 @@ export const OIDC_PLACEHOLDER_CLIENT_ID = 'anvil-desktop' as const;
 export const WORKOS_AUTHKIT_ISSUER = 'https://api.workos.com/user_management' as const;
 
 /** Frozen auth route families (see integration-contract section 5). */
-export const AUTH_OPERATIONS = ['enroll', 'session.refresh', 'session.revoke', 'session.describe'] as const;
+export const AUTH_OPERATIONS = [
+  'enroll',
+  'session.refresh',
+  'session.revoke',
+  'session.describe',
+] as const;
 
 export type AuthOperation = (typeof AUTH_OPERATIONS)[number];
 
@@ -182,6 +187,28 @@ export interface EnrollmentCodeIssueResult {
   accountId: string;
 }
 
+export type FairUseRestrictionCode =
+  | 'storage-usage'
+  | 'sustained-excessive-usage'
+  | 'service-protection';
+
+export interface FairUseNotice {
+  code: FairUseRestrictionCode;
+  /** Plain text written by support; clients must render it as text. */
+  message: string;
+  noticeAt: string;
+  restrictAt: string;
+  /** True only when an operator explicitly bypassed the normal notice period. */
+  emergency: boolean;
+}
+
+export interface FairUseAccountStatus {
+  status: 'clear' | 'notice' | 'restricted';
+  /** Observed byte counts only; these are not plan quotas. */
+  usage: { historyBytes: number; artifactBytes: number };
+  notice?: FairUseNotice;
+}
+
 /**
  * OPS-01 diagnostics: aggregate counters and retention state for the account.
  * Optional so older backends stay compatible; never carries entity content,
@@ -190,15 +217,17 @@ export interface EnrollmentCodeIssueResult {
 export interface SyncAccountStats {
   /** Bytes of retained change history (journal payloads) currently stored. */
   historyBytes: number;
-  /** Budget enforced before accepting new shared changes. */
-  historyQuotaBytes: number;
+  /** @deprecated Aggregate history storage is measured and governed by fair use. */
+  historyQuotaBytes?: number;
   /** Cursors strictly below this sequence must reset and re-scan. */
   retentionFloor: number;
   /**
    * MESH-03: declared bytes held by non-terminal artifact rows
-   * (reserved/uploaded/published/deleting) against the account quota.
+   * (reserved/uploaded/published/deleting), measured for fair-use review.
    */
   artifactBytes?: number;
+  /** Hosted-only notice/restriction state and observed storage use. */
+  fairUse?: FairUseAccountStatus;
   counters: Record<string, number>;
 }
 
@@ -314,12 +343,13 @@ export interface AccountDeletionStatusResult {
 
 /**
  * Auth codes owned by this contract (envelope.ts is owned by another packet,
- * so they live here). Terminal failures map to HTTP 401; pending and
- * slow-down values are polling signals.
+ * so they live here). Proof failures map to HTTP 401, device-limit to 403,
+ * and pending/slow-down values are polling signals.
  */
 export type AuthErrorCode =
   | 'refresh-reuse-detected'
   | 'enrollment-code-used'
+  | 'device-limit'
   | 'invalid-proof'
   | 'device-authorization-pending'
   | 'device-authorization-slow-down'
@@ -327,13 +357,13 @@ export type AuthErrorCode =
   | 'device-authorization-expired';
 
 /**
- * HTTP status agreement for auth failures: reuse of an already-rotated
- * Refresh reuse, consumed enrollment codes, and terminal device-authorization
- * failures are 401 authentication failures. Pending and slow-down responses
- * are polling signals, with status codes that let headless clients retry.
+ * HTTP status agreement for auth failures. A device-limit refusal is a
+ * capacity condition (403), not an invalid identity proof (401).
  */
 export function authErrorHttpStatus(code: AuthErrorCode): number {
   switch (code) {
+    case 'device-limit':
+      return 403;
     case 'refresh-reuse-detected':
       return 401;
     case 'enrollment-code-used':

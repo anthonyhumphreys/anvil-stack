@@ -40,9 +40,12 @@ import {
 import { sha256Hex } from './hash';
 import {
   checkHostedAccess,
+  hostedEnforcementEnabled,
   resolveAccountEntitlement,
   ENTITLEMENT_CACHE_DDL,
 } from './hosted/enforcement';
+import { resolveHostedLimits } from './hosted/billing';
+import { PREVIEW_END_MS } from './hosted/policy';
 import type {
   ShareCreateResult,
   ShareFinalizeResult,
@@ -77,17 +80,14 @@ import {
   parseRecoveryEnvelope,
   serializeRecoveryEnvelope,
 } from '../../contract/device-security';
-import {
-  hostedIdentityFromOidcSubject,
-  initialHostedSyncAccountId,
-} from './hosted/identity';
+import { hostedIdentityFromOidcSubject, initialHostedSyncAccountId } from './hosted/identity';
 import {
   HostedConflictError,
   bumpGeneration,
   getBillingAccountByIdentity,
-  getOrCreateBillingAccount,
   setSyncAccountLink,
 } from './hosted/store';
+import { getOrCreateAdmittedBillingAccount } from './hosted/admission';
 
 const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_GRACE_MS = 30 * 1000;
@@ -149,7 +149,13 @@ interface SessionRow {
   trust_state: 'pending' | 'trusted' | 'revoked' | null;
   trusted_at: number | null;
   signing_public_key: string | null;
-  trust_source: 'first-device' | 'manual-approval' | 'pairing' | 'recovery' | 'automatic-auth' | null;
+  trust_source:
+    | 'first-device'
+    | 'manual-approval'
+    | 'pairing'
+    | 'recovery'
+    | 'automatic-auth'
+    | null;
   trust_generation: number | null;
   [key: string]: string | number | null;
 }
@@ -201,7 +207,10 @@ interface SharedArtifactRow {
   [key: string]: string | number | null;
 }
 
-function authError(code: AuthErrorCode | 'unauthenticated' | 'throttled' | 'malformed-request') {
+function authError(
+  code: AuthErrorCode | 'unauthenticated' | 'throttled' | 'malformed-request',
+  details?: Record<string, unknown>,
+) {
   const status =
     code === 'unauthenticated' || code === 'malformed-request'
       ? authErrorHttpStatus('invalid-proof')
@@ -217,7 +226,7 @@ function authError(code: AuthErrorCode | 'unauthenticated' | 'throttled' | 'malf
     headers.set('retry-after', '5');
   }
   return Response.json(
-    { error: { code, retryable } },
+    { error: { code, retryable, ...(details === undefined ? {} : { details }) } },
     { status: code === 'malformed-request' ? 400 : status, headers },
   );
 }
@@ -682,6 +691,8 @@ export class SessionCoordinator extends DurableObject<Env> {
           return this.handleDeletionState(url);
         case 'POST /internal/describe':
           return await this.handleDescribe(request);
+        case 'POST /internal/hosted/device-limit-status':
+          return await this.handleHostedDeviceLimitStatus(request);
         case 'POST /internal/security-get':
           return await this.handleSecurityGet(request);
         case 'POST /internal/security-challenge': {
@@ -884,8 +895,8 @@ export class SessionCoordinator extends DurableObject<Env> {
     const base = await initialHostedSyncAccountId(identity).catch(() => null);
     if (base === null) return null;
     const db = this.env.HOSTED_DB;
-    const billing = await getOrCreateBillingAccount(db, identity);
-    if (billing.lifecycle !== 'active') return null;
+    const billing = await getOrCreateAdmittedBillingAccount(this.env, db, identity);
+    if (billing === null || billing.lifecycle !== 'active') return null;
 
     let accountId = billing.sync_account_id ?? base;
     if (this.deletionRow(accountId) !== null) {
@@ -925,7 +936,9 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (identity === null) return null;
     const billing = await getBillingAccountByIdentity(this.env.HOSTED_DB, identity);
     if (billing?.lifecycle !== 'active') return null;
-    return billing.sync_account_id ?? (await initialHostedSyncAccountId(identity).catch(() => null));
+    return (
+      billing.sync_account_id ?? (await initialHostedSyncAccountId(identity).catch(() => null))
+    );
   }
 
   /** Reserves a WorkOS proof exactly once after provider identity succeeds. */
@@ -957,9 +970,9 @@ export class SessionCoordinator extends DurableObject<Env> {
   private allowWorkosDeviceAttempt(now: number): boolean {
     return this.ctx.storage.transactionSync(() => {
       const row = this.ctx.storage.sql
-        .exec<{ last_attempt_at: number }>(
-          'SELECT last_attempt_at FROM workos_device_rate WHERE singleton = 1',
-        )
+        .exec<{
+          last_attempt_at: number;
+        }>('SELECT last_attempt_at FROM workos_device_rate WHERE singleton = 1')
         .toArray()[0];
       if (row !== undefined && now - row.last_attempt_at < WORKOS_DEVICE_MIN_ATTEMPT_INTERVAL_MS) {
         return false;
@@ -1238,6 +1251,9 @@ export class SessionCoordinator extends DurableObject<Env> {
       );
     }
 
+    const deviceLimitFailure = this.hostedDeviceLimitFailure(accountId, codeClass);
+    if (deviceLimitFailure !== null) return deviceLimitFailure;
+
     const security = this.ensureAccountSecurity(accountId, now);
     const existing = this.ctx.storage.sql
       .exec(
@@ -1302,6 +1318,67 @@ export class SessionCoordinator extends DurableObject<Env> {
       },
     );
     return Response.json(session, { status: 200 });
+  }
+
+  /**
+   * Hosted accounts share one five-device allowance per person, regardless
+   * of whether the person or a team funds access. Existing sessions are
+   * never revoked here; removing a device remains an explicit account action.
+   */
+  private hostedDeviceLimitFailure(
+    accountId: string,
+    enrollmentClass: EnrollmentClass,
+  ): Response | null {
+    if (enrollmentClass !== 'device' || !hostedEnforcementEnabled(this.env)) return null;
+    const { limit, activeCount } = this.readHostedDeviceCount(accountId);
+    return activeCount >= limit ? authError('device-limit', { limit, used: activeCount }) : null;
+  }
+
+  private readHostedDeviceCount(accountId: string): { limit: number; activeCount: number } {
+    const limit = resolveHostedLimits(this.env).devices;
+    const row = this.ctx.storage.sql
+      .exec(
+        `SELECT COUNT(*) AS n FROM device_sessions
+         WHERE account_id = ? AND enrollment_class = 'device' AND revoked_at IS NULL`,
+        accountId,
+      )
+      .toArray()[0] as { n?: number } | undefined;
+    return { limit, activeCount: row?.n ?? 0 };
+  }
+
+  private hostedDeviceLimitStatus(
+    accountId: string,
+    now: number,
+  ): { overLimit: boolean; limit: number; activeCount: number } {
+    const { limit, activeCount } = this.readHostedDeviceCount(accountId);
+    const overLimit =
+      hostedEnforcementEnabled(this.env) && now >= PREVIEW_END_MS && activeCount > limit;
+    return { overLimit, limit, activeCount };
+  }
+
+  private async handleHostedDeviceLimitStatus(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['accountId'] !== 'string' ||
+      body['accountId'].length === 0
+    ) {
+      return rpcErrorResponse(undefined, 'malformed-request');
+    }
+    return Response.json(this.hostedDeviceLimitStatus(body['accountId'], Date.now()), {
+      status: 200,
+    });
+  }
+
+  private hostedDeviceMutationDenial(accountId: string, requestId?: string): Response | null {
+    const status = this.hostedDeviceLimitStatus(accountId, Date.now());
+    return status.overLimit
+      ? rpcErrorResponse(requestId, 'forbidden', {
+          reason: 'device-limit-exceeded',
+          limit: status.limit,
+          activeCount: status.activeCount,
+        })
+      : null;
   }
 
   /**
@@ -1501,10 +1578,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       // ENV-01: an ephemeral environment cannot mint trust — code issuance
       // is a device-class ability only.
       if (session.enrollment_class === 'ephemeral') {
-        return Response.json(
-          { error: { code: 'forbidden', retryable: false } },
-          { status: 403 },
-        );
+        return Response.json({ error: { code: 'forbidden', retryable: false } }, { status: 403 });
       }
       accountId = session.account_id;
       issuedBy = session.enrollment_id;
@@ -1679,9 +1753,7 @@ export class SessionCoordinator extends DurableObject<Env> {
         enrollmentClass: row.enrollment_class ?? 'device',
         proofMethod: row.proof_method ?? 'enrollment-code',
         trustState: this.trustState(row),
-        ...(typeof row.environment_id === 'string'
-          ? { environmentId: row.environment_id }
-          : {}),
+        ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
       },
       { status: 200 },
     );
@@ -1713,9 +1785,7 @@ export class SessionCoordinator extends DurableObject<Env> {
         enrollmentClass: row.enrollment_class ?? 'device',
         proofMethod: row.proof_method ?? 'enrollment-code',
         trustState: this.trustState(row),
-        ...(typeof row.environment_id === 'string'
-          ? { environmentId: row.environment_id }
-          : {}),
+        ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
       },
       { status: 200 },
     );
@@ -1746,10 +1816,21 @@ export class SessionCoordinator extends DurableObject<Env> {
     // BILL-03: hosted deployments surface the account's entitlement so
     // clients can render access state. Resolution failure omits the field
     // rather than failing describe; self-host (no HOSTED_DB) omits it too.
-    const entitlement =
+    const resolvedEntitlement =
       this.env.HOSTED_DB === undefined
         ? null
         : await resolveAccountEntitlement(this.env, row.account_id, Date.now()).catch(() => null);
+    const entitlement =
+      resolvedEntitlement !== null &&
+      resolvedEntitlement.state !== 'restricted' &&
+      this.hostedDeviceLimitStatus(row.account_id, Date.now()).overLimit
+        ? {
+            ...resolvedEntitlement,
+            state: 'restricted' as const,
+            capabilities: { syncWrite: false, meshSubmit: false },
+            reason: 'device-limit-exceeded' as const,
+          }
+        : resolvedEntitlement;
     const result: SessionDescribeResult = {
       accountId: row.account_id,
       enrollmentId: row.enrollment_id,
@@ -1794,7 +1875,9 @@ export class SessionCoordinator extends DurableObject<Env> {
       ) {
         return row.trust_source;
       }
-      return row.enrollment_id === security.bootstrap_enrollment_id ? 'first-device' : 'manual-approval';
+      return row.enrollment_id === security.bootstrap_enrollment_id
+        ? 'first-device'
+        : 'manual-approval';
     };
     const enrollments = rows.map((row) => ({
       enrollmentId: row.enrollment_id,
@@ -1806,7 +1889,8 @@ export class SessionCoordinator extends DurableObject<Env> {
           : row.proof_method === 'workos-device'
             ? ('workos-device' as const)
             : ('enrollment-code' as const),
-      enrollmentClass: row.enrollment_class === 'ephemeral' ? ('ephemeral' as const) : ('device' as const),
+      enrollmentClass:
+        row.enrollment_class === 'ephemeral' ? ('ephemeral' as const) : ('device' as const),
       trustState: this.trustState(row),
       trustSource: sourceFor(row),
       trustedAt: row.trusted_at === null ? null : new Date(row.trusted_at).toISOString(),
@@ -1942,7 +2026,8 @@ export class SessionCoordinator extends DurableObject<Env> {
         (this.trustState(current) === 'trusted' ||
           (security.recovery_revision === 0 &&
             security.bootstrap_enrollment_id === callerEnrollmentId)),
-      requiresRecovery: current !== null && this.trustState(current) === 'trusted' && recovery !== null,
+      requiresRecovery:
+        current !== null && this.trustState(current) === 'trusted' && recovery !== null,
       recentEvents,
       bootstrapEnrollmentId: security.bootstrap_enrollment_id,
       enrollments,
@@ -1984,10 +2069,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     return decoded !== null && decoded.byteLength === 32;
   }
 
-  private canMaintainInvalidatedRecovery(
-    row: SessionRow,
-    security: AccountSecurityRow,
-  ): boolean {
+  private canMaintainInvalidatedRecovery(row: SessionRow, security: AccountSecurityRow): boolean {
     if (this.trustState(row) !== 'trusted') return false;
     if (security.recovery_invalidated_at === null) return true;
     // Legacy trusted rows predate trust_generation; they are treated as
@@ -2030,7 +2112,9 @@ export class SessionCoordinator extends DurableObject<Env> {
       return rpcErrorResponse(undefined, 'forbidden', { reason: 'fresh-trusted-holder-required' });
     }
     const backendId =
-      typeof body['backendId'] === 'string' && body['backendId'].length > 0 && body['backendId'].length <= 256
+      typeof body['backendId'] === 'string' &&
+      body['backendId'].length > 0 &&
+      body['backendId'].length <= 256
         ? body['backendId']
         : null;
     if (backendId === null || security.backend_id === null || backendId !== security.backend_id) {
@@ -2115,7 +2199,9 @@ export class SessionCoordinator extends DurableObject<Env> {
     }
     if (!(await verifySecurityProof(challenge, proof))) return false;
     const used = this.ctx.storage.sql
-      .exec<{ challenge_id: string }>(
+      .exec<{
+        challenge_id: string;
+      }>(
         'UPDATE security_challenges SET used_at = ? WHERE challenge_id = ? AND used_at IS NULL RETURNING challenge_id',
         Date.now(),
         challenge.challenge_id,
@@ -2145,7 +2231,8 @@ export class SessionCoordinator extends DurableObject<Env> {
     const body = await readJson(request);
     if (!isRecord(body)) return authError('malformed-request');
     const security = this.ensureAccountSecurity(caller.auth.accountId);
-    const policy = body['policy'] === undefined ? security.policy : this.securityPolicy(body['policy']);
+    const policy =
+      body['policy'] === undefined ? security.policy : this.securityPolicy(body['policy']);
     if (policy === null) return authError('malformed-request');
     const fields = this.recoveryFields(body);
     const backendId = body['backendId'];
@@ -2188,7 +2275,15 @@ export class SessionCoordinator extends DurableObject<Env> {
       if (payloadHash !== (await this.securityPayloadHash(body))) {
         return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'payload-hash-mismatch' });
       }
-      if (!(await this.consumeSecurityProof(caller, 'configure', body['proof'], security, payloadHash))) {
+      if (
+        !(await this.consumeSecurityProof(
+          caller,
+          'configure',
+          body['proof'],
+          security,
+          payloadHash,
+        ))
+      ) {
         return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-security-proof' });
       }
     }
@@ -2253,7 +2348,9 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (payloadHash !== (await this.securityPayloadHash(body))) {
       return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'payload-hash-mismatch' });
     }
-    if (!(await this.consumeSecurityProof(caller, 'recover', body['proof'], security, payloadHash))) {
+    if (
+      !(await this.consumeSecurityProof(caller, 'recover', body['proof'], security, payloadHash))
+    ) {
       return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-recovery-proof' });
     }
     const now = Date.now();
@@ -2297,7 +2394,9 @@ export class SessionCoordinator extends DurableObject<Env> {
   private async handleSecurityApprove(request: Request): Promise<Response> {
     const caller = this.securityCaller(request);
     if (caller === null || this.trustState(caller.row) !== 'trusted') {
-      return caller === null ? authError('unauthenticated') : rpcErrorResponse(undefined, 'forbidden');
+      return caller === null
+        ? authError('unauthenticated')
+        : rpcErrorResponse(undefined, 'forbidden');
     }
     const body = await readJson(request);
     if (
@@ -2315,7 +2414,9 @@ export class SessionCoordinator extends DurableObject<Env> {
       target.enrollment_class === 'ephemeral' ||
       this.trustState(target) !== 'pending'
     ) {
-      return rpcErrorResponse(undefined, 'conflict', { reason: 'pending-durable-enrollment-required' });
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'pending-durable-enrollment-required',
+      });
     }
     const security = this.ensureAccountSecurity(caller.auth.accountId);
     const now = Date.now();
@@ -2346,7 +2447,9 @@ export class SessionCoordinator extends DurableObject<Env> {
   private async handleSecuritySetPolicy(request: Request): Promise<Response> {
     const caller = this.securityCaller(request);
     if (caller === null || this.trustState(caller.row) !== 'trusted') {
-      return caller === null ? authError('unauthenticated') : rpcErrorResponse(undefined, 'forbidden');
+      return caller === null
+        ? authError('unauthenticated')
+        : rpcErrorResponse(undefined, 'forbidden');
     }
     const body = await readJson(request);
     if (!isRecord(body)) return authError('malformed-request');
@@ -2365,7 +2468,9 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (payloadHash !== (await this.securityPayloadHash(body))) {
       return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'payload-hash-mismatch' });
     }
-    if (!(await this.consumeSecurityProof(caller, 'setPolicy', body['proof'], security, payloadHash))) {
+    if (
+      !(await this.consumeSecurityProof(caller, 'setPolicy', body['proof'], security, payloadHash))
+    ) {
       return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-security-proof' });
     }
     this.ctx.storage.sql.exec(
@@ -2381,7 +2486,9 @@ export class SessionCoordinator extends DurableObject<Env> {
   private async handleSecurityUpdateRecovery(request: Request): Promise<Response> {
     const caller = this.securityCaller(request);
     if (caller === null || this.trustState(caller.row) !== 'trusted') {
-      return caller === null ? authError('unauthenticated') : rpcErrorResponse(undefined, 'forbidden');
+      return caller === null
+        ? authError('unauthenticated')
+        : rpcErrorResponse(undefined, 'forbidden');
     }
     const body = await readJson(request);
     if (!isRecord(body)) return authError('malformed-request');
@@ -2395,7 +2502,8 @@ export class SessionCoordinator extends DurableObject<Env> {
       typeof backendId !== 'string' ||
       backendId.length === 0 ||
       backendId.length > 256
-    ) return authError('malformed-request');
+    )
+      return authError('malformed-request');
     const security = this.ensureAccountSecurity(caller.auth.accountId);
     if (expected !== security.revision) {
       return rpcErrorResponse(undefined, 'conflict', {
@@ -2403,7 +2511,11 @@ export class SessionCoordinator extends DurableObject<Env> {
         revision: security.revision,
       });
     }
-    if (security.recovery_verifier_public_key === null || security.recovery_id === null || backendId !== security.backend_id) {
+    if (
+      security.recovery_verifier_public_key === null ||
+      security.recovery_id === null ||
+      backendId !== security.backend_id
+    ) {
       return rpcErrorResponse(undefined, 'conflict', { reason: 'recovery-not-configured' });
     }
     if (!this.canMaintainInvalidatedRecovery(caller.row, security)) {
@@ -2421,7 +2533,15 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (payloadHash !== (await this.securityPayloadHash(body))) {
       return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'payload-hash-mismatch' });
     }
-    if (!(await this.consumeSecurityProof(caller, 'updateRecovery', body['proof'], security, payloadHash))) {
+    if (
+      !(await this.consumeSecurityProof(
+        caller,
+        'updateRecovery',
+        body['proof'],
+        security,
+        payloadHash,
+      ))
+    ) {
       return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-security-proof' });
     }
     const nextRecoveryRevision = security.recovery_revision + 1;
@@ -2458,7 +2578,8 @@ export class SessionCoordinator extends DurableObject<Env> {
       }
       const issuer = this.env.OIDC_ISSUER;
       const clientId = this.env.OIDC_CLIENT_ID;
-      if (typeof issuer !== 'string' || typeof clientId !== 'string') return authError('invalid-proof');
+      if (typeof issuer !== 'string' || typeof clientId !== 'string')
+        return authError('invalid-proof');
       const sub = await verifyOidcPkceProof(proof as never, { issuer, clientId });
       if (sub === null) return authError('invalid-proof');
       accountId = await this.resolveExistingOidcAccountId(issuer, clientId, sub);
@@ -2475,7 +2596,9 @@ export class SessionCoordinator extends DurableObject<Env> {
         accountId,
       });
     }
-    this.securityAudit(accountId, 'reset', 'accepted', auditEnrollment, { mode: current ? 'session' : 'oidc' });
+    this.securityAudit(accountId, 'reset', 'accepted', auditEnrollment, {
+      mode: current ? 'session' : 'oidc',
+    });
     const deleted = await this.deleteAccountById(accountId);
     const result = (await deleted.json()) as AccountDeleteResult;
     return Response.json(
@@ -2827,6 +2950,8 @@ export class SessionCoordinator extends DurableObject<Env> {
         { status: 403 },
       );
     }
+    const deviceLimitDenial = this.hostedDeviceMutationDenial(caller.accountId);
+    if (deviceLimitDenial !== null) return deviceLimitDenial;
     const used = this.ctx.storage.sql
       .exec(
         `SELECT COALESCE(SUM(byte_length), 0) AS total FROM shared_artifacts
@@ -2896,6 +3021,8 @@ export class SessionCoordinator extends DurableObject<Env> {
         { status: 403 },
       );
     }
+    const deviceLimitDenial = this.hostedDeviceMutationDenial(caller.accountId);
+    if (deviceLimitDenial !== null) return deviceLimitDenial;
     const row = this.readShare(shareId);
     if (row === null || row.account_id !== caller.accountId) {
       return rpcErrorResponse(undefined, 'not-found');
@@ -2967,6 +3094,13 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (body['byteLength'] !== row.byte_length || body['sha256'] !== row.sha256) {
       return rpcErrorResponse(undefined, 'conflict', { reason: 'manifest-mismatch' });
     }
+    const now = Date.now();
+    const access = await checkHostedAccess(this.ctx.storage, this.env, caller.accountId, now);
+    if (!access.allowed) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: access.reason });
+    }
+    const deviceLimitDenial = this.hostedDeviceMutationDenial(caller.accountId);
+    if (deviceLimitDenial !== null) return deviceLimitDenial;
     // E2E: a declared seal flag must agree with the reservation — the bytes
     // being finalized cannot silently change protection class.
     if (
@@ -2984,7 +3118,6 @@ export class SessionCoordinator extends DurableObject<Env> {
       this.ctx.storage.sql.exec('DELETE FROM shared_artifacts WHERE share_id = ?', row.share_id);
       return rpcErrorResponse(undefined, 'conflict', { reason: 'checksum-mismatch' });
     }
-    const now = Date.now();
     const expiresAt = now + row.expires_in_days * DAY_MS;
     this.ctx.storage.sql.exec(
       `UPDATE shared_artifacts
@@ -3390,7 +3523,10 @@ export class SessionCoordinator extends DurableObject<Env> {
       deletedSessions = this.ctx.storage.sql
         .exec<{
           n: number;
-        }>('DELETE FROM device_sessions WHERE revoked_at IS NOT NULL AND revoked_at < ? RETURNING 1 AS n', now - REVOKED_SESSION_RETENTION_MS)
+        }>(
+          'DELETE FROM device_sessions WHERE revoked_at IS NOT NULL AND revoked_at < ? RETURNING 1 AS n',
+          now - REVOKED_SESSION_RETENTION_MS,
+        )
         .toArray().length;
       deletedChallenges = this.ctx.storage.sql
         .exec<{ n: number }>(

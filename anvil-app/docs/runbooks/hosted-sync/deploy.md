@@ -123,10 +123,12 @@ Production stays blocked until the production manifest entry is complete. The
 wrapper rejects reused Worker, R2 bucket, D1 name/id, backend origin,
 provisioner name, descriptor id, and either WorkOS client id. Production
 provision, migrate, apply, and secret operations require a production-only
-backend secrets file. If the managed provisioner is enabled, its token must
-match the backend secret and differ from any available staging token. Do not reuse staging
-service keys or Stripe credentials; the wrapper checks values when staging
-secret files are available.
+backend secrets file and a completed Staging backend secrets file for
+cross-environment isolation checks. The wrapper rejects reused WorkOS, Stripe,
+HMAC, operator, and provisioner secrets. Production Stripe Price IDs must also
+differ from all configured Staging Price IDs; generate and review Staging config
+first. If the managed provisioner is enabled, its token must match the backend
+secret and differ from Staging.
 
 Use the production target only after its WorkOS application and website
 settings are ready:
@@ -172,64 +174,11 @@ Before publishing paid checkout, complete the [launch checklist](launch-checklis
 
 ## Enable Stripe checkout
 
-Stripe configuration is optional and remains disabled until its secrets and
-vars are set for a target. Use a Stripe test-mode account for staging. Keep
-production checkout disabled until the launch checklist, real prices, and
-business settings have been approved. Set `MESH_ORIGIN` to the selected
-manifest entry's `baseUrl`.
-
-In the Stripe Dashboard's **test mode**, create one monthly and one annual
-recurring Price. Copy their exact `price_...` IDs. Register a test-mode
-webhook endpoint at `$MESH_ORIGIN/v1/hosted/stripe-webhook` for these events:
-
-- `checkout.session.completed`, `checkout.session.expired`
-- `customer.subscription.created`, `customer.subscription.updated`,
-  `customer.subscription.deleted`
-- `invoice.paid`, `invoice.payment_failed`
-
-Add `STRIPE_SECRET_KEY` and the endpoint's signing secret as
-`STRIPE_WEBHOOK_SECRET` to the staging backend secret file recorded by
-`staging.secrets.backendFile` in `.wrangler/hosted-targets.json`. Never put
-these values in `vars.json`. Configure a test-mode Stripe customer portal if
-testing **Manage billing**.
-
-In `cloud/backend/.wrangler/mesh/<worker-name>/vars.json`, keep existing
-unrelated vars and set the checkout flag, fixed return URLs, and Price IDs.
-Use the same website origin for all three URLs. The backend ignores
-client-supplied redirect targets.
-
-```json
-{
-  "HOSTED_CHECKOUT_ENABLED": "true",
-  "HOSTED_CHECKOUT_SUCCESS_URL": "http://localhost:3000/account/billing?checkout=success",
-  "HOSTED_CHECKOUT_CANCEL_URL": "http://localhost:3000/account/billing?checkout=cancel",
-  "HOSTED_PORTAL_RETURN_URL": "http://localhost:3000/account/billing",
-  "STRIPE_PRICE_SYNC_MONTHLY": "<monthly-price-id-from-test-mode>",
-  "STRIPE_PRICE_SYNC_ANNUAL": "<annual-price-id-from-test-mode>"
-}
-```
-
-Install secrets, review the local plan, then apply staging:
-
-```sh
-pnpm --dir cloud/backend hosted:deploy -- --environment staging secrets --json
-pnpm --dir cloud/backend hosted:deploy -- --environment staging plan --json
-pnpm --dir cloud/backend hosted:deploy -- --environment staging apply --test-deployment --json
-```
-
-Open `/account/billing` from the staging website and complete a real Checkout
-Session for the disposable staging account. For concrete purchase,
-authentication, cancellation, duplicate-delivery, and account deletion steps,
-follow [staging acceptance](staging-acceptance.md#stripe-test-mode-checkout).
-Use the [Stripe test cards](https://docs.stripe.com/testing) only with test
-mode. The monthly/yearly checkout flow creates its customer without a Stripe
-Test Clock; clock-driven renewal, grace, unpaid, and recovery cases are
-currently blocked pending a clock-bound test customer path. Do not mark those
-cases passed using unmapped `stripe trigger` payloads.
-
-Production requires the [launch checklist](launch-checklist.md), live-mode
-resources, approved prices and HTTPS return URLs. Do not reuse staging
-billing data, WorkOS identities or secret values for a production launch.
+Use the detailed [organization and billing launch runbook](organization-billing-launch.md)
+for current staging and Production Stripe setup. It defines separate test/live
+resources, four Personal/Team prices, webhook event selection and API version,
+the free-preview cutoff, and environment-specific secrets. Do not use old
+personal-only price setup instructions or copy staging values into Production.
 
 ## Verify the deployed branch
 

@@ -18,6 +18,12 @@ declare namespace Cloudflare {
      * Set this to the website's WORKOS_CLIENT_ID when the desktop application
      * uses a separate public WorkOS application client id. */
     HOSTED_WORKOS_CLIENT_ID?: string;
+    /** WorkOS server API secret for hosted organization/invitation operations. */
+    WORKOS_API_KEY?: string;
+    /** Optional JSON array of operator-reviewed WorkOS user ids to admit once. */
+    HOSTED_ADMITTED_WORKOS_USER_IDS?: string;
+    /** Signature verification secret for the hosted WorkOS webhook endpoint. */
+    WORKOS_WEBHOOK_SECRET?: string;
     /** Deployment-admin credential for `POST /v1/enrollment-codes`. */
     ENROLLMENT_ADMIN_TOKEN?: string;
     /**
@@ -40,6 +46,12 @@ declare namespace Cloudflare {
     STRIPE_API_BASE?: string;
     STRIPE_PRICE_SYNC_MONTHLY?: string;
     STRIPE_PRICE_SYNC_ANNUAL?: string;
+    STRIPE_PRICE_TEAM_MONTHLY?: string;
+    STRIPE_PRICE_TEAM_ANNUAL?: string;
+    /** Required Stripe account mode for hosted billing: staging uses test mode. */
+    HOSTED_BILLING_ENVIRONMENT?: 'staging' | 'production';
+    /** Staging-only switch for rehearsing paid flows before the preview cutoff. */
+    HOSTED_ALLOW_EARLY_CHECKOUT?: string;
     /** 'true' publishes checkout creation; anything else refuses with 403. */
     HOSTED_CHECKOUT_ENABLED?: string;
     HOSTED_CHECKOUT_SUCCESS_URL?: string;
@@ -47,6 +59,8 @@ declare namespace Cloudflare {
     HOSTED_PORTAL_RETURN_URL?: string;
     /** JSON partial override of DEFAULT_HOSTED_LIMITS. */
     HOSTED_SYNC_LIMITS?: string;
+    /** Optional operator-only HMAC key map for billing administration endpoints. */
+    HOSTED_OPERATOR_KEYS?: string;
     /**
      * BILL-03 enforcement switch. 'true' denies mutating operations for
      * restricted/unknown hosted entitlements inside AccountCoordinator;

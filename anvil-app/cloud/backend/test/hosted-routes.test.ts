@@ -42,7 +42,7 @@ beforeEach(async () => {
 });
 
 function makeIdentity(tag: string): HostedIdentity {
-  return { workosClientId: `client_${tag}`, workosUserId: `user_${tag}` };
+  return { workosClientId: 'client_hosted_test', workosUserId: `user_${tag}` };
 }
 
 /** Signs and POSTs a service request to an /internal/hosted/* route. */
@@ -122,14 +122,15 @@ async function addActiveSubscription(billingAccountId: string): Promise<void> {
     .prepare(
       `INSERT INTO stripe_subscriptions
          (stripe_subscription_id, stripe_customer_id, billing_account_id, status,
-          plan_key, interval, current_period_end, cancel_at_period_end,
+          plan_key, interval, current_period_end, paid_through, paid_seat_quantity, cancel_at_period_end,
           has_paid_invoice, first_failed_renewal_at, verified_at, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', 'sync_personal', 'month', ?, 0, 1, NULL, ?, ?, ?)`,
+       VALUES (?, ?, ?, 'active', 'sync_personal', 'month', ?, ?, 1, 0, 1, NULL, ?, ?, ?)`,
     )
     .bind(
       `sub_${crypto.randomUUID().replaceAll('-', '')}`,
       `cus_${crypto.randomUUID().replaceAll('-', '')}`,
       billingAccountId,
+      now + 30 * 86_400_000,
       now + 30 * 86_400_000,
       now,
       now,
@@ -159,6 +160,7 @@ describe('hosted service auth gate', () => {
   });
 
   it('rejects a replayed signature via the D1 nonce store', async () => {
+    await getOrCreateBillingAccount(hostedDb(), identity);
     const payload = new TextEncoder().encode(JSON.stringify(identity));
     const url = 'https://spike.test/internal/hosted/pair-device';
     const headers = await signHostedServiceRequest(
@@ -176,8 +178,34 @@ describe('hosted service auth gate', () => {
 });
 
 describe('hosted pair-device', () => {
+  it('denies a signed pairing request from a verified user without waitlist approval', async () => {
+    const identity = makeIdentity(`unapproved-${crypto.randomUUID()}`);
+    const email = 'not-approved@example.test';
+    const query = new URLSearchParams({ state: 'approved', email, limit: '10' });
+    for (const [path, body] of [
+      [
+        `/user_management/users/${identity.workosUserId}`,
+        { id: identity.workosUserId, email, email_verified: true },
+      ],
+      [`/user_management/waitlists/default/entries?${query.toString()}`, { data: [] }],
+    ] as const) {
+      const queued = await fetch('https://api.workos.com/__workos-stub/enqueue', {
+        method: 'POST',
+        body: JSON.stringify({ method: 'GET', path, body }),
+      });
+      expect(queued.status).toBe(200);
+    }
+    const denied = await signedHostedPost('/internal/hosted/pair-device', identity);
+    expect(denied.status).toBe(403);
+    expect(denied.body['error']).toMatchObject({
+      details: { reason: 'waitlist-approval-required' },
+    });
+    expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
+  });
+
   it('enrolls devices onto one derived account per WorkOS identity', async () => {
     const identityA = makeIdentity(`a-${crypto.randomUUID()}`);
+    await getOrCreateBillingAccount(hostedDb(), identityA);
     const pair1 = await signedHostedPost('/internal/hosted/pair-device', {
       ...identityA,
       displayName: 'Work laptop',
@@ -198,9 +226,9 @@ describe('hosted pair-device', () => {
     expect(session2.accountId).toBe(accountId1);
     expect(session2.enrollmentId).not.toBe(session1.enrollmentId);
 
-    // A different user, and the same user under a different WorkOS client,
-    // each resolve to different accounts.
+    // A different admitted user resolves to a different account.
     const identityB = makeIdentity(`b-${crypto.randomUUID()}`);
+    await getOrCreateBillingAccount(hostedDb(), identityB);
     const pairB = await signedHostedPost('/internal/hosted/pair-device', identityB);
     expect(pairB.status).toBe(200);
     expect(pairB.body['accountId']).not.toBe(accountId1);
@@ -209,12 +237,13 @@ describe('hosted pair-device', () => {
       workosClientId: `client_other-${crypto.randomUUID()}`,
       workosUserId: identityA.workosUserId,
     });
-    expect(pairOtherClient.status).toBe(200);
-    expect(pairOtherClient.body['accountId']).not.toBe(accountId1);
+    // A client from another environment cannot create an admitted account.
+    expect(pairOtherClient.status).toBe(403);
   });
 
   it('rolls to the next generation when the mapped sync account is tombstoned', async () => {
     const identity = makeIdentity(`del-${crypto.randomUUID()}`);
+    await getOrCreateBillingAccount(hostedDb(), identity);
     const pair1 = await signedHostedPost('/internal/hosted/pair-device', identity);
     const session = await enrollWithCode(pair1.body['code'] as string);
 
@@ -250,6 +279,7 @@ describe('hosted pair-device', () => {
 
   it('resets through security, preserves hosted billing, and pairs on a fresh generation', async () => {
     const identity = makeIdentity(`reset-${crypto.randomUUID()}`);
+    await getOrCreateBillingAccount(hostedDb(), identity);
     const firstPair = await signedHostedPost('/internal/hosted/pair-device', identity);
     expect(firstPair.status).toBe(200);
     const oldAccountId = firstPair.body['accountId'] as string;
@@ -435,6 +465,7 @@ describe('hosted device link flow', () => {
 describe('hosted dashboard contract relay', () => {
   it('unwraps request, status, and snapshot results from the account coordinator', async () => {
     const identity = makeIdentity(`dashboard-${crypto.randomUUID()}`);
+    await getOrCreateBillingAccount(hostedDb(), identity);
     const pair = await signedHostedPost('/internal/hosted/pair-device', identity);
     const device = await enrollWithCode(pair.body['code'] as string, 'dashboard-device');
     const requestId = crypto.randomUUID();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { deleteAccountAction, type ActionResult } from "@/app/account/actions";
@@ -61,9 +62,17 @@ export function DeleteDataCard() {
               />
             </div>
             {result && !result.ok ? (
-              <p role="alert" className="text-sm text-destructive">
-                {result.message}
-              </p>
+              <div role="alert" className="grid gap-2 text-sm text-destructive">
+                <p>{result.message}</p>
+                {result.code === "last-organization-owner" ? (
+                  <Link
+                    href="/account/organizations"
+                    className="w-fit font-medium text-foreground underline underline-offset-4"
+                  >
+                    Manage organisation ownership
+                  </Link>
+                ) : null}
+              </div>
             ) : null}
             <div>
               <Button

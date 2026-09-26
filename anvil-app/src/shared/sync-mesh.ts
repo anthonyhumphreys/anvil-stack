@@ -135,6 +135,9 @@ export interface SyncEntitlementRecord {
   state: string;
   source: string;
   planKey: string | null;
+  fundedBy: 'personal' | 'team' | 'preview' | 'none';
+  organizationId: string | null;
+  deviceLimit: number;
   previewEndsAt: string | null;
   accessUntil: string | null;
   graceUntil: string | null;

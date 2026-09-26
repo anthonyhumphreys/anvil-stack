@@ -11,6 +11,8 @@ const unauthenticatedPaths = [
   "/docs/:path*",
   "/sync",
   "/pricing",
+  "/waitlist",
+  "/invite",
   "/callback",
   "/auth/callback"
 ];
@@ -25,7 +27,8 @@ export default workosConfigured()
       middlewareAuth: {
         enabled: true,
         unauthenticatedPaths
-      }
+      },
+      signUpPaths: ["/waitlist"]
     })
   : function proxy() {
       return NextResponse.next();

@@ -12,48 +12,69 @@
 // write, so redelivery stays idempotent.
 
 import { isRecord, rpcErrorResponse } from '../rpc';
+import { getOrCreateAdmittedBillingAccount } from './admission';
 import {
   audit,
+  findActiveTeamBillingForUser,
   getBillingAccountIdByCustomer,
+  getBillingOwnerByCustomer,
   getBillingMeta,
   getEntitlement,
+  getOrganizationIdByStripeCustomer,
+  getStripeCustomerForOrganization,
   getStripeCustomerForAccount,
+  getOrganizationTeamCapacity,
   getWebhookEvent,
+  hostedCheckoutAvailable,
+  hostedPlanForPrice,
   insertWebhookEvent,
   latestOpenCheckout,
+  latestOpenOrganizationCheckout,
+  latestSubscriptionForOrganization,
   latestSubscriptionForAccount,
   lastWebhookProcessedAt,
+  organizationCapacityRefreshStatements,
   reconcileMetaKey,
   markCheckoutComplete,
   markCheckoutExpired,
   markSubscriptionDeleted,
   markWebhookFailed,
   markWebhookProcessed,
+  recordInvoicePaid,
   recordCheckoutSession,
   recordInvoiceFailed,
-  recordInvoicePaid,
   resolveHostedLimits,
   setBillingMeta,
+  upsertStripeOrganizationCustomer,
   upsertStripeCustomer,
   upsertSubscriptionFromStripe,
+  type StripeSubscriptionRow,
 } from './billing';
 import { validateHostedIdentity, type HostedIdentity } from './identity';
+import { ensureOwnerSeatForPaidOrganization } from './organizations';
+import { reconcileStripeBillingOwner } from './subscription-reconcile';
 import { emitMetric } from './metrics';
 import {
   parseStripeCheckoutSession,
   parseStripeInvoice,
+  parseStripePrice,
   parseStripeSubscription,
   StripeApiError,
   stripeRequest,
   verifyStripeWebhookSignature,
   type StripeCheckoutSession,
-  type StripeList,
   type StripePortalSession,
+  type StripeSubscription,
 } from './stripe';
-import { getBillingAccountById, getBillingAccountByIdentity, getOrCreateBillingAccount } from './store';
+import {
+  getBillingAccountById,
+  getBillingAccountByIdentity,
+  type BillingAccountRow,
+} from './store';
 
 const WEBHOOK_BODY_MAX_BYTES = 64 * 1024;
 const LAST_RECONCILE_KEY = 'last_reconcile_at';
+const SEAT_UPDATE_LEASE_MS = 30_000;
 
 async function readWebhookBody(request: Request): Promise<string | null> {
   const declared = Number(request.headers.get('content-length') ?? '0');
@@ -85,15 +106,26 @@ function errorMessage(error: unknown): string {
 interface StripeEvent {
   id: string;
   type: string;
+  livemode: boolean;
   object: unknown;
 }
 
 function parseStripeEvent(value: unknown): StripeEvent | null {
-  if (!isRecord(value) || typeof value['id'] !== 'string' || typeof value['type'] !== 'string') {
+  if (
+    !isRecord(value) ||
+    typeof value['id'] !== 'string' ||
+    typeof value['type'] !== 'string' ||
+    typeof value['livemode'] !== 'boolean'
+  ) {
     return null;
   }
   const data = isRecord(value['data']) ? value['data'] : null;
-  return { id: value['id'], type: value['type'], object: data?.['object'] };
+  return {
+    id: value['id'],
+    type: value['type'],
+    livemode: value['livemode'],
+    object: data?.['object'],
+  };
 }
 
 /** Audit tag for events that cannot be attributed to a billing account. */
@@ -104,22 +136,37 @@ const UNMAPPED = 'unmapped';
  * deterministic reject — the caller records it as failed and still
  * acknowledges delivery. Throws only for retryable infrastructure faults.
  */
-async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<boolean> {
+async function processStripeEvent(db: D1Database, env: Env, event: StripeEvent): Promise<boolean> {
   const now = Date.now();
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = parseStripeCheckoutSession(event.object);
-      const accountId = session?.client_reference_id ?? null;
+      if (session === null) return false;
+      const checkoutRow = await db
+        .prepare(
+          `SELECT billing_account_id, organization_id, plan_key
+           FROM checkout_sessions WHERE stripe_session_id = ?`,
+        )
+        .bind(session.id)
+        .first<{ billing_account_id: string; organization_id: string | null; plan_key: string }>();
+      const accountId = checkoutRow?.billing_account_id ?? session.client_reference_id;
       const account = accountId === null ? null : await getBillingAccountById(db, accountId);
-      if (session === null || account === null) {
+      if (account === null || checkoutRow === null || account.id !== accountId) {
         await audit(db, accountId ?? UNMAPPED, 'checkout.rejected', {
           eventId: event.id,
-          sessionId: session?.id ?? null,
+          sessionId: session.id,
         });
         return false;
       }
-      if (session.customer !== null) {
+      if (session.customer !== null && checkoutRow.organization_id === null) {
         await upsertStripeCustomer(db, account.id, session.customer);
+      } else if (session.customer !== null && checkoutRow.organization_id !== null) {
+        await upsertStripeOrganizationCustomer(
+          db,
+          checkoutRow.organization_id,
+          account.id,
+          session.customer,
+        );
       }
       await markCheckoutComplete(db, session.id, now);
       await audit(db, account.id, 'checkout.completed', {
@@ -131,8 +178,7 @@ async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<b
     case 'checkout.session.expired': {
       const session = parseStripeCheckoutSession(event.object);
       if (session === null) return false;
-      const accountId =
-        session.client_reference_id ?? (await accountIdForSession(db, session.id));
+      const accountId = (await accountIdForSession(db, session.id)) ?? session.client_reference_id;
       if (accountId === null) {
         await audit(db, UNMAPPED, 'checkout.expired', { eventId: event.id, sessionId: session.id });
         return true;
@@ -145,8 +191,8 @@ async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<b
     case 'customer.subscription.updated': {
       const sub = parseStripeSubscription(event.object);
       if (sub === null) return false;
-      const accountId = await getBillingAccountIdByCustomer(db, sub.customer);
-      if (accountId === null) {
+      const owner = await getBillingOwnerByCustomer(db, sub.customer);
+      if (owner === null) {
         // Stripe also delivers events for unrelated/test objects on the
         // same endpoint — those are noise, processed without side-effects.
         await audit(db, UNMAPPED, 'subscription.ignored-unknown-customer', {
@@ -157,8 +203,15 @@ async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<b
         });
         return true;
       }
-      await upsertSubscriptionFromStripe(db, accountId, sub, now);
-      await audit(db, accountId, 'subscription.upserted', {
+      await upsertSubscriptionFromStripe(
+        db,
+        owner.billingAccountId,
+        sub,
+        now,
+        env,
+        owner.organizationId,
+      );
+      await audit(db, owner.billingAccountId, 'subscription.upserted', {
         eventId: event.id,
         subscription: sub.id,
         status: sub.status,
@@ -169,8 +222,8 @@ async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<b
     case 'customer.subscription.deleted': {
       const sub = parseStripeSubscription(event.object);
       if (sub === null) return false;
-      const accountId = await getBillingAccountIdByCustomer(db, sub.customer);
-      if (accountId === null) {
+      const owner = await getBillingOwnerByCustomer(db, sub.customer);
+      if (owner === null) {
         await audit(db, UNMAPPED, 'subscription.ignored-unknown-customer', {
           eventId: event.id,
           customer: sub.customer,
@@ -180,17 +233,20 @@ async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<b
         return true;
       }
       await markSubscriptionDeleted(db, sub.id, now);
-      await audit(db, accountId, 'subscription.deleted', {
+      await audit(db, owner.billingAccountId, 'subscription.deleted', {
         eventId: event.id,
         subscription: sub.id,
       });
       return true;
     }
-    case 'invoice.paid': {
+    case 'invoice.paid':
+    case 'invoice.payment_succeeded': {
       const invoice = parseStripeInvoice(event.object);
       if (invoice === null) return false;
       const subscription =
-        invoice.subscription === null ? null : await findSubscription(db, invoice.subscription);
+        invoice.subscription === null
+          ? null
+          : await findSubscriptionOrFetch(db, env, invoice.subscription, now);
       if (invoice.subscription === null || subscription === null) {
         await audit(db, UNMAPPED, 'invoice.ignored', {
           eventId: event.id,
@@ -199,8 +255,60 @@ async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<b
         });
         return true;
       }
+      if (invoice.status !== 'paid') {
+        await audit(db, subscription.billing_account_id, 'invoice.ignored-not-paid', {
+          eventId: event.id,
+          invoice: invoice.id,
+          subscription: invoice.subscription,
+        });
+        return true;
+      }
+      const rawCurrent = await stripeRequest<unknown>(
+        env,
+        `/v1/subscriptions/${encodeURIComponent(invoice.subscription)}`,
+        { params: { 'expand[0]': 'latest_invoice' } },
+      );
+      const current = parseStripeSubscription(rawCurrent);
+      const latestInvoiceId = stripeLatestInvoiceId(rawCurrent);
+      const latestInvoice = isRecord(rawCurrent) ? rawCurrent['latest_invoice'] : null;
+      if (
+        current === null ||
+        (invoice.customer !== null && current.customer !== invoice.customer) ||
+        latestInvoiceId !== invoice.id ||
+        (isRecord(latestInvoice) &&
+          latestInvoice['status'] !== undefined &&
+          latestInvoice['status'] !== 'paid')
+      ) {
+        await audit(db, subscription.billing_account_id, 'invoice.ignored-stale', {
+          eventId: event.id,
+          invoice: invoice.id,
+          subscription: invoice.subscription,
+          latestInvoice: latestInvoiceId,
+        });
+        return true;
+      }
+      const owner = await getBillingOwnerByCustomer(db, current.customer);
+      if (owner === null) {
+        await audit(db, UNMAPPED, 'invoice.ignored-unknown-customer', {
+          eventId: event.id,
+          invoice: invoice.id,
+          customer: current.customer,
+        });
+        return true;
+      }
+      await upsertSubscriptionFromStripe(
+        db,
+        owner.billingAccountId,
+        current,
+        now,
+        env,
+        owner.organizationId,
+      );
       await recordInvoicePaid(db, invoice.subscription, now);
-      await audit(db, subscription.billing_account_id, 'invoice.paid', {
+      if (owner.organizationId !== null) {
+        await ensureOwnerSeatForPaidOrganization(db, owner.organizationId, now);
+      }
+      await audit(db, owner.billingAccountId, 'invoice.paid', {
         eventId: event.id,
         invoice: invoice.id,
         subscription: invoice.subscription,
@@ -214,7 +322,7 @@ async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<b
         await audit(db, UNMAPPED, 'webhook.ignored', { eventId: event.id, type: event.type });
         return true;
       }
-      const subscription = await findSubscription(db, invoice.subscription);
+      const subscription = await findSubscriptionOrFetch(db, env, invoice.subscription, now);
       if (subscription === null) {
         await audit(db, UNMAPPED, 'invoice.ignored', {
           eventId: event.id,
@@ -223,8 +331,47 @@ async function processStripeEvent(db: D1Database, event: StripeEvent): Promise<b
         });
         return true;
       }
+      const rawCurrent = await stripeRequest<unknown>(
+        env,
+        `/v1/subscriptions/${encodeURIComponent(invoice.subscription)}`,
+        { params: { 'expand[0]': 'latest_invoice' } },
+      );
+      const current = parseStripeSubscription(rawCurrent);
+      const latestInvoiceId = stripeLatestInvoiceId(rawCurrent);
+      const latestInvoice = isRecord(rawCurrent) ? rawCurrent['latest_invoice'] : null;
+      if (
+        current === null ||
+        (invoice.customer !== null && current.customer !== invoice.customer) ||
+        latestInvoiceId !== invoice.id ||
+        (isRecord(latestInvoice) && latestInvoice['status'] === 'paid')
+      ) {
+        await audit(db, subscription.billing_account_id, 'invoice.failure-ignored-stale', {
+          eventId: event.id,
+          invoice: invoice.id,
+          subscription: invoice.subscription,
+          latestInvoice: latestInvoiceId,
+        });
+        return true;
+      }
+      const owner = await getBillingOwnerByCustomer(db, current.customer);
+      if (owner === null) {
+        await audit(db, UNMAPPED, 'invoice.ignored-unknown-customer', {
+          eventId: event.id,
+          invoice: invoice.id,
+          customer: current.customer,
+        });
+        return true;
+      }
+      await upsertSubscriptionFromStripe(
+        db,
+        owner.billingAccountId,
+        current,
+        now,
+        env,
+        owner.organizationId,
+      );
       await recordInvoiceFailed(db, invoice.subscription, now);
-      await audit(db, subscription.billing_account_id, 'invoice.payment_failed', {
+      await audit(db, owner.billingAccountId, 'invoice.payment_failed', {
         eventId: event.id,
         invoice: invoice.id,
         subscription: invoice.subscription,
@@ -246,16 +393,43 @@ async function accountIdForSession(db: D1Database, sessionId: string): Promise<s
   return row?.billing_account_id ?? null;
 }
 
+async function findSubscriptionOrFetch(
+  db: D1Database,
+  env: Env,
+  stripeSubscriptionId: string,
+  now: number,
+): Promise<{ billing_account_id: string; organization_id: string | null } | null> {
+  const existing = await findSubscription(db, stripeSubscriptionId);
+  if (existing !== null) return existing;
+  const raw = await stripeRequest<unknown>(
+    env,
+    `/v1/subscriptions/${encodeURIComponent(stripeSubscriptionId)}`,
+  );
+  const subscription = parseStripeSubscription(raw);
+  if (subscription === null) return null;
+  const owner = await getBillingOwnerByCustomer(db, subscription.customer);
+  if (owner === null) return null;
+  await upsertSubscriptionFromStripe(
+    db,
+    owner.billingAccountId,
+    subscription,
+    now,
+    env,
+    owner.organizationId,
+  );
+  return findSubscription(db, stripeSubscriptionId);
+}
+
 async function findSubscription(
   db: D1Database,
   stripeSubscriptionId: string,
-): Promise<{ billing_account_id: string } | null> {
+): Promise<{ billing_account_id: string; organization_id: string | null } | null> {
   return db
     .prepare(
-      'SELECT billing_account_id FROM stripe_subscriptions WHERE stripe_subscription_id = ?',
+      'SELECT billing_account_id, organization_id FROM stripe_subscriptions WHERE stripe_subscription_id = ?',
     )
     .bind(stripeSubscriptionId)
-    .first<{ billing_account_id: string }>();
+    .first<{ billing_account_id: string; organization_id: string | null }>();
 }
 
 /**
@@ -290,6 +464,15 @@ export async function handleStripeWebhook(
   if (event === null) {
     return rpcErrorResponse(undefined, 'malformed-request');
   }
+  const expectedLiveMode = env.HOSTED_BILLING_ENVIRONMENT === 'production';
+  if (
+    (env.HOSTED_BILLING_ENVIRONMENT !== 'staging' &&
+      env.HOSTED_BILLING_ENVIRONMENT !== 'production') ||
+    event.livemode !== expectedLiveMode
+  ) {
+    emitMetric('webhook.rejected', { reason: 'environment-mode' });
+    return rpcErrorResponse(undefined, 'unauthenticated');
+  }
   const now = Date.now();
   const fresh = await insertWebhookEvent(db, event.id, event.type, now);
   if (!fresh) {
@@ -300,7 +483,7 @@ export async function handleStripeWebhook(
     }
   }
   try {
-    if (!(await processStripeEvent(db, event))) {
+    if (!(await processStripeEvent(db, env, event))) {
       await markWebhookFailed(db, event.id, 'event could not be applied', now);
       emitMetric('webhook.event', { type: event.type, outcome: 'failed-deterministic' });
       return Response.json({ received: true });
@@ -316,11 +499,410 @@ export async function handleStripeWebhook(
 }
 
 export function stripeConfigured(env: Env): boolean {
-  return typeof env.STRIPE_SECRET_KEY === 'string' && env.STRIPE_SECRET_KEY.length > 0;
+  if (typeof env.STRIPE_SECRET_KEY !== 'string' || env.STRIPE_SECRET_KEY.length === 0) {
+    return false;
+  }
+  if (
+    env.HOSTED_BILLING_ENVIRONMENT === 'staging' &&
+    env.STRIPE_SECRET_KEY.startsWith('sk_test_')
+  ) {
+    return true;
+  }
+  return (
+    env.HOSTED_BILLING_ENVIRONMENT === 'production' &&
+    env.STRIPE_SECRET_KEY.startsWith('sk_live_') &&
+    (env.STRIPE_API_BASE === undefined || env.STRIPE_API_BASE.length === 0)
+  );
 }
 
 function identityFrom(body: HostedIdentity): HostedIdentity {
   return { workosClientId: body.workosClientId, workosUserId: body.workosUserId };
+}
+
+async function activeOrganizationOwner(
+  db: D1Database,
+  organizationId: string,
+  identity: HostedIdentity,
+  allowClosed = false,
+): Promise<{ billing_account_id: string } | null> {
+  return db
+    .prepare(
+      `SELECT m.billing_account_id
+       FROM hosted_organization_memberships m
+       JOIN hosted_organizations o ON o.id = m.organization_id
+         AND (o.status = 'active' OR (? = 1 AND o.status = 'closed'))
+       WHERE m.organization_id = ? AND m.workos_client_id = ? AND m.workos_user_id = ?
+         AND m.role = 'owner' AND m.status = 'active'`,
+    )
+    .bind(allowClosed ? 1 : 0, organizationId, identity.workosClientId, identity.workosUserId)
+    .first<{ billing_account_id: string }>();
+}
+
+function stripeScheduleId(subscriptionValue: unknown): string | null {
+  if (!isRecord(subscriptionValue)) return null;
+  const schedule = subscriptionValue['schedule'];
+  if (typeof schedule === 'string') return schedule;
+  return isRecord(schedule) && typeof schedule['id'] === 'string' ? schedule['id'] : null;
+}
+
+function activeScheduleStart(scheduleValue: unknown, nowSeconds: number): number | null {
+  if (!isRecord(scheduleValue)) return null;
+  const currentPhase = isRecord(scheduleValue['current_phase'])
+    ? scheduleValue['current_phase']
+    : null;
+  const phases = Array.isArray(scheduleValue['phases']) ? scheduleValue['phases'] : [];
+  const active = phases.find((phase) => {
+    if (!isRecord(phase)) return false;
+    return (
+      Number.isSafeInteger(phase['start_date']) &&
+      Number.isSafeInteger(phase['end_date']) &&
+      (phase['start_date'] as number) <= nowSeconds &&
+      (phase['end_date'] as number) > nowSeconds
+    );
+  });
+  const phase = isRecord(active) ? active : currentPhase;
+  return phase !== null && Number.isSafeInteger(phase['start_date'])
+    ? (phase['start_date'] as number)
+    : null;
+}
+
+interface TeamSeatContext {
+  account: BillingAccountRow;
+  current: StripeSubscriptionRow;
+  customerId: string;
+  provider: StripeSubscription;
+  rawProvider: unknown;
+  item: StripeSubscription['items']['data'][number];
+  currentSeats: number;
+  interval: 'month' | 'year';
+  providerScheduleId: string | null;
+}
+
+interface SeatQuoteAmounts {
+  amountDue: number;
+  currency: 'gbp';
+  taxAmount: number;
+}
+
+interface SeatQuoteResponse extends SeatQuoteAmounts {
+  quoteId: string;
+  seatCapacity: number;
+  requestedSeats: number;
+  prorationDate: number;
+  expiresAt: number;
+}
+
+interface SeatQuoteRow {
+  id: string;
+  organization_id: string;
+  created_by_billing_account_id: string;
+  stripe_subscription_id: string;
+  stripe_subscription_item_id: string;
+  stripe_customer_id: string;
+  current_seat_quantity: number;
+  requested_seat_quantity: number;
+  current_period_end: number;
+  amount_due: number;
+  currency: string;
+  tax_amount: number;
+  proration_date: number;
+  expires_at: number;
+  status: 'pending' | 'confirmed' | 'superseded' | 'expired';
+}
+
+async function loadTeamSeatContext(
+  db: D1Database,
+  env: Env,
+  organizationId: string,
+  identity: HostedIdentity,
+  now: number,
+): Promise<{ context: TeamSeatContext } | { response: Response }> {
+  const account = await getBillingAccountByIdentity(db, identity);
+  if (account === null) return { response: rpcErrorResponse(undefined, 'not-found') };
+  if (account.lifecycle !== 'active') {
+    return { response: rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' }) };
+  }
+  const owner = await activeOrganizationOwner(db, organizationId, identity);
+  if (owner === null || owner.billing_account_id !== account.id) {
+    return {
+      response: rpcErrorResponse(undefined, 'forbidden', { reason: 'organization-owner-required' }),
+    };
+  }
+  const customer = await getStripeCustomerForOrganization(db, organizationId);
+  if (customer === null) return { response: rpcErrorResponse(undefined, 'not-found') };
+
+  const initial = await latestSubscriptionForOrganization(db, organizationId);
+  if (
+    initial === null ||
+    initial.plan_key !== 'sync_team' ||
+    initial.status !== 'active' ||
+    initial.has_paid_invoice !== 1 ||
+    initial.paid_through === null ||
+    initial.paid_through <= now ||
+    initial.stripe_subscription_item_id === null
+  ) {
+    return {
+      response: rpcErrorResponse(undefined, 'conflict', {
+        reason: 'active-team-subscription-required',
+      }),
+    };
+  }
+  if (initial.cancel_at_period_end === 1) {
+    return {
+      response: rpcErrorResponse(undefined, 'conflict', { reason: 'cancellation-scheduled' }),
+    };
+  }
+
+  const rawProvider = await stripeRequest<unknown>(
+    env,
+    `/v1/subscriptions/${encodeURIComponent(initial.stripe_subscription_id)}`,
+  );
+  const provider = parseStripeSubscription(rawProvider);
+  if (
+    provider === null ||
+    provider.id !== initial.stripe_subscription_id ||
+    provider.customer !== customer.stripe_customer_id ||
+    provider.status !== 'active' ||
+    provider.current_period_end * 1000 <= now
+  ) {
+    return {
+      response: rpcErrorResponse(undefined, 'conflict', { reason: 'subscription-changed' }),
+    };
+  }
+  const item = provider.items.data[0];
+  const currentSeats = item.quantity;
+  const interval = item.price.recurring?.interval;
+  if (
+    currentSeats === null ||
+    item.id === null ||
+    (interval !== 'month' && interval !== 'year') ||
+    hostedPlanForPrice(env, item.price.id, interval, currentSeats) !== 'sync_team'
+  ) {
+    return {
+      response: rpcErrorResponse(undefined, 'conflict', {
+        reason: 'unsupported-team-subscription',
+      }),
+    };
+  }
+
+  await upsertSubscriptionFromStripe(db, account.id, provider, now, env, organizationId);
+  const current = await latestSubscriptionForOrganization(db, organizationId);
+  if (
+    current === null ||
+    current.has_paid_invoice !== 1 ||
+    current.paid_seat_quantity !== currentSeats ||
+    current.paid_through === null ||
+    current.paid_through <= now
+  ) {
+    return {
+      response: rpcErrorResponse(undefined, 'conflict', { reason: 'payment-not-confirmed' }),
+    };
+  }
+  const providerScheduleId = stripeScheduleId(rawProvider);
+  if (
+    providerScheduleId !== null &&
+    current.stripe_subscription_schedule_id !== providerScheduleId
+  ) {
+    return {
+      response: rpcErrorResponse(undefined, 'conflict', { reason: 'schedule-managed-externally' }),
+    };
+  }
+  return {
+    context: {
+      account,
+      current,
+      customerId: customer.stripe_customer_id,
+      provider,
+      rawProvider,
+      item,
+      currentSeats,
+      interval,
+      providerScheduleId,
+    },
+  };
+}
+
+async function claimSeatUpdateLease(
+  db: D1Database,
+  organizationId: string,
+  now: number,
+): Promise<string | null> {
+  const token = crypto.randomUUID();
+  const result = await db
+    .prepare(
+      `UPDATE organization_billing_state
+       SET seat_update_lease_token = ?, seat_update_lease_until = ?, updated_at = ?
+       WHERE organization_id = ?
+         AND (seat_update_lease_token IS NULL OR seat_update_lease_until <= ?)`,
+    )
+    .bind(token, now + SEAT_UPDATE_LEASE_MS, now, organizationId, now)
+    .run();
+  return result.meta.changes === 1 ? token : null;
+}
+
+async function renewSeatUpdateLease(
+  db: D1Database,
+  organizationId: string,
+  token: string,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE organization_billing_state
+       SET seat_update_lease_until = ?, updated_at = ?
+       WHERE organization_id = ? AND seat_update_lease_token = ?
+         AND seat_update_lease_until > ?`,
+    )
+    .bind(now + SEAT_UPDATE_LEASE_MS, now, organizationId, token, now)
+    .run();
+  return result.meta.changes === 1;
+}
+
+async function releaseSeatUpdateLease(
+  db: D1Database,
+  organizationId: string,
+  token: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE organization_billing_state
+       SET seat_update_lease_token = NULL, seat_update_lease_until = NULL, updated_at = ?
+       WHERE organization_id = ? AND seat_update_lease_token = ?`,
+    )
+    .bind(Date.now(), organizationId, token)
+    .run();
+}
+
+function parseSeatQuoteAmounts(value: unknown): SeatQuoteAmounts | null {
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value['amount_due']) ||
+    (value['amount_due'] as number) < 0 ||
+    value['currency'] !== 'gbp'
+  ) {
+    return null;
+  }
+  const taxRows = value['total_taxes'] ?? value['total_tax_amounts'] ?? [];
+  if (!Array.isArray(taxRows)) return null;
+  let taxAmount = 0;
+  for (const row of taxRows) {
+    if (!isRecord(row) || !Number.isSafeInteger(row['amount']) || (row['amount'] as number) < 0) {
+      return null;
+    }
+    taxAmount += row['amount'] as number;
+    if (!Number.isSafeInteger(taxAmount)) return null;
+  }
+  return { amountDue: value['amount_due'] as number, currency: 'gbp', taxAmount };
+}
+
+async function previewTeamSeatChange(
+  env: Env,
+  context: TeamSeatContext,
+  requestedSeats: number,
+  prorationDate: number,
+): Promise<SeatQuoteAmounts> {
+  const preview = await stripeRequest<unknown>(env, '/v1/invoices/create_preview', {
+    method: 'POST',
+    params: {
+      customer: context.customerId,
+      subscription: context.current.stripe_subscription_id,
+      'subscription_details[items][0][id]': context.item.id as string,
+      'subscription_details[items][0][quantity]': requestedSeats,
+      'subscription_details[proration_behavior]': 'always_invoice',
+      'subscription_details[proration_date]': prorationDate,
+    },
+  });
+  const amounts = parseSeatQuoteAmounts(preview);
+  if (amounts === null) throw new StripeApiError(0, 'seat invoice preview failed validation');
+  return amounts;
+}
+
+async function persistSeatQuote(
+  db: D1Database,
+  organizationId: string,
+  context: TeamSeatContext,
+  requestedSeats: number,
+  prorationDate: number,
+  now: number,
+  amounts: SeatQuoteAmounts,
+): Promise<SeatQuoteResponse> {
+  const quoteId = crypto.randomUUID();
+  const expiresAt = now + 5 * 60_000;
+  await db.batch([
+    db
+      .prepare(
+        `UPDATE team_seat_change_quotes SET status = 'superseded'
+         WHERE organization_id = ? AND status = 'pending'`,
+      )
+      .bind(organizationId),
+    db
+      .prepare(
+        `INSERT INTO team_seat_change_quotes
+          (id, organization_id, created_by_billing_account_id,
+           stripe_subscription_id, stripe_subscription_item_id, stripe_customer_id,
+           current_seat_quantity, requested_seat_quantity, current_period_end,
+           amount_due, currency, tax_amount, proration_date, expires_at, status,
+           created_at, confirmed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`,
+      )
+      .bind(
+        quoteId,
+        organizationId,
+        context.account.id,
+        context.current.stripe_subscription_id,
+        context.item.id,
+        context.customerId,
+        context.currentSeats,
+        requestedSeats,
+        context.provider.current_period_end * 1000,
+        amounts.amountDue,
+        amounts.currency,
+        amounts.taxAmount,
+        prorationDate,
+        expiresAt,
+        now,
+      ),
+  ]);
+  return {
+    quoteId,
+    seatCapacity: context.currentSeats,
+    requestedSeats,
+    amountDue: amounts.amountDue,
+    currency: amounts.currency,
+    taxAmount: amounts.taxAmount,
+    prorationDate,
+    expiresAt,
+  };
+}
+
+function quoteResponse(row: SeatQuoteRow): SeatQuoteResponse {
+  return {
+    quoteId: row.id,
+    seatCapacity: row.current_seat_quantity,
+    requestedSeats: row.requested_seat_quantity,
+    amountDue: row.amount_due,
+    currency: 'gbp',
+    taxAmount: row.tax_amount,
+    prorationDate: row.proration_date,
+    expiresAt: row.expires_at,
+  };
+}
+
+function stripeLatestInvoiceId(rawSubscription: unknown): string | null {
+  if (!isRecord(rawSubscription)) return null;
+  const latest = rawSubscription['latest_invoice'];
+  if (typeof latest === 'string') return latest;
+  return isRecord(latest) && typeof latest['id'] === 'string' ? latest['id'] : null;
+}
+
+async function latestInvoicePaid(env: Env, rawSubscription: unknown): Promise<boolean> {
+  if (!isRecord(rawSubscription)) return false;
+  const latest = rawSubscription['latest_invoice'];
+  let invoice: unknown = latest;
+  if (typeof latest === 'string') {
+    invoice = await stripeRequest<unknown>(env, `/v1/invoices/${encodeURIComponent(latest)}`);
+  }
+  return isRecord(invoice) && invoice['status'] === 'paid';
 }
 
 /**
@@ -329,30 +911,52 @@ function identityFrom(body: HostedIdentity): HostedIdentity {
  * runs before any provider call, so a disabled/misconfigured deployment
  * never creates customers or sessions.
  */
-export async function handleCheckout(
-  body: unknown,
-  env: Env,
-  db: D1Database,
-): Promise<Response> {
+export async function handleCheckout(body: unknown, env: Env, db: D1Database): Promise<Response> {
   if (
     !isRecord(body) ||
     !validateHostedIdentity(body) ||
-    (body['interval'] !== 'month' && body['interval'] !== 'year')
+    (body['interval'] !== 'month' && body['interval'] !== 'year') ||
+    (body['planKey'] !== undefined &&
+      body['planKey'] !== 'sync_personal' &&
+      body['planKey'] !== 'sync_team')
   ) {
     return rpcErrorResponse(undefined, 'malformed-request');
   }
-  if (env.HOSTED_CHECKOUT_ENABLED !== 'true') {
+  const planKey: 'sync_personal' | 'sync_team' =
+    body['planKey'] === 'sync_team' ? 'sync_team' : 'sync_personal';
+  const interval = body['interval'] as 'month' | 'year';
+  const isTeam = planKey === 'sync_team';
+  const organizationId = isTeam ? (body['organizationId'] as string) : undefined;
+  const seats: number = isTeam ? (typeof body['seats'] === 'number' ? body['seats'] : 5) : 1;
+  if (
+    (isTeam &&
+      (typeof organizationId !== 'string' ||
+        organizationId.length < 1 ||
+        typeof seats !== 'number' ||
+        !Number.isSafeInteger(seats) ||
+        seats < 5 ||
+        seats > 50)) ||
+    (!isTeam && (body['organizationId'] !== undefined || body['seats'] !== undefined))
+  ) {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  const now = Date.now();
+  if (!hostedCheckoutAvailable(env, now)) {
     return rpcErrorResponse(undefined, 'forbidden', { reason: 'checkout-disabled' });
   }
-  const interval = body['interval'];
-  const price =
-    interval === 'year' ? env.STRIPE_PRICE_SYNC_ANNUAL : env.STRIPE_PRICE_SYNC_MONTHLY;
+  const priceId = isTeam
+    ? interval === 'year'
+      ? env.STRIPE_PRICE_TEAM_ANNUAL
+      : env.STRIPE_PRICE_TEAM_MONTHLY
+    : interval === 'year'
+      ? env.STRIPE_PRICE_SYNC_ANNUAL
+      : env.STRIPE_PRICE_SYNC_MONTHLY;
   const successUrl = env.HOSTED_CHECKOUT_SUCCESS_URL;
   const cancelUrl = env.HOSTED_CHECKOUT_CANCEL_URL;
   if (
     !stripeConfigured(env) ||
-    typeof price !== 'string' ||
-    price.length === 0 ||
+    typeof priceId !== 'string' ||
+    priceId.length === 0 ||
     typeof successUrl !== 'string' ||
     successUrl.length === 0 ||
     typeof cancelUrl !== 'string' ||
@@ -360,48 +964,149 @@ export async function handleCheckout(
   ) {
     return rpcErrorResponse(undefined, 'unavailable');
   }
-  const account = await getOrCreateBillingAccount(db, identityFrom(body));
+  const account = await getOrCreateAdmittedBillingAccount(env, db, identityFrom(body));
+  if (account === null) {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'waitlist-approval-required' });
+  }
   if (account.lifecycle !== 'active') {
     return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
   }
-  let customer = await getStripeCustomerForAccount(db, account.id);
-  if (customer === null) {
+
+  let billingAccountId = account.id;
+  let customerId: string | null;
+  if (isTeam) {
+    const owner = await activeOrganizationOwner(db, organizationId as string, identityFrom(body));
+    if (owner === null) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'organization-owner-required' });
+    }
+    billingAccountId = owner.billing_account_id;
+    if (billingAccountId !== account.id) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'organization-owner-required' });
+    }
+    const pending = await latestOpenOrganizationCheckout(db, organizationId as string);
+    if (pending !== null)
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'checkout-pending' });
+    const current = await latestSubscriptionForOrganization(db, organizationId as string);
+    if (current !== null && current.status === 'active' && current.current_period_end > now) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'team-subscription-active' });
+    }
+    const existing = await getStripeCustomerForOrganization(db, organizationId as string);
+    customerId = existing?.stripe_customer_id ?? null;
+  } else {
+    if (await latestOpenCheckout(db, account.id)) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'checkout-pending' });
+    }
+    const current = await latestSubscriptionForAccount(db, account.id);
+    if (current !== null && current.status === 'active' && current.current_period_end > now) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'personal-subscription-active' });
+    }
+    const existing = await getStripeCustomerForAccount(db, account.id);
+    customerId = existing?.stripe_customer_id ?? null;
+  }
+
+  const expectedAmount = isTeam
+    ? interval === 'year'
+      ? 7_000
+      : 700
+    : interval === 'year'
+      ? 8_000
+      : 800;
+  const configuredLiveMode = env.HOSTED_BILLING_ENVIRONMENT === 'production';
+  const providerPrice = parseStripePrice(
+    await stripeRequest<unknown>(env, `/v1/prices/${encodeURIComponent(priceId)}`),
+  );
+  if (
+    providerPrice === null ||
+    providerPrice.id !== priceId ||
+    providerPrice.active !== true ||
+    providerPrice.livemode !== configuredLiveMode ||
+    providerPrice.currency !== 'gbp' ||
+    providerPrice.unit_amount !== expectedAmount ||
+    providerPrice.recurring?.interval !== interval ||
+    providerPrice.recurring.interval_count !== 1
+  ) {
+    return rpcErrorResponse(undefined, 'unavailable');
+  }
+
+  if (customerId === null) {
     const created = await stripeRequest<{ id: string }>(env, '/v1/customers', {
       method: 'POST',
-      params: { 'metadata[billing_account_id]': account.id },
-      idempotencyKey: `customer:${account.id}`,
+      params: isTeam
+        ? {
+            'metadata[organization_id]': organizationId as string,
+            'metadata[created_by_billing_account_id]': account.id,
+          }
+        : { 'metadata[billing_account_id]': account.id },
+      idempotencyKey: isTeam ? `customer:organization:${organizationId}` : `customer:${account.id}`,
     });
-    customer = await upsertStripeCustomer(db, account.id, created.id);
+    customerId = created.id;
+    if (isTeam) {
+      await upsertStripeOrganizationCustomer(db, organizationId as string, account.id, customerId);
+    } else {
+      await upsertStripeCustomer(db, account.id, customerId);
+    }
   }
+
+  const metadata: Record<string, string> = isTeam
+    ? {
+        'metadata[billing_account_id]': account.id,
+        'metadata[organization_id]': organizationId as string,
+        'subscription_data[metadata][organization_id]': organizationId as string,
+      }
+    : { 'metadata[billing_account_id]': account.id };
   const session = await stripeRequest<StripeCheckoutSession>(env, '/v1/checkout/sessions', {
     method: 'POST',
     params: {
       mode: 'subscription',
-      customer: customer.stripe_customer_id,
-      'line_items[0][price]': price,
-      'line_items[0][quantity]': 1,
-      client_reference_id: account.id,
-      'metadata[billing_account_id]': account.id,
+      customer: customerId,
+      'line_items[0][price]': priceId,
+      'line_items[0][quantity]': seats,
+      client_reference_id: isTeam ? (organizationId as string) : account.id,
+      ...metadata,
       success_url: successUrl,
       cancel_url: cancelUrl,
     },
-    idempotencyKey: `checkout:${account.id}:${interval}:${Math.floor(Date.now() / 3_600_000)}`,
+    idempotencyKey: `checkout:${isTeam ? `organization:${organizationId}` : account.id}:${planKey}:${interval}:${seats}:${Math.floor(now / 3_600_000)}`,
   });
   if (typeof session.url !== 'string' || session.url.length === 0) {
     throw new StripeApiError(0, 'checkout session missing url');
   }
-  await recordCheckoutSession(db, session.id, account.id, 'sync_personal', interval, Date.now());
-  await audit(db, account.id, 'checkout.created', { sessionId: session.id, interval });
+  const sessionRecorded = await recordCheckoutSession(
+    db,
+    session.id,
+    billingAccountId,
+    planKey,
+    interval,
+    now,
+    isTeam ? (organizationId as string) : null,
+    seats,
+  );
+  if (!sessionRecorded) {
+    await stripeRequest<unknown>(
+      env,
+      `/v1/checkout/sessions/${encodeURIComponent(session.id)}/expire`,
+      { method: 'POST', params: {} },
+    );
+    return rpcErrorResponse(undefined, 'conflict', { reason: 'organization-closed' });
+  }
+  await audit(db, billingAccountId, 'checkout.created', {
+    sessionId: session.id,
+    interval,
+    planKey,
+    organizationId: isTeam ? organizationId : null,
+    seats,
+  });
   return Response.json({ checkoutUrl: session.url, sessionId: session.id });
 }
 
 /** `POST /internal/hosted/portal` — Stripe Customer Portal session. */
-export async function handlePortal(
-  body: unknown,
-  env: Env,
-  db: D1Database,
-): Promise<Response> {
-  if (!isRecord(body) || !validateHostedIdentity(body)) {
+export async function handlePortal(body: unknown, env: Env, db: D1Database): Promise<Response> {
+  if (
+    !isRecord(body) ||
+    !validateHostedIdentity(body) ||
+    (body['organizationId'] !== undefined &&
+      (typeof body['organizationId'] !== 'string' || body['organizationId'].length === 0))
+  ) {
     return rpcErrorResponse(undefined, 'malformed-request');
   }
   if (!stripeConfigured(env)) {
@@ -411,27 +1116,733 @@ export async function handlePortal(
   if (typeof returnUrl !== 'string' || returnUrl.length === 0) {
     return rpcErrorResponse(undefined, 'unavailable');
   }
-  const account = await getBillingAccountByIdentity(db, identityFrom(body));
-  if (account === null) {
-    return rpcErrorResponse(undefined, 'not-found');
+  const organizationId = body['organizationId'];
+  let billingAccountId: string;
+  let customerId: string | null;
+  if (typeof organizationId === 'string') {
+    const owner = await activeOrganizationOwner(db, organizationId, identityFrom(body), true);
+    if (owner === null) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'organization-owner-required' });
+    }
+    billingAccountId = owner.billing_account_id;
+    const customer = await getStripeCustomerForOrganization(db, organizationId);
+    customerId = customer?.stripe_customer_id ?? null;
+  } else {
+    const account = await getBillingAccountByIdentity(db, identityFrom(body));
+    if (account === null) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    if (account.lifecycle !== 'active') {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
+    }
+    billingAccountId = account.id;
+    const customer = await getStripeCustomerForAccount(db, account.id);
+    customerId = customer?.stripe_customer_id ?? null;
   }
-  if (account.lifecycle !== 'active') {
-    return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
-  }
-  const customer = await getStripeCustomerForAccount(db, account.id);
-  if (customer === null) {
+  if (customerId === null) {
     return rpcErrorResponse(undefined, 'not-found');
   }
   const session = await stripeRequest<StripePortalSession>(env, '/v1/billing_portal/sessions', {
     method: 'POST',
-    params: { customer: customer.stripe_customer_id, return_url: returnUrl },
-    idempotencyKey: `portal:${account.id}:${Math.floor(Date.now() / 3_600_000)}`,
+    params: { customer: customerId, return_url: returnUrl },
+    idempotencyKey: `portal:${typeof organizationId === 'string' ? `organization:${organizationId}` : billingAccountId}:${Math.floor(Date.now() / 3_600_000)}`,
   });
   if (typeof session.url !== 'string' || session.url.length === 0) {
     throw new StripeApiError(0, 'portal session missing url');
   }
-  await audit(db, account.id, 'portal.created', { sessionId: session.id });
+  await audit(db, billingAccountId, 'portal.created', {
+    sessionId: session.id,
+    organizationId: typeof organizationId === 'string' ? organizationId : null,
+  });
   return Response.json({ portalUrl: session.url });
+}
+
+async function authorizeActiveSeatOwner(
+  db: D1Database,
+  organizationId: string,
+  identity: HostedIdentity,
+): Promise<{ account: BillingAccountRow } | { response: Response }> {
+  const account = await getBillingAccountByIdentity(db, identity);
+  if (account === null) return { response: rpcErrorResponse(undefined, 'not-found') };
+  if (account.lifecycle !== 'active') {
+    return { response: rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' }) };
+  }
+  const owner = await activeOrganizationOwner(db, organizationId, identity);
+  if (owner === null || owner.billing_account_id !== account.id) {
+    return {
+      response: rpcErrorResponse(undefined, 'forbidden', { reason: 'organization-owner-required' }),
+    };
+  }
+  return { account };
+}
+
+/** `POST /internal/hosted/seats/quote` — previews and persists an upgrade quote. */
+export async function handleOrganizationSeatQuote(
+  body: unknown,
+  env: Env,
+  db: D1Database,
+): Promise<Response> {
+  if (
+    !isRecord(body) ||
+    !validateHostedIdentity(body) ||
+    typeof body['organizationId'] !== 'string' ||
+    body['organizationId'].length === 0 ||
+    !Number.isSafeInteger(body['seats']) ||
+    (body['seats'] as number) < 5 ||
+    (body['seats'] as number) > 50
+  ) {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  const organizationId = body['organizationId'];
+  const requestedSeats = body['seats'] as number;
+  const now = Date.now();
+  if (!hostedCheckoutAvailable(env, now)) {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'checkout-disabled' });
+  }
+  if (!stripeConfigured(env)) return rpcErrorResponse(undefined, 'unavailable');
+
+  const identity = identityFrom(body);
+  const authorization = await authorizeActiveSeatOwner(db, organizationId, identity);
+  if ('response' in authorization) return authorization.response;
+  const leaseToken = await claimSeatUpdateLease(db, organizationId, now);
+  if (leaseToken === null) {
+    return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-in-progress' });
+  }
+  try {
+    const loaded = await loadTeamSeatContext(db, env, organizationId, identity, Date.now());
+    if ('response' in loaded) return loaded.response;
+    const context = loaded.context;
+    if (requestedSeats <= context.currentSeats) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-quote-requires-increase' });
+    }
+    if (
+      context.providerScheduleId !== null ||
+      context.current.stripe_subscription_schedule_id !== null
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'scheduled-seat-change-pending' });
+    }
+    const quoteNow = Date.now();
+    const prorationDate = Math.floor(quoteNow / 1000);
+    const amounts = await previewTeamSeatChange(env, context, requestedSeats, prorationDate);
+    if (!(await renewSeatUpdateLease(db, organizationId, leaseToken))) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-lease-expired' });
+    }
+    const quote = await persistSeatQuote(
+      db,
+      organizationId,
+      context,
+      requestedSeats,
+      prorationDate,
+      quoteNow,
+      amounts,
+    );
+    return Response.json(quote);
+  } finally {
+    await releaseSeatUpdateLease(db, organizationId, leaseToken);
+  }
+}
+
+/**
+ * `POST /internal/hosted/seats/confirm` — confirms a displayed quote only
+ * while its amount and subscription version still match Stripe's preview.
+ */
+export async function handleOrganizationSeatConfirm(
+  body: unknown,
+  env: Env,
+  db: D1Database,
+): Promise<Response> {
+  if (
+    !isRecord(body) ||
+    !validateHostedIdentity(body) ||
+    typeof body['organizationId'] !== 'string' ||
+    body['organizationId'].length === 0 ||
+    typeof body['quoteId'] !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body['quoteId'])
+  ) {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  const organizationId = body['organizationId'];
+  const quoteId = body['quoteId'];
+  const now = Date.now();
+  if (!hostedCheckoutAvailable(env, now)) {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'checkout-disabled' });
+  }
+  if (!stripeConfigured(env)) return rpcErrorResponse(undefined, 'unavailable');
+
+  const identity = identityFrom(body);
+  const authorization = await authorizeActiveSeatOwner(db, organizationId, identity);
+  if ('response' in authorization) return authorization.response;
+  const leaseToken = await claimSeatUpdateLease(db, organizationId, now);
+  if (leaseToken === null) {
+    return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-in-progress' });
+  }
+  try {
+    const quote = await db
+      .prepare('SELECT * FROM team_seat_change_quotes WHERE id = ? AND organization_id = ?')
+      .bind(quoteId, organizationId)
+      .first<SeatQuoteRow>();
+    if (
+      quote === null ||
+      quote.created_by_billing_account_id !== authorization.account.id ||
+      quote.status !== 'pending'
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-quote-invalid' });
+    }
+    if (quote.expires_at <= now) {
+      await db
+        .prepare(
+          `UPDATE team_seat_change_quotes SET status = 'expired'
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .bind(quoteId)
+        .run();
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-quote-expired' });
+    }
+
+    const loaded = await loadTeamSeatContext(db, env, organizationId, identity, Date.now());
+    if ('response' in loaded) return loaded.response;
+    const context = loaded.context;
+    if (
+      context.providerScheduleId !== null ||
+      context.current.stripe_subscription_schedule_id !== null
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'scheduled-seat-change-pending' });
+    }
+    if (quote.requested_seat_quantity <= context.currentSeats) {
+      await db
+        .prepare(
+          `UPDATE team_seat_change_quotes SET status = 'superseded'
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .bind(quoteId)
+        .run();
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-change-already-applied' });
+    }
+
+    const sameSubscriptionVersion =
+      quote.stripe_subscription_id === context.current.stripe_subscription_id &&
+      quote.stripe_subscription_item_id === context.item.id &&
+      quote.stripe_customer_id === context.customerId &&
+      quote.current_seat_quantity === context.currentSeats &&
+      quote.current_period_end === context.provider.current_period_end * 1000;
+    const freshAmounts = await previewTeamSeatChange(
+      env,
+      context,
+      quote.requested_seat_quantity,
+      quote.proration_date,
+    );
+    const samePrice =
+      quote.amount_due === freshAmounts.amountDue &&
+      quote.currency === freshAmounts.currency &&
+      quote.tax_amount === freshAmounts.taxAmount;
+    if (!sameSubscriptionVersion || !samePrice) {
+      const newProrationDate = Math.floor(Date.now() / 1000);
+      const newAmounts = await previewTeamSeatChange(
+        env,
+        context,
+        quote.requested_seat_quantity,
+        newProrationDate,
+      );
+      if (!(await renewSeatUpdateLease(db, organizationId, leaseToken))) {
+        return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-lease-expired' });
+      }
+      const replacement = await persistSeatQuote(
+        db,
+        organizationId,
+        context,
+        quote.requested_seat_quantity,
+        newProrationDate,
+        Date.now(),
+        newAmounts,
+      );
+      await db
+        .prepare(
+          `UPDATE team_seat_change_quotes SET status = 'superseded'
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .bind(quoteId)
+        .run();
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'seat-quote-changed',
+        quote: replacement,
+      });
+    }
+
+    if (!(await renewSeatUpdateLease(db, organizationId, leaseToken))) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-lease-expired' });
+    }
+
+    let rawUpdated: unknown;
+    try {
+      rawUpdated = await stripeRequest<unknown>(
+        env,
+        `/v1/subscriptions/${encodeURIComponent(context.current.stripe_subscription_id)}`,
+        {
+          method: 'POST',
+          params: {
+            'items[0][id]': context.item.id as string,
+            'items[0][quantity]': quote.requested_seat_quantity,
+            proration_behavior: 'always_invoice',
+            payment_behavior: 'error_if_incomplete',
+            proration_date: quote.proration_date,
+            'expand[0]': 'latest_invoice',
+          },
+          idempotencyKey: `team-seat-confirm:${quote.id}`,
+        },
+      );
+    } catch (error) {
+      if (error instanceof StripeApiError && error.status === 402) {
+        await db
+          .prepare(
+            `UPDATE team_seat_change_quotes SET status = 'superseded'
+             WHERE id = ? AND status = 'pending'`,
+          )
+          .bind(quoteId)
+          .run();
+        return rpcErrorResponse(undefined, 'conflict', { reason: 'payment-not-confirmed' });
+      }
+      throw error;
+    }
+    const updated = parseStripeSubscription(rawUpdated);
+    if (
+      updated === null ||
+      updated.id !== context.current.stripe_subscription_id ||
+      updated.customer !== context.customerId ||
+      updated.status !== 'active' ||
+      updated.items.data[0].quantity !== quote.requested_seat_quantity ||
+      hostedPlanForPrice(
+        env,
+        updated.items.data[0].price.id,
+        updated.items.data[0].price.recurring?.interval,
+        updated.items.data[0].quantity,
+      ) !== 'sync_team'
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'payment-not-confirmed' });
+    }
+    const updatedInvoiceId = stripeLatestInvoiceId(rawUpdated);
+    const invoiceWasPaid = await latestInvoicePaid(env, rawUpdated);
+    if (
+      !invoiceWasPaid ||
+      (quote.amount_due > 0 && updatedInvoiceId === stripeLatestInvoiceId(context.rawProvider))
+    ) {
+      // Mirror the Stripe quantity but keep paid_seat_quantity unchanged;
+      // the capacity refresh therefore cannot grant the unpaid upgrade.
+      await upsertSubscriptionFromStripe(
+        db,
+        context.account.id,
+        updated,
+        Date.now(),
+        env,
+        organizationId,
+      );
+      await db
+        .prepare(
+          `UPDATE team_seat_change_quotes SET status = 'superseded'
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .bind(quoteId)
+        .run();
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'payment-not-confirmed' });
+    }
+    const confirmedAt = Date.now();
+    await upsertSubscriptionFromStripe(
+      db,
+      context.account.id,
+      updated,
+      confirmedAt,
+      env,
+      organizationId,
+    );
+    await recordInvoicePaid(db, updated.id, confirmedAt);
+    const confirmed = await db
+      .prepare(
+        `UPDATE team_seat_change_quotes SET status = 'confirmed', confirmed_at = ?
+         WHERE id = ? AND organization_id = ? AND status = 'pending'`,
+      )
+      .bind(confirmedAt, quoteId, organizationId)
+      .run();
+    if (confirmed.meta.changes !== 1) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-quote-invalid' });
+    }
+    const capacity = await getOrganizationTeamCapacity(db, organizationId, confirmedAt);
+    if (capacity !== quote.requested_seat_quantity) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'payment-not-confirmed' });
+    }
+    await audit(db, context.account.id, 'team.seats.increased', {
+      organizationId,
+      previousSeats: context.currentSeats,
+      seats: quote.requested_seat_quantity,
+      quoteId,
+      amountDue: quote.amount_due,
+      currency: quote.currency,
+    });
+    return Response.json({
+      seatCapacity: capacity,
+      scheduledSeatCapacity: null,
+      effectiveAt: null,
+    });
+  } finally {
+    await releaseSeatUpdateLease(db, organizationId, leaseToken);
+  }
+}
+
+/**
+ * `POST /internal/hosted/seats` — owner-controlled team quantity changes.
+ * Increases take effect only after Stripe confirms an immediately invoiced
+ * update; decreases are scheduled for the end of the current paid period.
+ */
+export async function handleOrganizationSeatChange(
+  body: unknown,
+  env: Env,
+  db: D1Database,
+): Promise<Response> {
+  if (
+    !isRecord(body) ||
+    !validateHostedIdentity(body) ||
+    typeof body['organizationId'] !== 'string' ||
+    body['organizationId'].length === 0 ||
+    !Number.isSafeInteger(body['seats']) ||
+    (body['seats'] as number) < 5 ||
+    (body['seats'] as number) > 50
+  ) {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  const organizationId = body['organizationId'];
+  const requestedSeats = body['seats'] as number;
+  const now = Date.now();
+  if (!hostedCheckoutAvailable(env, now)) {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'checkout-disabled' });
+  }
+  if (!stripeConfigured(env)) return rpcErrorResponse(undefined, 'unavailable');
+
+  const identity = identityFrom(body);
+  const account = await getBillingAccountByIdentity(db, identity);
+  if (account === null) return rpcErrorResponse(undefined, 'not-found');
+  if (account.lifecycle !== 'active') {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
+  }
+  const owner = await activeOrganizationOwner(db, organizationId, identity);
+  if (owner === null || owner.billing_account_id !== account.id) {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'organization-owner-required' });
+  }
+  const customer = await getStripeCustomerForOrganization(db, organizationId);
+  if (customer === null) return rpcErrorResponse(undefined, 'not-found');
+
+  const initial = await latestSubscriptionForOrganization(db, organizationId);
+  if (
+    initial === null ||
+    initial.plan_key !== 'sync_team' ||
+    initial.status !== 'active' ||
+    initial.has_paid_invoice !== 1 ||
+    initial.paid_through === null ||
+    initial.paid_through <= now ||
+    initial.stripe_subscription_item_id === null
+  ) {
+    return rpcErrorResponse(undefined, 'conflict', { reason: 'active-team-subscription-required' });
+  }
+
+  await getOrganizationTeamCapacity(db, organizationId, now);
+  const leaseToken = crypto.randomUUID();
+  const lease = await db
+    .prepare(
+      `UPDATE organization_billing_state
+       SET seat_update_lease_token = ?, seat_update_lease_until = ?, updated_at = ?
+       WHERE organization_id = ?
+         AND (seat_update_lease_token IS NULL OR seat_update_lease_until <= ?)`,
+    )
+    .bind(leaseToken, now + SEAT_UPDATE_LEASE_MS, now, organizationId, now)
+    .run();
+  if (lease.meta.changes !== 1) {
+    return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-in-progress' });
+  }
+
+  let scheduleClampApplied = false;
+  let providerScheduleConfirmed = false;
+  let previousSchedule: { capacity: number | null; effectiveAt: number | null } | null = null;
+  try {
+    const state = await db
+      .prepare(
+        `SELECT scheduled_seat_capacity, scheduled_effective_at
+         FROM organization_billing_state WHERE organization_id = ?`,
+      )
+      .bind(organizationId)
+      .first<{ scheduled_seat_capacity: number | null; scheduled_effective_at: number | null }>();
+    previousSchedule = {
+      capacity: state?.scheduled_seat_capacity ?? null,
+      effectiveAt: state?.scheduled_effective_at ?? null,
+    };
+
+    const rawProviderSubscription = await stripeRequest<unknown>(
+      env,
+      `/v1/subscriptions/${encodeURIComponent(initial.stripe_subscription_id)}`,
+    );
+    const providerSubscription = parseStripeSubscription(rawProviderSubscription);
+    if (
+      providerSubscription === null ||
+      providerSubscription.id !== initial.stripe_subscription_id ||
+      providerSubscription.customer !== customer.stripe_customer_id ||
+      providerSubscription.status !== 'active' ||
+      providerSubscription.current_period_end * 1000 <= now
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'subscription-changed' });
+    }
+    const item = providerSubscription.items.data[0];
+    const currentSeats = item.quantity;
+    const interval = item.price.recurring?.interval;
+    if (
+      currentSeats === null ||
+      item.id === null ||
+      (interval !== 'month' && interval !== 'year') ||
+      hostedPlanForPrice(env, item.price.id, interval, currentSeats) !== 'sync_team'
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'unsupported-team-subscription' });
+    }
+
+    // Refresh from Stripe before capacity decisions. The upsert preserves the
+    // verified paid marker but makes provider-side quantity/status changes
+    // immediately authoritative for access and reservation guards.
+    await upsertSubscriptionFromStripe(
+      db,
+      account.id,
+      providerSubscription,
+      now,
+      env,
+      organizationId,
+    );
+    const current = await latestSubscriptionForOrganization(db, organizationId);
+    if (
+      current === null ||
+      current.has_paid_invoice !== 1 ||
+      current.paid_seat_quantity !== currentSeats ||
+      current.paid_through === null ||
+      current.paid_through <= now
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'payment-not-confirmed' });
+    }
+    if (current.cancel_at_period_end === 1) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'cancellation-scheduled' });
+    }
+
+    const providerScheduleId = stripeScheduleId(rawProviderSubscription);
+    const recordedScheduleId = current.stripe_subscription_schedule_id;
+    if (providerScheduleId !== null && recordedScheduleId !== providerScheduleId) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'schedule-managed-externally' });
+    }
+
+    const counts = await db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN state = 'assigned' THEN 1 ELSE 0 END) AS assigned,
+           SUM(CASE WHEN state = 'reserved' AND expires_at > ? THEN 1 ELSE 0 END) AS reserved
+         FROM hosted_team_seat_assignments WHERE organization_id = ?`,
+      )
+      .bind(now, organizationId)
+      .first<{ assigned: number | null; reserved: number | null }>();
+    const assigned = counts?.assigned ?? 0;
+    const reserved = counts?.reserved ?? 0;
+    if (requestedSeats < assigned + reserved) {
+      return rpcErrorResponse(undefined, 'quota-exceeded', {
+        reason: 'seat-capacity-in-use',
+        assigned,
+        reserved,
+      });
+    }
+
+    if (requestedSeats === currentSeats) {
+      if (providerScheduleId !== null) {
+        if (!(await renewSeatUpdateLease(db, organizationId, leaseToken))) {
+          return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-lease-expired' });
+        }
+        await stripeRequest<unknown>(
+          env,
+          `/v1/subscription_schedules/${encodeURIComponent(providerScheduleId)}/release`,
+          {
+            method: 'POST',
+            params: {},
+            idempotencyKey: `seat-schedule-release:${current.stripe_subscription_id}:${providerScheduleId}`,
+          },
+        );
+      }
+      if (!(await renewSeatUpdateLease(db, organizationId, leaseToken))) {
+        return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-lease-expired' });
+      }
+      await db.batch([
+        db
+          .prepare(
+            `UPDATE stripe_subscriptions SET stripe_subscription_schedule_id = NULL, updated_at = ?
+             WHERE stripe_subscription_id = ? AND organization_id = ?`,
+          )
+          .bind(now, current.stripe_subscription_id, organizationId),
+        db
+          .prepare(
+            `UPDATE organization_billing_state
+             SET scheduled_seat_capacity = NULL, scheduled_effective_at = NULL, updated_at = ?
+             WHERE organization_id = ? AND seat_update_lease_token = ?`,
+          )
+          .bind(now, organizationId, leaseToken),
+        ...organizationCapacityRefreshStatements(db, organizationId, now),
+      ]);
+      return Response.json({
+        seatCapacity: await getOrganizationTeamCapacity(db, organizationId, now),
+        scheduledSeatCapacity: null,
+        effectiveAt: null,
+      });
+    }
+
+    if (requestedSeats > currentSeats) {
+      if (providerScheduleId !== null || previousSchedule.capacity !== null) {
+        return rpcErrorResponse(undefined, 'conflict', { reason: 'scheduled-seat-change-pending' });
+      }
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-quote-required' });
+    }
+
+    const effectiveAt = current.current_period_end;
+    const preclamp = await db.batch([
+      db
+        .prepare(
+          `UPDATE hosted_team_seat_assignments
+           SET state = 'released', updated_at = ?
+           WHERE organization_id = ? AND state = 'reserved' AND expires_at <= ?`,
+        )
+        .bind(now, organizationId, now),
+      db
+        .prepare(
+          `UPDATE organization_billing_state
+           SET scheduled_seat_capacity = ?, scheduled_effective_at = ?, updated_at = ?
+           WHERE organization_id = ? AND seat_update_lease_token = ?
+             AND (SELECT COUNT(*) FROM hosted_team_seat_assignments
+                  WHERE organization_id = ? AND
+                    (state = 'assigned' OR (state = 'reserved' AND expires_at > ?))) <= ?`,
+        )
+        .bind(
+          requestedSeats,
+          effectiveAt,
+          now,
+          organizationId,
+          leaseToken,
+          organizationId,
+          now,
+          requestedSeats,
+        ),
+      ...organizationCapacityRefreshStatements(db, organizationId, now),
+    ]);
+    if (preclamp[1]?.meta.changes !== 1) {
+      return rpcErrorResponse(undefined, 'quota-exceeded', { reason: 'seat-capacity-in-use' });
+    }
+    scheduleClampApplied = true;
+
+    let scheduleId = providerScheduleId;
+    let schedule: unknown;
+    if (scheduleId === null) {
+      if (!(await renewSeatUpdateLease(db, organizationId, leaseToken))) {
+        return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-lease-expired' });
+      }
+      schedule = await stripeRequest<unknown>(env, '/v1/subscription_schedules', {
+        method: 'POST',
+        params: { from_subscription: current.stripe_subscription_id },
+        idempotencyKey: `team-seat-schedule-create:${current.stripe_subscription_id}:${effectiveAt}`,
+      });
+      scheduleId = isRecord(schedule) && typeof schedule['id'] === 'string' ? schedule['id'] : null;
+    } else {
+      schedule = await stripeRequest<unknown>(
+        env,
+        `/v1/subscription_schedules/${encodeURIComponent(scheduleId)}`,
+      );
+    }
+    const phaseStart = activeScheduleStart(schedule, Math.floor(now / 1000));
+    if (scheduleId === null || phaseStart === null) {
+      throw new StripeApiError(0, 'subscription schedule did not include a current phase');
+    }
+    const currentPeriodEndSeconds = providerSubscription.current_period_end;
+    if (currentPeriodEndSeconds * 1000 !== effectiveAt) {
+      throw new StripeApiError(0, 'subscription period changed while scheduling seat reduction');
+    }
+    if (!(await renewSeatUpdateLease(db, organizationId, leaseToken))) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'seat-update-lease-expired' });
+    }
+    await stripeRequest<unknown>(
+      env,
+      `/v1/subscription_schedules/${encodeURIComponent(scheduleId)}`,
+      {
+        method: 'POST',
+        params: {
+          end_behavior: 'release',
+          proration_behavior: 'none',
+          'phases[0][start_date]': phaseStart,
+          'phases[0][end_date]': currentPeriodEndSeconds,
+          'phases[0][items][0][price]': item.price.id,
+          'phases[0][items][0][quantity]': currentSeats,
+          'phases[0][proration_behavior]': 'none',
+          'phases[1][start_date]': currentPeriodEndSeconds,
+          'phases[1][items][0][price]': item.price.id,
+          'phases[1][items][0][quantity]': requestedSeats,
+          'phases[1][duration][interval]': interval,
+          'phases[1][duration][interval_count]': 1,
+          'phases[1][proration_behavior]': 'none',
+        },
+        idempotencyKey: `team-seat-schedule:${current.stripe_subscription_id}:${requestedSeats}:${effectiveAt}`,
+      },
+    );
+    providerScheduleConfirmed = true;
+    await db
+      .prepare(
+        `UPDATE stripe_subscriptions SET stripe_subscription_schedule_id = ?, updated_at = ?
+         WHERE stripe_subscription_id = ? AND organization_id = ?`,
+      )
+      .bind(scheduleId, Date.now(), current.stripe_subscription_id, organizationId)
+      .run();
+    await audit(db, account.id, 'team.seats.reduction-scheduled', {
+      organizationId,
+      previousSeats: currentSeats,
+      seats: requestedSeats,
+      effectiveAt,
+    });
+    return Response.json({
+      seatCapacity: await getOrganizationTeamCapacity(db, organizationId, Date.now()),
+      scheduledSeatCapacity: requestedSeats,
+      effectiveAt,
+    });
+  } catch (error) {
+    const providerRejectedChange =
+      error instanceof StripeApiError && error.status >= 400 && error.status < 500;
+    if (
+      scheduleClampApplied &&
+      !providerScheduleConfirmed &&
+      providerRejectedChange &&
+      previousSchedule !== null
+    ) {
+      try {
+        await db.batch([
+          db
+            .prepare(
+              `UPDATE organization_billing_state
+               SET scheduled_seat_capacity = ?, scheduled_effective_at = ?, updated_at = ?
+               WHERE organization_id = ? AND seat_update_lease_token = ?`,
+            )
+            .bind(
+              previousSchedule.capacity,
+              previousSchedule.effectiveAt,
+              Date.now(),
+              organizationId,
+              leaseToken,
+            ),
+          ...organizationCapacityRefreshStatements(db, organizationId, Date.now()),
+        ]);
+      } catch {
+        // Keep the conservative preclamp if the schedule rollback is unavailable.
+      }
+    }
+    throw error;
+  } finally {
+    await db
+      .prepare(
+        `UPDATE organization_billing_state
+         SET seat_update_lease_token = NULL, seat_update_lease_until = NULL, updated_at = ?
+         WHERE organization_id = ? AND seat_update_lease_token = ?`,
+      )
+      .bind(Date.now(), organizationId, leaseToken)
+      .run();
+  }
 }
 
 /** `POST /internal/hosted/billing` — the website's billing overview. */
@@ -457,20 +1868,39 @@ export async function handleBillingOverview(
   );
   const subscription = await latestSubscriptionForAccount(db, account.id);
   const pending = await latestOpenCheckout(db, account.id);
+  const team = await findActiveTeamBillingForUser(db, account.id);
+  const teamSubscription =
+    team === null ? null : await latestSubscriptionForOrganization(db, team.organizationId);
   const reconcileAt = await getBillingMeta(db, LAST_RECONCILE_KEY);
+  const personalSubscription =
+    subscription === null
+      ? null
+      : {
+          planKey: subscription.plan_key,
+          interval: subscription.interval,
+          status: subscription.status,
+          currentPeriodEnd: subscription.current_period_end,
+          cancelAtPeriodEnd: subscription.cancel_at_period_end === 1,
+        };
   return Response.json({
     billingAccountId: account.id,
     lifecycle: account.lifecycle,
     entitlement,
-    subscription:
-      subscription === null
+    checkoutAvailable: hostedCheckoutAvailable(env, now),
+    subscription: personalSubscription,
+    personalSubscription,
+    teamSponsorship:
+      team === null || teamSubscription === null
         ? null
         : {
-            planKey: subscription.plan_key,
-            interval: subscription.interval,
-            status: subscription.status,
-            currentPeriodEnd: subscription.current_period_end,
-            cancelAtPeriodEnd: subscription.cancel_at_period_end === 1,
+            organizationId: team.organizationId,
+            organizationName: team.organizationName,
+            planKey: teamSubscription.plan_key,
+            interval: teamSubscription.interval,
+            status: teamSubscription.status,
+            currentPeriodEnd: teamSubscription.current_period_end,
+            cancelAtPeriodEnd: teamSubscription.cancel_at_period_end === 1,
+            seatCapacity: await getOrganizationTeamCapacity(db, team.organizationId, now),
           },
     pendingCheckout:
       pending === null
@@ -514,11 +1944,7 @@ export async function handleEntitlement(
  * webhooks. A provider failure propagates as 503 without touching
  * last_reconcile_at.
  */
-export async function handleReconcile(
-  body: unknown,
-  env: Env,
-  db: D1Database,
-): Promise<Response> {
+export async function handleReconcile(body: unknown, env: Env, db: D1Database): Promise<Response> {
   if (!isRecord(body) || !validateHostedIdentity(body)) {
     return rpcErrorResponse(undefined, 'malformed-request');
   }
@@ -541,19 +1967,16 @@ export async function handleReconcile(
     await audit(db, account.id, 'reconcile', { subscriptions: 0 });
     return Response.json({ reconciled: true, subscriptions: 0 });
   }
-  const list = await stripeRequest<StripeList<unknown>>(env, '/v1/subscriptions', {
-    method: 'GET',
-    params: { customer: customer.stripe_customer_id, status: 'all', limit: 25 },
-  });
-  let count = 0;
-  for (const item of list.data ?? []) {
-    const sub = parseStripeSubscription(item);
-    if (sub === null) {
-      throw new StripeApiError(0, 'subscription list item failed validation');
-    }
-    await upsertSubscriptionFromStripe(db, account.id, sub, now);
-    count += 1;
-  }
+  const count = await reconcileStripeBillingOwner(
+    db,
+    env,
+    {
+      billingAccountId: account.id,
+      organizationId: null,
+      stripeCustomerId: customer.stripe_customer_id,
+    },
+    now,
+  );
   await setBillingMeta(db, LAST_RECONCILE_KEY, String(now));
   await setBillingMeta(db, reconcileMetaKey(account.id), String(now));
   await audit(db, account.id, 'reconcile', { subscriptions: count });

@@ -564,10 +564,14 @@ export async function postAuthRoute<R = unknown>(
   }
   if (isRecord(payload) && isRecord(payload['error'])) {
     const errorBody = payload['error'];
+    const code = typeof errorBody['code'] === 'string' ? errorBody['code'] : 'unauthenticated';
     throw new BackendRpcError({
-      code: typeof errorBody['code'] === 'string' ? errorBody['code'] : 'unauthenticated',
+      code,
       retryable: errorBody['retryable'] === true,
-      message: `backend auth route ${route} rejected`,
+      message:
+        code === 'device-limit'
+          ? 'This account has reached its device limit. Revoke a device before enrolling another.'
+          : `backend auth route ${route} rejected`,
       details: isRecord(errorBody['details']) ? errorBody['details'] : undefined,
     });
   }

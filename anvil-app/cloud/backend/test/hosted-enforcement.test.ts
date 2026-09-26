@@ -1,10 +1,7 @@
 import { env, runInDurableObject, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
-import type {
-  ArtifactFinalizeResult,
-  ArtifactReserveResult,
-} from '../../contract/artifacts';
+import type { ArtifactFinalizeResult, ArtifactReserveResult } from '../../contract/artifacts';
 import type {
   DeviceSession,
   EnrollmentCodeIssueResult,
@@ -29,6 +26,8 @@ import {
   checkHostedAccess,
   ENTITLEMENT_CACHE_TTL_MS,
   hostedConfigIssues,
+  resolveAccountEntitlement,
+  TEAM_ENTITLEMENT_CACHE_TTL_MS,
 } from '../src/hosted/enforcement';
 import { PREVIEW_END_MS } from '../src/hosted/policy';
 import { sha256Hex } from '../src/hash';
@@ -90,14 +89,16 @@ async function addActiveSubscription(billingAccountId: string, paidThrough: numb
     .prepare(
       `INSERT INTO stripe_subscriptions
          (stripe_subscription_id, stripe_customer_id, billing_account_id, status,
-          plan_key, interval, current_period_end, cancel_at_period_end,
-          has_paid_invoice, first_failed_renewal_at, verified_at, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', 'sync_personal', 'month', ?, 0, 1, NULL, ?, ?, ?)`,
+          plan_key, interval, current_period_end, paid_through, paid_seat_quantity,
+          cancel_at_period_end, has_paid_invoice, first_failed_renewal_at,
+          verified_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', 'sync_personal', 'month', ?, ?, 1, 0, 1, NULL, ?, ?, ?)`,
     )
     .bind(
       `sub_${crypto.randomUUID().replaceAll('-', '')}`,
       `cus_${crypto.randomUUID().replaceAll('-', '')}`,
       billingAccountId,
+      paidThrough,
       paidThrough,
       now,
       now,
@@ -117,12 +118,106 @@ async function cacheRow(accountId: string): Promise<{ fetched_at: number } | nul
   return runInDurableObject(accountStub(accountId), (_i: AccountCoordinator, state) => {
     return (
       state.storage.sql
-        .exec<{ fetched_at: number }>(
-          'SELECT fetched_at FROM hosted_entitlement_cache WHERE id = 1',
+        .exec<{
+          fetched_at: number;
+        }>('SELECT fetched_at FROM hosted_entitlement_cache WHERE id = 1')
+        .toArray()[0] ?? null
+    );
+  });
+}
+
+async function fundingCacheRow(accountId: string): Promise<{
+  fetched_at: number;
+  funded_by: string;
+  organization_id: string | null;
+} | null> {
+  return runInDurableObject(accountStub(accountId), (_i: AccountCoordinator, state) => {
+    return (
+      state.storage.sql
+        .exec<{
+          fetched_at: number;
+          funded_by: string;
+          organization_id: string | null;
+        }>(
+          'SELECT fetched_at, funded_by, organization_id FROM hosted_entitlement_cache WHERE id = 1',
         )
         .toArray()[0] ?? null
     );
   });
+}
+
+async function linkTeamSeat(
+  accountId: string,
+  linkedBillingAccountId?: string,
+): Promise<{ billingAccountId: string; organizationId: string }> {
+  const billingAccountId = linkedBillingAccountId ?? (await linkBilling(accountId, 0));
+  const now = Date.now();
+  const organizationId = `org_${crypto.randomUUID().replaceAll('-', '')}`;
+  const db = hostedDb();
+  await db
+    .prepare(
+      `INSERT INTO hosted_organizations
+         (id, idempotency_key, workos_organization_id, name, status,
+          created_by_workos_user_id, created_at, updated_at)
+       VALUES (?, ?, ?, 'Team fixture', 'active', ?, ?, ?)`,
+    )
+    .bind(
+      organizationId,
+      `idem_${organizationId}`,
+      `workos_${organizationId}`,
+      `user_${billingAccountId}`,
+      now,
+      now,
+    )
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO hosted_organization_memberships
+         (organization_id, billing_account_id, workos_client_id, workos_user_id,
+          email, role, status, seat_opted_out, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'member', 'active', 0, ?, ?)`,
+    )
+    .bind(
+      organizationId,
+      billingAccountId,
+      `client_${billingAccountId}`,
+      `user_${billingAccountId}`,
+      `${billingAccountId}@example.test`,
+      now,
+      now,
+    )
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO hosted_team_seat_assignments
+         (id, organization_id, billing_account_id, invitation_id, state, expires_at,
+          created_at, updated_at)
+       VALUES (?, ?, ?, NULL, 'assigned', NULL, ?, ?)`,
+    )
+    .bind(`seat_${organizationId}`, organizationId, billingAccountId, now, now)
+    .run();
+  await db
+    .prepare(
+      `INSERT INTO stripe_subscriptions
+         (stripe_subscription_id, stripe_customer_id, billing_account_id, organization_id,
+          plan_key, interval, status, current_period_end, paid_through,
+          paid_seat_quantity, cancel_at_period_end, has_paid_invoice, first_failed_renewal_at,
+          verified_at, seat_quantity, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'sync_team', 'month', 'active', ?, ?, 5, 0, 1, NULL, ?, 5, ?, ?)`,
+    )
+    .bind(
+      `sub_${organizationId}`,
+      `cus_${organizationId}`,
+      billingAccountId,
+      organizationId,
+      now + 30 * DAY,
+      now + 30 * DAY,
+      now,
+      now,
+      now,
+    )
+    .run();
+  return { billingAccountId, organizationId };
 }
 
 /** Restrict the account now and age any previously cached decision out. */
@@ -209,9 +304,7 @@ async function runningJob(f: Fixture): Promise<RunningJob> {
     requestedTarget: { kind: 'device', enrollmentId: f.workerEnrollmentId },
     inputManifest: manifest(),
   };
-  const created = expectSuccess<JobCreateResult>(
-    await postRpc('job.create', params, f.sourceAuth),
-  );
+  const created = expectSuccess<JobCreateResult>(await postRpc('job.create', params, f.sourceAuth));
   const claimed = expectSuccess<JobClaimResult>(
     await postRpc('job.claim', { jobId: created.job.id }, f.workerAuth),
   );
@@ -263,6 +356,86 @@ describe('hosted enforcement — restricted account', () => {
     const exported = await postRpc('data.export.begin', {}, f.sourceAuth);
     expect(exported.status).toBe(200);
     expect(expectSuccess<DataExportBeginResult>(exported).operationId).toMatch(/^exp_/);
+  });
+
+  it('enforces fair-use restrictions while preserving storage-recovery paths', async () => {
+    const f = fixture('fair-use-restricted');
+    const change = await hashedChange({ enrollmentSequence: 1, entityId: 'workspace-to-delete' });
+    expectSuccess<SyncPushResult>(await postRpc('sync.push', { changes: [change] }, f.sourceAuth));
+
+    const job = await runningJob(f);
+    const artifactBytes = new TextEncoder().encode('fair-use recovery artifact');
+    const artifactSha = await sha256Hex('fair-use recovery artifact');
+    const reservation = expectSuccess<ArtifactReserveResult>(
+      await postRpc(
+        'artifact.reserve',
+        {
+          attemptId: job.attemptId,
+          byteLength: artifactBytes.byteLength,
+          sha256: artifactSha,
+          mediaType: 'application/octet-stream',
+          retentionDays: 7,
+        },
+        f.workerAuth,
+      ),
+    );
+
+    const now = Date.now();
+    await runInDurableObject(accountStub(f.accountId), (_i: AccountCoordinator, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO sync_meta (key, value) VALUES ('fair_use_restriction', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        JSON.stringify({
+          code: 'storage-usage',
+          message: 'Reduce retained data or contact support.',
+          noticeAt: new Date(now - DAY).toISOString(),
+          restrictAt: new Date(now - 1_000).toISOString(),
+          emergency: false,
+        }),
+      );
+    });
+
+    const deletion = await hashedChange({
+      enrollmentSequence: 2,
+      entityId: 'workspace-to-delete',
+      operation: 'delete',
+    });
+    const deleted = expectSuccess<SyncPushResult>(
+      await postRpc('sync.push', { changes: [deletion] }, f.sourceAuth),
+    );
+    expect(deleted.results[0]?.status).toBe('accepted');
+
+    const blocked = await postRpc(
+      'sync.push',
+      { changes: [await hashedChange({ enrollmentSequence: 3, entityId: 'new-workspace' })] },
+      f.sourceAuth,
+    );
+    expectForbidden(blocked, 'fair-use-restricted');
+
+    const deniedReservation = await postRpc(
+      'artifact.reserve',
+      {
+        attemptId: job.attemptId,
+        byteLength: artifactBytes.byteLength,
+        sha256: artifactSha,
+        mediaType: 'application/octet-stream',
+        retentionDays: 7,
+      },
+      f.workerAuth,
+    );
+    expectForbidden(deniedReservation, 'fair-use-restricted');
+
+    const deniedUpload = await putArtifact(reservation.uploadPath, f.workerAuth, artifactBytes);
+    expect(deniedUpload.status).toBe(403);
+    const deniedUploadBody = (await deniedUpload.json()) as Parameters<typeof isRpcError>[0];
+    expect(isRpcError(deniedUploadBody) && deniedUploadBody.error.details?.['reason']).toBe(
+      'fair-use-restricted',
+    );
+
+    expect(
+      (await postRpc('sync.pull', { cursor: null, maxBytes: 16384 }, f.sourceAuth)).status,
+    ).toBe(200);
+    expect((await postRpc('data.export.begin', {}, f.sourceAuth)).status).toBe(200);
   });
 
   it('keeps running-attempt completion available while denying renew and new work', async () => {
@@ -367,11 +540,7 @@ describe('hosted enforcement — restricted account', () => {
     expectForbidden(deniedReserve, 'subscription-required');
 
     // The reserved row is still open, but landing new bytes is denied.
-    const deniedPut = await putArtifact(
-      `/v1/artifacts/${blocked.artifactId}`,
-      f.workerAuth,
-      body,
-    );
+    const deniedPut = await putArtifact(`/v1/artifacts/${blocked.artifactId}`, f.workerAuth, body);
     expect(deniedPut.status).toBe(403);
 
     // …while a reservation whose bytes were already stored may publish.
@@ -431,11 +600,7 @@ describe('hosted enforcement — restricted account', () => {
     const session = await enroll(ids.accountId);
     await restrict(ids.accountId);
 
-    const deleted = await postRpc(
-      'account.delete',
-      {},
-      `Bearer ${session.accessToken}`,
-    );
+    const deleted = await postRpc('account.delete', {}, `Bearer ${session.accessToken}`);
     expect(deleted.status).toBe(200);
   });
 });
@@ -446,11 +611,7 @@ describe('hosted enforcement — session.describe', () => {
     const session = await enroll(ids.accountId);
     await linkBilling(ids.accountId, 0);
 
-    const described = await postRpc(
-      'session.describe',
-      {},
-      `Bearer ${session.accessToken}`,
-    );
+    const described = await postRpc('session.describe', {}, `Bearer ${session.accessToken}`);
     expect(described.status).toBe(200);
     const result = expectSuccess<SessionDescribeResult>(described);
     expect(result.entitlement?.state).toBe('restricted');
@@ -461,11 +622,7 @@ describe('hosted enforcement — session.describe', () => {
     const ids = uniqueIds('describe-preview');
     const session = await enroll(ids.accountId);
 
-    const described = await postRpc(
-      'session.describe',
-      {},
-      `Bearer ${session.accessToken}`,
-    );
+    const described = await postRpc('session.describe', {}, `Bearer ${session.accessToken}`);
     const result = expectSuccess<SessionDescribeResult>(described);
     expect(result.entitlement?.state).toBe('preview');
     expect(result.entitlement?.reason).toBe('preview');
@@ -545,6 +702,110 @@ describe('hosted enforcement — cache bound', () => {
     );
     expectForbidden(fourth, 'subscription-required');
   });
+
+  it('expires team-funded cache within one minute and falls back to personal billing', async () => {
+    const f = fixture('team-cache-fallback');
+    const billingAccountId = await linkBilling(f.accountId, 0);
+    await addActiveSubscription(billingAccountId, Date.now() + 30 * DAY);
+    const team = await linkTeamSeat(f.accountId, billingAccountId);
+    let fetchedAt = 0;
+
+    await runInDurableObject(accountStub(f.accountId), async (_i: AccountCoordinator, state) => {
+      const teamAccess = await checkHostedAccess(state.storage, env, f.accountId, Date.now());
+      expect(teamAccess.allowed).toBe(true);
+      if (teamAccess.allowed) {
+        expect(teamAccess.entitlement?.fundedBy).toBe('team');
+        expect(teamAccess.entitlement?.planKey).toBe('sync_team');
+        expect(teamAccess.entitlement?.organizationId).toBe(team.organizationId);
+      }
+      const row = state.storage.sql
+        .exec<{
+          fetched_at: number;
+          funded_by: string;
+          organization_id: string | null;
+        }>(
+          'SELECT fetched_at, funded_by, organization_id FROM hosted_entitlement_cache WHERE id = 1',
+        )
+        .one();
+      fetchedAt = row.fetched_at;
+      expect(row.funded_by).toBe('team');
+      expect(row.organization_id).toBe(team.organizationId);
+    });
+
+    await hostedDb()
+      .prepare(
+        `UPDATE hosted_organization_memberships SET status = 'inactive'
+         WHERE organization_id = ? AND billing_account_id = ?`,
+      )
+      .bind(team.organizationId, billingAccountId)
+      .run();
+
+    await runInDurableObject(accountStub(f.accountId), async (_i: AccountCoordinator, state) => {
+      const withinBound = await checkHostedAccess(
+        state.storage,
+        env,
+        f.accountId,
+        fetchedAt + TEAM_ENTITLEMENT_CACHE_TTL_MS,
+      );
+      expect(withinBound.allowed).toBe(true);
+      if (withinBound.allowed) expect(withinBound.entitlement?.fundedBy).toBe('team');
+
+      const afterBound = await checkHostedAccess(
+        state.storage,
+        env,
+        f.accountId,
+        fetchedAt + TEAM_ENTITLEMENT_CACHE_TTL_MS + 1,
+      );
+      expect(afterBound.allowed).toBe(true);
+      if (afterBound.allowed) {
+        expect(afterBound.entitlement?.fundedBy).toBe('personal');
+        expect(afterBound.entitlement?.planKey).toBe('sync_personal');
+        expect(afterBound.entitlement?.organizationId).toBeNull();
+      }
+    });
+  });
+
+  it('activates a newly assigned team seat within one minute of a restricted cache', async () => {
+    const f = fixture('team-cache-activation');
+    const billingAccountId = await linkBilling(f.accountId, 0);
+    let fetchedAt = 0;
+
+    await runInDurableObject(accountStub(f.accountId), async (_i: AccountCoordinator, state) => {
+      const restricted = await checkHostedAccess(state.storage, env, f.accountId, Date.now());
+      expect(restricted.allowed).toBe(false);
+      const row = state.storage.sql
+        .exec<{
+          fetched_at: number;
+          funded_by: string;
+        }>('SELECT fetched_at, funded_by FROM hosted_entitlement_cache WHERE id = 1')
+        .one();
+      fetchedAt = row.fetched_at;
+      expect(row.funded_by).toBe('none');
+    });
+
+    const team = await linkTeamSeat(f.accountId, billingAccountId);
+    await runInDurableObject(accountStub(f.accountId), async (_i: AccountCoordinator, state) => {
+      const beforeExpiry = await checkHostedAccess(
+        state.storage,
+        env,
+        f.accountId,
+        fetchedAt + ENTITLEMENT_CACHE_TTL_MS,
+      );
+      expect(beforeExpiry.allowed).toBe(false);
+
+      const afterExpiry = await checkHostedAccess(
+        state.storage,
+        env,
+        f.accountId,
+        fetchedAt + ENTITLEMENT_CACHE_TTL_MS + 1,
+      );
+      expect(afterExpiry.allowed).toBe(true);
+      if (afterExpiry.allowed) {
+        expect(afterExpiry.entitlement?.fundedBy).toBe('team');
+        expect(afterExpiry.entitlement?.organizationId).toBe(team.organizationId);
+      }
+    });
+  });
 });
 
 describe('checkHostedAccess — outage and deployment paths', () => {
@@ -555,8 +816,12 @@ describe('checkHostedAccess — outage and deployment paths', () => {
       },
     }) as unknown as D1Database;
 
-  function enforcementEnv(db: D1Database | undefined): Env {
-    return { HOSTED_DB: db, HOSTED_BILLING_ENFORCEMENT: 'true' } as unknown as Env;
+  function enforcementEnv(db: D1Database | undefined, devSpike = false): Env {
+    return {
+      HOSTED_DB: db,
+      HOSTED_BILLING_ENFORCEMENT: 'true',
+      ...(devSpike ? { ANVIL_DEV_SPIKE: 'true' } : {}),
+    } as unknown as Env;
   }
 
   it('is inert with no HOSTED_DB (self-host) or with the flag off', async () => {
@@ -577,6 +842,83 @@ describe('checkHostedAccess — outage and deployment paths', () => {
       Date.now(),
     );
     expect(flagOff.allowed).toBe(true);
+  });
+
+  it('does not grant preview without a billing row outside the test-spike flag', async () => {
+    const regularIds = uniqueIds('missing-billing-no-preview');
+    const hostedEnv = enforcementEnv(hostedDb());
+    const resolved = await resolveAccountEntitlement(
+      hostedEnv,
+      regularIds.accountId,
+      PREVIEW_END_MS - 1,
+    );
+    expect(resolved.state).toBe('restricted');
+    expect(resolved.fundedBy).toBe('none');
+    expect(resolved.reason).toBe('subscription-required');
+
+    await runInDurableObject(
+      accountStub(regularIds.accountId),
+      async (_i: AccountCoordinator, state) => {
+        const access = await checkHostedAccess(
+          state.storage,
+          hostedEnv,
+          regularIds.accountId,
+          PREVIEW_END_MS - 1,
+        );
+        expect(access.allowed).toBe(false);
+        if (!access.allowed) expect(access.reason).toBe('subscription-required');
+      },
+    );
+
+    const spikeIds = uniqueIds('missing-billing-test-spike');
+    const spike = await resolveAccountEntitlement(
+      enforcementEnv(hostedDb(), true),
+      spikeIds.accountId,
+      PREVIEW_END_MS - 1,
+    );
+    expect(spike.state).toBe('preview');
+    expect(spike.fundedBy).toBe('preview');
+    await runInDurableObject(
+      accountStub(spikeIds.accountId),
+      async (_i: AccountCoordinator, state) => {
+        const access = await checkHostedAccess(
+          state.storage,
+          enforcementEnv(hostedDb(), true),
+          spikeIds.accountId,
+          PREVIEW_END_MS - 1,
+        );
+        expect(access.allowed).toBe(true);
+        if (access.allowed) expect(access.entitlement?.fundedBy).toBe('preview');
+      },
+    );
+  });
+
+  it('does not restore a stale team seat from billing-outage fallback', async () => {
+    const ids = uniqueIds('team-outage-expired-cache');
+    const team = await linkTeamSeat(ids.accountId);
+    let fetchedAt = 0;
+    await runInDurableObject(accountStub(ids.accountId), async (_i: AccountCoordinator, state) => {
+      const access = await checkHostedAccess(state.storage, env, ids.accountId, Date.now());
+      expect(access.allowed).toBe(true);
+      const row = state.storage.sql
+        .exec<{
+          fetched_at: number;
+        }>('SELECT fetched_at FROM hosted_entitlement_cache WHERE id = 1')
+        .one();
+      fetchedAt = row.fetched_at;
+    });
+    expect(team.organizationId).toBeTruthy();
+
+    await runInDurableObject(accountStub(ids.accountId), async (_i: AccountCoordinator, state) => {
+      const access = await checkHostedAccess(
+        state.storage,
+        enforcementEnv(throwingDb()),
+        ids.accountId,
+        fetchedAt + TEAM_ENTITLEMENT_CACHE_TTL_MS + 1,
+      );
+      expect(access.allowed).toBe(false);
+      if (!access.allowed) expect(access.reason).toBe('billing-unavailable');
+    });
   });
 
   it('serves bounded outage grace from a paid cache entry', async () => {
@@ -602,9 +944,7 @@ describe('checkHostedAccess — outage and deployment paths', () => {
       expect(access.entitlement?.state).toBe('grace');
       expect(access.entitlement?.source).toBe('outage-grace');
       expect(access.entitlement?.reason).toBe('billing-outage');
-      expect(Date.parse(access.entitlement?.accessUntil ?? '')).toBe(
-        paidThrough + 24 * HOUR,
-      );
+      expect(Date.parse(access.entitlement?.accessUntil ?? '')).toBe(paidThrough + 24 * HOUR);
     });
   });
 
@@ -652,12 +992,7 @@ describe('checkHostedAccess — outage and deployment paths', () => {
       expect(before.allowed).toBe(true);
       expect(before.entitlement?.state).toBe('preview');
       // Simulated post-cutoff: the outage does not extend preview access.
-      const after = await checkHostedAccess(
-        state.storage,
-        env,
-        ids.accountId,
-        PREVIEW_END_MS + 1,
-      );
+      const after = await checkHostedAccess(state.storage, env, ids.accountId, PREVIEW_END_MS + 1);
       expect(after.allowed).toBe(false);
     });
   });
@@ -683,9 +1018,10 @@ describe('checkHostedAccess — outage and deployment paths', () => {
 describe('hostedConfigIssues', () => {
   it('is quiet when enforcement is off and lists missing bindings when on', () => {
     expect(hostedConfigIssues({} as unknown as Env)).toEqual([]);
-    expect(
-      hostedConfigIssues({ HOSTED_BILLING_ENFORCEMENT: 'true' } as unknown as Env),
-    ).toEqual(['HOSTED_DB', 'HOSTED_SERVICE_KEYS']);
+    expect(hostedConfigIssues({ HOSTED_BILLING_ENFORCEMENT: 'true' } as unknown as Env)).toEqual([
+      'HOSTED_DB',
+      'HOSTED_SERVICE_KEYS',
+    ]);
     expect(
       hostedConfigIssues({
         HOSTED_BILLING_ENFORCEMENT: 'true',

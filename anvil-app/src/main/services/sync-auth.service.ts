@@ -137,6 +137,7 @@ function errorCodeOf(error: unknown): AuthErrorCode | null {
   switch (code) {
     case 'refresh-reuse-detected':
     case 'enrollment-code-used':
+    case 'device-limit':
     case 'invalid-proof':
     case 'device-authorization-pending':
     case 'device-authorization-slow-down':
@@ -151,6 +152,8 @@ function errorCodeOf(error: unknown): AuthErrorCode | null {
 /** Human-readable label for auth failures. Never includes tokens or proofs. */
 export function describeAuthError(code: AuthErrorCode): string {
   switch (code) {
+    case 'device-limit':
+      return 'This account has reached its device limit. Revoke a device before enrolling another.';
     case 'refresh-reuse-detected':
       return 'The refresh credential was already rotated. The local session was signed out.';
     case 'enrollment-code-used':

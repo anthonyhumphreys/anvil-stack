@@ -15,7 +15,6 @@ import { expectSuccess, hashedChange, postRpc, spikeBearer, uniqueIds } from './
 
 const ADMIN_TOKEN = 'test-admin-credential';
 const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
-const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
 
 function accountStub(accountId: string) {
   return env.ACCOUNT.get(env.ACCOUNT.idFromName(accountId));
@@ -61,16 +60,17 @@ async function enroll(code: string): Promise<DeviceSession> {
   return (await response.json()) as DeviceSession;
 }
 
-describe('retention, quota, and ops counters', () => {
-  it('rejects new history once the account byte quota is exceeded, then recovers', async () => {
-    const ids = uniqueIds('quota');
+describe('retention and ops counters', () => {
+  it('tracks retained history above the former aggregate quota and keeps accepting changes', async () => {
+    const ids = uniqueIds('history-usage');
     const auth = spikeBearer(ids.accountId, ids.enrollmentId);
 
-    // Simulate a nearly-full history budget; the next payload crosses it.
+    // Simulate usage above the former limit. Aggregate storage is measured,
+    // while request and payload bounds remain enforced independently.
     await runInDurableObject(accountStub(ids.accountId), (_i: AccountCoordinator, state) => {
       state.storage.sql.exec(
         "INSERT INTO sync_meta (key, value) VALUES ('history_bytes', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        String(HISTORY_QUOTA_BYTES - 10),
+        String(64 * 1024 * 1024 + 10),
       );
     });
 
@@ -82,31 +82,23 @@ describe('retention, quota, and ops counters', () => {
     const pushed = expectSuccess<SyncPushResult>(
       await postRpc('sync.push', { changes: [change] }, auth),
     );
-    expect(pushed.results[0]?.status).toBe('rejected');
-    expect(pushed.results[0]).toMatchObject({ reason: 'quota-exceeded' });
+    expect(pushed.results[0]?.status).toBe('accepted');
 
-    // The rejection is terminal: sequence consumed with a receipt, so replay
-    // returns the same verdict rather than re-applying.
+    // Replays remain idempotent after the account passes the former limit.
     const replay = expectSuccess<SyncPushResult>(
       await postRpc('sync.push', { changes: [change] }, auth),
     );
     expect(replay.results).toEqual(pushed.results);
 
-    // Freeing history (e.g. after a sweep) lets new changes through.
-    await runInDurableObject(accountStub(ids.accountId), (_i: AccountCoordinator, state) => {
-      state.storage.sql.exec(
-        "UPDATE sync_meta SET value = '0' WHERE key = 'history_bytes'",
-      );
-    });
     const second = await hashedChange({
       enrollmentSequence: 2,
-      entityId: 'tpl-after-quota',
-      payload: { name: 'Fits' },
+      entityId: 'tpl-after-former-quota',
+      payload: { name: 'Still accepted' },
     });
-    const recovered = expectSuccess<SyncPushResult>(
+    const continued = expectSuccess<SyncPushResult>(
       await postRpc('sync.push', { changes: [second] }, auth),
     );
-    expect(recovered.results[0]?.status).toBe('accepted');
+    expect(continued.results[0]?.status).toBe('accepted');
   });
 
   it('sweep deletes expired journal rows, advances the floor, and stale cursors reset', async () => {
@@ -190,7 +182,8 @@ describe('retention, quota, and ops counters', () => {
     const stats = described.accountStats;
     expect(stats).toBeDefined();
     expect(stats?.historyBytes).toBeGreaterThan(0);
-    expect(stats?.historyQuotaBytes).toBe(HISTORY_QUOTA_BYTES);
+    expect(stats?.fairUse?.status).toBe('clear');
+    expect(stats?.fairUse?.usage.historyBytes).toBe(stats?.historyBytes);
     expect(stats?.counters['push_accepted']).toBe(1);
     expect(stats?.counters['bytes_accepted']).toBeGreaterThan(0);
   });
@@ -267,8 +260,6 @@ describe('session retention sweep', () => {
       }),
     });
     expect(stale.status).toBe(401);
-    expect(((await stale.json()) as { error: { code: string } }).error.code).toBe(
-      'invalid-proof',
-    );
+    expect(((await stale.json()) as { error: { code: string } }).error.code).toBe('invalid-proof');
   });
 });

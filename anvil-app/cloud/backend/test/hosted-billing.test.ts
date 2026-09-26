@@ -1,7 +1,8 @@
 import { env, SELF } from 'cloudflare:test';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HostedEntitlement } from '../../contract/entitlements';
+import { getOrCreateAdmittedBillingAccount } from '../src/hosted/admission';
 import { getEntitlement } from '../src/hosted/billing';
 import type { HostedIdentity } from '../src/hosted/identity';
 import { DEFAULT_HOSTED_LIMITS, PREVIEW_END_MS } from '../src/hosted/policy';
@@ -20,6 +21,9 @@ const SERVICE_SECRET = 'a'.repeat(32);
 const SERVICE_AUDIENCE = 'anvil-hosted';
 const WEBHOOK_SECRET = 'whsec_testfake0123456789';
 const STRIPE_API = 'https://api.stripe.com';
+const WORKOS_API = 'https://api.workos.com';
+const WORKOS_API_KEY = 'sk_test_workos_fake';
+const HOSTED_CLIENT_ID = 'client_hosted_test';
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 /** A fixed evaluation instant safely past the 2026-11-01 preview cutoff. */
@@ -28,7 +32,11 @@ const POST_PREVIEW = PREVIEW_END_MS + 30 * DAY;
 const ENV_DEFAULTS: Record<string, string> = {
   STRIPE_SECRET_KEY: 'sk_test_fake',
   STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+  WORKOS_API_KEY,
+  HOSTED_WORKOS_CLIENT_ID: HOSTED_CLIENT_ID,
+  HOSTED_BILLING_ENVIRONMENT: 'staging',
   HOSTED_CHECKOUT_ENABLED: 'true',
+  HOSTED_ALLOW_EARLY_CHECKOUT: '',
   STRIPE_PRICE_SYNC_MONTHLY: 'price_test_monthly',
   STRIPE_PRICE_SYNC_ANNUAL: 'price_test_annual',
   HOSTED_CHECKOUT_SUCCESS_URL: 'https://example.test/checkout/success',
@@ -57,6 +65,7 @@ function applyMigration(sql: string): Promise<unknown> {
 beforeEach(async () => {
   await applyMigration(migration0001);
   await applyMigration(migration0002);
+  await fetch(`${WORKOS_API}/__workos-stub/reset`, { method: 'POST' });
   // Outbound Stripe calls are served by the miniflare outbound stub in
   // vitest.config.ts; reset its queue between tests.
   await fetch(`${STRIPE_API}/__stripe-stub/reset`, { method: 'POST' });
@@ -68,14 +77,69 @@ afterEach(async () => {
   for (const [key, value] of Object.entries(ENV_DEFAULTS)) {
     (env as unknown as Record<string, string>)[key] = value;
   }
-  const pending = (await (
-    await fetch(`${STRIPE_API}/__stripe-stub/pending`)
-  ).json()) as { pending: unknown[] };
+  vi.restoreAllMocks();
+  const pending = (await (await fetch(`${STRIPE_API}/__stripe-stub/pending`)).json()) as {
+    pending: unknown[];
+  };
   expect(pending.pending).toEqual([]);
+  const pendingWorkOS = (await (await fetch(`${WORKOS_API}/__workos-stub/pending`)).json()) as {
+    pending: unknown[];
+  };
+  expect(pendingWorkOS.pending).toEqual([]);
 });
 
 function makeIdentity(tag: string): HostedIdentity {
-  return { workosClientId: `client_${tag}`, workosUserId: `user_${tag}` };
+  return { workosClientId: HOSTED_CLIENT_ID, workosUserId: `user_${tag}` };
+}
+
+function waitlistPath(email: string): string {
+  const query = new URLSearchParams({
+    state: 'approved',
+    email: email.trim().toLowerCase(),
+    limit: '10',
+  });
+  return `/user_management/waitlists/default/entries?${query.toString()}`;
+}
+
+async function stubWorkOS(
+  method: string,
+  path: string,
+  body: unknown,
+  status = 200,
+): Promise<void> {
+  const response = await fetch(`${WORKOS_API}/__workos-stub/enqueue`, {
+    method: 'POST',
+    body: JSON.stringify({ method, path, status, body }),
+  });
+  expect(response.status).toBe(200);
+}
+
+async function stubApprovedWaitlist(identity: HostedIdentity): Promise<void> {
+  await stubWaitlist(identity, 'approved');
+}
+
+async function stubWaitlist(
+  identity: HostedIdentity,
+  state: 'approved' | 'pending',
+): Promise<void> {
+  const email = `${identity.workosUserId}@example.test`;
+  await stubWorkOS('GET', `/user_management/users/${identity.workosUserId}`, {
+    object: 'user',
+    id: identity.workosUserId,
+    email,
+    email_verified: true,
+  });
+  await stubWorkOS('GET', waitlistPath(email), {
+    object: 'list',
+    data: [{ email, state }],
+  });
+}
+
+async function admittedAccount(identity: HostedIdentity): Promise<BillingAccountRow> {
+  await stubApprovedWaitlist(identity);
+  const account = await getOrCreateAdmittedBillingAccount(env, hostedDb(), identity);
+  if (account === null) throw new Error('The test WorkOS identity was not admitted.');
+  return account;
 }
 
 /** Signs and POSTs a service request to an /internal/hosted/* route. */
@@ -91,9 +155,7 @@ async function signedHostedPost(
     { audience: SERVICE_AUDIENCE, keyId: SERVICE_KEY_ID, secret: SERVICE_SECRET },
     Date.now(),
   );
-  const response = await SELF.fetch(
-    new Request(url, { method: 'POST', headers, body: payload }),
-  );
+  const response = await SELF.fetch(new Request(url, { method: 'POST', headers, body: payload }));
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
@@ -125,14 +187,25 @@ async function signStripePayload(rawBody: string, timestampMs: number): Promise<
     key,
     new TextEncoder().encode(`${seconds}.${rawBody}`),
   );
-  const hex = [...new Uint8Array(signature)]
-    .map((v) => v.toString(16).padStart(2, '0'))
-    .join('');
+  const hex = [...new Uint8Array(signature)].map((v) => v.toString(16).padStart(2, '0')).join('');
   return `t=${seconds},v1=${hex}`;
 }
 
 function stripeEvent(id: string, type: string, object: unknown): string {
-  return JSON.stringify({ id, object: 'event', type, data: { object } });
+  return JSON.stringify({ id, object: 'event', type, livemode: false, data: { object } });
+}
+
+function stripePrice(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'price_test_monthly',
+    object: 'price',
+    active: true,
+    livemode: false,
+    currency: 'gbp',
+    unit_amount: 800,
+    recurring: { interval: 'month', interval_count: 1 },
+    ...overrides,
+  };
 }
 
 async function postWebhook(
@@ -157,17 +230,55 @@ function stripeSubscription(
   customer: string,
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  const id =
+    typeof overrides['id'] === 'string'
+      ? overrides['id']
+      : `sub_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+  const periodStart =
+    typeof overrides['current_period_start'] === 'number'
+      ? overrides['current_period_start']
+      : Math.floor(Date.now() / 1000) - 1_000;
+  const periodEnd =
+    typeof overrides['current_period_end'] === 'number'
+      ? overrides['current_period_end']
+      : Math.floor(Date.now() / 1000) + 30 * 86_400;
   return {
-    id: `sub_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`,
+    id,
     object: 'subscription',
     status: 'active',
     customer,
-    current_period_end: Math.floor(Date.now() / 1000) + 30 * 86_400,
+    current_period_start: periodStart,
+    current_period_end: periodEnd,
     cancel_at_period_end: false,
     items: {
       object: 'list',
-      data: [{ price: { id: 'price_test_monthly', recurring: { interval: 'month' } } }],
+      data: [
+        {
+          id: `si_${id}`,
+          quantity: 1,
+          current_period_start: periodStart,
+          current_period_end: periodEnd,
+          price: {
+            id: 'price_test_monthly',
+            recurring: { interval: 'month', interval_count: 1 },
+          },
+        },
+      ],
     },
+    ...overrides,
+  };
+}
+
+function modernInvoice(subscriptionId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id: `in_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`,
+    object: 'invoice',
+    parent: {
+      type: 'subscription_details',
+      subscription_details: { subscription: subscriptionId },
+    },
+    billing_reason: 'subscription_cycle',
+    status: 'paid',
     ...overrides,
   };
 }
@@ -193,9 +304,7 @@ async function subscriptionRow(
     .first<Record<string, unknown>>();
 }
 
-async function webhookRow(
-  stripeEventId: string,
-): Promise<Record<string, unknown> | null> {
+async function webhookRow(stripeEventId: string): Promise<Record<string, unknown> | null> {
   return hostedDb()
     .prepare('SELECT * FROM webhook_events WHERE stripe_event_id = ?')
     .bind(stripeEventId)
@@ -204,9 +313,7 @@ async function webhookRow(
 
 async function auditKinds(billingAccountId: string): Promise<string[]> {
   const { results } = await hostedDb()
-    .prepare(
-      'SELECT kind FROM billing_audit WHERE billing_account_id = ? ORDER BY id',
-    )
+    .prepare('SELECT kind FROM billing_audit WHERE billing_account_id = ? ORDER BY id')
     .bind(billingAccountId)
     .all<{ kind: string }>();
   return (results ?? []).map((row) => row.kind);
@@ -237,8 +344,7 @@ describe('stripe webhook signature gate', () => {
     expect(missing.status).toBe(401);
 
     const goodHeader = await signStripePayload(raw, Date.now());
-    const corrupted =
-      goodHeader.slice(0, -2) + (goodHeader.endsWith('00') ? 'ff' : '00');
+    const corrupted = goodHeader.slice(0, -2) + (goodHeader.endsWith('00') ? 'ff' : '00');
     const wrong = await postWebhook(raw, { header: corrupted });
     expect(wrong.status).toBe(401);
     // None of the rejected deliveries reached the inbox.
@@ -273,9 +379,11 @@ describe('stripe webhook signature gate', () => {
 describe('checkout.session.completed', () => {
   it('stores the customer, completes the checkout row, and audits', async () => {
     const identity = makeIdentity(`co-${crypto.randomUUID()}`);
-    const account = await getOrCreateBillingAccount(hostedDb(), identity);
+    env.HOSTED_ALLOW_EARLY_CHECKOUT = 'true';
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const sessionId = `cs_test_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+    await stubApprovedWaitlist(identity);
+    await stubStripe('GET', '/v1/prices/price_test_monthly', stripePrice());
     await stubStripe('POST', '/v1/customers', { id: customerId });
     await stubStripe('POST', '/v1/checkout/sessions', {
       id: sessionId,
@@ -283,7 +391,6 @@ describe('checkout.session.completed', () => {
       status: 'open',
       customer: customerId,
       subscription: null,
-      client_reference_id: account.id,
     });
     const checkout = await signedHostedPost('/internal/hosted/checkout', {
       ...identity,
@@ -292,34 +399,20 @@ describe('checkout.session.completed', () => {
     expect(checkout.status).toBe(200);
     expect(checkout.body['checkoutUrl']).toBe(`https://checkout.stripe.test/pay/${sessionId}`);
     expect(checkout.body['sessionId']).toBe(sessionId);
+    const account = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(account).not.toBeNull();
+    if (account === null) throw new Error('checkout did not create an admitted billing account');
     const open = await hostedDb()
       .prepare('SELECT status FROM checkout_sessions WHERE stripe_session_id = ?')
       .bind(sessionId)
       .first<{ status: string }>();
     expect(open?.status).toBe('open');
 
-    // A repeat checkout reuses the stored customer: the stub queue holds
-    // no second POST /v1/customers response, so a recreate would fail.
-    const sessionId2 = `cs_test_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
-    await stubStripe('POST', '/v1/checkout/sessions', {
-      id: sessionId2,
-      url: `https://checkout.stripe.test/pay/${sessionId2}`,
-      status: 'open',
-      customer: customerId,
-      subscription: null,
-      client_reference_id: account.id,
-    });
-    const again = await signedHostedPost('/internal/hosted/checkout', {
+    const concurrent = await signedHostedPost('/internal/hosted/checkout', {
       ...identity,
       interval: 'month',
     });
-    expect(again.status).toBe(200);
-    expect(again.body['sessionId']).toBe(sessionId2);
-    const customers = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM stripe_customers WHERE billing_account_id = ?')
-      .bind(account.id)
-      .first<{ n: number }>();
-    expect(customers?.n).toBe(1);
+    expect(concurrent.status).toBe(409);
 
     const eventId = `evt_${crypto.randomUUID()}`;
     const completed = await postWebhook(
@@ -347,6 +440,30 @@ describe('checkout.session.completed', () => {
       .bind(account.id)
       .first<Record<string, unknown>>();
     expect(customer?.['stripe_customer_id']).toBe(customerId);
+
+    // Completing the first session unlocks checkout again. A second customer
+    // creation is unnecessary because the first customer remains linked.
+    const sessionId2 = `cs_test_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+    await stubStripe('GET', '/v1/prices/price_test_monthly', stripePrice());
+    await stubStripe('POST', '/v1/checkout/sessions', {
+      id: sessionId2,
+      url: `https://checkout.stripe.test/pay/${sessionId2}`,
+      status: 'open',
+      customer: customerId,
+      subscription: null,
+      client_reference_id: account.id,
+    });
+    const again = await signedHostedPost('/internal/hosted/checkout', {
+      ...identity,
+      interval: 'month',
+    });
+    expect(again.status).toBe(200);
+    expect(again.body['sessionId']).toBe(sessionId2);
+    const customers = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM stripe_customers WHERE billing_account_id = ?')
+      .bind(account.id)
+      .first<{ n: number }>();
+    expect(customers?.n).toBe(1);
 
     const kinds = await auditKinds(account.id);
     expect(kinds).toContain('checkout.created');
@@ -474,7 +591,9 @@ describe('subscription lifecycle webhooks', () => {
     const row = await webhookRow(eventId);
     expect(row?.['status']).toBe('processed');
     const audit = await hostedDb()
-      .prepare("SELECT kind FROM billing_audit WHERE kind = 'subscription.ignored-unknown-customer'")
+      .prepare(
+        "SELECT kind FROM billing_audit WHERE kind = 'subscription.ignored-unknown-customer'",
+      )
       .all<{ kind: string }>();
     expect((audit.results ?? []).length).toBeGreaterThan(0);
   });
@@ -495,9 +614,7 @@ describe('subscription lifecycle webhooks', () => {
     expect(again.body['duplicate']).toBe(true);
 
     const count = await hostedDb()
-      .prepare(
-        'SELECT COUNT(*) AS n FROM stripe_subscriptions WHERE stripe_subscription_id = ?',
-      )
+      .prepare('SELECT COUNT(*) AS n FROM stripe_subscriptions WHERE stripe_subscription_id = ?')
       .bind(sub['id'])
       .first<{ n: number }>();
     expect(count?.n).toBe(1);
@@ -513,48 +630,84 @@ describe('invoice webhooks', () => {
       hasPaidInvoice?: number;
       firstFailedRenewalAt?: number | null;
     } = {},
-  ): Promise<{ account: BillingAccountRow; subscriptionId: string }> {
+  ): Promise<{ account: BillingAccountRow; subscriptionId: string; customerId: string }> {
     const identity = makeIdentity(`inv-${crypto.randomUUID()}`);
     const account = await getOrCreateBillingAccount(hostedDb(), identity);
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     await insertStripeCustomer(account.id, customerId);
     const subscriptionId = `sub_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const now = Date.now();
+    const currentPeriodEnd = now + 30 * DAY;
+    const hasPaidInvoice = overrides.hasPaidInvoice ?? 0;
     await hostedDb()
       .prepare(
         `INSERT INTO stripe_subscriptions
           (stripe_subscription_id, stripe_customer_id, billing_account_id,
-           status, plan_key, interval, current_period_end, cancel_at_period_end,
-           has_paid_invoice, first_failed_renewal_at, verified_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'sync_personal', 'month', ?, 0, ?, ?, ?, ?, ?)`,
+           status, plan_key, interval, current_period_end, paid_through,
+           paid_seat_quantity, cancel_at_period_end, has_paid_invoice,
+           first_failed_renewal_at, verified_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'sync_personal', 'month', ?, ?, 1, 0, ?, ?, ?, ?, ?)`,
       )
       .bind(
         subscriptionId,
         customerId,
         account.id,
         overrides.status ?? 'active',
-        now + 30 * DAY,
-        overrides.hasPaidInvoice ?? 0,
+        currentPeriodEnd,
+        hasPaidInvoice === 1 ? currentPeriodEnd : null,
+        hasPaidInvoice,
         overrides.firstFailedRenewalAt ?? null,
         now,
         now,
         now,
       )
       .run();
-    return { account, subscriptionId };
+    return { account, subscriptionId, customerId };
   }
 
+  it('refetches a missing subscription from the canonical Stripe endpoint for modern invoices', async () => {
+    const identity = makeIdentity(`invoice-refetch-${crypto.randomUUID()}`);
+    const account = await getOrCreateBillingAccount(hostedDb(), identity);
+    const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+    const subscriptionId = `sub_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+    await insertStripeCustomer(account.id, customerId);
+    const invoice = modernInvoice(subscriptionId, { billing_reason: 'subscription_create' });
+    const provider = stripeSubscription(customerId, {
+      id: subscriptionId,
+      latest_invoice: { id: invoice.id, status: 'paid' },
+    });
+    await stubStripe('GET', `/v1/subscriptions/${subscriptionId}`, provider);
+    await stubStripe('GET', `/v1/subscriptions/${subscriptionId}`, provider);
+
+    const result = await postWebhook(
+      stripeEvent(`evt_${crypto.randomUUID()}`, 'invoice.paid', invoice),
+    );
+
+    expect(result.status).toBe(200);
+    const row = await subscriptionRow(subscriptionId);
+    expect(row?.['status']).toBe('active');
+    expect(row?.['stripe_subscription_item_id']).toBe(`si_${subscriptionId}`);
+    expect(row?.['paid_seat_quantity']).toBe(1);
+    expect(row?.['paid_through']).toBe(row?.['current_period_end']);
+    expect(row?.['has_paid_invoice']).toBe(1);
+  });
+
   it('marks has_paid_invoice and clears a recorded renewal failure', async () => {
-    const { account, subscriptionId } = await seedSubscription({
+    const { account, subscriptionId, customerId } = await seedSubscription({
       firstFailedRenewalAt: Date.now() - DAY,
     });
+    const invoice = modernInvoice(subscriptionId, { id: 'in_paid_1' });
+    await stubStripe(
+      'GET',
+      `/v1/subscriptions/${subscriptionId}`,
+      stripeSubscription(customerId, {
+        id: subscriptionId,
+        latest_invoice: { id: invoice.id, status: 'paid' },
+      }),
+    );
     const result = await postWebhook(
       stripeEvent(`evt_${crypto.randomUUID()}`, 'invoice.paid', {
-        id: 'in_paid_1',
-        object: 'invoice',
-        subscription: subscriptionId,
-        billing_reason: 'subscription_cycle',
-        status: 'paid',
+        ...invoice,
       }),
     );
     expect(result.status).toBe(200);
@@ -565,17 +718,22 @@ describe('invoice webhooks', () => {
   });
 
   it('records the first renewal failure once and never moves it', async () => {
-    const { subscriptionId } = await seedSubscription({ status: 'past_due' });
-    const failed = async () =>
-      postWebhook(
-        stripeEvent(`evt_${crypto.randomUUID()}`, 'invoice.payment_failed', {
-          id: `in_${crypto.randomUUID().slice(0, 8)}`,
-          object: 'invoice',
-          subscription: subscriptionId,
-          billing_reason: 'subscription_cycle',
-          status: 'open',
+    const { subscriptionId, customerId } = await seedSubscription({ status: 'past_due' });
+    const invoice = modernInvoice(subscriptionId, { id: 'in_cycle_failed', status: 'open' });
+    const failed = async () => {
+      await stubStripe(
+        'GET',
+        `/v1/subscriptions/${subscriptionId}`,
+        stripeSubscription(customerId, {
+          id: subscriptionId,
+          status: 'past_due',
+          latest_invoice: { id: invoice.id, status: 'open' },
         }),
       );
+      return postWebhook(
+        stripeEvent(`evt_${crypto.randomUUID()}`, 'invoice.payment_failed', invoice),
+      );
+    };
     expect((await failed()).status).toBe(200);
     const first = (await subscriptionRow(subscriptionId))?.['first_failed_renewal_at'];
     expect(first).toBeTypeOf('number');
@@ -595,18 +753,18 @@ describe('invoice webhooks', () => {
   it('ignores non-cycle failure reasons', async () => {
     const { subscriptionId } = await seedSubscription();
     const result = await postWebhook(
-      stripeEvent(`evt_${crypto.randomUUID()}`, 'invoice.payment_failed', {
-        id: 'in_create_1',
-        object: 'invoice',
-        subscription: subscriptionId,
-        billing_reason: 'subscription_create',
-        status: 'open',
-      }),
+      stripeEvent(
+        `evt_${crypto.randomUUID()}`,
+        'invoice.payment_failed',
+        modernInvoice(subscriptionId, {
+          id: 'in_create_1',
+          billing_reason: 'subscription_create',
+          status: 'open',
+        }),
+      ),
     );
     expect(result.status).toBe(200);
-    expect(
-      (await subscriptionRow(subscriptionId))?.['first_failed_renewal_at'],
-    ).toBeNull();
+    expect((await subscriptionRow(subscriptionId))?.['first_failed_renewal_at']).toBeNull();
   });
 });
 
@@ -617,22 +775,28 @@ describe('entitlement over stored provider truth', () => {
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     await insertStripeCustomer(account.id, customerId);
     const paidThroughSec = Math.floor((POST_PREVIEW + 30 * DAY) / 1000);
+    const invoice = modernInvoice(`sub_unused`, {
+      id: 'in_1',
+      billing_reason: 'subscription_create',
+    });
     const sub = stripeSubscription(customerId, {
       status: 'active',
       current_period_end: paidThroughSec,
+      latest_invoice: { id: invoice.id, status: 'paid' },
     });
     expect(
-      (await postWebhook(stripeEvent(`evt_${crypto.randomUUID()}`, 'customer.subscription.created', sub))).status,
+      (
+        await postWebhook(
+          stripeEvent(`evt_${crypto.randomUUID()}`, 'customer.subscription.created', sub),
+        )
+      ).status,
     ).toBe(200);
-    await postWebhook(
-      stripeEvent(`evt_${crypto.randomUUID()}`, 'invoice.paid', {
-        id: 'in_1',
-        object: 'invoice',
-        subscription: sub['id'],
-        billing_reason: 'subscription_create',
-        status: 'paid',
-      }),
-    );
+    invoice.parent = {
+      type: 'subscription_details',
+      subscription_details: { subscription: sub['id'] as string },
+    };
+    await stubStripe('GET', `/v1/subscriptions/${sub['id'] as string}`, sub);
+    await postWebhook(stripeEvent(`evt_${crypto.randomUUID()}`, 'invoice.paid', invoice));
     const entitlement = await getEntitlement(
       hostedDb(),
       account,
@@ -659,11 +823,22 @@ describe('entitlement over stored provider truth', () => {
       .prepare(
         `INSERT INTO stripe_subscriptions
           (stripe_subscription_id, stripe_customer_id, billing_account_id,
-           status, plan_key, interval, current_period_end, cancel_at_period_end,
-           has_paid_invoice, first_failed_renewal_at, verified_at, created_at, updated_at)
-         VALUES (?, ?, ?, 'past_due', 'sync_personal', 'month', ?, 0, 1, ?, ?, ?, ?)`,
+           status, plan_key, interval, current_period_end, paid_through,
+           paid_seat_quantity, cancel_at_period_end, has_paid_invoice,
+           first_failed_renewal_at, verified_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'past_due', 'sync_personal', 'month', ?, ?, 1, 0, 1, ?, ?, ?, ?)`,
       )
-      .bind(subscriptionId, customerId, account.id, periodEnd, periodEnd, periodEnd + HOUR, now, now)
+      .bind(
+        subscriptionId,
+        customerId,
+        account.id,
+        periodEnd,
+        periodEnd,
+        periodEnd,
+        periodEnd + HOUR,
+        now,
+        now,
+      )
       .run();
     const entitlement = await getEntitlement(
       hostedDb(),
@@ -725,11 +900,12 @@ describe('internal billing routes', () => {
       interval: 'month',
     });
     expect(disabled.status).toBe(403);
-    expect(
-      (disabled.body['error'] as { details: { reason: string } }).details.reason,
-    ).toBe('checkout-disabled');
+    expect((disabled.body['error'] as { details: { reason: string } }).details.reason).toBe(
+      'checkout-disabled',
+    );
 
     env.HOSTED_CHECKOUT_ENABLED = 'true';
+    env.HOSTED_ALLOW_EARLY_CHECKOUT = 'true';
     env.STRIPE_PRICE_SYNC_MONTHLY = '';
     const noPrice = await signedHostedPost('/internal/hosted/checkout', {
       ...identity,
@@ -751,6 +927,84 @@ describe('internal billing routes', () => {
     expect(account).toBeNull();
   });
 
+  it('keeps staging checkout closed before the preview deadline unless opted in', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(PREVIEW_END_MS - DAY);
+    const identity = makeIdentity(`early-${crypto.randomUUID()}`);
+    env.HOSTED_ALLOW_EARLY_CHECKOUT = '';
+
+    const result = await signedHostedPost('/internal/hosted/checkout', {
+      ...identity,
+      interval: 'month',
+    });
+
+    expect(result.status).toBe(403);
+    expect((result.body['error'] as { details: { reason: string } }).details.reason).toBe(
+      'checkout-disabled',
+    );
+    expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
+  });
+
+  it('requires waitlist admission for a direct checkout request', async () => {
+    env.HOSTED_ALLOW_EARLY_CHECKOUT = 'true';
+    const identity = makeIdentity(`not-admitted-${crypto.randomUUID()}`);
+    await stubWaitlist(identity, 'pending');
+    const providerRowsBefore = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM stripe_customers')
+      .first<{ n: number }>();
+    const checkoutRowsBefore = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM checkout_sessions')
+      .first<{ n: number }>();
+
+    const result = await signedHostedPost('/internal/hosted/checkout', {
+      ...identity,
+      interval: 'month',
+    });
+
+    expect(result.status).toBe(403);
+    expect((result.body['error'] as { details: { reason: string } }).details.reason).toBe(
+      'waitlist-approval-required',
+    );
+    expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
+    const providerRows = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM stripe_customers')
+      .first<{ n: number }>();
+    const checkoutRows = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM checkout_sessions')
+      .first<{ n: number }>();
+    expect(providerRows?.n).toBe(providerRowsBefore?.n);
+    expect(checkoutRows?.n).toBe(checkoutRowsBefore?.n);
+  });
+
+  it('requires the configured staging Stripe price to be test mode and match the catalog', async () => {
+    env.HOSTED_ALLOW_EARLY_CHECKOUT = 'true';
+    const identity = makeIdentity(`price-mode-${crypto.randomUUID()}`);
+    await stubApprovedWaitlist(identity);
+    const customerRowsBefore = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM stripe_customers')
+      .first<{ n: number }>();
+    const checkoutRowsBefore = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM checkout_sessions')
+      .first<{ n: number }>();
+    await stubStripe('GET', '/v1/prices/price_test_monthly', stripePrice({ livemode: true }));
+
+    const result = await signedHostedPost('/internal/hosted/checkout', {
+      ...identity,
+      interval: 'month',
+    });
+
+    expect(result.status).toBe(503);
+    const account = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(account).not.toBeNull();
+    const customerRows = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM stripe_customers')
+      .first<{ n: number }>();
+    const checkoutRows = await hostedDb()
+      .prepare('SELECT COUNT(*) AS n FROM checkout_sessions')
+      .first<{ n: number }>();
+    expect(customerRows?.n).toBe(customerRowsBefore?.n);
+    expect(checkoutRows?.n).toBe(checkoutRowsBefore?.n);
+  });
+
   it('portal 404s without a customer and returns a portal URL with one', async () => {
     const identity = makeIdentity(`portal-${crypto.randomUUID()}`);
     const missing = await signedHostedPost('/internal/hosted/portal', identity);
@@ -768,9 +1022,7 @@ describe('internal billing routes', () => {
     });
     const portal = await signedHostedPost('/internal/hosted/portal', identity);
     expect(portal.status).toBe(200);
-    expect(portal.body['portalUrl']).toBe(
-      'https://billing.stripe.test/session/bps_test_1',
-    );
+    expect(portal.body['portalUrl']).toBe('https://billing.stripe.test/session/bps_test_1');
   });
 
   it('billing overview and entitlement answer the stored state', async () => {
@@ -841,9 +1093,7 @@ describe('reconcile', () => {
     // Reconciliation restores provider truth.
     await stubStripe('GET', '/v1/subscriptions', {
       object: 'list',
-      data: [
-        stripeSubscription(customerId, { id: subId, current_period_end: newerEnd }),
-      ],
+      data: [stripeSubscription(customerId, { id: subId, current_period_end: newerEnd })],
       has_more: false,
     });
     const reconciled = await signedHostedPost('/internal/hosted/reconcile', identity);

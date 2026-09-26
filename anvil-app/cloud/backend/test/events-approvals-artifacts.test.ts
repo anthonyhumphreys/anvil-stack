@@ -29,7 +29,6 @@ import { sha256Hex, utf8ByteLength } from '../src/hash';
 import { expectSuccess, postRpc, spikeBearer, uniqueIds } from './helpers';
 
 const JOB_EVENT_BUDGET_BYTES = 1024 * 1024;
-const ACCOUNT_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const ARTIFACT_MAX_BYTES = 64 * 1024 * 1024;
 
 function accountStub(accountId: string) {
@@ -1046,7 +1045,8 @@ describe('artifacts', () => {
       expect([400, 404]).toContain(denied.status);
     }
 
-    // Account byte quota: a seeded near-cap artifact leaves no headroom.
+    // Aggregate usage is reported for fair-use review, but does not impose a
+    // published account quota. The per-artifact safety bound still applies.
     await runInDurableObject(accountStub(f.accountId), (_i: AccountCoordinator, state) => {
       const now = Date.now();
       state.storage.sql.exec(
@@ -1059,7 +1059,7 @@ describe('artifacts', () => {
         f.accountId,
         job.jobId,
         job.attemptId,
-        ACCOUNT_ARTIFACT_MAX_BYTES - 10,
+        6 * 1024 * 1024 * 1024,
         'c'.repeat(64),
         `${f.accountId}/seeded`,
         now + 60_000,
@@ -1069,11 +1069,13 @@ describe('artifacts', () => {
         now + 7 * 24 * 60 * 60 * 1000,
       );
     });
-    const overQuota = await postRpc('artifact.reserve', { ...base, byteLength: 100 }, f.workerAuth);
-    expect(overQuota.status).toBe(413);
-    if (isRpcError(overQuota.body)) {
-      expect(overQuota.body.error.code).toBe('quota-exceeded');
-    }
+    const overFormerAggregateQuota = expectSuccess<ArtifactReserveResult>(
+      await postRpc('artifact.reserve', { ...base, byteLength: 100 }, f.workerAuth),
+    );
+    expect(overFormerAggregateQuota.artifactId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(overFormerAggregateQuota.uploadPath).toBe(
+      `/v1/artifacts/${overFormerAggregateQuota.artifactId}`,
+    );
   });
 
   it('verifies uploaded bytes on finalize; mismatches discard the object', async () => {

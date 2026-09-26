@@ -111,7 +111,7 @@ beforeEach(() => {
 
 describe('schema migrations', () => {
   it('leaves SCHEMA_VERSION at the current schema after later packets', () => {
-    expect(SCHEMA_VERSION).toBe(98);
+    expect(SCHEMA_VERSION).toBe(99);
   });
 
   it('migration 70 adds the sequence allocator, review flag, and scan staging', () => {
@@ -920,6 +920,9 @@ describe('sync entitlement (BILL-05)', () => {
     state: 'preview',
     source: 'preview',
     planKey: null,
+    fundedBy: 'preview' as const,
+    organizationId: null,
+    deviceLimit: 5,
     previewEndsAt: '2026-11-01T00:00:00Z',
     accessUntil: null,
     graceUntil: null,

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 98;
+export const SCHEMA_VERSION = 99;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1361,6 +1361,9 @@ CREATE TABLE IF NOT EXISTS sync_entitlement (
   state TEXT NOT NULL,
   source TEXT NOT NULL,
   plan_key TEXT,
+  funded_by TEXT NOT NULL DEFAULT 'none',
+  organization_id TEXT,
+  device_limit INTEGER NOT NULL DEFAULT 5,
   preview_ends_at TEXT,
   access_until TEXT,
   grace_until TEXT,
@@ -3524,6 +3527,12 @@ ALTER TABLE chat_threads ADD COLUMN side_question_of_thread_id TEXT
   REFERENCES chat_threads(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_chat_threads_side_question_parent
   ON chat_threads(side_question_of_thread_id);
+`,
+  99: `
+-- Store the hosted billing sponsor and device allowance for the last-known status card.
+ALTER TABLE sync_entitlement ADD COLUMN funded_by TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE sync_entitlement ADD COLUMN organization_id TEXT;
+ALTER TABLE sync_entitlement ADD COLUMN device_limit INTEGER NOT NULL DEFAULT 5;
 `,
 };
 

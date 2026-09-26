@@ -15,16 +15,14 @@
 // shared with the manual /internal/hosted/reconcile path — a website
 // "Refresh billing" click counts as a reconcile for staleness purposes.
 
-import {
-  audit,
-  reconcileMetaKey,
-  setBillingMeta,
-  upsertSubscriptionFromStripe,
-} from './billing';
+import { audit, reconcileMetaKey, setBillingMeta } from './billing';
 import { stripeConfigured } from './billing-routes';
 import { hostedConfigIssues } from './enforcement';
 import { emitMetric } from './metrics';
-import { parseStripeSubscription, stripeRequest, type StripeList } from './stripe';
+import {
+  organizationReconcileMetaKey,
+  reconcileStripeBillingOwner,
+} from './subscription-reconcile';
 
 const LAST_RECONCILE_KEY = 'last_reconcile_at';
 const RECONCILE_KEY_PREFIX = 'reconcile_at:';
@@ -40,12 +38,19 @@ const ONE_HOUR_MS = 3_600_000;
 interface CandidateRow {
   billing_account_id: string;
   stripe_customer_id: string;
+  organization_id: string | null;
+}
+
+function candidateMarker(candidate: CandidateRow): string {
+  return candidate.organization_id === null
+    ? reconcileMetaKey(candidate.billing_account_id)
+    : organizationReconcileMetaKey(candidate.organization_id);
 }
 
 async function loadReconcileMarkers(db: D1Database): Promise<Map<string, number>> {
   const { results } = await db
     .prepare(
-      `SELECT key, value FROM billing_meta WHERE key LIKE '${RECONCILE_KEY_PREFIX}%'`,
+      `SELECT key, value FROM billing_meta WHERE key LIKE '${RECONCILE_KEY_PREFIX}%' OR key LIKE 'reconcile_org:%'`,
     )
     .all<{ key: string; value: string }>();
   const markers = new Map<string, number>();
@@ -62,23 +67,21 @@ async function reconcileAccount(
   candidate: CandidateRow,
   now: number,
 ): Promise<void> {
-  const list = await stripeRequest<StripeList<unknown>>(env, '/v1/subscriptions', {
-    method: 'GET',
-    params: { customer: candidate.stripe_customer_id, status: 'all', limit: 25 },
-  });
-  let count = 0;
-  for (const item of list.data ?? []) {
-    const sub = parseStripeSubscription(item);
-    if (sub === null) {
-      throw new Error('subscription list item failed validation');
-    }
-    await upsertSubscriptionFromStripe(db, candidate.billing_account_id, sub, now);
-    count += 1;
-  }
-  await setBillingMeta(db, reconcileMetaKey(candidate.billing_account_id), String(now));
+  const count = await reconcileStripeBillingOwner(
+    db,
+    env,
+    {
+      billingAccountId: candidate.billing_account_id,
+      organizationId: candidate.organization_id,
+      stripeCustomerId: candidate.stripe_customer_id,
+    },
+    now,
+  );
+  await setBillingMeta(db, candidateMarker(candidate), String(now));
   await audit(db, candidate.billing_account_id, 'reconcile', {
     subscriptions: count,
     scheduled: true,
+    organizationId: candidate.organization_id,
   });
 }
 
@@ -89,12 +92,11 @@ async function reconcileAccount(
 async function emitAggregateMetrics(db: D1Database, now: number): Promise<void> {
   try {
     const row = await db
-      .prepare(
-        "SELECT MIN(created_at) AS oldest FROM webhook_events WHERE status != 'processed'",
-      )
+      .prepare("SELECT MIN(created_at) AS oldest FROM webhook_events WHERE status != 'processed'")
       .first<{ oldest: number | null }>();
     emitMetric('webhook.backlog', {
-      oldestUnprocessedAgeMs: row?.oldest === null || row?.oldest === undefined ? 0 : now - row.oldest,
+      oldestUnprocessedAgeMs:
+        row?.oldest === null || row?.oldest === undefined ? 0 : now - row.oldest,
     });
   } catch {
     emitMetric('sweep.error', { signal: 'webhook.backlog' });
@@ -132,14 +134,26 @@ async function emitAggregateMetrics(db: D1Database, now: number): Promise<void> 
     // marker is missing or past the 24h freshness target in metrics.md.
     const row = await db
       .prepare(
-        `SELECT COUNT(*) AS count FROM billing_accounts ba
-         WHERE ba.lifecycle = 'active'
-           AND EXISTS (SELECT 1 FROM stripe_subscriptions ss WHERE ss.billing_account_id = ba.id)
-           AND NOT EXISTS (
-             SELECT 1 FROM billing_meta bm
-             WHERE bm.key = 'reconcile_at:' || ba.id
-               AND CAST(bm.value AS INTEGER) > ?
-           )`,
+        `WITH owners AS (
+           SELECT 'reconcile_at:' || ba.id AS marker_key
+           FROM billing_accounts ba
+           WHERE ba.lifecycle = 'active' AND EXISTS (
+             SELECT 1 FROM stripe_subscriptions ss
+             WHERE ss.billing_account_id = ba.id AND ss.organization_id IS NULL
+           )
+           UNION ALL
+           SELECT 'reconcile_org:' || org.id AS marker_key
+           FROM hosted_organizations org
+           WHERE org.status IN ('active', 'closed') AND EXISTS (
+             SELECT 1 FROM stripe_subscriptions ss WHERE ss.organization_id = org.id
+               AND (org.status = 'active' OR ss.status NOT IN ('canceled', 'incomplete_expired'))
+           )
+         )
+         SELECT COUNT(*) AS count FROM owners
+         WHERE NOT EXISTS (
+           SELECT 1 FROM billing_meta bm
+           WHERE bm.key = owners.marker_key AND CAST(bm.value AS INTEGER) > ?
+         )`,
       )
       .bind(now - STALE_CHECKOUT_MS)
       .first<{ count: number }>();
@@ -167,15 +181,25 @@ export async function runHostedReconcile(env: Env): Promise<void> {
   try {
     const { results } = await db
       .prepare(
-        `SELECT ba.id AS billing_account_id, sc.stripe_customer_id
-         FROM billing_accounts ba
-         JOIN stripe_customers sc ON sc.billing_account_id = ba.id
-         LEFT JOIN billing_meta bm ON bm.key = 'reconcile_at:' || ba.id
-         WHERE ba.lifecycle = 'active'
-         -- Stalest first: a missing marker (NULL) sorts before the oldest
-         -- timestamp, so every account reaches the head of the queue
-         -- instead of the same oldest-50 being re-examined every run.
-         ORDER BY CAST(bm.value AS INTEGER) ASC, ba.created_at ASC
+        `WITH owners AS (
+           SELECT ba.id AS billing_account_id, sc.stripe_customer_id, NULL AS organization_id,
+                  'reconcile_at:' || ba.id AS marker_key, ba.created_at
+           FROM billing_accounts ba
+           JOIN stripe_customers sc ON sc.billing_account_id = ba.id
+           WHERE ba.lifecycle = 'active'
+           UNION ALL
+           SELECT sc.owner_billing_account_id, sc.stripe_customer_id, sc.organization_id,
+                  'reconcile_org:' || sc.organization_id, org.created_at
+           FROM stripe_organization_customers sc
+           JOIN hosted_organizations org ON org.id = sc.organization_id
+           WHERE org.status = 'active' OR (org.status = 'closed' AND EXISTS (
+             SELECT 1 FROM stripe_subscriptions ss
+             WHERE ss.organization_id = org.id AND ss.status NOT IN ('canceled', 'incomplete_expired')
+           ))
+         )
+         SELECT owners.billing_account_id, owners.stripe_customer_id, owners.organization_id
+         FROM owners LEFT JOIN billing_meta bm ON bm.key = owners.marker_key
+         ORDER BY CAST(bm.value AS INTEGER) ASC, owners.created_at ASC
          LIMIT ?`,
       )
       .bind(RECONCILE_CANDIDATE_LIMIT)
@@ -188,7 +212,7 @@ export async function runHostedReconcile(env: Env): Promise<void> {
   }
   const stale = candidates
     .filter((candidate) => {
-      const marker = markers.get(reconcileMetaKey(candidate.billing_account_id));
+      const marker = markers.get(candidateMarker(candidate));
       return marker === undefined || now - marker > RECONCILE_STALE_MS;
     })
     .slice(0, RECONCILE_BATCH_LIMIT);

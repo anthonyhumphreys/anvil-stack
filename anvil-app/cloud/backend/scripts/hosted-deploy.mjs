@@ -10,7 +10,10 @@ export const DEFAULT_MANIFEST = join(BACKEND_DIR, '.wrangler', 'hosted-targets.j
 const WORKOS_ISSUER = 'https://api.workos.com/user_management';
 const SECRET_NAMES = new Set([
   'HOSTED_SERVICE_KEYS',
+  'HOSTED_OPERATOR_KEYS',
   'MANAGED_PROVISIONER_TOKEN',
+  'WORKOS_API_KEY',
+  'WORKOS_WEBHOOK_SECRET',
   'STRIPE_SECRET_KEY',
   'STRIPE_WEBHOOK_SECRET',
 ]);
@@ -168,7 +171,7 @@ function pathsFor(target) {
   };
 }
 
-function resolveSecretPath(path) {
+export function resolveSecretPath(path) {
   return isAbsolute(path) ? path : resolve(BACKEND_DIR, path);
 }
 
@@ -190,6 +193,7 @@ export function mergeTargetVars(existing, target) {
     ...existing,
     ANVIL_DEPLOYMENT_ID: target.deploymentId,
     ANVIL_DEPLOYMENT_NAME: target.deploymentName,
+    HOSTED_BILLING_ENVIRONMENT: target.stage,
     HOSTED_WORKOS_CLIENT_ID: target.workos.hostedClientId,
     OIDC_ISSUER: target.workos.issuer,
     OIDC_CLIENT_ID: target.workos.desktopClientId,
@@ -212,7 +216,72 @@ function targetVars(target, path) {
   return vars;
 }
 
-function validateGeneratedConfig(path, target, environment, requireD1 = false) {
+const STRIPE_PRICE_VARS = [
+  'STRIPE_PRICE_SYNC_MONTHLY',
+  'STRIPE_PRICE_SYNC_ANNUAL',
+  'STRIPE_PRICE_TEAM_MONTHLY',
+  'STRIPE_PRICE_TEAM_ANNUAL',
+];
+
+function configuredWorkosAdmissions(config, environment) {
+  const value = config.vars?.HOSTED_ADMITTED_WORKOS_USER_IDS;
+  if (value === undefined) return new Set();
+  if (typeof value !== 'string')
+    throw new HostedDeployError(
+      `${environment} HOSTED_ADMITTED_WORKOS_USER_IDS must be a JSON array string.`,
+    );
+  let userIds;
+  try {
+    userIds = JSON.parse(value);
+  } catch {
+    throw new HostedDeployError(
+      `${environment} HOSTED_ADMITTED_WORKOS_USER_IDS must be valid JSON.`,
+    );
+  }
+  if (
+    !Array.isArray(userIds) ||
+    userIds.length > 1000 ||
+    userIds.some((id) => typeof id !== 'string' || !/^user_[A-Za-z0-9_-]{1,240}$/.test(id)) ||
+    new Set(userIds).size !== userIds.length
+  )
+    throw new HostedDeployError(
+      `${environment} HOSTED_ADMITTED_WORKOS_USER_IDS must contain at most 1,000 unique WorkOS user IDs.`,
+    );
+  return new Set(userIds);
+}
+
+function configuredStripePrices(config, environment) {
+  const prices = new Map();
+  for (const key of STRIPE_PRICE_VARS) {
+    const value = config.vars?.[key];
+    if (value === undefined || value === '') continue;
+    if (typeof value !== 'string' || !/^price_[A-Za-z0-9]+$/.test(value))
+      throw new HostedDeployError(
+        `${environment} generated vars.${key} must be a Stripe Price id.`,
+      );
+    prices.set(key, value);
+  }
+  if (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true') {
+    const missing = STRIPE_PRICE_VARS.filter((key) => !prices.has(key));
+    if (missing.length > 0)
+      throw new HostedDeployError(
+        `${environment} checkout is enabled but these prices are missing: ${missing.join(', ')}.`,
+      );
+  }
+  if (new Set(prices.values()).size !== prices.size)
+    throw new HostedDeployError(
+      `${environment} personal and team prices must use distinct Stripe Price ids.`,
+    );
+  return prices;
+}
+
+export function validateGeneratedConfig(
+  path,
+  target,
+  environment,
+  requireD1 = false,
+  stagingConfigPath,
+) {
   let config;
   try {
     config = JSON.parse(readFileSync(path, 'utf8'));
@@ -227,6 +296,14 @@ function validateGeneratedConfig(path, target, environment, requireD1 = false) {
     );
   if (config.vars?.HOSTED_BILLING_ENFORCEMENT !== 'true')
     throw new HostedDeployError(`${environment} hosted billing enforcement must be enabled.`);
+  if (config.vars?.HOSTED_BILLING_ENVIRONMENT !== environment)
+    throw new HostedDeployError(
+      `${environment} generated config has the wrong HOSTED_BILLING_ENVIRONMENT.`,
+    );
+  const prices = configuredStripePrices(config, environment);
+  const admissions = configuredWorkosAdmissions(config, environment);
+  if (environment === 'production' && config.vars?.STRIPE_API_BASE)
+    throw new HostedDeployError('Production generated config must not set STRIPE_API_BASE.');
   for (const [key, value] of Object.entries({
     ANVIL_DEPLOYMENT_ID: target.deploymentId,
     ANVIL_DEPLOYMENT_NAME: target.deploymentName,
@@ -261,6 +338,52 @@ function validateGeneratedConfig(path, target, environment, requireD1 = false) {
   if (environment === 'production' && id && id === target._stagingDatabaseId)
     throw new HostedDeployError('Production generated config points at the staging D1 database.');
   if (
+    environment === 'production' &&
+    Object.hasOwn(config.vars ?? {}, 'HOSTED_ALLOW_EARLY_CHECKOUT')
+  )
+    throw new HostedDeployError(
+      'Production generated config must not set HOSTED_ALLOW_EARLY_CHECKOUT.',
+    );
+  if (
+    environment === 'staging' &&
+    config.vars?.HOSTED_ALLOW_EARLY_CHECKOUT !== undefined &&
+    config.vars?.HOSTED_ALLOW_EARLY_CHECKOUT !== 'true'
+  )
+    throw new HostedDeployError(
+      'Staging HOSTED_ALLOW_EARLY_CHECKOUT must be the literal string true.',
+    );
+  if (
+    environment === 'production' &&
+    (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true' || prices.size > 0 || admissions.size > 0)
+  ) {
+    let stagingConfig;
+    try {
+      stagingConfig = JSON.parse(readFileSync(stagingConfigPath, 'utf8'));
+    } catch {
+      throw new HostedDeployError(
+        'Production isolation checks require the generated Staging config first.',
+      );
+    }
+    const stagingPrices = configuredStripePrices(stagingConfig, 'staging');
+    const stagingAdmissions = configuredWorkosAdmissions(stagingConfig, 'staging');
+    const absentFromStaging =
+      config.vars?.HOSTED_CHECKOUT_ENABLED === 'true'
+        ? STRIPE_PRICE_VARS.filter((key) => !stagingPrices.has(key))
+        : [];
+    if (absentFromStaging.length > 0)
+      throw new HostedDeployError(
+        `Production checkout requires staging prices for comparison: ${absentFromStaging.join(', ')}.`,
+      );
+    if ([...admissions].some((id) => stagingAdmissions.has(id)))
+      throw new HostedDeployError(
+        'Production HOSTED_ADMITTED_WORKOS_USER_IDS must not reuse Staging WorkOS user IDs.',
+      );
+    for (const [key, value] of prices) {
+      if ([...stagingPrices.values()].includes(value))
+        throw new HostedDeployError(`Production ${key} reuses a staging Stripe Price id.`);
+    }
+  }
+  if (
     target.managedProvisioner &&
     config.services?.find((binding) => binding.binding === 'MANAGED_PROVISIONER')?.service !==
       target.provisionerName
@@ -279,49 +402,85 @@ function validateGeneratedConfig(path, target, environment, requireD1 = false) {
   return config;
 }
 
-function readBackendSecrets(target, environment) {
-  let secrets;
+export function validateStripeSecretMode(key, environment) {
+  const expectedPrefix = environment === 'staging' ? 'sk_test_' : 'sk_live_';
+  if (typeof key !== 'string' || !key.startsWith(expectedPrefix))
+    throw new HostedDeployError(
+      `${environment} STRIPE_SECRET_KEY must use the ${environment === 'staging' ? 'test' : 'live'} Stripe mode.`,
+    );
+}
+
+function validateHmacKeyMap(value, label, environment) {
+  if (typeof value !== 'string' || value.length < 32)
+    throw new HostedDeployError(
+      `${environment} ${label} must be a JSON map of secrets at least 32 characters long.`,
+    );
+  let keys;
   try {
-    secrets = JSON.parse(readFileSync(resolveSecretPath(target.secrets.backendFile), 'utf8'));
+    keys = JSON.parse(value);
   } catch {
-    throw new HostedDeployError(`${environment} backend secret file is missing or invalid JSON.`);
+    throw new HostedDeployError(`${environment} ${label} must be a JSON object.`);
   }
+  if (
+    !keys ||
+    typeof keys !== 'object' ||
+    Array.isArray(keys) ||
+    Object.keys(keys).length === 0 ||
+    Object.entries(keys).some(
+      ([id, secret]) =>
+        !/^[A-Za-z0-9_-]{1,64}$/.test(id) ||
+        typeof secret !== 'string' ||
+        new TextEncoder().encode(secret).byteLength < 32,
+    )
+  )
+    throw new HostedDeployError(
+      `${environment} ${label} must map key ids to secrets of at least 32 bytes.`,
+    );
+  return keys;
+}
+
+function assertSeparateHmacAudiences(serviceKeys, operatorKeys, environment) {
+  if (!operatorKeys) return;
+  const serviceValues = new Set(Object.values(serviceKeys));
+  if (Object.values(operatorKeys).some((secret) => serviceValues.has(secret)))
+    throw new HostedDeployError(
+      `${environment} HOSTED_OPERATOR_KEYS must not reuse a HOSTED_SERVICE_KEYS secret.`,
+    );
+}
+
+export function validateBackendSecrets(secrets, target, environment) {
   if (
     !secrets ||
     typeof secrets !== 'object' ||
     Array.isArray(secrets) ||
     Object.keys(secrets).some(
-      (name) => !SECRET_NAMES.has(name) || typeof secrets[name] !== 'string' || !secrets[name],
+      (name) => !SECRET_NAMES.has(name) || typeof secrets[name] !== 'string',
     )
   ) {
     throw new HostedDeployError(`${environment} backend secret file has an invalid shape.`);
   }
-  if (typeof secrets.HOSTED_SERVICE_KEYS !== 'string' || secrets.HOSTED_SERVICE_KEYS.length < 32)
+  const serviceKeys = validateHmacKeyMap(
+    secrets.HOSTED_SERVICE_KEYS,
+    'HOSTED_SERVICE_KEYS',
+    environment,
+  );
+  if (typeof secrets.WORKOS_API_KEY !== 'string' || !secrets.WORKOS_API_KEY.startsWith('sk_'))
     throw new HostedDeployError(
-      `${environment} requires a fresh HOSTED_SERVICE_KEYS secret of at least 32 characters.`,
+      `${environment} requires its WorkOS environment WORKOS_API_KEY secret.`,
     );
-  let serviceKeys;
-  try {
-    serviceKeys = JSON.parse(secrets.HOSTED_SERVICE_KEYS);
-  } catch {
-    throw new HostedDeployError(`${environment} HOSTED_SERVICE_KEYS must be a JSON object.`);
-  }
   if (
-    !serviceKeys ||
-    typeof serviceKeys !== 'object' ||
-    Array.isArray(serviceKeys) ||
-    Object.keys(serviceKeys).length === 0 ||
-    Object.entries(serviceKeys).some(
-      ([key, value]) =>
-        !/^[A-Za-z0-9_-]{1,64}$/.test(key) || typeof value !== 'string' || value.length < 32,
-    )
-  ) {
-    throw new HostedDeployError(
-      `${environment} HOSTED_SERVICE_KEYS must map key ids to secrets of at least 32 characters.`,
-    );
-  }
+    typeof secrets.WORKOS_WEBHOOK_SECRET !== 'string' ||
+    !secrets.WORKOS_WEBHOOK_SECRET.startsWith('whsec_')
+  )
+    throw new HostedDeployError(`${environment} requires its WorkOS WORKOS_WEBHOOK_SECRET.`);
+  const operatorKeys =
+    secrets.HOSTED_OPERATOR_KEYS === undefined
+      ? undefined
+      : validateHmacKeyMap(secrets.HOSTED_OPERATOR_KEYS, 'HOSTED_OPERATOR_KEYS', environment);
+  assertSeparateHmacAudiences(serviceKeys, operatorKeys, environment);
   if (Boolean(secrets.STRIPE_SECRET_KEY) !== Boolean(secrets.STRIPE_WEBHOOK_SECRET))
     throw new HostedDeployError(`${environment} Stripe secrets must be configured together.`);
+  if (secrets.STRIPE_SECRET_KEY) validateStripeSecretMode(secrets.STRIPE_SECRET_KEY, environment);
   if (
     target.managedProvisioner &&
     (typeof secrets.MANAGED_PROVISIONER_TOKEN !== 'string' ||
@@ -331,6 +490,25 @@ function readBackendSecrets(target, environment) {
       `${environment} requires MANAGED_PROVISIONER_TOKEN for its managed provisioner.`,
     );
   return secrets;
+}
+
+export function validateCheckoutSecrets(config, secrets, environment) {
+  if (config.vars?.HOSTED_CHECKOUT_ENABLED !== 'true') return;
+  if (!secrets?.STRIPE_SECRET_KEY || !secrets?.STRIPE_WEBHOOK_SECRET)
+    throw new HostedDeployError(
+      `${environment} checkout is enabled but Stripe API and webhook secrets are missing.`,
+    );
+  validateStripeSecretMode(secrets.STRIPE_SECRET_KEY, environment);
+}
+
+function readBackendSecrets(target, environment) {
+  let secrets;
+  try {
+    secrets = JSON.parse(readFileSync(resolveSecretPath(target.secrets.backendFile), 'utf8'));
+  } catch {
+    throw new HostedDeployError(`${environment} backend secret file is missing or invalid JSON.`);
+  }
+  return validateBackendSecrets(secrets, target, environment);
 }
 
 function readProvisionerToken(target, environment) {
@@ -347,22 +525,45 @@ function readProvisionerToken(target, environment) {
   return token;
 }
 
-function assertProductionSecretsAreFresh(manifest, secrets) {
+export function assertProductionSecretsAreFresh(manifest, secrets) {
   const staging = manifest.environments.staging;
-  if (staging.secrets?.backendFile) {
-    const stagingPath = resolveSecretPath(staging.secrets.backendFile);
-    if (existsSync(stagingPath)) {
-      const stagingSecrets = readBackendSecrets(staging, 'staging');
-      for (const [name, value] of Object.entries(secrets)) {
-        if (name !== 'HOSTED_SERVICE_KEYS' && value === stagingSecrets[name])
-          throw new HostedDeployError(`Production secret ${name} reuses staging.`);
-      }
-      const stageKeys = JSON.parse(stagingSecrets.HOSTED_SERVICE_KEYS);
-      const prodKeys = JSON.parse(secrets.HOSTED_SERVICE_KEYS);
+  if (!staging.secrets?.backendFile)
+    throw new HostedDeployError(
+      'Production requires a Staging backend secret file for isolation checks.',
+    );
+  const stagingPath = resolveSecretPath(staging.secrets.backendFile);
+  if (!existsSync(stagingPath))
+    throw new HostedDeployError(
+      'Production requires the Staging backend secret file for isolation checks.',
+    );
+  const stagingSecrets = readBackendSecrets(staging, 'staging');
+  for (const [name, value] of Object.entries(secrets)) {
+    if (name !== 'HOSTED_SERVICE_KEYS' && value === stagingSecrets[name])
+      throw new HostedDeployError(`Production secret ${name} reuses staging.`);
+  }
+  for (const name of ['HOSTED_SERVICE_KEYS', 'HOSTED_OPERATOR_KEYS']) {
+    if (stagingSecrets[name] && secrets[name]) {
+      const stageKeys = JSON.parse(stagingSecrets[name]);
+      const prodKeys = JSON.parse(secrets[name]);
       if (Object.values(prodKeys).some((value) => Object.values(stageKeys).includes(value)))
-        throw new HostedDeployError('Production HOSTED_SERVICE_KEYS reuses staging.');
+        throw new HostedDeployError(`Production ${name} reuses a staging key.`);
     }
   }
+  const stageService = Object.values(JSON.parse(stagingSecrets.HOSTED_SERVICE_KEYS));
+  const stageOperator = stagingSecrets.HOSTED_OPERATOR_KEYS
+    ? Object.values(JSON.parse(stagingSecrets.HOSTED_OPERATOR_KEYS))
+    : [];
+  const productionService = Object.values(JSON.parse(secrets.HOSTED_SERVICE_KEYS));
+  const productionOperator = secrets.HOSTED_OPERATOR_KEYS
+    ? Object.values(JSON.parse(secrets.HOSTED_OPERATOR_KEYS))
+    : [];
+  if (
+    productionOperator.some((value) => stageService.includes(value)) ||
+    productionService.some((value) => stageOperator.includes(value))
+  )
+    throw new HostedDeployError(
+      'Production hosted HMAC keys must not reuse keys from either staging audience.',
+    );
   if (secrets.MANAGED_PROVISIONER_TOKEN && staging.secrets?.provisionerTokenFile) {
     const path = resolveSecretPath(staging.secrets.provisionerTokenFile);
     if (existsSync(path) && readFileSync(path, 'utf8').trim() === secrets.MANAGED_PROVISIONER_TOKEN)
@@ -529,12 +730,12 @@ export function run(argv, executeCommand = execute) {
   targetVars(target, paths.vars);
   const selectedFlags = checkedFlags(command, subcommand, flags, environment);
   let backendSecrets;
-  const needsProductionSecrets =
+  const needsBackendSecrets =
     ['provision', 'migrate', 'apply', 'secrets'].includes(command) ||
     (command === 'provisioner' && ['apply', 'secrets'].includes(subcommand));
-  if (environment === 'production' && needsProductionSecrets) {
+  if (needsBackendSecrets && command !== 'provisioner') {
     backendSecrets = readBackendSecrets(target, environment);
-    assertProductionSecretsAreFresh(manifest, backendSecrets);
+    if (environment === 'production') assertProductionSecretsAreFresh(manifest, backendSecrets);
     if (
       target.managedProvisioner &&
       backendSecrets.MANAGED_PROVISIONER_TOKEN !== readProvisionerToken(target, environment)
@@ -548,17 +749,20 @@ export function run(argv, executeCommand = execute) {
   if (command === 'provisioner' && subcommand === 'secrets')
     readProvisionerToken(target, environment);
   if (
+    command === 'provision' ||
     command === 'apply' ||
     command === 'migrate' ||
     command === 'remove' ||
     command === 'secrets'
   ) {
-    validateGeneratedConfig(
+    const generatedConfig = validateGeneratedConfig(
       paths.config,
       { ...target, _stagingDatabaseId: manifest.environments.staging.databaseId },
       environment,
-      command !== 'remove',
+      command !== 'remove' && command !== 'provision',
+      pathsFor(manifest.environments.staging).config,
     );
+    if (command !== 'remove') validateCheckoutSecrets(generatedConfig, backendSecrets, environment);
   }
   if (command === 'provisioner' && ['apply', 'remove', 'secrets'].includes(subcommand)) {
     let config;
@@ -590,14 +794,19 @@ export function run(argv, executeCommand = execute) {
       paths.config,
       { ...target, _stagingDatabaseId: manifest.environments.staging.databaseId },
       environment,
+      false,
+      pathsFor(manifest.environments.staging).config,
     );
-  if (command === 'provision')
-    validateGeneratedConfig(
+  if (command === 'provision') {
+    const generatedConfig = validateGeneratedConfig(
       paths.config,
       { ...target, _stagingDatabaseId: manifest.environments.staging.databaseId },
       environment,
       true,
+      pathsFor(manifest.environments.staging).config,
     );
+    validateCheckoutSecrets(generatedConfig, backendSecrets, environment);
+  }
   return 0;
 }
 

@@ -169,6 +169,7 @@ export const accountNavItems = [
   { label: "Workspace", href: "/account/workspace" },
   { label: "Dashboard", href: "/account/dashboard" },
   { label: "Billing", href: "/account/billing" },
+  { label: "Organisation", href: "/account/organizations" },
   { label: "Devices", href: "/account/devices" },
   { label: "Security", href: "/account/security" },
   { label: "Data", href: "/account/data" }

@@ -39,7 +39,9 @@ describe('createPkceS256Pair', () => {
     const expectedVerifier = Buffer.from(random).toString('base64url');
     expect(pair.verifier).toBe(expectedVerifier);
 
-    const expectedChallenge = createHash('sha256').update(pair.verifier, 'utf8').digest('base64url');
+    const expectedChallenge = createHash('sha256')
+      .update(pair.verifier, 'utf8')
+      .digest('base64url');
     expect(pair.challenge).toBe(expectedChallenge);
     expect(pair.challenge).toBe(base64UrlEncode(sha256Bytes(Buffer.from(pair.verifier, 'utf8'))));
   });
@@ -100,9 +102,10 @@ describe('isAllowedOidcRedirectUri', () => {
 });
 
 describe('authErrorHttpStatus', () => {
-  it('maps every auth failure to HTTP 401', () => {
+  it('maps proof failures to HTTP 401 and capacity failures to HTTP 403', () => {
     expect(authErrorHttpStatus('refresh-reuse-detected')).toBe(401);
     expect(authErrorHttpStatus('enrollment-code-used')).toBe(401);
     expect(authErrorHttpStatus('invalid-proof')).toBe(401);
+    expect(authErrorHttpStatus('device-limit')).toBe(403);
   });
 });

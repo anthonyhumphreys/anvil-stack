@@ -7,10 +7,14 @@ import {
   reconcileMetaKey,
   setBillingMeta,
   upsertStripeCustomer,
+  upsertStripeOrganizationCustomer,
+  upsertSubscriptionFromStripe,
 } from '../src/hosted/billing';
 import type { HostedIdentity } from '../src/hosted/identity';
 import { runHostedReconcile } from '../src/hosted/reconciler';
-import { getOrCreateBillingAccount } from '../src/hosted/store';
+import { getOrCreateBillingAccount, markBillingLifecycle } from '../src/hosted/store';
+import { organizationReconcileMetaKey } from '../src/hosted/subscription-reconcile';
+import { parseStripeSubscription } from '../src/hosted/stripe';
 
 const STRIPE_API = 'https://api.stripe.com';
 const HOUR = 3_600_000;
@@ -55,14 +59,14 @@ async function stubStripe(
 }
 
 async function stripePendingCount(): Promise<number> {
-  const pending = (await (
-    await fetch(`${STRIPE_API}/__stripe-stub/pending`)
-  ).json()) as { pending: unknown[] };
+  const pending = (await (await fetch(`${STRIPE_API}/__stripe-stub/pending`)).json()) as {
+    pending: unknown[];
+  };
   return pending.pending.length;
 }
 
 function makeIdentity(tag: string): HostedIdentity {
-  return { workosClientId: `client_${tag}`, workosUserId: `user_${tag}` };
+  return { workosClientId: 'client_hosted_test', workosUserId: `user_${tag}` };
 }
 
 function stripeSubscription(customer: string): Record<string, unknown> {
@@ -75,12 +79,26 @@ function stripeSubscription(customer: string): Record<string, unknown> {
     cancel_at_period_end: false,
     items: {
       object: 'list',
-      data: [{ price: { id: 'price_test_monthly', recurring: { interval: 'month' } } }],
+      data: [
+        {
+          id: 'si_test_personal',
+          quantity: 1,
+          current_period_start: Math.floor(Date.now() / 1000) - 86400,
+          current_period_end: Math.floor(Date.now() / 1000) + 30 * 86_400,
+          price: { id: 'price_test_monthly', recurring: { interval: 'month' } },
+        },
+      ],
     },
   };
 }
 
 beforeEach(async () => {
+  // The Worker test pool retains D1 state between tests. Retire prior
+  // fixtures so queued provider responses belong only to this case.
+  await hostedDb().batch([
+    hostedDb().prepare("UPDATE billing_accounts SET lifecycle = 'deleted'"),
+    hostedDb().prepare("UPDATE hosted_organizations SET status = 'closed'"),
+  ]);
   await fetch(`${STRIPE_API}/__stripe-stub/reset`, { method: 'POST' });
   logSpy = vi.spyOn(console, 'log');
 });
@@ -129,11 +147,7 @@ describe('runHostedReconcile', () => {
   it('re-reconciles an account whose marker is older than the stale window', async () => {
     const account = await getOrCreateBillingAccount(hostedDb(), makeIdentity('old'));
     await upsertStripeCustomer(hostedDb(), account.id, 'cus_old');
-    await setBillingMeta(
-      hostedDb(),
-      reconcileMetaKey(account.id),
-      String(Date.now() - 13 * HOUR),
-    );
+    await setBillingMeta(hostedDb(), reconcileMetaKey(account.id), String(Date.now() - 13 * HOUR));
     await stubStripe('GET', '/v1/subscriptions', { object: 'list', data: [] });
 
     await runHostedReconcile(env);
@@ -216,5 +230,132 @@ describe('runHostedReconcile', () => {
     await runHostedReconcile(env);
 
     expect(metric('checkout.stale')?.['count']).toBe(1);
+  });
+  it('paginates subscriptions and repairs a missed paid invoice', async () => {
+    const account = await getOrCreateBillingAccount(hostedDb(), makeIdentity('paged'));
+    await upsertStripeCustomer(hostedDb(), account.id, 'cus_paged');
+    const first: Record<string, unknown> = {
+      ...stripeSubscription('cus_paged'),
+      latest_invoice: 'in_repaired',
+    };
+    const second = stripeSubscription('cus_paged');
+    await stubStripe('GET', '/v1/subscriptions', { object: 'list', data: [first], has_more: true });
+    await stubStripe('GET', '/v1/invoices/in_repaired', {
+      id: 'in_repaired',
+      customer: 'cus_paged',
+      status: 'paid',
+      billing_reason: 'subscription_cycle',
+      parent: { subscription_details: { subscription: first.id } },
+    });
+    await stubStripe('GET', '/v1/subscriptions', {
+      object: 'list',
+      data: [second],
+      has_more: false,
+    });
+    await runHostedReconcile(env);
+    const row = await hostedDb()
+      .prepare(
+        'SELECT has_paid_invoice, paid_through, paid_seat_quantity FROM stripe_subscriptions WHERE stripe_subscription_id = ?',
+      )
+      .bind(first.id)
+      .first<{ has_paid_invoice: number; paid_through: number; paid_seat_quantity: number }>();
+    expect(row?.has_paid_invoice).toBe(1);
+    expect(row?.paid_seat_quantity).toBe(1);
+    expect(row?.paid_through).toBeGreaterThan(Date.now());
+    expect(metric('reconcile.run')?.['reconciled']).toBe(1);
+    expect(await getBillingMeta(hostedDb(), reconcileMetaKey(account.id))).not.toBeNull();
+  });
+
+  it.each(['active', 'closed'] as const)(
+    'reconciles %s team billing independently of a deleted original payer',
+    async (organizationStatus) => {
+      const db = hostedDb();
+      const creator = await getOrCreateBillingAccount(
+        db,
+        makeIdentity(`old-payer-${organizationStatus}`),
+      );
+      const orgId = `anvil_org_reconcile_${organizationStatus}`;
+      const customerId = `cus_org_reconcile_${organizationStatus}`;
+      await db
+        .prepare(
+          `INSERT INTO hosted_organizations
+      (id, idempotency_key, name, status, created_by_workos_user_id, created_at, updated_at)
+      VALUES (?, ?, 'Team', 'active', ?, ?, ?)`,
+        )
+        .bind(
+          orgId,
+          `reconcile-org-fixture-${organizationStatus}`,
+          creator.workos_user_id,
+          Date.now(),
+          Date.now(),
+        )
+        .run();
+      await upsertStripeOrganizationCustomer(db, orgId, creator.id, customerId);
+      await markBillingLifecycle(db, creator.id, 'deleted');
+      const sub = stripeSubscription(customerId);
+      sub.items = {
+        data: [
+          {
+            id: 'si_team',
+            quantity: 5,
+            current_period_start: Math.floor(Date.now() / 1000) - 86400,
+            current_period_end: Math.floor(Date.now() / 1000) + 86400,
+            price: { id: 'price_test_team_monthly', recurring: { interval: 'month' } },
+          },
+        ],
+      };
+      if (organizationStatus === 'closed') {
+        await upsertSubscriptionFromStripe(
+          db,
+          creator.id,
+          parseStripeSubscription(sub)!,
+          Date.now(),
+          env,
+          orgId,
+        );
+        await db
+          .prepare("UPDATE hosted_organizations SET status = 'closed' WHERE id = ?")
+          .bind(orgId)
+          .run();
+      }
+      await stubStripe('GET', '/v1/subscriptions', {
+        object: 'list',
+        data: [sub],
+        has_more: false,
+      });
+      await runHostedReconcile(env);
+      const stored = await db
+        .prepare(
+          'SELECT organization_id, plan_key FROM stripe_subscriptions WHERE stripe_subscription_id = ?',
+        )
+        .bind(sub.id)
+        .first<{ organization_id: string; plan_key: string }>();
+      expect(stored).toMatchObject({ organization_id: orgId, plan_key: 'sync_team' });
+      expect(await getBillingMeta(db, organizationReconcileMetaKey(orgId))).not.toBeNull();
+      expect(await getBillingMeta(db, reconcileMetaKey(creator.id))).toBeNull();
+    },
+  );
+
+  it('keeps existing subscriptions on partial failure and cancels absent mirrors only after a complete snapshot', async () => {
+    const db = hostedDb();
+    const account = await getOrCreateBillingAccount(db, makeIdentity('partial'));
+    await upsertStripeCustomer(db, account.id, 'cus_partial');
+    const old = parseStripeSubscription(stripeSubscription('cus_partial'))!;
+    await upsertSubscriptionFromStripe(db, account.id, old, Date.now(), env);
+    const other = stripeSubscription('cus_partial');
+    await stubStripe('GET', '/v1/subscriptions', { object: 'list', data: [other], has_more: true });
+    await stubStripe('GET', '/v1/subscriptions', { error: { message: 'temporary outage' } }, 503);
+    await runHostedReconcile(env);
+    const status = () =>
+      db
+        .prepare('SELECT status FROM stripe_subscriptions WHERE stripe_subscription_id = ?')
+        .bind(old.id)
+        .first<{ status: string }>();
+    expect((await status())?.status).toBe('active');
+    expect(await getBillingMeta(db, reconcileMetaKey(account.id))).toBeNull();
+    await stubStripe('GET', '/v1/subscriptions', { object: 'list', data: [], has_more: false });
+    await runHostedReconcile(env);
+    expect((await status())?.status).toBe('canceled');
+    expect(await getBillingMeta(db, reconcileMetaKey(account.id))).not.toBeNull();
   });
 });

@@ -20,16 +20,20 @@ export type HostedAccessSource =
   | "outage-grace"
   | "none";
 
+export type HostedFundingSource = "personal" | "team" | "preview" | "none";
+
 export interface HostedLimits {
   devices: number;
-  artifactBytes: number;
-  historyBytes: number;
+  artifactBytes: number | null;
+  historyBytes: number | null;
 }
 
 export interface HostedEntitlement {
   state: HostedAccessState;
   source: HostedAccessSource;
-  planKey: "sync_personal" | null;
+  planKey: "sync_personal" | "sync_team" | null;
+  fundedBy: HostedFundingSource;
+  organizationId: string | null;
   capabilities: { syncWrite: boolean; meshSubmit: boolean };
   limits: HostedLimits;
   previewEndsAt: string;
@@ -45,7 +49,8 @@ export interface HostedEntitlement {
     | "preview-ended"
     | "subscription-required"
     | "account-deleted"
-    | "billing-unavailable";
+    | "billing-unavailable"
+    | "device-limit-exceeded";
 }
 
 /** POST /internal/hosted/account */
@@ -74,10 +79,25 @@ export interface HostedBillingOverview {
   billingAccountId: string;
   lifecycle: HostedLifecycle;
   entitlement: HostedEntitlement;
+  /** Backend-authoritative environment gate for personal checkout. */
+  checkoutAvailable: boolean;
   subscription: HostedSubscription | null;
+  personalSubscription?: HostedSubscription | null;
+  teamSponsorship: HostedTeamSponsorship | null;
   pendingCheckout: HostedPendingCheckout | null;
   lastReconcileAt: number | null;
   lastWebhookAt: number | null;
+}
+
+export interface HostedTeamSponsorship {
+  organizationId: string;
+  organizationName: string;
+  planKey: "sync_team";
+  interval: HostedBillingInterval;
+  status: string;
+  currentPeriodEnd: number;
+  cancelAtPeriodEnd: boolean;
+  seatCapacity: number;
 }
 
 /** POST /internal/hosted/pair-device */
@@ -104,6 +124,100 @@ export interface HostedCheckoutResult {
 /** POST /internal/hosted/portal */
 export interface HostedPortalResult {
   portalUrl: string;
+}
+
+export type HostedOrganizationRole = "owner" | "member";
+
+export interface HostedOrganizationMember {
+  workosUserId: string;
+  email: string;
+  role: HostedOrganizationRole;
+  fundedBy: "team" | "none";
+  seatAssigned: boolean;
+}
+
+export interface HostedOrganizationInvitation {
+  id: string;
+  email: string;
+  state: string;
+  expiresAt: string | number;
+}
+
+export interface HostedOrganizationBillingSummary {
+  source: "preview" | "team" | "none";
+  checkoutAvailable: boolean;
+  seatCapacity: number;
+  planKey: "sync_team" | null;
+  interval: HostedBillingInterval | null;
+  status: string | null;
+  currentPeriodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
+  scheduledSeatCapacity: number | null;
+  scheduledEffectiveAt: number | null;
+}
+
+export interface HostedOrganization {
+  id: string;
+  name: string;
+  status?: "active" | "closed";
+  billingRecoveryOnly?: boolean;
+  membership: { role: HostedOrganizationRole; seatAssigned: boolean; fundedBy?: "team" | "none" };
+  seats: { assigned: number; reserved: number; available: number };
+  members: HostedOrganizationMember[];
+  invitations: HostedOrganizationInvitation[];
+  billing: HostedOrganizationBillingSummary;
+}
+
+export interface HostedOrganizationListResult {
+  organizations: HostedOrganization[];
+}
+
+export interface HostedOrganizationCreateResult {
+  organization: HostedOrganization;
+}
+
+export interface HostedOrganizationInviteResult {
+  invitation: HostedOrganizationInvitation & { acceptInvitationUrl?: string };
+  seat: { assignedSeats?: number; reservedSeats: number; availableSeats: number };
+}
+
+export interface HostedOrganizationAcceptResult {
+  accepted: boolean;
+  reason?: "not-anvil-organization-invitation";
+  organizationId?: string;
+  role?: HostedOrganizationRole;
+  entitlement?: HostedEntitlement;
+}
+
+export interface HostedOrganizationSeatChangeResult {
+  seatCapacity: number;
+  scheduledSeatCapacity: number | null;
+  effectiveAt: number | null;
+}
+
+export interface HostedSeatIncreaseQuote {
+  quoteId: string;
+  seatCapacity: number;
+  requestedSeats: number;
+  /** Stripe invoice-preview total in minor units, including applicable tax. */
+  amountDue: number;
+  currency: "gbp";
+  /** Tax portion in minor units, already included in amountDue. */
+  taxAmount: number;
+  /** Stripe Unix timestamp in seconds. */
+  prorationDate: number;
+  /** Unix timestamp in milliseconds. */
+  expiresAt: number;
+}
+
+export interface HostedOrganizationMemberSeatResult {
+  assigned: boolean;
+}
+
+export interface HostedOrganizationCloseResult {
+  closed: boolean;
+  organizationId: string;
+  providerSyncPending?: boolean;
 }
 
 /** POST /internal/hosted/reconcile */

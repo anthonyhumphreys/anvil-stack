@@ -99,6 +99,8 @@ export interface SyncDevice {
   revoked: boolean;
   createdAt: string;
   self: boolean;
+  /** Ephemeral cloud environments do not consume a person-device slot. */
+  enrollmentClass?: 'device' | 'ephemeral';
   /** Audit metadata only; trust state never grants decryption access in the renderer. */
   trustState?: SyncDeviceTrustState;
   /** Audit metadata only; the keyring remains the authority for encryption access. */
@@ -275,12 +277,31 @@ export interface SyncHostedStatus {
   state: 'preview' | 'active' | 'grace' | 'restricted' | 'unknown';
   source: string;
   planKey: string | null;
+  fundedBy: 'personal' | 'team' | 'preview' | 'none';
+  organizationId: string | null;
+  deviceLimit: number;
   previewEndsAt: string | null;
   accessUntil: string | null;
   graceUntil: string | null;
   checkedAt: string;
   reason: string;
   restricted: boolean;
+  /** Account-specific hosted fair-use notice; never shared with organization owners. */
+  fairUse?: SyncFairUseStatus | null;
+}
+
+export interface SyncFairUseNotice {
+  code: 'storage-usage' | 'sustained-excessive-usage' | 'service-protection';
+  message: string;
+  noticeAt: string;
+  restrictAt: string;
+  emergency: boolean;
+}
+
+export interface SyncFairUseStatus {
+  status: 'clear' | 'notice' | 'restricted';
+  usage: { historyBytes: number; artifactBytes: number };
+  notice?: SyncFairUseNotice;
 }
 
 /** MESH-02 device-local worker state — consent + incarnation, never synced. */
@@ -351,8 +372,10 @@ export interface SyncScopeDiagnostics {
 /** Aggregate operational counters returned by the backend, when reachable. */
 export interface SyncRemoteAccountStats {
   historyBytes: number;
-  historyQuotaBytes: number;
+  historyQuotaBytes?: number;
+  artifactBytes?: number;
   retentionFloor: number;
+  fairUse?: SyncFairUseStatus;
   counters: Record<string, number>;
 }
 

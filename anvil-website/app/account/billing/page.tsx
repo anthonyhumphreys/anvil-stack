@@ -1,4 +1,6 @@
 import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
+import Link from "next/link";
+import { PreviewDeadlineNotice } from "@/components/account/preview-deadline-notice";
 import { BillingActions } from "@/components/account/billing-actions";
 import { EntitlementStateBadge, entitlementSummary } from "@/components/account/entitlement";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +34,8 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
         </p>
       </header>
 
+      <PreviewDeadlineNotice />
+
       {billing.ok && billing.data.entitlement.state === "grace" ? (
         <p role="alert" className="rounded-md border border-accent/60 bg-[oklch(var(--accent)/0.08)] px-4 py-3 text-sm">
           Access is in a grace period
@@ -57,9 +61,24 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
         </CardHeader>
         <CardContent className="grid gap-4">
           {billing.ok ? (
-            <p className="text-sm text-muted-foreground">
-              {entitlementSummary(billing.data.entitlement)}
-            </p>
+            <>
+              <p className="text-sm text-muted-foreground">
+                {entitlementSummary(billing.data.entitlement)}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Hosted access is currently funded by{" "}
+                <span className="font-medium text-foreground">
+                  {billing.data.entitlement.fundedBy === "team"
+                    ? "an organisation seat"
+                    : billing.data.entitlement.fundedBy === "personal"
+                      ? "your personal subscription"
+                      : billing.data.entitlement.fundedBy === "preview"
+                        ? "the preview"
+                        : "no active plan"}
+                </span>
+                .
+              </p>
+            </>
           ) : billing.code === "not-found" ? (
             <p className="text-sm text-muted-foreground">
               No hosted billing account exists yet — it is created the first time you pair a device
@@ -72,6 +91,52 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
           )}
         </CardContent>
       </Card>
+
+      {billing.ok && billing.data.teamSponsorship !== null ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Team sponsorship</CardTitle>
+            <CardDescription>
+              Your hosted access is funded by a seat in {billing.data.teamSponsorship.organizationName}.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3">
+            <dl className="grid gap-3 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="text-xs font-medium text-muted-foreground">Team plan</dt>
+                <dd className="mt-0.5">
+                  {billing.data.teamSponsorship.interval === "year" ? "Annual" : "Monthly"} ·{" "}
+                  {billing.data.teamSponsorship.status}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-muted-foreground">Team period ends</dt>
+                <dd className="mt-0.5">
+                  {formatDate(billing.data.teamSponsorship.currentPeriodEnd) ?? "—"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-muted-foreground">Team seat capacity</dt>
+                <dd className="mt-0.5">{billing.data.teamSponsorship.seatCapacity}</dd>
+              </div>
+              {billing.data.teamSponsorship.cancelAtPeriodEnd ? (
+                <div>
+                  <dt className="text-xs font-medium text-muted-foreground">Cancellation</dt>
+                  <dd className="mt-0.5">The organisation plan ends with this period.</dd>
+                </div>
+              ) : null}
+            </dl>
+            <p className="text-xs leading-5 text-muted-foreground">
+              Your personal subscription, if any, remains separate and is not cancelled by a team
+              seat. You can review organisation membership and funding on the{" "}
+              <Link href="/account/organizations" className="underline underline-offset-4">
+                organisation billing page
+              </Link>
+              .
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {billing.ok ? (
         <Card>
@@ -123,10 +188,16 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
                 is still pending — finishing it updates this view.
               </p>
             ) : null}
+            <p className="text-xs leading-5 text-muted-foreground">
+              This page shows your personal subscription. If an organisation assigns you a team seat,
+              that funds hosted access separately; it does not cancel or alter personal billing.
+            </p>
             {/* The portal needs a Stripe customer, which checkout creates —
                 the billing payload does not expose one directly, so any
                 subscription or pending checkout is the visible signal. */}
             <BillingActions
+              checkoutAvailable={billing.data.checkoutAvailable}
+              personalSubscriptionStatus={billing.data.subscription?.status ?? null}
               hasStripeCustomer={
                 billing.data.subscription !== null || billing.data.pendingCheckout !== null
               }

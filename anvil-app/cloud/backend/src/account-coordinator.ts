@@ -44,7 +44,7 @@ import {
   type SyncInvalidateFrame,
   type WorkerAvailableFrame,
 } from '../../contract/socket';
-import type { SyncAccountStats } from '../../contract/auth';
+import type { FairUseAccountStatus, FairUseNotice, SyncAccountStats } from '../../contract/auth';
 import { HOSTED_OPERATION_CLASS, type OperationName } from '../../contract/operations';
 import {
   COMPANION_ADVERTISEMENT_TTL_MS,
@@ -56,7 +56,17 @@ import {
   type DevicePresenceEntry,
   type DevicePresenceResult,
 } from '../../contract/companion';
-import { checkHostedAccess, ENTITLEMENT_CACHE_DDL } from './hosted/enforcement';
+import {
+  checkHostedAccess,
+  hostedEnforcementEnabled,
+  ENTITLEMENT_CACHE_DDL,
+} from './hosted/enforcement';
+import {
+  fairUseStatus,
+  parseFairUseRestrictionCommand,
+  parseStoredFairUseNotice,
+} from './hosted/fair-use-policy';
+import { emitMetric } from './hosted/metrics';
 import {
   DATA_EXPORT_FORMAT_VERSION,
   type DataExportBeginResult,
@@ -631,7 +641,7 @@ const ACCOUNT_PURGE_TABLES = [
   'dashboard_commands',
   'dashboard_requests',
 ] as const;
-/** Per-account retained-history budget enforced before accepting changes. */
+/** Self-host default only; hosted plans use operator-mediated fair use. */
 const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
 /** Import-preview response cap — the staged plan itself is unbounded by this. */
 const DATA_IMPORT_PREVIEW_ENTRY_CAP = 200;
@@ -787,8 +797,9 @@ const APPROVAL_MIN_TTL_MS = 1_000;
 const APPROVAL_MAX_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_ACTION_DIGEST_LENGTH = 256;
 const MAX_APPROVAL_REASON_LENGTH = 1024;
-/** MESH-03 artifact quotas + retention bounds (spec §10). */
+/** MESH-03 per-request safety bounds + retention (not aggregate plan quotas). */
 const ARTIFACT_MAX_BYTES = 64 * 1024 * 1024;
+/** Self-host default only; hosted plans use operator-mediated fair use. */
 const ACCOUNT_ARTIFACT_MAX_BYTES = 512 * 1024 * 1024;
 const ARTIFACT_UPLOAD_TTL_MS = 10 * 60 * 1000;
 const ARTIFACT_DEFAULT_RETENTION_DAYS = 7;
@@ -893,6 +904,31 @@ export class AccountCoordinator extends DurableObject<Env> {
     // frozen ACCOUNT_SCHEMA — a per-object row bounding how long a hosted
     // access decision may be reused.
     this.ctx.storage.sql.exec(ENTITLEMENT_CACHE_DDL);
+    // BILL-08: retain the funding source so stale team membership cannot
+    // use the personal subscription outage grace.
+    const addedFundingSource = this.ensureColumn(
+      'hosted_entitlement_cache',
+      'funded_by',
+      "ALTER TABLE hosted_entitlement_cache ADD COLUMN funded_by TEXT NOT NULL DEFAULT 'none'",
+    );
+    this.ensureColumn(
+      'hosted_entitlement_cache',
+      'organization_id',
+      'ALTER TABLE hosted_entitlement_cache ADD COLUMN organization_id TEXT',
+    );
+    if (addedFundingSource) {
+      // Rows written before funding source was tracked could only be personal
+      // or preview decisions. Preserve their outage behavior during rollout.
+      this.ctx.storage.sql.exec(`
+        UPDATE hosted_entitlement_cache
+        SET funded_by = CASE
+          WHEN source = 'preview' THEN 'preview'
+          WHEN source IN ('subscription', 'renewal-grace', 'outage-grace') THEN 'personal'
+          ELSE 'none'
+        END
+        WHERE funded_by = 'none'
+      `);
+    }
     // E2E: additive columns on objects created before sealing existed —
     // CREATE TABLE IF NOT EXISTS never alters an existing table.
     this.ensureColumn(
@@ -926,11 +962,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       'ALTER TABLE enrollments ADD COLUMN environment_id TEXT',
     );
     // E2EE task envelopes on objects created before sealed inputs existed.
-    this.ensureColumn(
-      'jobs',
-      'sealed_inputs',
-      'ALTER TABLE jobs ADD COLUMN sealed_inputs TEXT',
-    );
+    this.ensureColumn('jobs', 'sealed_inputs', 'ALTER TABLE jobs ADD COLUMN sealed_inputs TEXT');
     this.ensureColumn(
       'jobs',
       'result_recipients',
@@ -963,18 +995,29 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   /** Adds a column to an existing DO SQLite table when it is missing. */
-  private ensureColumn(table: string, name: string, ddl: string): void {
+  private ensureColumn(table: string, name: string, ddl: string): boolean {
     const columns = this.ctx.storage.sql
       .exec<{ name: string }>(`PRAGMA table_info(${table})`)
       .toArray()
       .map((row) => row.name);
     if (!columns.includes(name)) {
       this.ctx.storage.sql.exec(ddl);
+      return true;
     }
+    return false;
   }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === '/internal/fair-use' && request.method === 'GET') {
+      if (this.env.HOSTED_DB === undefined) return rpcErrorResponse(undefined, 'not-found');
+      const fairUse = this.fairUseAccountStatus(Date.now());
+      this.emitFairUseUsageMetric(fairUse);
+      return Response.json(fairUse);
+    }
+    if (url.pathname === '/internal/fair-use/restriction' && request.method === 'POST') {
+      return this.handleFairUseRestriction(request);
+    }
     if (url.pathname === '/internal/meta' && request.method === 'GET') {
       // Worker-internal read: the SessionCoordinator resolves the dataset
       // epoch for enroll/refresh/describe responses, and merges these
@@ -1626,6 +1669,14 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (denial !== null) {
         return denial;
       }
+      // sync.push has a narrower fair-use rule: deletions remain available
+      // so an account can reduce retained data and recover. Other operations
+      // classified as mutating create or extend hosted state and stop once an
+      // operator-issued restriction reaches its effective time.
+      if (rpc.operation !== 'sync.push') {
+        const fairUseDenial = this.fairUseWriteDenial(rpc.requestId);
+        if (fairUseDenial !== null) return fairUseDenial;
+      }
     }
     try {
       switch (rpc.operation) {
@@ -1782,13 +1833,162 @@ export class AccountCoordinator extends DurableObject<Env> {
   ): Promise<Response | null> {
     const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, Date.now());
     if (access.allowed) {
+      if (!hostedEnforcementEnabled(this.env)) return null;
+      let response: Response;
+      try {
+        response = await this.env.SESSIONS.get(this.env.SESSIONS.idFromName('sessions')).fetch(
+          'https://internal.anvil/internal/hosted/device-limit-status',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ accountId: auth.accountId }),
+          },
+        );
+      } catch {
+        return rpcErrorResponse(requestId, 'unavailable', { reason: 'device-limit-check' });
+      }
+      const status = (await response.json().catch(() => null)) as {
+        overLimit?: unknown;
+        limit?: unknown;
+        activeCount?: unknown;
+      } | null;
+      if (
+        !response.ok ||
+        status === null ||
+        typeof status.overLimit !== 'boolean' ||
+        typeof status.limit !== 'number' ||
+        !Number.isSafeInteger(status.limit) ||
+        status.limit <= 0 ||
+        typeof status.activeCount !== 'number' ||
+        !Number.isSafeInteger(status.activeCount) ||
+        status.activeCount < 0
+      ) {
+        return rpcErrorResponse(requestId, 'unavailable', { reason: 'device-limit-check' });
+      }
+      if (status.overLimit) {
+        emitMetric('hosted.device_limit_denial', {
+          limit: status.limit,
+          activeCount: status.activeCount,
+        });
+        return rpcErrorResponse(requestId, 'forbidden', {
+          reason: 'device-limit-exceeded',
+          limit: status.limit,
+          activeCount: status.activeCount,
+        });
+      }
       return null;
     }
     return rpcErrorResponse(requestId, 'forbidden', { reason: access.reason });
   }
 
+  private fairUseWriteDenial(requestId: string | undefined): Response | null {
+    const notice = this.activeFairUseRestriction(Date.now());
+    if (notice === null) return null;
+    emitMetric('fair_use.write_denied', { code: notice.code });
+    return rpcErrorResponse(requestId, 'forbidden', {
+      reason: 'fair-use-restricted',
+      code: notice.code,
+      message: notice.message,
+      restrictAt: notice.restrictAt,
+    });
+  }
+
+  private assertFairUseWritesAllowed(): void {
+    const notice = this.activeFairUseRestriction(Date.now());
+    if (notice !== null) {
+      throw new RpcFailure('forbidden', {
+        reason: 'fair-use-restricted',
+        code: notice.code,
+        message: notice.message,
+        restrictAt: notice.restrictAt,
+      });
+    }
+  }
+
+  private activeFairUseRestriction(now: number): FairUseNotice | null {
+    if (this.env.HOSTED_DB === undefined) return null;
+    const notice = parseStoredFairUseNotice(this.readMetaOrNull('fair_use_restriction'));
+    return notice !== null && now >= Date.parse(notice.restrictAt) ? notice : null;
+  }
+
+  private fairUseAccountStatus(now: number) {
+    const usage = {
+      historyBytes: this.readHistoryBytes(),
+      artifactBytes: this.readArtifactBytes(),
+    };
+    const notice = parseStoredFairUseNotice(this.readMetaOrNull('fair_use_restriction'));
+    return fairUseStatus(notice, usage, now);
+  }
+
+  private emitFairUseUsageMetric(fairUse: FairUseAccountStatus): void {
+    if (this.env.HOSTED_DB === undefined) return;
+    const now = Date.now();
+    const shouldEmit = this.commit(() => {
+      const previous = Number(this.readMetaOrNull('fair_use_metric_at') ?? '0');
+      if (Number.isFinite(previous) && now - previous < 5 * 60 * 1000) return false;
+      this.writeMeta('fair_use_metric_at', String(now));
+      return true;
+    });
+    if (!shouldEmit) return;
+    emitMetric('fair_use.usage', {
+      accountId: this.ctx.id.toString(),
+      status: fairUse.status,
+      historyBytes: fairUse.usage.historyBytes,
+      artifactBytes: fairUse.usage.artifactBytes,
+    });
+  }
+
+  private emitCurrentFairUseUsageMetric(): void {
+    if (this.env.HOSTED_DB === undefined) return;
+    this.emitFairUseUsageMetric(this.fairUseAccountStatus(Date.now()));
+  }
+
+  private async handleFairUseRestriction(request: Request): Promise<Response> {
+    if (this.env.HOSTED_DB === undefined) return rpcErrorResponse(undefined, 'not-found');
+    const body = (await request.json().catch(() => null)) as unknown;
+    let result: ReturnType<typeof parseFairUseRestrictionCommand>;
+    try {
+      result = this.commit(() => {
+        const previous = parseStoredFairUseNotice(this.readMetaOrNull('fair_use_restriction'));
+        const parsed = parseFairUseRestrictionCommand(body, Date.now(), previous);
+        if (!parsed.ok) return parsed;
+        if (parsed.command.action === 'clear') {
+          this.ctx.storage.sql.exec("DELETE FROM sync_meta WHERE key = 'fair_use_restriction'");
+        } else {
+          this.writeMeta('fair_use_restriction', JSON.stringify(parsed.command.notice));
+        }
+        return parsed;
+      });
+    } catch {
+      return rpcErrorResponse(undefined, 'unavailable');
+    }
+    if (!result.ok) {
+      return rpcErrorResponse(undefined, 'malformed-request', { reason: result.reason });
+    }
+    if (result.command.action === 'clear') {
+      emitMetric('fair_use.restriction_cleared');
+    } else {
+      emitMetric('fair_use.restriction_set', {
+        code: result.command.notice.code,
+        emergency: result.command.notice.emergency,
+        restrictAt: result.command.notice.restrictAt,
+      });
+    }
+    return Response.json(this.fairUseAccountStatus(Date.now()));
+  }
+
   private async handlePush(auth: SpikeAuth, requestId: string, params: unknown): Promise<Response> {
     const push = parseSpikePushParams(params);
+    // The account may delete shared data during a fair-use restriction so it
+    // can reduce retained use. Do not consume receipts or enrollment sequence
+    // numbers for blocked writes; the local outbox can retry when the notice
+    // is cleared or the restriction is lifted.
+    if (
+      this.activeFairUseRestriction(Date.now()) !== null &&
+      push.changes.some((change) => change.operation !== 'delete')
+    ) {
+      return this.fairUseWriteDenial(requestId) ?? rpcErrorResponse(requestId, 'unavailable');
+    }
     const prepared: PreparedChange[] = [];
     for (const change of push.changes) {
       const payloadJson = change.operation === 'delete' ? null : JSON.stringify(change.payload);
@@ -1809,6 +2009,7 @@ export class AccountCoordinator extends DurableObject<Env> {
 
     if (outcome.acceptedWatermark !== null) {
       this.broadcastInvalidate(outcome.acceptedWatermark);
+      this.emitCurrentFairUseUsageMetric();
     }
     await this.ensureSweepScheduled();
     const result: SyncPushResult = { results: outcome.results };
@@ -1826,6 +2027,10 @@ export class AccountCoordinator extends DurableObject<Env> {
     const storedEpoch = this.readMeta('epoch');
     if (epoch !== undefined && epoch !== storedEpoch) {
       throw new RpcFailure('epoch-mismatch', { expected: storedEpoch, actual: epoch });
+    }
+
+    if (prepared.some((item) => item.change.operation !== 'delete')) {
+      this.assertFairUseWritesAllowed();
     }
 
     const results: SyncPushItemResult[] = [];
@@ -1871,11 +2076,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       const cryptoIssue =
         item.change.operation === 'delete'
           ? null
-          : cryptoBoundaryPayloadIssue(
-              item.change.entityType,
-              item.change.entityId,
-              payload,
-            );
+          : cryptoBoundaryPayloadIssue(item.change.entityType, item.change.entityId, payload);
       if (cryptoIssue !== null) {
         throw new RpcFailure('malformed-request', {
           reason: 'crypto-boundary-invalid',
@@ -1949,11 +2150,12 @@ export class AccountCoordinator extends DurableObject<Env> {
       return { item: expired, acceptedSequence: null };
     }
 
-    // History-byte quota is enforced before acceptance (spec §5): the change
-    // is terminally rejected and consumes its sequence with a receipt; local
-    // editing continues and the client can re-queue after retention frees
-    // space. Recovery history is never silently discarded.
-    if (this.readHistoryBytes() + item.entityBytes > HISTORY_QUOTA_BYTES) {
+    // Preserve the established self-host storage default. Hosted accounts
+    // report aggregate use and rely on operator-issued fair-use restrictions.
+    if (
+      this.env.HOSTED_DB === undefined &&
+      this.readHistoryBytes() + item.entityBytes > HISTORY_QUOTA_BYTES
+    ) {
       const overQuota: SyncPushItemResult = {
         status: 'rejected',
         changeId: change.changeId,
@@ -2624,10 +2826,9 @@ export class AccountCoordinator extends DurableObject<Env> {
       return 'ephemeral';
     }
     const row = this.ctx.storage.sql
-      .exec<{ enrollment_class: string }>(
-        'SELECT enrollment_class FROM enrollments WHERE enrollment_id = ?',
-        auth.enrollmentId,
-      )
+      .exec<{
+        enrollment_class: string;
+      }>('SELECT enrollment_class FROM enrollments WHERE enrollment_id = ?', auth.enrollmentId)
       .toArray()[0];
     return row?.enrollment_class === 'ephemeral' ? 'ephemeral' : 'device';
   }
@@ -2642,10 +2843,9 @@ export class AccountCoordinator extends DurableObject<Env> {
       return auth.environmentId;
     }
     const row = this.ctx.storage.sql
-      .exec<{ environment_id: string | null }>(
-        'SELECT environment_id FROM enrollments WHERE enrollment_id = ?',
-        auth.enrollmentId,
-      )
+      .exec<{
+        environment_id: string | null;
+      }>('SELECT environment_id FROM enrollments WHERE enrollment_id = ?', auth.enrollmentId)
       .toArray()[0];
     return row?.environment_id ?? null;
   }
@@ -3173,6 +3373,10 @@ export class AccountCoordinator extends DurableObject<Env> {
         }
         return { job: this.jobSummary(existing), notifyTarget: null as string | null };
       }
+      // Managed provisioning awaits a provider-capacity preflight above; recheck
+      // restrictions in the insertion transaction in case a notice became
+      // effective while that preflight was in flight.
+      this.assertFairUseWritesAllowed();
       if (managedCaps !== null) {
         // The async entitlement preflight can overlap another create. Keep
         // the cap authoritative at the point where this job row is inserted.
@@ -3440,8 +3644,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         // verified source enrollment. Older compatible backends may ignore
         // this additive field; the client searches its bounded response.
         const job = this.readJobByRequest(auth.enrollmentId, list.requestId);
-        rows =
-          job === null || (list.state !== undefined && job.state !== list.state) ? [] : [job];
+        rows = job === null || (list.state !== undefined && job.state !== list.state) ? [] : [job];
       } else {
         rows =
           list.state === undefined
@@ -3894,7 +4097,11 @@ export class AccountCoordinator extends DurableObject<Env> {
     const expired = this.ctx.storage.sql
       .exec<{
         job_id: string;
-      }>("SELECT job_id FROM jobs WHERE state = 'queued' AND queue_deadline <= ? LIMIT ?", now, SWEEP_BATCH_ROWS)
+      }>(
+        "SELECT job_id FROM jobs WHERE state = 'queued' AND queue_deadline <= ? LIMIT ?",
+        now,
+        SWEEP_BATCH_ROWS,
+      )
       .toArray();
     for (const row of expired) {
       const job = this.readJob(row.job_id);
@@ -5429,7 +5636,8 @@ export class AccountCoordinator extends DurableObject<Env> {
 
   /**
    * `artifact.reserve` (worker actor): a byte-length + sha256 reservation
-   * under per-artifact and per-account quotas. Returns the bounded upload
+   * under the per-artifact safety bound. Aggregate storage is observed for
+   * fair use and has no advertised plan quota. Returns the bounded upload
    * route and its expiry; the R2 key is `accountId/artifactId`, private to
    * the backend.
    */
@@ -5438,6 +5646,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     const reserve = parseArtifactReserveParams(params);
     const now = Date.now();
     const result = this.commit((): ArtifactReserveResult => {
+      this.assertFairUseWritesAllowed();
       this.requireLiveIncarnation(worker, now);
       const attempt = this.readAttempt(reserve.attemptId);
       if (attempt === null) {
@@ -5456,20 +5665,15 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (!isActiveAttemptState(attempt.state)) {
         throw new RpcFailure('conflict', { reason: 'attempt-terminal' });
       }
-      const used =
-        this.ctx.storage.sql
-          .exec<{ total: number | null }>(
-            `SELECT COALESCE(SUM(byte_length), 0) AS total FROM artifacts
-           WHERE account_id = ? AND state NOT IN ('deleted', 'expired')`,
-            auth.accountId,
-          )
-          .one().total ?? 0;
-      if (used + reserve.byteLength > ACCOUNT_ARTIFACT_MAX_BYTES) {
-        throw new RpcFailure('quota-exceeded', {
-          reason: 'account-artifact-bytes',
-          limitBytes: ACCOUNT_ARTIFACT_MAX_BYTES,
-          usedBytes: used,
-        });
+      if (this.env.HOSTED_DB === undefined) {
+        const used = this.readArtifactBytes();
+        if (used + reserve.byteLength > ACCOUNT_ARTIFACT_MAX_BYTES) {
+          throw new RpcFailure('quota-exceeded', {
+            reason: 'account-artifact-bytes',
+            limitBytes: ACCOUNT_ARTIFACT_MAX_BYTES,
+            usedBytes: used,
+          });
+        }
       }
       const artifactId = crypto.randomUUID();
       const uploadExpiresAt = now + ARTIFACT_UPLOAD_TTL_MS;
@@ -5517,6 +5721,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         expiresAt: new Date(uploadExpiresAt).toISOString(),
       };
     });
+    this.emitCurrentFairUseUsageMetric();
     return rpcSuccessResponse(requestId, result);
   }
 
@@ -5540,10 +5745,13 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (denial !== null) {
       return denial;
     }
+    const fairUseDenial = this.fairUseWriteDenial(undefined);
+    if (fairUseDenial !== null) return fairUseDenial;
     const now = Date.now();
     let artifact: ArtifactRow;
     try {
       artifact = this.commit((): ArtifactRow => {
+        this.assertFairUseWritesAllowed();
         const row = this.readArtifact(artifactId);
         if (row === null || row.account_id !== auth.accountId) {
           throw new RpcFailure('not-found', { reason: 'artifact' });
@@ -5608,6 +5816,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       }
     });
     this.bumpCounter('artifact_uploads', 1);
+    this.emitCurrentFairUseUsageMetric();
     return Response.json({ artifactId, byteLength: stored.size, state: 'uploaded' });
   }
 
@@ -5736,6 +5945,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         });
       }
     });
+    this.emitCurrentFairUseUsageMetric();
   }
 
   /** Streams + verifies an R2 object's sha256 without buffering it whole. */
@@ -5920,9 +6130,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       environmentId: row.environment_id,
       provider: row.provider as EnvironmentProviderId,
       state: row.state as EnvironmentState,
-      ...(row.handle === null
-        ? {}
-        : { handle: JSON.parse(row.handle) as Record<string, unknown> }),
+      ...(row.handle === null ? {} : { handle: JSON.parse(row.handle) as Record<string, unknown> }),
       ...(row.enrollment_id === null ? {} : { enrollmentId: row.enrollment_id }),
       ...(row.job_id === null ? {} : { jobId: row.job_id }),
       createdBy: row.created_by,
@@ -5939,10 +6147,7 @@ export class AccountCoordinator extends DurableObject<Env> {
   private readEnvironment(environmentId: string): EnvironmentRow | null {
     return (
       this.ctx.storage.sql
-        .exec<EnvironmentRow>(
-          'SELECT * FROM environments WHERE environment_id = ?',
-          environmentId,
-        )
+        .exec<EnvironmentRow>('SELECT * FROM environments WHERE environment_id = ?', environmentId)
         .toArray()[0] ?? null
     );
   }
@@ -5971,10 +6176,9 @@ export class AccountCoordinator extends DurableObject<Env> {
           throw new RpcFailure('forbidden', { reason: 'environment-not-bound' });
         }
         const count = this.ctx.storage.sql
-          .exec<{ n: number }>(
-            'SELECT COUNT(*) AS n FROM environments WHERE account_id = ?',
-            auth.accountId,
-          )
+          .exec<{
+            n: number;
+          }>('SELECT COUNT(*) AS n FROM environments WHERE account_id = ?', auth.accountId)
           .one().n;
         if (count >= MAX_ENVIRONMENTS_PER_ACCOUNT) {
           throw new RpcFailure('quota-exceeded', { reason: 'environment-cap' });
@@ -6043,7 +6247,9 @@ export class AccountCoordinator extends DurableObject<Env> {
           throw new RpcFailure('forbidden', { reason: 'enrollment-link-not-self' });
         }
         const enrollment = this.ctx.storage.sql
-          .exec<{ enrollment_class: string | null }>(
+          .exec<{
+            enrollment_class: string | null;
+          }>(
             'SELECT enrollment_class FROM enrollments WHERE enrollment_id = ?',
             report.enrollmentId,
           )
@@ -6068,11 +6274,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         row.reap_requested_at = now;
       }
       // Terminal or verified-receipt reports close the record.
-      if (
-        report.state === 'terminated' ||
-        report.state === 'failed' ||
-        report.reaped === true
-      ) {
+      if (report.state === 'terminated' || report.state === 'failed' || report.reaped === true) {
         if (row.reaped_at === null) {
           row.reaped_at = now;
         }
@@ -6381,98 +6583,102 @@ export class AccountCoordinator extends DurableObject<Env> {
     const now = Date.now();
     // Phase 1 (commit): take queued managed provision jobs into internal
     // attempts and consume their bootstrap payloads.
-    const claimed = this.commit((): {
-      jobId: string;
-      attemptId: string;
-      fence: number;
-      environmentId: string;
-      ttlSeconds: number;
-      payload: string | null;
-    }[] => {
-      const jobs = this.ctx.storage.sql
-        .exec<JobRow>(
-          `SELECT * FROM jobs
-           WHERE kind = 'provision-environment' AND state = 'queued'
-             AND queue_deadline > ?
-             AND json_extract(input_manifest, '$.inputs.provider') = 'anvil-managed'
-           ORDER BY created_at ASC LIMIT ?`,
-          now,
-          MANAGED_PROVISION_BATCH,
-        )
-        .toArray();
-      const out: {
+    const claimed = this.commit(
+      (): {
         jobId: string;
         attemptId: string;
         fence: number;
         environmentId: string;
         ttlSeconds: number;
         payload: string | null;
-      }[] = [];
-      for (const job of jobs) {
-        const manifest = JSON.parse(job.input_manifest) as ExecutionManifest;
-        const environmentId = manifest.inputs['environmentId'];
-        const ttlSeconds = manifest.inputs['ttlSeconds'];
-        if (
-          typeof environmentId !== 'string' ||
-          typeof ttlSeconds !== 'number' ||
-          !Number.isFinite(ttlSeconds)
-        ) {
-          this.setJobState(job, 'failed', now, { stateReason: 'malformed-inputs' });
-          continue;
-        }
-        const fence = job.next_fence;
-        const attemptId = crypto.randomUUID();
-        this.ctx.storage.sql.exec(
-          `INSERT INTO attempts (
+      }[] => {
+        const jobs = this.ctx.storage.sql
+          .exec<JobRow>(
+            `SELECT * FROM jobs
+           WHERE kind = 'provision-environment' AND state = 'queued'
+             AND queue_deadline > ?
+             AND json_extract(input_manifest, '$.inputs.provider') = 'anvil-managed'
+           ORDER BY created_at ASC LIMIT ?`,
+            now,
+            MANAGED_PROVISION_BATCH,
+          )
+          .toArray();
+        const out: {
+          jobId: string;
+          attemptId: string;
+          fence: number;
+          environmentId: string;
+          ttlSeconds: number;
+          payload: string | null;
+        }[] = [];
+        for (const job of jobs) {
+          const manifest = JSON.parse(job.input_manifest) as ExecutionManifest;
+          const environmentId = manifest.inputs['environmentId'];
+          const ttlSeconds = manifest.inputs['ttlSeconds'];
+          if (
+            typeof environmentId !== 'string' ||
+            typeof ttlSeconds !== 'number' ||
+            !Number.isFinite(ttlSeconds)
+          ) {
+            this.setJobState(job, 'failed', now, { stateReason: 'malformed-inputs' });
+            continue;
+          }
+          const fence = job.next_fence;
+          const attemptId = crypto.randomUUID();
+          this.ctx.storage.sql.exec(
+            `INSERT INTO attempts (
              attempt_id, job_id, worker_enrollment_id, worker_incarnation, fence, state,
              lease_expires_at, outcome, result, error, late_result, created_at, updated_at
            ) VALUES (?, ?, ?, ?, ?, 'claimed', ?, NULL, NULL, NULL, NULL, ?, ?)`,
-          attemptId,
-          job.job_id,
-          MANAGED_PROVISIONER_ENROLLMENT,
-          MANAGED_PROVISIONER_INCARNATION,
-          fence,
-          now + MANAGED_PROVISION_BUDGET_MS,
-          now,
-          now,
-        );
-        this.journalDurableEvent({
-          jobId: job.job_id,
-          attemptId,
-          generation: fence,
-          kind: 'attempt.created',
-          payload: {
+            attemptId,
+            job.job_id,
+            MANAGED_PROVISIONER_ENROLLMENT,
+            MANAGED_PROVISIONER_INCARNATION,
             fence,
-            workerEnrollmentId: MANAGED_PROVISIONER_ENROLLMENT,
-            workerIncarnation: MANAGED_PROVISIONER_INCARNATION,
-            leaseExpiresAt: new Date(now + MANAGED_PROVISION_BUDGET_MS).toISOString(),
-            internal: 'managed-provisioner',
-          },
-        });
-        this.setJobState(job, 'running', now, {
-          activeAttemptId: attemptId,
-          nextFence: fence + 1,
-        });
-        // Consume-once: the payload leaves the table when the attempt is
-        // born. A job with no staged payload fails honestly — the source
-        // skipped environment.bootstrap (or it expired unconsumed).
-        const staged = this.ctx.storage.sql
-          .exec<{ payload: string }>(
-            'DELETE FROM environment_bootstrap WHERE environment_id = ? RETURNING payload',
+            now + MANAGED_PROVISION_BUDGET_MS,
+            now,
+            now,
+          );
+          this.journalDurableEvent({
+            jobId: job.job_id,
+            attemptId,
+            generation: fence,
+            kind: 'attempt.created',
+            payload: {
+              fence,
+              workerEnrollmentId: MANAGED_PROVISIONER_ENROLLMENT,
+              workerIncarnation: MANAGED_PROVISIONER_INCARNATION,
+              leaseExpiresAt: new Date(now + MANAGED_PROVISION_BUDGET_MS).toISOString(),
+              internal: 'managed-provisioner',
+            },
+          });
+          this.setJobState(job, 'running', now, {
+            activeAttemptId: attemptId,
+            nextFence: fence + 1,
+          });
+          // Consume-once: the payload leaves the table when the attempt is
+          // born. A job with no staged payload fails honestly — the source
+          // skipped environment.bootstrap (or it expired unconsumed).
+          const staged = this.ctx.storage.sql
+            .exec<{
+              payload: string;
+            }>(
+              'DELETE FROM environment_bootstrap WHERE environment_id = ? RETURNING payload',
+              environmentId,
+            )
+            .toArray()[0];
+          out.push({
+            jobId: job.job_id,
+            attemptId,
+            fence,
             environmentId,
-          )
-          .toArray()[0];
-        out.push({
-          jobId: job.job_id,
-          attemptId,
-          fence,
-          environmentId,
-          ttlSeconds,
-          payload: staged?.payload ?? null,
-        });
-      }
-      return out;
-    });
+            ttlSeconds,
+            payload: staged?.payload ?? null,
+          });
+        }
+        return out;
+      },
+    );
     // Phase 2 (async): the provisioner call per claimed job.
     for (const item of claimed) {
       const attempt = this.readAttempt(item.attemptId);
@@ -6539,7 +6745,11 @@ export class AccountCoordinator extends DurableObject<Env> {
           providerRef?: string;
           error?: string;
         } | null;
-        if (!response.ok || typeof body?.providerRef !== 'string' || body.providerRef.length === 0) {
+        if (
+          !response.ok ||
+          typeof body?.providerRef !== 'string' ||
+          body.providerRef.length === 0
+        ) {
           finish(
             false,
             null,
@@ -6571,11 +6781,15 @@ export class AccountCoordinator extends DurableObject<Env> {
             },
           });
         });
-        finish(true, {
-          environmentId: item.environmentId,
-          provider: 'anvil-managed',
-          providerRef: body.providerRef,
-        }, null);
+        finish(
+          true,
+          {
+            environmentId: item.environmentId,
+            provider: 'anvil-managed',
+            providerRef: body.providerRef,
+          },
+          null,
+        );
       } catch (error) {
         finish(false, null, error instanceof Error ? error.message : String(error));
       }
@@ -6591,8 +6805,10 @@ export class AccountCoordinator extends DurableObject<Env> {
       )
       .toArray();
     for (const env of reaping) {
-      const handle = env.handle === null ? null : (JSON.parse(env.handle) as Record<string, unknown>);
-      const providerRef = typeof handle?.['providerRef'] === 'string' ? handle['providerRef'] : null;
+      const handle =
+        env.handle === null ? null : (JSON.parse(env.handle) as Record<string, unknown>);
+      const providerRef =
+        typeof handle?.['providerRef'] === 'string' ? handle['providerRef'] : null;
       if (providerRef === null) {
         // No provider handle ever materialized — the record is the whole
         // environment; nothing to terminate downstream.
@@ -6729,16 +6945,17 @@ export class AccountCoordinator extends DurableObject<Env> {
         throw new RpcFailure('malformed-request', { reason: 'expiresAt-window' });
       }
       const existing = this.ctx.storage.sql
-        .exec<{ grant_id: string }>(
-          'SELECT grant_id FROM credential_grants WHERE grant_id = ?',
-          envelopeSha,
-        )
+        .exec<{
+          grant_id: string;
+        }>('SELECT grant_id FROM credential_grants WHERE grant_id = ?', envelopeSha)
         .toArray()[0];
       if (existing !== undefined) {
         return { delivered: false };
       }
       const count = this.ctx.storage.sql
-        .exec<{ n: number }>(
+        .exec<{
+          n: number;
+        }>(
           'SELECT COUNT(*) AS n FROM credential_grants WHERE attempt_id = ?',
           deliver.grant.attemptId,
         )
@@ -6836,9 +7053,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     const deliver = parseTaskKeyDeliverParams(params);
     // Envelope shas derive from the wrap bytes — computed outside the
     // storage transaction (commit callbacks are synchronous).
-    const shas = await Promise.all(
-      deliver.wraps.map((wrap) => sha256Hex(JSON.stringify(wrap))),
-    );
+    const shas = await Promise.all(deliver.wraps.map((wrap) => sha256Hex(JSON.stringify(wrap))));
     const result = this.commit((): TaskKeyDeliverResult => {
       this.assertNotRevoked(auth);
       this.provisionEnrollment(auth);
@@ -7023,21 +7238,19 @@ export class AccountCoordinator extends DurableObject<Env> {
       browserPub: row.browser_pub,
       challenge: row.challenge,
       scopes: JSON.parse(row.scopes) as DashboardRequest['scopes'],
-      ...(JSON.parse(row.workspace_scopes) as BrowserWorkspaceBinding[]).length === 0
+      ...((JSON.parse(row.workspace_scopes) as BrowserWorkspaceBinding[]).length === 0
         ? {}
-        : { workspaceBindings: JSON.parse(row.workspace_scopes) as BrowserWorkspaceBinding[] },
-      ...(JSON.parse(row.granted_scopes) as DashboardRequest['scopes']).length === 0
+        : { workspaceBindings: JSON.parse(row.workspace_scopes) as BrowserWorkspaceBinding[] }),
+      ...((JSON.parse(row.granted_scopes) as DashboardRequest['scopes']).length === 0
         ? {}
-        : { grantedScopes: JSON.parse(row.granted_scopes) as DashboardRequest['scopes'] },
+        : { grantedScopes: JSON.parse(row.granted_scopes) as DashboardRequest['scopes'] }),
       ...(row.origin === null ? {} : { origin: row.origin }),
       ...(row.user_agent === null ? {} : { userAgent: row.user_agent }),
       expiresAt: new Date(row.expires_at).toISOString(),
       state: row.state as DashboardRequest['state'],
       createdAt: new Date(row.created_at).toISOString(),
       ...(row.decided_by === null ? {} : { decidedBy: row.decided_by }),
-      ...(row.decided_at === null
-        ? {}
-        : { decidedAt: new Date(row.decided_at).toISOString() }),
+      ...(row.decided_at === null ? {} : { decidedAt: new Date(row.decided_at).toISOString() }),
     };
   }
 
@@ -7174,9 +7387,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         );
       }
       return {
-        request: this.dashboardRequestRecord(
-          this.readDashboardRequestRequired(decide.requestId),
-        ),
+        request: this.dashboardRequestRecord(this.readDashboardRequestRequired(decide.requestId)),
       };
     });
     return rpcSuccessResponse(requestId, result);
@@ -7187,11 +7398,7 @@ export class AccountCoordinator extends DurableObject<Env> {
    * strictly increasing seq. Only the approving enrollment may publish —
    * the snapshot stream is bound to the device the user authorized.
    */
-  private handleDashboardPublish(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Response {
+  private handleDashboardPublish(auth: SpikeAuth, requestId: string, params: unknown): Response {
     const publish = parseDashboardPublishParams(params);
     const result = this.commit((): DashboardPublishResult => {
       this.assertNotRevoked(auth);
@@ -7284,9 +7491,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         row.request_id,
       );
       return {
-        request: this.dashboardRequestRecord(
-          this.readDashboardRequestRequired(revoke.requestId),
-        ),
+        request: this.dashboardRequestRecord(this.readDashboardRequestRequired(revoke.requestId)),
       };
     });
     return rpcSuccessResponse(requestId, result);
@@ -7346,9 +7551,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         now,
       );
       return {
-        request: this.dashboardRequestRecord(
-          this.readDashboardRequestRequired(input.requestId),
-        ),
+        request: this.dashboardRequestRecord(this.readDashboardRequestRequired(input.requestId)),
       };
     });
     return rpcSuccessResponse(input.requestId, result);
@@ -7502,7 +7705,10 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (binding === undefined) {
       throw new RpcFailure('forbidden', { reason: 'dashboard-workspace' });
     }
-    if (command.repositoryId !== undefined && !binding.repositoryIds.includes(command.repositoryId)) {
+    if (
+      command.repositoryId !== undefined &&
+      !binding.repositoryIds.includes(command.repositoryId)
+    ) {
       throw new RpcFailure('forbidden', { reason: 'dashboard-repository' });
     }
     if (
@@ -7737,51 +7943,60 @@ export class AccountCoordinator extends DurableObject<Env> {
       ) {
         throw new RpcFailure('malformed-request', { reason: 'command-expiresAt' });
       }
-      const count = this.ctx.storage.sql
-        .exec<{ count: number }>(
-          `SELECT COUNT(*) AS count FROM dashboard_commands
+      const count =
+        this.ctx.storage.sql
+          .exec<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM dashboard_commands
            WHERE request_id = ? AND state IN ('queued', 'claimed')`,
-          input.requestId,
-        )
-        .toArray()[0]?.count ?? 0;
+            input.requestId,
+          )
+          .toArray()[0]?.count ?? 0;
       if (count >= MAX_DASHBOARD_COMMANDS_PER_GRANT) {
         throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-queue' });
       }
-      const retained = this.ctx.storage.sql
-        .exec<{ count: number }>(
-          'SELECT COUNT(*) AS count FROM dashboard_commands WHERE request_id = ?',
-          input.requestId,
-        )
-        .toArray()[0]?.count ?? 0;
+      const retained =
+        this.ctx.storage.sql
+          .exec<{
+            count: number;
+          }>(
+            'SELECT COUNT(*) AS count FROM dashboard_commands WHERE request_id = ?',
+            input.requestId,
+          )
+          .toArray()[0]?.count ?? 0;
       if (retained >= MAX_DASHBOARD_COMMAND_ROWS_PER_GRANT) {
         throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-retention' });
       }
-      const accountRetained = this.ctx.storage.sql
-        .exec<{ count: number }>(
-          'SELECT COUNT(*) AS count FROM dashboard_commands WHERE account_id = ?',
-          dashboard.account_id,
-        )
-        .toArray()[0]?.count ?? 0;
+      const accountRetained =
+        this.ctx.storage.sql
+          .exec<{
+            count: number;
+          }>(
+            'SELECT COUNT(*) AS count FROM dashboard_commands WHERE account_id = ?',
+            dashboard.account_id,
+          )
+          .toArray()[0]?.count ?? 0;
       if (accountRetained >= MAX_DASHBOARD_COMMAND_ROWS_PER_ACCOUNT) {
         throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-account-retention' });
       }
-      const retainedBytes = this.ctx.storage.sql
-        .exec<{ bytes: number | null }>(
-          `SELECT COALESCE(SUM(length(envelope) + COALESCE(length(result), 0)), 0) AS bytes
+      const retainedBytes =
+        this.ctx.storage.sql
+          .exec<{ bytes: number | null }>(
+            `SELECT COALESCE(SUM(length(envelope) + COALESCE(length(result), 0)), 0) AS bytes
            FROM dashboard_commands WHERE request_id = ?`,
-          input.requestId,
-        )
-        .toArray()[0]?.bytes ?? 0;
+            input.requestId,
+          )
+          .toArray()[0]?.bytes ?? 0;
       if (retainedBytes + envelopeJson.length > MAX_DASHBOARD_COMMAND_BYTES_PER_GRANT) {
         throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-bytes' });
       }
-      const accountRetainedBytes = this.ctx.storage.sql
-        .exec<{ bytes: number | null }>(
-          `SELECT COALESCE(SUM(length(envelope) + COALESCE(length(result), 0)), 0) AS bytes
+      const accountRetainedBytes =
+        this.ctx.storage.sql
+          .exec<{ bytes: number | null }>(
+            `SELECT COALESCE(SUM(length(envelope) + COALESCE(length(result), 0)), 0) AS bytes
            FROM dashboard_commands WHERE account_id = ?`,
-          dashboard.account_id,
-        )
-        .toArray()[0]?.bytes ?? 0;
+            dashboard.account_id,
+          )
+          .toArray()[0]?.bytes ?? 0;
       if (accountRetainedBytes + envelopeJson.length > MAX_DASHBOARD_COMMAND_BYTES_PER_ACCOUNT) {
         throw new RpcFailure('quota-exceeded', { reason: 'dashboard-command-account-bytes' });
       }
@@ -8270,7 +8485,11 @@ export class AccountCoordinator extends DurableObject<Env> {
       const staleScans = this.ctx.storage.sql
         .exec<{
           scan_id: string;
-        }>('SELECT scan_id FROM scans WHERE done = 1 AND created_at < ? LIMIT ?', cutoff, SWEEP_BATCH_ROWS)
+        }>(
+          'SELECT scan_id FROM scans WHERE done = 1 AND created_at < ? LIMIT ?',
+          cutoff,
+          SWEEP_BATCH_ROWS,
+        )
         .toArray();
       for (const row of staleScans) {
         this.ctx.storage.sql.exec('DELETE FROM scans WHERE scan_id = ?', row.scan_id);
@@ -8420,17 +8639,18 @@ export class AccountCoordinator extends DurableObject<Env> {
       this.ctx.storage.sql.exec('DELETE FROM credential_grants WHERE expires_at <= ?', now);
       // ENV-09: staged enrollment codes the managed claimer never consumed
       // expire; the single-use code is already dead by TTL.
-      this.ctx.storage.sql.exec(
-        'DELETE FROM environment_bootstrap WHERE expires_at <= ?',
-        now,
-      );
+      this.ctx.storage.sql.exec('DELETE FROM environment_bootstrap WHERE expires_at <= ?', now);
       // MESH-03: the durable journal keeps the same 90-day horizon as the
       // change log; job_event_meta rows persist so cursors never rewind.
       const staleEvents = this.ctx.storage.sql
         .exec<{
           job_id: string;
           event_seq: number;
-        }>('SELECT job_id, event_seq FROM events WHERE created_at < ? LIMIT ?', cutoff, SWEEP_BATCH_ROWS)
+        }>(
+          'SELECT job_id, event_seq FROM events WHERE created_at < ? LIMIT ?',
+          cutoff,
+          SWEEP_BATCH_ROWS,
+        )
         .toArray();
       for (const row of staleEvents) {
         this.ctx.storage.sql.exec(
@@ -8503,6 +8723,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(
       Date.now() + (continued ? SWEEP_CONTINUE_MS : SWEEP_INTERVAL_MS),
     );
+    this.emitCurrentFairUseUsageMetric();
     return {
       deletedChanges,
       deletedReceipts,
@@ -8623,6 +8844,17 @@ export class AccountCoordinator extends DurableObject<Env> {
     return rows[0] === undefined ? 0 : Number(rows[0].value);
   }
 
+  private readArtifactBytes(): number {
+    return (
+      this.ctx.storage.sql
+        .exec<{ total: number | null }>(
+          `SELECT COALESCE(SUM(byte_length), 0) AS total FROM artifacts
+           WHERE state NOT IN ('deleted', 'expired')`,
+        )
+        .one().total ?? 0
+    );
+  }
+
   private addHistoryBytes(delta: number): void {
     const next = Math.max(0, this.readHistoryBytes() + delta);
     this.ctx.storage.sql.exec(
@@ -8649,18 +8881,23 @@ export class AccountCoordinator extends DurableObject<Env> {
       .toArray()) {
       counters[row.key] = row.value;
     }
-    const artifactBytes =
-      this.ctx.storage.sql
-        .exec<{ total: number | null }>(
-          `SELECT COALESCE(SUM(byte_length), 0) AS total FROM artifacts
-           WHERE state NOT IN ('deleted', 'expired')`,
-        )
-        .one().total ?? 0;
+    const historyBytes = this.readHistoryBytes();
+    const artifactBytes = this.readArtifactBytes();
+    const fairUse =
+      this.env.HOSTED_DB === undefined
+        ? undefined
+        : fairUseStatus(
+            parseStoredFairUseNotice(this.readMetaOrNull('fair_use_restriction')),
+            { historyBytes, artifactBytes },
+            Date.now(),
+          );
+    if (fairUse !== undefined) this.emitFairUseUsageMetric(fairUse);
     return {
-      historyBytes: this.readHistoryBytes(),
-      historyQuotaBytes: HISTORY_QUOTA_BYTES,
+      historyBytes,
+      ...(this.env.HOSTED_DB === undefined ? { historyQuotaBytes: HISTORY_QUOTA_BYTES } : {}),
       retentionFloor: this.readRetentionFloor(),
       artifactBytes,
+      ...(fairUse === undefined ? {} : { fairUse }),
       counters,
     };
   }
@@ -9059,11 +9296,7 @@ function cryptoBoundaryPayloadIssue(
         return 'keyring-wrap-key-version';
       }
       {
-        const ephIssue = base64ByteLengthValue(
-          payload['ephPub'],
-          32,
-          'keyring-wrap-eph-pub',
-        );
+        const ephIssue = base64ByteLengthValue(payload['ephPub'], 32, 'keyring-wrap-eph-pub');
         if (ephIssue !== null) return ephIssue;
         const nonceIssue = base64ByteLengthValue(
           payload['nonce'],
@@ -9810,7 +10043,11 @@ function parseJobIdParams(params: unknown): { jobId: string } {
   return { jobId: params['jobId'] };
 }
 
-function parseJobListParams(params: unknown): { state?: JobState; requestId?: string; limit: number } {
+function parseJobListParams(params: unknown): {
+  state?: JobState;
+  requestId?: string;
+  limit: number;
+} {
   if (!isRecord(params)) {
     throw new RpcFailure('malformed-request', { reason: 'list-params' });
   }
@@ -10573,7 +10810,10 @@ function parseEnvironmentReportParams(params: unknown): {
     throw new RpcFailure('malformed-request', { reason: 'reaped' });
   }
   const error = params['error'];
-  if (error !== undefined && (typeof error !== 'string' || error.length > MAX_REPORT_ERROR_LENGTH)) {
+  if (
+    error !== undefined &&
+    (typeof error !== 'string' || error.length > MAX_REPORT_ERROR_LENGTH)
+  ) {
     throw new RpcFailure('malformed-request', { reason: 'error' });
   }
   return {
@@ -10665,7 +10905,11 @@ function parseCredentialDeliverParams(params: unknown): { grant: CredentialGrant
   }
   for (const field of ['ephPub', 'nonce', 'ct'] as const) {
     const value = grant[field];
-    if (typeof value !== 'string' || value.length === 0 || value.length > MAX_GRANT_ENVELOPE_BYTES) {
+    if (
+      typeof value !== 'string' ||
+      value.length === 0 ||
+      value.length > MAX_GRANT_ENVELOPE_BYTES
+    ) {
       throw new RpcFailure('malformed-request', { reason: `grant-${field}` });
     }
   }
@@ -10877,13 +11121,20 @@ function parseDashboardSnapshot(value: unknown): SealedDashboardSnapshot {
   return value as unknown as SealedDashboardSnapshot;
 }
 
-function parseWorkspaceBindings(value: unknown, reason = 'workspaceBindings'): BrowserWorkspaceBinding[] {
+function parseWorkspaceBindings(
+  value: unknown,
+  reason = 'workspaceBindings',
+): BrowserWorkspaceBinding[] {
   if (!Array.isArray(value) || value.length > 64) {
     throw new RpcFailure('malformed-request', { reason });
   }
   const bindings: BrowserWorkspaceBinding[] = [];
   for (const entry of value) {
-    if (!isRecord(entry) || !isBoundedId(entry['workspaceId']) || entry['workspaceId'].includes('|')) {
+    if (
+      !isRecord(entry) ||
+      !isBoundedId(entry['workspaceId']) ||
+      entry['workspaceId'].includes('|')
+    ) {
       throw new RpcFailure('malformed-request', { reason });
     }
     const rawRepositories = entry['repositoryIds'];
@@ -10892,7 +11143,11 @@ function parseWorkspaceBindings(value: unknown, reason = 'workspaceBindings'): B
     }
     const repositoryIds: string[] = [];
     for (const repositoryId of rawRepositories) {
-      if (!isBoundedId(repositoryId) || repositoryId.includes('|') || repositoryIds.includes(repositoryId)) {
+      if (
+        !isBoundedId(repositoryId) ||
+        repositoryId.includes('|') ||
+        repositoryIds.includes(repositoryId)
+      ) {
         throw new RpcFailure('malformed-request', { reason });
       }
       repositoryIds.push(repositoryId);
@@ -10918,7 +11173,11 @@ function parseLegacyWorkspaceBindings(
   if (rawWorkspaces.length > 64 || rawRepositories.length > 64) {
     throw new RpcFailure('malformed-request', { reason: 'workspaceBindings' });
   }
-  if (rawWorkspaces.length > 1 && rawRepositories.length !== 0 && rawRepositories.length !== rawWorkspaces.length) {
+  if (
+    rawWorkspaces.length > 1 &&
+    rawRepositories.length !== 0 &&
+    rawRepositories.length !== rawWorkspaces.length
+  ) {
     // Never turn a single repository list into a cross-workspace wildcard.
     throw new RpcFailure('malformed-request', { reason: 'workspaceBindings' });
   }
@@ -11026,7 +11285,10 @@ function parseBrowserWorkspaceCommandEnvelope(value: unknown): BrowserWorkspaceC
   if (typeof value['expiresAt'] !== 'string' || !Number.isFinite(Date.parse(value['expiresAt']))) {
     throw new RpcFailure('malformed-request', { reason: 'command-expiresAt' });
   }
-  if (typeof value['nonce'] !== 'string' || base64ByteLength(value['nonce']) !== SEALED_NONCE_BYTES) {
+  if (
+    typeof value['nonce'] !== 'string' ||
+    base64ByteLength(value['nonce']) !== SEALED_NONCE_BYTES
+  ) {
     throw new RpcFailure('malformed-request', { reason: 'command-nonce' });
   }
   if (
@@ -11071,7 +11333,10 @@ function parseDashboardCommandClaimParams(params: unknown): DashboardCommandClai
   const rawLimit = params['limit'];
   if (
     rawLimit !== undefined &&
-    (typeof rawLimit !== 'number' || !Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > MAX_DASHBOARD_COMMAND_CLAIM)
+    (typeof rawLimit !== 'number' ||
+      !Number.isInteger(rawLimit) ||
+      rawLimit < 1 ||
+      rawLimit > MAX_DASHBOARD_COMMAND_CLAIM)
   ) {
     throw new RpcFailure('malformed-request', { reason: 'command-claim-limit' });
   }
@@ -11110,11 +11375,7 @@ function parseDashboardCommandStatusInput(body: unknown): {
   requestId: string;
   commandId: string;
 } {
-  if (
-    !isRecord(body) ||
-    !isBoundedId(body['requestId']) ||
-    !isBoundedId(body['commandId'])
-  ) {
+  if (!isRecord(body) || !isBoundedId(body['requestId']) || !isBoundedId(body['commandId'])) {
     throw new RpcFailure('malformed-request', { reason: 'command-status' });
   }
   return { requestId: body['requestId'], commandId: body['commandId'] };
@@ -11156,7 +11417,11 @@ function parseHostedDashboardRequestInput(body: unknown): ParsedHostedDashboardR
     throw new RpcFailure('malformed-request', { reason: 'challenge' });
   }
   const rawScopes = body['scopes'];
-  if (!Array.isArray(rawScopes) || rawScopes.length === 0 || rawScopes.length > MAX_DASHBOARD_SCOPES) {
+  if (
+    !Array.isArray(rawScopes) ||
+    rawScopes.length === 0 ||
+    rawScopes.length > MAX_DASHBOARD_SCOPES
+  ) {
     throw new RpcFailure('malformed-request', { reason: 'scopes' });
   }
   const scopes: DashboardRequest['scopes'] = [];
@@ -11168,7 +11433,7 @@ function parseHostedDashboardRequestInput(body: unknown): ParsedHostedDashboardR
   }
   const workspaceBindings =
     body['workspaceBindings'] === undefined
-      ? parseLegacyWorkspaceBindings(body) ?? []
+      ? (parseLegacyWorkspaceBindings(body) ?? [])
       : parseWorkspaceBindings(body['workspaceBindings']);
   const expiresAtMs = Date.parse(body['expiresAt'] as string);
   if (typeof body['expiresAt'] !== 'string' || !Number.isFinite(expiresAtMs)) {

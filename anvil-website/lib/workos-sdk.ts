@@ -2,4 +2,11 @@
 // behind this module so the selected deployment values are installed first.
 import "@/lib/workos-env";
 
-export { authkitProxy, handleAuth, signOut, withAuth } from "@workos-inc/authkit-nextjs";
+export {
+  authkitProxy,
+  getSignInUrl,
+  getSignUpUrl,
+  handleAuth,
+  signOut,
+  withAuth
+} from "@workos-inc/authkit-nextjs";

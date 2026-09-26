@@ -46,7 +46,7 @@ describe('evaluateHostedEntitlement', () => {
     expect(result.source).toBe('preview');
     expect(result.reason).toBe('preview');
     expect(result.capabilities).toEqual({ syncWrite: true, meshSubmit: true });
-    expect(result.planKey).toBe('sync_personal');
+    expect(result.planKey).toBeNull();
     expect(result.accessUntil).toBe(PREVIEW_ENDS_AT);
     expect(result.graceUntil).toBeNull();
     expect(result.checkedAt).toBe(new Date(PREVIEW_END_MS - 1).toISOString());
@@ -91,6 +91,39 @@ describe('evaluateHostedEntitlement', () => {
     expect(Date.parse(result.accessUntil!)).toBeGreaterThan(PREVIEW_END_MS - DAY);
   });
 
+  it('prefers an active team seat when both team and personal plans are paid', () => {
+    const teamPaidThrough = PREVIEW_END_MS + 30 * DAY;
+    const result = evaluateHostedEntitlement(
+      input({
+        subscriptions: [sub({ paidThrough: PREVIEW_END_MS + 90 * DAY })],
+        sponsorship: {
+          organizationId: 'org_team_funding',
+          subscriptions: [sub({ planKey: 'sync_team', paidThrough: teamPaidThrough })],
+        },
+      }),
+    );
+    expect(result.state).toBe('active');
+    expect(result.planKey).toBe('sync_team');
+    expect(result.fundedBy).toBe('team');
+    expect(result.organizationId).toBe('org_team_funding');
+    expect(result.accessUntil).toBe(new Date(teamPaidThrough).toISOString());
+  });
+
+  it('falls back to personal funding when no active team seat remains', () => {
+    const personalPaidThrough = PREVIEW_END_MS + 45 * DAY;
+    const result = evaluateHostedEntitlement(
+      input({
+        subscriptions: [sub({ paidThrough: personalPaidThrough })],
+        sponsorship: null,
+      }),
+    );
+    expect(result.state).toBe('active');
+    expect(result.planKey).toBe('sync_personal');
+    expect(result.fundedBy).toBe('personal');
+    expect(result.organizationId).toBeNull();
+    expect(result.accessUntil).toBe(new Date(personalPaidThrough).toISOString());
+  });
+
   it('denies active subscription without a paid invoice after preview end', () => {
     const result = evaluateHostedEntitlement(
       input({
@@ -105,9 +138,7 @@ describe('evaluateHostedEntitlement', () => {
   it('honors cancelAtPeriodEnd paidUntil then denies even during outage', () => {
     const paidThrough = PREVIEW_END_MS + 10 * DAY;
     const subscription = sub({ cancelAtPeriodEnd: true, paidThrough });
-    const active = evaluateHostedEntitlement(
-      input({ subscriptions: [subscription] }),
-    );
+    const active = evaluateHostedEntitlement(input({ subscriptions: [subscription] }));
     expect(active.state).toBe('active');
     expect(active.accessUntil).toBe(new Date(paidThrough).toISOString());
 
@@ -183,7 +214,12 @@ describe('evaluateHostedEntitlement', () => {
     const subscription = sub({ paidThrough });
     const now = paidThrough + 12 * HOUR;
     const result = evaluateHostedEntitlement(
-      input({ now, subscriptions: [subscription], billingUnavailable: true, previewEligible: false }),
+      input({
+        now,
+        subscriptions: [subscription],
+        billingUnavailable: true,
+        previewEligible: false,
+      }),
     );
     expect(result.state).toBe('grace');
     expect(result.source).toBe('outage-grace');
@@ -299,6 +335,8 @@ describe('evaluateHostedEntitlement', () => {
     { renewalGraceDays: 8 },
     { outageGraceHours: 25 },
   ])('rejects invalid input %o', (overrides) => {
-    expect(() => evaluateHostedEntitlement(input(overrides))).toThrow('Invalid hosted policy input');
+    expect(() => evaluateHostedEntitlement(input(overrides))).toThrow(
+      'Invalid hosted policy input',
+    );
   });
 });

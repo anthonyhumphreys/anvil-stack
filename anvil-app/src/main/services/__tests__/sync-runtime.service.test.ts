@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
 import { DEFAULT_ORCHESTRATION } from '../../../shared/workflow-orchestration';
 import type { WorkflowNode } from '../../../shared/types';
-import { SPIKE_DATASET_EPOCH } from '../../../shared/sync-runtime';
+import { SPIKE_DATASET_EPOCH, type SyncFairUseStatus } from '../../../shared/sync-runtime';
 import {
   SYNC_ENTITY_SETTINGS,
   SYNC_ENTITY_WORKFLOW_TEMPLATE,
@@ -478,6 +478,7 @@ function fakeBackend(
     accessTtlMs?: number;
     /** When set, `session.describe` reports this hosted entitlement (BILL-05). */
     entitlement?: Record<string, unknown> | (() => Record<string, unknown> | undefined);
+    fairUse?: SyncFairUseStatus;
     /** When set, `sync.push` is refused 403 with this `details.reason`. */
     denyPush?: string;
     /** When set, encrypted-account reset is rejected definitively. */
@@ -669,6 +670,7 @@ function fakeBackend(
               historyBytes: 4096,
               historyQuotaBytes: 67108864,
               retentionFloor: 7,
+              ...(options.fairUse === undefined ? {} : { fairUse: options.fairUse }),
               counters: { push_total: 3, pull_total: 5 },
             },
             // Self-host shape: the field is simply absent.
@@ -1434,8 +1436,10 @@ describe('hosted entitlement (BILL-05)', () => {
     state: 'restricted',
     source: 'none',
     planKey: null,
+    fundedBy: 'none',
+    organizationId: null,
     capabilities: { syncWrite: false, meshSubmit: false },
-    limits: { devices: 3, artifactBytes: 0, historyBytes: 0 },
+    limits: { devices: 5, artifactBytes: 0, historyBytes: 0 },
     previewEndsAt: '2026-11-01T00:00:00Z',
     accessUntil: null,
     graceUntil: null,
@@ -1447,8 +1451,10 @@ describe('hosted entitlement (BILL-05)', () => {
     state: 'preview',
     source: 'preview',
     planKey: 'hosted-preview',
+    fundedBy: 'preview',
+    organizationId: null,
     capabilities: { syncWrite: true, meshSubmit: true },
-    limits: { devices: 3, artifactBytes: 1048576, historyBytes: 67108864 },
+    limits: { devices: 5, artifactBytes: 1048576, historyBytes: 67108864 },
     previewEndsAt: '2026-11-01T00:00:00Z',
     accessUntil: '2026-11-01T00:00:00Z',
     graceUntil: null,
@@ -1491,11 +1497,50 @@ describe('hosted entitlement (BILL-05)', () => {
     expect(hosted?.state).toBe('preview');
     expect(hosted?.restricted).toBe(false);
     expect(hosted?.planKey).toBe('hosted-preview');
+    expect(hosted?.fundedBy).toBe('preview');
+    expect(hosted?.deviceLimit).toBe(5);
     expect(hosted?.previewEndsAt).toBe('2026-11-01T00:00:00Z');
     expect(getRuntimeStatus().hosted).toEqual(hosted);
     const row = getSyncEntitlement('backend-1', 'account-1');
     expect(row?.revision).toBe(2);
     expect(row?.reason).toBe('preview');
+  });
+
+  it('shows the account-specific fair-use notice with its effective date in hosted status', async () => {
+    const fairUseNotice: SyncFairUseStatus = {
+      status: 'notice',
+      usage: { historyBytes: 4096, artifactBytes: 1024 },
+      notice: {
+        code: 'storage-usage',
+        message: 'Please reduce retained storage before the stated date.',
+        noticeAt: '2026-09-11T10:00:00.000Z',
+        restrictAt: '2026-09-18T10:00:00.000Z',
+        emergency: false,
+      },
+    };
+    const options: {
+      entitlement?: Record<string, unknown>;
+      fairUse?: SyncFairUseStatus;
+    } = { entitlement: PREVIEW_ENTITLEMENT, fairUse: fairUseNotice };
+    const backend = fakeBackend(options);
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+    enableSync();
+
+    const hosted = await refreshHostedEntitlement();
+    expect(hosted?.fairUse).toEqual(fairUseNotice);
+    expect(getRuntimeStatus().hosted?.fairUse).toEqual(fairUseNotice);
+
+    options.fairUse = {
+      status: 'restricted',
+      usage: fairUseNotice.usage,
+      notice: fairUseNotice.notice,
+    };
+    const restricted = await refreshHostedEntitlement();
+    expect(restricted?.fairUse?.status).toBe('restricted');
+    expect(restricted?.fairUse?.notice?.restrictAt).toBe(fairUseNotice.notice?.restrictAt);
   });
 
   it('clears a stale hosted row when session.describe omits entitlement (self-host)', async () => {
@@ -1511,6 +1556,9 @@ describe('hosted entitlement (BILL-05)', () => {
       state: 'restricted',
       source: 'none',
       planKey: null,
+      fundedBy: 'none',
+      organizationId: null,
+      deviceLimit: 5,
       previewEndsAt: null,
       accessUntil: null,
       graceUntil: null,

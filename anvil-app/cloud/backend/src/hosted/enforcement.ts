@@ -2,7 +2,7 @@
 //
 // Three surfaces share this module: AccountCoordinator gates mutating
 // RPC/WebSocket/artifact-byte work through `checkHostedAccess` (with a
-// five-minute DO-local cache in `hosted_entitlement_cache`), and
+// funding-aware DO-local cache in `hosted_entitlement_cache`), and
 // SessionCoordinator surfaces the same decision on `session.describe`
 // through `resolveAccountEntitlement`.
 //
@@ -15,11 +15,10 @@
 //   mutating operations with `forbidden`.
 //
 // Failure modes are fail-closed for writes only: a billing lookup that
-// throws falls back to the bounded cached decision — last verified paid
-// state earns at most OUTAGE_GRACE_HOURS past its stored paid-through,
-// preview/grace entries keep their already-absolute deadline, and no
-// cache resolves to `unknown` (denied). Reads and describe are never
-// affected by the cache.
+// throws falls back to the bounded cached decision — personal paid state
+// earns at most OUTAGE_GRACE_HOURS past its stored paid-through, preview
+// entries keep their absolute deadline, and stale team funding is denied.
+// Reads and describe are never affected by the enforcement cache.
 
 import type { HostedEntitlement } from '../../../contract/entitlements';
 import {
@@ -32,8 +31,10 @@ import { emitMetric } from './metrics';
 import { evaluateHostedEntitlement, PREVIEW_ENDS_AT, PREVIEW_END_MS } from './policy';
 import { findActiveBillingBySyncAccount } from './store';
 
-/** BILL-03 bound: a cached entitlement decision is reused at most this long. */
-export const ENTITLEMENT_CACHE_TTL_MS = 5 * 60 * 1000;
+/** Keep hosted funding and membership changes visible within one minute. */
+export const ENTITLEMENT_CACHE_TTL_MS = 60 * 1000;
+/** Kept as an explicit alias for callers/tests describing team-seat freshness. */
+export const TEAM_ENTITLEMENT_CACHE_TTL_MS = ENTITLEMENT_CACHE_TTL_MS;
 
 const OUTAGE_GRACE_MS = OUTAGE_GRACE_HOURS * 3_600_000;
 
@@ -49,6 +50,8 @@ export const ENTITLEMENT_CACHE_DDL = `CREATE TABLE IF NOT EXISTS hosted_entitlem
   reason TEXT NOT NULL,
   access_until INTEGER,
   paid_through INTEGER,
+  funded_by TEXT NOT NULL DEFAULT 'none',
+  organization_id TEXT,
   revision INTEGER NOT NULL,
   fetched_at INTEGER NOT NULL
 )`;
@@ -59,6 +62,8 @@ interface CachedEntitlement {
   reason: string;
   access_until: number | null;
   paid_through: number | null;
+  funded_by: HostedEntitlement['fundedBy'];
+  organization_id: string | null;
   revision: number;
   fetched_at: number;
 }
@@ -108,14 +113,16 @@ function writeCache(
 ): void {
   storage.sql.exec(
     `INSERT INTO hosted_entitlement_cache
-       (id, state, source, reason, access_until, paid_through, revision, fetched_at)
-     VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+       (id, state, source, reason, access_until, paid_through, funded_by, organization_id, revision, fetched_at)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        state = excluded.state,
        source = excluded.source,
        reason = excluded.reason,
        access_until = excluded.access_until,
        paid_through = excluded.paid_through,
+       funded_by = excluded.funded_by,
+       organization_id = excluded.organization_id,
        revision = excluded.revision,
        fetched_at = excluded.fetched_at`,
     entitlement.state,
@@ -123,6 +130,8 @@ function writeCache(
     entitlement.reason,
     entitlement.accessUntil === null ? null : Date.parse(entitlement.accessUntil),
     paidThrough,
+    entitlement.fundedBy,
+    entitlement.organizationId,
     entitlement.revision,
     now,
   );
@@ -132,7 +141,14 @@ function entitlementFromCache(cached: CachedEntitlement, env: Env): HostedEntitl
   return {
     state: cached.state as HostedEntitlement['state'],
     source: cached.source as HostedEntitlement['source'],
-    planKey: cached.source === 'preview' || cached.source === 'none' ? null : 'sync_personal',
+    planKey:
+      cached.funded_by === 'team'
+        ? 'sync_team'
+        : cached.funded_by === 'personal'
+          ? 'sync_personal'
+          : null,
+    fundedBy: cached.funded_by,
+    organizationId: cached.organization_id,
     capabilities:
       cached.state === 'preview' || cached.state === 'active' || cached.state === 'grace'
         ? { syncWrite: true, meshSubmit: true }
@@ -156,8 +172,8 @@ function allowsWrite(entitlement: HostedEntitlement): boolean {
 
 /**
  * Uncached resolution straight from hosted truth — the session.describe
- * path. An account with no billing row is preview-eligible until the
- * absolute preview cutoff, matching the empty-subscription policy result.
+ * path. An account with no billing row is preview-eligible only in the
+ * explicit local test-spike environment.
  */
 export async function resolveAccountEntitlement(
   env: Env,
@@ -172,7 +188,7 @@ export async function resolveAccountEntitlement(
     return evaluateHostedEntitlement({
       now,
       lifecycle: 'active',
-      previewEligible: true,
+      previewEligible: env.ANVIL_DEV_SPIKE === 'true',
       revision: 0,
       limits,
       subscriptions: [],
@@ -181,9 +197,7 @@ export async function resolveAccountEntitlement(
       outageGraceHours: OUTAGE_GRACE_HOURS,
     });
   }
-  return (
-    await getEntitlementSnapshot(db, billing, now, limits, false)
-  ).entitlement;
+  return (await getEntitlementSnapshot(db, billing, now, limits, false)).entitlement;
 }
 
 /**
@@ -199,6 +213,8 @@ function outageFallback(cached: CachedEntitlement | null, env: Env, now: number)
     state: 'unknown',
     source: 'none',
     planKey: null,
+    fundedBy: 'none',
+    organizationId: null,
     capabilities: { syncWrite: false, meshSubmit: false },
     limits,
     previewEndsAt: PREVIEW_ENDS_AT,
@@ -211,6 +227,11 @@ function outageFallback(cached: CachedEntitlement | null, env: Env, now: number)
   if (cached === null) {
     return { allowed: false, entitlement: base, reason: 'billing-unavailable' };
   }
+  // Team funding comes from a removable organization membership/seat. Once
+  // its short cache expires, an outage must not restore that access.
+  if (cached.funded_by === 'team') {
+    return { allowed: false, entitlement: base, reason: 'billing-unavailable' };
+  }
   if (cached.source === 'subscription' && cached.paid_through !== null) {
     const graceEnd = cached.paid_through + OUTAGE_GRACE_MS;
     if (graceEnd > now) {
@@ -219,6 +240,8 @@ function outageFallback(cached: CachedEntitlement | null, env: Env, now: number)
         state: 'grace',
         source: 'outage-grace',
         planKey: 'sync_personal',
+        fundedBy: 'personal',
+        organizationId: null,
         capabilities: { syncWrite: true, meshSubmit: true },
         accessUntil: new Date(graceEnd).toISOString(),
         graceUntil: new Date(graceEnd).toISOString(),
@@ -239,7 +262,7 @@ function outageFallback(cached: CachedEntitlement | null, env: Env, now: number)
 
 /**
  * The enforcement check. Mutating callers deny when this returns
- * `allowed: false`. Cache reuse is bounded by ENTITLEMENT_CACHE_TTL_MS
+ * `allowed: false`. Cache reuse is bounded by the funding-specific TTL
  * and by the decision's absolute access deadline, so a preview grant can
  * never outlive the cutoff even inside the TTL window.
  */
@@ -253,10 +276,12 @@ export async function checkHostedAccess(
     return { allowed: true, entitlement: null };
   }
   const cached = readCache(storage);
+  const cacheTtl =
+    cached?.funded_by === 'team' ? TEAM_ENTITLEMENT_CACHE_TTL_MS : ENTITLEMENT_CACHE_TTL_MS;
   if (
     cached !== null &&
     now - cached.fetched_at >= 0 &&
-    now - cached.fetched_at <= ENTITLEMENT_CACHE_TTL_MS &&
+    now - cached.fetched_at <= cacheTtl &&
     (cached.access_until === null || cached.access_until > now)
   ) {
     const entitlement = entitlementFromCache(cached, env);
@@ -281,7 +306,7 @@ export async function checkHostedAccess(
       entitlement = evaluateHostedEntitlement({
         now,
         lifecycle: 'active',
-        previewEligible: true,
+        previewEligible: env.ANVIL_DEV_SPIKE === 'true',
         revision: 0,
         limits,
         subscriptions: [],

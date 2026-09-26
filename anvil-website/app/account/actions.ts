@@ -30,7 +30,7 @@ import type {
 
 export type ActionResult<T> =
   | { ok: true; data: T }
-  | { ok: false; message: string };
+  | { ok: false; message: string; code?: string };
 
 const NOT_CONFIGURED: ActionResult<never> = {
   ok: false,
@@ -46,8 +46,37 @@ function fail(error: unknown): ActionResult<never> {
     if (reason === "checkout-disabled") {
       return {
         ok: false,
-        message: "Checkout is not enabled yet — paid plans start 1 Nov 2026."
+        message: "Checkout is not enabled on this deployment. Production paid access begins 1 November 2026."
       };
+    }
+    if (reason === "waitlist-approval-required") {
+      return {
+        ok: false,
+        message:
+          "Hosted access is invite-only. Request access through the WorkOS waitlist and finish signup after approval."
+      };
+    }
+    if (reason === "personal-subscription-active") {
+      return {
+        ok: false,
+        message: "You already have a personal subscription. Use Manage billing to review or change it."
+      };
+    }
+    if (reason === "team-subscription-active") {
+      return {
+        ok: false,
+        message: "An organisation seat is already funding hosted access. Review team billing before starting another plan."
+      };
+    }
+    if (reason === "last-organization-owner") {
+      return {
+        ok: false,
+        code: "last-organization-owner",
+        message: "Transfer ownership or close your organisation before deleting this hosted account."
+      };
+    }
+    if (reason === "checkout-pending") {
+      return { ok: false, message: "A checkout is already open for this account. Finish it or wait for it to expire." };
     }
     if (reason === "account-deleted") {
       return { ok: false, message: "This hosted account has been deleted." };

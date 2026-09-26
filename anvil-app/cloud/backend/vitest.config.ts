@@ -8,16 +8,67 @@ import { defineConfig } from 'vitest/config';
 // FIFO on method + pathname; an unstubbed call fails loudly, and no test
 // traffic can reach the real api.stripe.com.
 const stripeStubQueue: { method: string; path: string; status: number; body: unknown }[] = [];
+const workosStubQueue: { method: string; path: string; status: number; body: unknown }[] = [];
+const workosStubCalls: { method: string; path: string }[] = [];
 
-async function stripeStubOutbound(request: Request): Promise<Response> {
+async function hostedProviderStubOutbound(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), {
       status,
       headers: { 'content-type': 'application/json' },
     });
+  if (url.hostname === 'api.workos.com') {
+    if (url.pathname === '/__workos-stub/enqueue' && request.method === 'POST') {
+      const rule = (await request.json()) as {
+        method: string;
+        path: string;
+        status?: number;
+        body?: unknown;
+      };
+      workosStubQueue.push({
+        method: rule.method,
+        path: rule.path,
+        status: rule.status ?? 200,
+        body: rule.body ?? {},
+      });
+      return json({ pending: workosStubQueue.length });
+    }
+    if (url.pathname === '/__workos-stub/reset' && request.method === 'POST') {
+      workosStubQueue.length = 0;
+      workosStubCalls.length = 0;
+      return json({ pending: 0 });
+    }
+    if (url.pathname === '/__workos-stub/pending' && request.method === 'GET') {
+      return json({ pending: workosStubQueue });
+    }
+    if (url.pathname === '/__workos-stub/calls' && request.method === 'GET') {
+      return json({ calls: workosStubCalls });
+    }
+    const publicAuthKitExchange =
+      request.method === 'POST' && url.pathname === '/user_management/authenticate';
+    if (
+      !publicAuthKitExchange &&
+      request.headers.get('authorization') !== 'Bearer sk_test_workos_fake'
+    ) {
+      return json({ error: 'workos-stub: missing or wrong bearer' }, 401);
+    }
+    const key = `${request.method} ${url.pathname}${url.search}`;
+    workosStubCalls.push({ method: request.method, path: `${url.pathname}${url.search}` });
+    const index = workosStubQueue.findIndex((rule) => {
+      if (rule.method !== request.method) return false;
+      if (rule.path.endsWith('*'))
+        return key.startsWith(`${rule.method} ${rule.path.slice(0, -1)}`);
+      return `${rule.method} ${rule.path}` === key;
+    });
+    if (index === -1) {
+      return json({ error: `workos-stub: no queued response for ${key}` }, 500);
+    }
+    const [rule] = workosStubQueue.splice(index, 1);
+    return json(rule.body, rule.status);
+  }
   if (url.hostname !== 'api.stripe.com') {
-    return json({ error: `stripe-stub: refusing non-Stripe outbound fetch to ${url.hostname}` }, 500);
+    return json({ error: `hosted-provider-stub: refusing outbound fetch to ${url.hostname}` }, 500);
   }
   if (url.pathname === '/__stripe-stub/enqueue' && request.method === 'POST') {
     const rule = (await request.json()) as {
@@ -130,11 +181,17 @@ export default defineConfig({
           // preview-entitled, proving enforcement doesn't disturb them.
           HOSTED_BILLING_ENFORCEMENT: 'true',
           HOSTED_SERVICE_KEYS: JSON.stringify({ test: 'a'.repeat(32) }),
+          HOSTED_BILLING_ENVIRONMENT: 'staging',
           STRIPE_SECRET_KEY: 'sk_test_fake',
+          WORKOS_API_KEY: 'sk_test_workos_fake',
+          WORKOS_WEBHOOK_SECRET: 'whsec_test_workos_fake0123456789',
+          HOSTED_WORKOS_CLIENT_ID: 'client_hosted_test',
           STRIPE_WEBHOOK_SECRET: 'whsec_testfake0123456789',
           HOSTED_CHECKOUT_ENABLED: 'true',
           STRIPE_PRICE_SYNC_MONTHLY: 'price_test_monthly',
           STRIPE_PRICE_SYNC_ANNUAL: 'price_test_annual',
+          STRIPE_PRICE_TEAM_MONTHLY: 'price_test_team_monthly',
+          STRIPE_PRICE_TEAM_ANNUAL: 'price_test_team_annual',
           HOSTED_CHECKOUT_SUCCESS_URL: 'https://example.test/checkout/success',
           HOSTED_CHECKOUT_CANCEL_URL: 'https://example.test/checkout/cancel',
           HOSTED_PORTAL_RETURN_URL: 'https://example.test/account',
@@ -148,7 +205,7 @@ export default defineConfig({
         serviceBindings: {
           MANAGED_PROVISIONER: provisionerStubBinding,
         },
-        outboundService: stripeStubOutbound,
+        outboundService: hostedProviderStubOutbound,
       },
     }),
   ],

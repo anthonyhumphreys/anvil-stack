@@ -5,11 +5,7 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
-import type {
-  DeviceSession,
-  DeviceSummary,
-  EnrollmentCodeIssueResult,
-} from '../../contract/auth';
+import type { DeviceSession, DeviceSummary, EnrollmentCodeIssueResult } from '../../contract/auth';
 import { isRpcError } from '../../contract/envelope';
 import type { HostedIdentity } from '../src/hosted/identity';
 import { signHostedServiceRequest } from '../src/hosted/service-auth';
@@ -27,7 +23,7 @@ function hostedDb(): D1Database {
 }
 
 function makeIdentity(tag: string): HostedIdentity {
-  return { workosClientId: `client_${tag}`, workosUserId: `user_${tag}` };
+  return { workosClientId: 'client_hosted_test', workosUserId: `user_${tag}` };
 }
 
 /** Signs and POSTs a service request to an /internal/hosted/* route. */
@@ -43,16 +39,11 @@ async function signedHostedPost(
     { audience: SERVICE_AUDIENCE, keyId: SERVICE_KEY_ID, secret: SERVICE_SECRET },
     Date.now(),
   );
-  const response = await SELF.fetch(
-    new Request(url, { method: 'POST', headers, body: payload }),
-  );
+  const response = await SELF.fetch(new Request(url, { method: 'POST', headers, body: payload }));
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
-async function enrollWithCode(
-  code: string,
-  installationId: string,
-): Promise<DeviceSession> {
+async function enrollWithCode(code: string, installationId: string): Promise<DeviceSession> {
   const response = await SELF.fetch('https://spike.test/v1/enroll', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -74,6 +65,8 @@ async function pairAndEnroll(
   identity: HostedIdentity,
   installationId: string,
 ): Promise<{ session: DeviceSession; accountId: string }> {
+  // This suite exercises devices for an already admitted preview user.
+  await getOrCreateBillingAccount(hostedDb(), identity);
   const pair = await signedHostedPost('/internal/hosted/pair-device', identity);
   expect(pair.status).toBe(200);
   const session = await enrollWithCode(pair.body['code'] as string, installationId);
@@ -162,10 +155,7 @@ describe('hosted devices', () => {
         '/internal/hosted/device-rename',
         { ...identity, enrollmentId: 'enr_x', displayName: 'y'.repeat(81) },
       ],
-      [
-        '/internal/hosted/device-rename',
-        { ...identity, enrollmentId: 'enr_x', displayName: 42 },
-      ],
+      ['/internal/hosted/device-rename', { ...identity, enrollmentId: 'enr_x', displayName: 42 }],
       ['/internal/hosted/device-revoke', { ...identity }],
       ['/internal/hosted/device-revoke', { ...identity, enrollmentId: '' }],
     ];
