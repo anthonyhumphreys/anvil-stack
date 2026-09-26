@@ -1524,7 +1524,10 @@ describe('hosted entitlement (BILL-05)', () => {
     } = { entitlement: PREVIEW_ENTITLEMENT, fairUse: fairUseNotice };
     const backend = fakeBackend(options);
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
-    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    initSyncRuntime(dir, {
+      fetchFn: backend.fetchFn,
+      createSocket: fakeSocketFactory().createSocket,
+    });
     pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
     await enrollOn(backend);
     enableSync();
@@ -1541,6 +1544,52 @@ describe('hosted entitlement (BILL-05)', () => {
     const restricted = await refreshHostedEntitlement();
     expect(restricted?.fairUse?.status).toBe('restricted');
     expect(restricted?.fairUse?.notice?.restrictAt).toBe(fairUseNotice.notice?.restrictAt);
+  });
+
+  it('does not surface a failed request from a stale sync cycle in the next runtime', async () => {
+    const backend = fakeBackend();
+    let resolveDeviceListStarted!: () => void;
+    const deviceListStarted = new Promise<void>((resolve) => {
+      resolveDeviceListStarted = resolve;
+    });
+    let rejectDeviceList!: (reason: Error) => void;
+    let heldDeviceList = false;
+    const fetchFn: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const body = JSON.parse((init?.body as string) ?? '{}') as { operation?: string };
+      if (
+        new URL(url).pathname === '/v1/rpc' &&
+        body.operation === 'device.list' &&
+        !heldDeviceList
+      ) {
+        heldDeviceList = true;
+        return new Promise<Response>((_resolve, reject) => {
+          rejectDeviceList = reject;
+          resolveDeviceListStarted();
+        });
+      }
+      return backend.fetchFn(input, init);
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      fetchFn,
+      createSocket: fakeSocketFactory().createSocket,
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+
+    // enableSync starts a background cycle; hold its first account RPC while the
+    // runtime is reset, then make the old request fail.
+    enableSync();
+    await deviceListStarted;
+    resetSyncRuntimeForTests();
+    initSyncRuntime(mkdtempSync(join(tmpdir(), 'sync-runtime-next-')), {
+      fetchFn: fakeBackend().fetchFn,
+    });
+    rejectDeviceList(new Error('stale device roster failed'));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(getRuntimeStatus().lastError).toBeNull();
   });
 
   it('clears a stale hosted row when session.describe omits entitlement (self-host)', async () => {

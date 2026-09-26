@@ -988,13 +988,14 @@ function enrollAgainst(
 
 function refreshAgainst(
   backend: SyncBackendRecord,
+  fetchFn: typeof fetch | undefined = fetchOverride,
 ): (params: SessionRefreshParams) => Promise<SessionRefreshResult> {
   return (params) =>
     postAuthRoute<SessionRefreshResult>(
       { apiUrl: apiUrlFor(backend) },
       'session/refresh',
       params as unknown as Record<string, unknown>,
-      { fetchFn: fetchOverride },
+      { fetchFn },
     );
 }
 
@@ -1639,18 +1640,20 @@ async function readOnlySyncPull(fence: {
   const paths = resolveBackendPaths(backend.baseUrl, backend.descriptor, {
     allowLoopbackHttp: shouldAllowLoopbackHttp(backend.baseUrl),
   });
+  const fetchFn = fetchOverride;
+  const cycleRpc: SyncEngineRpc | undefined =
+    rpcOverride ??
+    (fetchFn === undefined
+      ? undefined
+      : (connection, operation, params, accessToken) =>
+          backendRpc(connection, operation, params, accessToken, { fetchFn }));
   await runSyncCycle({
     scope: fence.scope,
     enrollmentId: fence.enrollmentId,
     connection: { apiUrl: paths.apiUrl, limits: backend.descriptor.limits },
     accessToken: token,
     writeGate: () => ({ allowed: false }),
-    rpc:
-      rpcOverride ??
-      (fetchOverride === undefined
-        ? undefined
-        : (connection, operation, params, accessToken) =>
-            backendRpc(connection, operation, params, accessToken, { fetchFn: fetchOverride })),
+    rpc: cycleRpc,
     guard: () => {
       try {
         assertSecurityScope(fence);
@@ -2486,7 +2489,7 @@ async function runSessionRefresh(): Promise<void> {
     return;
   }
   try {
-    const snapshot = await service.refreshSession(refreshAgainst(backend));
+    const snapshot = await service.refreshSession(refreshAgainst(backend, fetchOverride));
     if (generation !== runtimeGeneration) {
       return;
     }
@@ -2500,6 +2503,9 @@ async function runSessionRefresh(): Promise<void> {
       sessionExpired = true;
     }
   } catch (error) {
+    if (generation !== runtimeGeneration) {
+      return;
+    }
     lastError = error instanceof Error ? error.message : String(error);
     if (error instanceof BackendRpcError && !error.retryable) {
       // The refresh credential itself was rejected or revoked; polling cannot
@@ -3048,6 +3054,13 @@ export async function requestSync(): Promise<void> {
     datasetEpoch: fields.datasetEpoch,
   };
   const generation = runtimeGeneration;
+  const fetchFn = fetchOverride;
+  const cycleRpc: SyncEngineRpc | undefined =
+    rpcOverride ??
+    (fetchFn === undefined
+      ? undefined
+      : (connection, operation, params, accessToken) =>
+          backendRpc(connection, operation, params, accessToken, { fetchFn }));
   const guard = (): boolean => {
     if (generation !== runtimeGeneration) return false;
     const active = getActiveBackend();
@@ -3095,16 +3108,10 @@ export async function requestSync(): Promise<void> {
           getSyncEntitlement(scope.backendId, scope.accountId)?.restricted !== true &&
           keyRotationBlockedScopeKey !== runtimeScopeKey(scope),
       }),
-      rpc:
-        rpcOverride ??
-        (fetchOverride === undefined
-          ? undefined
-          : (connection, operation, params, accessToken) =>
-              backendRpc(connection, operation, params, accessToken, {
-                fetchFn: fetchOverride,
-              })),
+      rpc: cycleRpc,
       guard,
     });
+    if (!guard()) return;
     lastError = null;
     if (guard()) {
       // Rotation reports ride the same cadence — a finished rotation is
@@ -3117,6 +3124,7 @@ export async function requestSync(): Promise<void> {
       await serviceDashboardGrants(scope, guard).catch(() => undefined);
     }
   } catch (error) {
+    if (!guard()) return;
     const hostedReason =
       error instanceof SyncEngineError && error.code === 'forbidden'
         ? error.details?.['reason']
