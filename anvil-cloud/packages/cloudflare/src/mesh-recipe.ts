@@ -428,7 +428,14 @@ export async function provisionMeshSecrets(
   const allowed = new Set([
     "ENROLLMENT_ADMIN_TOKEN",
     ...(options.plan.deploymentMode === "hosted"
-      ? ["HOSTED_SERVICE_KEYS", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]
+      ? [
+          "HOSTED_SERVICE_KEYS",
+          "HOSTED_OPERATOR_KEYS",
+          "WORKOS_API_KEY",
+          "WORKOS_WEBHOOK_SECRET",
+          "STRIPE_SECRET_KEY",
+          "STRIPE_WEBHOOK_SECRET",
+        ]
       : []),
     ...(options.plan.services.some(
       (service) => service.binding === "MANAGED_PROVISIONER",

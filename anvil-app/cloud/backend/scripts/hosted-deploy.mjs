@@ -470,7 +470,8 @@ export function validateBackendSecrets(secrets, target, environment) {
     );
   if (
     typeof secrets.WORKOS_WEBHOOK_SECRET !== 'string' ||
-    !secrets.WORKOS_WEBHOOK_SECRET.startsWith('whsec_')
+    secrets.WORKOS_WEBHOOK_SECRET.length < 20 ||
+    /\s/.test(secrets.WORKOS_WEBHOOK_SECRET)
   )
     throw new HostedDeployError(`${environment} requires its WorkOS WORKOS_WEBHOOK_SECRET.`);
   const operatorKeys =

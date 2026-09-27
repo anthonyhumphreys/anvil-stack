@@ -193,6 +193,25 @@ describe("Mesh resource lifecycle", () => {
     expect(JSON.stringify(result)).not.toContain("sensitive");
   });
 
+  it("accepts hosted WorkOS and operator secrets for installation", async () => {
+    const { options } = await fixture();
+    const plan = await createMeshDeploymentPlan(options);
+    const run = runner();
+    const secrets = {
+      HOSTED_SERVICE_KEYS: "website-key",
+      HOSTED_OPERATOR_KEYS: "operator-key",
+      WORKOS_API_KEY: "workos-key",
+      WORKOS_WEBHOOK_SECRET: "webhook-key",
+    };
+    const result = await provisionMeshSecrets({ plan, secrets, run });
+    expect(result.ok).toBe(true);
+    expect(result.created).toEqual(
+      Object.keys(secrets)
+        .sort()
+        .map((name) => `secret:${name}`),
+    );
+  });
+
   it("blocks unresolved live deploys and production test bypasses before spawning", async () => {
     const { options } = await fixture();
     const run = runner();

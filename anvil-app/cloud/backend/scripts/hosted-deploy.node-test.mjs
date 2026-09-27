@@ -372,7 +372,7 @@ test('backend secrets keep WorkOS and Stripe environment credentials correctly s
   const shared = {
     HOSTED_SERVICE_KEYS: JSON.stringify({ website: 'w'.repeat(40) }),
     WORKOS_API_KEY: 'sk_test_workos_staging',
-    WORKOS_WEBHOOK_SECRET: 'whsec_workos_staging',
+    WORKOS_WEBHOOK_SECRET: 'WorkOSDashboardSecret12345',
     MANAGED_PROVISIONER_TOKEN: 'p'.repeat(40),
   };
   validateBackendSecrets(shared, staging, 'staging');
