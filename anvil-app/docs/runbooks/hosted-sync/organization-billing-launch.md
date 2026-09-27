@@ -132,24 +132,49 @@ Remove each ID after the first Anvil billing row is created.
 ## Staging setup and rehearsal
 
 Do all staging work first. Use disposable WorkOS identities and Stripe test mode.
-The staging resources already recorded in `cloud/backend/hosted-targets.example.json`
-are for acceptance testing; production remains incomplete in the ignored operator
-manifest.
+The existing hosted backend is the Staging target. Keep its Worker, provisioner,
+D1 database, R2 bucket, WorkOS clients, and existing data; apply the new D1
+migrations and upgrade the Worker in place. Production remains a separate,
+incomplete target in the ignored operator manifest.
+
+### Current Staging baseline (verified 27 September 2026)
+
+| Resource                          | Verified state                                                                                                                                                                                         | Remaining work                                                                                                                                                                                                                                 |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cloudflare Worker and provisioner | `anvil-sync-hosted-staging` and `anvil-sync-hosted-staging-provisioner` are deployed.                                                                                                                  | Upgrade the existing backend after the Staging plan and migrations; do not recreate either Worker.                                                                                                                                             |
+| Cloudflare storage                | D1 `anvil-sync-hosted-staging-billing` and R2 `anvil-sync-hosted-staging-artifacts` exist.                                                                                                             | Apply pending D1 migrations `0004_organizations.sql` and `0005_team_billing.sql` to this D1 database. Preserve its existing accounts and objects.                                                                                              |
+| Cloudflare secrets                | The deployed backend lists `HOSTED_SERVICE_KEYS` and `MANAGED_PROVISIONER_TOKEN`. The local protected backend secret file named in the manifest is absent.                                             | Recover the existing website service key mapping and provisioner token into that local file before running `migrate`, `apply`, or `secrets`; add the Staging WorkOS API key and new webhook secret. Do not rotate the service key by accident. |
+| WorkOS clients and roles          | The manifest has separate Staging desktop and website client IDs. The website's local `.env` uses the website client and a test API key. The Staging API lists environment roles `admin` and `member`. | Reuse these clients and roles. Verify the deployed website settings and Dashboard redirect and invitation URLs.                                                                                                                                |
+| WorkOS waitlist and webhook       | The Staging API has no default waitlist and lists no webhook endpoints.                                                                                                                                | Enable the waitlist and create the backend webhook endpoint below. Check the signup, domain/JIT, and invitation settings in the Dashboard.                                                                                                     |
+| Stripe                            | No Staging Price IDs or checkout setting are present in the generated Worker vars; no Stripe secrets are installed on the backend.                                                                     | Create test-mode prices and webhook in step 3.                                                                                                                                                                                                 |
+
+This baseline comes from a read-only Staging plan, Cloudflare Worker/D1/R2 and
+secret-list checks, and WorkOS API checks using the local Staging website key.
+The last backend Worker deployment was 22 September 2026, before the
+organisation changes; passing CI has not deployed this release to Staging.
+Dashboard-only WorkOS settings and the deployed website's credentials were not
+verified by those API checks. Recheck the target and provider state before a
+later deployment; this table is a dated record, not a replacement for the plan.
 
 ### 1. Configure WorkOS Staging
 
-In the WorkOS Dashboard, select the **Staging** environment.
+In the WorkOS Dashboard, select the **existing Staging** environment. Keep the
+two client IDs already recorded in the target manifest; there is no need to
+create replacement applications.
 
-1. Open the Anvil website and desktop applications. Record the staging client IDs;
-   the website client must match `staging.workos.hostedClientId`, and the desktop
-   client must match `staging.workos.desktopClientId` in the local hosted-target
-   manifest.
-2. Register the staging website callback URL from
+1. Verify that the deployed Staging website uses
+   `staging.workos.hostedClientId` and the desktop uses
+   `staging.workos.desktopClientId`. The local website `.env` already matches
+   the website client; that does not verify deployed website settings.
+2. Verify the Staging website callback URL from
    `ANVIL_STAGING_WORKOS_REDIRECT_URI` and the appropriate local/deployed return
-   URLs. Use the exact callback configured by the current website build. Keep
-   local `http://localhost` callbacks in Staging only.
-3. In **Authentication → Features**, enable the **Waitlist** for Staging. Existing
-   users can still sign in; new self-service attempts should land on the waitlist.
+   URLs in the Dashboard; add missing URLs. The local website `.env` currently
+   points to `http://localhost:3000/auth/callback`, which does not establish the
+   deployed callback. Keep local `http://localhost` callbacks in Staging only.
+3. In **Authentication → Features**, enable the **Waitlist** for Staging. The
+   Staging API currently has no default waitlist. Existing users can still sign
+   in; new self-service attempts should land on the waitlist. Confirm the
+   default waitlist is present after enabling it.
 4. Disable verified-domain automatic membership and SSO JIT provisioning. Verify
    no verified domain or connection can silently create a member outside the
    approved waitlist flow.
@@ -163,28 +188,30 @@ In the WorkOS Dashboard, select the **Staging** environment.
    approved entry until its first Anvil account exists. Denying a request does
    not remove the address from the waitlist; revoke an issued invitation if
    approval must be withdrawn.
-7. In **Authorization → Roles**, keep the seeded environment-level `member`
-   role as the default. Create an environment-level role with the exact slug
-   `admin` if one does not exist. The hosted backend maps local organization
-   owners to `admin` and ordinary members to `member`. This is distinct from
-   your WorkOS Dashboard team admin role and from organization-scoped custom
-   roles; do not create an organization-scoped role for this mapping.
+7. In **Authorization → Roles**, verify the existing environment-level `member`
+   and `admin` roles and keep `member` as the default. Both slugs are already
+   returned by the Staging API. The hosted backend maps local organization
+   owners to `admin` and ordinary members to `member`. These are distinct from
+   WorkOS Dashboard team roles and organization-scoped custom roles; do not
+   create duplicate roles for this mapping.
 
 WorkOS waitlist entries are environment-scoped. Staging approval does not admit
 the same person in Production.
 
 ### 2. Configure staging billing resources in Cloudflare
 
-From `anvil-app/`, prepare the ignored operator manifest if it does not exist:
+From `anvil-app/`, keep the existing ignored operator manifest. On another
+machine, copy the checked-in example only if that manifest does not yet exist:
 
 ```sh
 mkdir -p cloud/backend/.wrangler
 cp -n cloud/backend/hosted-targets.example.json cloud/backend/.wrangler/hosted-targets.json
 ```
 
-Keep the supplied staging account, Worker, URL, bucket, D1 ID, descriptor, and
-WorkOS IDs. Before invoking provider operations, build the matching Anvil Cloud
-CLI and validate the local staging plan:
+The current manifest already names the deployed staging account, Worker, URL,
+bucket, D1 ID, descriptor, provisioner, and WorkOS clients. Before invoking
+provider operations, build the matching Anvil Cloud CLI and validate the local
+staging plan:
 
 ```sh
 cd ../anvil-cloud
@@ -203,10 +230,10 @@ D1, R2, provisioner, WorkOS clients, and `HOSTED_BILLING_ENVIRONMENT=staging`
 before continuing. All deployment commands below select the target through the
 wrapper; do not choose a resource with a direct `wrangler` override.
 
-The staging `baseUrl` is already known from the manifest. Before backend
-provisioning, create the WorkOS webhook endpoint at that origin so its signing
-secret is available to the deployment preflight. The Worker will begin handling
-events after it is deployed and its secrets are installed.
+The staging `baseUrl` is already known from the manifest. No WorkOS webhook
+endpoint exists yet; create one at that origin so its signing secret is
+available to the deployment preflight. The current Worker will begin handling
+these events after the updated version and its secrets are installed.
 
 ```text
 https://<staging-worker-host>/v1/hosted/workos-webhook
@@ -233,32 +260,43 @@ The server uses its WorkOS key for organization, membership, invitation, and
 waitlist admission checks. Do not use the website's WorkOS key as the operator
 HMAC key.
 
-Set up an independent staging provisioner when the release uses managed
-environments. Then provision staging storage, apply the billing migration, and
-deploy the Worker using the existing sequence in [deploy.md](deploy.md#deploy-staging).
-Do not run these commands until the resulting plans name only staging resources.
-
-After the staging Worker is deployed, use its manifest `baseUrl` as the staging
-WorkOS and Stripe webhook origin. The WorkOS endpoint configured above can now
-deliver to the deployed Worker.
-
-The backend secret file named by `staging.secrets.backendFile` must contain these
-keys when provisioning/applying the organisation-enabled backend:
+The backend secret file named by `staging.secrets.backendFile` is currently
+missing locally, although the deployed Worker still has its service and
+provisioner secrets. Rebuild the protected file from the existing Staging
+credential records. Preserve the website's active HMAC key ID and secret in
+`HOSTED_SERVICE_KEYS`, using the local website `.env` only after checking that
+it matches the deployed website; preserve the existing token in the
+`provisionerTokenFile`. Add the Staging WorkOS API key and the newly issued
+webhook secret. Do not replace the website HMAC secret without a coordinated
+rotation. The resulting file must contain:
 
 ```json
 {
-  "HOSTED_SERVICE_KEYS": "{\"website-staging\":\"<unique random secret of at least 32 bytes>\"}",
+  "HOSTED_SERVICE_KEYS": "{\"<existing website key ID>\":\"<matching existing service secret>\"}",
   "WORKOS_API_KEY": "<WorkOS Staging API key>",
   "WORKOS_WEBHOOK_SECRET": "<WorkOS Staging webhook signing secret>",
-  "MANAGED_PROVISIONER_TOKEN": "<staging provisioner token, when provisioner is enabled>"
+  "MANAGED_PROVISIONER_TOKEN": "<existing staging provisioner token>"
 }
 ```
 
-Keep the file under `.wrangler/`, restrict local access, and install it with:
+Keep the file under `.wrangler/` and restrict local access. The staging
+provisioner, D1 database, and R2 bucket already exist. Do not run the initial
+provisioner `apply` or storage `provision` merely to add organisations. From
+`anvil-app/`, use the guarded target to apply the two pending migrations,
+install the new secrets, and upgrade the existing Worker:
 
 ```sh
+pnpm --dir cloud/backend hosted:deploy -- --environment staging plan --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging migrate --json
 pnpm --dir cloud/backend hosted:deploy -- --environment staging secrets --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging apply --test-deployment --json
 ```
+
+Review the selected Worker, D1 database, and pending migration list before the
+first mutation. Never use `remove` for this upgrade. After deployment, verify
+delivery to the WorkOS webhook endpoint above. Use the same manifest `baseUrl`
+for the Stripe webhook in step 3. For command details, see
+[deploy.md](deploy.md#deploy-staging).
 
 The operator-only `HOSTED_OPERATOR_KEYS` entry is optional until an operator
 needs to set or clear a fair-use restriction. Its separate setup is below.
