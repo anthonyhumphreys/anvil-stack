@@ -40,7 +40,9 @@ Generated Wrangler files and secret files live under `.wrangler/` and are
 ignored by git. `vars.json` preserves existing optional non-secret settings
 such as Stripe checkout URLs and quota overrides while locking deployment and
 WorkOS identity vars to the selected manifest entry. Do not put secret values
-in `vars.json`.
+in `vars.json`. The existing JSON secret file remains supported; for optional
+dotenv and process-environment inputs, see
+[hosted backend secret inputs](secret-inputs.md).
 
 ## Build and preflight
 
@@ -78,9 +80,12 @@ them again before it calls the CLI.
 ## Deploy staging
 
 For cloud environments, deploy the staging provisioner first. Its `plan` is
-local; `apply` contacts Cloudflare. Set the token path in the staging manifest
-and use one fresh value in both the provisioner token file and backend secrets
-file:
+local; `apply` contacts Cloudflare. Use one fresh
+`MANAGED_PROVISIONER_TOKEN` value for both the backend and provisioner. In the
+legacy JSON mode, set the token path in the staging manifest and use the same
+value in the backend secrets file. With a dotenv or process source, the wrapper
+uses `MANAGED_PROVISIONER_TOKEN` for both. See
+[hosted backend secret inputs](secret-inputs.md) for the source choices.
 
 ```sh
 pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner plan --json
@@ -104,13 +109,11 @@ pnpm --dir cloud/backend hosted:deploy -- --environment staging apply --test-dep
 pnpm --dir cloud/backend hosted:deploy -- --environment staging secrets --json
 ```
 
-The wrapper reads backend secrets from the `staging.secrets.backendFile` path
-in the manifest. The required `HOSTED_SERVICE_KEYS` JSON map must contain a
-fresh key id and a secret of at least 32 characters. When the managed
-provisioner is enabled, the backend's `MANAGED_PROVISIONER_TOKEN` must match
-the provisioner token file. Stripe values are optional and must be supplied
-together. Secret values are streamed from files to the CLI and are never
-printed by the wrapper.
+The wrapper reads backend secrets from the configured Staging source. The
+required `HOSTED_SERVICE_KEYS` JSON map must contain a fresh key id and a secret
+of at least 32 characters. When the managed provisioner is enabled, its token
+must match `MANAGED_PROVISIONER_TOKEN`. Stripe values are optional and must be
+supplied together. The wrapper does not print secret values.
 
 `--test-deployment` is allowed only for non-production targets. Normal apply
 and remove remain behind the CLI's provider-evidence gate. D1/R2 provisioning
@@ -122,13 +125,16 @@ reviewing the target and plan.
 Production stays blocked until the production manifest entry is complete. The
 wrapper rejects reused Worker, R2 bucket, D1 name/id, backend origin,
 provisioner name, descriptor id, and either WorkOS client id. Production
-provision, migrate, apply, and secret operations require a production-only
-backend secrets file and a completed Staging backend secrets file for
-cross-environment isolation checks. The wrapper rejects reused WorkOS, Stripe,
-HMAC, operator, and provisioner secrets. Production Stripe Price IDs must also
-differ from all configured Staging Price IDs; generate and review Staging config
-first. If the managed provisioner is enabled, its token must match the backend
-secret and differ from Staging.
+provision, migrate, apply, and secret operations require a Production-only
+backend secret source and an independently loadable, completed Staging source
+for cross-environment isolation checks. If Staging uses only
+`secrets.backendEnv: "process"`, the wrapper cannot compare the two sources and
+must fail closed. The wrapper rejects reused WorkOS, Stripe, HMAC, operator,
+and provisioner secrets. Production Stripe Price IDs must also differ from all
+configured Staging Price IDs; generate and review Staging config first. If the
+managed provisioner is enabled, its token must match the backend secret and
+differ from Staging. Source options and the optional internal 1Password mount
+are documented in [hosted backend secret inputs](secret-inputs.md).
 
 Use the production target only after its WorkOS application and website
 settings are ready:
@@ -160,7 +166,10 @@ Vercel environments. In particular, each website
 `ANVIL_<ENV>_WORKOS_CLIENT_ID` must match the manifest target's `hostedClientId`,
 and each `ANVIL_<ENV>_BACKEND_ORIGIN` must match its `baseUrl`; desktop direct
 OIDC uses `desktopClientId`. Production must use its own WorkOS API key and
-callback URL.
+callback URL. The website's Vercel environment receives only website-specific
+variables. Do not export all variables from a backend dotenv source to Vercel;
+the `ANVIL_STAGING_*` and `ANVIL_PRODUCTION_*` prefixes do not make every value
+website-safe. See [hosted backend secret inputs](secret-inputs.md).
 
 The GitHub Actions environments `anvil-staging` and `anvil-production` have
 been created. Staging has `ANVIL_STAGING_HOSTED_BACKEND_URL` set to its
@@ -259,4 +268,5 @@ pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner remo
 Worker removal does not provide a full storage cleanup workflow. Review and
 remove the dedicated D1/R2 resources in Cloudflare when their test data is no
 longer needed. Keep billing migrations intact for any retained database.
-Delete temporary secret files when finished.
+Delete operator-created temporary secret files when finished. The wrapper
+removes its own temporary files; keep mounted 1Password paths in place.

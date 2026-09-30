@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /** Select and validate a hosted target before invoking the Anvil Cloud CLI. */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { parseEnv } from 'node:util';
 
 export const BACKEND_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 export const DEFAULT_MANIFEST = join(BACKEND_DIR, '.wrangler', 'hosted-targets.json');
@@ -95,9 +97,30 @@ function validateTarget(target, environment) {
     throw new HostedDeployError(`${environment}.managedProvisioner must be true or false.`);
   if (target.managedProvisioner)
     requireName(target.provisionerName, `${environment}.provisionerName`);
-  if (!target.secrets?.backendFile)
-    throw new HostedDeployError(`${environment}.secrets.backendFile is required.`);
-  if (target.managedProvisioner && !target.secrets.provisionerTokenFile)
+  const secretSources = ['backendFile', 'backendEnvFile', 'backendEnv'].filter(
+    (key) => target.secrets?.[key] !== undefined,
+  );
+  if (secretSources.length !== 1)
+    throw new HostedDeployError(
+      `${environment}.secrets must select exactly one of backendFile, backendEnvFile, or backendEnv.`,
+    );
+  if (target.secrets.backendEnv !== undefined && target.secrets.backendEnv !== 'process')
+    throw new HostedDeployError(`${environment}.secrets.backendEnv must be "process".`);
+  if (
+    (target.secrets.backendEnvFile !== undefined &&
+      (typeof target.secrets.backendEnvFile !== 'string' || !target.secrets.backendEnvFile)) ||
+    (target.secrets.backendFile !== undefined &&
+      (typeof target.secrets.backendFile !== 'string' || !target.secrets.backendFile))
+  )
+    throw new HostedDeployError(`${environment} backend secret source must be a non-empty path.`);
+  const usesEnvironmentSecrets = Boolean(
+    target.secrets.backendEnvFile || target.secrets.backendEnv === 'process',
+  );
+  if (usesEnvironmentSecrets && target.secrets.provisionerTokenFile !== undefined)
+    throw new HostedDeployError(
+      `${environment}.secrets.provisionerTokenFile cannot be used with an environment secret source.`,
+    );
+  if (target.managedProvisioner && !usesEnvironmentSecrets && !target.secrets.provisionerTokenFile)
     throw new HostedDeployError(`${environment}.secrets.provisionerTokenFile is required.`);
   return target;
 }
@@ -502,17 +525,92 @@ export function validateCheckoutSecrets(config, secrets, environment) {
   validateStripeSecretMode(secrets.STRIPE_SECRET_KEY, environment);
 }
 
-function readBackendSecrets(target, environment) {
+function validateDotenvSyntax(contents, environment) {
+  let multilineQuote;
+  for (const line of contents.split(/\r?\n/)) {
+    if (multilineQuote) {
+      const end = findDotenvQuote(line, multilineQuote, 0);
+      if (end < 0) continue;
+      if (!validDotenvTrailingText(line.slice(end + 1)))
+        throw new HostedDeployError(`${environment} backend environment file is malformed.`);
+      multilineQuote = undefined;
+      continue;
+    }
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const assignment = /^(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.*)$/.exec(trimmed);
+    if (!assignment)
+      throw new HostedDeployError(`${environment} backend environment file is malformed.`);
+    const value = assignment[1];
+    const quote = value[0];
+    if (quote !== '"' && quote !== "'" && quote !== '`') continue;
+    const end = findDotenvQuote(value, quote);
+    if (end < 0) multilineQuote = quote;
+    else if (!validDotenvTrailingText(value.slice(end + 1)))
+      throw new HostedDeployError(`${environment} backend environment file is malformed.`);
+  }
+  if (multilineQuote)
+    throw new HostedDeployError(`${environment} backend environment file is malformed.`);
+}
+
+function findDotenvQuote(value, quote, start = 1) {
+  return value.indexOf(quote, start);
+}
+
+function validDotenvTrailingText(value) {
+  const trailing = value.trim();
+  return !trailing || trailing.startsWith('#');
+}
+
+function selectBackendSecrets(values) {
+  return Object.fromEntries(
+    [...SECRET_NAMES]
+      .filter((name) => Object.hasOwn(values, name))
+      .map((name) => [name, values[name]]),
+  );
+}
+
+export function readBackendSecrets(target, environment) {
+  const source = target.secrets;
   let secrets;
-  try {
-    secrets = JSON.parse(readFileSync(resolveSecretPath(target.secrets.backendFile), 'utf8'));
-  } catch {
-    throw new HostedDeployError(`${environment} backend secret file is missing or invalid JSON.`);
+  if (source.backendFile) {
+    try {
+      secrets = JSON.parse(readFileSync(resolveSecretPath(source.backendFile), 'utf8'));
+    } catch {
+      throw new HostedDeployError(`${environment} backend secret file is missing or invalid JSON.`);
+    }
+  } else if (source.backendEnvFile) {
+    let values;
+    try {
+      const contents = readFileSync(resolveSecretPath(source.backendEnvFile), 'utf8');
+      validateDotenvSyntax(contents, environment);
+      values = parseEnv(contents);
+    } catch (error) {
+      if (error instanceof HostedDeployError) throw error;
+      throw new HostedDeployError(`${environment} backend environment file is missing or invalid.`);
+    }
+    if (values.ANVIL_DEPLOYMENT_ENV !== environment)
+      throw new HostedDeployError(
+        `${environment} backend environment file must set ANVIL_DEPLOYMENT_ENV=${environment}.`,
+      );
+    secrets = selectBackendSecrets(values);
+  } else if (source.backendEnv === 'process') {
+    if (process.env.ANVIL_DEPLOYMENT_ENV !== environment)
+      throw new HostedDeployError(
+        `${environment} process environment must set ANVIL_DEPLOYMENT_ENV=${environment}.`,
+      );
+    secrets = selectBackendSecrets(process.env);
+  } else {
+    throw new HostedDeployError(`${environment} backend secret source is not configured.`);
   }
   return validateBackendSecrets(secrets, target, environment);
 }
 
-function readProvisionerToken(target, environment) {
+export function readProvisionerToken(target, environment) {
+  if (target.secrets.backendEnvFile || target.secrets.backendEnv === 'process') {
+    const secrets = readBackendSecrets(target, environment);
+    return secrets.MANAGED_PROVISIONER_TOKEN;
+  }
   let token;
   try {
     token = readFileSync(resolveSecretPath(target.secrets.provisionerTokenFile), 'utf8').trim();
@@ -528,12 +626,19 @@ function readProvisionerToken(target, environment) {
 
 export function assertProductionSecretsAreFresh(manifest, secrets) {
   const staging = manifest.environments.staging;
-  if (!staging.secrets?.backendFile)
+  if (
+    !staging.secrets?.backendFile &&
+    !staging.secrets?.backendEnvFile &&
+    staging.secrets?.backendEnv !== 'process'
+  )
     throw new HostedDeployError(
-      'Production requires a Staging backend secret file for isolation checks.',
+      'Production requires a Staging backend secret source for isolation checks.',
     );
-  const stagingPath = resolveSecretPath(staging.secrets.backendFile);
-  if (!existsSync(stagingPath))
+  if (staging.secrets.backendEnv === 'process')
+    throw new HostedDeployError(
+      'Production requires Staging secrets in a file for isolation checks; process environment secrets cannot supply both environments.',
+    );
+  if (staging.secrets.backendFile && !existsSync(resolveSecretPath(staging.secrets.backendFile)))
     throw new HostedDeployError(
       'Production requires the Staging backend secret file for isolation checks.',
     );
@@ -565,10 +670,42 @@ export function assertProductionSecretsAreFresh(manifest, secrets) {
     throw new HostedDeployError(
       'Production hosted HMAC keys must not reuse keys from either staging audience.',
     );
-  if (secrets.MANAGED_PROVISIONER_TOKEN && staging.secrets?.provisionerTokenFile) {
-    const path = resolveSecretPath(staging.secrets.provisionerTokenFile);
-    if (existsSync(path) && readFileSync(path, 'utf8').trim() === secrets.MANAGED_PROVISIONER_TOKEN)
-      throw new HostedDeployError('Production provisioner token reuses staging.');
+  if (secrets.MANAGED_PROVISIONER_TOKEN && staging.managedProvisioner) {
+    if (staging.secrets.backendEnvFile || staging.secrets.backendEnv === 'process') {
+      if (stagingSecrets.MANAGED_PROVISIONER_TOKEN === secrets.MANAGED_PROVISIONER_TOKEN)
+        throw new HostedDeployError('Production provisioner token reuses staging.');
+    } else if (staging.secrets.provisionerTokenFile) {
+      const path = resolveSecretPath(staging.secrets.provisionerTokenFile);
+      if (
+        existsSync(path) &&
+        readFileSync(path, 'utf8').trim() === secrets.MANAGED_PROVISIONER_TOKEN
+      )
+        throw new HostedDeployError('Production provisioner token reuses staging.');
+    }
+  }
+}
+
+export function withSecretFiles({ backendSecrets, provisionerToken }, action) {
+  const directory = mkdtempSync(join(tmpdir(), 'anvil-hosted-secrets-'));
+  const files = {};
+  try {
+    if (backendSecrets !== undefined) {
+      files.backendSecretFile = join(directory, 'backend-secrets.json');
+      writeFileSync(files.backendSecretFile, JSON.stringify(selectBackendSecrets(backendSecrets)), {
+        flag: 'wx',
+        mode: 0o600,
+      });
+    }
+    if (provisionerToken !== undefined) {
+      files.provisionerTokenFile = join(directory, 'provisioner-token');
+      writeFileSync(files.provisionerTokenFile, provisionerToken, {
+        flag: 'wx',
+        mode: 0o600,
+      });
+    }
+    return action(files);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 }
 
@@ -605,7 +742,7 @@ export function checkedFlags(command, subcommand, flags, environment) {
   return accepted;
 }
 
-export function cliArgs(command, subcommand, target, paths, flags) {
+export function cliArgs(command, subcommand, target, paths, flags, secretFiles = {}) {
   const common = ['--stage', target.stage, '--account-id', target.accountId];
   if (command === 'provisioner')
     return [
@@ -622,7 +759,11 @@ export function cliArgs(command, subcommand, target, paths, flags) {
       '--config-out',
       paths.provisioner,
       ...(subcommand === 'secrets'
-        ? ['--from-file', resolveSecretPath(target.secrets.provisionerTokenFile)]
+        ? [
+            '--from-file',
+            secretFiles.provisionerTokenFile ??
+              resolveSecretPath(target.secrets.provisionerTokenFile),
+          ]
         : []),
       ...flags,
     ];
@@ -664,7 +805,10 @@ export function cliArgs(command, subcommand, target, paths, flags) {
     paths.connection,
     ...(target.managedProvisioner ? ['--managed-provisioner', target.provisionerName] : []),
     ...(command === 'secrets'
-      ? ['--from-file', resolveSecretPath(target.secrets.backendFile)]
+      ? [
+          '--from-file',
+          secretFiles.backendSecretFile ?? resolveSecretPath(target.secrets.backendFile),
+        ]
       : []),
     ...flags,
   ];
@@ -739,16 +883,20 @@ export function run(argv, executeCommand = execute) {
     if (environment === 'production') assertProductionSecretsAreFresh(manifest, backendSecrets);
     if (
       target.managedProvisioner &&
+      !target.secrets.backendEnvFile &&
+      target.secrets.backendEnv !== 'process' &&
       backendSecrets.MANAGED_PROVISIONER_TOKEN !== readProvisionerToken(target, environment)
     )
       throw new HostedDeployError('Backend and provisioner production tokens must match.');
   }
-  if (command === 'secrets' && !backendSecrets) {
-    backendSecrets = readBackendSecrets(target, environment);
-    if (environment === 'production') assertProductionSecretsAreFresh(manifest, backendSecrets);
+  let provisionerToken;
+  if (command === 'provisioner' && subcommand === 'secrets') {
+    if (target.secrets.backendEnvFile || target.secrets.backendEnv === 'process') {
+      backendSecrets = readBackendSecrets(target, environment);
+      if (environment === 'production') assertProductionSecretsAreFresh(manifest, backendSecrets);
+      provisionerToken = backendSecrets.MANAGED_PROVISIONER_TOKEN;
+    } else provisionerToken = readProvisionerToken(target, environment);
   }
-  if (command === 'provisioner' && subcommand === 'secrets')
-    readProvisionerToken(target, environment);
   if (
     command === 'provision' ||
     command === 'apply' ||
@@ -785,10 +933,27 @@ export function run(argv, executeCommand = execute) {
   }
   if (command === 'plan') selectedFlags.push('--write');
   if (command === 'provisioner' && subcommand === 'plan') selectedFlags.push('--write');
-  const status = executeCommand(
-    cliArgs(command, subcommand, target, paths, selectedFlags),
-    environment,
-  );
+  let status;
+  if (command === 'secrets') {
+    status = withSecretFiles({ backendSecrets }, (secretFiles) =>
+      executeCommand(
+        cliArgs(command, subcommand, target, paths, selectedFlags, secretFiles),
+        environment,
+      ),
+    );
+  } else if (command === 'provisioner' && subcommand === 'secrets') {
+    status = withSecretFiles({ provisionerToken }, (secretFiles) =>
+      executeCommand(
+        cliArgs(command, subcommand, target, paths, selectedFlags, secretFiles),
+        environment,
+      ),
+    );
+  } else {
+    status = executeCommand(
+      cliArgs(command, subcommand, target, paths, selectedFlags),
+      environment,
+    );
+  }
   if (status !== 0) return status;
   if (command === 'plan')
     validateGeneratedConfig(

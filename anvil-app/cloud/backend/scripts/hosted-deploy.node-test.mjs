@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -12,12 +20,15 @@ import {
   checkedFlags,
   cliArgs,
   mergeTargetVars,
+  readBackendSecrets,
+  readProvisionerToken,
   run,
   validateBackendSecrets,
   validateCheckoutSecrets,
   validateGeneratedConfig,
   validateManifest,
   validateStripeSecretMode,
+  withSecretFiles,
 } from './hosted-deploy.mjs';
 
 const manifest = JSON.parse(
@@ -40,6 +51,143 @@ test('the checked-in target example keeps current resources assigned to staging'
 
 test('production is blocked until its independent Cloudflare and WorkOS target is configured', () => {
   assert.throws(() => validateManifest(manifest, 'production'), /production\.accountId/);
+});
+
+test('secret source selection accepts one JSON, dotenv, or explicit process source', () => {
+  const configured = (secrets) => ({
+    ...manifest,
+    environments: { ...manifest.environments, staging: { ...staging, secrets } },
+  });
+  assert.equal(
+    validateManifest(configured(staging.secrets), 'staging').workerName,
+    staging.workerName,
+  );
+  assert.equal(
+    validateManifest(configured({ backendEnvFile: '/tmp/staging.env' }), 'staging').workerName,
+    staging.workerName,
+  );
+  assert.equal(
+    validateManifest(configured({ backendEnv: 'process' }), 'staging').workerName,
+    staging.workerName,
+  );
+  assert.throws(
+    () =>
+      validateManifest(
+        configured({ ...staging.secrets, backendEnvFile: '/tmp/staging.env' }),
+        'staging',
+      ),
+    /exactly one of backendFile, backendEnvFile, or backendEnv/,
+  );
+  assert.throws(
+    () => validateManifest(configured({ backendEnv: true }), 'staging'),
+    /backendEnv must be "process"/,
+  );
+});
+
+test('dotenv sources require the selected deployment marker and expose only backend secrets', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hosted-env-secrets-test-'));
+  const envPath = join(directory, 'staging.env');
+  const token = 'p'.repeat(48);
+  const contents = (deploymentEnvironment) =>
+    `# Environment-specific hosted secrets\n\nANVIL_DEPLOYMENT_ENV=${deploymentEnvironment}\nHOSTED_SERVICE_KEYS='{"website":"${'s'.repeat(48)}"}'\nWORKOS_API_KEY=sk_test_workos_staging_unique\nWORKOS_WEBHOOK_SECRET=whsec_staging_unique_value\nMANAGED_PROVISIONER_TOKEN=${token}\nWEBSITE_SENTRY_AUTH_TOKEN=website-only-secret\n`;
+  const targetManifest = {
+    ...manifest,
+    environments: {
+      ...manifest.environments,
+      staging: { ...staging, secrets: { backendEnvFile: envPath } },
+    },
+  };
+  try {
+    writeFileSync(envPath, contents('staging'));
+    const target = validateManifest(targetManifest, 'staging');
+    const secrets = readBackendSecrets(target, 'staging');
+    assert.deepEqual(Object.keys(secrets).sort(), [
+      'HOSTED_SERVICE_KEYS',
+      'MANAGED_PROVISIONER_TOKEN',
+      'WORKOS_API_KEY',
+      'WORKOS_WEBHOOK_SECRET',
+    ]);
+    assert.equal(readProvisionerToken(target, 'staging'), token);
+    assert.equal(secrets.WEBSITE_SENTRY_AUTH_TOKEN, undefined);
+
+    writeFileSync(envPath, contents('production'));
+    assert.throws(
+      () => readBackendSecrets(target, 'staging'),
+      /must set ANVIL_DEPLOYMENT_ENV=staging/,
+    );
+
+    writeFileSync(envPath, 'not a dotenv assignment = secret-must-not-leak\n');
+    assert.throws(
+      () => readBackendSecrets(target, 'staging'),
+      (error) =>
+        error instanceof HostedDeployError &&
+        /environment file is malformed/.test(error.message) &&
+        !error.message.includes('secret-must-not-leak'),
+    );
+
+    writeFileSync(
+      envPath,
+      contents('staging').replace(
+        'WORKOS_WEBHOOK_SECRET=whsec_staging_unique_value',
+        'WORKOS_WEBHOOK_SECRET="whsec_sensitive\\"truncated-tail"',
+      ),
+    );
+    assert.throws(
+      () => readBackendSecrets(target, 'staging'),
+      (error) =>
+        error instanceof HostedDeployError &&
+        /environment file is malformed/.test(error.message) &&
+        !error.message.includes('whsec_sensitive'),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('process environment source requires its explicit matching deployment marker', () => {
+  const target = validateManifest(
+    {
+      ...manifest,
+      environments: {
+        ...manifest.environments,
+        staging: { ...staging, secrets: { backendEnv: 'process' } },
+      },
+    },
+    'staging',
+  );
+  const previous = new Map(
+    [
+      'ANVIL_DEPLOYMENT_ENV',
+      'HOSTED_SERVICE_KEYS',
+      'WORKOS_API_KEY',
+      'WORKOS_WEBHOOK_SECRET',
+      'MANAGED_PROVISIONER_TOKEN',
+      'WEBSITE_SENTRY_AUTH_TOKEN',
+    ].map((key) => [key, process.env[key]]),
+  );
+  try {
+    Object.assign(process.env, {
+      ANVIL_DEPLOYMENT_ENV: 'staging',
+      HOSTED_SERVICE_KEYS: JSON.stringify({ website: 's'.repeat(48) }),
+      WORKOS_API_KEY: 'sk_test_process_workos_staging',
+      WORKOS_WEBHOOK_SECRET: 'whsec_process_staging_unique',
+      MANAGED_PROVISIONER_TOKEN: 'p'.repeat(48),
+      WEBSITE_SENTRY_AUTH_TOKEN: 'website-only-secret',
+    });
+    const secrets = readBackendSecrets(target, 'staging');
+    assert.equal(secrets.WORKOS_API_KEY, 'sk_test_process_workos_staging');
+    assert.equal(secrets.WEBSITE_SENTRY_AUTH_TOKEN, undefined);
+    process.env.ANVIL_DEPLOYMENT_ENV = 'production';
+    assert.throws(
+      () => readBackendSecrets(target, 'staging'),
+      /process environment must set ANVIL_DEPLOYMENT_ENV=staging/,
+    );
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('production rejects staging resource and either staging WorkOS client reuse', () => {
@@ -484,6 +632,194 @@ test('production requires staging secrets and rejects keys shared across HMAC au
       /Production secret WORKOS_API_KEY reuses staging/,
     );
   } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('production isolation compares dotenv staging secrets and rejects an ambient staging source', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'hosted-env-isolation-test-'));
+  const envPath = join(directory, 'staging.env');
+  const stageToken = 'p'.repeat(48);
+  const stageSecrets = {
+    HOSTED_SERVICE_KEYS: JSON.stringify({ website: 's'.repeat(48) }),
+    WORKOS_API_KEY: 'sk_workos_staging_unique',
+    WORKOS_WEBHOOK_SECRET: 'whsec_staging_unique',
+    MANAGED_PROVISIONER_TOKEN: stageToken,
+  };
+  const productionSecrets = {
+    HOSTED_SERVICE_KEYS: JSON.stringify({ website: 'x'.repeat(48) }),
+    WORKOS_API_KEY: 'sk_workos_production_unique',
+    WORKOS_WEBHOOK_SECRET: 'whsec_production_unique',
+    MANAGED_PROVISIONER_TOKEN: 'q'.repeat(48),
+  };
+  const targetManifest = {
+    ...manifest,
+    environments: {
+      ...manifest.environments,
+      staging: { ...staging, secrets: { backendEnvFile: envPath } },
+    },
+  };
+  try {
+    writeFileSync(
+      envPath,
+      `ANVIL_DEPLOYMENT_ENV=staging\n${Object.entries(stageSecrets)
+        .map(([key, value]) => `${key}='${value}'`)
+        .join('\n')}\n`,
+    );
+    assert.doesNotThrow(() => assertProductionSecretsAreFresh(targetManifest, productionSecrets));
+    assert.throws(
+      () =>
+        assertProductionSecretsAreFresh(targetManifest, {
+          ...productionSecrets,
+          WORKOS_API_KEY: stageSecrets.WORKOS_API_KEY,
+        }),
+      /Production secret WORKOS_API_KEY reuses staging/,
+    );
+
+    targetManifest.environments.staging.secrets = { backendEnv: 'process' };
+    assert.throws(
+      () => assertProductionSecretsAreFresh(targetManifest, productionSecrets),
+      /process environment secrets cannot supply both environments/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('secret forwarding files contain only selected values, use mode 0600, and always clean up', () => {
+  let successfulFiles;
+  const status = withSecretFiles(
+    {
+      backendSecrets: {
+        WORKOS_API_KEY: 'sk_test_selected',
+        WEBSITE_SENTRY_AUTH_TOKEN: 'must-not-be-forwarded',
+      },
+      provisionerToken: 'p'.repeat(48),
+    },
+    (files) => {
+      successfulFiles = files;
+      const backendStat = statSync(files.backendSecretFile);
+      const tokenStat = statSync(files.provisionerTokenFile);
+      assert.equal(backendStat.mode & 0o777, 0o600);
+      assert.equal(tokenStat.mode & 0o777, 0o600);
+      assert.deepEqual(JSON.parse(readFileSync(files.backendSecretFile, 'utf8')), {
+        WORKOS_API_KEY: 'sk_test_selected',
+      });
+      assert.equal(readFileSync(files.provisionerTokenFile, 'utf8'), 'p'.repeat(48));
+      return 17;
+    },
+  );
+  assert.equal(status, 17);
+  assert.equal(existsSync(successfulFiles.backendSecretFile), false);
+  assert.equal(existsSync(successfulFiles.provisionerTokenFile), false);
+
+  let failedFiles;
+  assert.throws(
+    () =>
+      withSecretFiles({ backendSecrets: { WORKOS_API_KEY: 'sk_test_selected' } }, (files) => {
+        failedFiles = files;
+        throw new Error('simulated CLI failure');
+      }),
+    /simulated CLI failure/,
+  );
+  assert.equal(existsSync(failedFiles.backendSecretFile), false);
+});
+
+test('run forwards dotenv secrets through temporary files and cleans them up on CLI outcomes', () => {
+  const suffix = randomUUID().replaceAll('-', '').slice(0, 8);
+  const workerName = `anvil-sync-hosted-env-test-${suffix}`;
+  const target = {
+    ...staging,
+    workerName,
+    provisionerName: `${workerName}-provisioner`,
+  };
+  const directory = mkdtempSync(join(tmpdir(), 'hosted-env-run-test-'));
+  const manifestPath = join(directory, 'targets.json');
+  const envPath = join(directory, 'staging.env');
+  const outputDir = join(BACKEND_DIR, '.wrangler', 'mesh', target.workerName);
+  const configPath = join(outputDir, 'wrangler.jsonc');
+  const managedToken = 'p'.repeat(48);
+  const backendSecrets = {
+    HOSTED_SERVICE_KEYS: JSON.stringify({ website: 's'.repeat(48) }),
+    WORKOS_API_KEY: 'sk_test_workos_run_staging',
+    WORKOS_WEBHOOK_SECRET: 'whsec_run_staging_unique_value',
+    MANAGED_PROVISIONER_TOKEN: managedToken,
+  };
+  const envContents = `ANVIL_DEPLOYMENT_ENV=staging\n${Object.entries(backendSecrets)
+    .map(([key, value]) => `${key}='${value}'`)
+    .join('\n')}\nWEBSITE_SENTRY_AUTH_TOKEN=website-only-secret\n`;
+  const targetManifest = {
+    ...manifest,
+    environments: {
+      ...manifest.environments,
+      staging: { ...target, secrets: { backendEnvFile: envPath } },
+    },
+  };
+  const previousDeploymentEnv = process.env.ANVIL_DEPLOYMENT_ENV;
+  delete process.env.ANVIL_DEPLOYMENT_ENV;
+  try {
+    writeFileSync(manifestPath, JSON.stringify(targetManifest));
+    writeFileSync(envPath, envContents);
+    mkdirSync(outputDir, { recursive: true });
+    writeJson(configPath, hostedConfig(target, 'staging'));
+    writeJson(join(outputDir, 'provisioner.jsonc'), {
+      name: target.provisionerName,
+      account_id: target.accountId,
+      vars: { ALLOW_UNAUTHENTICATED: 'false' },
+    });
+    const sourceBefore = readFileSync(envPath);
+    const args = ['--environment', 'staging', '--manifest', manifestPath, 'secrets'];
+
+    let nonzeroTemporaryPath;
+    const status = run(args, (cliArgs, environment) => {
+      assert.equal(environment, 'staging');
+      const fromFileIndex = cliArgs.indexOf('--from-file');
+      assert.notEqual(fromFileIndex, -1);
+      const secretPath = cliArgs[fromFileIndex + 1];
+      nonzeroTemporaryPath = secretPath;
+      assert.notEqual(secretPath, envPath);
+      assert.equal(statSync(secretPath).mode & 0o777, 0o600);
+      assert.deepEqual(JSON.parse(readFileSync(secretPath, 'utf8')), backendSecrets);
+      assert.ok(!cliArgs.includes(managedToken));
+      assert.ok(!cliArgs.includes('website-only-secret'));
+      return 17;
+    });
+    assert.equal(status, 17);
+    assert.equal(existsSync(nonzeroTemporaryPath), false);
+    assert.deepEqual(readFileSync(envPath), sourceBefore);
+
+    let failedTemporaryPath;
+    assert.throws(
+      () =>
+        run(args, (cliArgs) => {
+          failedTemporaryPath = cliArgs[cliArgs.indexOf('--from-file') + 1];
+          assert.equal(statSync(failedTemporaryPath).mode & 0o777, 0o600);
+          throw new Error('simulated CLI invocation failure');
+        }),
+      /simulated CLI invocation failure/,
+    );
+    assert.equal(existsSync(failedTemporaryPath), false);
+    assert.deepEqual(readFileSync(envPath), sourceBefore);
+
+    let provisionerTemporaryPath;
+    const provisionerStatus = run(
+      ['--environment', 'staging', '--manifest', manifestPath, 'provisioner', 'secrets'],
+      (cliArgs, environment) => {
+        assert.equal(environment, 'staging');
+        provisionerTemporaryPath = cliArgs[cliArgs.indexOf('--from-file') + 1];
+        assert.equal(statSync(provisionerTemporaryPath).mode & 0o777, 0o600);
+        assert.equal(readFileSync(provisionerTemporaryPath, 'utf8'), managedToken);
+        assert.ok(!cliArgs.includes(managedToken));
+        return 0;
+      },
+    );
+    assert.equal(provisionerStatus, 0);
+    assert.equal(existsSync(provisionerTemporaryPath), false);
+    assert.deepEqual(readFileSync(envPath), sourceBefore);
+  } finally {
+    if (previousDeploymentEnv === undefined) delete process.env.ANVIL_DEPLOYMENT_ENV;
+    else process.env.ANVIL_DEPLOYMENT_ENV = previousDeploymentEnv;
+    rmSync(outputDir, { recursive: true, force: true });
     rmSync(directory, { recursive: true, force: true });
   }
 });

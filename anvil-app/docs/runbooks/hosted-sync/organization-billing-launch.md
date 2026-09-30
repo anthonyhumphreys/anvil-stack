@@ -114,30 +114,34 @@ the free preview, before `2026-11-01T00:00:00Z`.
   outstanding invoices and any remaining schedule; do not change D1 rows by
   hand. Restoring access after provider-side deletion requires operator
   recovery.
-- Keep Worker secrets in the selected target's ignored `backend-secrets.json`
-  file and install them only through `hosted:deploy ... secrets`. Never put
-  secret values in a Wrangler `vars.json`, manifest, source file, Vercel browser
+- Keep Worker secrets in the selected target's configured secret source and
+  install them only through `hosted:deploy ... secrets`. Never put secret
+  values in a Wrangler `vars.json`, manifest, source file, Vercel browser
   variable, or shell argument.
 - Do not copy WorkOS, Stripe, HMAC, D1, R2, or Worker credentials between
   environments. The deployment wrapper rejects reused WorkOS clients and
   secrets, Stripe mode/secrets/price IDs, website/operator HMAC keys, and
   provisioner tokens.
 
-There is no SST-style central `secret set` command in this project. The
-operator's source for backend credentials is the git-ignored
+The provider-neutral default for backend credentials is the git-ignored
 `cloud/backend/.wrangler/mesh/<worker-name>/backend-secrets.json`, selected by
-`secrets.backendFile` in the ignored target manifest. The guarded
-`hosted:deploy -- --environment staging secrets --json` command installs those
-values as encrypted Cloudflare Worker secrets; Cloudflare shows their names,
-not their original values. Keep a recoverable copy in the team's password
-manager because a lost local file cannot be reconstructed from Cloudflare.
+`secrets.backendFile` in the ignored target manifest. Keep a recoverable copy
+in the team's password manager because a lost local file cannot be
+reconstructed from Cloudflare. Optional dotenv and process-environment sources
+are also supported; see [hosted backend secret inputs](secret-inputs.md) for
+their setup and safeguards. The guarded
+`hosted:deploy -- --environment staging secrets --json` command installs the
+selected source as encrypted Cloudflare Worker secrets; Cloudflare shows their
+names, not their original values.
 Non-secret Worker settings, including Stripe Price IDs, live in the selected
 target's ignored `vars.json` and are applied with the Worker. The website has
 its own server-side WorkOS, cookie, and HMAC values in Vercel environment
 variables, with separate Staging and Production names from
 `anvil-website/.env.example`. The website HMAC key must match the appropriate
 entry in the backend's `HOSTED_SERVICE_KEYS` map. Never use a
-`NEXT_PUBLIC_` variable for a secret.
+`NEXT_PUBLIC_` variable for a secret. Although website inputs use names such as
+`ANVIL_STAGING_*`, export only website-specific variables to Vercel; never
+export the entire backend dotenv source.
 
 When a migration exception is required, put a JSON string of up to 1,000 unique
 WorkOS `user_...` IDs in `HOSTED_ADMITTED_WORKOS_USER_IDS` in that target's
@@ -271,15 +275,15 @@ reordered events. If the Dashboard offers a test delivery, send it after the
 Worker has been deployed and its webhook secret installed.
 
 Store the WorkOS Staging API key as `WORKOS_API_KEY` and that webhook endpoint's
-signing secret as `WORKOS_WEBHOOK_SECRET` in the staging backend secret file.
+signing secret as `WORKOS_WEBHOOK_SECRET` in the staging backend secret source.
 The server uses its WorkOS key for organization, membership, invitation, and
 waitlist admission checks. Do not use the website's WorkOS key as the operator
 HMAC key.
 
-The protected backend secret file now exists locally with the Staging website
-HMAC key, WorkOS test API key, WorkOS webhook secret, and provisioner token.
-Do not replace the website HMAC secret without a coordinated rotation. The
-file contains:
+The protected legacy JSON backend secret file exists locally with the Staging
+website HMAC key, WorkOS test API key, WorkOS webhook secret, and provisioner
+token. This source remains supported; do not replace the website HMAC secret
+without a coordinated rotation. The file contains:
 
 ```json
 {
@@ -390,9 +394,9 @@ portal-return URLs. In `vars.json`, set:
 Staging before Halloween. It does not change preview access policy. The wrapper
 rejects this key entirely in Production. Leave it out of production vars.
 
-After adding the four Price IDs, test API key, and Stripe webhook secret to the
-target vars and backend secret file, regenerate the config, install the secrets,
-and deploy the staging checkout configuration:
+After adding the four Price IDs to target vars and the test API key and Stripe
+webhook secret to the selected backend secret source, regenerate the config,
+install the secrets, and deploy the staging checkout configuration:
 
 ```sh
 pnpm --dir cloud/backend hosted:deploy -- --environment staging plan --json
@@ -476,10 +480,10 @@ separate Cloudflare account if available; otherwise keep every resource name and
 ID unique within the account. Leave `databaseId` null until the Production
 `provision` command creates it.
 
-Prepare a production-only secret file with the Production WorkOS API and webhook
-secrets, a new website HMAC secret, and the live Stripe secrets only after they
-are created. Set `HOSTED_BILLING_ENVIRONMENT=production` through the generated
-target vars. Keep checkout disabled until 1 November 2026. Never set
+Prepare a production-only secret source with the Production WorkOS API and
+webhook secrets, a new website HMAC secret, and the live Stripe secrets only
+after they are created. Set `HOSTED_BILLING_ENVIRONMENT=production` through the
+generated target vars. Keep checkout disabled until 1 November 2026. Never set
 `HOSTED_ALLOW_EARLY_CHECKOUT` in Production.
 
 If individually reviewed existing WorkOS users need a migration exception,
@@ -513,10 +517,10 @@ https://<production-worker-host>/v1/hosted/workos-webhook
 
 Subscribe to the same five membership and invitation lifecycle events listed
 for Staging. Store this endpoint's `whsec_...` value beside the Production
-`WORKOS_API_KEY` in the protected backend secret file before running
+`WORKOS_API_KEY` in the protected backend secret source before running
 `provision`, `migrate`, or `apply`; preflight requires both WorkOS secrets.
 
-Production must remain blocked until its target, secret file, WorkOS clients,
+Production must remain blocked until its target, secret source, WorkOS clients,
 staging-vs-production uniqueness checks, and release evidence are complete. Then
 use the guarded production commands in
 [deploy.md](deploy.md#configure-production-deployment), in this order:
@@ -548,7 +552,7 @@ https://<production-worker-host>/v1/hosted/stripe-webhook
 
 Subscribe only to the billing events listed for staging. Store the live
 `sk_live_...` key and this endpoint's `whsec_...` signing secret in the
-Production backend secrets file. The wrapper rejects test keys and a configured
+Production backend secret source. The wrapper rejects test keys and a configured
 `STRIPE_API_BASE` override in Production. The backend must reject a webhook whose
 event `livemode` does not match `HOSTED_BILLING_ENVIRONMENT`.
 Set its API version to `2026-08-26.dahlia`, the same version as the Stripe API
@@ -598,7 +602,7 @@ as evidence for Production.
 The operator endpoint is independent of the website's billing service key. If
 staff need to inspect or change a fair-use restriction, add a separate random
 key of at least 32 bytes under `HOSTED_OPERATOR_KEYS` in the selected
-environment's backend secret file:
+environment's backend secret source:
 
 ```json
 {
