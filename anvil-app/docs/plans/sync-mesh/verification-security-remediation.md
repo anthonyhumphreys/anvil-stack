@@ -1,87 +1,77 @@
-# Mesh verification security remediation
+# Mesh verification execution security decision
 
-Status: proposed on 2 October 2026. No security implementation change is included
-in this proposal. [CodeQL alert #29](https://github.com/anthonyhumphreys/anvil-stack/security/code-scanning/29)
-must remain a merge blocker until the replacement is implemented and verified.
+Accepted by Anth on 2 October 2026. This decision supersedes the earlier
+proposal to replace remote verification commands with target-local profiles.
 
-## Finding and current controls
+## Decision
 
-`mesh-worktree.service.ts:runVerificationCommand` executes remote-authored text
-through `execFileAsync('sh', ['-c', input.command])`. Both remote code-task jobs
-in `mesh-worker.service.ts` and result integration in
-`mesh-integration.service.ts` reach this helper.
+Retain arbitrary verification commands and their declared shell semantics.
+Executing user-authorized commands across devices is a core Anvil capability;
+a fixed profile-only contract would remove useful workflows. No profile
+migration or shell-command blacklist is planned.
 
-The target device already requires native approval for the exact command,
-repository and job/integration. Headless, hidden, minimized and expired approval
-requests fail closed. The process receives a restricted environment and bounded
-execution/output. These controls reduce unattended execution, but approved text
-still becomes arbitrary shell code with the user's operating-system permissions.
-The inline CodeQL suppression does not change that behavior.
+[CodeQL alert #29](https://github.com/anthonyhumphreys/anvil-stack/security/code-scanning/29)
+correctly identifies remote input reaching `sh -c`. The accepted behavior is
+command execution from an authorized source with separate target-local consent.
+The finding does not by itself establish an authorization or approval bypass.
+Dispose of this specific alert as `won't fix`, with the authorization evidence
+and this decision recorded. Do not disable CodeQL or its command-injection rule.
+Removing the shell capability is not a merge requirement.
 
-[CodeQL's guidance](https://codeql.github.com/codeql-query-help/javascript/js-command-line-injection/)
-recommends execution without a shell and separate arguments. Here, allowing the
-remote caller to choose an executable and arguments would still permit
-`sh -c`, `node -e`, or a package runner executing remote-selected code. The
-replacement must also restrict who defines the action.
+## Boundaries retained
 
-## Recommended contract
+- The public Worker authenticates the session and forwards its verified account
+  and enrollment identity. Caller-supplied identity headers cannot select a
+  different account. The development spike bearer is unavailable unless the
+  explicit development switch is enabled.
+- A target worker must opt into execution. Its source policy is checked at
+  placement and again at claim; explicit targets must be eligible within the
+  authenticated account. Revoked sessions cannot continue making requests.
+- Execution permission and cryptographic device trust are separate. An explicit
+  device allowlist is narrower than the optional `same-account` source policy;
+  the latter authorizes account sources and must not be described as checking
+  each peer's locally verified cryptographic identity.
+- Both remote code-task verification and result integration use
+  `runVerificationCommand`. Every exact command requires one-run native consent
+  bound to the repository, worktree and job/attempt or integration/run.
+  Declined, headless, hidden, minimized and expired approvals do not execute.
+- Keep the restricted process environment, execution timeout, bounded output
+  and result/journal evidence. These reduce exposure; they do not sandbox the
+  process or isolate the user's files and network.
 
-Remote requests carry bounded verification profile IDs. Profiles are defined
-and approved on the executing device, outside synced entities and repository
-worktrees. A remote request cannot create or modify a profile, or override its
-executable, arguments, environment, working directory or timeout.
+## Accepted risk and reopening criteria
 
-Start with a small explicit set of local profiles rather than a general shell
-editor. Each profile fixes an absolute executable, argument array, repository
-binding, worktree working-directory policy and bounded timeout. The main process
-resolves and snapshots the profile before prompting, then executes that same
-snapshot with `shell: false`. Resolve tool paths from trusted local configuration;
-do not discover executables from the remote-controlled worktree or its PATH.
+An approved command runs with the user's operating-system permissions. Trust
+authenticates and authorizes its source; it does not make every command safe.
+Compromised authorized clients, stolen credentials or malicious agent/repository
+input can produce a harmful request without physical access to the machine.
+The source policy and target-local consent remain required controls.
 
-Keep per-run native consent, restricted environment, timeout, bounded log tail,
-and journal evidence. Consent displays the resolved action and exact target.
-Running repository test scripts still executes repository code and requires
-approval; profiles do not make worktrees a process or network sandbox.
+Reopen this alert or create a specific security finding if an unauthorized,
+cross-account or revoked source can cause execution, if approval can be bypassed
+or rebound to different command/target data, or if a new execution path omits
+these controls. Broadening unattended execution requires a separate decision.
 
-## Implementation and compatibility
+## Verification evidence
 
-1. Define a typed profile-reference contract and target-local resolver. Validate
-   IDs and request size at runtime, including persisted and sealed job inputs.
-   Reject unknown profiles, extra execution fields and legacy freeform commands
-   explicitly. Never filter malformed entries into an empty successful run.
-2. Update workflow nodes, shared IPC types, preload, workflow services, dispatch
-   builders, worker execution and integration together. Both callers must use
-   the same resolver and consent gate.
-3. Replace the shell sink and remove its suppression. Record profile identity,
-   the resolved display action, approval/refusal reason, exit status, timeout and
-   bounded output in results and journals. Make failed, declined or invalid
-   verification visibly prevent a verified-success outcome. The worker currently
-   returns `ok: true` even after unsuccessful verification, while integration
-   returns `failed`; preserve useful task results but make verification status
-   explicit and gate downstream integration consistently.
-4. Migrate existing templates and queued jobs. Existing tests and inputs include
-   compound commands, redirection and shell builtins. Those require a new local
-   profile or a visible compatibility refusal. If an exact legacy value maps to
-   a fixed approved action, use an explicit mapping with no parser, shell fallback
-   or interpretation of unknown strings.
+Checked the working tree based on `f9e06f1`, with regression tests added in this
+decision change. No runtime behavior changed.
 
-Do not add shell-character blacklists, remote argv as executable authority, or a
-new suppression to close the alert. A configurable profile UI can follow the
-initial fixed-action implementation if real usage requires it.
+- Desktop worktree, worker and integration suites: 57 tests passed. Coverage
+  includes successful shell execution, nonzero exits, timeout, exact-command
+  consent details, declined/headless requests, hidden/minimized windows and
+  approval arriving after the 30-second deadline. The suites ran using the
+  installed Electron runtime in Node mode to match the native SQLite ABI.
+- Backend auth, jobs, workers, security enrollment and task-key/dashboard
+  suites: 85 tests passed. Coverage includes explicit source-policy refusal,
+  claim-time source checks, cross-account target/get/claim refusal, expired and
+  revoked credentials, verified-account routing, task-key recipients and grant
+  revocation. Placement/lifecycle fixtures use the development test bearer;
+  the auth suite separately exercises issued device credentials.
+- The existing full backend suite passed 434 tests before adding the two job
+  regressions. Focused results above cover the final test changes.
 
-## Verification and completion criteria
-
-- At both worker and integration entry points, malicious command fields,
-  executable/argument overrides, unknown IDs and legacy strings never spawn a
-  process. Invalid verification cannot become an empty successful check set.
-- Synced entity updates and repository writes cannot overwrite local profiles.
-  Profile changes during approval cannot change the approved executable action.
-- Declined, headless and expired approval requests never execute. A known local
-  profile executes its fixed arguments in the intended pinned worktree.
-- Nonzero exits, timeouts, output limits, environment filtering and refusal
-  evidence remain covered. Repository scripts retain the explicit consent gate.
-- Run focused worktree/worker/integration/workflow tests, desktop typechecks,
-  lint, tests and build. Run CodeQL without the sink suppression and verify the
-  original path is absent with no equivalent remote-controlled execution path.
-- Close the alert and resolve the PR review thread only after that evidence is
-  available. Native approval alone is not the remediation completion criterion.
+This is targeted boundary verification, not an exhaustive security audit or
+live physical-device acceptance. The existing worker's task-completion result
+and integration's verification-success result have different meanings; changing
+that reporting contract is outside this alert decision.

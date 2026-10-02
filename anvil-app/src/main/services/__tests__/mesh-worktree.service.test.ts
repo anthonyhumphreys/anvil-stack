@@ -323,4 +323,54 @@ describe('runVerificationCommand', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { label: 'hidden', isVisible: () => false, isMinimized: () => false },
+    { label: 'minimized', isVisible: () => true, isMinimized: () => true },
+  ])('never runs verification with a $label approval window', async (window) => {
+    const dir = mkdtempSync(join(tmpdir(), 'anvil-verify-'));
+    const marker = join(dir, 'should-not-exist');
+    electronMocks.getAllWindows.mockReturnValueOnce([window]);
+    try {
+      const outcome = await runVerificationCommand({
+        repositoryId: 'repo-target',
+        command: `touch ${marker}`,
+        cwd: dir,
+        target: { kind: 'remote-job', jobId: 'job-unattended', attemptId: 'attempt-unattended' },
+      });
+      expect(outcome.approvalGranted).toBe(false);
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled();
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores approval received after the native consent deadline', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'anvil-verify-'));
+    const marker = join(dir, 'should-not-exist');
+    let approve!: (value: { response: number }) => void;
+    electronMocks.showMessageBox.mockReturnValueOnce(
+      new Promise<{ response: number }>((resolve) => {
+        approve = resolve;
+      }),
+    );
+    vi.useFakeTimers();
+    try {
+      const pending = runVerificationCommand({
+        repositoryId: 'repo-target',
+        command: `touch ${marker}`,
+        cwd: dir,
+        target: { kind: 'integration', integrationId: 'integration-late', runId: 'run-late' },
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await pending).toMatchObject({ approvalGranted: false, exitCode: null });
+      approve({ response: 0 });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

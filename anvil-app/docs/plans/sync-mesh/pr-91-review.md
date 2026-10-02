@@ -14,13 +14,17 @@ CodeQL analysis job only means the scan completed, not that its policy passed.
 
 ## High priority
 
-1. **Target-local verification consent implemented; CodeQL rerun pending.**
+1. **Target-local verification consent implemented; shell capability retained.**
    Remote-authored commands still use their declared shell semantics, but each
    exact command now requires one-run native approval on the target device,
    showing its job/attempt or integration/run, repository and worktree. An
    unattended/headless worker declines immediately. A scrubbed environment and
    disposable worktree alone would not isolate the user's files or network.
-   Recheck CodeQL alert 29 against this commit before merge.
+   On 2 October 2026, Anth accepted retaining this capability after targeted
+   authorization and approval checks. The [security decision](verification-security-remediation.md)
+   supersedes the profile-only proposal and records the specific alert's
+   `won't fix` disposition. Replacing shell verification is not a merge gate;
+   authorization or consent bypasses remain security bugs.
 
 2. **Bootstrap consent and checkout containment implemented.**
    Every executable recipe step, including argv and package managers, now

@@ -319,6 +319,49 @@ describe('claim gating', () => {
     }
   });
 
+  it('rejects an explicit target whose worker policy disallows the source', async () => {
+    const f = fixture('explicit-source-policy');
+    await publishPolicy(f.workerAuth, allowJobsPolicy({ allowedSources: ['enr-unrelated'] }));
+    await connectWorker(f.workerAuth);
+    const denied = await postRpc(
+      'job.create',
+      createParams({ requestedTarget: deviceTarget(f.workerEnrollmentId) }),
+      f.sourceAuth,
+    );
+    expect(denied.status).toBe(403);
+    if (isRpcError(denied.body)) {
+      expect(denied.body.error.details?.['reason']).toBe('target-not-eligible');
+    }
+  });
+
+  it("never targets or exposes another account's worker and jobs", async () => {
+    const owner = fixture('account-owner');
+    const other = fixture('account-other');
+    await publishPolicy(owner.workerAuth);
+    await connectWorker(owner.workerAuth);
+    await publishPolicy(other.workerAuth);
+    await connectWorker(other.workerAuth);
+    const created = await createJob(owner.sourceAuth, {
+      requestedTarget: deviceTarget(owner.workerEnrollmentId),
+    });
+
+    expect((await postRpc('job.get', { jobId: created.job.id }, other.sourceAuth)).status).toBe(
+      404,
+    );
+    expect((await postRpc('job.claim', { jobId: created.job.id }, other.workerAuth)).status).toBe(
+      404,
+    );
+    const denied = await postRpc(
+      'job.create',
+      createParams({ requestedTarget: deviceTarget(owner.workerEnrollmentId) }),
+      other.sourceAuth,
+    );
+    expect(denied.status).toBe(403);
+    if (isRpcError(denied.body)) {
+      expect(denied.body.error.details?.['reason']).toBe('target-not-eligible');
+    }
+  });
+
   it('rejects claims past the queue deadline and marks the job failed', async () => {
     const f = fixture('gate-deadline');
     await publishPolicy(f.workerAuth);
