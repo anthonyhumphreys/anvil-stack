@@ -167,3 +167,24 @@ encrypted data generation. Full account deletion follows the separate
   security revision. New-device recovery must use the newly printed code and
   current envelope; an old cached bundle, if retained with its old code, can
   only open the historical key versions it contains.
+
+## Job permission modes
+
+A worker's maximum is local to that machine and defaults to `on-request`.
+Inspect or change it before choosing unattended execution:
+
+```bash
+anvil-daemon worker mode
+anvil-daemon worker mode full-access
+anvil-daemon worker mode workspace-auto
+anvil-daemon worker mode on-request
+anvil-daemon worker mode read-only
+```
+
+The requested job mode is capped by this maximum. Full access must be selected
+by both the submitting job and target to run without restrictions. Approval
+mode accepts decisions from another trusted device through Mesh, so the target
+needs no desktop window. Workspace automation and read-only commands use the
+installed Codex app-server sandbox without a model turn; there is no unsandboxed
+fallback if the CLI or sandbox is unavailable. Workspace automation disables
+network access. Lowering the maximum cancels active jobs.

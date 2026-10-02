@@ -349,7 +349,7 @@ Initial step types are `command` and `verify`. Do not add a general workflow lan
 
 A step transitions through `pending → running → verified`, or `failed/unknown-outcome`. After a crash, verify the postcondition before retrying. Non-idempotent steps with uncertain results require inspection. Capture bounded, sanitized logs locally. Cancellation requests terminate the process group where supported, then inspect child processes and filesystem state before confirming stop.
 
-Automatically setting up a remote workspace is permitted only when the target has already approved the exact effective recipe and source policy. Otherwise the job waits for an approval that the target policy allows to be answered remotely, or requires target-local action.
+Remote bootstrap follows the requested running mode capped by the target node maximum. Full access permits unattended recipes with OS-account permissions; workspace automation and read-only use their enforced sandboxes. Approval mode waits for an exact recipe/commit/attempt authorization that may be answered from another trusted device. The job content digest is portable; local authorization additionally binds the target policy and effective mode.
 
 ### Safe removal
 
@@ -359,7 +359,7 @@ Global definition deletion never invokes filesystem deletion. Keep orphaned loca
 
 ## 8. Worker lifecycle and low-cost availability
 
-All signed-in profiles may connect for sync invalidations. Only Mesh-enabled enrollments accept worker commands. Sync-only devices maintain no durable presence timer. They show `last synced` when no recent live evidence exists.
+All signed-in profiles may connect for sync invalidations. Only Mesh-enabled enrollments accept worker commands. Each node stores a local maximum running mode: `read-only`, `on-request`, `workspace-auto`, or `full-access`. The requested mode cannot exceed that ceiling, and changing synced/default running modes cannot raise it. Existing nodes default to `on-request`. Lowering the maximum cancels active attempts. Handoff checkpoints retain the source session's chosen mode, then the target applies its own ceiling. Sync-only devices maintain no durable presence timer. They show `last synced` when no recent live evidence exists.
 
 A worker runs while Anvil is open or in its supported background mode. No inbound ports or separate OS service are needed. Closing Anvil attempts graceful interruption and records unresolved execution; crash recovery does not assume every child process died.
 

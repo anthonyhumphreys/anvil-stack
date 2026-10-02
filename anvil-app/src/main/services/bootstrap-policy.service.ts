@@ -26,6 +26,7 @@ import {
   runBootstrapRecipe,
   type BootstrapRunHandle,
   type BootstrapRunResult,
+  type BootstrapRunOptions,
 } from './bootstrap-runner.service.js';
 
 function nowIso(): string {
@@ -293,6 +294,7 @@ export function startBootstrapRun(input: {
   definitionRevision?: string;
   resolveEnv?: (name: string) => string | undefined;
   onStepLog?: (stepId: string, chunk: string) => void;
+  commandExecutor?: BootstrapRunOptions['commandExecutor'];
 }): { runId: string; handle: BootstrapRunHandle | null } {
   const db = getDb();
   const digest = computeBootstrapDigest(input);
@@ -337,6 +339,7 @@ export function startBootstrapRun(input: {
     checkoutRoot: input.checkoutRoot,
     resolveEnv: input.resolveEnv,
     shellApproved: approval?.shellApproved === true,
+    commandExecutor: input.commandExecutor,
     onStepState: (stepId, state) => {
       updateStep.run(state, null, null, nowIso(), runId, stepId);
     },

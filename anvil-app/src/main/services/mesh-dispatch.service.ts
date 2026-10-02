@@ -229,6 +229,7 @@ export async function dispatchWorkflowNode(input: {
   provider?: 'codex' | 'azure' | 'openai';
   model?: string;
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  permissionMode?: import('../../../cloud/contract/permissions.js').PermissionMode;
   turnTimeoutMs?: number;
   requestedTarget?: JobCreateParams['requestedTarget'];
   pinnedManifest?: JobCreateParams['inputManifest'];
@@ -252,6 +253,7 @@ export async function dispatchWorkflowNode(input: {
     ...(input.provider === undefined ? {} : { provider: input.provider }),
     ...(input.model === undefined ? {} : { model: input.model }),
     ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+    ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
     ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
     ...(input.requestedTarget === undefined ? {} : { requestedTarget: input.requestedTarget }),
     ...(input.pinnedManifest === undefined ? {} : { pinnedManifest: input.pinnedManifest }),

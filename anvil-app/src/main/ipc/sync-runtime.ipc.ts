@@ -1,3 +1,5 @@
+import { isPermissionMode } from '../../../cloud/contract/permissions.js';
+import { setMeshMaximumPermissionMode } from '../services/mesh-worker.service.js';
 import { ipcMain } from 'electron';
 import {
   approveDashboardGrant,
@@ -239,6 +241,12 @@ export function registerSyncRuntimeHandlers(): void {
       throw new Error('mesh-worker-set requires an enabled boolean');
     }
     return setMeshWorkerOptIn(payload['enabled']);
+  });
+
+  ipcMain.handle('sync-runtime:mesh-maximum-mode-set', (_event, payload: unknown) => {
+    if (!isRecord(payload) || !isPermissionMode(payload['mode']))
+      throw new Error('Invalid Mesh maximum permission mode.');
+    return setMeshMaximumPermissionMode(payload['mode']);
   });
 
   ipcMain.handle('sync-runtime:resolve-conflict', (_event, payload: unknown) => {

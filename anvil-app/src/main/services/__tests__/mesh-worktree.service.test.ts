@@ -225,6 +225,42 @@ describe('disposeAttemptWorktrees', () => {
 });
 
 describe('runVerificationCommand', () => {
+  it('runs full access on a headless target without a dialog', async () => {
+    electronMocks.getAllWindows.mockReturnValue([]);
+    electronMocks.getFocusedWindow.mockReturnValue(null);
+    const result = await runVerificationCommand({
+      repositoryId: 'repo',
+      command: 'echo unattended',
+      cwd: '/tmp',
+      target: { kind: 'remote-job', jobId: 'job', attemptId: 'attempt' },
+      permissionMode: 'full-access',
+    });
+    expect(result).toMatchObject({ approvalGranted: true, exitCode: 0, logTail: 'unattended\n' });
+    expect(electronMocks.showMessageBox).not.toHaveBeenCalled();
+  });
+  it('uses remote approval on a headless target and respects refusal', async () => {
+    electronMocks.getAllWindows.mockReturnValue([]);
+    electronMocks.getFocusedWindow.mockReturnValue(null);
+    const approve = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const input = {
+      repositoryId: 'repo',
+      command: 'echo approved',
+      cwd: '/tmp',
+      target: { kind: 'remote-job' as const, jobId: 'job', attemptId: 'attempt' },
+      permissionMode: 'on-request' as const,
+      approve,
+    };
+    expect(await runVerificationCommand(input)).toMatchObject({
+      approvalGranted: false,
+      exitCode: null,
+    });
+    expect(await runVerificationCommand(input)).toMatchObject({
+      approvalGranted: true,
+      exitCode: 0,
+    });
+    expect(electronMocks.showMessageBox).not.toHaveBeenCalled();
+  });
+
   it('records exit code and output tail honestly', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'anvil-verify-'));
     try {

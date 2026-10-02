@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   job_id TEXT NOT NULL,
   attempt_id TEXT NOT NULL,
   action_digest TEXT NOT NULL,
+  sealed_details TEXT,
   generation INTEGER NOT NULL,
   approver_enrollment_id TEXT,
   approver_role TEXT NOT NULL DEFAULT 'user',

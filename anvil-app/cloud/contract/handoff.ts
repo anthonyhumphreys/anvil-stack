@@ -35,6 +35,8 @@ export interface SessionCheckpoint {
   repositories: HandoffRepositoryCommit[];
   provider: string;
   model: string;
+  /** Chosen source running mode; approval authority still never transfers. */
+  permissionMode?: import('./permissions.js').PermissionMode;
   /** Transferable messages, a summary, or both depending on provider mode. */
   messages?: unknown[];
   summary?: string;

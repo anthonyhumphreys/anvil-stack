@@ -1,3 +1,4 @@
+import { bootstrapManifestPolicy } from '../../../cloud/contract/permissions.js';
 import { writeGatewayCodexCatalog } from './llm-gateway-runtime.service.js';
 import { randomUUID } from 'node:crypto';
 import {
@@ -51,7 +52,6 @@ import { triggerWatchtowerEvent } from './automation.service.js';
 import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
 import { providerSpawnEnv } from './agent-spawn-env.js';
 import { acpProviderLabel, buildAcpPrintInvocation } from './acp-print-cli.js';
-import { buildDevicePolicy } from './mesh-worker.service.js';
 import { computeBootstrapDigest, getWorkspaceBootstrap } from './bootstrap-policy.service.js';
 import { workspaceDefinitionRevision } from './sync-entity-domain.js';
 import {
@@ -540,7 +540,7 @@ function captureRunInputManifest(
         : computeBootstrapDigest({
             recipe,
             repositoryCommits: commits,
-            executionPolicy: buildDevicePolicy(),
+            executionPolicy: bootstrapManifestPolicy(),
           }),
     configVersions: {},
     ...(trigger === undefined ? {} : { trigger }),
@@ -1115,6 +1115,7 @@ async function executeRemoteWorkflowNode(
       provider: node.provider as 'codex' | 'azure' | 'openai' | undefined,
       model: node.model,
       verification: node.verification,
+      permissionMode: node.permissionMode ?? getSettings().codexMode,
       requestedTarget,
       pinnedManifest: manifest,
     });

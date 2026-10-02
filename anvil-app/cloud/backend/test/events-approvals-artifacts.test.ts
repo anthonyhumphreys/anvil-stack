@@ -498,8 +498,10 @@ describe('approvals', () => {
     const workerSocket = await openSocket(f.workerAuth);
     const workerFrames = collectFrames(workerSocket);
 
+    const sealedDetails = { enc: 'aes-256-gcm', nonce: btoa('123456789012'), ct: btoa('1234567890123456') };
     const approvalId = await requestApproval(workerSocket, workerFrames, job, {
       actionDigest: 'sha256:danger-op',
+      sealedDetails,
     });
 
     const parked = await getJob(f.sourceAuth, job.jobId);
@@ -515,6 +517,8 @@ describe('approvals', () => {
     expect(got.approvals[0]?.attemptId).toBe(job.attemptId);
     expect(got.approvals[0]?.generation).toBe(job.fence);
     expect(got.approvals[0]?.actionDigest).toBe('sha256:danger-op');
+    expect(got.approvals[0]?.sealedDetails).toEqual(sealedDetails);
+    expect(got.approvals[0]?.details).toBeUndefined();
 
     const decided = expectSuccess<ApprovalDecideResult>(
       await postRpc('approval.decide', { approvalId, decision: 'approved' }, f.sourceAuth),

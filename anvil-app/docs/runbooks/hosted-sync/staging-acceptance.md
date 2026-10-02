@@ -127,6 +127,30 @@ Pass only when the website and both physical devices show the same staging
 account, the revoked device loses hosted access, and a fresh enrollment
 reconnects.
 
+## Node running modes
+
+Use a disposable checkout and harmless commands. Record the requested mode and
+target maximum alongside each result; the target's Settings > Sync & Mesh
+maximum is independent of its general chat mode.
+
+1. Leave B's maximum at the default approval mode. Request a full-access job
+   from A. Bootstrap and verification must wait for approval on A, including
+   when B runs as a headless daemon. Denial must prevent execution. Confirm
+   approval displays the exact action, not only its hash.
+2. Explicitly set B's maximum to full access and request full access on A.
+   Bootstrap and verification must run unattended without a visible B window.
+3. Request workspace automation with B's maximum at full access. Confirm a
+   harmless write inside the checkout succeeds, an outside write is refused,
+   and network access is blocked. Request read only and confirm writes fail.
+4. Start a long-running disposable job, then lower B's maximum. Confirm the
+   active process stops and the job reports cancellation. A subsequent job
+   must use the lower maximum. Restart B and confirm its maximum persists.
+5. Hand off a session from A to B. Confirm the session retains its chosen
+   mode, capped by B's maximum, and previous approvals are not reused.
+
+These checks remain pending until performed on physical devices against the
+candidate backend and desktop versions.
+
 ## Browser dashboard approval and reconnection
 
 1. In a fresh private browser profile, sign in to the same staging user and

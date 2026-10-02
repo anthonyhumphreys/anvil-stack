@@ -40,6 +40,7 @@ vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
 const interruptTurnMock = vi.fn();
 const stopSessionMock = vi.fn();
 vi.mock('../codex-session.service.js', () => ({
+  getCodexSession: () => ({ mode: 'workspace-auto' }),
   interruptTurn: (...args: unknown[]) => interruptTurnMock(...args),
   stopSession: (...args: unknown[]) => stopSessionMock(...args),
 }));
@@ -212,7 +213,17 @@ describe('evaluateHandoffReadiness', () => {
     const { repoDir } = makeRepoWithRemote('dirty');
     const { sessionId } = seedSession('dirty', repoDir);
     writeFileSync(join(repoDir, 'untracked.txt'), 'scratch');
-    git(repoDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'unpushed');
+    git(
+      repoDir,
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'unpushed',
+    );
     const result = await evaluateHandoffReadiness(sessionId);
     expect(result.ok).toBe(false);
     const codes = result.blockers.map((b) => b.code);
@@ -395,6 +406,7 @@ describe('captureSessionCheckpoint', () => {
       ).run(`m-${i}`, threadId, i % 2 === 0 ? 'user' : 'assistant', `message ${i}`, i);
     }
     const checkpoint = await captureSessionCheckpoint(sessionId, 1);
+    expect(checkpoint.permissionMode).toBe('workspace-auto');
     expect(checkpoint.repositories).toEqual([{ repositoryId: repoId, commit: head }]);
     expect(checkpoint.messages?.length).toBeLessThanOrEqual(20);
     expect(checkpoint.summary).toBe('message 29');

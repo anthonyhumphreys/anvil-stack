@@ -163,6 +163,8 @@ import { configureArtifactShareContext } from './artifact-share.service.js';
 import { decodePairingPayload, isPairingPayloadString } from '../../../cloud/contract/sealed.js';
 import { clearCompanionAuthCaches } from './companion-auth-cache.service.js';
 import {
+  taskKeyFor,
+  unsealTaskResult,
   deriveSas,
   deviceTrustState,
   ensureDeviceIdentity,
@@ -2293,7 +2295,28 @@ export async function cancelMeshJob(jobId: string): Promise<JobSummary> {
 
 export async function getMeshApprovals(jobId: string): Promise<ApprovalRecord[]> {
   const result = await accountRpc<ApprovalGetResult>('approval.get', { jobId });
-  return result.approvals;
+  const scope = currentScope();
+  if (scope === null || result.approvals.every((approval) => approval.sealedDetails === undefined))
+    return result.approvals;
+  const { job } = await accountRpc<JobGetResult>('job.get', { jobId });
+  const key = taskKeyFor(scope, job.id) ?? taskKeyFor(scope, `req:${job.requestId}`);
+  return result.approvals.map((approval) => {
+    if (approval.sealedDetails === undefined || key === null) return approval;
+    try {
+      const value = unsealTaskResult(
+        scope,
+        job.id,
+        approval.attemptId,
+        key,
+        approval.sealedDetails,
+      ) as { actionDigest?: unknown; details?: unknown };
+      return value.actionDigest === approval.actionDigest && typeof value.details === 'string'
+        ? { ...approval, details: value.details }
+        : approval;
+    } catch {
+      return approval;
+    }
+  });
 }
 
 export async function decideMeshApproval(

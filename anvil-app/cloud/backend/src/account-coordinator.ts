@@ -1,3 +1,4 @@
+import { isPermissionMode } from '../../contract/permissions.js';
 import { DurableObject } from 'cloudflare:workers';
 
 import type { SpikeAuth } from './auth';
@@ -407,6 +408,7 @@ interface ApprovalRow {
   job_id: string;
   attempt_id: string;
   action_digest: string;
+  sealed_details: string | null;
   generation: number;
   approver_enrollment_id: string | null;
   approver_role: string;
@@ -973,6 +975,11 @@ export class AccountCoordinator extends DurableObject<Env> {
       'sealed_result',
       'ALTER TABLE attempts ADD COLUMN sealed_result TEXT',
     );
+    this.ensureColumn(
+      'approvals',
+      'sealed_details',
+      'ALTER TABLE approvals ADD COLUMN sealed_details TEXT',
+    );
     // browser-workspace/1 approval bindings on dashboard rows created before
     // the command relay existed. Empty lists deliberately preserve the
     // legacy grant's lack of workspace action authority.
@@ -1483,6 +1490,10 @@ export class AccountCoordinator extends DurableObject<Env> {
     ) {
       throw new RpcFailure('malformed-request', { reason: 'actionDigest' });
     }
+    const sealedDetails = doc['sealedDetails'];
+    if (sealedDetails !== undefined && sealedTaskEnvelopeIssue(sealedDetails) !== null) {
+      throw new RpcFailure('malformed-request', { reason: 'sealed-approval-details' });
+    }
     const approverRaw = doc['approverEnrollmentId'];
     if (approverRaw !== undefined && approverRaw !== null && !isBoundedId(approverRaw)) {
       throw new RpcFailure('malformed-request', { reason: 'approverEnrollmentId' });
@@ -1524,15 +1535,16 @@ export class AccountCoordinator extends DurableObject<Env> {
     const expiresAt = now + ttl;
     this.ctx.storage.sql.exec(
       `INSERT INTO approvals (
-         approval_id, account_id, job_id, attempt_id, action_digest, generation,
+         approval_id, account_id, job_id, attempt_id, action_digest, sealed_details, generation,
          approver_enrollment_id, approver_role, state, decided_by, decided_at,
          expires_at, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'user', 'pending', NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'user', 'pending', NULL, NULL, ?, ?)`,
       approvalId,
       job.account_id,
       job.job_id,
       attempt.attempt_id,
       actionDigest,
+      sealedDetails === undefined ? null : JSON.stringify(sealedDetails),
       attempt.fence,
       approverEnrollmentId,
       expiresAt,
@@ -1547,6 +1559,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       payload: {
         approvalId,
         actionDigest,
+        ...(sealedDetails === undefined ? {} : { sealedDetails }),
         ...(approverEnrollmentId === null ? {} : { approverEnrollmentId }),
         expiresAt: new Date(expiresAt).toISOString(),
       },
@@ -5281,7 +5294,12 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (!isApprovalState(row.state)) {
       throw new RpcFailure('unavailable', { reason: 'corrupt-approval-state' });
     }
+    const details =
+      row.sealed_details === null
+        ? undefined
+        : (JSON.parse(row.sealed_details) as SealedTaskPayload);
     return {
+      ...(details === undefined ? {} : { sealedDetails: details }),
       id: row.approval_id,
       jobId: row.job_id,
       attemptId: row.attempt_id,
@@ -9483,6 +9501,10 @@ function parseDevicePolicyParams(params: unknown): DevicePolicy {
   if (typeof allowJobs !== 'boolean') {
     throw new RpcFailure('malformed-request', { reason: 'allowJobs' });
   }
+  const maxPermissionMode = worker['maxPermissionMode'];
+  if (maxPermissionMode !== undefined && !isPermissionMode(maxPermissionMode)) {
+    throw new RpcFailure('malformed-request', { reason: 'maxPermissionMode' });
+  }
   const sourcesRaw = worker['allowedSources'];
   let allowedSources: string[] | undefined;
   if (sourcesRaw !== undefined) {
@@ -9506,6 +9528,7 @@ function parseDevicePolicyParams(params: unknown): DevicePolicy {
   return {
     worker: {
       allowJobs,
+      ...(maxPermissionMode === undefined ? {} : { maxPermissionMode }),
       ...(allowedSources === undefined ? {} : { allowedSources }),
       ...(maxConcurrentJobs === undefined ? {} : { maxConcurrentJobs }),
     },
@@ -10696,6 +10719,9 @@ function parseSessionCheckpoint(input: unknown): HandoffCheckpoint {
   }
   if (!isBoundedId(provider) || !isBoundedId(model)) {
     throw new RpcFailure('malformed-request', { reason: 'checkpoint.provider' });
+  }
+  if (input['permissionMode'] !== undefined && !isPermissionMode(input['permissionMode'])) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint.permissionMode' });
   }
   if (!Array.isArray(artifactRefs) || !artifactRefs.every((a) => isBoundedId(a))) {
     throw new RpcFailure('malformed-request', { reason: 'checkpoint.artifactRefs' });

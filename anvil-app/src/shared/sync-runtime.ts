@@ -308,6 +308,8 @@ export interface SyncFairUseStatus {
 export interface MeshWorkerStatus {
   /** Local opt-in flag: this device consents to run account jobs. */
   enabled: boolean;
+  /** Device-local maximum, unaffected by synced settings or remote requests. */
+  maxPermissionMode: import('../../cloud/contract/permissions.js').PermissionMode;
   /** The worker incarnation lease is live (fresh `worker.connect`). */
   connected: boolean;
   workerIncarnation: string | null;

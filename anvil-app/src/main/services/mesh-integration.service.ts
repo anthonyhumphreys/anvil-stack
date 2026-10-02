@@ -1,3 +1,6 @@
+import { constrainPermissionMode } from '../../../cloud/contract/permissions.js';
+import { getMeshMaximumPermissionMode } from './mesh-permissions.service.js';
+import { getSettings } from './settings.service.js';
 // FLOW-03: fan-out integration + verification (spec §457).
 //
 // An integration run takes the adopted result refs of a fan-out's node
@@ -244,6 +247,10 @@ export async function integrateResults(input: {
           repositoryId,
           command,
           cwd: worktree!.worktreePath,
+          permissionMode: constrainPermissionMode(
+            getSettings().codexMode,
+            getMeshMaximumPermissionMode(),
+          ),
           target: {
             kind: 'integration',
             integrationId: input.integrationId,

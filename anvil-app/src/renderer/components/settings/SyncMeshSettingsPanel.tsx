@@ -1,3 +1,4 @@
+import { isPermissionMode, type PermissionMode } from '../../../../cloud/contract/permissions';
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
@@ -213,6 +214,19 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const handleSetMeshWorker = async (enabled: boolean): Promise<void> => {
     if (runtime?.syncEnabled !== true || runtime.meshWorker.enabled === enabled) return;
     await handleMeshChange();
+  };
+  const [permissionSaving, setPermissionSaving] = useState(false);
+  const handleMaximumMode = async (mode: PermissionMode): Promise<void> => {
+    setPermissionSaving(true);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.setMeshMaximumPermissionMode(mode);
+      await refreshStatus();
+    } catch (error) {
+      setError(toErrorMessage(error));
+    } finally {
+      setPermissionSaving(false);
+    }
   };
   const [issuedCode, setIssuedCode] = useState<SyncIssuedEnrollmentCode | null>(null);
   const [pairingCopied, setPairingCopied] = useState(false);
@@ -1527,6 +1541,29 @@ export function SyncMeshSettingsPanel(): ReactNode {
                 {meshToggling ? 'Updating…' : runtime.meshWorker.enabled ? 'On' : 'Off'}
               </button>
             </div>
+            <label className="mt-3 block text-xs text-text-secondary">
+              Maximum permission mode for this device
+              <select
+                className="mt-1 block w-full rounded-md border border-border bg-bg-primary px-2 py-1.5 text-sm text-text-primary"
+                value={runtime.meshWorker.maxPermissionMode ?? 'on-request'}
+                disabled={permissionSaving}
+                onChange={(event) => {
+                  if (isPermissionMode(event.target.value))
+                    void handleMaximumMode(event.target.value);
+                }}
+              >
+                <option value="read-only">Read only</option>
+                <option value="on-request">Ask for extra access</option>
+                <option value="workspace-auto">Auto in workspace</option>
+                <option value="full-access">Full access</option>
+              </select>
+            </label>
+            <p className="mt-1 text-xs text-text-tertiary">
+              Jobs use their chosen mode up to this limit. Approval requests can be answered on
+              another trusted device. Workspace automation runs commands inside the workspace
+              sandbox. Full access runs unattended with your account permissions. Lowering this
+              limit stops active jobs.
+            </p>
             {runtime.meshWorker.enabled && (
               <p className="mt-2 text-xs text-text-tertiary">
                 {runtime.meshWorker.connected

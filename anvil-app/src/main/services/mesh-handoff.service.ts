@@ -16,7 +16,7 @@ import { rpc } from './sync-backend-client.service.js';
 import { getFullStatus } from './git.service.js';
 import { detectUnsupportedCheckout } from './workspace-materialization.service.js';
 import { readSessionOwnership, writeSessionOwnership } from './mesh-ownership.service.js';
-import { interruptTurn, stopSession } from './codex-session.service.js';
+import { getCodexSession, interruptTurn, stopSession } from './codex-session.service.js';
 import type {
   HandoffAdvanceResult,
   HandoffCancelResult,
@@ -290,6 +290,7 @@ export async function captureSessionCheckpoint(
     repositories,
     provider: context.provider,
     model: context.model ?? 'default',
+    permissionMode: getCodexSession(sessionId)?.mode ?? 'on-request',
     messages,
     summary: messages
       .filter((m) => m.role === 'assistant')

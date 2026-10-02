@@ -115,7 +115,8 @@ function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
           });
         }
       } else if (id !== undefined && method === undefined) {
-        // driver results (approval decline) — recorded via `received` only.
+        if (id === 'req-approval-1')
+          write({ method: 'turn/completed', params: { turn: { id: turnId, status: turnStatus } } });
       } else if (id !== undefined) {
         write({ jsonrpc: '2.0', id, result: {} });
       }
@@ -220,6 +221,32 @@ describe('mesh-session provider driver', () => {
     expect((decline?.['result'] as Record<string, unknown>)['decision']).toBe('decline');
   });
 
+  it('routes approval mode to the Mesh approver and accepts only a live decision', async () => {
+    const fake = fakeAppServer({ sendApprovalRequest: true, holdTurn: true });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const approve = vi.fn().mockResolvedValue(true);
+    await runRemoteSessionTurn(spec({ permissionMode: 'on-request' }), { ...HOOKS_BASE, approve });
+    expect(approve).toHaveBeenCalledWith(expect.objectContaining({ approvalCommand: 'rm -rf /' }));
+    expect(
+      fake.received.find((m) => m['id'] === 'req-approval-1' && m['result'])?.['result'],
+    ).toEqual({ decision: 'accept' });
+    expect(fake.received.find((m) => m['method'] === 'turn/start')?.['params']).toMatchObject({
+      approvalPolicy: 'on-request',
+    });
+  });
+  it.each(['read-only', 'workspace-auto', 'full-access'] as const)(
+    'does not authorize provider escalation in %s mode',
+    async (permissionMode) => {
+      const fake = fakeAppServer({ sendApprovalRequest: true, holdTurn: true });
+      configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+      const approve = vi.fn().mockResolvedValue(true);
+      await runRemoteSessionTurn(spec({ permissionMode }), { ...HOOKS_BASE, approve });
+      expect(approve).not.toHaveBeenCalled();
+      expect(
+        fake.received.find((m) => m['id'] === 'req-approval-1' && m['result'])?.['result'],
+      ).toEqual({ decision: 'decline' });
+    },
+  );
   it('fails the attempt when the turn reports failed', async () => {
     const fake = fakeAppServer({ turnStatus: 'failed' });
     configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });

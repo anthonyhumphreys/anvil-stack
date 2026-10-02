@@ -1,79 +1,74 @@
-# Mesh verification execution security decision
+# Mesh execution permission decision
 
-Accepted by Anth on 2 October 2026. This decision supersedes the earlier
-proposal to replace remote verification commands with target-local profiles.
+Accepted by Anth on 2 October 2026. The node permission model supersedes both
+fixed verification profiles and mandatory native approval for every command.
 
 ## Decision
 
-Retain arbitrary verification commands and their declared shell semantics.
-Executing user-authorized commands across devices is a core Anvil capability;
-a fixed profile-only contract would remove useful workflows. No profile
-migration or shell-command blacklist is planned.
+Arbitrary shell commands are an intended Anvil capability. Jobs carry their
+chosen running mode, and each target sets its own maximum mode locally. The
+less permissive mode wins. Neither synced settings nor a source's request can
+raise the target ceiling.
+
+- Read only runs the provider and declared commands in a read-only sandbox.
+- Ask for approval routes provider requests and bootstrap/verification approval
+  through the authenticated Mesh approval channel. Another trusted device can
+  approve an exact action; a visible window on the worker is unnecessary.
+- Workspace automation runs unattended inside the workspace sandbox, with
+  network access disabled. It cannot silently escalate outside that sandbox.
+- Full access runs unattended with the target user's operating-system access.
+  Both the requested mode and target ceiling must permit it.
+
+Existing nodes default to approval mode. Enabling a worker does not raise its
+ceiling. Changing the desktop's general running mode does not change that
+ceiling either. Lowering a ceiling cancels active attempts, and subsequent jobs
+use the new limit. Raising it never broadens an already started provider turn.
+
+Desktop owners set the maximum in Settings > Sync & Mesh. Headless owners use
+`anvil-daemon worker mode <mode>`. Remote workflow steps can override the current
+running mode; otherwise submission pins the current mode into encrypted inputs.
+
+Bootstrap transport pins cover the recipe and exact repository commits without
+including a different device's local policy. Target authorization separately
+pins its own policy, effective mode and job/attempt. Remote bootstrap approvals
+apply to that attempt only. Approval details are encrypted under the task key,
+bound to the attempt and action digest, and displayed by the approving client.
+
+## Security boundaries
+
+Keep authenticated account/enrollment identity, claim-time source policy,
+revocation, task-key recipients, repository containment, restricted process
+environments, timeouts, bounded output, cancellation and result evidence.
+Execution authorization and cryptographic device trust remain separate controls.
+The `same-account` source policy is account authorization, not a per-peer local
+cryptographic verification check.
+
+Full access intentionally allows an authorized source to run arbitrary code.
+Compromised authorized clients, agent instructions or repositories can submit
+harmful commands without physical access to a machine. Approval mode explicitly
+authorizes each bootstrap recipe or verification command and provider escalation;
+automatic sandbox modes enforce their boundary instead of relying on a prompt.
 
 [CodeQL alert #29](https://github.com/anthonyhumphreys/anvil-stack/security/code-scanning/29)
-correctly identifies remote input reaching `sh -c`. The accepted behavior is
-command execution from an authorized source with separate target-local consent.
-The finding does not by itself establish an authorization or approval bypass.
-Dispose of this specific alert as `won't fix`, with the authorization evidence
-and this decision recorded. Do not disable CodeQL or its command-injection rule.
-Removing the shell capability is not a merge requirement.
+identifies input reaching a shell. Keep its specific `won't fix` disposition for
+intended authorized execution. Do not disable CodeQL or blacklist commands.
+Reopen for an authentication/source-policy bypass, a target-ceiling bypass,
+rebound approval, revoked source execution, or an unenforced sandbox claim.
 
-## Boundaries retained
+## Verification
 
-- The public Worker authenticates the session and forwards its verified account
-  and enrollment identity. Caller-supplied identity headers cannot select a
-  different account. The development spike bearer is unavailable unless the
-  explicit development switch is enabled.
-- A target worker must opt into execution. Its source policy is checked at
-  placement and again at claim; explicit targets must be eligible within the
-  authenticated account. Revoked sessions cannot continue making requests.
-- Execution permission and cryptographic device trust are separate. An explicit
-  device allowlist is narrower than the optional `same-account` source policy;
-  the latter authorizes account sources and must not be described as checking
-  each peer's locally verified cryptographic identity.
-- Both remote code-task verification and result integration use
-  `runVerificationCommand`. Every exact command requires one-run native consent
-  bound to the repository, worktree and job/attempt or integration/run.
-  Declined, headless, hidden, minimized and expired approvals do not execute.
-- Keep the restricted process environment, execution timeout, bounded output
-  and result/journal evidence. These reduce exposure; they do not sandbox the
-  process or isolate the user's files and network.
+Regression coverage includes local persistence/migration, mode ceilings,
+headless full-access verification, remote approval/refusal, ordinary and shell
+bootstrap execution, encrypted approval details, provider approvals and active
+attempt cancellation on downgrade. A live installed-Codex check exercises
+workspace and read-only filesystem boundaries without a model turn.
 
-## Accepted risk and reopening criteria
+Local verification on 2 October passed 1,776 desktop tests (12 skipped), desktop
+lint and both TypeScript projects, desktop and daemon builds, 436 backend tests
+and backend typecheck. The final handoff contract check passed 13 targeted
+backend tests. A separate opt-in installed-Codex run passed 15 command/session
+tests, including the live filesystem sandbox check. Daemon authorization
+checks and maximum-mode persistence across separate CLI processes also passed.
 
-An approved command runs with the user's operating-system permissions. Trust
-authenticates and authorizes its source; it does not make every command safe.
-Compromised authorized clients, stolen credentials or malicious agent/repository
-input can produce a harmful request without physical access to the machine.
-The source policy and target-local consent remain required controls.
-
-Reopen this alert or create a specific security finding if an unauthorized,
-cross-account or revoked source can cause execution, if approval can be bypassed
-or rebound to different command/target data, or if a new execution path omits
-these controls. Broadening unattended execution requires a separate decision.
-
-## Verification evidence
-
-Checked the working tree based on `f9e06f1`, with regression tests added in this
-decision change. No runtime behavior changed.
-
-- Desktop worktree, worker and integration suites: 57 tests passed. Coverage
-  includes successful shell execution, nonzero exits, timeout, exact-command
-  consent details, declined/headless requests, hidden/minimized windows and
-  approval arriving after the 30-second deadline. The suites ran using the
-  installed Electron runtime in Node mode to match the native SQLite ABI.
-- Backend auth, jobs, workers, security enrollment and task-key/dashboard
-  suites: 85 tests passed. Coverage includes explicit source-policy refusal,
-  claim-time source checks, cross-account target/get/claim refusal, expired and
-  revoked credentials, verified-account routing, task-key recipients and grant
-  revocation. Placement/lifecycle fixtures use the development test bearer;
-  the auth suite separately exercises issued device credentials.
-- The existing full backend suite passed 434 tests before adding the two job
-  regressions. Focused results above cover the final test changes.
-- Desktop Node and renderer typechecks, targeted desktop test lint and backend
-  typecheck passed after correcting the new window mock's inferred return types.
-
-This is targeted boundary verification, not an exhaustive security audit or
-live physical-device acceptance. The existing worker's task-completion result
-and integration's verification-success result have different meanings; changing
-that reporting contract is outside this alert decision.
+Physical multi-device acceptance remains on the staging checklist. Unit and
+sandbox checks do not replace it.

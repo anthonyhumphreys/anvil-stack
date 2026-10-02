@@ -1,3 +1,5 @@
+import { bootstrapCommandArgv } from './bootstrap-runner.service.js';
+import { executeMeshCommand } from './mesh-command.service.js';
 // MESH-02: device-local worker runtime.
 //
 // Sync enrollment does not authorize Mesh. A device opts in locally via
@@ -12,6 +14,18 @@
 // provider (apiUrl + token + enrollment) via `configureMeshWorkerContext`
 // and calls the lifecycle hooks below on enable/disable/frame events.
 
+import {
+  bootstrapManifestPolicy,
+  constrainPermissionMode,
+  isPermissionMode,
+  permissionSandbox,
+  type PermissionMode,
+} from '../../../cloud/contract/permissions.js';
+import {
+  effectiveMeshPermissionMode,
+  getMeshMaximumPermissionMode,
+  requestedMeshPermissionMode,
+} from './mesh-permissions.service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -70,7 +84,6 @@ import type { AgentProvider, ReasoningEffort } from '../../shared/types.js';
 import {
   computeBootstrapDigest,
   getWorkspaceBootstrap,
-  isBootstrapApproved,
   recordBootstrapApproval,
   resolveWorkspaceCommits,
   startBootstrapRun,
@@ -177,6 +190,7 @@ interface WorkerStateRow {
 let contextProvider: (() => MeshWorkerContext | null) | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let connectInFlight: Promise<void> | null = null;
+let policyPublishPending = false;
 
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
 const WORKER_CAPABILITIES = [
@@ -351,6 +365,7 @@ export function getMeshWorkerStatus(): MeshWorkerStatus {
     Date.parse(state.lease_expires_at) > Date.now();
   return {
     enabled: state.enabled === 1,
+    maxPermissionMode: getMeshMaximumPermissionMode(),
     connected: live,
     workerIncarnation: state.incarnation,
     leaseExpiresAt: state.lease_expires_at,
@@ -413,15 +428,53 @@ export async function setMeshWorkerEnabled(enabled: boolean): Promise<MeshWorker
 export function buildDevicePolicy(): DevicePolicy {
   return {
     worker: {
-      allowJobs: true,
-      allowedSources: ['same-account'],
-      maxConcurrentJobs: DEFAULT_MAX_CONCURRENT_JOBS,
+      ...bootstrapManifestPolicy().worker,
+      maxPermissionMode: getMeshMaximumPermissionMode(),
     },
   };
 }
 
+export async function setMeshMaximumPermissionMode(
+  mode: PermissionMode,
+): Promise<MeshWorkerStatus> {
+  if (!isPermissionMode(mode)) throw new Error('Invalid Mesh permission mode.');
+  const previous = getMeshMaximumPermissionMode();
+  if (mode === previous) return getMeshWorkerStatus();
+  getDb()
+    .prepare(
+      `INSERT INTO mesh_worker_state (id, enabled, max_permission_mode, updated_at)
+    VALUES (1, 0, ?, ?) ON CONFLICT(id) DO UPDATE SET max_permission_mode = excluded.max_permission_mode, updated_at = excluded.updated_at`,
+    )
+    .run(mode, nowIso());
+  // A downgrade stops active attempts; no running provider may retain greater access.
+  if (constrainPermissionMode(previous, mode) !== previous) {
+    const attempts = activeAttempts();
+    for (const attempt of attempts)
+      updateAttemptState(attempt.id, attempt.state, { cancelRequested: true });
+    for (const attempt of attempts) {
+      try {
+        await meshRpc('job.cancel', { jobId: attempt.job_id });
+      } catch {
+        appendJournal(attempt.id, 'permission-cancel-pending');
+      }
+    }
+  }
+  policyPublishPending = true;
+  if (isMeshWorkerEnabled()) {
+    try {
+      await publishWorkerPolicy();
+    } catch (error) {
+      writeWorkerState({
+        last_error: `Permission mode saved locally; policy publication failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+  return getMeshWorkerStatus();
+}
+
 async function publishWorkerPolicy(): Promise<void> {
   await meshRpc('device.policy.publish', buildDevicePolicy());
+  policyPublishPending = false;
 }
 
 function buildCapabilities(): WorkerCapabilities {
@@ -562,6 +615,7 @@ async function heartbeat(): Promise<void> {
     stopHeartbeat();
     return;
   }
+  if (policyPublishPending) await publishWorkerPolicy();
   const state = readWorkerState();
   const leaseExpiry = state.lease_expires_at !== null ? Date.parse(state.lease_expires_at) : 0;
   if (state.incarnation === null || leaseExpiry - Date.now() < LEASE_RENEW_INTERVAL_MS) {
@@ -1112,7 +1166,18 @@ async function requestAndAwaitApproval(
   actionDigest: string,
   pollMs = APPROVAL_POLL_MS,
   capMs = APPROVAL_WAIT_CAP_MS,
+  details?: string,
 ): Promise<'approved' | 'denied'> {
+  const ctx = workerContext();
+  const key = ctx?.scope === undefined ? null : taskKeyFor(ctx.scope, job.id);
+  const sealedDetails =
+    details === undefined
+      ? undefined
+      : ctx?.scope !== undefined && key !== null
+        ? sealTaskResult(ctx.scope, job.id, attempt.id, key, { actionDigest, details })
+        : undefined;
+  if (details !== undefined && sealedDetails === undefined)
+    throw new Error('approval-details-key-unavailable');
   appendJournal(attempt.id, 'approval-requested', { actionDigest });
   emitActivity(attempt, `approval requested: ${actionDigest.slice(0, 12)}…`);
   const deadline = Date.now() + capMs;
@@ -1126,10 +1191,14 @@ async function requestAndAwaitApproval(
     lastRetryReason = reason;
     appendJournal(attempt.id, event, { reason });
   };
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !isCancelRequested(attempt.id)) {
     if (!requestSeen) {
       try {
-        sendControl(attempt, { request: 'approval', actionDigest });
+        sendControl(attempt, {
+          request: 'approval',
+          actionDigest,
+          ...(sealedDetails === undefined ? {} : { sealedDetails }),
+        });
       } catch (error) {
         // Socket still connecting or mid-reconnect — retried next poll.
         journalRetry('approval-send-retry', error);
@@ -1175,12 +1244,42 @@ async function requestAndAwaitApproval(
   return 'denied';
 }
 
+async function approveProviderAction(
+  job: MeshJob,
+  attempt: ExecutionAttempt,
+  permissionMode: PermissionMode,
+  event: import('../../shared/types.js').CodexEvent,
+): Promise<boolean> {
+  if (permissionMode !== 'on-request' || isCancelRequested(attempt.id)) return false;
+  const action = {
+    kind: event.approvalKind,
+    command: event.approvalCommand,
+    cwd: event.approvalCwd,
+    reason: event.approvalReason,
+    permissions: event.approvalPermissions,
+    requestId: event.approvalRequestId,
+  };
+  const digest = createHash('sha256')
+    .update(canonicalJson({ jobId: job.id, attemptId: attempt.id, action, permissionMode }))
+    .digest('hex');
+  return (
+    (await requestAndAwaitApproval(
+      job,
+      attempt,
+      digest,
+      undefined,
+      undefined,
+      `Provider action:\n${canonicalJson(action)}`,
+    )) === 'approved' && !isCancelRequested(attempt.id)
+  );
+}
+
 /**
  * `prepare-workspace`: materialize the manifest's pinned repositories into
  * a worker-managed checkout root, then run the workspace bootstrap recipe
- * when its digest matches the manifest pin. Bootstrap needs an approval:
- * a local pin wins; otherwise a remote approval is requested — EXCEPT for
- * shell recipes, which spec §10 reserves to target-local consent.
+ * when its content digest matches. The chosen running mode is capped locally:
+ * approval mode requests one-run authorization; unattended modes execute under
+ * their corresponding access policy.
  */
 async function executePrepareWorkspace(
   job: MeshJob,
@@ -1285,47 +1384,81 @@ async function executePrepareWorkspace(
     const digest = computeBootstrapDigest({
       recipe,
       repositoryCommits: manifestCommits,
-      executionPolicy: buildDevicePolicy(),
+      executionPolicy: bootstrapManifestPolicy(),
     });
     if (digest !== manifest.bootstrapDigest) {
       throw new Error(
         `bootstrap-digest-mismatch: computed ${digest} != manifest ${manifest.bootstrapDigest}`,
       );
     }
-    const usesShell = recipe.steps.some((step) => step.shell !== undefined);
-    if (!isBootstrapApproved(workspaceId, digest, recipe)) {
-      if (usesShell) {
-        // Spec §10: shell execution is target-local consent — a remote
-        // approval cannot satisfy it.
-        throw new Error('shell-recipe-requires-local-approval');
-      }
-      const decision = await requestAndAwaitApproval(job, attempt, digest);
-      if (decision !== 'approved') {
+    const mode = effectiveMeshPermissionMode(manifest.inputs);
+    // The transport pin covers recipe+commits. Local authorization additionally
+    // pins this target's policy and this one attempt, never another device's policy.
+    const localPolicy = { ...buildDevicePolicy(), mode, jobId: job.id, attemptId: attempt.id };
+    const localDigest = computeBootstrapDigest({
+      recipe,
+      repositoryCommits: manifestCommits,
+      executionPolicy: localPolicy,
+    });
+    if (mode === 'on-request') {
+      if (
+        (await requestAndAwaitApproval(
+          job,
+          attempt,
+          localDigest,
+          undefined,
+          undefined,
+          `Bootstrap recipe:\n${recipe.steps.map((step) => step.shell ?? step.argv?.join(' ') ?? step.kind).join('\n')}`,
+        )) !== 'approved'
+      )
         throw new Error('bootstrap-approval-denied-or-expired');
-      }
-      // The remote decision binds this exact digest — record it locally so
-      // the runner's gate and audit trail see the same pin.
-      recordBootstrapApproval(workspaceId, {
-        recipe,
-        repositoryCommits: manifestCommits,
-        executionPolicy: buildDevicePolicy(),
-        shellApproved: false,
-      });
     }
+    if (isCancelRequested(attempt.id)) throw new Error('bootstrap-cancelled');
+    recordBootstrapApproval(workspaceId, {
+      recipe,
+      repositoryCommits: manifestCommits,
+      executionPolicy: localPolicy,
+      shellApproved: true,
+    });
     const root = workspaceCheckoutRoot(workspaceId) ?? checkoutRoot;
     emitActivity(attempt, 'bootstrap: running recipe');
     const run = startBootstrapRun({
       workspaceId,
       recipe,
       repositoryCommits: manifestCommits,
-      executionPolicy: buildDevicePolicy(),
+      executionPolicy: localPolicy,
       checkoutRoot: root,
       definitionRevision: manifest.workspaceDefinitionRevision,
+      commandExecutor: async ({ step, cwd, env, onSpawn }) => {
+        if (isCancelRequested(attempt.id) || effectiveMeshPermissionMode(manifest.inputs) !== mode)
+          throw new Error('bootstrap-permission-policy-changed');
+        const outcome = await executeMeshCommand({
+          argv: bootstrapCommandArgv(step),
+          cwd,
+          env,
+          mode,
+          timeoutMs: step.timeoutMs,
+          onSpawn,
+        });
+        return {
+          stepId: step.id,
+          state: outcome.exitCode === 0 ? 'verified' : 'failed',
+          ...outcome,
+        };
+      },
     });
     if (run.handle === null) {
       throw new Error('bootstrap run parked awaiting-approval unexpectedly');
     }
-    const runResult = await run.handle.done;
+    const cancelTimer = setInterval(() => {
+      if (isCancelRequested(attempt.id)) run.handle?.cancel();
+    }, 500);
+    let runResult;
+    try {
+      runResult = await run.handle.done;
+    } finally {
+      clearInterval(cancelTimer);
+    }
     if (runResult.state !== 'verified') {
       throw new Error(`bootstrap-${runResult.state}`);
     }
@@ -1578,11 +1711,18 @@ async function executeStartSession(
       : SESSION_TURN_DEFAULT_TIMEOUT_MS,
     SESSION_TURN_MAX_TIMEOUT_MS,
   );
-  const rawSandbox = manifest.inputs['sandbox'];
-  const sandbox =
-    rawSandbox === 'read-only' || rawSandbox === 'danger-full-access'
-      ? rawSandbox
-      : 'workspace-write';
+  const permissionMode = effectiveMeshPermissionMode({
+    ...manifest.inputs,
+    ...(handoffCheckpoint?.permissionMode === undefined
+      ? {}
+      : { permissionMode: handoffCheckpoint.permissionMode }),
+  });
+  const sandbox = permissionSandbox(permissionMode);
+  appendJournal(attemptId, 'execution-permissions', {
+    requestedMode: manifest.inputs['permissionMode'] ?? manifest.inputs['sandbox'] ?? 'on-request',
+    effectiveMode: permissionMode,
+    maximumMode: getMeshMaximumPermissionMode(),
+  });
   const rawEffort = manifest.inputs['reasoningEffort'];
 
   // SESSION-03: a handoff continuation seeds a FRESH provider thread from
@@ -1601,6 +1741,7 @@ async function executeStartSession(
       prompt: effectivePrompt,
       ...(typeof rawEffort === 'string' ? { reasoningEffort: rawEffort as ReasoningEffort } : {}),
       sandbox,
+      permissionMode,
       ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
       // ENV-06: grants for this claim are in-memory only and win over
       // ambient provider credentials for the duration of the turn.
@@ -1615,6 +1756,7 @@ async function executeStartSession(
       },
       emitActivity: (text) => emitActivity(attempt, text),
       isCancelled: () => isCancelRequested(attemptId),
+      approve: (event) => approveProviderAction(job, attempt, permissionMode, event),
     },
   );
 
@@ -1858,11 +2000,13 @@ async function executeCodeTask(
       : SESSION_TURN_DEFAULT_TIMEOUT_MS,
     SESSION_TURN_MAX_TIMEOUT_MS,
   );
-  const rawSandbox = manifest.inputs['sandbox'];
-  const sandbox =
-    rawSandbox === 'read-only' || rawSandbox === 'danger-full-access'
-      ? rawSandbox
-      : 'workspace-write';
+  const permissionMode = effectiveMeshPermissionMode(manifest.inputs);
+  const sandbox = permissionSandbox(permissionMode);
+  appendJournal(attemptId, 'execution-permissions', {
+    requestedMode: manifest.inputs['permissionMode'] ?? manifest.inputs['sandbox'] ?? 'on-request',
+    effectiveMode: permissionMode,
+    maximumMode: getMeshMaximumPermissionMode(),
+  });
   const rawEffort = manifest.inputs['reasoningEffort'];
 
   const turnFailure: { error: Error | null } = { error: null };
@@ -1874,6 +2018,7 @@ async function executeCodeTask(
       prompt,
       ...(typeof rawEffort === 'string' ? { reasoningEffort: rawEffort as ReasoningEffort } : {}),
       sandbox,
+      permissionMode,
       ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
       // ENV-06: grants for this claim are in-memory only and win over
       // ambient provider credentials for the duration of the turn.
@@ -1888,6 +2033,7 @@ async function executeCodeTask(
       },
       emitActivity: (text) => emitActivity(attempt, text),
       isCancelled: () => isCancelRequested(attemptId),
+      approve: (event) => approveProviderAction(job, attempt, permissionMode, event),
     },
   ).catch((error) => {
     turnFailure.error = error instanceof Error ? error : new Error(String(error));
@@ -1935,11 +2081,38 @@ async function executeCodeTask(
   const verification: ResultManifestVerification[] = [];
   for (const repo of finalized) {
     for (const command of verificationCommands) {
+      if (isCancelRequested(attemptId)) return { ok: false, cancelled: true };
       const outcome = await runVerificationCommand({
         repositoryId: repo.repositoryId,
         command,
         cwd: repo.worktreePath,
         target: { kind: 'remote-job', jobId: job.id, attemptId },
+        permissionMode,
+        isCancelled: () => isCancelRequested(attemptId),
+        approve: async () => {
+          const digest = createHash('sha256')
+            .update(
+              canonicalJson({
+                jobId: job.id,
+                attemptId,
+                repositoryId: repo.repositoryId,
+                cwd: repo.worktreePath,
+                command,
+                permissionMode,
+              }),
+            )
+            .digest('hex');
+          return (
+            (await requestAndAwaitApproval(
+              job,
+              attempt,
+              digest,
+              undefined,
+              undefined,
+              `Verification command:\n${command}\nWorking directory: ${repo.worktreePath}`,
+            )) === 'approved' && !isCancelRequested(attemptId)
+          );
+        },
       });
       verification.push({
         repositoryId: outcome.repositoryId,
@@ -2110,6 +2283,10 @@ async function reportAttempt(
       : undefined;
   const publicResult = sealedResult === undefined ? result : publicResultSummary(result);
   try {
+    // Local policy cancellation must also reach the coordinator before a clean
+    // stop is reported, otherwise it would be mistaken for successful completion.
+    if (job !== undefined && isCancelRequested(attemptId))
+      await meshRpc('job.cancel', { jobId: job.id });
     const report = await meshRpc<{ status: string }>('attempt.report', {
       attemptId,
       incarnation: row.incarnation,
@@ -2162,6 +2339,7 @@ export async function reconcileMeshAttemptsOnBoot(): Promise<void> {
 }
 
 export function resetMeshWorkerForTests(): void {
+  policyPublishPending = false;
   stopHeartbeat();
   connectInFlight = null;
   contextProvider = null;
@@ -2377,6 +2555,7 @@ export async function createDiagnosticJob(input: DiagnosticJobInput): Promise<Jo
 
 export interface PrepareWorkspaceJobInput {
   requestId: string;
+  permissionMode?: PermissionMode;
   workspaceId: string;
   /** Explicit device target; omitted = automatic placement. */
   targetEnrollmentId?: string;
@@ -2413,7 +2592,7 @@ export async function createPrepareWorkspaceJob(
     return { repositoryId: def.portable_id, commit };
   });
   const recipe = getWorkspaceBootstrap(input.workspaceId);
-  const policy = buildDevicePolicy();
+  const policy = bootstrapManifestPolicy();
   const bootstrapDigest =
     recipe === null
       ? 'none'
@@ -2443,6 +2622,7 @@ export async function createPrepareWorkspaceJob(
     kind: 'prepare-workspace',
     requestedTarget,
     manifest,
+    privateInputs: { permissionMode: input.permissionMode ?? getSettings().codexMode },
     retryPolicy: 'inspect-before-retry',
   });
 }
@@ -2459,6 +2639,7 @@ export interface StartSessionJobInput {
   personaId?: string;
   reasoningEffort?: string;
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  permissionMode?: PermissionMode;
   /** Pinned minimum `codex --version` the target must satisfy (audit §9). */
   cliMinVersion?: string;
   turnTimeoutMs?: number;
@@ -2501,7 +2682,7 @@ export async function createStartSessionJob(input: StartSessionJobInput): Promis
       : computeBootstrapDigest({
           recipe,
           repositoryCommits: commits,
-          executionPolicy: buildDevicePolicy(),
+          executionPolicy: bootstrapManifestPolicy(),
         });
   const model =
     input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
@@ -2521,6 +2702,11 @@ export async function createStartSessionJob(input: StartSessionJobInput): Promis
     ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
     ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
     ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+    permissionMode:
+      input.permissionMode ??
+      (input.sandbox === undefined
+        ? getSettings().codexMode
+        : requestedMeshPermissionMode({ sandbox: input.sandbox })),
     ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
     ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
     ...(input.handoffId === undefined ? {} : { handoffId: input.handoffId }),
@@ -2554,6 +2740,7 @@ export interface CodeTaskJobInput {
   personaId?: string;
   reasoningEffort?: string;
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  permissionMode?: PermissionMode;
   cliMinVersion?: string;
   turnTimeoutMs?: number;
   /**
@@ -2599,7 +2786,7 @@ export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSum
       : computeBootstrapDigest({
           recipe,
           repositoryCommits: commits,
-          executionPolicy: buildDevicePolicy(),
+          executionPolicy: bootstrapManifestPolicy(),
         });
   const model =
     input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
@@ -2618,6 +2805,11 @@ export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSum
     ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
     ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
     ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+    permissionMode:
+      input.permissionMode ??
+      (input.sandbox === undefined
+        ? getSettings().codexMode
+        : requestedMeshPermissionMode({ sandbox: input.sandbox })),
     ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
     ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
     ...(input.verification === undefined ? {} : { verification: input.verification }),
@@ -2708,7 +2900,7 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
               : computeBootstrapDigest({
                   recipe,
                   repositoryCommits: commits,
-                  executionPolicy: buildDevicePolicy(),
+                  executionPolicy: bootstrapManifestPolicy(),
                 });
           return {
             workspaceDefinitionRevision: revision,
@@ -2730,6 +2922,11 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
         ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
         ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
         ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+        permissionMode:
+          input.permissionMode ??
+          (input.sandbox === undefined
+            ? getSettings().codexMode
+            : requestedMeshPermissionMode({ sandbox: input.sandbox })),
         ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
         ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
         ...(input.verification === undefined ? {} : { verification: input.verification }),

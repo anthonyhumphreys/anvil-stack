@@ -744,6 +744,8 @@ export interface WorkflowNode {
   target?: WorkflowTargetPolicy;
   repositoryIds?: string[];
   verification?: string[];
+  /** Chosen running mode; remote execution also obeys the target node ceiling. */
+  permissionMode?: CodexMode;
 }
 
 export interface WorkflowEdge {
@@ -1385,7 +1387,7 @@ export interface ChatSteerResult {
   queueDepth: number;
 }
 
-export type CodexMode = 'read-only' | 'on-request' | 'workspace-auto' | 'full-access';
+export type CodexMode = import('../../cloud/contract/permissions.js').PermissionMode;
 
 // ---------------------------------------------------------------------------
 // Mobile Companion

@@ -812,6 +812,9 @@ export interface AnvilAPI {
      * and connects a leased worker incarnation when enabled; requires sync.
      */
     setMeshWorker: (enabled: boolean) => Promise<MeshWorkerStatus>;
+    setMeshMaximumPermissionMode: (
+      mode: import('../../cloud/contract/permissions.js').PermissionMode,
+    ) => Promise<MeshWorkerStatus>;
     /** All enrollments on the account, including revoked rows and self. */
     listDevices: () => Promise<SyncDevice[]>;
     /** Rename any same-account enrollment; empty string clears the name. */

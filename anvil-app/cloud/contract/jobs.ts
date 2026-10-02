@@ -384,7 +384,7 @@ export interface ResultManifestRepository {
 export interface ResultManifestVerification {
   repositoryId: string;
   command: string;
-  /** Whether this exact command was approved locally on the worker device. */
+  /** Whether the command was authorized by the effective mode or an exact-action approval. */
   approvalGranted?: boolean;
   exitCode: number | null;
   timedOut: boolean;
@@ -510,6 +510,10 @@ export interface ApprovalRecord {
   attemptId: string;
   /** Digest of the action being approved (e.g. a bootstrap recipe hash). */
   actionDigest: string;
+  /** Command/recipe details encrypted under the task key and bound to this action digest. */
+  sealedDetails?: SealedTaskPayload;
+  /** Decrypted by the local client; never submitted in plaintext. */
+  details?: string;
   /** The attempt fence the request was issued against; stale fences reject. */
   generation: number;
   /** The single enrollment permitted to decide; absent defers to `approverRole`. */

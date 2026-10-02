@@ -1,10 +1,11 @@
+import type { PermissionMode } from '../../../cloud/contract/permissions.js';
 // SESSION-02: remote `start-session` provider driver.
 //
 // Runs one codex-protocol app-server turn on a worker-managed or verified
 // mapped checkout, isolated from the interactive chat session machinery:
 // journal-first spawn (the caller writes `provider-spawn` before this is
-// invoked), an allowlisted spawn env (SESSION-01), `never` approval policy
-// with in-band auto-decline for any request the server still sends, bounded
+// invoked), an allowlisted spawn env (SESSION-01), target-capped running modes
+// with Mesh approval routing when selected, bounded
 // waits, and a SIGTERM→SIGKILL process-group stop that cannot leave an
 // orphan behind on timeout or cancellation (spec §9 / audit items 1,2,5,7).
 
@@ -38,6 +39,7 @@ export interface RemoteSessionSpec {
   prompt: string;
   reasoningEffort?: ReasoningEffort;
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+  permissionMode?: PermissionMode;
   /** Same-home `thread/resume` handle from a prior attempt's journal. */
   resumeThreadId?: string;
   /**
@@ -68,6 +70,7 @@ export interface RemoteSessionHooks {
   emitActivity(text: string): void;
   /** Pollable cancellation flag (mesh attempt cancel_requested). */
   isCancelled(): boolean;
+  approve?: (event: CodexEvent) => Promise<boolean>;
 }
 
 /** codex app-server gives ~20s to produce thread/started. */
@@ -258,8 +261,28 @@ export async function runRemoteSessionTurn(
 
   const onEvent = (event: CodexEvent): void => {
     if (event.type === 'approval_request' && event.approvalRequestId !== undefined) {
-      sendCodexJsonRpcResult(proc, event.approvalRequestId, { decision: 'decline' });
-      hooks.emitActivity('session: provider approval request declined (unattended)');
+      const id = event.approvalRequestId;
+      const decide = async (): Promise<void> => {
+        let approved = false;
+        try {
+          approved =
+            spec.permissionMode === 'on-request' &&
+            (await hooks.approve?.(event)) === true &&
+            !hooks.isCancelled() &&
+            !turnSettled;
+        } catch {
+          /* Refuse an unreachable/expired approval. */
+        }
+        sendCodexJsonRpcResult(
+          proc,
+          id,
+          event.approvalKind === 'permissions'
+            ? { permissions: approved ? (event.approvalPermissions ?? {}) : {}, scope: 'turn' }
+            : { decision: approved ? 'accept' : 'decline' },
+        );
+        hooks.emitActivity(`session: provider approval ${approved ? 'approved' : 'declined'}`);
+      };
+      void decide();
       return;
     }
     if (event.type === 'input_request' && event.inputRequestId !== undefined) {
@@ -313,7 +336,7 @@ export async function runRemoteSessionTurn(
     const threadParams = {
       model: spec.model,
       cwd: spec.cwd,
-      approvalPolicy: 'never',
+      approvalPolicy: spec.permissionMode === 'on-request' ? 'on-request' : 'never',
       sandbox: spec.sandbox,
     };
     if (spec.resumeThreadId !== undefined) {
@@ -341,7 +364,7 @@ export async function runRemoteSessionTurn(
     sendCodexJsonRpc(proc, 'turn/start', {
       threadId: state.threadId,
       input: [{ type: 'text', text: spec.prompt, text_elements: [] }],
-      approvalPolicy: 'never',
+      approvalPolicy: spec.permissionMode === 'on-request' ? 'on-request' : 'never',
       sandboxPolicy: sandboxModeToTurnPolicy(spec.sandbox, spec.cwd),
       model: spec.model,
       effort: normaliseReasoningEffort(spec.reasoningEffort),

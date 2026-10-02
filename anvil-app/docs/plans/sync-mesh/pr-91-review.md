@@ -14,24 +14,22 @@ CodeQL analysis job only means the scan completed, not that its policy passed.
 
 ## High priority
 
-1. **Target-local verification consent implemented; shell capability retained.**
-   Remote-authored commands still use their declared shell semantics, but each
-   exact command now requires one-run native approval on the target device,
-   showing its job/attempt or integration/run, repository and worktree. An
-   unattended/headless worker declines immediately. A scrubbed environment and
-   disposable worktree alone would not isolate the user's files or network.
-   On 2 October 2026, Anth accepted retaining this capability after targeted
-   authorization and approval checks. The [security decision](verification-security-remediation.md)
-   supersedes the profile-only proposal and records the specific alert's
-   `won't fix` disposition. Replacing shell verification is not a merge gate;
-   authorization or consent bypasses remain security bugs.
+1. **Node-capped execution modes implemented; shell capability retained.**
+   Anth's 2 October decision replaces mandatory native consent with the chosen
+   running mode constrained by each target's local maximum. Full access runs
+   unattended; approval mode accepts exact-action decisions through Mesh;
+   workspace and read-only modes use the OS sandbox. Existing nodes default to
+   approval mode. Source policy, revocation and account isolation remain.
+   The [security decision](verification-security-remediation.md) supersedes both
+   native-per-command consent and fixed profiles. CodeQL #29 retains its
+   specific `won't fix` disposition for intended authorized command execution.
 
-2. **Bootstrap consent and checkout containment implemented.**
-   Every executable recipe step, including argv and package managers, now
-   requires target-local code consent in addition to its pinned recipe digest;
-   backend-only approval leaves it parked. The runner resolves working
-   directories under the checkout and checks real paths, including symlinks.
-   The approval panel shows the commands and working directories.
+2. **Remote bootstrap approval repaired; checkout containment retained.**
+   Ordinary argv and shell recipes now follow the effective running mode.
+   A remote approval can authorize that exact attempt when the target's mode
+   allows it. Job content pins exclude the submitting node's local ceiling;
+   local authorization additionally binds the target policy and attempt.
+   Working directories remain contained, including real-path/symlink checks.
 
 3. **Backend-bound sessions implemented.**
    Sync, refresh, diagnostics, artifact access, and sign-out revocation require
@@ -83,7 +81,9 @@ CodeQL analysis job only means the scan completed, not that its policy passed.
 
 4. **Additional security hardening implemented.**
    Secret writes fail closed when Electron secure storage is unavailable;
-   legacy plaintext data is readable only after secure storage returns.
+   legacy plaintext data is readable only after secure storage returns. This
+   remains a compatibility restriction. An [encrypted vault fallback](credential-storage-fallback.md)
+   is proposed separately and has not been implemented.
    Mobile companion event streams use short-lived single-use tickets instead
    of bearer query parameters, invalidate attestation/tickets on sign-out and
    revocation, restrict CORS, and hide health data from LAN peers. Backend

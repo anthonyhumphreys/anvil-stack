@@ -196,6 +196,10 @@ describe('worker policy gate', () => {
       auth,
     );
     expect(badAllowJobs.status).toBe(400);
+    expect((await postRpc('device.policy.publish', { worker: { allowJobs: true, maxPermissionMode: 'anything' } }, auth)).status).toBe(400);
+    await publishPolicy(auth, { worker: { allowJobs: true, maxPermissionMode: 'workspace-auto' } });
+    const permissionPolicy = expectSuccess<WorkerDescribeResult>(await postRpc('worker.describe', {}, auth));
+    expect(permissionPolicy.policy.worker.maxPermissionMode).toBe('workspace-auto');
 
     await publishPolicy(auth);
     await connectWorker(auth);

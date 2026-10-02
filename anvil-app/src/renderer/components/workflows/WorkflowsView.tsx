@@ -1,3 +1,4 @@
+import { isPermissionMode } from '../../../../cloud/contract/permissions';
 import { WorkflowLaunchpad } from './WorkflowLaunchpad';
 import {
   OrchestrationPanel,
@@ -1206,6 +1207,30 @@ function Inspector({
                 are available here.
               </p>
             </Field>
+            {node.target !== undefined && node.target.kind !== 'local' && (
+              <Field label="Running mode">
+                <select
+                  className="workflow-input"
+                  value={node.permissionMode ?? ''}
+                  onChange={(event) =>
+                    onChange({
+                      permissionMode: isPermissionMode(event.target.value)
+                        ? event.target.value
+                        : undefined,
+                    })
+                  }
+                >
+                  <option value="">Use current running mode</option>
+                  <option value="read-only">Read only</option>
+                  <option value="on-request">Ask for extra access</option>
+                  <option value="workspace-auto">Auto in workspace</option>
+                  <option value="full-access">Full access</option>
+                </select>
+                <p className="mt-1 text-xs text-text-tertiary">
+                  The target device's maximum can reduce this mode.
+                </p>
+              </Field>
+            )}
             <Field label="Model">
               <input
                 list={`workflow-models-${node.id}`}

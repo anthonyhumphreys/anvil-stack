@@ -1,3 +1,5 @@
+import type { PermissionMode } from './permissions.js';
+
 // Worker lifecycle (MESH-01): local opt-in policy, worker incarnation
 // registry, capability/replica metadata, and availability reporting.
 //
@@ -19,6 +21,8 @@ export const SAME_ACCOUNT_SOURCE = 'same-account' as const;
 export interface WorkerPolicy {
   /** Master switch: `worker.*` operations reject unless this is true. */
   allowJobs: boolean;
+  /** Local maximum running mode. Older nodes default to approval mode. */
+  maxPermissionMode?: PermissionMode;
   /**
    * Source enrollments permitted to request execution on this device:
    * explicit enrollment ids or the literal `same-account`. Absent means no

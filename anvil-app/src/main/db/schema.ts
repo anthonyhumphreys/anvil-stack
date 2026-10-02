@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 99;
+export const SCHEMA_VERSION = 100;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -766,6 +766,8 @@ CREATE TABLE IF NOT EXISTS editable_agents (
 CREATE TABLE IF NOT EXISTS mesh_worker_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   enabled INTEGER NOT NULL DEFAULT 0,
+  max_permission_mode TEXT NOT NULL DEFAULT 'on-request'
+    CHECK (max_permission_mode IN ('read-only', 'on-request', 'workspace-auto', 'full-access')),
   incarnation TEXT,
   lease_expires_at TEXT,
   connected_at TEXT,
@@ -3533,6 +3535,11 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_side_question_parent
 ALTER TABLE sync_entitlement ADD COLUMN funded_by TEXT NOT NULL DEFAULT 'none';
 ALTER TABLE sync_entitlement ADD COLUMN organization_id TEXT;
 ALTER TABLE sync_entitlement ADD COLUMN device_limit INTEGER NOT NULL DEFAULT 5;
+`,
+  100: `
+-- Device-local Mesh permission ceiling. Existing nodes retain approval mode.
+ALTER TABLE mesh_worker_state ADD COLUMN max_permission_mode TEXT NOT NULL DEFAULT 'on-request'
+  CHECK (max_permission_mode IN ('read-only', 'on-request', 'workspace-auto', 'full-access'));
 `,
 };
 

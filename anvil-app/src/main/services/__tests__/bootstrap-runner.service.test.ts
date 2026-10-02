@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runBootstrapRecipe } from '../bootstrap-runner.service';
+import { bootstrapCommandArgv, runBootstrapRecipe } from '../bootstrap-runner.service';
 import type { BootstrapRecipe, BootstrapStepState } from '../../../../cloud/contract/bootstrap';
 
 function recipe(steps: BootstrapRecipe['steps']): BootstrapRecipe {
@@ -22,6 +22,12 @@ function nodeStep(id: string, script: string): BootstrapRecipe['steps'][number] 
 }
 
 describe('bootstrap runner', () => {
+  it('preserves native Windows and Unix shell semantics for mode-aware execution', () => {
+    const step = { ...nodeStep('shell', ''), argv: undefined, shell: 'echo native' };
+    expect(bootstrapCommandArgv(step, 'win32').slice(1)).toEqual(['/d', '/s', '/c', 'echo native']);
+    expect(bootstrapCommandArgv(step, 'darwin')).toEqual(['/bin/sh', '-c', 'echo native']);
+  });
+
   it('runs ordered steps to verified and captures bounded logs', async () => {
     const transitions: Array<[string, BootstrapStepState]> = [];
     const result = await runBootstrapRecipe(

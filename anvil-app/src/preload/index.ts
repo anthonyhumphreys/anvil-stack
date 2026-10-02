@@ -829,6 +829,10 @@ const api: AnvilAPI = {
     openHostedAccount: (): Promise<void> => ipcRenderer.invoke('sync-runtime:open-hosted-account'),
     setMeshWorker: (enabled: boolean): Promise<MeshWorkerStatus> =>
       ipcRenderer.invoke('sync-runtime:mesh-worker-set', { enabled }),
+    setMeshMaximumPermissionMode: (
+      mode: import('../../cloud/contract/permissions.js').PermissionMode,
+    ): Promise<MeshWorkerStatus> =>
+      ipcRenderer.invoke('sync-runtime:mesh-maximum-mode-set', { mode }),
     listDevices: (): Promise<SyncDevice[]> => ipcRenderer.invoke('sync-runtime:devices-list'),
     renameDevice: (enrollmentId: string, displayName: string): Promise<SyncDeviceRenameResult> =>
       ipcRenderer.invoke('sync-runtime:device-rename', { enrollmentId, displayName }),

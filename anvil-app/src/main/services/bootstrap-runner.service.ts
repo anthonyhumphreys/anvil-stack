@@ -58,6 +58,17 @@ export function bootstrapStepRequiresLocalCodeConsent(step: BootstrapStep): bool
   return step.shell !== undefined || step.argv !== undefined;
 }
 
+/** Preserve Node's native shell semantics for recipes on each target platform. */
+export function bootstrapCommandArgv(
+  step: BootstrapStep,
+  targetPlatform: NodeJS.Platform = process.platform,
+): readonly string[] {
+  if (step.shell === undefined) return step.argv ?? [];
+  return targetPlatform === 'win32'
+    ? [process.env['COMSPEC'] ?? 'cmd.exe', '/d', '/s', '/c', step.shell]
+    : ['/bin/sh', '-c', step.shell];
+}
+
 export interface BootstrapStepOutcome {
   stepId: string;
   state: BootstrapStepState;
@@ -83,6 +94,13 @@ export interface BootstrapRunOptions {
   resolveEnv?: (name: string) => string | undefined;
   /** Explicit local code consent from the local approval record. */
   shellApproved?: boolean;
+  /** Target-selected command executor, including the running-mode sandbox. */
+  commandExecutor?: (input: {
+    step: BootstrapStep;
+    cwd: string;
+    env: Record<string, string>;
+    onSpawn: (child: ChildProcess) => void;
+  }) => Promise<BootstrapStepOutcome>;
   /** Journal hook: invoked on every step state transition. */
   onStepState?: (stepId: string, state: BootstrapStepState, detail?: string) => void;
   /** Bounded per-step log sink for live observation. */
@@ -229,6 +247,23 @@ async function runStep(
   }
 
   onStepState?.(step.id, 'running');
+  if (options.commandExecutor !== undefined) {
+    try {
+      const outcome = await options.commandExecutor({
+        step,
+        cwd,
+        env: buildEnv(step, options.resolveEnv),
+        onSpawn,
+      });
+      onStepLog?.(step.id, outcome.log);
+      onStepState?.(step.id, outcome.state);
+      return outcome;
+    } catch (error) {
+      const log = error instanceof Error ? error.message : String(error);
+      onStepState?.(step.id, 'failed', log);
+      return { stepId: step.id, state: 'failed', exitCode: null, timedOut: false, log };
+    }
+  }
   return new Promise((resolveOutcome) => {
     const tail = new TailBuffer();
     const argv = step.argv ?? [];

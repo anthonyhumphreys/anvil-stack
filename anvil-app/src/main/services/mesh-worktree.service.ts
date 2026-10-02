@@ -1,3 +1,5 @@
+import type { PermissionMode } from '../../../cloud/contract/permissions.js';
+import { executeMeshCommand } from './mesh-command.service.js';
 // FLOW-01: per-attempt worktrees (spec §451-455).
 //
 // Every write-capable attempt gets its own branch + linked worktree per
@@ -283,12 +285,18 @@ export async function runVerificationCommand(input: {
   cwd: string;
   target: VerificationApprovalTarget;
   timeoutMs?: number;
+  permissionMode?: PermissionMode;
+  /** Remote mode uses the authenticated Mesh approval channel, local integration uses native UI. */
+  approve?: () => Promise<boolean>;
+  isCancelled?: () => boolean;
 }): Promise<VerificationOutcome> {
   const started = Date.now();
   const timeoutMs = input.timeoutMs ?? VERIFICATION_TIMEOUT_MS;
   let approvalGranted = false;
   try {
-    approvalGranted = await requestVerificationApproval(input);
+    const mode = input.permissionMode ?? 'on-request';
+    approvalGranted =
+      mode !== 'on-request' || (await (input.approve?.() ?? requestVerificationApproval(input)));
     if (!approvalGranted) {
       return {
         repositoryId: input.repositoryId,
@@ -300,20 +308,21 @@ export async function runVerificationCommand(input: {
         logTail: '',
       };
     }
-    // codeql[js/command-line-injection] execution requires a native, target-local approval bound to this exact command and target
-    const { stdout, stderr } = await execFileAsync('sh', ['-c', input.command], {
+    const result = await executeMeshCommand({
+      argv: ['sh', '-c', input.command],
       cwd: input.cwd,
-      timeout: timeoutMs,
       env: meshExecEnv(),
-      maxBuffer: 16 * 1024 * 1024,
+      mode,
+      timeoutMs,
+      isCancelled: input.isCancelled,
     });
-    const tail = (String(stdout) + String(stderr)).slice(-LOG_TAIL_BYTES);
+    const tail = result.log.slice(-LOG_TAIL_BYTES);
     return {
       repositoryId: input.repositoryId,
       command: input.command,
       approvalGranted: true,
-      exitCode: 0,
-      timedOut: false,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
       durationMs: Date.now() - started,
       logTail: tail,
     };

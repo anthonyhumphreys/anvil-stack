@@ -23,6 +23,18 @@ function applyMigration(db: Database.Database, migration: string): void {
   }
 }
 
+it('migrates existing worker nodes to approval mode without enabling them', () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE mesh_worker_state (id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL, updated_at TEXT);
+    INSERT INTO mesh_worker_state VALUES (1, 0, 'before');`);
+  db.exec(MIGRATIONS[100]!);
+  expect(db.prepare('SELECT enabled, max_permission_mode FROM mesh_worker_state').get()).toEqual({
+    enabled: 0,
+    max_permission_mode: 'on-request',
+  });
+  db.close();
+});
+
 describe('fresh database schema', () => {
   it('migrates existing chat threads without losing read-only side-question purpose', () => {
     const db = new Database(':memory:');
@@ -207,7 +219,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(99);
+      expect(SCHEMA_VERSION).toBe(100);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',

@@ -1,3 +1,8 @@
+import { isPermissionMode } from '../../cloud/contract/permissions.js';
+import {
+  setMeshMaximumPermissionMode,
+  getMeshWorkerStatus,
+} from '../main/services/mesh-worker.service.js';
 /**
  * anvil-daemon — headless Anvil host (DAEMON-01).
  *
@@ -113,6 +118,7 @@ function usage(): never {
   anvil-daemon security recovery-replace
   anvil-daemon sign-out
   anvil-daemon worker on|off
+  anvil-daemon worker mode [read-only|on-request|workspace-auto|full-access]
   anvil-daemon companion on|off
   anvil-daemon provider list
   anvil-daemon provider add <provider> [--name <name>] [--config <json>] [--secret <json>]
@@ -496,7 +502,24 @@ async function main(): Promise<void> {
       break;
     case 'worker': {
       boot();
-      const on = process.argv[3] === 'on';
+      const action = process.argv[3];
+      if (action === 'mode') {
+        const mode = process.argv[4];
+        try {
+          if (mode === undefined) console.log(getMeshWorkerStatus().maxPermissionMode);
+          else {
+            if (!isPermissionMode(mode))
+              throw new Error('Use read-only, on-request, workspace-auto, or full-access.');
+            await setMeshMaximumPermissionMode(mode);
+            console.log(`[anvil-daemon] maximum job permission mode: ${mode}`);
+          }
+        } finally {
+          stopSyncRuntimeForOneShot();
+        }
+        break;
+      }
+      if (action !== 'on' && action !== 'off') throw new Error('Use worker on, off, or mode.');
+      const on = action === 'on';
       try {
         await setMeshWorkerOptIn(on);
         writeConfig({ worker: on });

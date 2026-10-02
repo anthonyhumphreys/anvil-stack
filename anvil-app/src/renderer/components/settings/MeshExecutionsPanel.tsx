@@ -400,7 +400,7 @@ export function MeshExecutionsPanel({
                             key={approval.id}
                             className="flex items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/5 px-2.5 py-1.5"
                           >
-                            <p className="min-w-0 text-xs text-text-secondary">
+                            <div className="min-w-0 text-xs text-text-secondary">
                               <span className="font-medium text-text-primary">
                                 {approval.state === 'pending'
                                   ? 'Approval requested'
@@ -408,9 +408,21 @@ export function MeshExecutionsPanel({
                               </span>{' '}
                               · {approval.actionDigest.slice(0, 12)}… · expires{' '}
                               {new Date(approval.expiresAt).toLocaleTimeString()}
-                            </p>
+                              {approval.details && (
+                                <pre className="mt-1 whitespace-pre-wrap break-words text-xs">
+                                  {approval.details}
+                                </pre>
+                              )}
+                              {approval.sealedDetails && !approval.details && (
+                                <p className="mt-1">
+                                  Unlock this job's key to review the requested action.
+                                </p>
+                              )}
+                            </div>
                             {approval.state === 'pending' &&
-                              (canDecide(approval) ? (
+                              (canDecide(approval) &&
+                              (approval.sealedDetails === undefined ||
+                                approval.details !== undefined) ? (
                                 <span className="flex shrink-0 gap-1.5">
                                   <button
                                     type="button"

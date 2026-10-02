@@ -1,3 +1,5 @@
+import { bootstrapManifestPolicy } from '../../../../cloud/contract/permissions';
+import { computeBootstrapDigest, setWorkspaceBootstrap } from '../bootstrap-policy.service';
 import Database from 'better-sqlite3';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -95,9 +97,16 @@ import {
   requestApprovalForTests,
   resetMeshWorkerForTests,
   setMeshWorkerEnabled,
+  setMeshMaximumPermissionMode,
+  buildDevicePolicy,
 } from '../mesh-worker.service';
 import { BackendRpcError } from '../sync-backend-client.service';
-import { taskKeyFor, unsealTaskInputs } from '../sync-keyring.service';
+import {
+  taskKeyFor,
+  unsealTaskInputs,
+  storeTaskKey,
+  unsealTaskResult,
+} from '../sync-keyring.service';
 import { workspaceDefinitionRevision } from '../sync-entity-domain';
 import { probeSessionCli, runRemoteSessionTurn } from '../mesh-session.service';
 import type { RemoteSessionHooks, RemoteSessionSpec } from '../mesh-session.service';
@@ -152,6 +161,44 @@ beforeEach(() => {
   meshVerificationDialog.showMessageBox.mockClear().mockResolvedValue({ response: 0 });
   resetMeshWorkerForTests();
   configureMeshWorkerContext(() => CTX);
+});
+
+describe('node permission ceiling', () => {
+  it('defaults to approval and persists independently of worker opt-in', async () => {
+    expect(getMeshWorkerStatus().maxPermissionMode).toBe('on-request');
+    await setMeshMaximumPermissionMode('full-access');
+    await setMeshWorkerEnabled(false);
+    expect(getMeshWorkerStatus().maxPermissionMode).toBe('full-access');
+  });
+  it('saves the local ceiling when the coordinator is unreachable', async () => {
+    rpcHandler = (operation) =>
+      operation === 'worker.connect'
+        ? {
+            workerIncarnation: 'inc-1',
+            leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+          }
+        : {};
+    await setMeshWorkerEnabled(true);
+    rpcHandler = () => {
+      throw new Error('offline');
+    };
+    expect(await setMeshMaximumPermissionMode('read-only')).toMatchObject({
+      maxPermissionMode: 'read-only',
+      lastError: expect.stringContaining('saved locally'),
+    });
+  });
+  it('stops active work when the maximum is lowered', async () => {
+    await setMeshMaximumPermissionMode('full-access');
+    db.prepare(
+      `INSERT INTO mesh_attempts (id, job_id, enrollment_id, incarnation, fence, kind, state, manifest_json, journal_json, created_at, updated_at)
+      VALUES ('att-policy', 'job-policy', 'enr-1', 'inc-1', 1, 'code-task', 'running', '{}', '[]', datetime('now'), datetime('now'))`,
+    ).run();
+    await setMeshMaximumPermissionMode('read-only');
+    expect(
+      db.prepare('SELECT cancel_requested FROM mesh_attempts WHERE id = ?').get('att-policy'),
+    ).toEqual({ cancel_requested: 1 });
+    expect(rpcCalls).toContainEqual({ operation: 'job.cancel', params: { jobId: 'job-policy' } });
+  });
 });
 
 describe('mesh worker opt-in', () => {
@@ -800,6 +847,33 @@ const runTurnMock = vi.mocked(runRemoteSessionTurn);
 const probeMock = vi.mocked(probeSessionCli);
 
 describe('start-session executor (SESSION-02)', () => {
+  it.each(['on-request', 'workspace-auto', 'full-access', 'read-only'] as const)(
+    'caps a full-access request at the node maximum %s',
+    async (mode) => {
+      const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace(`cap-${mode}`);
+      try {
+        await setMeshMaximumPermissionMode(mode);
+        const job = makeSessionJob('job-cap', workspaceId, portableId, head, {
+          permissionMode: 'full-access',
+        });
+        claimWith(job);
+        await handleJobAvailable(job.id);
+        expect(runTurnMock.mock.calls.at(-1)?.[0]).toMatchObject({
+          permissionMode: mode,
+          sandbox:
+            mode === 'full-access'
+              ? 'danger-full-access'
+              : mode === 'read-only'
+                ? 'read-only'
+                : 'workspace-write',
+        });
+        expect(buildDevicePolicy().worker.maxPermissionMode).toBe(mode);
+      } finally {
+        rmSync(repoDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   function seedSessionWorkspace(
     suffix: string,
     mapped = true,
@@ -1362,6 +1436,139 @@ describe('code-task executor (FLOW-01)', () => {
     rpcCalls.length = 0;
   });
 
+  it.each(['full-access', 'on-request'] as const)(
+    'bootstraps ordinary and shell commands under %s authorization',
+    async (permissionMode) => {
+      const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace(
+        `bootstrap-${permissionMode}`,
+      );
+      const recipe = {
+        schemaVersion: 1 as const,
+        steps: [
+          {
+            id: 'argv',
+            kind: 'command' as const,
+            workingDirectory: '.',
+            argv: ['sh', '-c', 'printf argv > bootstrap-argv'],
+            timeoutMs: 5_000,
+            envNames: [],
+            retry: 'safe' as const,
+          },
+          {
+            id: 'shell',
+            kind: 'command' as const,
+            workingDirectory: '.',
+            shell: 'printf shell > bootstrap-shell',
+            timeoutMs: 5_000,
+            envNames: [],
+            retry: 'safe' as const,
+          },
+        ],
+      };
+      try {
+        await setMeshMaximumPermissionMode(permissionMode);
+        setWorkspaceBootstrap(workspaceId, recipe);
+        const job = makeCodeTaskJob('job-bootstrap', workspaceId, portableId, head, {
+          permissionMode,
+        });
+        job.kind = 'prepare-workspace';
+        job.inputManifest.bootstrapDigest = computeBootstrapDigest({
+          recipe,
+          repositoryCommits: { [portableId]: head },
+          executionPolicy: bootstrapManifestPolicy(),
+        });
+        storeTaskKey(SCOPE, job.id, Buffer.alloc(32, 9));
+        claimWith(job);
+        const previous = rpcHandler;
+        let request: { actionDigest: string; sealedDetails: unknown } | undefined;
+        configureMeshWorkerContext(() => ({
+          ...CTX,
+          userDataDir,
+          sendFrame: (frame) => {
+            const activity = frame as {
+              type: string;
+              streamId: string;
+              payload: { kind: string; text: string };
+            };
+            if (
+              activity.type === 'activity' &&
+              activity.streamId === 'control' &&
+              activity.payload.kind === 'status'
+            )
+              request = JSON.parse(activity.payload.text);
+          },
+        }));
+        rpcHandler = (operation, params) =>
+          operation === 'approval.get' && request !== undefined
+            ? {
+                approvals: [
+                  {
+                    id: 'approved-bootstrap',
+                    actionDigest: request.actionDigest,
+                    state: 'approved',
+                  },
+                ],
+              }
+            : previous(operation, params);
+        await handleJobAvailable(job.id);
+        expect(
+          db.prepare('SELECT state FROM mesh_attempts WHERE id = ?').get('att-job-bootstrap'),
+        ).toEqual({ state: 'completed' });
+        expect(existsSync(join(repoDir, 'bootstrap-argv'))).toBe(true);
+        expect(existsSync(join(repoDir, 'bootstrap-shell'))).toBe(true);
+        if (permissionMode === 'on-request') {
+          expect(request).toBeDefined();
+          expect(JSON.stringify(request)).not.toContain('printf');
+          expect(
+            unsealTaskResult(
+              SCOPE,
+              job.id,
+              'att-job-bootstrap',
+              Buffer.alloc(32, 9),
+              request!.sealedDetails,
+            ),
+          ).toMatchObject({
+            actionDigest: request!.actionDigest,
+            details: expect.stringContaining('printf shell'),
+          });
+        } else expect(request).toBeUndefined();
+      } finally {
+        rmSync(repoDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('publishes cancellation before reporting a provider stopped by a ceiling downgrade', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('ceiling-stop');
+    try {
+      await setMeshMaximumPermissionMode('full-access');
+      const job = makeCodeTaskJob('job-stop', workspaceId, portableId, head, {
+        permissionMode: 'full-access',
+      });
+      claimWith(job);
+      runTurnMock.mockImplementation(async () => {
+        await setMeshMaximumPermissionMode('read-only');
+        return {
+          providerThreadId: 'thread-stop',
+          turnId: null,
+          turnStatus: 'interrupted',
+          cliVersion: '0.44.0',
+          cancelled: true,
+        };
+      });
+      await handleJobAvailable(job.id);
+      const cancellation = rpcCalls.findIndex((call) => call.operation === 'job.cancel');
+      const report = rpcCalls.findIndex((call) => call.operation === 'attempt.report');
+      expect(cancellation).toBeGreaterThanOrEqual(0);
+      expect(report).toBeGreaterThan(cancellation);
+      expect(
+        db.prepare('SELECT state FROM mesh_attempts WHERE id = ?').get('att-job-stop'),
+      ).toEqual({ state: 'cancelled' });
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('runs the turn in a per-attempt worktree and publishes a result manifest', async () => {
     const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('happy');
     try {
@@ -1435,11 +1642,13 @@ describe('code-task executor (FLOW-01)', () => {
     }
   });
 
-  it('records declared verification outcomes in the manifest verbatim', async () => {
+  it('records declared verification outcomes in full access without a desktop approval', async () => {
+    await setMeshMaximumPermissionMode('full-access');
     const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('verify');
     try {
       const job = makeCodeTaskJob('job-task', workspaceId, portableId, head, {
         verification: ['exit 0', 'exit 2'],
+        permissionMode: 'full-access',
       });
       claimWith(job);
       await handleJobAvailable('job-task');
@@ -1452,6 +1661,7 @@ describe('code-task executor (FLOW-01)', () => {
           verification: Array<{ command: string; exitCode: number | null; timedOut: boolean }>;
         };
       };
+      expect(meshVerificationDialog.showMessageBox).not.toHaveBeenCalled();
       expect(result.resultManifest.verification).toMatchObject([
         { repositoryId: portableId, command: 'exit 0', exitCode: 0, timedOut: false },
         { repositoryId: portableId, command: 'exit 2', exitCode: 2, timedOut: false },
