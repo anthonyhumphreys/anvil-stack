@@ -6,6 +6,10 @@ desktops, device lifecycle, browser approval/reconnection, managed capacity,
 Stripe test mode, and deletion. For the deeper manual trust, recovery, and
 iPhone companion scenarios, continue with the [four-device test plan](four-device-test-plan.md).
 
+Live acceptance is tracked in [ANV-11](https://linear.app/anvil-stack/issue/ANV-11/run-hosted-sync-staging-acceptance-for-pr-91).
+Anth will run this rehearsal. Record the final candidate and each gate's result
+there; creating the ticket does not close any acceptance gate.
+
 Do not use a production WorkOS account, production Stripe key, existing
 customer account, or valuable sync data. Account deletion at the end of this
 run is intentionally destructive: use a disposable staging WorkOS identity
@@ -64,7 +68,8 @@ export MESH_ORIGIN='https://anvil-sync-hosted-staging.still-glitter-7d20.workers
 export DESCRIPTOR_FILE="$(mktemp)"
 curl -fsS "$MESH_ORIGIN/.well-known/anvil-backend" > "$DESCRIPTOR_FILE"
 jq -e '
-  .descriptorVersion == "anvil-backend/1" and
+  .descriptorVersion == 1 and
+  (.protocols | index("anvil-backend/1")) and
   (.profiles | index("sync/1")) and
   (.profiles | index("mesh/1")) and
   (.authModes | index("workos-device")) and

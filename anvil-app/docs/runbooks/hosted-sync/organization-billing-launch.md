@@ -159,6 +159,14 @@ incomplete target in the ignored operator manifest.
 
 ### Current Staging state (verified 27 September 2026)
 
+Follow-up on 2 October: the staging website credentials were installed as
+Vercel Preview overrides for `develop` and `feature/sync-mesh--foundations`,
+and WorkOS accepted `https://staging.anvilstack.dev/auth/callback` while
+preserving localhost. Backend secrets and non-secret Worker settings were
+installed in GitHub's `anvil-staging` environment. Invitation URL verification,
+the refreshed website deployment and live acceptance remain separate checks;
+see [staging-website.md](staging-website.md) and [ANV-11](https://linear.app/anvil-stack/issue/ANV-11/run-hosted-sync-staging-acceptance-for-pr-91).
+
 | Resource                          | Verified state                                                                                                                                                                                                                                                                                                                    | Remaining work                                                                                                                                                                                         |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Cloudflare Worker and provisioner | `anvil-sync-hosted-staging` was upgraded in place to version `069d4d3f-13f3-48c1-8cad-b192ff5f616c`; the existing provisioner remains deployed.                                                                                                                                                                                   | Retain both resources. Checkout is disabled on the Worker.                                                                                                                                             |
@@ -280,10 +288,11 @@ The server uses its WorkOS key for organization, membership, invitation, and
 waitlist admission checks. Do not use the website's WorkOS key as the operator
 HMAC key.
 
-The protected legacy JSON backend secret file exists locally with the Staging
-website HMAC key, WorkOS test API key, WorkOS webhook secret, and provisioner
-token. This source remains supported; do not replace the website HMAC secret
-without a coordinated rotation. The file contains:
+The Staging 1Password Environment now supplies the website HMAC key, WorkOS
+test API key, WorkOS webhook secret, and provisioner token through its mounted
+dotenv file. The legacy JSON source remains supported for other operators, but
+the local copy has been removed. Do not replace the website HMAC secret without
+a coordinated rotation. A legacy JSON file, if used, contains:
 
 ```json
 {
@@ -294,7 +303,8 @@ without a coordinated rotation. The file contains:
 }
 ```
 
-Keep the file under `.wrangler/` and restrict local access. The staging
+If using legacy JSON, keep the file under `.wrangler/` and restrict local
+access. The staging
 provisioner, D1 database, and R2 bucket already exist. Do not run the initial
 provisioner `apply` or storage `provision` merely to add organisations. The
 following guarded commands have already been completed; rerun them only for a

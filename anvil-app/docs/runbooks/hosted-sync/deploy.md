@@ -91,7 +91,7 @@ uses `MANAGED_PROVISIONER_TOKEN` for both. See
 pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner plan --json
 pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner apply --dry-run --json
 pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner apply --test-deployment --json
-pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner secrets --json
+pnpm --dir cloud/backend hosted:deploy -- --environment staging provisioner secrets --test-deployment --json
 ```
 
 Sync, device enrollment and desktop-to-desktop Mesh do not need the
@@ -158,6 +158,10 @@ Production rejects `--test-deployment`. The wrapper never creates production
 WorkOS clients or chooses production resource names on your behalf.
 
 ## Website and release environments
+
+For automated staging backend deployment and the unsigned macOS candidate,
+follow [staging-ci.md](staging-ci.md). Live acceptance is tracked in
+[ANV-11](https://linear.app/anvil-stack/issue/ANV-11/run-hosted-sync-staging-acceptance-for-pr-91).
 
 The website selects the same `ANVIL_DEPLOYMENT_ENV=staging|production` value as
 the backend wrapper. Configure `ANVIL_STAGING_*` and

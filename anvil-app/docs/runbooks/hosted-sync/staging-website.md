@@ -24,12 +24,14 @@ Cloudflare currently proxies the staging hostname. HTTPS returned 200 during
 setup. Vercel reports "Proxy Detected" rather than a direct DNS configuration.
 No DNS records or Cloudflare security settings were changed.
 
-## Hosted account configuration still required
+## Hosted account configuration
 
-Serving the website does not verify account signup or billing. Configure the
-website's staging credentials in Vercel Preview settings before rehearsing those
-flows. Scope credentials to `develop` and, while testing PR #91, to
-`feature/sync-mesh--foundations`. Do not import the combined backend environment.
+On 2 October 2026, the website's staging credentials were installed in Vercel
+Preview settings, scoped to `develop` and `feature/sync-mesh--foundations`.
+The API key, cookie password, and hosted service secret are marked sensitive.
+The staging HTTPS callback was registered in WorkOS while preserving localhost.
+Serving the website does not verify account signup or billing. A fresh deployment
+and signed-in acceptance are still required. Do not import the combined backend environment.
 
 Use `ANVIL_DEPLOYMENT_ENV=staging` and these website variables from the
 `Anvil hosted staging` 1Password Environment:

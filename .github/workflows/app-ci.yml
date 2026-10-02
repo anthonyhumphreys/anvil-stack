@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - main
+      - develop
     paths:
       - ".github/workflows/app-ci.yml"
       - ".github/scripts/publish-r2-immutable.mjs"
@@ -58,6 +59,14 @@ jobs:
 
       - name: Lint
         run: pnpm lint
+
+      - name: Typecheck desktop processes
+        run: |
+          pnpm exec tsc --noEmit -p tsconfig.node.json
+          pnpm exec tsc --noEmit -p tsconfig.web.json
+
+      - name: Build headless daemon
+        run: pnpm build:daemon
 
       - name: Test
         run: pnpm test
@@ -112,3 +121,27 @@ jobs:
       - name: Verify hosted config validator
         working-directory: anvil-app/cloud/backend
         run: node scripts/verify-hosted-config.mjs --self-check
+
+      - name: Test hosted deployment isolation
+        working-directory: anvil-app/cloud/backend
+        run: pnpm test:hosted-deploy
+
+  provisioner:
+    name: Managed provisioner tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: anvil-app/cloud/provisioner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-app/cloud/provisioner/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test

@@ -72,19 +72,19 @@ pnpm --dir cloud/backend hosted:deploy -- --environment staging secrets --json
 The wrapper reads the selected source and supplies it to the CLI. Do not add
 secret values to the command line.
 
-As of 30 September 2026, both internal Environments have been created. The
-Staging import is confirmed with four backend secrets, `ANVIL_DEPLOYMENT_ENV`,
-and seven website variables named `ANVIL_STAGING_*`. The mounted read
-returned zero bytes while the native "Populate file staging.env" authorization
-was pending. The mount is not verified and the local manifest still selects
-the existing JSON source. Production contains only its marker and no
-credentials, and no Production deployment has occurred. The mounted Environment
-inputs have not been used for a deployment. Existing local JSON and
-provisioner-token files remain in place until mount verification and a
-successful wrapper run. The website `.env` remains for local development;
-website values in 1Password have not been synced to Vercel. Do not treat the
-Staging import as mount verification; update this status after the mount can be
-read successfully.
+As of 30 September 2026, both internal Environments have been created. Staging
+contains four backend secrets, `ANVIL_DEPLOYMENT_ENV`, and seven website
+variables named `ANVIL_STAGING_*`. After the native 1Password mount approval,
+the wrapper read all four backend secrets and matched them to the prior staging
+values. The ignored local staging manifest selects `backendEnvFile`; backend
+and provisioner secrets were reinstalled from the mount successfully. Production
+contains only its environment marker and has not been deployed. The website
+`.env` remains for local development. On 2 October, website values were installed
+as Vercel Preview overrides for `develop` and `feature/sync-mesh--foundations`.
+The WorkOS API key, cookie password, and hosted service secret are sensitive
+variables. The four backend secrets were installed in GitHub's `anvil-staging`
+environment for guarded CI deployment. The old ignored backend JSON and provisioner token files were
+removed after the reinstall succeeded.
 
 Production isolation checks load the Staging source independently to compare
 values across environments. A process-only Staging source cannot be loaded for
