@@ -95,6 +95,9 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 
 ## Known sharp edges
 
+- CodeQL alert #29 remains open for remote verification shell execution. The
+  [remediation proposal](verification-security-remediation.md) replaces command
+  text with verification profiles defined on the target device.
 - Backend revocation reaches direct connections within ~60s (attestation cache TTL); push invalidation is a Phase 5 candidate.
 - Account-mediated mode needs the host awake with its companion server enabled — the coordinator is directory + durable fallback, not a live proxy (frame relay is Phase 5, optional).
 - Account-mode connections store `pending` optimistically; they activate on host approval with no re-dial.

@@ -30,8 +30,11 @@ On 2 October 2026, the website's staging credentials were installed in Vercel
 Preview settings, scoped to `develop` and `feature/sync-mesh--foundations`.
 The API key, cookie password, and hosted service secret are marked sensitive.
 The staging HTTPS callback was registered in WorkOS while preserving localhost.
-Serving the website does not verify account signup or billing. A fresh deployment
-and signed-in acceptance are still required. Do not import the combined backend environment.
+Preview deployment `dpl_BBxqcyEoDyyVtmtJ9tEMmD8JE61f`, commit `7c1f828`, is READY
+and assigned to the staging domain. Signed-out `/account`, `/login` and
+`/auth/login` redirect to the staging website client and HTTPS callback.
+Serving the website does not verify account signup or billing. Invitation URL
+verification and signed-in acceptance remain open. Do not import the combined backend environment.
 
 Use `ANVIL_DEPLOYMENT_ENV=staging` and these website variables from the
 `Anvil hosted staging` 1Password Environment:

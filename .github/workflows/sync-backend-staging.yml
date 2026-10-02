@@ -46,7 +46,7 @@ jobs:
             anvil-cloud/pnpm-lock.yaml
       - name: Install backend and deployment CLI dependencies
         run: |
-          pnpm install --frozen-lockfile
+          pnpm install --ignore-workspace --frozen-lockfile
           pnpm --dir ../../../anvil-cloud install --frozen-lockfile
       - name: Verify backend and deployment guards
         run: |

@@ -108,7 +108,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: anvil-app/cloud/backend
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --ignore-workspace --frozen-lockfile
 
       - name: Test
         working-directory: anvil-app/cloud/backend
@@ -142,6 +142,6 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: anvil-app/cloud/provisioner/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --ignore-workspace --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
