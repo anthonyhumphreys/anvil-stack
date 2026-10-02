@@ -73,7 +73,6 @@ import {
   type SyncOperation,
   type SyncScope,
 } from '../../shared/sync-mesh.js';
-import { safeStorage } from 'electron';
 import { getDb } from '../db/database.js';
 import {
   acknowledgeBindingLocalEdits,
@@ -92,7 +91,13 @@ import {
   isSupportedEntityType,
   readEntityPayloadJson,
 } from './sync-entity-domain.js';
-import { encryptSecret, decryptSecret } from './auth.service.js';
+import {
+  encryptSecret,
+  decryptSecret,
+  decryptSecretStrict,
+  isSecretStorageAvailable,
+} from './auth.service.js';
+import { SECRET_ENVELOPE_PREFIX } from './secret-vault.service.js';
 
 const X25519_SPKI_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
 const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
@@ -222,11 +227,7 @@ export function hasAccountKey(scope: SyncScope): boolean {
 export type AccountKeyBundle = RecoveryKeyBundle;
 
 function safeStorageAvailable(): boolean {
-  try {
-    return safeStorage.isEncryptionAvailable();
-  } catch {
-    return false;
-  }
+  return isSecretStorageAvailable();
 }
 
 function decodeBundleEntries(
@@ -365,7 +366,11 @@ function recoverySecretWrapped(secret: Buffer): Buffer {
   const wrapped = encryptSecret(encoded);
   // Guard against a misconfigured test/runtime provider silently returning
   // the plaintext bytes instead of an OS-wrapped value.
-  if (wrapped.equals(Buffer.from(encoded, 'utf8'))) {
+  const prefix = ['keychain', 'daemon-file']
+    .map((provider) => Buffer.from(`${SECRET_ENVELOPE_PREFIX}${provider}:`))
+    .find((candidate) => wrapped.subarray(0, candidate.length).equals(candidate));
+  const providerBytes = prefix === undefined ? wrapped : wrapped.subarray(prefix.length);
+  if (providerBytes.equals(Buffer.from(encoded, 'utf8'))) {
     throw new RecoverySecretUnavailableError();
   }
   return wrapped;
@@ -375,7 +380,7 @@ function recoverySecretWrapped(secret: Buffer): Buffer {
 export function canStoreRecoverySecret(secret: Buffer): boolean {
   try {
     const wrapped = recoverySecretWrapped(secret);
-    return safeStorage.decryptString(wrapped) === secret.toString('base64');
+    return decryptSecretStrict(wrapped) === secret.toString('base64');
   } catch {
     return false;
   }
@@ -454,7 +459,6 @@ function retainedRecoverySecret(
   recoveryId: string | undefined,
   forRefresh: boolean,
 ): Buffer | null {
-  if (!safeStorageAvailable()) return null;
   const row = getDb()
     .prepare(
       `SELECT recovery_id, secret_wrapped, invalidated_at FROM sync_recovery_secrets
@@ -467,12 +471,9 @@ function retainedRecoverySecret(
     return null;
   if (forRefresh && row.invalidated_at !== null) return null;
   try {
-    // `decryptSecret` is the shared auth boundary. Compare it with a direct
-    // safeStorage decrypt so its legacy plaintext fallback remains disabled
-    // for this high-value secret.
-    const directDecoded = safeStorage.decryptString(row.secret_wrapped);
-    const decoded = decryptSecret(row.secret_wrapped, 'recovery secret');
-    if (decoded === undefined || decoded !== directDecoded) return null;
+    // Recovery custody only accepts an authenticated storage provider.
+    const decoded = decryptSecretStrict(row.secret_wrapped);
+    if (decoded === undefined) return null;
     const secret = Buffer.from(decoded, 'base64');
     return secret.byteLength === 32 && secret.toString('base64') === decoded ? secret : null;
   } catch {

@@ -23,7 +23,7 @@ import {
   SYNC_SETTINGS_ENTITY_ID,
 } from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
-import { decryptSecret, encryptSecret } from './auth.service.js';
+import { decryptSecret, encryptSecret, readStoredSecret } from './auth.service.js';
 import { testLlmConnection } from './llm.service.js';
 import { buildEntityPayload, SYNCED_SETTINGS_KEYS } from './sync-entity-domain.js';
 import { withSyncedEntityWrite } from './sync-persistence.service.js';
@@ -432,6 +432,16 @@ export function getSettings(): AppSettings {
 export function updateSettings(partial: Partial<AppSettings>): void {
   const db = getDb();
   ensureDocsSettingsColumns(db);
+  if (partial.workItemConnections !== undefined) {
+    const stored = db.prepare('SELECT work_item_connections FROM settings WHERE id = 1').get() as {
+      work_item_connections: Buffer | null;
+    };
+    const read = readStoredSecret(stored.work_item_connections);
+    if (read.state !== 'available' && read.state !== 'not-configured')
+      throw new Error(
+        'Saved work item connections are locked or unavailable. Unlock credential storage before editing them.',
+      );
+  }
   const current = getSettings();
   const setClauses: string[] = [];
   const values: unknown[] = [];

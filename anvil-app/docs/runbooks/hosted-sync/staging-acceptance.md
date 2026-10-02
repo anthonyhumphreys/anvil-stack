@@ -151,6 +151,25 @@ maximum is independent of its general chat mode.
 These checks remain pending until performed on physical devices against the
 candidate backend and desktop versions.
 
+## Credential storage fallback
+
+Use a disposable app profile with dummy integration keys. In Settings > Privacy >
+Credential storage, select a passphrase vault and save a provider key and work
+item token. Confirm both integrations work, then lock and restart the app.
+Saved keys must remain visibly configured, and work item connection edits must
+be refused while the saved bundle is locked. An incorrect passphrase must not
+change stored values. Unlock with the correct passphrase and confirm access
+returns. A saved sync session must survive lock/unavailability and recover.
+
+On a disposable macOS/Linux daemon profile, configure a key-file vault outside
+its data directory and confirm unattended restart. Remove the key temporarily:
+the daemon must report unavailable without regenerating the key. Restore the
+original key, database and `secret-storage.json`, then confirm access returns.
+Check migration retains unavailable legacy keychain values and does not place
+plaintext credentials in the database or diagnostics.
+
+These integration and backup/restore checks remain pending live acceptance.
+
 ## Browser dashboard approval and reconnection
 
 1. In a fresh private browser profile, sign in to the same staging user and

@@ -10,6 +10,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readProtectedVaultKey } from '../main/services/secret-vault.service.js';
 
 const dataDir = process.env.ANVIL_DATA_DIR ?? join(homedir(), '.anvil-daemon');
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -72,23 +73,34 @@ export const app = {
 const KEY_PATH = join(dataDir, '.daemon-key');
 const ENC_VERSION = 'v1';
 
-function masterKey(): Buffer {
+function masterKey(create = false): Buffer {
   if (!existsSync(KEY_PATH)) {
+    if (!create) throw new Error('Legacy daemon key is unavailable. Configure an encrypted vault.');
     const key = randomBytes(32);
-    writeFileSync(KEY_PATH, key, { mode: 0o600 });
+    writeFileSync(KEY_PATH, key, { mode: 0o600, flag: 'wx' });
     chmodSync(KEY_PATH, 0o600);
     return key;
   }
-  return readFileSync(KEY_PATH);
+  // Older Windows installs retain their existing daemon-key compatibility.
+  // New vault key files use the explicit supported-platform boundary.
+  return process.platform === 'win32' ? readFileSync(KEY_PATH) : readProtectedVaultKey(KEY_PATH);
 }
 
 export const safeStorage = {
   isEncryptionAvailable(): boolean {
-    return true;
+    try {
+      masterKey();
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  getSelectedStorageBackend(): string {
+    return 'anvil_daemon_legacy_file';
   },
   encryptString(plainText: string): Buffer {
     const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', masterKey(), iv);
+    const cipher = createCipheriv('aes-256-gcm', masterKey(true), iv);
     const ciphertext = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
     const tag = cipher.getAuthTag();
     return Buffer.concat([Buffer.from(ENC_VERSION), iv, tag, ciphertext]);

@@ -722,6 +722,14 @@ const api: AnvilAPI = {
   },
 
   settings: {
+    getSecretStorageStatus: () => ipcRenderer.invoke('settings:secret-storage-status'),
+    setupSecretVault: (input) => ipcRenderer.invoke('settings:secret-vault-setup', input),
+    unlockSecretVault: (passphrase) =>
+      ipcRenderer.invoke('settings:secret-vault-unlock', passphrase),
+    lockSecretVault: () => ipcRenderer.invoke('settings:secret-vault-lock'),
+    selectSecretStorageProvider: (provider) =>
+      ipcRenderer.invoke('settings:secret-storage-select', provider),
+    migrateSavedCredentials: () => ipcRenderer.invoke('settings:secret-storage-migrate'),
     get: () => ipcRenderer.invoke('settings:get'),
     update: (settings) => ipcRenderer.invoke('settings:update', settings),
     getCodexStatus: () => ipcRenderer.invoke('settings:codex-status'),

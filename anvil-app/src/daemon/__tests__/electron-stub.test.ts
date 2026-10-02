@@ -20,6 +20,14 @@ describe('daemon electron stub', () => {
     expect(app.getPath('userData')).toBe(dataDir);
   });
 
+  it('does not silently initialize file storage or regenerate a missing key on read', () => {
+    expect(safeStorage.isEncryptionAvailable()).toBe(false);
+    expect(() =>
+      safeStorage.decryptString(Buffer.concat([Buffer.from('v1'), Buffer.alloc(28)])),
+    ).toThrow('Legacy daemon key is unavailable');
+    expect(safeStorage.isEncryptionAvailable()).toBe(false);
+  });
+
   it('round-trips safeStorage encrypt/decrypt', () => {
     const secret = 'device-session-token-abc123';
     const encrypted = safeStorage.encryptString(secret);

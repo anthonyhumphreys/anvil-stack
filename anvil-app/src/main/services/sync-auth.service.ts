@@ -1,8 +1,18 @@
 import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
-import { decryptSecret, encryptSecret } from './auth.service.js';
+import { createSecretEncryptionLease, decryptSecret, encryptSecret } from './auth.service.js';
 import {
   runWorkOSDeviceFlow,
   type RunWorkOSDeviceFlowOptions,
@@ -379,7 +389,11 @@ export class SyncAuthService {
     }
   }
 
-  private persistSession(session: DeviceSession, backendId: string | null): void {
+  private persistSession(
+    session: DeviceSession,
+    backendId: string | null,
+    encrypt: (value: string) => Buffer = encryptSecret,
+  ): void {
     mkdirSync(this.userDataDir, { recursive: true });
     const persisted: PersistedSyncSession = {
       version: SESSION_FILE_VERSION,
@@ -389,13 +403,25 @@ export class SyncAuthService {
       datasetEpoch: session.datasetEpoch,
       credentialGeneration: session.credentialGeneration,
       accessExpiresAt: session.accessExpiresAt,
-      accessTokenEncrypted: toEncryptedPayload(encryptSecret(session.accessToken)),
-      refreshTokenEncrypted: toEncryptedPayload(encryptSecret(session.refreshToken)),
+      accessTokenEncrypted: toEncryptedPayload(encrypt(session.accessToken)),
+      refreshTokenEncrypted: toEncryptedPayload(encrypt(session.refreshToken)),
     };
     if (session.displayName !== undefined) {
       persisted.displayName = session.displayName;
     }
-    writeFileSync(this.sessionFilePath(), JSON.stringify(persisted, null, 2), 'utf-8');
+    const temporary = `${this.sessionFilePath()}.${randomUUID()}.tmp`;
+    let fd: number | undefined;
+    try {
+      fd = openSync(temporary, 'wx', 0o600);
+      writeFileSync(fd, JSON.stringify(persisted, null, 2));
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      renameSync(temporary, this.sessionFilePath());
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      if (existsSync(temporary)) unlinkSync(temporary);
+    }
     this.cached = persisted;
     this.cacheLoaded = true;
   }
@@ -623,13 +649,15 @@ export class SyncAuthService {
     }
     const refreshToken = this.readRefreshToken();
     if (refreshToken === null) {
-      this.wipeSession();
-      return this.getPublicSnapshot();
+      throw new Error(
+        'Saved sync credentials are locked or unavailable. Unlock credential storage before reconnecting. The saved session was retained.',
+      );
     }
     const epoch = this.sessionEpoch;
     const enrollmentId = cached.enrollmentId;
     const credentialGeneration = cached.credentialGeneration;
     const backendId = cached.backendId;
+    const encryption = createSecretEncryptionLease();
     try {
       const rotated = await refreshFn({ refreshToken, enrollmentId });
       if (
@@ -640,7 +668,7 @@ export class SyncAuthService {
       ) {
         return this.getPublicSnapshot();
       }
-      this.persistSession(rotated, backendId);
+      this.persistSession(rotated, backendId, (value) => encryption.encrypt(value));
       return this.getPublicSnapshot();
     } catch (error) {
       if (errorCodeOf(error) === 'refresh-reuse-detected') {
@@ -648,6 +676,8 @@ export class SyncAuthService {
         return this.getPublicSnapshot();
       }
       throw error;
+    } finally {
+      encryption.dispose();
     }
   }
 

@@ -26,7 +26,28 @@ If this checkout most recently built or ran Electron, run
 `pnpm run rebuild:native:node` before starting the daemon. Desktop `pnpm dev`
 and `pnpm build` rebuild native modules for Electron again.
 
-The bundle stubs `electron` out entirely (`src/daemon/electron-stub.ts`): `app.getPath` resolves under the data dir, `safeStorage` becomes AES-256-GCM over a `0600` master-key file, UI surfaces are inert.
+The bundle stubs `electron` out entirely. `app.getPath` resolves under the data
+directory and UI surfaces are inert. Existing `.daemon-key` installations retain
+their legacy encrypted storage; new profiles explicitly configure a vault.
+
+## Credential storage
+
+Configure storage before signing in or saving keys. For unattended macOS/Linux
+hosts, create a protected key file outside the data directory and its backups:
+
+```sh
+anvil-daemon vault setup --key-file /absolute/private-directory/anvil-vault.key
+anvil-daemon vault status
+```
+
+The parent directory must already exist, belong to you and be protected from
+other users' writes. A passphrase vault instead uses `vault setup
+--passphrase-stdin`; pass `--vault-passphrase-stdin` to `run` or another command
+to unlock that process. Supply input through a secret manager or a protected
+file, never through a command argument. Windows supports passphrase vaults.
+
+See [credential storage](../../plans/sync-mesh/credential-storage-fallback.md)
+for migration, locking and backup/restore instructions.
 
 ## Sign in
 

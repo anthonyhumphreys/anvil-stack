@@ -358,6 +358,20 @@ describe('PKCE login', () => {
 });
 
 describe('refreshSession', () => {
+  it('retains saved sessions while credential storage is unavailable and recovers when it returns', async () => {
+    await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
+    const original = readFileSync(sessionFilePath(userDataDir));
+    safeStorageMock.isEncryptionAvailable.mockReturnValue(false);
+    await expect(service.refreshSession(fake.refresh)).rejects.toThrow(
+      'saved session was retained',
+    );
+    expect(fake.refreshCalls).toHaveLength(0);
+    expect(service.getPublicSnapshot().state).toBe('signed-in');
+    expect(readFileSync(sessionFilePath(userDataDir))).toEqual(original);
+    safeStorageMock.isEncryptionAvailable.mockReturnValue(true);
+    expect((await service.refreshSession(fake.refresh)).state).toBe('signed-in');
+    expect(fake.refreshCalls).toHaveLength(1);
+  });
   it('rotates credentials and increments the credential generation', async () => {
     await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
     expect(readSessionFile(userDataDir)['credentialGeneration']).toBe(1);

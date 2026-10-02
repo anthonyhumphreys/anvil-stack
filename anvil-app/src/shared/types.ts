@@ -2704,6 +2704,8 @@ export interface LocalLlmCapabilities {
 }
 
 export interface AppSettings {
+  /** Local read status only. Never synced or accepted as a settings update. */
+  credentialStorage?: import('./secret-storage.js').CredentialStorageStatus;
   /** Primary provider for new chats and app-level AI tasks. */
   llmProvider: AgentProvider;
   /** Providers available to workflows and agent-authored shell commands. */

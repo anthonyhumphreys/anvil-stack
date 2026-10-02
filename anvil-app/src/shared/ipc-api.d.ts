@@ -694,6 +694,18 @@ export interface AnvilAPI {
   };
 
   settings: {
+    getSecretStorageStatus: () => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    setupSecretVault: (
+      input: import('./secret-storage.js').SecretVaultSetup,
+    ) => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    unlockSecretVault: (
+      passphrase?: string,
+    ) => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    lockSecretVault: () => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    selectSecretStorageProvider: (
+      provider: import('./secret-storage.js').SecretStorageProvider,
+    ) => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    migrateSavedCredentials: () => Promise<import('./secret-storage.js').CredentialMigrationResult>;
     get: () => Promise<AppSettings>;
     update: (settings: Partial<AppSettings>) => Promise<void>;
     getCodexStatus: () => Promise<CodexCliStatus>;

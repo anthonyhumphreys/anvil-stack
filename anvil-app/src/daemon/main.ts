@@ -62,6 +62,16 @@ import {
   type SecurityCommand,
 } from './security-cli.js';
 import { parseSignInCommand, runSignIn } from './signin-cli.js';
+import { parseVaultCommand, readVaultPassphraseFromStdin } from './vault-cli.js';
+import {
+  configureSecretVault,
+  unlockSecretVault,
+  selectSecretStorageProvider,
+} from '../main/services/auth.service.js';
+import {
+  getCredentialStorageStatus,
+  migrateSavedCredentials,
+} from '../main/services/credential-storage.service.js';
 
 const DATA_DIR = process.env.ANVIL_DATA_DIR ?? join(process.env.HOME ?? '.', '.anvil-daemon');
 const CONFIG_PATH = join(DATA_DIR, 'daemon.json');
@@ -107,6 +117,12 @@ function usage(): never {
   anvil-daemon enroll --api-url <url> (--code <code> | --pair <payload>) [--worker]
   anvil-daemon sign-in --api-url <url> [--worker]
   anvil-daemon run
+  anvil-daemon run --vault-passphrase-stdin
+  anvil-daemon vault status
+  anvil-daemon vault setup --passphrase-stdin
+  anvil-daemon vault setup --key-file <absolute-path-outside-data-dir>
+  anvil-daemon vault use keychain|vault
+  anvil-daemon vault migrate [--vault-passphrase-stdin]
   anvil-daemon status
   anvil-daemon security status
   anvil-daemon security devices
@@ -478,8 +494,34 @@ async function cmdPolicy(sub: string | undefined): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // Unlock in the process that performs the command, never in a one-shot
+  // unlock process whose in-memory key would disappear immediately.
+  if (hasFlag('--vault-passphrase-stdin')) {
+    if (process.argv.filter((value) => value === '--vault-passphrase-stdin').length !== 1)
+      throw new Error('Supply --vault-passphrase-stdin once.');
+    await unlockSecretVault(readVaultPassphraseFromStdin());
+    process.argv = process.argv.filter((value) => value !== '--vault-passphrase-stdin');
+  }
   const command = process.argv[2];
   switch (command) {
+    case 'vault': {
+      const action = parseVaultCommand(process.argv.slice(3));
+      initDatabase();
+      if (action.kind === 'setup') {
+        await configureSecretVault(
+          action.mode === 'passphrase'
+            ? { mode: action.mode, passphrase: readVaultPassphraseFromStdin() }
+            : { mode: action.mode, keyFilePath: action.keyFilePath },
+        );
+        console.log(JSON.stringify(migrateSavedCredentials()));
+      } else if (action.kind === 'use') {
+        selectSecretStorageProvider(action.provider);
+      } else if (action.kind === 'migrate') {
+        console.log(JSON.stringify(migrateSavedCredentials()));
+      }
+      console.log(JSON.stringify(getCredentialStorageStatus()));
+      break;
+    }
     case 'enroll':
       await cmdEnroll();
       break;

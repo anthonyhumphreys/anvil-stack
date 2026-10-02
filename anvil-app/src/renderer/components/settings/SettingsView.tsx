@@ -388,6 +388,24 @@ export function SettingsView({
             </aside>
 
             <main className="space-y-6">
+              {draft.settings.credentialStorage &&
+                (draft.settings.credentialStorage.state !== 'ready' ||
+                  Object.values(draft.settings.credentialStorage.credentials).some(
+                    (state) => !['available', 'not-configured'].includes(state),
+                  )) && (
+                  <div
+                    className="rounded-lg border border-border bg-bg-secondary p-4 text-sm text-text-secondary"
+                    role="status"
+                  >
+                    Credential storage is locked or unavailable. Existing saved values are retained.
+                    <button
+                      className="ml-2 text-accent underline"
+                      onClick={() => selectCategory('privacy', 'credential-storage')}
+                    >
+                      Open credential storage
+                    </button>
+                  </div>
+                )}
               <Suspense
                 fallback={
                   <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-secondary p-5 text-sm text-text-secondary">

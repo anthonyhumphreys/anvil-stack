@@ -325,9 +325,15 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
   {
     id: 'privacy',
     label: 'Privacy',
-    description: 'Optional crash reporting.',
+    description: 'Credential storage and optional crash reporting.',
     icon: ShieldCheck,
     panels: [
+      {
+        id: 'credential-storage',
+        title: 'Credential storage',
+        description: 'Keychain, encrypted vault and saved key access.',
+        keywords: ['credentials', 'keychain', 'vault', 'passphrase', 'keys', 'tokens', 'locked'],
+      },
       {
         id: 'telemetry',
         title: 'Help improve Anvil',

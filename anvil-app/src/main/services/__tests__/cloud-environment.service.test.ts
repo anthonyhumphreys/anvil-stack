@@ -121,13 +121,13 @@ describe('provider connections', () => {
     expect(created.hasSecret).toBe(true);
     expect(created.config['imageIdentifier']).toBe('arn:aws:lambda:img/anvil-worker:1');
     expect(JSON.stringify(created)).not.toContain('sekret');
-    // The raw row holds the encryptSecret output (the mock wraps with an
-    // `enc:` marker — proves the blob went through safeStorage, never a
-    // bare plaintext column).
+    // Provider metadata wraps the keychain ciphertext, not a bare plaintext column.
     const raw = db
       .prepare('SELECT secret_blob FROM cloud_provider_connections WHERE id = ?')
       .get(created.id) as { secret_blob: Buffer };
-    expect(raw.secret_blob.toString('utf-8').startsWith('enc:')).toBe(true);
+    expect(raw.secret_blob.toString('utf-8').startsWith('anvil-secret:v1:keychain:enc:')).toBe(
+      true,
+    );
   });
 
   it('rejects unknown provider config fields and partial AWS credentials', () => {

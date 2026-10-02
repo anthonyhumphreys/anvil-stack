@@ -80,10 +80,11 @@ CodeQL analysis job only means the scan completed, not that its policy passed.
    remains unchecked; live prices and business settings need approval.
 
 4. **Additional security hardening implemented.**
-   Secret writes fail closed when Electron secure storage is unavailable;
-   legacy plaintext data is readable only after secure storage returns. This
-   remains a compatibility restriction. An [encrypted vault fallback](credential-storage-fallback.md)
-   is proposed separately and has not been implemented.
+   OS credential storage remains the default. An explicit [encrypted vault
+   fallback](credential-storage-fallback.md) now supports session passphrases
+   and protected key files for unattended macOS/Linux use. Locked values remain
+   configured, unreadable credentials are retained and readable integration
+   keys migrate transactionally. Sync refresh preserves unavailable sessions.
    Mobile companion event streams use short-lived single-use tickets instead
    of bearer query parameters, invalidate attestation/tickets on sign-out and
    revocation, restrict CORS, and hide health data from LAN peers. Backend
