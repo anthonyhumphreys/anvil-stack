@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const electronMocks = vi.hoisted(() => ({
-  getAllWindows: vi.fn(() => [{ isVisible: () => true, isMinimized: () => false }]),
+  getAllWindows: vi.fn(() => [
+    { isVisible: (): boolean => true, isMinimized: (): boolean => false },
+  ]),
   getFocusedWindow: vi.fn(() => null),
   showMessageBox: vi.fn().mockResolvedValue({ response: 0 }),
 }));

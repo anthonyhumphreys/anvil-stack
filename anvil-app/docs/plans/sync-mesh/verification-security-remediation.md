@@ -70,6 +70,8 @@ decision change. No runtime behavior changed.
   the auth suite separately exercises issued device credentials.
 - The existing full backend suite passed 434 tests before adding the two job
   regressions. Focused results above cover the final test changes.
+- Desktop Node and renderer typechecks, targeted desktop test lint and backend
+  typecheck passed after correcting the new window mock's inferred return types.
 
 This is targeted boundary verification, not an exhaustive security audit or
 live physical-device acceptance. The existing worker's task-completion result
