@@ -68,6 +68,12 @@ export type DashboardRequestState =
  */
 export interface DashboardRequest {
   requestId: string;
+  /** Optional enrolled Desktop that alone may see/decide this request. */
+  targetEnrollmentId?: string;
+  /** Present only for a renewal request covered by an existing browser trust. */
+  trustId?: string;
+  /** HMAC proof relayed opaquely to the approving Desktop; never interpreted by the coordinator. */
+  renewalProof?: string;
   /** base64 raw X25519 public key the browser generated for this request. */
   browserPub: string;
   /** Random challenge the browser must keep proving (binds this request). */
@@ -132,6 +138,14 @@ export interface DashboardDecideParams {
   /** @deprecated use workspaceBindings. */
   repositoryIds?: string[];
   grantedScopes?: DashboardScope[];
+  /** Durable browser approval metadata. The proof key stays inside grant.ct. */
+  browserTrust?: DashboardBrowserTrustApproval;
+}
+
+export interface DashboardBrowserTrustApproval {
+  trustId: string;
+  /** ISO-8601 hard expiry, capped by the coordinator to its trust limit. */
+  expiresAt: string;
 }
 
 export interface DashboardDecideResult {
@@ -169,6 +183,11 @@ export interface DashboardRevokeResult {
 /** Browser → hosted `dashboard-request` upsert. */
 export interface HostedDashboardRequestInput {
   requestId: string;
+  /** Optional enrolled Desktop selected by the browser's machine chooser. */
+  targetEnrollmentId?: string;
+  /** Set together only for a renewal covered by this durable browser trust. */
+  trustId?: string;
+  renewalProof?: string;
   browserPub: string;
   challenge: string;
   scopes: DashboardScope[];
@@ -180,6 +199,60 @@ export interface HostedDashboardRequestInput {
   expiresAt: string;
   origin?: string;
   userAgent?: string;
+}
+
+/** Signed-in browser can revoke only its own trusted browser identity. */
+export interface HostedDashboardTrustRevokeInput {
+  trustId: string;
+  origin: string;
+}
+
+export interface HostedDashboardTrustRevokeResult {
+  revoked: boolean;
+}
+
+export interface HostedDashboardGrantRevokeInput {
+  requestId: string;
+}
+
+export interface HostedDashboardGrantRevokeResult {
+  revoked: boolean;
+}
+
+/** Canonical HMAC message shared by website and Desktop for one renewal. */
+export interface DashboardRenewalProofInput {
+  accountId: string;
+  requestId: string;
+  trustId: string;
+  browserPub: string;
+  origin: string;
+  targetEnrollmentId: string;
+  challenge: string;
+  expiresAt: string;
+  workspaceBindings: BrowserWorkspaceBinding[];
+  scopes: DashboardScope[];
+}
+
+export function dashboardRenewalProofMessage(input: DashboardRenewalProofInput): string {
+  const workspaceBindings = input.workspaceBindings
+    .map((binding) => ({
+      workspaceId: binding.workspaceId,
+      repositoryIds: [...binding.repositoryIds].sort(),
+    }))
+    .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+  return JSON.stringify([
+    'anvil/dashboard-renewal-proof/v1',
+    input.accountId,
+    input.requestId,
+    input.trustId,
+    input.browserPub,
+    input.origin,
+    input.targetEnrollmentId,
+    input.challenge,
+    input.expiresAt,
+    workspaceBindings,
+    [...input.scopes].sort(),
+  ]);
 }
 
 /** Hosted `dashboard-status` result: state + the sealed grant if approved. */

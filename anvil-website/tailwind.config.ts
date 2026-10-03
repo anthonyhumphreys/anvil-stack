@@ -3,7 +3,7 @@ import defaultTheme from "tailwindcss/defaultTheme";
 
 const config = {
   darkMode: ["class"],
-  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./lib/**/*.{ts,tsx}", "./content/**/*.md"],
+  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./lib/**/*.{ts,tsx}", "./content/**/*.md", "../anvil-app/src/renderer/components/chat/shared/**/*.{ts,tsx}", "../anvil-app/src/renderer/components/chat/ChatEmptyState.tsx"],
   theme: {
     extend: {
       fontFamily: {
@@ -11,6 +11,24 @@ const config = {
         mono: ["var(--font-mono)", ...defaultTheme.fontFamily.mono]
       },
       colors: {
+        bg: {
+          primary: "oklch(from var(--anvil-chat-bg-primary) l c h / <alpha-value>)",
+          secondary: "oklch(from var(--anvil-chat-bg-secondary) l c h / <alpha-value>)",
+          tertiary: "oklch(from var(--anvil-chat-bg-tertiary) l c h / <alpha-value>)",
+          elevated: "oklch(from var(--anvil-chat-bg-elevated) l c h / <alpha-value>)",
+          hover: "oklch(from var(--anvil-chat-bg-hover) l c h / <alpha-value>)",
+        },
+        text: {
+          primary: "oklch(from var(--anvil-chat-text-primary) l c h / <alpha-value>)",
+          secondary: "oklch(from var(--anvil-chat-text-secondary) l c h / <alpha-value>)",
+          tertiary: "oklch(from var(--anvil-chat-text-tertiary) l c h / <alpha-value>)",
+          muted: "oklch(from var(--anvil-chat-text-muted) l c h / <alpha-value>)",
+        },
+        "border-subtle": "oklch(from var(--anvil-chat-border-subtle) l c h / <alpha-value>)",
+        success: "oklch(from var(--anvil-chat-success) l c h / <alpha-value>)",
+        warning: "oklch(from var(--anvil-chat-warning) l c h / <alpha-value>)",
+        error: "oklch(from var(--anvil-chat-error) l c h / <alpha-value>)",
+        info: "oklch(from var(--anvil-chat-info) l c h / <alpha-value>)",
         border: "oklch(var(--border))",
         input: "oklch(var(--input))",
         ring: "oklch(var(--ring))",

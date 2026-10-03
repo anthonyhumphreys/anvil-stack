@@ -3,6 +3,34 @@
 Reviewed 25 September 2026 against `fc8286b33259f3285f36ac10ad01884b89d31280`.
 PR: https://github.com/anthonyhumphreys/anvil-stack/pull/91
 
+## 3 October connected browser workspace update
+
+The web workspace now selects an account-owned machine by name. Desktop
+approves the exact workspace, repositories and capabilities. An optional
+remembered browser connection lasts up to 30 days; short sessions renew using
+a proof key bound to the account, browser origin, selected machine and original
+approval. Disconnect cascades through renewed sessions and browser terminals.
+Desktop enforces expiry locally while offline and interrupts only attributable
+browser work. Account and machine switches invalidate stale responses and
+isolate drafts.
+
+The web chat reuses Desktop's composer, message framing, thread rows, empty
+state and default theme. Provider, model and permission controls use the
+connected machine's configuration and local maximum. Browser-to-cloud work
+is deferred. The installed Anvil application is a standard build from main;
+it was not used to verify these changes.
+
+Local checks passed 1,928 Desktop tests with 12 skipped, 451 backend tests,
+both Desktop TypeScript projects, Desktop and website lint, Electron and
+daemon builds, website production builds, 16 website environment/crypto/store
+tests and validation of 100 documentation pages. Physical-device login,
+remembered-browser renewal, expiry/revocation and provider interaction remain
+manual acceptance in [ANV-11](https://linear.app/anvil-stack/issue/ANV-11/run-hosted-sync-staging-acceptance-for-pr-91).
+The browser acceptance cases are documented in
+`anvil-website/content/docs/sync/browser-workspace.md`.
+
+The following review records the earlier foundation changes and observations.
+
 This is a targeted merge-readiness and deployment review, not an exhaustive
 audit of all 829 changed files. GitHub reports 160,406 additions and 14,723
 deletions. The PR description still describes about 170 files and omits later

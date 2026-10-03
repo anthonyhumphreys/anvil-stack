@@ -21,6 +21,16 @@ const SCOPE_LABELS: Record<string, string> = {
   preview: 'Open development previews',
 };
 
+const FIRST_PAIRING_CAPABILITIES = [
+  'read-dashboard',
+  'workspace-write',
+  'submit-task',
+  'approve-action',
+  'request-handoff',
+  'terminal',
+  'preview',
+] as const;
+
 function scopeLabel(scope: string): string {
   return SCOPE_LABELS[scope] ?? scope;
 }
@@ -58,10 +68,11 @@ interface ScopeDraft {
   workspaceId: string;
   repoIds: string[];
   actionScopes: string[];
+  rememberBrowser: boolean;
 }
 
 function emptyDraft(): ScopeDraft {
-  return { workspaceId: '', repoIds: [], actionScopes: [] };
+  return { workspaceId: '', repoIds: [], actionScopes: [], rememberBrowser: false };
 }
 
 /**
@@ -73,6 +84,7 @@ export function DashboardAccessPanel(): ReactNode {
   const [requests, setRequests] = useState<SyncDashboardRequest[] | null>(null);
   const [workspaces, setWorkspaces] = useState<SyncDashboardGrantWorkspace[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, ScopeDraft>>({});
   const [confirmingRevokeId, setConfirmingRevokeId] = useState<string | null>(null);
@@ -140,9 +152,10 @@ export function DashboardAccessPanel(): ReactNode {
   ): Promise<void> => {
     setBusyKey(`${decision}:${request.requestId}`);
     setError(null);
+    setNotice(null);
     try {
       const draft = drafts[request.requestId] ?? emptyDraft();
-      await window.anvil.syncRuntime.decideDashboardRequest(
+      const result = await window.anvil.syncRuntime.decideDashboardRequest(
         request.requestId,
         decision,
         decision === 'approved'
@@ -150,9 +163,27 @@ export function DashboardAccessPanel(): ReactNode {
               workspaceId: draft.workspaceId,
               repoIds: draft.repoIds,
               actionScopes: draft.actionScopes,
+              ...(request.firstMachinePairing === true
+                ? { rememberBrowser: draft.rememberBrowser }
+                : {}),
             }
           : undefined,
       );
+      if (result.decision === 'denied') {
+        setNotice('Browser request denied.');
+      } else if (result.rememberedBrowser) {
+        setNotice('Browser remembered for up to 30 days. Active access still expires each hour.');
+      } else if (result.sessionOnly) {
+        setNotice(
+          result.sessionOnlyReason === 'secure-storage-unavailable'
+            ? draft.rememberBrowser
+              ? 'Approved for this session only. Secure storage is unavailable, so browser renewal could not be saved.'
+              : 'Approved while Desktop remains open. Secure storage is unavailable, so access will end when Desktop closes.'
+            : 'Approved for this session only. This browser origin cannot be used for a persistent trust.',
+        );
+      } else {
+        setNotice('Browser access approved for the requested session.');
+      }
       await refresh();
     } catch (err) {
       setError(toErrorMessage(err));
@@ -191,6 +222,12 @@ export function DashboardAccessPanel(): ReactNode {
         </p>
       )}
 
+      {notice !== null && (
+        <p role="status" className="text-xs text-text-secondary">
+          {notice}
+        </p>
+      )}
+
       {requests !== null && pending.length === 0 && active.length === 0 && (
         <p className="text-sm text-text-tertiary">
           No browser sessions requested dashboard access. Open the web dashboard to create a
@@ -206,6 +243,10 @@ export function DashboardAccessPanel(): ReactNode {
               (workspace) => workspace.workspaceId === draft.workspaceId,
             );
             const canApprove = draft.workspaceId !== '' && draft.repoIds.length > 0;
+            const isFirstPairing = request.firstMachinePairing === true;
+            const availableCapabilities = isFirstPairing
+              ? FIRST_PAIRING_CAPABILITIES
+              : request.scopes;
             return (
               <li
                 key={request.requestId}
@@ -247,7 +288,8 @@ export function DashboardAccessPanel(): ReactNode {
                     Desktop access
                   </legend>
                   <p className="mt-1 text-xs text-text-tertiary">
-                    Choose exactly where this browser may work. Nothing is selected automatically.
+                    Choose one workspace and its repository subset; additional capabilities stay off
+                    until you select them.
                   </p>
                   <label className="mt-2 block text-xs text-text-secondary">
                     <span className="sr-only">Workspace</span>
@@ -300,14 +342,16 @@ export function DashboardAccessPanel(): ReactNode {
 
                 <fieldset className="mt-3">
                   <legend className="text-xs font-medium text-text-secondary">
-                    Action permissions
+                    {isFirstPairing ? 'Optional capabilities' : 'Action permissions'}
                   </legend>
                   <p className="mt-1 text-xs text-text-tertiary">
-                    Dashboard snapshots stay read-only; workspace actions start unchecked.
+                    {isFirstPairing
+                      ? 'Workspace read is always included so the browser can open this workspace. Every additional capability starts unchecked.'
+                      : 'Dashboard snapshots stay read-only; workspace actions start unchecked.'}
                   </p>
                   <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
-                    {request.scopes
-                      .filter((scope) => scope !== 'read-dashboard')
+                    {availableCapabilities
+                      .filter((scope) => scope !== 'read-dashboard' || isFirstPairing)
                       .map((scope) => (
                         <label
                           key={scope}
@@ -325,6 +369,24 @@ export function DashboardAccessPanel(): ReactNode {
                       ))}
                   </div>
                 </fieldset>
+
+                {isFirstPairing && (
+                  <label className="mt-3 flex items-start gap-2 text-xs text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={draft.rememberBrowser}
+                      onChange={(event) =>
+                        updateDraft(request.requestId, { rememberBrowser: event.target.checked })
+                      }
+                      disabled={busyKey !== null}
+                      className="mt-0.5 accent-accent"
+                    />
+                    <span>
+                      Remember this browser for up to 30 days. Desktop saves its renewal proof in
+                      secure storage; each active grant still lasts no longer than an hour.
+                    </span>
+                  </label>
+                )}
 
                 <p className="mt-3 text-xs text-text-tertiary">
                   Approving binds a dashboard key to this browser, workspace, and repository

@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   saveChatThreadPlan: vi.fn(),
   saveChatEvent: vi.fn(),
   getCodexSession: vi.fn(),
+  getCodexSessionModel: vi.fn(() => 'gpt-5.4'),
   claimSessionForBrowser: vi.fn((sessionId: string) => mocks.getCodexSession(sessionId)),
   listActiveCodexSessions: vi.fn(() => []),
   listPendingApprovalRequests: vi.fn(() => []),
@@ -53,7 +54,24 @@ const mocks = vi.hoisted(() => ({
   }),
   getFullStatus: vi.fn(),
   getFileDiff: vi.fn(),
-  getSettings: vi.fn(() => ({ codexMode: 'on-request' })),
+  getSettings: vi.fn(() => ({
+    codexMode: 'on-request',
+    enabledLlmProviders: undefined as string[] | undefined,
+    llmProvider: undefined as string | undefined,
+    openaiModel: undefined as string | undefined,
+  })),
+  getCloudAgentSettings: vi.fn(() => ({
+    providers: [
+      { provider: 'codex', enabled: true, connected: true, connectionState: 'connected' },
+      { provider: 'openai', enabled: true, connected: true, connectionState: 'connected' },
+      { provider: 'azure', enabled: true, connected: true, connectionState: 'connected' },
+    ],
+  })),
+  detectCodexCli: vi.fn(async () => ({
+    installed: true,
+    models: [{ id: 'gpt-5.4', displayName: 'GPT 5.4' }],
+  })),
+  getMeshMaximumPermissionMode: vi.fn(() => 'full-access'),
   listWorkflowTemplates: vi.fn(() => []),
   listWorkflowRuns: vi.fn(() => []),
   getWorkflowRun: vi.fn(),
@@ -61,6 +79,10 @@ const mocks = vi.hoisted(() => ({
   cancelWorkflowRun: vi.fn(),
   toolsExecute: vi.fn(),
   disposeSharedTools: vi.fn(),
+  registerBrowserWorkspaceSession: vi.fn(),
+  beginBrowserWorkspaceTurn: vi.fn(),
+  finishBrowserWorkspaceTurn: vi.fn(),
+  abandonBrowserWorkspaceTurn: vi.fn(),
 }));
 
 vi.mock('../workspace.service.js', () => ({ getWorkspace: mocks.getWorkspace }));
@@ -80,6 +102,7 @@ vi.mock('../chat-evidence.service.js', () => ({ saveChatEvent: mocks.saveChatEve
 vi.mock('../codex-session.service.js', () => ({
   claimSessionForBrowser: mocks.claimSessionForBrowser,
   getCodexSession: mocks.getCodexSession,
+  getCodexSessionModel: mocks.getCodexSessionModel,
   interruptTurn: mocks.interruptTurn,
   listActiveCodexSessions: mocks.listActiveCodexSessions,
   listPendingApprovalRequests: mocks.listPendingApprovalRequests,
@@ -95,6 +118,23 @@ vi.mock('../git.service.js', () => ({
   getFileDiff: mocks.getFileDiff,
 }));
 vi.mock('../settings.service.js', () => ({ getSettings: mocks.getSettings }));
+vi.mock('../cloud-agent-settings.service.js', () => ({
+  getCloudAgentSettings: mocks.getCloudAgentSettings,
+}));
+vi.mock('../codex-bridge.service.js', () => ({ detectCodexCli: mocks.detectCodexCli }));
+vi.mock('../cursor-bridge.service.js', () => ({ detectCursorCli: vi.fn() }));
+vi.mock('../devin-bridge.service.js', () => ({ detectDevinCli: vi.fn() }));
+vi.mock('../codex-runtime.service.js', () => ({ getCodexRuntimeStatus: vi.fn() }));
+vi.mock('../llm-gateway.service.js', () => ({ getLlmGatewayStatus: vi.fn() }));
+vi.mock('../mesh-permissions.service.js', () => ({
+  getMeshMaximumPermissionMode: mocks.getMeshMaximumPermissionMode,
+}));
+vi.mock('../browser-session-ownership.service.js', () => ({
+  abandonBrowserWorkspaceTurn: mocks.abandonBrowserWorkspaceTurn,
+  beginBrowserWorkspaceTurn: mocks.beginBrowserWorkspaceTurn,
+  finishBrowserWorkspaceTurn: mocks.finishBrowserWorkspaceTurn,
+  registerBrowserWorkspaceSession: mocks.registerBrowserWorkspaceSession,
+}));
 vi.mock('../workflow.service.js', () => ({
   cancelWorkflowRun: mocks.cancelWorkflowRun,
   getWorkflowRun: mocks.getWorkflowRun,
@@ -169,10 +209,12 @@ beforeEach(() => {
   mocks.getChatThread.mockReset();
   mocks.getCodexSession.mockReset();
   mocks.listActiveCodexSessions.mockReturnValue([]);
-  mocks.getSettings.mockReturnValue({ codexMode: 'on-request' });
+  mocks.getSettings.mockReturnValue({ codexMode: 'on-request', enabledLlmProviders: undefined, llmProvider: undefined, openaiModel: undefined });
+  mocks.getMeshMaximumPermissionMode.mockReturnValue('full-access');
   vi.clearAllMocks();
   mocks.getWorkspace.mockImplementation(() => workspace());
-  mocks.getSettings.mockReturnValue({ codexMode: 'on-request' });
+  mocks.getSettings.mockReturnValue({ codexMode: 'on-request', enabledLlmProviders: undefined, llmProvider: undefined, openaiModel: undefined });
+  mocks.getMeshMaximumPermissionMode.mockReturnValue('full-access');
 });
 
 afterEach(() => {
@@ -451,7 +493,10 @@ describe('browser workspace chat lifecycle', () => {
       session.id,
       expect.objectContaining({ role: 'user', content: 'Inspect the repo' }),
     );
-    expect(mocks.sendMessage).toHaveBeenCalledWith(session.id, 'Inspect the repo');
+    expect(mocks.sendMessage).toHaveBeenCalledWith(session.id, 'Inspect the repo', [], {
+      model: 'gpt-5.4',
+      permissionMode: 'on-request',
+    });
   });
 
   it('starts a browser-owned session and records it in durable chat sessions', async () => {
@@ -467,7 +512,13 @@ describe('browser workspace chat lifecycle', () => {
       [repoPath],
       [repoId],
       'coder',
-      expect.objectContaining({ origin: 'browser', threadId: thread.id }),
+      expect.objectContaining({
+        origin: 'browser',
+        threadId: thread.id,
+        provider: 'codex',
+        model: 'gpt-5.4',
+        codexMode: 'on-request',
+      }),
     );
     expect(mocks.createChatSession).toHaveBeenCalledWith(
       thread.id,
@@ -494,32 +545,149 @@ describe('browser workspace chat lifecycle', () => {
     expect(mocks.startSession).not.toHaveBeenCalled();
   });
 
-  it('rejects browser session startup when Desktop is configured for full access', async () => {
-    mocks.getCodexSession.mockReturnValue(null);
-    mocks.getSettings.mockReturnValue({ codexMode: 'full-access' });
+  it('does not take over a busy Desktop-owned session', async () => {
+    const desktopSession = { ...session, origin: 'desktop' as const, status: 'busy' as const };
+    mocks.getCodexSession.mockReturnValue(desktopSession);
+    mocks.listActiveCodexSessions.mockReturnValue([desktopSession] as never);
+
     const result = await executeBrowserWorkspaceCommand(
       command({ operation: 'chat.session.start', threadId: thread.id }),
       context(['submit-task']),
     );
 
-    expect(result).toMatchObject({ ok: false, error: { code: 'forbidden' } });
+    expect(result).toMatchObject({ ok: false, error: { code: 'conflict' } });
+    expect(mocks.claimSessionForBrowser).not.toHaveBeenCalled();
     expect(mocks.startSession).not.toHaveBeenCalled();
   });
 
-  it('rejects sending through a full-access browser session', async () => {
-    mocks.getSettings.mockReturnValue({ codexMode: 'full-access' });
+  it('interrupts a busy session before applying a different permission mode', async () => {
+    const busySession = { ...session, status: 'busy' as const, mode: 'on-request' as const };
+    mocks.getCodexSession.mockReturnValue(busySession);
+
     const result = await executeBrowserWorkspaceCommand(
       command({
         operation: 'chat.send',
         threadId: thread.id,
         sessionId: session.id,
-        message: 'Do not elevate this turn',
+        message: 'Use the selected higher access for the next turn',
+        permissionMode: 'full-access',
       }),
       context(['submit-task']),
     );
 
-    expect(result).toMatchObject({ ok: false, error: { code: 'forbidden' } });
+    expect(result).toMatchObject({ ok: false, error: { code: 'conflict' } });
+    expect(mocks.interruptTurn).toHaveBeenCalledWith(session.id);
     expect(mocks.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('allows a browser session to use the explicitly selected Desktop full-access mode', async () => {
+    mocks.getCodexSession.mockReturnValue(null);
+    mocks.getSettings.mockReturnValue({
+      codexMode: 'full-access',
+      enabledLlmProviders: ['codex'],
+      llmProvider: 'codex',
+      openaiModel: 'gpt-5.4',
+    });
+    mocks.getMeshMaximumPermissionMode.mockReturnValue('full-access');
+    const result = await executeBrowserWorkspaceCommand(
+      command({
+        operation: 'chat.session.start',
+        threadId: thread.id,
+        provider: 'codex',
+        model: 'gpt-5.4',
+        permissionMode: 'full-access',
+      }),
+      context(['submit-task']),
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(mocks.startSession).toHaveBeenCalledWith(
+      [repoPath],
+      [repoId],
+      'coder',
+      expect.objectContaining({ codexMode: 'full-access', model: 'gpt-5.4' }),
+    );
+  });
+
+  it('rejects a model that is no longer in the current provider catalog', async () => {
+    mocks.getCodexSession.mockReturnValue(null);
+    const result = await executeBrowserWorkspaceCommand(
+      command({
+        operation: 'chat.session.start',
+        threadId: thread.id,
+        provider: 'codex',
+        model: 'retired-model',
+        permissionMode: 'on-request',
+      }),
+      context(['submit-task']),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(mocks.startSession).not.toHaveBeenCalled();
+  });
+
+  it('preserves the Desktop-configured custom model for Azure provider sessions', async () => {
+    mocks.getCodexSession.mockReturnValue(null);
+    mocks.getSettings.mockReturnValue({
+      codexMode: 'on-request',
+      enabledLlmProviders: ['azure'],
+      llmProvider: 'azure',
+      openaiModel: 'custom-foundry-model',
+    });
+
+    const result = await executeBrowserWorkspaceCommand(
+      command({
+        operation: 'chat.session.start',
+        threadId: thread.id,
+        provider: 'azure',
+        model: 'custom-foundry-model',
+        permissionMode: 'on-request',
+      }),
+      context(['submit-task']),
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(mocks.startSession).toHaveBeenCalledWith(
+      [repoPath],
+      [repoId],
+      'coder',
+      expect.objectContaining({ provider: 'azure', model: 'custom-foundry-model' }),
+    );
+  });
+
+  it('clamps a browser full-access request to the node read-only ceiling', async () => {
+    mocks.getSettings.mockReturnValue({
+      codexMode: 'full-access',
+      enabledLlmProviders: ['codex'],
+      llmProvider: 'codex',
+      openaiModel: 'gpt-5.4',
+    });
+    mocks.getMeshMaximumPermissionMode.mockReturnValue('read-only');
+    const result = await executeBrowserWorkspaceCommand(
+      command({
+        operation: 'chat.send',
+        threadId: thread.id,
+        sessionId: session.id,
+        message: 'Keep this turn read-only',
+        provider: 'codex',
+        model: 'gpt-5.4',
+        permissionMode: 'full-access',
+      }),
+      context(['submit-task']),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        requestedPermissionMode: 'full-access',
+        effectivePermissionMode: 'read-only',
+        maximumPermissionMode: 'read-only',
+      },
+    });
+    expect(mocks.sendMessage).toHaveBeenCalledWith(session.id, 'Keep this turn read-only', [], {
+      model: 'gpt-5.4',
+      permissionMode: 'read-only',
+    });
   });
 
   it('returns the newest history window and marks omitted older messages', async () => {

@@ -12,7 +12,7 @@
 // either. Grants are scoped, expiring, and revocable; delegated actions
 // ride grant scopes, never ambient session authority.
 
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { getDb } from '../db/database.js';
 import { rpc as backendRpc } from './sync-backend-client.service.js';
 import {
@@ -24,18 +24,21 @@ import {
   type SealedDashboardSnapshot,
 } from '../../../cloud/contract/sealed.js';
 import type {
+  DashboardRenewalProofInput,
   DashboardDecideResult,
   DashboardPublishResult,
   DashboardRequest,
   DashboardRequestsResult,
   DashboardRevokeResult,
 } from '../../../cloud/contract/dashboard.js';
+import { dashboardRenewalProofMessage } from '../../../cloud/contract/dashboard.js';
 import {
   BROWSER_WORKSPACE_MAX_RESULT_PLAINTEXT_BYTES,
   BROWSER_WORKSPACE_OPERATION_SCOPE,
   browserWorkspaceCommandAssociatedData,
   browserWorkspaceResultAssociatedData,
   type BrowserWorkspaceCommandEnvelope,
+  type BrowserWorkspaceBinding,
   type BrowserWorkspaceOperation,
   type BrowserWorkspaceResultEnvelope,
 } from '../../../cloud/contract/browser-workspace.js';
@@ -48,7 +51,11 @@ import {
   unwrapSecretBytes,
   wrapSecretBytes,
 } from './sync-keyring.service.js';
-import { revokeSharedBrowserWorkspaceGrant } from './browser-workspace-tools.service.js';
+import {
+  refreshSharedBrowserWorkspaceGrants,
+  revokeSharedBrowserWorkspaceGrant,
+  revokeSharedBrowserWorkspaceTrust,
+} from './browser-workspace-tools.service.js';
 import { canonicalJson } from './sync-persistence.service.js';
 
 export const DASHBOARD_WORKSPACE_SCOPES = [
@@ -72,7 +79,18 @@ export interface DashboardGrantWorkspaceSelection {
 export interface DashboardGrantApproval {
   workspace: DashboardGrantWorkspaceSelection;
   scopes: string[];
+  rememberBrowser?: boolean;
 }
+
+export type DashboardGrantApprovalResult =
+  | { decision: 'approved'; rememberedBrowser: true; sessionOnly: false }
+  | { decision: 'approved'; rememberedBrowser: false; sessionOnly: false }
+  | {
+      decision: 'approved';
+      rememberedBrowser: false;
+      sessionOnly: true;
+      sessionOnlyReason: 'secure-storage-unavailable' | 'origin-unavailable';
+    };
 
 export type DashboardWorkspaceCommand = BrowserWorkspaceCommandEnvelope & {
   /** Claim fence is Desktop-local relay metadata, not part of the sealed envelope. */
@@ -94,11 +112,13 @@ export interface DashboardGrantRevalidation {
   enrollmentId: string;
   workspace: DashboardGrantWorkspaceSelection;
   scopes: string[];
+  trustId?: string;
 }
 
 export interface DashboardGrantCommandExecutorInput {
   commandId: string;
   requestId: string;
+  trustId?: string;
   enrollmentId: string;
   operation: BrowserWorkspaceOperation;
   workspaceId: string;
@@ -142,6 +162,7 @@ export function configureDashboardGrantContext(provider: () => DashboardGrantCon
 
 export function resetDashboardGrantForTests(): void {
   contextProvider = null;
+  dashboardSessionKeys.clear();
 }
 
 async function dashRpc<T>(operation: string, params: unknown): Promise<T> {
@@ -160,6 +181,7 @@ async function dashRpc<T>(operation: string, params: unknown): Promise<T> {
 
 export interface DashboardGrantRow {
   requestId: string;
+  trustId?: string;
   browserPub: string;
   scopes: string[];
   expiresAt: string;
@@ -183,6 +205,345 @@ interface GrantRow {
   state: string;
   request_json: string | null;
   last_published_at: string | null;
+  trust_id: string | null;
+}
+
+interface TrustedBrowserRow {
+  trust_id: string;
+  proof_key_wrapped: Buffer;
+  browser_pub: string;
+  origin: string;
+  target_enrollment_id: string;
+  workspace_bindings_json: string;
+  scopes_json: string;
+  enrollment_id: string;
+  expires_at: string;
+  state: 'active' | 'revoked' | 'expired';
+}
+
+const DASHBOARD_SESSION_MAX_MS = 60 * 60 * 1000;
+const DASHBOARD_BROWSER_TRUST_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+const dashboardSessionKeys = new Map<string, Buffer>();
+
+function dashboardGrantKey(scope: SyncScope, requestId: string): string {
+  return `${scope.backendId}\u0000${scope.accountId}\u0000${requestId}`;
+}
+
+function dashboardDsk(
+  scope: SyncScope,
+  row: Pick<GrantRow, 'request_id' | 'dsk_wrapped'>,
+): Buffer | null {
+  if (row.dsk_wrapped !== null) {
+    const unwrapped = unwrapSecretBytes(row.dsk_wrapped);
+    if (unwrapped !== null && unwrapped.byteLength === 32) return unwrapped;
+  }
+  return dashboardSessionKeys.get(dashboardGrantKey(scope, row.request_id)) ?? null;
+}
+
+function wrapSecretBytesIfAvailable(value: Buffer): Buffer | null {
+  try {
+    return wrapSecretBytes(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizedBindings(
+  bindings: readonly BrowserWorkspaceBinding[],
+): BrowserWorkspaceBinding[] {
+  return bindings
+    .map((binding) => ({
+      workspaceId: binding.workspaceId,
+      repositoryIds: [...binding.repositoryIds].sort(),
+    }))
+    .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+}
+
+function bindingsMatch(
+  left: readonly BrowserWorkspaceBinding[],
+  right: readonly BrowserWorkspaceBinding[],
+): boolean {
+  return canonicalJson(normalizedBindings(left)) === canonicalJson(normalizedBindings(right));
+}
+
+function scopesMatch(left: readonly string[], right: readonly string[]): boolean {
+  return canonicalJson([...left].sort()) === canonicalJson([...right].sort());
+}
+
+function trustedBrowser(scope: SyncScope, trustId: string): TrustedBrowserRow | undefined {
+  return getDb()
+    .prepare(
+      `SELECT * FROM mesh_dashboard_browser_trusts
+       WHERE backend_id = ? AND account_id = ? AND trust_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, trustId) as TrustedBrowserRow | undefined;
+}
+
+function markLocalBrowserTrustRevoked(scope: SyncScope, trustId: string): void {
+  const now = nowIso();
+  const siblings = getDb()
+    .prepare(
+      `SELECT request_id FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND trust_id = ?`,
+    )
+    .all(scope.backendId, scope.accountId, trustId) as Array<{ request_id: string }>;
+  getDb().transaction(() => {
+    getDb()
+      .prepare(
+        `UPDATE mesh_dashboard_browser_trusts SET state = 'revoked', updated_at = ?
+         WHERE backend_id = ? AND account_id = ? AND trust_id = ?`,
+      )
+      .run(now, scope.backendId, scope.accountId, trustId);
+    getDb()
+      .prepare(
+        `UPDATE mesh_dashboard_grants SET state = 'revoked', updated_at = ?
+         WHERE backend_id = ? AND account_id = ? AND trust_id = ?`,
+      )
+      .run(now, scope.backendId, scope.accountId, trustId);
+  })();
+  for (const sibling of siblings) {
+    dashboardSessionKeys.delete(dashboardGrantKey(scope, sibling.request_id));
+  }
+  revokeSharedBrowserWorkspaceTrust(trustId);
+}
+
+function isCanonicalBrowserOrigin(origin: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    return (
+      (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
+      parsed.origin === origin &&
+      parsed.username === '' &&
+      parsed.password === ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+function verifiedRenewalTrust(
+  scope: SyncScope,
+  request: DashboardRequest,
+  enrollmentId: string,
+): TrustedBrowserRow | null {
+  if (
+    request.trustId === undefined ||
+    request.targetEnrollmentId !== enrollmentId ||
+    request.origin === undefined ||
+    request.renewalProof === undefined ||
+    request.challenge.length === 0 ||
+    !isCanonicalBrowserOrigin(request.origin)
+  ) {
+    return null;
+  }
+  const trust = trustedBrowser(scope, request.trustId);
+  if (
+    trust === undefined ||
+    trust.state !== 'active' ||
+    trust.enrollment_id !== enrollmentId ||
+    trust.target_enrollment_id !== enrollmentId ||
+    trust.browser_pub !== request.browserPub ||
+    trust.origin !== request.origin
+  ) {
+    return null;
+  }
+  const trustExpiresAt = Date.parse(trust.expires_at);
+  const sessionExpiresAt = Date.parse(request.expiresAt);
+  const now = Date.now();
+  if (
+    !Number.isFinite(trustExpiresAt) ||
+    !Number.isFinite(sessionExpiresAt) ||
+    new Date(sessionExpiresAt).toISOString() !== request.expiresAt ||
+    trustExpiresAt <= now ||
+    sessionExpiresAt <= now ||
+    sessionExpiresAt > Math.min(now + DASHBOARD_SESSION_MAX_MS, trustExpiresAt)
+  ) {
+    return null;
+  }
+
+  let trustBindings: BrowserWorkspaceBinding[];
+  let trustScopes: string[];
+  try {
+    trustBindings = JSON.parse(trust.workspace_bindings_json) as BrowserWorkspaceBinding[];
+    trustScopes = JSON.parse(trust.scopes_json) as string[];
+  } catch {
+    return null;
+  }
+  const requestBindings = request.workspaceBindings;
+  if (
+    requestBindings === undefined ||
+    !Array.isArray(requestBindings) ||
+    !Array.isArray(request.scopes) ||
+    !bindingsMatch(requestBindings, trustBindings) ||
+    !scopesMatch(request.scopes, trustScopes)
+  ) {
+    return null;
+  }
+
+  const proofBytes = Buffer.from(request.renewalProof, 'base64');
+  if (
+    !/^(?:[A-Za-z0-9+/]{4}){10}[A-Za-z0-9+/]{3}=+$/.test(request.renewalProof) ||
+    proofBytes.byteLength !== 32 ||
+    proofBytes.toString('base64') !== request.renewalProof
+  ) {
+    return null;
+  }
+  const proofKey = unwrapSecretBytes(trust.proof_key_wrapped);
+  if (proofKey === null || proofKey.byteLength !== 32) return null;
+
+  const proofInput: DashboardRenewalProofInput = {
+    accountId: scope.accountId,
+    requestId: request.requestId,
+    trustId: request.trustId,
+    browserPub: request.browserPub,
+    origin: request.origin,
+    targetEnrollmentId: request.targetEnrollmentId,
+    challenge: request.challenge,
+    expiresAt: request.expiresAt,
+    workspaceBindings: requestBindings,
+    scopes: request.scopes,
+  };
+  const expected = createHmac('sha256', proofKey)
+    .update(dashboardRenewalProofMessage(proofInput), 'utf8')
+    .digest();
+  return timingSafeEqual(expected, proofBytes) ? trust : null;
+}
+
+async function processRememberedRenewal(
+  scope: SyncScope,
+  request: DashboardRequest,
+): Promise<void> {
+  const existing = getDb()
+    .prepare(
+      `SELECT state FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, request.requestId) as { state: string } | undefined;
+  if (existing === undefined || existing.state !== 'pending') return;
+  const context = contextProvider?.() ?? null;
+  const trust =
+    context === null ? null : verifiedRenewalTrust(scope, request, context.enrollmentId);
+  if (trust === null) {
+    await denyDashboardRequest(scope, request.requestId);
+    return;
+  }
+  await approveRememberedRenewal(scope, request, trust);
+}
+
+async function approveRememberedRenewal(
+  scope: SyncScope,
+  request: DashboardRequest,
+  trust: TrustedBrowserRow,
+): Promise<void> {
+  const db = getDb();
+  const sourceGrants = db
+    .prepare(
+      `SELECT * FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND trust_id = ?
+       ORDER BY created_at DESC`,
+    )
+    .all(scope.backendId, scope.accountId, trust.trust_id) as GrantRow[];
+  let dsk: Buffer | null = null;
+  for (const grant of sourceGrants) {
+    dsk = dashboardDsk(scope, grant);
+    if (dsk !== null) break;
+  }
+  if (dsk === null) {
+    await denyDashboardRequest(scope, request.requestId);
+    return;
+  }
+
+  const workspaceBindings = JSON.parse(trust.workspace_bindings_json) as BrowserWorkspaceBinding[];
+  const scopes = JSON.parse(trust.scopes_json) as string[];
+  const binding = workspaceBindings[0];
+  if (binding === undefined) {
+    await denyDashboardRequest(scope, request.requestId);
+    return;
+  }
+  const sessionExpiresAt = request.expiresAt;
+  const inner: DashboardGrantInner = {
+    v: 1,
+    dsk: dsk.toString('base64'),
+    scopes,
+    expiresAt: sessionExpiresAt,
+    workspace: {
+      workspaceId: binding.workspaceId,
+      repoIds: [...binding.repositoryIds],
+    },
+    workspaceBindings,
+    enrollmentId: trust.enrollment_id,
+    browserTrust: {
+      trustId: trust.trust_id,
+      expiresAt: trust.expires_at,
+      targetEnrollmentId: trust.target_enrollment_id,
+    },
+  };
+  const aad = dashboardGrantAssociatedData({
+    backendId: scope.backendId,
+    accountId: scope.accountId,
+    requestId: request.requestId,
+    browserPub: request.browserPub,
+    expiresAt: sessionExpiresAt,
+  });
+  const wrapped = sealToRecipientPub(
+    request.browserPub,
+    Buffer.from(JSON.stringify(inner), 'utf8'),
+    aad,
+  );
+  const grant: DashboardGrantPayload = {
+    v: 1,
+    enc: 'x25519-aes-256-gcm',
+    requestId: request.requestId,
+    browserPub: request.browserPub,
+    expiresAt: sessionExpiresAt,
+    ephPub: wrapped.ephPub,
+    nonce: wrapped.nonce,
+    ct: wrapped.ct,
+  };
+  const snapshot = sealSnapshot(
+    scope,
+    request.requestId,
+    dsk,
+    1,
+    await buildDashboardSnapshot(scope),
+  );
+  await dashRpc<DashboardDecideResult>('dashboard.decide', {
+    requestId: request.requestId,
+    decision: 'approved',
+    grant,
+    snapshot,
+    workspaceBindings,
+    grantedScopes: scopes,
+  });
+  const wrappedDsk = wrapSecretBytesIfAvailable(dsk);
+  db.prepare(
+    `UPDATE mesh_dashboard_grants
+     SET state = 'approved', dsk_wrapped = ?, scopes_json = ?, workspace_id = ?,
+         repo_ids_json = ?, enrollment_id = ?, trust_id = ?, seq = 1,
+         last_published_at = ?, updated_at = ?
+     WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+  ).run(
+    wrappedDsk,
+    JSON.stringify(scopes),
+    binding.workspaceId,
+    JSON.stringify(binding.repositoryIds),
+    trust.enrollment_id,
+    trust.trust_id,
+    nowIso(),
+    nowIso(),
+    scope.backendId,
+    scope.accountId,
+    request.requestId,
+  );
+  db.prepare(
+    `UPDATE mesh_dashboard_browser_trusts SET updated_at = ?
+     WHERE backend_id = ? AND account_id = ? AND trust_id = ?`,
+  ).run(nowIso(), scope.backendId, scope.accountId, trust.trust_id);
+  if (wrappedDsk === null) {
+    dashboardSessionKeys.set(dashboardGrantKey(scope, request.requestId), dsk);
+  } else {
+    dashboardSessionKeys.delete(dashboardGrantKey(scope, request.requestId));
+  }
 }
 
 function rowToGrant(row: GrantRow): DashboardGrantRow {
@@ -193,6 +554,7 @@ function rowToGrant(row: GrantRow): DashboardGrantRow {
       : { workspaceId, repoIds: JSON.parse(row.repo_ids_json || '[]') as string[] };
   return {
     requestId: row.request_id,
+    ...(row.trust_id === null ? {} : { trustId: row.trust_id }),
     browserPub: row.browser_pub,
     scopes: JSON.parse(row.scopes_json) as string[],
     expiresAt: row.expires_at,
@@ -257,10 +619,12 @@ function upsertObserved(scope: SyncScope, request: DashboardRequest): void {
   const db = getDb();
   const existing = db
     .prepare(
-      `SELECT state FROM mesh_dashboard_grants
+      `SELECT state, trust_id FROM mesh_dashboard_grants
        WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
     )
-    .get(scope.backendId, scope.accountId, request.requestId) as { state: string } | undefined;
+    .get(scope.backendId, scope.accountId, request.requestId) as
+    | { state: string; trust_id: string | null }
+    | undefined;
   // A locally decided state (approved/denied/revoked) is authoritative —
   // mirror only requests we have not acted on, or terminal backend
   // transitions we have not seen yet.
@@ -270,29 +634,37 @@ function upsertObserved(scope: SyncScope, request: DashboardRequest): void {
       existing.state !== request.state
     ) {
       db.prepare(
-        `UPDATE mesh_dashboard_grants SET state = ?, request_json = ?, updated_at = ?
+        `UPDATE mesh_dashboard_grants SET state = ?, request_json = ?,
+           trust_id = COALESCE(?, trust_id), updated_at = ?
          WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
       ).run(
         request.state,
         JSON.stringify(request),
+        request.trustId ?? null,
         nowIso(),
         scope.backendId,
         scope.accountId,
         request.requestId,
       );
-      // Terminal state observed remotely: the grant's browser-owned PTYs die here.
-      revokeSharedBrowserWorkspaceGrant(request.requestId);
+      if (request.state === 'revoked' && request.trustId !== undefined) {
+        markLocalBrowserTrustRevoked(scope, request.trustId);
+      } else if (!(request.state === 'expired' && request.trustId !== undefined)) {
+        // A one-hour remembered grant can expire while its browser-owned
+        // sessions remain covered by a renewed sibling grant.
+        revokeSharedBrowserWorkspaceGrant(request.requestId);
+      }
     }
     return;
   }
   db.prepare(
     `INSERT INTO mesh_dashboard_grants
-       (backend_id, account_id, request_id, browser_pub, scopes_json,
+       (backend_id, account_id, request_id, browser_pub, scopes_json, trust_id,
         expires_at, seq, state, request_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
      ON CONFLICT (backend_id, account_id, request_id)
      DO UPDATE SET request_json = excluded.request_json,
                    expires_at = excluded.expires_at,
+                   trust_id = COALESCE(excluded.trust_id, mesh_dashboard_grants.trust_id),
                    state = excluded.state,
                    updated_at = excluded.updated_at`,
   ).run(
@@ -301,6 +673,7 @@ function upsertObserved(scope: SyncScope, request: DashboardRequest): void {
     request.requestId,
     request.browserPub,
     JSON.stringify(request.scopes),
+    request.trustId ?? null,
     request.expiresAt,
     request.state,
     JSON.stringify(request),
@@ -308,7 +681,11 @@ function upsertObserved(scope: SyncScope, request: DashboardRequest): void {
     nowIso(),
   );
   if (request.state !== 'pending' && request.state !== 'approved') {
-    revokeSharedBrowserWorkspaceGrant(request.requestId);
+    if (request.state === 'revoked' && request.trustId !== undefined) {
+      markLocalBrowserTrustRevoked(scope, request.trustId);
+    } else if (!(request.state === 'expired' && request.trustId !== undefined)) {
+      revokeSharedBrowserWorkspaceGrant(request.requestId);
+    }
   }
 }
 
@@ -577,9 +954,12 @@ async function publishStoredReceipt(
     | { dsk_wrapped: Buffer | null }
     | undefined;
   const dsk =
-    grant?.dsk_wrapped === null || grant?.dsk_wrapped === undefined
+    grant === undefined
       ? null
-      : unwrapSecretBytes(grant.dsk_wrapped);
+      : dashboardDsk(scope, {
+          request_id: command.requestId,
+          dsk_wrapped: grant.dsk_wrapped,
+        });
   if (dsk === null || dsk.byteLength !== 32) {
     await ctx.publishBrowserWorkspaceCommandResult(scope, command, {
       status: 'failed',
@@ -755,6 +1135,10 @@ async function dispatchBrowserWorkspaceCommand(
   }
 
   const remote = await ctx.revalidateBrowserWorkspaceGrant(scope, command.requestId);
+  if (remote.state === 'revoked' && (remote.trustId ?? grant.trust_id) !== null) {
+    const trustId = remote.trustId ?? grant.trust_id;
+    if (trustId !== null) revokeSharedBrowserWorkspaceTrust(trustId);
+  }
   if (
     !guard() ||
     remote.state !== 'approved' ||
@@ -762,6 +1146,7 @@ async function dispatchBrowserWorkspaceCommand(
     remote.workspace.workspaceId !== grant.workspace_id ||
     Date.parse(remote.expiresAt) <= Date.now() ||
     remote.expiresAt !== grant.expires_at ||
+    (remote.trustId ?? null) !== grant.trust_id ||
     !remote.scopes.includes(requestedScope) ||
     (command.repositoryId !== undefined && !remote.workspace.repoIds.includes(command.repositoryId))
   ) {
@@ -800,7 +1185,7 @@ async function dispatchBrowserWorkspaceCommand(
     );
   activeCommandIds.add(command.commandId);
   try {
-    const dsk = grant.dsk_wrapped === null ? null : unwrapSecretBytes(grant.dsk_wrapped);
+    const dsk = dashboardDsk(scope, grant);
     if (dsk === null || dsk.byteLength !== 32) throw new Error('Grant key is unavailable.');
     const payload = unsealJsonEnvelope(
       dsk,
@@ -820,6 +1205,7 @@ async function dispatchBrowserWorkspaceCommand(
     const result = await ctx.executeBrowserWorkspaceCommand({
       commandId: command.commandId,
       requestId: command.requestId,
+      trustId: grant.trust_id ?? undefined,
       enrollmentId: grant.enrollment_id,
       operation: command.operation,
       workspaceId: command.workspaceId,
@@ -959,7 +1345,7 @@ export async function pumpBrowserWorkspaceCommands(
 }
 
 async function publishSnapshot(scope: SyncScope, row: GrantRow): Promise<void> {
-  const dsk = row.dsk_wrapped === null ? null : unwrapSecretBytes(row.dsk_wrapped);
+  const dsk = dashboardDsk(scope, row);
   if (dsk === null) return;
   const seq = row.seq + 1;
   const snapshot = await buildDashboardSnapshot(scope);
@@ -989,6 +1375,28 @@ export async function serviceDashboardGrants(
   for (const request of requests) {
     upsertObserved(scope, request);
   }
+  for (const request of requests) {
+    if (request.state === 'pending' && request.trustId !== undefined) {
+      await processRememberedRenewal(scope, request).catch(() => undefined);
+    }
+  }
+  const liveGrantRefs = getDb()
+    .prepare(
+      `SELECT request_id, trust_id, expires_at FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND state = 'approved'`,
+    )
+    .all(scope.backendId, scope.accountId) as Array<{
+    request_id: string;
+    trust_id: string | null;
+    expires_at: string;
+  }>;
+  refreshSharedBrowserWorkspaceGrants(
+    liveGrantRefs.map((grant) => ({
+      grantId: grant.request_id,
+      ...(grant.trust_id === null ? {} : { trustId: grant.trust_id }),
+      expiresAt: Date.parse(grant.expires_at),
+    })),
+  );
   if (!guard()) return;
   // Command work is intentionally detached from this sync cycle. A slow
   // Desktop command must never hold the account sync cursor or block pulls.
@@ -1026,7 +1434,7 @@ export async function approveDashboardRequest(
   scope: SyncScope,
   requestId: string,
   approval?: DashboardGrantApproval,
-): Promise<void> {
+): Promise<DashboardGrantApprovalResult> {
   const db = getDb();
   const row = db
     .prepare(
@@ -1041,6 +1449,19 @@ export async function approveDashboardRequest(
     throw new Error(`dashboard request is ${row.state}, not pending`);
   }
   const request = JSON.parse(row.request_json) as DashboardRequest;
+  const activeContext = contextProvider?.() ?? null;
+  if (activeContext === null) throw new Error('Dashboard approval has no active enrollment.');
+  if (
+    request.targetEnrollmentId !== undefined &&
+    request.targetEnrollmentId !== activeContext.enrollmentId
+  ) {
+    throw new Error('This browser request targets a different Desktop enrollment.');
+  }
+  if (request.trustId !== undefined) {
+    throw new Error(
+      'Remembered browser renewals are approved automatically after proof verification.',
+    );
+  }
   if (approval === undefined) {
     throw new Error('dashboard approval requires an explicit workspace and repository selection');
   }
@@ -1059,6 +1480,27 @@ export async function approveDashboardRequest(
   if (workspaceRepoRows.length !== repoIds.length) {
     throw new Error('dashboard approval includes a repository outside the selected workspace');
   }
+  const isFirstPairing =
+    request.targetEnrollmentId !== undefined &&
+    request.scopes.length === 0 &&
+    (request.workspaceBindings?.length ?? 0) === 0;
+  if (approval.rememberBrowser === true && !isFirstPairing) {
+    throw new Error('Only a fresh browser pairing can be remembered.');
+  }
+  if (request.targetEnrollmentId !== undefined && !isFirstPairing) {
+    throw new Error('The named browser pairing request has unexpected preselected permissions.');
+  }
+  if (!isFirstPairing && request.workspaceBindings !== undefined) {
+    const requestedBinding = request.workspaceBindings.find(
+      (binding) => binding.workspaceId === workspaceId,
+    );
+    if (
+      requestedBinding === undefined ||
+      repoIds.some((repoId) => !requestedBinding.repositoryIds.includes(repoId))
+    ) {
+      throw new Error('dashboard approval exceeds the requested workspace or repository binding');
+    }
+  }
   const granted = [...new Set(approval.scopes)];
   // Dashboard projection access is the non-action baseline. Keep existing
   // dashboard flows intact while leaving every workspace action unchecked by
@@ -1069,7 +1511,14 @@ export async function approveDashboardRequest(
   ) {
     granted.unshift('read-dashboard');
   }
-  const invalid = granted.filter((s) => !(request.scopes as readonly string[]).includes(s));
+  // Browser workspace pairing needs this baseline permission to open the
+  // selected workspace. Action scopes remain explicit Desktop choices.
+  if (isFirstPairing && !granted.includes('workspace-read')) {
+    granted.unshift('workspace-read');
+  }
+  const invalid = isFirstPairing
+    ? []
+    : granted.filter((s) => !(request.scopes as readonly string[]).includes(s));
   if (invalid.length > 0) {
     throw new Error(`scopes not requested: ${invalid.join(', ')}`);
   }
@@ -1081,17 +1530,50 @@ export async function approveDashboardRequest(
     throw new Error('dashboard approval includes an unknown scope');
   }
   const expiresAt = request.expiresAt;
-  if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
+  const now = Date.now();
+  if (
+    !Number.isFinite(Date.parse(expiresAt)) ||
+    Date.parse(expiresAt) <= now ||
+    Date.parse(expiresAt) > now + DASHBOARD_SESSION_MAX_MS
+  ) {
     throw new Error('dashboard request has expired');
   }
   const dsk = randomBytes(32);
+  const wrappedDsk = wrapSecretBytesIfAvailable(dsk);
+  const requestedRemember = approval.rememberBrowser === true && isFirstPairing;
+  const trustId = requestedRemember ? randomUUID() : null;
+  const proofKey = requestedRemember ? randomBytes(32) : null;
+  const wrappedProofKey = proofKey === null ? null : wrapSecretBytesIfAvailable(proofKey);
+  const rememberBrowser =
+    trustId !== null &&
+    proofKey !== null &&
+    wrappedProofKey !== null &&
+    wrappedDsk !== null &&
+    request.origin !== undefined &&
+    isCanonicalBrowserOrigin(request.origin);
+  const browserTrustApproval = rememberBrowser
+    ? {
+        trustId: trustId!,
+        expiresAt: new Date(now + DASHBOARD_BROWSER_TRUST_MAX_MS).toISOString(),
+      }
+    : null;
   const inner: DashboardGrantInner = {
     v: 1,
     dsk: dsk.toString('base64'),
     scopes: granted,
     expiresAt,
     workspace: { workspaceId, repoIds },
-    enrollmentId: contextProvider?.()?.enrollmentId ?? '',
+    workspaceBindings: [{ workspaceId, repositoryIds: repoIds }],
+    enrollmentId: activeContext.enrollmentId,
+    ...(rememberBrowser && browserTrustApproval !== null && proofKey !== null
+      ? {
+          browserTrust: {
+            ...browserTrustApproval,
+            proofKey: proofKey.toString('base64'),
+            targetEnrollmentId: activeContext.enrollmentId,
+          },
+        }
+      : {}),
   };
   if (inner.enrollmentId === '') {
     throw new Error('dashboard approval requires an active enrollment');
@@ -1126,29 +1608,79 @@ export async function approveDashboardRequest(
     snapshot,
     workspaceBindings: [{ workspaceId, repositoryIds: repoIds }],
     grantedScopes: granted,
+    ...(browserTrustApproval === null ? {} : { browserTrust: browserTrustApproval }),
   });
-  db.prepare(
-    `UPDATE mesh_dashboard_grants
-     SET state = 'approved', dsk_wrapped = ?, scopes_json = ?, workspace_id = ?,
-         repo_ids_json = ?, enrollment_id = ?, seq = 1,
-         last_published_at = ?, updated_at = ?
-     WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
-  ).run(
-    wrapSecretBytes(dsk),
-    JSON.stringify(granted),
-    workspaceId,
-    JSON.stringify(repoIds),
-    inner.enrollmentId,
-    nowIso(),
-    nowIso(),
-    scope.backendId,
-    scope.accountId,
-    requestId,
-  );
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE mesh_dashboard_grants
+       SET state = 'approved', dsk_wrapped = ?, scopes_json = ?, workspace_id = ?,
+           repo_ids_json = ?, enrollment_id = ?, trust_id = ?, seq = 1,
+           last_published_at = ?, updated_at = ?
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    ).run(
+      wrappedDsk,
+      JSON.stringify(granted),
+      workspaceId,
+      JSON.stringify(repoIds),
+      inner.enrollmentId,
+      rememberBrowser ? trustId : null,
+      nowIso(),
+      nowIso(),
+      scope.backendId,
+      scope.accountId,
+      requestId,
+    );
+    if (rememberBrowser && trustId !== null && wrappedProofKey !== null && browserTrustApproval) {
+      db.prepare(
+        `INSERT INTO mesh_dashboard_browser_trusts
+         (backend_id, account_id, trust_id, proof_key_wrapped, browser_pub, origin,
+          target_enrollment_id, workspace_bindings_json, scopes_json, enrollment_id,
+          expires_at, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+      ).run(
+        scope.backendId,
+        scope.accountId,
+        trustId,
+        wrappedProofKey,
+        request.browserPub,
+        request.origin,
+        activeContext.enrollmentId,
+        JSON.stringify([{ workspaceId, repositoryIds: repoIds }]),
+        JSON.stringify(granted),
+        activeContext.enrollmentId,
+        browserTrustApproval.expiresAt,
+        nowIso(),
+        nowIso(),
+      );
+    }
+  })();
+  if (wrappedDsk === null) {
+    dashboardSessionKeys.set(dashboardGrantKey(scope, requestId), dsk);
+  } else {
+    dashboardSessionKeys.delete(dashboardGrantKey(scope, requestId));
+  }
+  if (rememberBrowser) {
+    return { decision: 'approved', rememberedBrowser: true, sessionOnly: false };
+  }
+  if (wrappedDsk === null || requestedRemember) {
+    return {
+      decision: 'approved',
+      rememberedBrowser: false,
+      sessionOnly: true,
+      sessionOnlyReason:
+        wrappedDsk === null || wrappedProofKey === null
+          ? 'secure-storage-unavailable'
+          : 'origin-unavailable',
+    };
+  }
+  return { decision: 'approved', rememberedBrowser: false, sessionOnly: false };
 }
 
 /** Denies a pending request. */
-export async function denyDashboardRequest(scope: SyncScope, requestId: string): Promise<void> {
+export async function denyDashboardRequest(
+  scope: SyncScope,
+  requestId: string,
+): Promise<{ decision: 'denied'; rememberedBrowser: false; sessionOnly: false }> {
   await dashRpc<DashboardDecideResult>('dashboard.decide', {
     requestId,
     decision: 'denied',
@@ -1160,17 +1692,31 @@ export async function denyDashboardRequest(scope: SyncScope, requestId: string):
     )
     .run(nowIso(), scope.backendId, scope.accountId, requestId);
   revokeSharedBrowserWorkspaceGrant(requestId);
+  dashboardSessionKeys.delete(dashboardGrantKey(scope, requestId));
+  return { decision: 'denied', rememberedBrowser: false, sessionOnly: false };
 }
 
 /** Revokes a live grant — the snapshot stream ends immediately. */
 export async function revokeDashboardGrant(scope: SyncScope, requestId: string): Promise<void> {
-  await dashRpc<DashboardRevokeResult>('dashboard.revoke', { requestId });
+  const local = getDb()
+    .prepare(
+      `SELECT trust_id FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, requestId) as { trust_id: string | null } | undefined;
+  const result = await dashRpc<DashboardRevokeResult>('dashboard.revoke', { requestId });
+  const trustId = result.request.trustId ?? local?.trust_id ?? null;
+  if (trustId !== null) {
+    markLocalBrowserTrustRevoked(scope, trustId);
+    return;
+  }
   getDb()
     .prepare(
       `UPDATE mesh_dashboard_grants SET state = 'revoked', updated_at = ?
        WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
     )
     .run(nowIso(), scope.backendId, scope.accountId, requestId);
+  dashboardSessionKeys.delete(dashboardGrantKey(scope, requestId));
   revokeSharedBrowserWorkspaceGrant(requestId);
 }
 

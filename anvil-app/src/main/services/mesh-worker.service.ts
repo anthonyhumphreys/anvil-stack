@@ -51,6 +51,7 @@ import { commonParentDir } from './codex-protocol.service.js';
 import { resolveSessionModel } from './codex-session.service.js';
 import { getSettings } from './settings.service.js';
 import { writeSessionOwnership } from './mesh-ownership.service.js';
+import { interruptBrowserWorkspaceTurnsAbove } from './browser-session-ownership.service.js';
 import {
   allocateAttemptWorktrees,
   createAttemptBundle,
@@ -454,6 +455,7 @@ export async function setMeshMaximumPermissionMode(
     .run(mode, nowIso());
   // A downgrade stops active attempts; no running provider may retain greater access.
   if (constrainPermissionMode(previous, mode) !== previous) {
+    interruptBrowserWorkspaceTurnsAbove(mode);
     const attempts = activeAttempts();
     for (const attempt of attempts)
       updateAttemptState(attempt.id, attempt.state, { cancelRequested: true });

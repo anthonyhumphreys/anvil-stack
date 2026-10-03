@@ -1,4 +1,9 @@
-import type { StarterPrompt } from '../../utils/starter-prompts';
+import type { ChatPromptSuggestion as StarterPrompt } from './shared/ChatPresentation';
+import {
+  CHAT_PROMPT_SUGGESTION_BUTTON_CLASS,
+  ChatEmptyStateFrame,
+  ChatPromptSuggestionButton,
+} from './shared/ChatPresentation';
 
 interface Suggestion {
   label: string;
@@ -327,7 +332,7 @@ export function ChatEmptyState({
   ].includes(personaId);
 
   return (
-    <div className="flex h-full w-full items-center justify-center px-4 py-10">
+    <ChatEmptyStateFrame>
       <div className="w-full max-w-2xl text-center">
         <h3 className="text-xl font-semibold tracking-[-0.02em] text-text-primary">
           What should we work on?
@@ -346,21 +351,20 @@ export function ChatEmptyState({
 
         <div className="mt-5 flex flex-wrap justify-center gap-2" aria-label="Suggested prompts">
           {suggestions.map((suggestion) => (
-            <button
+            <ChatPromptSuggestionButton
               key={suggestion.label}
               onClick={() => onSuggestionClick(suggestion.prompt)}
-              className={getSuggestionShortcutClassName()}
               title={suggestion.prompt}
             >
               {suggestion.label}
-            </button>
+            </ChatPromptSuggestionButton>
           ))}
         </div>
       </div>
-    </div>
+    </ChatEmptyStateFrame>
   );
 }
 
 export function getSuggestionShortcutClassName(): string {
-  return 'rounded-lg px-3 py-2 text-sm font-medium text-text-secondary transition-colors duration-150 hover:bg-bg-tertiary hover:text-text-primary focus-visible:bg-bg-tertiary focus-visible:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60';
+  return CHAT_PROMPT_SUGGESTION_BUTTON_CLASS;
 }

@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { hostname } from 'node:os';
 import {
   BROWSER_WORKSPACE_MAX_CHAT_MESSAGE_CHARS,
   BROWSER_WORKSPACE_MAX_DIFF_BYTES,
@@ -19,7 +20,22 @@ import {
   BROWSER_WORKSPACE_MAX_HISTORY_BYTES,
   BROWSER_WORKSPACE_MAX_RESULT_PLAINTEXT_BYTES,
   BROWSER_WORKSPACE_OPERATION_SCOPE,
+  type BrowserWorkspaceAgentProvider,
+  type BrowserWorkspaceExecutionModelOption,
+  type BrowserWorkspaceExecutionOptions,
+  type BrowserWorkspaceExecutionProviderOption,
 } from '../../../cloud/contract/browser-workspace.js';
+import {
+  PERMISSION_MODES,
+  constrainPermissionMode,
+  isPermissionMode,
+  type PermissionMode,
+} from '../../../cloud/contract/permissions.js';
+import {
+  AGENT_PROVIDERS,
+  isAcpAgentProvider,
+  isAgentProvider,
+} from '../../shared/agent-providers.js';
 import type {
   BrowserWorkspaceCommand,
   BrowserWorkspaceCommandFailure,
@@ -27,6 +43,7 @@ import type {
   BrowserWorkspaceExecutionContext,
 } from '../../../cloud/contract/browser-workspace.js';
 import type {
+  AgentProvider,
   ChatMessage,
   CodexEvent,
   CodexInputResponse,
@@ -50,6 +67,7 @@ import {
 import { saveChatEvent } from './chat-evidence.service.js';
 import {
   getCodexSession,
+  getCodexSessionModel,
   claimSessionForBrowser,
   interruptTurn,
   listPendingApprovalRequests,
@@ -70,6 +88,19 @@ import {
 } from './browser-workspace-tools.service.js';
 import { getSettings } from './settings.service.js';
 import { getWorkspace } from './workspace.service.js';
+import { getCloudAgentSettings } from './cloud-agent-settings.service.js';
+import { detectCodexCli } from './codex-bridge.service.js';
+import { getCodexRuntimeStatus } from './codex-runtime.service.js';
+import { detectCursorCli } from './cursor-bridge.service.js';
+import { detectDevinCli } from './devin-bridge.service.js';
+import { getLlmGatewayStatus } from './llm-gateway.service.js';
+import { getMeshMaximumPermissionMode } from './mesh-permissions.service.js';
+import {
+  abandonBrowserWorkspaceTurn,
+  beginBrowserWorkspaceTurn,
+  finishBrowserWorkspaceTurn,
+  registerBrowserWorkspaceSession,
+} from './browser-session-ownership.service.js';
 import {
   cancelWorkflowRun,
   getWorkflowRun,
@@ -215,6 +246,7 @@ function handleCodexEvent({
     if (event.type === 'status' && event.status === 'complete') {
       persistBrowserAssistantSegments(sessionId, session, output, true);
       output.activeLegacySegmentId = undefined;
+      finishBrowserWorkspaceTurn(sessionId);
     }
   } catch (error) {
     console.error('[BrowserWorkspace] Failed to persist Codex event:', error);
@@ -341,6 +373,281 @@ function requireScope(context: BrowserWorkspaceExecutionContext, scope: string):
   if (!hasScope(context, scope)) {
     throw new BrowserWorkspaceCommandError('forbidden', `This grant does not allow ${scope}.`);
   }
+}
+
+const BROWSER_CHAT_PROVIDERS: readonly BrowserWorkspaceAgentProvider[] = AGENT_PROVIDERS;
+
+function toModelOption(id: string, label = id): BrowserWorkspaceExecutionModelOption {
+  return { id, label };
+}
+
+async function getBrowserWorkspaceExecutionOptions(
+  providersToCheck?: readonly AgentProvider[],
+): Promise<BrowserWorkspaceExecutionOptions> {
+  const settings = getSettings();
+  const configuredProvider = isAgentProvider(settings.llmProvider) ? settings.llmProvider : 'codex';
+  const configuredPermissionMode = isPermissionMode(settings.codexMode)
+    ? settings.codexMode
+    : 'on-request';
+  const enabledProviders = new Set<AgentProvider>([
+    ...(settings.enabledLlmProviders ?? []),
+    configuredProvider,
+  ]);
+  const checkedProviders = new Set(providersToCheck ?? enabledProviders);
+  const hasCodexFamily = BROWSER_CHAT_PROVIDERS.some(
+    (provider) =>
+      enabledProviders.has(provider) &&
+      checkedProviders.has(provider) &&
+      provider !== 'cursor' &&
+      provider !== 'devin' &&
+      provider !== 'llmgateway',
+  );
+  const shouldDetectCursor = enabledProviders.has('cursor') && checkedProviders.has('cursor');
+  const shouldDetectDevin = enabledProviders.has('devin') && checkedProviders.has('devin');
+  const shouldDetectGateway =
+    enabledProviders.has('llmgateway') && checkedProviders.has('llmgateway');
+
+  const [codexCli, cursorCli, devinCli, gatewayStatus, runtimeStatus, cloudSettings] =
+    await Promise.all([
+      hasCodexFamily ? detectCodexCli().catch(() => null) : Promise.resolve(null),
+      shouldDetectCursor ? detectCursorCli().catch(() => null) : Promise.resolve(null),
+      shouldDetectDevin ? detectDevinCli().catch(() => null) : Promise.resolve(null),
+      shouldDetectGateway ? getLlmGatewayStatus().catch(() => null) : Promise.resolve(null),
+      shouldDetectGateway ? getCodexRuntimeStatus().catch(() => null) : Promise.resolve(null),
+      Promise.resolve()
+        .then(() => getCloudAgentSettings())
+        .catch(() => null),
+    ]);
+
+  const cloudProviderStatus = new Map(
+    (cloudSettings?.providers ?? []).map((status) => [status.provider, status]),
+  );
+  const maximumPermissionMode = getMeshMaximumPermissionMode();
+  const defaultPermissionMode = constrainPermissionMode(
+    configuredPermissionMode,
+    maximumPermissionMode,
+  );
+
+  const providers = BROWSER_CHAT_PROVIDERS.map(
+    (provider): BrowserWorkspaceExecutionProviderOption => {
+      const enabled = enabledProviders.has(provider);
+      const configuredModel =
+        provider === configuredProvider ? settings.openaiModel?.trim() : undefined;
+      let models: BrowserWorkspaceExecutionModelOption[] = [];
+      let available = false;
+      let unavailableReason: string | undefined;
+
+      if (!checkedProviders.has(provider)) {
+        unavailableReason = 'Provider availability was not refreshed for this request.';
+      } else if (provider === 'codex' || provider === 'openai' || provider === 'azure') {
+        const auth = cloudProviderStatus.get(provider);
+        models = (codexCli?.models ?? [])
+          .filter((model) => !model.hidden)
+          .map((model) => toModelOption(model.id, model.displayName || model.id));
+        if (!enabled) {
+          unavailableReason =
+            'Enable this provider in Desktop Settings to use it from the browser.';
+        } else if (!codexCli?.installed) {
+          unavailableReason = 'The Codex CLI is not available on this Desktop.';
+        } else if (!auth?.connected) {
+          unavailableReason =
+            auth?.detail ?? 'Provider credentials are not available on this Desktop.';
+        } else if (models.length === 0) {
+          unavailableReason = 'No current models are available for this provider.';
+        } else {
+          available = true;
+        }
+      } else if (provider === 'cursor') {
+        const auth = cloudProviderStatus.get(provider);
+        models = [
+          toModelOption('auto', 'Automatic (Cursor default)'),
+          ...(cursorCli?.models ?? []).map((model) => toModelOption(model.id, model.label)),
+        ];
+        if (configuredModel && !models.some((model) => model.id === configuredModel)) {
+          models.push(toModelOption(configuredModel, `${configuredModel} (Desktop configured)`));
+        }
+        if (!enabled) {
+          unavailableReason =
+            'Enable this provider in Desktop Settings to use it from the browser.';
+        } else if (!cursorCli?.installed) {
+          unavailableReason = 'Cursor Agent CLI is not installed on this Desktop.';
+        } else if (!auth?.connected && (cursorCli?.models.length ?? 0) === 0) {
+          unavailableReason =
+            auth?.detail ??
+            cursorCli?.error ??
+            'Connect Cursor on this Desktop to list available models.';
+        } else {
+          available = true;
+        }
+      } else if (provider === 'devin') {
+        const auth = cloudProviderStatus.get(provider);
+        models = [
+          toModelOption('auto', 'Automatic (Devin default)'),
+          ...(devinCli?.models ?? []).map((model) => toModelOption(model.id, model.label)),
+        ];
+        if (configuredModel && !models.some((model) => model.id === configuredModel)) {
+          models.push(toModelOption(configuredModel, `${configuredModel} (Desktop configured)`));
+        }
+        if (!enabled) {
+          unavailableReason =
+            'Enable this provider in Desktop Settings to use it from the browser.';
+        } else if (!devinCli?.installed) {
+          unavailableReason = 'Devin CLI is not installed on this Desktop.';
+        } else if (devinCli.authenticated === false && !auth?.connected) {
+          unavailableReason = 'Sign in to Devin on this Desktop before using it from the browser.';
+        } else if (
+          !auth?.connected &&
+          devinCli.authenticated !== true &&
+          (devinCli.models.length ?? 0) === 0
+        ) {
+          unavailableReason =
+            devinCli.error ?? 'Connect Devin on this Desktop to list available models.';
+        } else {
+          available = true;
+        }
+      } else {
+        models = (gatewayStatus?.models ?? []).map((model) =>
+          toModelOption(model.id, model.displayName || model.id),
+        );
+        if (!enabled) {
+          unavailableReason =
+            'Enable this provider in Desktop Settings to use it from the browser.';
+        } else if (!gatewayStatus?.connected) {
+          unavailableReason =
+            gatewayStatus?.error ?? 'LLMGateway credentials are not available on this Desktop.';
+        } else if (!runtimeStatus?.ready) {
+          unavailableReason =
+            runtimeStatus?.error ?? 'The Anvil-managed Codex runtime is not ready on this Desktop.';
+        } else if (models.length === 0) {
+          unavailableReason = gatewayStatus?.error ?? 'LLMGateway has no current models available.';
+        } else {
+          available = true;
+        }
+      }
+
+      // Codex's dynamic catalog is authoritative. OpenAI-compatible provider
+      // sessions intentionally accept custom ids, so preserve the model the
+      // user configured in Desktop when its dynamic suggestions omit it.
+      if (
+        (provider === 'openai' || provider === 'azure') &&
+        configuredModel &&
+        !models.some((model) => model.id === configuredModel)
+      ) {
+        models.push(toModelOption(configuredModel, `${configuredModel} (Desktop configured)`));
+      }
+
+      const providerPermissionModes = PERMISSION_MODES.filter(
+        (mode) => !isAcpAgentProvider(provider) || mode !== 'read-only',
+      );
+      const effectivePermissionModes = providerPermissionModes.filter(
+        (mode) => constrainPermissionMode(mode, maximumPermissionMode) === mode,
+      );
+      const providerDefaultPermissionMode = effectivePermissionModes.includes(defaultPermissionMode)
+        ? defaultPermissionMode
+        : effectivePermissionModes[0];
+      if (effectivePermissionModes.length === 0) {
+        available = false;
+        unavailableReason =
+          'This Desktop’s access ceiling is read-only, which this provider cannot guarantee.';
+      }
+
+      const defaultModel =
+        configuredModel && models.some((model) => model.id === configuredModel)
+          ? configuredModel
+          : models[0]?.id;
+      return {
+        provider,
+        enabled,
+        available,
+        ...(unavailableReason ? { unavailableReason } : {}),
+        ...(defaultModel ? { defaultModel } : {}),
+        models,
+        permissionModes: effectivePermissionModes,
+        // A provider is unavailable when no supported access mode can be run
+        // under the local ceiling; the fallback stays typed but is never usable.
+        defaultPermissionMode: providerDefaultPermissionMode ?? defaultPermissionMode,
+      };
+    },
+  );
+
+  const chatAvailable = providers.some((provider) => provider.available);
+
+  return {
+    target: {
+      kind: 'connected-machine',
+      displayName: hostname() || 'Connected Desktop',
+      chatAvailable,
+      ...(!chatAvailable
+        ? {
+            unavailableReason:
+              'No enabled agent provider is ready on this Desktop. Enable a provider and connect its credentials in Desktop Settings.',
+          }
+        : {}),
+    },
+    providers,
+    permissionModes: PERMISSION_MODES.filter(
+      (mode) => constrainPermissionMode(mode, maximumPermissionMode) === mode,
+    ),
+    maximumPermissionMode,
+    defaultPermissionMode,
+  };
+}
+
+function browserPermissionMode(
+  requested: unknown,
+  provider: BrowserWorkspaceExecutionProviderOption,
+  fallback: PermissionMode,
+  maximumPermissionMode = getMeshMaximumPermissionMode(),
+): PermissionMode {
+  if (requested !== undefined && !isPermissionMode(requested)) {
+    throw new BrowserWorkspaceCommandError('invalid-command', 'Permission mode is invalid.');
+  }
+  const effective = constrainPermissionMode(
+    requested === undefined ? fallback : requested,
+    maximumPermissionMode,
+  );
+  if (!provider.permissionModes.includes(effective)) {
+    throw new BrowserWorkspaceCommandError(
+      'unsupported',
+      `${provider.provider} cannot guarantee ${effective} access on this Desktop. Choose a supported access mode.`,
+    );
+  }
+  return effective;
+}
+
+function requireProviderOption(
+  options: BrowserWorkspaceExecutionOptions,
+  requestedProvider: unknown,
+): BrowserWorkspaceExecutionProviderOption {
+  if (!isAgentProvider(requestedProvider)) {
+    throw new BrowserWorkspaceCommandError('invalid-command', 'Agent provider is invalid.');
+  }
+  const provider = options.providers.find((candidate) => candidate.provider === requestedProvider);
+  if (!provider?.available) {
+    throw new BrowserWorkspaceCommandError(
+      'unsupported',
+      provider?.unavailableReason ??
+        'This agent provider is not available on the connected Desktop.',
+    );
+  }
+  return provider;
+}
+
+function requireProviderModel(
+  provider: BrowserWorkspaceExecutionProviderOption,
+  requestedModel: unknown,
+): string {
+  if (typeof requestedModel !== 'string' || !requestedModel.trim() || requestedModel.length > 256) {
+    throw new BrowserWorkspaceCommandError('invalid-command', 'Model selection is invalid.');
+  }
+  const model = requestedModel.trim();
+  if (!provider.models.some((candidate) => candidate.id === model)) {
+    throw new BrowserWorkspaceCommandError(
+      'unsupported',
+      `Model '${model}' is not available for ${provider.provider} on the connected Desktop. Refresh provider settings and choose a listed model.`,
+    );
+  }
+  return model;
 }
 
 function loadWorkspace(context: BrowserWorkspaceExecutionContext) {
@@ -876,6 +1183,11 @@ async function startBrowserSession(
   context: BrowserWorkspaceExecutionContext,
   threadId: string,
   requestedRepositoryId?: string,
+  selection?: {
+    provider?: unknown;
+    model?: unknown;
+    permissionMode?: unknown;
+  },
 ) {
   const thread = assertThread(context, threadId);
   if (requestedRepositoryId && !thread.repoIds.includes(requestedRepositoryId)) {
@@ -884,16 +1196,61 @@ async function startBrowserSession(
       'Requested repository is not in the chat thread.',
     );
   }
-  if (getSettings().codexMode === 'full-access') {
+  const existing = activeSessionForThread(context, threadId);
+  if (existing && existing.origin !== 'browser' && existing.status !== 'ready') {
     throw new BrowserWorkspaceCommandError(
-      'forbidden',
-      'Browser sessions cannot start while Desktop Codex is configured for full access.',
+      'conflict',
+      'This Desktop session is still active. Wait for it to finish before attaching the browser workspace.',
     );
   }
-  const existing = activeSessionForThread(context, threadId);
-  if (existing) return claimSessionForBrowser(existing.id) ?? existing;
-  const repos = sessionRepoPaths(context, thread.repoIds);
+  if (selection?.provider !== undefined && !isAgentProvider(selection.provider)) {
+    throw new BrowserWorkspaceCommandError('invalid-command', 'Agent provider is invalid.');
+  }
+  if (existing && selection?.provider !== undefined && selection.provider !== existing.provider) {
+    throw new BrowserWorkspaceCommandError(
+      'conflict',
+      `This thread has an active ${existing.provider ?? 'unknown'} session. Stop it before switching providers.`,
+    );
+  }
+
+  const settings = getSettings();
   const binding = getChatThreadProviderBinding(threadId);
+  const selectedProvider =
+    (selection?.provider as AgentProvider | undefined) ??
+    existing?.provider ??
+    binding?.provider ??
+    (isAgentProvider(settings.llmProvider) ? settings.llmProvider : 'codex');
+  const executionOptions = await getBrowserWorkspaceExecutionOptions([selectedProvider]);
+  const providerOption = requireProviderOption(executionOptions, selectedProvider);
+  const model = selection?.model ?? (existing ? getCodexSessionModel(existing.id) : undefined);
+  if (model !== undefined) requireProviderModel(providerOption, model);
+  if (selection?.permissionMode !== undefined) {
+    browserPermissionMode(
+      selection.permissionMode,
+      providerOption,
+      providerOption.defaultPermissionMode,
+    );
+  }
+
+  if (existing) {
+    const claimed = claimSessionForBrowser(existing.id) ?? existing;
+    registerBrowserWorkspaceSession({
+      sessionId: claimed.id,
+      workspaceId: context.workspaceId,
+      grantId: context.grantId,
+      trustId: context.trustId,
+      expiresAt: context.expiresAt,
+      startedByBrowser: existing.origin === 'browser',
+    });
+    return claimed;
+  }
+  const repos = sessionRepoPaths(context, thread.repoIds);
+  const selectedModel = requireProviderModel(providerOption, model ?? providerOption.defaultModel);
+  const permissionMode = browserPermissionMode(
+    selection?.permissionMode,
+    providerOption,
+    providerOption.defaultPermissionMode,
+  );
   const session = await startSession(
     repos.map((repo) => repo.path),
     repos.map((repo) => repo.id),
@@ -901,11 +1258,23 @@ async function startBrowserSession(
     {
       origin: 'browser',
       threadId,
-      provider: binding?.provider,
-      providerThreadId: binding?.providerThreadId,
+      provider: selectedProvider,
+      model: selectedModel,
+      codexMode: permissionMode,
+      ...(binding?.provider === selectedProvider
+        ? { providerThreadId: binding.providerThreadId }
+        : {}),
       workspace: { workspaceId: context.workspaceId },
     },
   );
+  registerBrowserWorkspaceSession({
+    sessionId: session.id,
+    workspaceId: context.workspaceId,
+    grantId: context.grantId,
+    trustId: context.trustId,
+    expiresAt: context.expiresAt,
+    startedByBrowser: true,
+  });
   createChatSession(
     threadId,
     thread.activeRepoId ?? thread.repoIds[0] ?? null,
@@ -941,6 +1310,7 @@ function browserWorkspaceToolRequest(
 ): BrowserWorkspaceToolRequest {
   const runtimeContext: BrowserWorkspaceRuntimeContext = {
     grantId: context.grantId,
+    trustId: context.trustId,
     workspaceId: context.workspaceId,
     repoIds: context.repoIds,
     scopes: context.scopes,
@@ -1079,6 +1449,15 @@ async function executeBrowserWorkspaceCommandInternal(
           ),
         };
       }
+      case 'chat.execution.options': {
+        requireScope(context, 'workspace-read');
+        loadWorkspace(context);
+        return {
+          commandId: context.commandId,
+          ok: true,
+          data: await getBrowserWorkspaceExecutionOptions(),
+        };
+      }
       case 'chat.create': {
         requireScope(context, 'submit-task');
         const repoIds = command.repositoryIds ?? [...context.repoIds];
@@ -1112,7 +1491,7 @@ async function executeBrowserWorkspaceCommandInternal(
         return {
           commandId: context.commandId,
           ok: true,
-          data: await startBrowserSession(context, command.threadId, command.repositoryId),
+          data: await startBrowserSession(context, command.threadId, command.repositoryId, command),
         };
       }
       case 'chat.send': {
@@ -1125,7 +1504,7 @@ async function executeBrowserWorkspaceCommandInternal(
         }
         const thread = assertThread(context, command.threadId);
         const session = assertSession(context, command.sessionId);
-        if (session.origin !== 'browser' || getSettings().codexMode === 'full-access') {
+        if (session.origin !== 'browser') {
           throw new BrowserWorkspaceCommandError(
             'forbidden',
             'This session is not owned by a browser workspace grant.',
@@ -1135,6 +1514,39 @@ async function executeBrowserWorkspaceCommandInternal(
           throw new BrowserWorkspaceCommandError(
             'forbidden',
             'Session does not belong to the chat thread.',
+          );
+        }
+        const selectedProvider = command.provider ?? session.provider;
+        if (!selectedProvider) {
+          throw new BrowserWorkspaceCommandError(
+            'unsupported',
+            'This session does not have a supported agent provider.',
+          );
+        }
+        const executionOptions = await getBrowserWorkspaceExecutionOptions([selectedProvider]);
+        const providerOption = requireProviderOption(executionOptions, selectedProvider);
+        if (session.provider && selectedProvider !== session.provider) {
+          throw new BrowserWorkspaceCommandError(
+            'conflict',
+            `This thread is running with ${session.provider}. Stop the session before switching providers.`,
+          );
+        }
+        const selectedModel = requireProviderModel(
+          providerOption,
+          command.model ?? getCodexSessionModel(session.id) ?? providerOption.defaultModel,
+        );
+        const maximumPermissionMode = getMeshMaximumPermissionMode();
+        const permissionMode = browserPermissionMode(
+          command.permissionMode,
+          providerOption,
+          session.mode ?? providerOption.defaultPermissionMode,
+          maximumPermissionMode,
+        );
+        if (session.status === 'busy' && session.mode && permissionMode !== session.mode) {
+          interruptTurn(session.id);
+          throw new BrowserWorkspaceCommandError(
+            'conflict',
+            `The requested access differs from the active ${session.mode} turn. An interrupt was sent; retry after that turn settles to continue with ${permissionMode} access.`,
           );
         }
         const timestamp = new Date().toISOString();
@@ -1149,8 +1561,33 @@ async function executeBrowserWorkspaceCommandInternal(
           repoContext: session.repoId,
         };
         saveChatEntry(thread.id, session.repoId ?? null, session.id, message);
-        await sendMessage(session.id, message.content);
-        return { commandId: context.commandId, ok: true, data: { sessionId: session.id } };
+        beginBrowserWorkspaceTurn({
+          sessionId: session.id,
+          grantId: context.grantId,
+          trustId: context.trustId,
+          expiresAt: context.expiresAt,
+          permissionMode,
+        });
+        try {
+          await sendMessage(session.id, message.content, [], {
+            model: selectedModel,
+            permissionMode,
+          });
+        } catch (error) {
+          abandonBrowserWorkspaceTurn(session.id, context.grantId);
+          throw error;
+        }
+        const effectivePermissionMode = getCodexSession(session.id)?.mode ?? permissionMode;
+        return {
+          commandId: context.commandId,
+          ok: true,
+          data: {
+            sessionId: session.id,
+            requestedPermissionMode: command.permissionMode ?? session.mode ?? permissionMode,
+            effectivePermissionMode,
+            maximumPermissionMode,
+          },
+        };
       }
       case 'chat.status': {
         requireScope(context, 'workspace-read');

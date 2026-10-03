@@ -517,10 +517,15 @@ export function registerSyncRuntimeHandlers(): void {
       ) {
         throw new Error('dashboard-decide actionScopes must be known dashboard scopes');
       }
+      const rememberBrowser = approval['rememberBrowser'];
+      if (rememberBrowser !== undefined && typeof rememberBrowser !== 'boolean') {
+        throw new Error('dashboard-decide rememberBrowser must be a boolean');
+      }
       return approveDashboardGrant(payload['requestId'], {
         workspaceId: approval['workspaceId'],
         repoIds: repoIds as string[],
         actionScopes: actionScopes as string[],
+        ...(rememberBrowser === undefined ? {} : { rememberBrowser }),
       });
     }
     return denyDashboardGrant(payload['requestId']);

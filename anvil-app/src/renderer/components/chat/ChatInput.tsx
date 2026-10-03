@@ -30,6 +30,12 @@ import type {
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
 import { ChatAccessLevelChip } from './ChatAccessLevelChip';
+import {
+  ChatComposerEditor,
+  ChatComposerFooter,
+  ChatComposerFrame,
+  ChatComposerSurface,
+} from './shared/ChatPresentation';
 import type { ChatAccessOption } from './thread-access';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { slugForDomId } from '../../utils/dom-id';
@@ -1212,496 +1218,469 @@ export function ChatInput({
         : undefined;
 
   return (
-    <div className="bg-transparent px-3 pb-3 pt-2 xl:px-5 xl:pb-4 xl:pt-3">
-      <div ref={composerWidthRef} className="mx-auto w-full max-w-[1040px]">
-        <div
-          className={`relative rounded-xl border bg-bg-secondary transition-[border-color,background-color] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
-            disabled && !busy ? 'opacity-60' : ''
-          } ${
-            draggingFiles
-              ? 'border-accent bg-accent/5'
-              : hasContent
-                ? 'border-border bg-bg-secondary'
-                : 'border-border-subtle'
-          }`}
-          onDragEnter={handleDragEnter}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          {draggingFiles && (
-            <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-xl border border-dashed border-accent bg-bg-primary/80 backdrop-blur-sm">
-              <div className="flex items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-4 py-2 text-sm font-medium text-text-primary">
-                <Paperclip size={14} className="text-accent" />
-                Drop files to attach
-              </div>
-            </div>
-          )}
-
-          {(attachments.length > 0 || attachmentError) && (
-            <div className="border-b border-border-subtle px-3 py-2">
-              {attachments.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {attachments.map((attachment) => (
-                    <ComposerAttachmentChip
-                      key={attachment.id}
-                      attachment={attachment}
-                      previewDataUrl={attachmentPreviews[attachment.id]}
-                      onRemove={() => removeAttachment(attachment.id)}
-                    />
-                  ))}
-                </div>
-              )}
-              {attachmentError && (
-                <p role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-warning">
-                  <AlertCircle size={12} />
-                  {attachmentError}
-                </p>
-              )}
-            </div>
-          )}
-
-          {showQuickPrompts && (
-            <div
-              className="flex gap-1 overflow-x-auto px-3 pt-2"
-              aria-label="Conversation starters"
-            >
-              {quickPrompts.slice(0, 4).map((quickPrompt) => (
-                <button
-                  key={quickPrompt.id}
-                  type="button"
-                  onClick={() => handleQuickPrompt(quickPrompt.prompt)}
-                  className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-                >
-                  {quickPrompt.label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {showFileMentionMenu && (
-            <FileMentionMenu
-              id={FILE_MENTION_MENU_ID}
-              results={fileMentionResults}
-              selectedIndex={selectedFileMentionIndex}
-              loading={fileMentionLoading}
-              error={fileMentionError}
-              onSelect={(result) => void handleSelectFileMention(result)}
-              onHighlight={setSelectedFileMentionIndex}
-            />
-          )}
-
-          {showSlashCommandMenu && (
-            <SlashCommandMenu
-              id={SLASH_COMMAND_MENU_ID}
-              results={slashCommandResults}
-              selectedIndex={selectedSlashCommandIndex}
-              onSelect={handleSelectSlashCommand}
-              onHighlight={setSelectedSlashCommandIndex}
-            />
-          )}
-
-          {showSkillMentionMenu && (
-            <SkillMentionMenu
-              id={SKILL_MENTION_MENU_ID}
-              results={skillMentionResults}
-              selectedIndex={selectedSkillMentionIndex}
-              loading={skillMentionLoading}
-              error={skillMentionError}
-              onSelect={handleSelectSkillMention}
-              onHighlight={setSelectedSkillMentionIndex}
-            />
-          )}
-
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={handleTextChange}
-            onKeyDown={handleKeyDown}
-            onClick={handleTextareaSelection}
-            onSelect={handleTextareaSelection}
-            onInput={handleInput}
-            onPaste={handlePaste}
-            disabled={disabled}
-            aria-label="Chat message"
-            aria-describedby={
-              voiceError
-                ? 'chat-composer-keyboard-hint chat-composer-voice-error'
-                : 'chat-composer-keyboard-hint'
-            }
-            aria-autocomplete="list"
-            aria-expanded={Boolean(activeMenuId)}
-            aria-controls={activeMenuId}
-            aria-activedescendant={activeDescendant}
-            placeholder={
-              busy
-                ? canGuide && canQueue
-                  ? 'Write a message, then choose Guide current run or Queue next...'
-                  : canGuide
-                    ? 'Write guidance for the current run...'
-                    : canQueue
-                      ? 'Write a message to queue for the next run...'
-                      : 'Follow-up sending is unavailable for this session...'
-                : disabled
-                  ? 'Chat is not ready yet...'
-                  : mentionRepoIds.length > 0
-                    ? 'Ask anything, or type /, @, or $...'
-                    : 'Ask anything, paste images, or drop files here...'
-            }
-            rows={1}
-            className="chat-composer-textarea block w-full resize-none bg-transparent px-4 pb-3 pt-4 text-sm leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
-            style={{ maxHeight: '200px', minHeight: '72px' }}
-          />
-
-          <div
-            className={`flex min-h-12 flex-wrap items-center gap-x-2 gap-y-1 px-2.5 pb-2 pt-1 ${
-              compactFooter ? 'flex-col items-stretch' : 'justify-between'
-            }`}
-          >
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
-              {leadingControls}
-              <button
-                type="button"
-                onClick={() => void handleSelectAttachments()}
-                disabled={disabled || preparingAttachments}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
-                title={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
-                aria-label={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
-                aria-busy={preparingAttachments}
-              >
-                {preparingAttachments ? (
-                  <Loader2 size={15} className="animate-spin" />
-                ) : (
-                  <Paperclip size={15} />
-                )}
-              </button>
-
-              {contextControls && (
-                <div ref={contextMenuRef} className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setContextMenuOpen((open) => !open)}
-                    className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-                    aria-haspopup="dialog"
-                    aria-expanded={contextMenuOpen}
-                    aria-controls={contextMenuOpen ? 'chat-context-menu' : undefined}
-                  >
-                    Context
-                    <ChevronDown
-                      size={11}
-                      className={`transition-transform ${contextMenuOpen ? 'rotate-180' : ''}`}
-                    />
-                  </button>
-                  {contextMenuOpen && (
-                    <div
-                      id="chat-context-menu"
-                      role="dialog"
-                      aria-label="Conversation context"
-                      className="absolute bottom-full left-0 z-50 mb-2 min-w-64 rounded-xl border border-border bg-bg-elevated p-2 shadow-lg ring-1 ring-overlay"
-                    >
-                      <p className="px-2 pb-2 text-xs leading-4 text-text-tertiary">
-                        Choose repositories and documents for this conversation.
-                      </p>
-                      <div className="flex flex-wrap items-center gap-1">{contextControls}</div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div
-              className={`flex min-w-0 flex-wrap items-center justify-end gap-1.5 ${
-                compactFooter ? 'w-full flex-col items-stretch' : 'ml-auto'
-              }`}
-            >
-              <div
-                className={`flex min-w-0 flex-wrap items-center gap-1.5 ${
-                  compactFooter ? 'w-full' : 'flex-none'
-                }`}
-              >
-                {/* CH1 — the thread's access level is always visible here. */}
-                {(onCodexModeChange || onAccessOptionSelect) && (
-                  <ChatAccessLevelChip
-                    value={codexMode}
-                    options={accessOptions}
-                    appliedMode={accessAppliedMode}
-                    onChange={onCodexModeChange}
-                    onSelectOption={onAccessOptionSelect}
-                    disabled={codexModeDisabled}
+    <ChatComposerFrame frameRef={composerWidthRef}>
+      <ChatComposerSurface
+        hasContent={hasContent}
+        disabled={disabled && !busy}
+        draggingFiles={draggingFiles}
+        draggingIcon={<Paperclip size={14} className="text-accent" />}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {(attachments.length > 0 || attachmentError) && (
+          <div className="border-b border-border-subtle px-3 py-2">
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {attachments.map((attachment) => (
+                  <ComposerAttachmentChip
+                    key={attachment.id}
+                    attachment={attachment}
+                    previewDataUrl={attachmentPreviews[attachment.id]}
+                    onRemove={() => removeAttachment(attachment.id)}
                   />
-                )}
-
-                {(onModelChange ||
-                  onExecutionStrategyChange ||
-                  onReasoningChange ||
-                  onCollaborationModeChange ||
-                  onFastModeChange) && (
-                  <RunSettingsDropdown
-                    model={model}
-                    modelProvider={modelProvider}
-                    modelOptions={modelOptions}
-                    onModelChange={onModelChange}
-                    executionStrategy={executionStrategy}
-                    onExecutionStrategyChange={onExecutionStrategyChange}
-                    reasoningLevel={reasoningLevel}
-                    reasoningOptions={reasoningOptions}
-                    onReasoningChange={onReasoningChange}
-                    collaborationMode={collaborationMode}
-                    onCollaborationModeChange={onCollaborationModeChange}
-                    fastMode={fastMode}
-                    fastModeAvailable={fastModeAvailable}
-                    onFastModeChange={onFastModeChange}
-                    compact={compactFooter}
-                  />
-                )}
+                ))}
               </div>
-
-              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-                <VoiceInputButton
-                  onTranscript={(text) => {
-                    setVoiceError(null);
-                    handleVoiceTranscript(text);
-                  }}
-                  onError={setVoiceError}
-                  disabled={disabled}
-                  colour={personaColour}
-                />
-                {busy ? (
-                  <>
-                    {canGuide && (
-                      <button
-                        type="button"
-                        onClick={() => void handleFollowUp('guide')}
-                        disabled={followUpButtonDisabled}
-                        className="flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
-                        style={{ backgroundColor: personaColour }}
-                        aria-label="Guide the current run"
-                        title="Send guidance to the agent’s current run"
-                      >
-                        <Send size={13} />
-                        Guide current run
-                      </button>
-                    )}
-                    {canQueue && (
-                      <button
-                        type="button"
-                        onClick={() => void handleFollowUp('queue')}
-                        disabled={followUpButtonDisabled}
-                        className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-tertiary px-2.5 text-xs font-medium text-text-primary transition-colors hover:bg-bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
-                        aria-label="Queue for the next run"
-                        title="Send this message after the current run finishes"
-                      >
-                        <ListChecks size={13} />
-                        Queue next
-                      </button>
-                    )}
-                    {!canGuide && !canQueue && (
-                      <span className="px-2 text-xs text-text-tertiary">
-                        Follow-up sending is unavailable for this session.
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => void handleSend()}
-                    disabled={
-                      disabled || !hasContent || preparingAttachments || standardSendPending
-                    }
-                    className="composer-send flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-[transform,filter,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-30"
-                    style={{
-                      backgroundColor: hasContent
-                        ? personaColour
-                        : `color-mix(in srgb, ${personaColour} 25%, transparent)`,
-                    }}
-                    aria-label={standardSendPending ? 'Sending message' : 'Send message'}
-                    aria-busy={standardSendPending}
-                    title={standardSendPending ? 'Sending message' : 'Send message'}
-                  >
-                    {standardSendPending ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <Send size={14} />
-                    )}
-                    Send
-                  </button>
-                )}
-                {sideQuestionAvailable && onSideQuestion && (
-                  <button
-                    type="button"
-                    onClick={() => void handleSideQuestion()}
-                    disabled={sideQuestionButtonDisabled}
-                    className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border-subtle bg-transparent px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
-                    aria-label="Ask a read-only side question"
-                    aria-busy={sideQuestionPending}
-                    title="Start a separate read-only conversation. The main run continues."
-                  >
-                    {sideQuestionPending ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
-                      <CircleHelp size={13} />
-                    )}
-                    Side question
-                  </button>
-                )}
-                {busy && (
-                  <button
-                    type="button"
-                    onClick={onStop}
-                    disabled={!onStop}
-                    className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/70 disabled:cursor-not-allowed disabled:opacity-50"
-                    title="Stop generation"
-                    aria-label="Stop current run"
-                  >
-                    <Square size={12} fill="currentColor" />
-                    Stop
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {voiceError && (
-            <p
-              id="chat-composer-voice-error"
-              role="alert"
-              className="flex items-start gap-1.5 border-t border-border-subtle px-4 py-2 text-xs leading-5 text-error"
-            >
-              <AlertCircle size={13} className="mt-0.5 shrink-0" />
-              {voiceError}
-            </p>
-          )}
-          {standardFeedback && (
-            <div
-              role={standardFeedback.kind === 'error' ? 'alert' : 'status'}
-              className={`border-t border-border-subtle px-4 py-2 text-xs leading-5 ${
-                standardFeedback.kind === 'error' ? 'text-error' : 'text-text-secondary'
-              }`}
-            >
-              {standardFeedback.message}
-            </div>
-          )}
-          {followUpFeedback && (
-            <div
-              role={followUpFeedback.kind === 'success' ? 'status' : 'alert'}
-              className={`flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle px-4 py-2 text-xs leading-5 ${
-                followUpFeedback.kind === 'success' ? 'text-text-secondary' : 'text-error'
-              }`}
-            >
-              <span className="min-w-0 flex-1">{followUpFeedback.message}</span>
-            </div>
-          )}
-          {uncertainFollowUps.map((submission) => (
-            <div
-              key={submission.requestId}
-              className="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle px-4 py-2 text-xs leading-5 text-warning"
-            >
-              <span className="min-w-0 flex-1">
-                An earlier follow-up has uncertain delivery. Retry will use the same message and
-                request ID.
-              </span>
-              <button
-                type="button"
-                onClick={() => void handleFollowUp(submission.intent, submission)}
-                disabled={disabled || !!pendingFollowUpId}
-                className="shrink-0 rounded-md border border-border px-2 py-1 font-medium text-text-primary transition-colors hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Retry same message
-              </button>
-            </div>
-          ))}
-        </div>
-
-        <p id="chat-composer-keyboard-hint" className="sr-only">
-          {busy
-            ? `Enter does not send while the agent is working. Choose ${
-                [
-                  canGuide ? 'Guide current run' : null,
-                  canQueue ? 'Queue next' : null,
-                  sideQuestionAvailable ? 'Side question' : null,
-                ]
-                  .filter(Boolean)
-                  .join(', ') || 'Stop or wait'
-              }. Shift plus Enter adds a line.`
-            : 'Enter sends. Shift plus Enter adds a line.'}
-          {mentionRepoIds.length > 0
-            ? ' Type slash for commands, at for files, or dollar for skills.'
-            : ' Type slash for commands or dollar for skills.'}
-        </p>
-
-        {/* CH8 — syntax hint under the composer on empty threads. */}
-        {showSyntaxHint && (
-          <div className="mt-1.5 flex items-center justify-between gap-2 px-1">
-            <p className="text-xs text-text-tertiary">
-              <span className="font-mono">/</span> commands
-              {mentionRepoIds.length > 0 && (
-                <>
-                  {' · '}
-                  <span className="font-mono">@</span> files
-                </>
-              )}
-              {' · '}
-              <span className="font-mono">$</span> skills
-            </p>
-            <div ref={syntaxHelpRef} className="relative">
-              <button
-                type="button"
-                onClick={() => setSyntaxHelpOpen((open) => !open)}
-                className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-                aria-label="Composer syntax help"
-                aria-expanded={syntaxHelpOpen}
-              >
-                <CircleHelp size={13} />
-              </button>
-              {syntaxHelpOpen && (
-                <div
-                  role="dialog"
-                  aria-label="Composer syntax"
-                  className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-overlay"
-                >
-                  <p className="text-xs font-semibold text-text-primary">Composer shortcuts</p>
-                  <ul className="mt-2 space-y-2 text-xs leading-5 text-text-secondary">
-                    <li>
-                      <span className="font-mono text-text-primary">/</span> — quick commands like{' '}
-                      <span className="font-mono">/new</span> or{' '}
-                      <span className="font-mono">/plan</span>
-                    </li>
-                    {mentionRepoIds.length > 0 && (
-                      <li>
-                        <span className="font-mono text-text-primary">@</span> — mention files in
-                        the selected repositories
-                      </li>
-                    )}
-                    <li>
-                      <span className="font-mono text-text-primary">$</span> — invoke a registered
-                      skill
-                    </li>
-                    <li>
-                      <span className="font-mono text-text-primary">Enter</span>{' '}
-                      {busy
-                        ? `does not send; choose ${
-                            [
-                              canGuide ? 'Guide current run' : null,
-                              canQueue ? 'Queue next' : null,
-                              sideQuestionAvailable ? 'Side question' : null,
-                            ]
-                              .filter(Boolean)
-                              .join(', ') || 'wait'
-                          },`
-                        : 'sends,'}{' '}
-                      <span className="font-mono text-text-primary">Shift+Enter</span> adds a line
-                    </li>
-                  </ul>
-                </div>
-              )}
-            </div>
+            )}
+            {attachmentError && (
+              <p role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-warning">
+                <AlertCircle size={12} />
+                {attachmentError}
+              </p>
+            )}
           </div>
         )}
-      </div>
+
+        {showQuickPrompts && (
+          <div className="flex gap-1 overflow-x-auto px-3 pt-2" aria-label="Conversation starters">
+            {quickPrompts.slice(0, 4).map((quickPrompt) => (
+              <button
+                key={quickPrompt.id}
+                type="button"
+                onClick={() => handleQuickPrompt(quickPrompt.prompt)}
+                className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+              >
+                {quickPrompt.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {showFileMentionMenu && (
+          <FileMentionMenu
+            id={FILE_MENTION_MENU_ID}
+            results={fileMentionResults}
+            selectedIndex={selectedFileMentionIndex}
+            loading={fileMentionLoading}
+            error={fileMentionError}
+            onSelect={(result) => void handleSelectFileMention(result)}
+            onHighlight={setSelectedFileMentionIndex}
+          />
+        )}
+
+        {showSlashCommandMenu && (
+          <SlashCommandMenu
+            id={SLASH_COMMAND_MENU_ID}
+            results={slashCommandResults}
+            selectedIndex={selectedSlashCommandIndex}
+            onSelect={handleSelectSlashCommand}
+            onHighlight={setSelectedSlashCommandIndex}
+          />
+        )}
+
+        {showSkillMentionMenu && (
+          <SkillMentionMenu
+            id={SKILL_MENTION_MENU_ID}
+            results={skillMentionResults}
+            selectedIndex={selectedSkillMentionIndex}
+            loading={skillMentionLoading}
+            error={skillMentionError}
+            onSelect={handleSelectSkillMention}
+            onHighlight={setSelectedSkillMentionIndex}
+          />
+        )}
+
+        <ChatComposerEditor
+          inputRef={textareaRef}
+          value={value}
+          onChange={handleTextChange}
+          onKeyDown={handleKeyDown}
+          onClick={handleTextareaSelection}
+          onSelect={handleTextareaSelection}
+          onInput={handleInput}
+          onPaste={handlePaste}
+          disabled={disabled}
+          aria-label="Chat message"
+          aria-describedby={
+            voiceError
+              ? 'chat-composer-keyboard-hint chat-composer-voice-error'
+              : 'chat-composer-keyboard-hint'
+          }
+          aria-autocomplete="list"
+          aria-expanded={Boolean(activeMenuId)}
+          aria-controls={activeMenuId}
+          aria-activedescendant={activeDescendant}
+          placeholder={
+            busy
+              ? canGuide && canQueue
+                ? 'Write a message, then choose Guide current run or Queue next...'
+                : canGuide
+                  ? 'Write guidance for the current run...'
+                  : canQueue
+                    ? 'Write a message to queue for the next run...'
+                    : 'Follow-up sending is unavailable for this session...'
+              : disabled
+                ? 'Chat is not ready yet...'
+                : mentionRepoIds.length > 0
+                  ? 'Ask anything, or type /, @, or $...'
+                  : 'Ask anything, paste images, or drop files here...'
+          }
+          rows={1}
+        />
+
+        <ChatComposerFooter compact={compactFooter}>
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {leadingControls}
+            <button
+              type="button"
+              onClick={() => void handleSelectAttachments()}
+              disabled={disabled || preparingAttachments}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
+              title={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
+              aria-label={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
+              aria-busy={preparingAttachments}
+            >
+              {preparingAttachments ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <Paperclip size={15} />
+              )}
+            </button>
+
+            {contextControls && (
+              <div ref={contextMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setContextMenuOpen((open) => !open)}
+                  className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                  aria-haspopup="dialog"
+                  aria-expanded={contextMenuOpen}
+                  aria-controls={contextMenuOpen ? 'chat-context-menu' : undefined}
+                >
+                  Context
+                  <ChevronDown
+                    size={11}
+                    className={`transition-transform ${contextMenuOpen ? 'rotate-180' : ''}`}
+                  />
+                </button>
+                {contextMenuOpen && (
+                  <div
+                    id="chat-context-menu"
+                    role="dialog"
+                    aria-label="Conversation context"
+                    className="absolute bottom-full left-0 z-50 mb-2 min-w-64 rounded-xl border border-border bg-bg-elevated p-2 shadow-lg ring-1 ring-overlay"
+                  >
+                    <p className="px-2 pb-2 text-xs leading-4 text-text-tertiary">
+                      Choose repositories and documents for this conversation.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-1">{contextControls}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div
+            className={`flex min-w-0 flex-wrap items-center justify-end gap-1.5 ${
+              compactFooter ? 'w-full flex-col items-stretch' : 'ml-auto'
+            }`}
+          >
+            <div
+              className={`flex min-w-0 flex-wrap items-center gap-1.5 ${
+                compactFooter ? 'w-full' : 'flex-none'
+              }`}
+            >
+              {/* CH1 — the thread's access level is always visible here. */}
+              {(onCodexModeChange || onAccessOptionSelect) && (
+                <ChatAccessLevelChip
+                  value={codexMode}
+                  options={accessOptions}
+                  appliedMode={accessAppliedMode}
+                  onChange={onCodexModeChange}
+                  onSelectOption={onAccessOptionSelect}
+                  disabled={codexModeDisabled}
+                />
+              )}
+
+              {(onModelChange ||
+                onExecutionStrategyChange ||
+                onReasoningChange ||
+                onCollaborationModeChange ||
+                onFastModeChange) && (
+                <RunSettingsDropdown
+                  model={model}
+                  modelProvider={modelProvider}
+                  modelOptions={modelOptions}
+                  onModelChange={onModelChange}
+                  executionStrategy={executionStrategy}
+                  onExecutionStrategyChange={onExecutionStrategyChange}
+                  reasoningLevel={reasoningLevel}
+                  reasoningOptions={reasoningOptions}
+                  onReasoningChange={onReasoningChange}
+                  collaborationMode={collaborationMode}
+                  onCollaborationModeChange={onCollaborationModeChange}
+                  fastMode={fastMode}
+                  fastModeAvailable={fastModeAvailable}
+                  onFastModeChange={onFastModeChange}
+                  compact={compactFooter}
+                />
+              )}
+            </div>
+
+            <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+              <VoiceInputButton
+                onTranscript={(text) => {
+                  setVoiceError(null);
+                  handleVoiceTranscript(text);
+                }}
+                onError={setVoiceError}
+                disabled={disabled}
+                colour={personaColour}
+              />
+              {busy ? (
+                <>
+                  {canGuide && (
+                    <button
+                      type="button"
+                      onClick={() => void handleFollowUp('guide')}
+                      disabled={followUpButtonDisabled}
+                      className="flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                      style={{ backgroundColor: personaColour }}
+                      aria-label="Guide the current run"
+                      title="Send guidance to the agent’s current run"
+                    >
+                      <Send size={13} />
+                      Guide current run
+                    </button>
+                  )}
+                  {canQueue && (
+                    <button
+                      type="button"
+                      onClick={() => void handleFollowUp('queue')}
+                      disabled={followUpButtonDisabled}
+                      className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-tertiary px-2.5 text-xs font-medium text-text-primary transition-colors hover:bg-bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                      aria-label="Queue for the next run"
+                      title="Send this message after the current run finishes"
+                    >
+                      <ListChecks size={13} />
+                      Queue next
+                    </button>
+                  )}
+                  {!canGuide && !canQueue && (
+                    <span className="px-2 text-xs text-text-tertiary">
+                      Follow-up sending is unavailable for this session.
+                    </span>
+                  )}
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleSend()}
+                  disabled={disabled || !hasContent || preparingAttachments || standardSendPending}
+                  className="composer-send flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-[transform,filter,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-30"
+                  style={{
+                    backgroundColor: hasContent
+                      ? personaColour
+                      : `color-mix(in srgb, ${personaColour} 25%, transparent)`,
+                  }}
+                  aria-label={standardSendPending ? 'Sending message' : 'Send message'}
+                  aria-busy={standardSendPending}
+                  title={standardSendPending ? 'Sending message' : 'Send message'}
+                >
+                  {standardSendPending ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Send size={14} />
+                  )}
+                  Send
+                </button>
+              )}
+              {sideQuestionAvailable && onSideQuestion && (
+                <button
+                  type="button"
+                  onClick={() => void handleSideQuestion()}
+                  disabled={sideQuestionButtonDisabled}
+                  className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border-subtle bg-transparent px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
+                  aria-label="Ask a read-only side question"
+                  aria-busy={sideQuestionPending}
+                  title="Start a separate read-only conversation. The main run continues."
+                >
+                  {sideQuestionPending ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <CircleHelp size={13} />
+                  )}
+                  Side question
+                </button>
+              )}
+              {busy && (
+                <button
+                  type="button"
+                  onClick={onStop}
+                  disabled={!onStop}
+                  className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/70 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Stop generation"
+                  aria-label="Stop current run"
+                >
+                  <Square size={12} fill="currentColor" />
+                  Stop
+                </button>
+              )}
+            </div>
+          </div>
+        </ChatComposerFooter>
+
+        {voiceError && (
+          <p
+            id="chat-composer-voice-error"
+            role="alert"
+            className="flex items-start gap-1.5 border-t border-border-subtle px-4 py-2 text-xs leading-5 text-error"
+          >
+            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+            {voiceError}
+          </p>
+        )}
+        {standardFeedback && (
+          <div
+            role={standardFeedback.kind === 'error' ? 'alert' : 'status'}
+            className={`border-t border-border-subtle px-4 py-2 text-xs leading-5 ${
+              standardFeedback.kind === 'error' ? 'text-error' : 'text-text-secondary'
+            }`}
+          >
+            {standardFeedback.message}
+          </div>
+        )}
+        {followUpFeedback && (
+          <div
+            role={followUpFeedback.kind === 'success' ? 'status' : 'alert'}
+            className={`flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle px-4 py-2 text-xs leading-5 ${
+              followUpFeedback.kind === 'success' ? 'text-text-secondary' : 'text-error'
+            }`}
+          >
+            <span className="min-w-0 flex-1">{followUpFeedback.message}</span>
+          </div>
+        )}
+        {uncertainFollowUps.map((submission) => (
+          <div
+            key={submission.requestId}
+            className="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle px-4 py-2 text-xs leading-5 text-warning"
+          >
+            <span className="min-w-0 flex-1">
+              An earlier follow-up has uncertain delivery. Retry will use the same message and
+              request ID.
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleFollowUp(submission.intent, submission)}
+              disabled={disabled || !!pendingFollowUpId}
+              className="shrink-0 rounded-md border border-border px-2 py-1 font-medium text-text-primary transition-colors hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Retry same message
+            </button>
+          </div>
+        ))}
+      </ChatComposerSurface>
+
+      <p id="chat-composer-keyboard-hint" className="sr-only">
+        {busy
+          ? `Enter does not send while the agent is working. Choose ${
+              [
+                canGuide ? 'Guide current run' : null,
+                canQueue ? 'Queue next' : null,
+                sideQuestionAvailable ? 'Side question' : null,
+              ]
+                .filter(Boolean)
+                .join(', ') || 'Stop or wait'
+            }. Shift plus Enter adds a line.`
+          : 'Enter sends. Shift plus Enter adds a line.'}
+        {mentionRepoIds.length > 0
+          ? ' Type slash for commands, at for files, or dollar for skills.'
+          : ' Type slash for commands or dollar for skills.'}
+      </p>
+
+      {/* CH8 — syntax hint under the composer on empty threads. */}
+      {showSyntaxHint && (
+        <div className="mt-1.5 flex items-center justify-between gap-2 px-1">
+          <p className="text-xs text-text-tertiary">
+            <span className="font-mono">/</span> commands
+            {mentionRepoIds.length > 0 && (
+              <>
+                {' · '}
+                <span className="font-mono">@</span> files
+              </>
+            )}
+            {' · '}
+            <span className="font-mono">$</span> skills
+          </p>
+          <div ref={syntaxHelpRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setSyntaxHelpOpen((open) => !open)}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+              aria-label="Composer syntax help"
+              aria-expanded={syntaxHelpOpen}
+            >
+              <CircleHelp size={13} />
+            </button>
+            {syntaxHelpOpen && (
+              <div
+                role="dialog"
+                aria-label="Composer syntax"
+                className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-overlay"
+              >
+                <p className="text-xs font-semibold text-text-primary">Composer shortcuts</p>
+                <ul className="mt-2 space-y-2 text-xs leading-5 text-text-secondary">
+                  <li>
+                    <span className="font-mono text-text-primary">/</span> — quick commands like{' '}
+                    <span className="font-mono">/new</span> or{' '}
+                    <span className="font-mono">/plan</span>
+                  </li>
+                  {mentionRepoIds.length > 0 && (
+                    <li>
+                      <span className="font-mono text-text-primary">@</span> — mention files in the
+                      selected repositories
+                    </li>
+                  )}
+                  <li>
+                    <span className="font-mono text-text-primary">$</span> — invoke a registered
+                    skill
+                  </li>
+                  <li>
+                    <span className="font-mono text-text-primary">Enter</span>{' '}
+                    {busy
+                      ? `does not send; choose ${
+                          [
+                            canGuide ? 'Guide current run' : null,
+                            canQueue ? 'Queue next' : null,
+                            sideQuestionAvailable ? 'Side question' : null,
+                          ]
+                            .filter(Boolean)
+                            .join(', ') || 'wait'
+                        },`
+                      : 'sends,'}{' '}
+                    <span className="font-mono text-text-primary">Shift+Enter</span> adds a line
+                  </li>
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {preparingAttachments ? 'Preparing attachments.' : ''}
       </p>
-    </div>
+    </ChatComposerFrame>
   );
 }
 

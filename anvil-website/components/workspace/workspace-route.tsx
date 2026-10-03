@@ -1,7 +1,13 @@
 "use client";
 
 import { WorkspaceShell } from "@/components/workspace/workspace-shell";
-import type { WorkspaceActions, WorkspaceShellProps, WorkspaceViewModel } from "@/components/workspace/types";
+import type {
+  WorkspaceActions,
+  WorkspaceExecutionControls,
+  WorkspaceOnboardingState,
+  WorkspaceShellProps,
+  WorkspaceViewModel,
+} from "@/components/workspace/types";
 
 export const unavailableWorkspace: WorkspaceViewModel = {
   connection: {
@@ -25,6 +31,9 @@ export const unavailableWorkspace: WorkspaceViewModel = {
 export interface WorkspaceRouteProps {
   model?: WorkspaceViewModel;
   actions?: WorkspaceActions;
+  onboarding?: WorkspaceOnboardingState;
+  execution?: WorkspaceExecutionControls;
+  targetLabel?: string;
   draftScope?: string | null;
   headerSlot?: WorkspaceShellProps["headerSlot"];
 }
@@ -34,6 +43,16 @@ export interface WorkspaceRouteProps {
  * and callbacks here. The honest default is unavailable, with every mutating
  * control disabled, so a deployment never looks connected by accident.
  */
-export function WorkspaceRoute({ model = unavailableWorkspace, actions, draftScope, headerSlot }: WorkspaceRouteProps) {
-  return <WorkspaceShell model={model} actions={actions} draftScope={draftScope} headerSlot={headerSlot} />;
+export function WorkspaceRoute({ model = unavailableWorkspace, actions, onboarding, execution, targetLabel, draftScope, headerSlot }: WorkspaceRouteProps) {
+  return (
+    <WorkspaceShell
+      model={model}
+      actions={actions}
+      onboarding={onboarding}
+      execution={execution}
+      targetLabel={targetLabel}
+      draftScope={draftScope}
+      headerSlot={headerSlot}
+    />
+  );
 }

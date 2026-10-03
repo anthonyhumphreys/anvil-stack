@@ -10,6 +10,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test:browser-workspace": "node --experimental-strip-types --test scripts/browser-workspace.test.mjs",
     "validate:docs": "node scripts/validate-docs.mjs",
     "test:deployment-env": "node --test scripts/deployment-env.test.mjs"
   },

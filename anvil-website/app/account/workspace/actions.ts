@@ -1,11 +1,14 @@
 "use server";
 
+import { headers } from "next/headers";
 import { hostedIdentity } from "@/lib/auth";
 import {
   getDashboardCommandStatus,
   getDashboardStatus,
   hostedConfigured,
   HostedApiError,
+  revokeDashboardTrust,
+  revokeDashboardGrant,
   submitDashboardCommand,
   submitDashboardRequest
 } from "@/lib/hosted";
@@ -20,6 +23,8 @@ import type {
   HostedDashboardCommandStatusResult,
   HostedDashboardCommandSubmitResult,
   BrowserWorkspaceBinding,
+  HostedDashboardTrustRevokeResult,
+  HostedDashboardGrantRevokeResult,
   HostedDashboardRequestResult,
   HostedDashboardStatus
 } from "@/lib/hosted/types";
@@ -132,14 +137,30 @@ async function requireIdentity() {
 
 export interface BrowserWorkspaceAccessRequest {
   requestId: string;
+  targetEnrollmentId: string;
   browserPub: string;
   challenge: string;
-  workspaceIds: string[];
-  repositoryIds?: string[];
-  scopes?: DashboardScope[];
+  trustId?: string;
+  renewalProof?: string;
+  scopes: DashboardScope[];
+  workspaceBindings?: BrowserWorkspaceBinding[];
   expiresAt: string;
-  origin?: string;
-  userAgent?: string;
+}
+
+async function requestOrigin(): Promise<{ origin: string; userAgent: string | undefined } | null> {
+  const incoming = await headers();
+  const raw = incoming.get("origin");
+  if (!raw || raw.length > 300) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.origin !== raw || parsed.username || parsed.password) return null;
+    const local = parsed.protocol === "http:" &&
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]");
+    if (parsed.protocol !== "https:" && !local) return null;
+    return { origin: parsed.origin, userAgent: incoming.get("user-agent")?.slice(0, 300) };
+  } catch {
+    return null;
+  }
 }
 
 /** Creates or resumes a browser authorization request with readonly defaults. */
@@ -148,7 +169,7 @@ export async function requestBrowserWorkspaceAccessAction(
 ): Promise<BrowserWorkspaceActionResult<HostedDashboardRequestResult>> {
   const identity = await requireIdentity();
   if (!identity) return NOT_CONFIGURED;
-  if (!isRecord(input) || !Array.isArray(input.workspaceIds)) {
+  if (!isRecord(input)) {
     return { ok: false, code: "malformed-request", message: "Choose a valid workspace." };
   }
   if (!REQUEST_ID_PATTERN.test(input.requestId) || !KEY_PATTERN.test(input.browserPub)) {
@@ -157,54 +178,92 @@ export async function requestBrowserWorkspaceAccessAction(
   if (!isBase64(input.challenge) || decodedBase64Bytes(input.challenge) !== 32) {
     return { ok: false, code: "malformed-request", message: "Malformed browser challenge." };
   }
-  if (
-    input.workspaceIds.length === 0 ||
-    input.workspaceIds.length > 32 ||
-    !input.workspaceIds.every((id) => SCOPE_ID_PATTERN.test(id))
-  ) {
-    return { ok: false, code: "malformed-request", message: "Choose a valid workspace." };
+  if (typeof input.targetEnrollmentId !== "string" || !SCOPE_ID_PATTERN.test(input.targetEnrollmentId)) {
+    return { ok: false, code: "malformed-request", message: "Choose a trusted Desktop machine." };
   }
-  if (input.repositoryIds !== undefined && !Array.isArray(input.repositoryIds)) {
-    return { ok: false, code: "malformed-request", message: "Repository scope is invalid." };
+  if (input.workspaceBindings !== undefined && (!Array.isArray(input.workspaceBindings) || input.workspaceBindings.length !== 0)) {
+    return { ok: false, code: "malformed-request", message: "Desktop selects workspace access during approval." };
   }
-  const repositoryIds = input.repositoryIds ?? [];
-  if (
-    repositoryIds.length === 0 ||
-    repositoryIds.length > 256 ||
-    !repositoryIds.every((id) => SCOPE_ID_PATTERN.test(id))
-  ) {
-    return { ok: false, code: "malformed-request", message: "Repository scope is invalid." };
-  }
-  const workspaceBindings: BrowserWorkspaceBinding[] = input.workspaceIds.map((workspaceId) => ({
-    workspaceId,
-    repositoryIds: [...repositoryIds]
-  }));
   if (input.scopes !== undefined && !Array.isArray(input.scopes)) {
     return { ok: false, code: "malformed-request", message: "Workspace permission is invalid." };
   }
-  const scopes = [...new Set(input.scopes ?? ["read-dashboard", "workspace-read"])] as DashboardScope[];
-  if (scopes.length === 0 || scopes.some((scope) => !WORKSPACE_SCOPES.includes(scope))) {
+  const scopes = [...new Set(input.scopes ?? [])] as DashboardScope[];
+  if (scopes.length !== 0 || scopes.some((scope) => !WORKSPACE_SCOPES.includes(scope))) {
     return { ok: false, code: "malformed-request", message: "Workspace permission is invalid." };
+  }
+  const isRenewal = input.trustId !== undefined || input.renewalProof !== undefined;
+  if (
+    isRenewal &&
+    (typeof input.trustId !== "string" || !REQUEST_ID_PATTERN.test(input.trustId) ||
+      typeof input.renewalProof !== "string" || !isBase64(input.renewalProof) ||
+      decodedBase64Bytes(input.renewalProof) !== 32 || scopes.length !== 0)
+  ) {
+    return { ok: false, code: "malformed-request", message: "The remembered browser proof is invalid." };
   }
   if (typeof input.expiresAt !== "string") {
     return { ok: false, code: "malformed-request", message: "Expiry out of bounds." };
   }
   const expiresAtMs = Date.parse(input.expiresAt);
-  if (!Number.isFinite(expiresAtMs) || expiresAtMs - Date.now() < 60_000 || expiresAtMs - Date.now() > 24 * 60 * 60_000) {
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs - Date.now() < 60_000 || expiresAtMs - Date.now() > 60 * 60_000) {
     return { ok: false, code: "malformed-request", message: "Expiry out of bounds." };
+  }
+  const requestIdentity = await requestOrigin();
+  if (requestIdentity === null) {
+    return { ok: false, code: "origin-required", message: "Open the workspace from its secure website address and try again." };
   }
   try {
     const data = await submitDashboardRequest(identity, {
       requestId: input.requestId,
+      targetEnrollmentId: input.targetEnrollmentId,
+      ...(isRenewal ? { trustId: input.trustId as string, renewalProof: input.renewalProof as string } : {}),
       browserPub: input.browserPub,
       challenge: input.challenge,
       scopes,
-      workspaceBindings,
+      workspaceBindings: [],
       expiresAt: new Date(expiresAtMs).toISOString(),
-      ...(typeof input.origin === "string" ? { origin: input.origin.slice(0, 200) } : {}),
-      ...(typeof input.userAgent === "string" ? { userAgent: input.userAgent.slice(0, 300) } : {})
+      origin: requestIdentity.origin,
+      ...(requestIdentity.userAgent === undefined ? {} : { userAgent: requestIdentity.userAgent })
     });
     return { ok: true, data };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+/** Revokes a remembered browser and all of its renewed sessions. */
+export async function revokeBrowserWorkspaceTrustAction(
+  trustId: string,
+): Promise<BrowserWorkspaceActionResult<HostedDashboardTrustRevokeResult>> {
+  const identity = await requireIdentity();
+  if (!identity) return NOT_CONFIGURED;
+  if (typeof trustId !== "string" || !REQUEST_ID_PATTERN.test(trustId)) {
+    return { ok: false, code: "malformed-request", message: "Malformed browser trust id." };
+  }
+  const requestIdentity = await requestOrigin();
+  if (requestIdentity === null) {
+    return { ok: false, code: "origin-required", message: "Open the workspace from its secure website address and try again." };
+  }
+  try {
+    return {
+      ok: true,
+      data: await revokeDashboardTrust(identity, { trustId, origin: requestIdentity.origin })
+    };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+/** Revokes one temporary browser grant when no remembered trust exists. */
+export async function revokeBrowserWorkspaceGrantAction(
+  requestId: string,
+): Promise<BrowserWorkspaceActionResult<HostedDashboardGrantRevokeResult>> {
+  const identity = await requireIdentity();
+  if (!identity) return NOT_CONFIGURED;
+  if (typeof requestId !== "string" || !REQUEST_ID_PATTERN.test(requestId)) {
+    return { ok: false, code: "malformed-request", message: "Malformed browser grant id." };
+  }
+  try {
+    return { ok: true, data: await revokeDashboardGrant(identity, requestId) };
   } catch (error) {
     return fail(error);
   }

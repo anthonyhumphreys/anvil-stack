@@ -71,6 +71,7 @@ import type {
   SyncAttemptActivity,
   SyncConflictResolutionChoice,
   SyncDashboardGrantApproval,
+  SyncDashboardGrantDecisionResult,
   SyncDashboardGrantWorkspace,
   SyncDashboardRequest,
   SyncDataExportFileResult,
@@ -893,7 +894,7 @@ const api: AnvilAPI = {
       requestId: string,
       decision: 'approved' | 'denied',
       approval?: SyncDashboardGrantApproval,
-    ): Promise<void> =>
+    ): Promise<SyncDashboardGrantDecisionResult> =>
       ipcRenderer.invoke('sync-runtime:dashboard-decide', {
         requestId,
         decision,

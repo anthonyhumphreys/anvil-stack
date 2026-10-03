@@ -27,6 +27,7 @@ import { ConfirmDialog } from '../ui';
 import { isEditableShortcutTarget } from '../../utils/keyboard';
 import { ChatAccessLevelBadge } from './ChatAccessLevelChip';
 import { ChatLayoutToggle } from './ChatLayoutToggle';
+import { ChatThreadItemButton, ChatThreadItemFrame } from './shared/ChatPresentation';
 import {
   activeChatThreadStatusFilter,
   CHAT_THREAD_STATUS_FILTERS,
@@ -176,12 +177,7 @@ export function ChatThreadRail({
     );
 
     return (
-      <div
-        key={thread.id}
-        className={`group flex min-w-0 rounded-lg transition-colors ${
-          active ? 'bg-accent/10' : 'hover:bg-bg-tertiary/55'
-        }`}
-      >
+      <ChatThreadItemFrame key={thread.id} active={active}>
         {editing ? (
           <div
             className={`flex min-w-0 flex-1 items-start gap-2 ${compact ? 'px-2.5 py-2' : 'px-2.5 py-2.5'}`}
@@ -189,17 +185,15 @@ export function ChatThreadRail({
             {rowContent}
           </div>
         ) : (
-          <button
+          <ChatThreadItemButton
             type="button"
+            compact={compact}
             aria-current={active ? 'true' : undefined}
             title={thread.title}
             onClick={() => onSelectThread(thread.id)}
-            className={`flex min-w-0 flex-1 cursor-pointer items-start gap-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 ${
-              compact ? 'px-2.5 py-2' : 'px-2.5 py-2.5'
-            }`}
           >
             {rowContent}
-          </button>
+          </ChatThreadItemButton>
         )}
         <div className={getThreadActionVisibilityClass()}>
           {editing ? (
@@ -243,7 +237,7 @@ export function ChatThreadRail({
             </>
           )}
         </div>
-      </div>
+      </ChatThreadItemFrame>
     );
   };
 

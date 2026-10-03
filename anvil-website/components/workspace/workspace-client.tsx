@@ -1,8 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import { AlertCircle, Check, KeyRound, LockKeyhole, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { LockKeyhole } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { WorkspaceRoute } from "@/components/workspace/workspace-route";
@@ -10,8 +9,13 @@ import type {
   WorkspaceActions,
   WorkspaceApproval,
   WorkspaceChange,
+  WorkspaceExecutionControls,
+  WorkspaceExecutionProvider,
   WorkspaceFile,
+  WorkspaceMachineOption,
+  WorkspacePermissionMode,
   WorkspacePreview,
+  WorkspaceProviderId,
   WorkspaceRepository,
   WorkspaceSession,
   WorkspaceTerminal,
@@ -21,20 +25,8 @@ import type {
 } from "@/components/workspace/types";
 import {
   useBrowserWorkspace,
-  type BrowserWorkspaceAuth,
   type BrowserWorkspaceCommandInput,
-  type BrowserWorkspaceRequestOptions,
 } from "@/lib/browser-workspace";
-import type { DashboardScope } from "@/lib/hosted/types";
-
-const ACCESS_SCOPES: Array<{ value: DashboardScope; label: string; detail: string }> = [
-  { value: "workspace-read", label: "Read workspace", detail: "Repositories, sessions, files, diffs, and results" },
-  { value: "workspace-write", label: "Edit files", detail: "Guarded file writes with revision checks" },
-  { value: "submit-task", label: "Send work", detail: "Create sessions, send messages, run workflows, cancel work" },
-  { value: "approve-action", label: "Resolve approvals", detail: "Approve or reject Desktop requests" },
-  { value: "terminal", label: "Use terminal", detail: "Open a scoped Desktop terminal" },
-  { value: "preview", label: "Capture preview", detail: "Request an authenticated Desktop screenshot" },
-];
 
 type JsonRecord = Record<string, unknown>;
 
@@ -79,6 +71,7 @@ interface RawMessage {
 interface RawSession {
   id: string;
   status: string;
+  provider?: WorkspaceProviderId;
   repoId?: string;
   startedAt?: string;
 }
@@ -104,6 +97,76 @@ interface RawWorkflowRun {
   error?: string;
   updatedAt?: string;
   createdAt?: string;
+}
+
+interface RawExecutionOptions {
+  target: { kind: "connected-machine"; displayName: string; chatAvailable: boolean; unavailableReason?: string };
+  providers: WorkspaceExecutionProvider[];
+  maximumPermissionMode: WorkspacePermissionMode;
+}
+
+const PROVIDER_IDS: readonly WorkspaceProviderId[] = ["codex", "openai", "azure", "cursor", "devin", "llmgateway"];
+const PERMISSION_MODES: readonly WorkspacePermissionMode[] = ["read-only", "on-request", "workspace-auto", "full-access"];
+const useSynchronousWorkspaceEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+function parseExecutionOptions(value: unknown): RawExecutionOptions | null {
+  const source = record(value);
+  const target = record(source?.target);
+  const displayName = stringValue(target?.displayName);
+  const maximumPermissionMode = source?.maximumPermissionMode;
+  if (
+    target?.kind !== "connected-machine" ||
+    !displayName ||
+    typeof target.chatAvailable !== "boolean" ||
+    !PERMISSION_MODES.includes(maximumPermissionMode as WorkspacePermissionMode)
+  ) {
+    return null;
+  }
+  const providers = listValue(source?.providers).flatMap((value): WorkspaceExecutionProvider[] => {
+    const item = record(value);
+    const provider = item?.provider;
+    const defaultPermissionMode = item?.defaultPermissionMode;
+    if (
+      !item ||
+      typeof provider !== "string" ||
+      !PROVIDER_IDS.includes(provider as WorkspaceProviderId) ||
+      typeof item?.enabled !== "boolean" ||
+      typeof item?.available !== "boolean" ||
+      !PERMISSION_MODES.includes(defaultPermissionMode as WorkspacePermissionMode)
+    ) {
+      return [];
+    }
+    const models = listValue(item.models).flatMap((model) => {
+      const modelItem = record(model);
+      const id = stringValue(modelItem?.id);
+      const label = stringValue(modelItem?.label);
+      return id && label ? [{ id, label }] : [];
+    });
+    const permissionModes = listValue(item.permissionModes).filter(
+      (mode): mode is WorkspacePermissionMode => typeof mode === "string" && PERMISSION_MODES.includes(mode as WorkspacePermissionMode)
+    );
+    return [{
+      provider: provider as WorkspaceProviderId,
+      enabled: item.enabled,
+      available: item.available,
+      unavailableReason: stringValue(item.unavailableReason),
+      defaultModel: stringValue(item.defaultModel),
+      models,
+      permissionModes,
+      defaultPermissionMode: defaultPermissionMode as WorkspacePermissionMode,
+    }];
+  });
+
+  return {
+    target: {
+      kind: "connected-machine",
+      displayName,
+      chatAvailable: target.chatAvailable,
+      unavailableReason: stringValue(target.unavailableReason),
+    },
+    providers,
+    maximumPermissionMode: maximumPermissionMode as WorkspacePermissionMode,
+  };
 }
 
 function parseRepository(value: unknown): RawRepository | null {
@@ -136,7 +199,10 @@ function parseMessage(value: unknown): RawMessage | null {
   const item = record(value);
   const id = stringValue(item?.id);
   const content = typeof item?.content === "string" ? item.content : undefined;
-  const role = item?.role === "user" || item?.role === "assistant" || item?.role === "system" ? item.role : undefined;
+  const event = record(item?.event);
+  const role = item?.role === "system" && event?.type === "text"
+    ? "assistant"
+    : item?.role === "user" || item?.role === "assistant" || item?.role === "system" ? item.role : undefined;
   if (!id || content === undefined || !role) return null;
   return { id, role, content, timestamp: stringValue(item?.timestamp) };
 }
@@ -146,7 +212,10 @@ function parseSession(value: unknown): RawSession | null {
   const id = stringValue(item?.id);
   const status = stringValue(item?.status);
   if (!id || !status) return null;
-  return { id, status, repoId: stringValue(item?.repoId), startedAt: stringValue(item?.startedAt) };
+  const provider = typeof item?.provider === "string" && PROVIDER_IDS.includes(item.provider as WorkspaceProviderId)
+    ? item.provider as WorkspaceProviderId
+    : undefined;
+  return { id, status, provider, repoId: stringValue(item?.repoId), startedAt: stringValue(item?.startedAt) };
 }
 
 function parseApproval(value: unknown): RawApproval | null {
@@ -235,19 +304,27 @@ function previewUnavailableDetail(reason: string | undefined): string {
   return "Preview capture is not configured on the approving Desktop.";
 }
 
-function scopeKey(accountScope: string, workspaceId: string): string {
-  return `anvil.browser-workspace.selection.v1:${accountScope}:${workspaceId}`;
+function scopeKey(accountScope: string, enrollmentId: string, workspaceId: string): string {
+  return `anvil.browser-workspace.selection.v1:${accountScope}:${enrollmentId}:${workspaceId}`;
 }
 
 function commandPayload(operation: BrowserWorkspaceCommandInput["operation"], payload: JsonRecord): JsonRecord {
   return { operation, ...payload };
 }
 
-export function BrowserWorkspaceClient({ accountScope }: { accountScope: string }) {
+export function BrowserWorkspaceClient({
+  accountScope,
+  machines,
+  discoveryDetail,
+}: {
+  accountScope: string;
+  machines: WorkspaceMachineOption[];
+  discoveryDetail?: string;
+}) {
   const client = useBrowserWorkspace({ accountScope, resumeStoredSession: true });
-  const { auth, error: authError, execute } = client;
+  const { auth, error: authError, execute, requestAccess, lock, disconnect } = client;
   const workspaceId = auth.workspace?.workspaceId;
-  const ready = auth.status === "ready" && workspaceId !== undefined;
+  const enrollmentId = auth.workspace?.enrollmentId;
   const [repositories, setRepositories] = useState<RawRepository[]>([]);
   const [threads, setThreads] = useState<RawThread[]>([]);
   const [sessions, setSessions] = useState<Record<string, RawSession>>({});
@@ -262,13 +339,32 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
   const [terminalSession, setTerminalSession] = useState<TerminalSessionState | null>(null);
   const [loading, setLoading] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [selectedEnrollmentId, setSelectedEnrollmentId] = useState<string | undefined>(() => enrollmentId ?? machines[0]?.enrollmentId);
+  const ready = auth.status === "ready" && workspaceId !== undefined && (!selectedEnrollmentId || selectedEnrollmentId === enrollmentId);
+  const [executionOptions, setExecutionOptions] = useState<RawExecutionOptions | null>(null);
+  const [executionGrantKey, setExecutionGrantKey] = useState<string | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<WorkspaceProviderId>();
+  const [selectedModel, setSelectedModel] = useState<string>();
+  const [selectedPermissionMode, setSelectedPermissionMode] = useState<WorkspacePermissionMode>();
   const [lastRefresh, setLastRefresh] = useState<string>();
   const refreshInFlight = useRef<Promise<void> | null>(null);
-  const historyInFlight = useRef<Promise<void> | null>(null);
-  const repositoryInFlight = useRef<Promise<void> | null>(null);
+  const historyReadInFlight = useRef(new Map<string, Promise<void>>());
+  const activeChatPollInFlight = useRef(false);
+  const executionOptionsInFlight = useRef<Promise<void> | null>(null);
+  const lastHistoryPollAt = useRef(0);
+  const lastApprovalPollAt = useRef(0);
   const workspaceGeneration = useRef(0);
+  const sessionTransitions = useRef(new Map<string, number>());
+  const deliveryInFlight = useRef<{ token: symbol; generation: number } | null>(null);
+  const [loadedGrantKey, setLoadedGrantKey] = useState<string | null>(null);
+  const [switchingSession, setSwitchingSession] = useState<{ threadId: string; scopeKey: string } | null>(null);
+  const [pendingDelivery, setPendingDelivery] = useState<{ token: symbol; generation: number; scopeKey: string } | null>(null);
+  const grantKey = ready && workspaceId && enrollmentId ? `${accountScope}:${enrollmentId}:${workspaceId}` : null;
   const selectedRepositoryRef = useRef(selectedRepositoryId);
   const selectedThreadRef = useRef(selectedThreadId);
+  const selectedProviderRef = useRef(selectedProvider);
+  const didSyncInitialTarget = useRef(false);
   // The terminal session is the ref's source of truth; state is the render mirror.
   const terminalSessionRef = useRef<TerminalSessionState | null>(null);
 
@@ -278,16 +374,58 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
   }, [selectedRepositoryId, selectedThreadId]);
 
   useEffect(() => {
+    selectedProviderRef.current = selectedProvider;
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    if (didSyncInitialTarget.current || auth.status !== "ready" || !enrollmentId) return;
+    didSyncInitialTarget.current = true;
+    setSelectedEnrollmentId(enrollmentId);
+  }, [auth.status, enrollmentId]);
+
+  useEffect(() => {
+    if (selectedEnrollmentId && machines.some((machine) => machine.enrollmentId === selectedEnrollmentId)) return;
+    const fallback = enrollmentId ?? machines[0]?.enrollmentId;
+    if (fallback) queueMicrotask(() => setSelectedEnrollmentId(fallback));
+  }, [enrollmentId, machines, selectedEnrollmentId]);
+
+  useSynchronousWorkspaceEffect(() => {
     workspaceGeneration.current += 1;
     refreshInFlight.current = null;
-    historyInFlight.current = null;
-    repositoryInFlight.current = null;
-  }, [accountScope, ready, workspaceId]);
+    executionOptionsInFlight.current = null;
+    activeChatPollInFlight.current = false;
+    sessionTransitions.current.clear();
+    deliveryInFlight.current = null;
+    lastHistoryPollAt.current = 0;
+    lastApprovalPollAt.current = 0;
+    queueMicrotask(() => {
+      setLoadedGrantKey(null);
+      setRepositories([]);
+      setThreads([]);
+      setSessions({});
+      setHistory({});
+      setApprovals([]);
+      setWorkflows([]);
+      setSelectedRepositoryId(undefined);
+      setSelectedThreadId(undefined);
+      setFiles([]);
+      setChanges([]);
+      setExecutionOptions(null);
+      setExecutionGrantKey(null);
+      setSelectedProvider(undefined);
+      setSelectedModel(undefined);
+      setSelectedPermissionMode(undefined);
+      setSwitchingSession(null);
+      setPendingDelivery(null);
+    });
+  }, [accountScope, enrollmentId, ready, workspaceId]);
 
   const runCommand = useCallback(
     async <T,>(input: BrowserWorkspaceCommandInput): Promise<T | null> => {
+      const generation = workspaceGeneration.current;
       try {
         const result = await execute<T>(input);
+        if (generation !== workspaceGeneration.current) return null;
         if (!result.ok) {
           setCommandError(result.error?.message ?? "Desktop could not complete that command.");
           return null;
@@ -295,6 +433,7 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
         setCommandError(null);
         return result.data ?? null;
       } catch (error) {
+        if (generation !== workspaceGeneration.current) return null;
         setCommandError(error instanceof Error ? error.message : "Desktop workspace command failed.");
         return null;
       }
@@ -303,29 +442,27 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
   );
 
   const refresh = useCallback(async () => {
-    if (!workspaceId || !ready) return;
+    if (!workspaceId || !ready || !grantKey) return;
     if (refreshInFlight.current) return refreshInFlight.current;
     const generation = workspaceGeneration.current;
     const promise = (async () => {
       setLoading(true);
-      const [repoData, threadData, approvalData, workflowData] = await Promise.all([
+      const [repoData, threadData, workflowData] = await Promise.all([
         runCommand<unknown[]>({ operation: "repo.list", workspaceId, payload: commandPayload("repo.list", {}) }),
         runCommand<unknown[]>({ operation: "chat.thread.list", workspaceId, payload: commandPayload("chat.thread.list", {}) }),
-        runCommand<unknown[]>({ operation: "chat.approvals.list", workspaceId, payload: commandPayload("chat.approvals.list", {}) }),
         runCommand<JsonRecord>({ operation: "workflow.list", workspaceId, payload: commandPayload("workflow.list", {}) }),
       ]);
-      if (generation !== workspaceGeneration.current || !ready || workspaceId !== auth.workspace?.workspaceId) return;
+      if (generation !== workspaceGeneration.current || !ready || workspaceId !== auth.workspace?.workspaceId || enrollmentId !== auth.workspace?.enrollmentId) return;
       const nextRepositories = listValue(repoData).map(parseRepository).filter((value): value is RawRepository => value !== null);
       const nextThreads = listValue(threadData).map(parseThread).filter((value): value is RawThread => value !== null);
-      const nextApprovals = listValue(approvalData).map(parseApproval).filter((value): value is RawApproval => value !== null);
       const workflowRuns = listValue(record(workflowData)?.runs).map(parseWorkflow).filter((value): value is RawWorkflowRun => value !== null);
       setRepositories(nextRepositories);
       setThreads(nextThreads);
-      setApprovals(nextApprovals);
       setWorkflows(workflowRuns);
       setSelectedRepositoryId((current) => current && nextRepositories.some((repo) => repo.id === current) ? current : nextRepositories[0]?.id);
       setSelectedThreadId((current) => current && nextThreads.some((thread) => thread.id === current) ? current : nextThreads[0]?.id);
       setLastRefresh(new Date().toISOString());
+      setLoadedGrantKey(grantKey);
     })().finally(() => {
       if (generation === workspaceGeneration.current) setLoading(false);
     });
@@ -335,7 +472,7 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
     } finally {
       if (refreshInFlight.current === promise) refreshInFlight.current = null;
     }
-  }, [auth.workspace?.workspaceId, ready, runCommand, workspaceId]);
+  }, [auth.workspace?.enrollmentId, auth.workspace?.workspaceId, enrollmentId, grantKey, ready, runCommand, workspaceId]);
 
   useEffect(() => {
     if (!ready) return;
@@ -344,13 +481,47 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
 
   useEffect(() => {
     if (!ready || !workspaceId) return;
-    const interval = window.setInterval(() => void refresh(), 5_000);
+    const interval = window.setInterval(() => void refresh(), 20_000);
     return () => window.clearInterval(interval);
   }, [ready, refresh, workspaceId]);
 
+  const loadExecutionOptions = useCallback(async () => {
+    if (!ready || !workspaceId || !grantKey) return;
+    if (executionOptionsInFlight.current) return executionOptionsInFlight.current;
+    const generation = workspaceGeneration.current;
+    const promise = (async () => {
+      const data = await runCommand<unknown>({ operation: "chat.execution.options", workspaceId, payload: commandPayload("chat.execution.options", {}) });
+      if (generation !== workspaceGeneration.current || !ready || workspaceId !== auth.workspace?.workspaceId || enrollmentId !== auth.workspace?.enrollmentId) return;
+      const nextOptions = parseExecutionOptions(data);
+      setExecutionOptions(nextOptions);
+      setExecutionGrantKey(grantKey);
+      const usableProviders = nextOptions?.providers.filter((provider) => provider.enabled && provider.available) ?? [];
+      const firstProvider = usableProviders[0];
+      setSelectedProvider((current) => {
+        const currentOption = usableProviders.find((provider) => provider.provider === current);
+        return currentOption?.provider ?? firstProvider?.provider;
+      });
+      const provider = usableProviders.find((item) => item.provider === selectedProviderRef.current) ?? firstProvider;
+      setSelectedModel((current) => provider?.models.some((model) => model.id === current) ? current : provider?.defaultModel ?? provider?.models[0]?.id);
+      setSelectedPermissionMode((current) => provider?.permissionModes.includes(current as WorkspacePermissionMode) ? current : provider?.defaultPermissionMode ?? nextOptions?.maximumPermissionMode);
+    })().finally(() => {
+      if (executionOptionsInFlight.current === promise) executionOptionsInFlight.current = null;
+    });
+    executionOptionsInFlight.current = promise;
+    return promise;
+  }, [auth.workspace?.enrollmentId, auth.workspace?.workspaceId, enrollmentId, grantKey, ready, runCommand, workspaceId]);
+
   useEffect(() => {
     if (!ready || !workspaceId) return;
-    const key = scopeKey(accountScope, workspaceId);
+    queueMicrotask(() => void loadExecutionOptions());
+    const interval = window.setInterval(() => void loadExecutionOptions(), 60_000);
+    return () => window.clearInterval(interval);
+  }, [loadExecutionOptions, ready, workspaceId]);
+
+  useEffect(() => {
+    if (!ready || !workspaceId) return;
+    if (!enrollmentId) return;
+    const key = scopeKey(accountScope, enrollmentId, workspaceId);
     queueMicrotask(() => {
       try {
         const raw = window.localStorage.getItem(key);
@@ -362,34 +533,97 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
         // A corrupt selection is equivalent to no selection.
       }
     });
-  }, [accountScope, ready, workspaceId]);
+  }, [accountScope, enrollmentId, ready, workspaceId]);
 
   useEffect(() => {
-    if (!ready || !workspaceId) return;
+    if (!ready || !workspaceId || !enrollmentId || loadedGrantKey !== grantKey) return;
     try {
-      window.localStorage.setItem(scopeKey(accountScope, workspaceId), JSON.stringify({ repositoryId: selectedRepositoryId, threadId: selectedThreadId }));
+      window.localStorage.setItem(scopeKey(accountScope, enrollmentId, workspaceId), JSON.stringify({ repositoryId: selectedRepositoryId, threadId: selectedThreadId }));
     } catch {
       // Private browsing may deny storage. Data remains usable in memory.
     }
-  }, [accountScope, ready, selectedRepositoryId, selectedThreadId, workspaceId]);
+  }, [accountScope, enrollmentId, grantKey, loadedGrantKey, ready, selectedRepositoryId, selectedThreadId, workspaceId]);
 
   const loadThreadHistory = useCallback(async (threadId: string) => {
-    if (!workspaceId || !ready) return;
-    const data = await runCommand<JsonRecord>({ operation: "chat.history.read", workspaceId, payload: commandPayload("chat.history.read", { threadId }) });
-    const messages = listValue(data?.messages).map(parseMessage).filter((value): value is RawMessage => value !== null);
-    setHistory((current) => ({ ...current, [threadId]: messages }));
-  }, [ready, runCommand, workspaceId]);
+    if (!workspaceId || !ready || !grantKey) return;
+    const readKey = `${grantKey}:${threadId}`;
+    const existing = historyReadInFlight.current.get(readKey);
+    if (existing) return existing;
+    const generation = workspaceGeneration.current;
+    const promise = (async () => {
+      const data = await runCommand<JsonRecord>({ operation: "chat.history.read", workspaceId, payload: commandPayload("chat.history.read", { threadId }) });
+      if (!data || generation !== workspaceGeneration.current || workspaceId !== auth.workspace?.workspaceId || enrollmentId !== auth.workspace?.enrollmentId) return;
+      const messages = listValue(data.messages).map(parseMessage).filter((value): value is RawMessage => value !== null);
+      setHistory((current) => ({ ...current, [threadId]: messages }));
+    })().finally(() => {
+      if (historyReadInFlight.current.get(readKey) === promise) historyReadInFlight.current.delete(readKey);
+    });
+    historyReadInFlight.current.set(readKey, promise);
+    return promise;
+  }, [auth.workspace?.enrollmentId, auth.workspace?.workspaceId, enrollmentId, grantKey, ready, runCommand, workspaceId]);
 
   useEffect(() => {
     if (selectedThreadId && !history[selectedThreadId]) queueMicrotask(() => void loadThreadHistory(selectedThreadId));
   }, [history, loadThreadHistory, selectedThreadId]);
 
+  useEffect(() => {
+    lastHistoryPollAt.current = 0;
+    lastApprovalPollAt.current = 0;
+  }, [selectedThreadId]);
+
+  const pollActiveChat = useCallback(async () => {
+    if (!workspaceId || !ready || !grantKey || !selectedThreadId || document.visibilityState !== "visible" || activeChatPollInFlight.current) return;
+    activeChatPollInFlight.current = true;
+    const generation = workspaceGeneration.current;
+    const threadId = selectedThreadId;
+    const session = sessions[threadId];
+    const isBusy = session?.status === "busy" || session?.status === "starting";
+    const now = Date.now();
+    const historyDue = now - lastHistoryPollAt.current >= (isBusy ? 6_000 : 15_000);
+    const approvalsDue = now - lastApprovalPollAt.current >= (isBusy ? 6_000 : 15_000);
+    if (historyDue) lastHistoryPollAt.current = now;
+    if (approvalsDue) lastApprovalPollAt.current = now;
+    try {
+      const [statusData, approvalData] = await Promise.all([
+        session
+          ? runCommand<JsonRecord>({ operation: "chat.status", workspaceId, payload: commandPayload("chat.status", { sessionId: session.id }) })
+          : Promise.resolve(null),
+        approvalsDue
+          ? runCommand<unknown[]>({ operation: "chat.approvals.list", workspaceId, payload: commandPayload("chat.approvals.list", {}) })
+          : Promise.resolve(null),
+        historyDue ? loadThreadHistory(threadId) : Promise.resolve(),
+      ]);
+      if (generation !== workspaceGeneration.current || workspaceId !== auth.workspace?.workspaceId || enrollmentId !== auth.workspace?.enrollmentId) return;
+      const nextSession = parseSession(statusData);
+      if (nextSession) setSessions((current) => current[threadId]?.id === session?.id ? { ...current, [threadId]: nextSession } : current);
+      if (approvalData) setApprovals(listValue(approvalData).map(parseApproval).filter((value): value is RawApproval => value !== null));
+    } finally {
+      activeChatPollInFlight.current = false;
+    }
+  }, [auth.workspace?.enrollmentId, auth.workspace?.workspaceId, enrollmentId, grantKey, loadThreadHistory, ready, runCommand, selectedThreadId, sessions, workspaceId]);
+
+  useEffect(() => {
+    if (!ready || !workspaceId || !selectedThreadId) return;
+    const isBusy = sessions[selectedThreadId]?.status === "busy" || sessions[selectedThreadId]?.status === "starting";
+    const interval = window.setInterval(() => void pollActiveChat(), isBusy ? 3_000 : 12_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void pollActiveChat();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [pollActiveChat, ready, selectedThreadId, sessions, workspaceId]);
+
   const loadRepositoryData = useCallback(async (repositoryId: string) => {
-    if (!workspaceId || !ready) return;
+    if (!workspaceId || !ready || !grantKey) return;
+    const generation = workspaceGeneration.current;
     const [fileData, statusData] = await Promise.all([
       runCommand<JsonRecord>({ operation: "file.list", workspaceId, repositoryId, payload: commandPayload("file.list", { repositoryId, maxEntries: 500 }) }),
       runCommand<JsonRecord>({ operation: "git.status", workspaceId, repositoryId, payload: commandPayload("git.status", { repositoryId }) }),
     ]);
+    if (generation !== workspaceGeneration.current || repositoryId !== selectedRepositoryRef.current || workspaceId !== auth.workspace?.workspaceId || enrollmentId !== auth.workspace?.enrollmentId) return;
     const statusFiles = listValue(statusData?.files).map((entry) => record(entry)).filter((entry): entry is JsonRecord => entry !== null);
     const statusByPath = new Map(statusFiles.map((entry) => [stringValue(entry.path) ?? "", stringValue(entry.status)]));
     const entries = listValue(fileData?.entries);
@@ -409,8 +643,9 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
       const diff = stringValue(diffData?.hunks) ?? "";
       return { ...change, diff, additions: diff.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++" )).length, deletions: diff.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---" )).length };
     }));
+    if (generation !== workspaceGeneration.current || repositoryId !== selectedRepositoryRef.current || workspaceId !== auth.workspace?.workspaceId || enrollmentId !== auth.workspace?.enrollmentId) return;
     setChanges(withDiffs);
-  }, [ready, runCommand, workspaceId]);
+  }, [auth.workspace?.enrollmentId, auth.workspace?.workspaceId, enrollmentId, grantKey, ready, runCommand, workspaceId]);
 
   useEffect(() => {
     if (selectedRepositoryId) queueMicrotask(() => void loadRepositoryData(selectedRepositoryId));
@@ -418,15 +653,17 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
 
   const selectFile = useCallback(async (relativePath: string) => {
     if (!workspaceId || !ready || !selectedRepositoryId) return;
+    const generation = workspaceGeneration.current;
     const data = await runCommand<JsonRecord>({ operation: "file.read", workspaceId, repositoryId: selectedRepositoryId, payload: commandPayload("file.read", { repositoryId: selectedRepositoryId, relativePath }) });
-    if (!data) return;
+    if (!data || generation !== workspaceGeneration.current || selectedRepositoryId !== selectedRepositoryRef.current) return;
     setFiles((current) => current.map((file) => file.path === relativePath ? { ...file, content: typeof data.content === "string" ? data.content : "", revision: stringValue(data.revision) ?? null, editable: data.binary !== true } : file));
   }, [ready, runCommand, selectedRepositoryId, workspaceId]);
 
   const saveFile = useCallback(async (relativePath: string, content: string, expectedRevision?: string | null) => {
     if (!workspaceId || !ready || !selectedRepositoryId) return;
+    const generation = workspaceGeneration.current;
     const data = await runCommand<JsonRecord>({ operation: "file.write", workspaceId, repositoryId: selectedRepositoryId, payload: commandPayload("file.write", { repositoryId: selectedRepositoryId, relativePath, content, expectedRevision: expectedRevision ?? null }) });
-    if (data) setFiles((current) => current.map((file) => file.path === relativePath ? { ...file, content, revision: stringValue(data.revision) ?? null } : file));
+    if (data && generation === workspaceGeneration.current && selectedRepositoryId === selectedRepositoryRef.current) setFiles((current) => current.map((file) => file.path === relativePath ? { ...file, content, revision: stringValue(data.revision) ?? null } : file));
   }, [ready, runCommand, selectedRepositoryId, workspaceId]);
 
   const selectThread = useCallback(async (threadId: string) => {
@@ -434,38 +671,135 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
     await loadThreadHistory(threadId);
   }, [loadThreadHistory]);
 
-  const createThread = useCallback(async () => {
-    if (!workspaceId || !ready || !auth.scopes.includes("submit-task")) return;
-    const repositoryIds = selectedRepositoryId ? [selectedRepositoryId] : repositories.map((repo) => repo.id);
-    const data = await runCommand<JsonRecord>({ operation: "chat.create", workspaceId, payload: commandPayload("chat.create", { personaId: "coder", repositoryIds, activeRepositoryId: selectedRepositoryId ?? null }) });
+  const createThread = useCallback(async (): Promise<string | null> => {
+    if (!workspaceId || !ready || loadedGrantKey !== grantKey || !auth.scopes.includes("submit-task")) return null;
+    const generation = workspaceGeneration.current;
+    const allowedRepositoryIds = repositories.map((repo) => repo.id).filter((repoId) => auth.workspace?.repoIds.includes(repoId));
+    const repositoryIds = selectedRepositoryId && allowedRepositoryIds.includes(selectedRepositoryId) ? [selectedRepositoryId] : allowedRepositoryIds;
+    if (repositoryIds.length === 0) throw new Error("The connected machine has no approved repositories for a chat.");
+    const data = await runCommand<JsonRecord>({ operation: "chat.create", workspaceId, payload: commandPayload("chat.create", { personaId: "coder", repositoryIds, activeRepositoryId: repositoryIds.includes(selectedRepositoryId ?? "") ? selectedRepositoryId : repositoryIds[0] }) });
+    if (generation !== workspaceGeneration.current) return null;
     const thread = parseThread(data);
     if (!thread) throw new Error("Desktop did not return the new workspace session.");
     setThreads((current) => [thread, ...current.filter((item) => item.id !== thread.id)]);
     setSelectedThreadId(thread.id);
     setHistory((current) => ({ ...current, [thread.id]: [] }));
-  }, [auth.scopes, ready, repositories, runCommand, selectedRepositoryId, workspaceId]);
+    return thread.id;
+  }, [auth.scopes, auth.workspace?.repoIds, grantKey, loadedGrantKey, ready, repositories, runCommand, selectedRepositoryId, workspaceId]);
 
-  const ensureSession = useCallback(async (threadId: string): Promise<RawSession | null> => {
-    const existing = sessions[threadId];
-    if (existing) return existing;
-    if (!workspaceId || !ready) return null;
-    const thread = threads.find((item) => item.id === threadId);
-    const repositoryId = thread?.activeRepoId ?? selectedRepositoryId;
-    const data = await runCommand<JsonRecord>({ operation: "chat.session.start", workspaceId, payload: commandPayload("chat.session.start", { threadId, ...(repositoryId ? { repositoryId } : {}) }) });
-    const session = parseSession(data);
-    if (session) setSessions((current) => ({ ...current, [threadId]: session }));
-    return session;
-  }, [ready, runCommand, selectedRepositoryId, sessions, threads, workspaceId]);
+  const ensureSession = useCallback(async (threadId: string, settings: Pick<WorkspaceExecutionControls, "provider" | "model" | "permissionMode">): Promise<RawSession | null> => {
+    if (!workspaceId || !ready || !grantKey || loadedGrantKey !== grantKey) return null;
+    const generation = workspaceGeneration.current;
+    if (sessionTransitions.current.has(threadId)) throw new Error("A workspace session change is already in progress. Try again when it finishes.");
+    sessionTransitions.current.set(threadId, generation);
+    setSwitchingSession({ threadId, scopeKey: grantKey });
+    try {
+      let existing: RawSession | undefined = sessions[threadId];
+      if (existing) {
+        const existingId = existing.id;
+        // The cache can lag behind a turn started in another view. Confirm the
+        // exact session before using it, stopping it, or replacing it.
+        let statusResult: { ok: boolean; data?: JsonRecord; error?: { code: string; message: string } };
+        try {
+          statusResult = await execute<JsonRecord>({ operation: "chat.status", workspaceId, payload: commandPayload("chat.status", { sessionId: existingId }) });
+        } catch (error) {
+          if (generation !== workspaceGeneration.current) return null;
+          const message = error instanceof Error ? error.message : "Could not verify the current provider session.";
+          setCommandError(message);
+          throw new Error(message);
+        }
+        if (generation !== workspaceGeneration.current) return null;
+        if (!statusResult.ok) {
+          if (statusResult.error?.code !== "not-found") {
+            const message = statusResult.error?.message ?? "Could not verify the current provider session.";
+            setCommandError(message);
+            throw new Error(message);
+          }
+          setCommandError(null);
+          setSessions((cached) => {
+            if (cached[threadId]?.id !== existingId) return cached;
+            const next = { ...cached };
+            delete next[threadId];
+            return next;
+          });
+          existing = undefined;
+        } else {
+          setCommandError(null);
+          const current = parseSession(statusResult.data);
+          if (!current || current.id !== existingId || !current.provider) {
+            const message = "Could not verify which provider is running. Refresh the session before switching providers.";
+            setCommandError(message);
+            throw new Error(message);
+          }
+          setSessions((cached) => cached[threadId]?.id === existingId ? { ...cached, [threadId]: current } : cached);
+          if (current.status === "busy" || current.status === "starting") {
+            if (current.provider === settings.provider) return current;
+            throw new Error("Finish or cancel the current turn before switching providers.");
+          }
+          if (current.provider === settings.provider && current.status !== "error") return current;
 
-  const sendMessage = useCallback(async (message: string) => {
-    if (!workspaceId || !ready || !selectedThreadId || !auth.scopes.includes("submit-task")) return;
-    const session = await ensureSession(selectedThreadId);
-    if (!session) throw new Error("Desktop could not start the workspace session.");
-    const result = await runCommand<JsonRecord>({ operation: "chat.send", workspaceId, payload: commandPayload("chat.send", { threadId: selectedThreadId, sessionId: session.id, message }) });
-    if (!result) throw new Error("Desktop did not accept the message.");
-    setHistory((current) => ({ ...current, [selectedThreadId]: [...(current[selectedThreadId] ?? []), { id: `browser:${Date.now()}`, role: "user", content: message, timestamp: new Date().toISOString() }] }));
-    setTimeout(() => void loadThreadHistory(selectedThreadId), 800);
-  }, [auth.scopes, ensureSession, loadThreadHistory, ready, runCommand, selectedThreadId, workspaceId]);
+          const stopped = await runCommand<JsonRecord>({ operation: "chat.cancel", workspaceId, payload: commandPayload("chat.cancel", { sessionId: current.id, mode: "stop" }) });
+          if (!stopped) throw new Error("Desktop could not stop the current provider session. Your message was not sent.");
+          if (generation !== workspaceGeneration.current) return null;
+          setSessions((cached) => {
+            if (cached[threadId]?.id !== current.id) return cached;
+            const next = { ...cached };
+            delete next[threadId];
+            return next;
+          });
+        }
+      }
+
+      const thread = threads.find((item) => item.id === threadId);
+      const repositoryId = thread?.activeRepoId ?? selectedRepositoryId;
+      const data = await runCommand<JsonRecord>({ operation: "chat.session.start", workspaceId, payload: commandPayload("chat.session.start", { threadId, ...(repositoryId ? { repositoryId } : {}), ...settings }) });
+      if (generation !== workspaceGeneration.current) return null;
+      if (!data) throw new Error("Desktop could not start the workspace session.");
+      const session = parseSession(data);
+      if (!session || session.provider !== settings.provider) {
+        const message = "Desktop did not start a session with the selected provider.";
+        setCommandError(message);
+        throw new Error(message);
+      }
+      setSessions((current) => ({ ...current, [threadId]: session }));
+      return session;
+    } finally {
+      if (sessionTransitions.current.get(threadId) === generation) sessionTransitions.current.delete(threadId);
+      if (generation === workspaceGeneration.current) setSwitchingSession((current) => current?.threadId === threadId && current.scopeKey === grantKey ? null : current);
+    }
+  }, [execute, grantKey, loadedGrantKey, ready, runCommand, selectedRepositoryId, sessions, setCommandError, threads, workspaceId]);
+
+  const sendMessage = useCallback(async (message: string, settings?: Pick<WorkspaceExecutionControls, "provider" | "model" | "permissionMode">) => {
+    if (!workspaceId || !ready || !grantKey || loadedGrantKey !== grantKey || !auth.scopes.includes("submit-task") || !settings?.provider || !settings.model || !settings.permissionMode) return;
+    const generation = workspaceGeneration.current;
+    if (deliveryInFlight.current) throw new Error("A message is already being delivered. Wait for it to finish before sending another.");
+    const delivery = { token: Symbol("workspace-delivery"), generation, scopeKey: grantKey };
+    deliveryInFlight.current = delivery;
+    setPendingDelivery(delivery);
+    try {
+      let threadId = selectedThreadId;
+      if (!threadId) threadId = (await createThread()) ?? undefined;
+      if (generation !== workspaceGeneration.current) throw new Error("The selected machine changed before this chat could start.");
+      if (!threadId) throw new Error("Choose a project before starting a chat.");
+      const session = await ensureSession(threadId, settings);
+      if (generation !== workspaceGeneration.current) throw new Error("The selected machine changed before this message could be sent.");
+      if (!session) throw new Error("Desktop could not start the workspace session.");
+      const result = await runCommand<JsonRecord>({ operation: "chat.send", workspaceId, payload: commandPayload("chat.send", { threadId, sessionId: session.id, message, ...settings }) });
+      if (!result) throw new Error("Desktop did not accept the message.");
+      if (generation !== workspaceGeneration.current) return;
+      setHistory((current) => ({ ...current, [threadId]: [...(current[threadId] ?? []), { id: `browser:${Date.now()}`, role: "user", content: message, timestamp: new Date().toISOString() }] }));
+      if (typeof result.effectivePermissionMode === "string" && PERMISSION_MODES.includes(result.effectivePermissionMode as WorkspacePermissionMode)) {
+        setSelectedPermissionMode(result.effectivePermissionMode as WorkspacePermissionMode);
+      }
+      lastHistoryPollAt.current = 0;
+      setTimeout(() => void loadThreadHistory(threadId), 800);
+    } finally {
+      if (deliveryInFlight.current?.token === delivery.token) {
+        deliveryInFlight.current = null;
+        if (generation === workspaceGeneration.current) setPendingDelivery((current) => current?.token === delivery.token ? null : current);
+      }
+    }
+  }, [auth.scopes, createThread, ensureSession, grantKey, loadThreadHistory, loadedGrantKey, ready, runCommand, selectedThreadId, workspaceId]);
 
   const cancelSession = useCallback(async () => {
     if (!workspaceId || !ready || !selectedThreadId || !auth.scopes.includes("submit-task")) return;
@@ -596,6 +930,7 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
 
   const capturePreview = useCallback(async (refreshFrame: boolean) => {
     if (!workspaceId || !ready || !selectedRepositoryId || !auth.scopes.includes("preview")) return;
+    const generation = workspaceGeneration.current;
     setPreview({ state: "starting", detail: "Requesting a screenshot from the approving Desktop…" });
     const data = await runCommand<JsonRecord>({
       operation: "preview.screenshot",
@@ -603,6 +938,7 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
       repositoryId: selectedRepositoryId,
       payload: commandPayload("preview.screenshot", { repositoryId: selectedRepositoryId, refresh: refreshFrame }),
     });
+    if (generation !== workspaceGeneration.current || selectedRepositoryId !== selectedRepositoryRef.current) return;
     const result = record(data);
     if (!result) {
       setPreview({ state: "error", detail: "Desktop did not return a preview result." });
@@ -658,14 +994,19 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
   }, [ready]);
 
   const model = useMemo<WorkspaceViewModel>(() => {
-    const repoModels: WorkspaceRepository[] = repositories.map((repo) => ({ id: repo.id, name: repo.name, branch: repo.defaultBranch, dirty: repo.status === "dirty" || repo.status === "modified", authorized: auth.workspace?.repoIds.includes(repo.id) ?? false }));
-    const threadModels: WorkspaceSession[] = threads.filter((thread) => !selectedRepositoryId || thread.repoIds.length === 0 || thread.repoIds.includes(selectedRepositoryId)).map((thread) => ({ id: thread.id, repositoryId: thread.activeRepoId ?? selectedRepositoryId ?? "", title: thread.title, summary: thread.summary ?? thread.preview, updatedAt: thread.updatedAt, state: statusToSessionState(sessions[thread.id]?.status, thread.attentionState) }));
-    const approvalModels: WorkspaceApproval[] = approvals.map((approval) => ({ id: approval.requestKey, title: approval.kind ?? "Desktop approval", detail: approval.reason ?? approval.command ?? "Desktop requested permission for this session.", scope: approval.policy ?? approval.repoName, state: "pending" }));
-    const workflowModels: WorkspaceWorkflow[] = workflows.map((run) => ({ id: run.id, name: run.templateName ?? run.templateId ?? "Workflow", state: workflowState(run.status), detail: run.error, updatedAt: run.updatedAt ?? run.createdAt }));
-    const messageModels = selectedThreadId ? (history[selectedThreadId] ?? []).map((message) => ({ id: message.id, role: message.role, content: message.content, createdAt: message.timestamp })) : [];
+    const dataIsCurrent = ready && loadedGrantKey !== null && loadedGrantKey === grantKey;
+    const currentRepositories = dataIsCurrent ? repositories : [];
+    const currentThreads = dataIsCurrent ? threads : [];
+    const repoModels: WorkspaceRepository[] = currentRepositories.map((repo) => ({ id: repo.id, name: repo.name, branch: repo.defaultBranch, dirty: repo.status === "dirty" || repo.status === "modified", authorized: auth.workspace?.repoIds.includes(repo.id) ?? false }));
+    const threadModels: WorkspaceSession[] = currentThreads.filter((thread) => !selectedRepositoryId || thread.repoIds.length === 0 || thread.repoIds.includes(selectedRepositoryId)).map((thread) => ({ id: thread.id, repositoryId: thread.activeRepoId ?? selectedRepositoryId ?? "", title: thread.title, summary: thread.summary ?? thread.preview, updatedAt: thread.updatedAt, state: statusToSessionState(sessions[thread.id]?.status, thread.attentionState) }));
+    const approvalModels: WorkspaceApproval[] = (dataIsCurrent ? approvals : []).map((approval) => ({ id: approval.requestKey, title: approval.kind ?? "Desktop approval", detail: approval.reason ?? approval.command ?? "Desktop requested permission for this session.", scope: approval.policy ?? approval.repoName, state: "pending" }));
+    const workflowModels: WorkspaceWorkflow[] = (dataIsCurrent ? workflows : []).map((run) => ({ id: run.id, name: run.templateName ?? run.templateId ?? "Workflow", state: workflowState(run.status), detail: run.error, updatedAt: run.updatedAt ?? run.createdAt }));
+    const activeThreadId = threadModels.some((thread) => thread.id === selectedThreadId) ? selectedThreadId : undefined;
+    const activeRepositoryId = repoModels.some((repo) => repo.id === selectedRepositoryId) ? selectedRepositoryId : undefined;
+    const messageModels = activeThreadId ? (history[activeThreadId] ?? []).map((message) => ({ id: message.id, role: message.role, content: message.content, createdAt: message.timestamp })) : [];
     const hasTerminalScope = auth.scopes.includes("terminal");
     const hasPreviewScope = auth.scopes.includes("preview");
-    const terminalModel: WorkspaceTerminal | undefined = ready
+    const terminalModel: WorkspaceTerminal | undefined = dataIsCurrent
       ? {
           lines: terminalLines(terminalSession),
           inputEnabled: hasTerminalScope && !(terminalSession?.exited ?? false),
@@ -676,10 +1017,10 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
                 : "The current grant does not include terminal access."
               : terminalSession.exited
                 ? "The scoped terminal exited; the next command opens a new one."
-                : `Scoped terminal on ${repositories.find((repo) => repo.id === terminalSession.repoId)?.name ?? terminalSession.repoId}.`,
+                : `Scoped terminal on ${currentRepositories.find((repo) => repo.id === terminalSession.repoId)?.name ?? terminalSession.repoId}.`,
         }
       : undefined;
-    const previewModel: WorkspacePreview | undefined = ready
+    const previewModel: WorkspacePreview | undefined = dataIsCurrent
       ? (preview ?? {
           state: "unavailable",
           detail: hasPreviewScope
@@ -687,31 +1028,33 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
             : "The current grant does not include preview access.",
         })
       : undefined;
+    const connectedMachine = machines.find((machine) => machine.enrollmentId === enrollmentId);
+    const desktopName = connectedMachine?.displayName ?? (auth.workspace ? `Anvil machine · ${auth.workspace.enrollmentId.slice(0, 8)}` : undefined);
     return {
-      connection: { state: ready ? "connected" : auth.status === "pending" ? "connecting" : auth.status === "ended" && auth.reason === "revoked" ? "permission-denied" : "unavailable", desktopName: auth.workspace ? `Desktop · ${auth.workspace.enrollmentId.slice(0, 8)}` : undefined, detail: commandError ?? (loading ? "Loading authorized workspace data…" : authError ?? undefined), checkedAt: lastRefresh },
+      connection: { state: ready ? "connected" : auth.status === "pending" || (auth.status === "ready" && selectedEnrollmentId !== enrollmentId) ? "connecting" : auth.status === "ended" && auth.reason === "revoked" ? "permission-denied" : "unavailable", desktopName, targetEnrollmentId: enrollmentId, detail: commandError ?? (loading ? "Loading workspace…" : auth.status === "pending" ? "Waiting for approval in Anvil Desktop…" : ready && !dataIsCurrent ? "Loading workspace…" : authError ?? undefined), checkedAt: lastRefresh },
       repositories: repoModels,
       sessions: threadModels,
-      activeRepositoryId: selectedRepositoryId,
-      activeSessionId: selectedThreadId,
+      activeRepositoryId,
+      activeSessionId: activeThreadId,
       messages: messageModels,
       approvals: approvalModels,
-      files,
-      changes,
+      files: dataIsCurrent ? files : [],
+      changes: dataIsCurrent ? changes : [],
       tests: [] as WorkspaceTest[],
       workflows: workflowModels,
       terminal: terminalModel,
       preview: previewModel,
-      canCreateSession: ready && auth.scopes.includes("submit-task"),
-      canWriteFiles: ready && auth.scopes.includes("workspace-write"),
-      canSubmitTasks: ready && auth.scopes.includes("submit-task"),
-      canApproveActions: ready && auth.scopes.includes("approve-action"),
+      canCreateSession: dataIsCurrent && repoModels.length > 0 && auth.scopes.includes("submit-task"),
+      canWriteFiles: dataIsCurrent && auth.scopes.includes("workspace-write"),
+      canSubmitTasks: dataIsCurrent && auth.scopes.includes("submit-task"),
+      canApproveActions: dataIsCurrent && auth.scopes.includes("approve-action"),
     };
-  }, [approvals, auth.reason, auth.scopes, auth.status, auth.workspace, authError, changes, commandError, files, history, lastRefresh, loading, preview, ready, repositories, selectedRepositoryId, selectedThreadId, sessions, terminalSession, threads, workflows]);
+  }, [approvals, auth.reason, auth.scopes, auth.status, auth.workspace, authError, changes, commandError, enrollmentId, files, grantKey, history, lastRefresh, loadedGrantKey, loading, machines, preview, ready, repositories, selectedEnrollmentId, selectedRepositoryId, selectedThreadId, sessions, terminalSession, threads, workflows]);
 
   const actions: WorkspaceActions = useMemo(() => ({
     onSelectRepository: setSelectedRepositoryId,
     onSelectSession: selectThread,
-    onCreateSession: createThread,
+    onCreateSession: async () => { await createThread(); },
     onSendMessage: sendMessage,
     onCancelSession: cancelSession,
     onApproveAction: (approvalId) => decideApproval(approvalId, "accept"),
@@ -725,50 +1068,86 @@ export function BrowserWorkspaceClient({ accountScope }: { accountScope: string 
     onStartPreview: auth.scopes.includes("preview") ? () => capturePreview(false) : undefined,
     onRefreshPreview: auth.scopes.includes("preview") ? () => capturePreview(true) : undefined,
   }), [auth.scopes, cancelSession, cancelWorkflow, capturePreview, createThread, decideApproval, runWorkflow, saveFile, selectFile, selectThread, sendMessage, sendTerminalCommand]);
+  const requestMachine = useCallback(async (targetEnrollmentId: string) => {
+    if (!machines.some((machine) => machine.enrollmentId === targetEnrollmentId)) {
+      setRequestError("That machine is no longer available. Refresh the page and try again.");
+      return;
+    }
+    setSelectedEnrollmentId(targetEnrollmentId);
+    setRequestError(null);
+    try {
+      const result = await requestAccess({ targetEnrollmentId });
+      if (!result.ok) setRequestError(result.message);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : "Could not request Desktop approval.");
+    }
+  }, [machines, requestAccess]);
 
-  if (!ready) {
-    return <WorkspaceAccessGate auth={auth} error={authError} onRequest={client.requestAccess} />;
-  }
+  const onboarding = useMemo(() => ({
+    machines,
+    currentEnrollmentId: enrollmentId,
+    selectedEnrollmentId: selectedEnrollmentId ?? enrollmentId,
+    requestPending: auth.status === "pending",
+    renewing: auth.renewing,
+    requestId: auth.requestId,
+    verificationCode: auth.verificationCode,
+    error: requestError ?? (auth.status === "ended" ? authError ?? `This machine's browser access ${auth.reason ?? "ended"}. Connect again to request approval.` : authError),
+    discoveryDetail,
+    onSelectMachine: (targetEnrollmentId: string) => {
+      setSelectedEnrollmentId(targetEnrollmentId);
+      setRequestError(null);
+    },
+    onRequestMachine: requestMachine,
+  }), [auth.reason, auth.requestId, auth.renewing, auth.status, auth.verificationCode, authError, discoveryDetail, enrollmentId, machines, requestError, requestMachine, selectedEnrollmentId]);
 
-  return <WorkspaceRoute model={model} actions={actions} draftScope={`${accountScope}:${workspaceId}`} headerSlot={<Button type="button" variant="ghost" size="sm" onClick={() => void client.lock()}><LockKeyhole aria-hidden="true" />Lock</Button>} />;
-}
+  const currentMachine = machines.find((machine) => machine.enrollmentId === enrollmentId);
+  const controls = useMemo<WorkspaceExecutionControls | undefined>(() => {
+    if (!executionOptions || executionGrantKey !== grantKey || !ready) return undefined;
+    const selectedOption = executionOptions.providers.find((provider) => provider.provider === selectedProvider);
+    const activeSession = selectedThreadId ? sessions[selectedThreadId] : undefined;
+    const providerSwitchBusy = activeSession?.status === "busy" || activeSession?.status === "starting";
+    const sessionSwitching = switchingSession?.threadId === selectedThreadId && switchingSession?.scopeKey === grantKey;
+    const deliveryPending = pendingDelivery?.scopeKey === grantKey;
+    return {
+      chatAvailable: executionOptions.target.chatAvailable,
+      unavailableReason: executionOptions.target.unavailableReason,
+      providers: executionOptions.providers,
+      maximumPermissionMode: executionOptions.maximumPermissionMode,
+      provider: selectedOption ? selectedProvider : undefined,
+      model: selectedOption?.models.some((item) => item.id === selectedModel) ? selectedModel : undefined,
+      permissionMode: selectedOption?.permissionModes.includes(selectedPermissionMode as WorkspacePermissionMode) ? selectedPermissionMode : undefined,
+      deliveryPending,
+      providerSwitchBlocked: providerSwitchBusy || sessionSwitching || deliveryPending,
+      providerSwitchBlockedReason: providerSwitchBusy
+        ? "Finish or cancel the current turn before switching providers."
+        : sessionSwitching ? "Changing provider session…"
+          : deliveryPending ? "Wait for the current message to finish sending before switching providers."
+            : undefined,
+      onProviderChange: (provider) => {
+        const next = executionOptions.providers.find((item) => item.provider === provider);
+        setSelectedProvider(provider);
+        setSelectedModel(next?.defaultModel ?? next?.models[0]?.id);
+        setSelectedPermissionMode(next?.defaultPermissionMode ?? executionOptions.maximumPermissionMode);
+      },
+      onModelChange: setSelectedModel,
+      onPermissionModeChange: setSelectedPermissionMode,
+    };
+  }, [executionGrantKey, executionOptions, grantKey, pendingDelivery, ready, selectedModel, selectedPermissionMode, selectedProvider, selectedThreadId, sessions, switchingSession]);
 
-function WorkspaceAccessGate({ auth, error, onRequest }: { auth: BrowserWorkspaceAuth; error: string | null; onRequest: (request: BrowserWorkspaceRequestOptions) => Promise<unknown> }) {
-  const [workspaceId, setWorkspaceId] = useState("");
-  const [repositoryIds, setRepositoryIds] = useState("");
-  const [scopes, setScopes] = useState<DashboardScope[]>(["workspace-read"]);
-  const [busy, setBusy] = useState(false);
-  const toggleScope = (scope: DashboardScope) => setScopes((current) => current.includes(scope) ? current.filter((item) => item !== scope) : [...current, scope]);
-  const requestedRepositoryIds = repositoryIds.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
-  if (auth.status === "pending") {
-    return (
-      <AccessState title="Waiting for Desktop approval" detail={`Request ${auth.requestId ?? "pending"} is waiting for an enrolled Desktop to approve this browser.`}>
-        <div className="grid gap-1.5 rounded-md border border-dashed px-3 py-2.5">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Verification code</p>
-          <p className="font-mono text-lg tracking-widest">{auth.verificationCode ?? "…"}</p>
-          <p className="text-xs leading-5 text-muted-foreground">Confirm this code matches the one shown beside this request in Anvil Desktop before approving.</p>
-        </div>
-      </AccessState>
-    );
-  }
+  const headerControls = <>
+    <Button type="button" variant="ghost" size="sm" title="Lock this browser on this device" onClick={() => void lock()}><LockKeyhole aria-hidden="true" /><span className="hidden sm:inline">Lock browser</span></Button>
+    {auth.status === "ready" || auth.status === "pending" || auth.status === "ended" ? <Button type="button" variant="ghost" size="sm" onClick={() => void disconnect()}>Disconnect</Button> : null}
+  </>;
+
   return (
-    <div className="grid gap-6 rounded-lg border bg-background p-5 sm:p-7">
-      <div className="grid gap-2">
-        <div className="flex items-center gap-2"><KeyRound className="size-4 text-accent" aria-hidden="true" /><h1 className="text-xl font-semibold">Authorize a Desktop workspace</h1></div>
-        <p className="max-w-2xl text-sm leading-6 text-muted-foreground">The browser does not discover repositories or hold device keys. Enter the workspace ID shown by Anvil Desktop, then choose the permissions this browser should request.</p>
-      </div>
-      {auth.status === "ended" ? <p role="status" className="rounded-md border border-dashed px-3 py-2.5 text-sm text-muted-foreground">The previous browser grant {auth.reason ?? "ended"}. Request a new grant to continue.</p> : null}
-      {error ? <p role="alert" className="flex items-start gap-2 rounded-md border border-destructive/50 px-3 py-2.5 text-sm text-destructive"><AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />{error}</p> : null}
-      <form className="grid gap-5" onSubmit={(event) => { event.preventDefault(); if (!workspaceId.trim() || requestedRepositoryIds.length === 0 || scopes.length === 0) return; setBusy(true); void onRequest({ workspaceIds: [workspaceId.trim()], repositoryIds: requestedRepositoryIds, scopes }).finally(() => setBusy(false)); }}>
-        <div className="grid gap-2"><label htmlFor="workspace-id" className="text-sm font-medium">Workspace ID</label><input id="workspace-id" value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)} required pattern="[A-Za-z0-9_-]{1,200}" className="min-h-11 rounded-md border bg-background px-3 font-mono text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="workspace-id" /><p className="text-xs text-muted-foreground">Use the ID shown by Anvil Desktop. The browser cannot discover workspaces.</p></div>
-        <div className="grid gap-2"><label htmlFor="repository-ids" className="text-sm font-medium">Authorized repository IDs</label><input id="repository-ids" value={repositoryIds} onChange={(event) => setRepositoryIds(event.target.value)} required pattern="[A-Za-z0-9_-]+([\s,]+[A-Za-z0-9_-]+)*" className="min-h-11 rounded-md border bg-background px-3 font-mono text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="repo-id, another-repo-id" /><p className="text-xs text-muted-foreground">Enter the exact repository IDs selected in Desktop, separated by commas or spaces. Wildcards are not accepted.</p></div>
-        <fieldset className="grid gap-2"><legend className="text-sm font-medium">Requested permissions</legend>{ACCESS_SCOPES.map((scope) => <label key={scope.value} className="flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5 hover:bg-muted"><input type="checkbox" checked={scopes.includes(scope.value)} onChange={() => toggleScope(scope.value)} className="mt-1 size-4 accent-[oklch(var(--accent))]" /><span><span className="block text-sm font-medium">{scope.label}</span><span className="block text-xs leading-5 text-muted-foreground">{scope.detail}</span></span></label>)}</fieldset>
-        <Button type="submit" disabled={busy || workspaceId.trim().length === 0 || requestedRepositoryIds.length === 0 || scopes.length === 0}>{busy ? <RefreshCw className="animate-spin" aria-hidden="true" /> : <Check aria-hidden="true" />}Request Desktop approval</Button>
-      </form>
-    </div>
+    <WorkspaceRoute
+      model={model}
+      actions={actions}
+      onboarding={onboarding}
+      execution={controls}
+      targetLabel={executionOptions?.target.displayName ?? currentMachine?.displayName}
+      draftScope={`${accountScope}:${selectedEnrollmentId ?? enrollmentId ?? "unpaired"}`}
+      headerSlot={headerControls}
+    />
   );
-}
-
-function AccessState({ title, detail, children }: { title: string; detail: string; children?: ReactNode }) {
-  return <div className="grid gap-3 rounded-lg border bg-background p-5 sm:p-7"><div className="flex items-center gap-2"><LockKeyhole className="size-4 text-muted-foreground" aria-hidden="true" /><h1 className="text-xl font-semibold">{title}</h1></div><p className="text-sm leading-6 text-muted-foreground">{detail}</p>{children}</div>;
 }

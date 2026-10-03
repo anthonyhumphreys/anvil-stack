@@ -226,11 +226,7 @@ export interface HostedReconcileResult {
   subscriptions: number;
 }
 
-/**
- * Device/deletion shapes below mirror the device-authenticated RPC contract
- * (contract/auth.ts). The `/internal/hosted/*` routes for them are not
- * deployed yet — callers must tolerate a `not-found` HostedApiError.
- */
+/** Account-scoped hosted device and deletion shapes. No session tokens are returned. */
 export interface HostedDeviceSummary {
   enrollmentId: string;
   displayName?: string;
@@ -239,10 +235,19 @@ export interface HostedDeviceSummary {
   revoked: boolean;
   createdAt: string;
   self: boolean;
+  enrollmentClass?: "device" | "ephemeral";
+  trustState?: "pending" | "trusted" | "revoked";
 }
 
 export interface HostedDeviceListResult {
   devices: HostedDeviceSummary[];
+}
+
+/** Browser-selectable, account-owned Desktop machine. Live status is not reported by the API. */
+export interface HostedWorkspaceMachine {
+  enrollmentId: string;
+  name: string;
+  status: "unknown";
 }
 
 export type HostedDeletionState = "none" | "deleting" | "deleted";
@@ -293,6 +298,9 @@ export interface BrowserWorkspaceBinding {
 /** Browser → POST /internal/hosted/dashboard-request */
 export interface HostedDashboardRequestInput {
   requestId: string;
+  targetEnrollmentId?: string;
+  trustId?: string;
+  renewalProof?: string;
   browserPub: string;
   challenge: string;
   scopes: DashboardScope[];
@@ -304,6 +312,55 @@ export interface HostedDashboardRequestInput {
   expiresAt: string;
   origin?: string;
   userAgent?: string;
+}
+
+export interface HostedDashboardTrustRevokeInput {
+  trustId: string;
+  origin: string;
+}
+
+export interface HostedDashboardTrustRevokeResult {
+  revoked: boolean;
+}
+
+export interface HostedDashboardGrantRevokeResult {
+  revoked: boolean;
+}
+
+export interface DashboardRenewalProofInput {
+  accountId: string;
+  requestId: string;
+  trustId: string;
+  browserPub: string;
+  origin: string;
+  targetEnrollmentId: string;
+  challenge: string;
+  expiresAt: string;
+  workspaceBindings: BrowserWorkspaceBinding[];
+  scopes: DashboardScope[];
+}
+
+/** Must match dashboardRenewalProofMessage in the Desktop cloud contract. */
+export function dashboardRenewalProofMessage(input: DashboardRenewalProofInput): string {
+  const workspaceBindings = input.workspaceBindings
+    .map((binding) => ({
+      workspaceId: binding.workspaceId,
+      repositoryIds: [...binding.repositoryIds].sort()
+    }))
+    .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+  return JSON.stringify([
+    "anvil/dashboard-renewal-proof/v1",
+    input.accountId,
+    input.requestId,
+    input.trustId,
+    input.browserPub,
+    input.origin,
+    input.targetEnrollmentId,
+    input.challenge,
+    input.expiresAt,
+    workspaceBindings,
+    [...input.scopes].sort()
+  ]);
 }
 
 export interface HostedDashboardRequestResult {
@@ -363,6 +420,7 @@ export const BROWSER_WORKSPACE_OPERATIONS = [
   "file.read",
   "file.write",
   "chat.thread.list",
+  "chat.execution.options",
   "chat.create",
   "chat.history.read",
   "chat.session.start",
@@ -406,6 +464,7 @@ export const BROWSER_WORKSPACE_OPERATION_SCOPE: Record<
   "file.read": "workspace-read",
   "file.write": "workspace-write",
   "chat.thread.list": "workspace-read",
+  "chat.execution.options": "workspace-read",
   "chat.create": "submit-task",
   "chat.history.read": "workspace-read",
   "chat.session.start": "submit-task",

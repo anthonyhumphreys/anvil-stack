@@ -136,6 +136,10 @@ export interface SyncDeviceVerification {
  */
 export interface SyncDashboardRequest {
   requestId: string;
+  /** The browser selected this Desktop to receive and decide the request. */
+  targetEnrollmentId?: string;
+  /** A fresh machine pairing with no prior workspace or scope permissions. */
+  firstMachinePairing?: boolean;
   browserPub: string;
   /** Short browser-key/challenge comparison code; origin and UA are only hints. */
   verificationCode?: string;
@@ -176,7 +180,24 @@ export interface SyncDashboardGrantApproval {
   workspaceId: string;
   repoIds: string[];
   actionScopes: string[];
+  /** Ask Desktop to retain a renewal proof for this browser for up to 30 days. */
+  rememberBrowser?: boolean;
 }
+
+export type SyncDashboardGrantDecisionResult =
+  | {
+      decision: 'approved';
+      rememberedBrowser: true;
+      sessionOnly: false;
+    }
+  | {
+      decision: 'approved';
+      rememberedBrowser: false;
+      sessionOnly: true;
+      sessionOnlyReason: 'secure-storage-unavailable' | 'origin-unavailable';
+    }
+  | { decision: 'approved'; rememberedBrowser: false; sessionOnly: false }
+  | { decision: 'denied'; rememberedBrowser: false; sessionOnly: false };
 
 /** Result of exporting the account's synced entities to a chosen file. */
 export interface SyncDataExportFileResult {

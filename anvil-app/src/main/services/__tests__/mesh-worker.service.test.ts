@@ -16,6 +16,9 @@ db.exec(SCHEMA_SQL);
 const meshVerificationDialog = vi.hoisted(() => ({
   showMessageBox: vi.fn().mockResolvedValue({ response: 0 }),
 }));
+const browserSessionOwnership = vi.hoisted(() => ({
+  interruptBrowserWorkspaceTurnsAbove: vi.fn(),
+}));
 
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('electron', () => ({
@@ -73,6 +76,7 @@ vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
 vi.mock('../mesh-artifact.service.js', () => ({
   uploadAttemptArtifact: vi.fn(async () => ({ id: 'art-test' })),
 }));
+vi.mock('../browser-session-ownership.service.js', () => browserSessionOwnership);
 
 vi.mock('../sync-keyring.service.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../sync-keyring.service.js')>();
@@ -212,6 +216,9 @@ describe('node permission ceiling', () => {
       db.prepare('SELECT cancel_requested FROM mesh_attempts WHERE id = ?').get('att-policy'),
     ).toEqual({ cancel_requested: 1 });
     expect(rpcCalls).toContainEqual({ operation: 'job.cancel', params: { jobId: 'job-policy' } });
+    expect(browserSessionOwnership.interruptBrowserWorkspaceTurnsAbove).toHaveBeenCalledWith(
+      'read-only',
+    );
   });
 });
 

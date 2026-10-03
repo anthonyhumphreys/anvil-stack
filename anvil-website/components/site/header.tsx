@@ -77,9 +77,9 @@ export function SiteHeader({ active }: { active?: "home" | "docs" | "sync" | "pr
         <div className="hidden items-center gap-1 md:flex">
           <ThemeToggle />
           {accountEnabled ? (
-            <Link href="/account" aria-current={active === "account" ? "page" : undefined} className={`${linkClass} gap-2`}>
+            <Link href="/account/workspace" aria-current={active === "account" ? "page" : undefined} className={`${linkClass} gap-2`}>
               <UserRound className="size-4" aria-hidden="true" />
-              Account
+              Open Anvil
             </Link>
           ) : null}
           <Link href={githubRepositoryUrl} className={`${linkClass} gap-2`}>
@@ -126,9 +126,9 @@ export function SiteHeader({ active }: { active?: "home" | "docs" | "sync" | "pr
               </Link>
             ))}
             {accountEnabled ? (
-              <Link href="/account" className="flex min-h-11 items-center gap-2 border-t px-3 text-sm font-medium text-muted-foreground hover:text-foreground">
+              <Link href="/account/workspace" className="flex min-h-11 items-center gap-2 border-t px-3 text-sm font-medium text-muted-foreground hover:text-foreground">
                 <UserRound className="size-4" aria-hidden="true" />
-                Account
+                Open Anvil
               </Link>
             ) : null}
             <Link href={githubRepositoryUrl} className="flex min-h-11 items-center gap-2 border-t px-3 text-sm font-medium text-muted-foreground hover:text-foreground">

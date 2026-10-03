@@ -1,6 +1,57 @@
 import type { ReactNode } from "react";
 
-export type WorkspaceView = "conversation" | "files" | "changes" | "runs" | "terminal" | "preview";
+export type WorkspaceView = "conversation" | "files" | "changes" | "runs" | "terminal" | "preview" | "context";
+
+export type WorkspaceProviderId = "codex" | "openai" | "azure" | "cursor" | "devin" | "llmgateway";
+export type WorkspacePermissionMode = "read-only" | "on-request" | "workspace-auto" | "full-access";
+
+export interface WorkspaceMachineOption {
+  enrollmentId: string;
+  displayName: string;
+  self?: boolean;
+}
+
+export interface WorkspaceExecutionProvider {
+  provider: WorkspaceProviderId;
+  enabled: boolean;
+  available: boolean;
+  unavailableReason?: string;
+  defaultModel?: string;
+  models: Array<{ id: string; label: string }>;
+  permissionModes: WorkspacePermissionMode[];
+  defaultPermissionMode: WorkspacePermissionMode;
+}
+
+export interface WorkspaceExecutionControls {
+  chatAvailable: boolean;
+  unavailableReason?: string;
+  providers: WorkspaceExecutionProvider[];
+  maximumPermissionMode: WorkspacePermissionMode;
+  provider?: WorkspaceProviderId;
+  model?: string;
+  permissionMode?: WorkspacePermissionMode;
+  deliveryPending?: boolean;
+  providerSwitchBlocked?: boolean;
+  providerSwitchBlockedReason?: string;
+  onProviderChange?: (provider: WorkspaceProviderId) => void;
+  onModelChange?: (model: string) => void;
+  onPermissionModeChange?: (mode: WorkspacePermissionMode) => void;
+}
+
+export interface WorkspaceOnboardingState {
+  machines: WorkspaceMachineOption[];
+  /** Enrollment currently bound to the browser grant. */
+  currentEnrollmentId?: string;
+  selectedEnrollmentId?: string;
+  requestPending?: boolean;
+  renewing?: boolean;
+  requestId?: string | null;
+  verificationCode?: string;
+  error?: string | null;
+  discoveryDetail?: string;
+  onSelectMachine?: (enrollmentId: string) => void;
+  onRequestMachine?: (enrollmentId: string) => void | Promise<void>;
+}
 
 export type WorkspaceConnectionState =
   | "connected"
@@ -14,6 +65,7 @@ export type WorkspaceSessionState = "idle" | "running" | "waiting" | "completed"
 export interface WorkspaceConnection {
   state: WorkspaceConnectionState;
   desktopName?: string;
+  targetEnrollmentId?: string;
   detail?: string;
   checkedAt?: string;
 }
@@ -140,7 +192,7 @@ export interface WorkspaceActions {
   onSelectRepository?: (repositoryId: string) => void | Promise<void>;
   onSelectSession?: (sessionId: string) => void | Promise<void>;
   onCreateSession?: () => void | Promise<void>;
-  onSendMessage?: (content: string) => void | Promise<void>;
+  onSendMessage?: (content: string, execution?: Pick<WorkspaceExecutionControls, "provider" | "model" | "permissionMode">) => void | Promise<void>;
   onCancelSession?: () => void | Promise<void>;
   onApproveAction?: (approvalId: string) => void | Promise<void>;
   onRejectAction?: (approvalId: string) => void | Promise<void>;
@@ -157,6 +209,9 @@ export interface WorkspaceActions {
 export interface WorkspaceShellProps {
   model: WorkspaceViewModel;
   actions?: WorkspaceActions;
+  onboarding?: WorkspaceOnboardingState;
+  execution?: WorkspaceExecutionControls;
+  targetLabel?: string;
   /**
    * An opaque, already account/workspace-scoped key supplied by the browser
    * transport. Drafts are never persisted if this is omitted.

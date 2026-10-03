@@ -11,7 +11,8 @@ configureWorkosEnvironment();
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  outputFileTracingRoot: projectRoot,
+  outputFileTracingRoot: path.resolve(projectRoot, ".."),
+  turbopack: { root: path.resolve(projectRoot, "..") },
   reactStrictMode: true,
   async redirects() {
     const registryDocs = [

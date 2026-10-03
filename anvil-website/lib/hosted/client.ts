@@ -9,6 +9,9 @@ import type {
   HostedCheckoutResult,
   HostedDashboardRequestInput,
   HostedDashboardRequestResult,
+  HostedDashboardTrustRevokeInput,
+  HostedDashboardTrustRevokeResult,
+  HostedDashboardGrantRevokeResult,
   HostedDashboardCommandStatusResult,
   HostedDashboardCommandSubmitResult,
   BrowserWorkspaceCommandEnvelope,
@@ -17,6 +20,7 @@ import type {
   HostedDataStatusResult,
   HostedDeleteAccountResult,
   HostedDeviceListResult,
+  HostedWorkspaceMachine,
   HostedEntitlement,
   HostedIdentity,
   HostedOrganizationAcceptResult,
@@ -398,12 +402,31 @@ export function createLinkCode(identity: HostedIdentity): Promise<HostedLinkCode
   return hostedCall<HostedLinkCodeResult>("/internal/hosted/link-code", identity);
 }
 
-/** POST /internal/hosted/devices — account device list (route not deployed yet). */
+/** POST /internal/hosted/devices — account-scoped enrolled device list. */
 export function listDevices(identity: HostedIdentity): Promise<HostedDeviceListResult> {
   return hostedCall<HostedDeviceListResult>("/internal/hosted/devices", identity);
 }
 
-/** POST /internal/hosted/device-rename (route not deployed yet). */
+/** Active person-owned machines that a browser may target for Desktop approval. */
+export async function listWorkspaceMachines(
+  identity: HostedIdentity,
+): Promise<HostedWorkspaceMachine[]> {
+  const { devices } = await listDevices(identity);
+  return devices
+    .filter(
+      (device) =>
+        !device.revoked &&
+        device.enrollmentClass === "device" &&
+        device.trustState === "trusted",
+    )
+    .map((device) => ({
+      enrollmentId: device.enrollmentId,
+      name: device.displayName?.trim() || `Anvil Desktop · ${device.enrollmentId.slice(-6)}`,
+      status: "unknown",
+    }));
+}
+
+/** POST /internal/hosted/device-rename. */
 export function renameDevice(
   identity: HostedIdentity,
   enrollmentId: string,
@@ -412,7 +435,7 @@ export function renameDevice(
   return hostedCall("/internal/hosted/device-rename", { ...identity, enrollmentId, displayName });
 }
 
-/** POST /internal/hosted/device-revoke (route not deployed yet). */
+/** POST /internal/hosted/device-revoke. */
 export function revokeDevice(
   identity: HostedIdentity,
   enrollmentId: string
@@ -420,12 +443,12 @@ export function revokeDevice(
   return hostedCall("/internal/hosted/device-revoke", { ...identity, enrollmentId });
 }
 
-/** POST /internal/hosted/data-status — hosted deletion status (route not deployed yet). */
+/** POST /internal/hosted/data-status — hosted deletion status. */
 export function getDataStatus(identity: HostedIdentity): Promise<HostedDataStatusResult> {
   return hostedCall<HostedDataStatusResult>("/internal/hosted/data-status", identity);
 }
 
-/** POST /internal/hosted/delete-account — schedule hosted data purge (route not deployed yet). */
+/** POST /internal/hosted/delete-account — schedule hosted data purge. */
 export function deleteAccount(identity: HostedIdentity): Promise<HostedDeleteAccountResult> {
   return hostedCall<HostedDeleteAccountResult>("/internal/hosted/delete-account", identity);
 }
@@ -447,6 +470,28 @@ export function submitDashboardRequest(
   return hostedCall<HostedDashboardRequestResult>("/internal/hosted/dashboard-request", {
     ...identity,
     request
+  });
+}
+
+/** POST /internal/hosted/dashboard-trust-revoke — revoke one remembered browser. */
+export function revokeDashboardTrust(
+  identity: HostedIdentity,
+  request: HostedDashboardTrustRevokeInput,
+): Promise<HostedDashboardTrustRevokeResult> {
+  return hostedCall<HostedDashboardTrustRevokeResult>("/internal/hosted/dashboard-trust-revoke", {
+    ...identity,
+    request,
+  });
+}
+
+/** POST /internal/hosted/dashboard-revoke — revoke one browser session grant. */
+export function revokeDashboardGrant(
+  identity: HostedIdentity,
+  requestId: string,
+): Promise<HostedDashboardGrantRevokeResult> {
+  return hostedCall<HostedDashboardGrantRevokeResult>("/internal/hosted/dashboard-revoke", {
+    ...identity,
+    requestId,
   });
 }
 

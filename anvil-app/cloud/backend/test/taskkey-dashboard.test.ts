@@ -298,7 +298,10 @@ describe('taskkey deliver/pull', () => {
         'taskkey.deliver',
         {
           jobId: created.job.id,
-          wraps: [wrapFor(created.job.id, fx.workerEnrollmentId), wrapFor(created.job.id, observer)],
+          wraps: [
+            wrapFor(created.job.id, fx.workerEnrollmentId),
+            wrapFor(created.job.id, observer),
+          ],
         },
         fx.sourceAuth,
       ),
@@ -374,13 +377,16 @@ describe('dashboard grants', () => {
     };
   }
 
-  function grant(requestId: string): DashboardGrantPayload {
+  function grant(
+    requestId: string,
+    expiresAt = new Date(Date.now() + 3_600_000).toISOString(),
+  ): DashboardGrantPayload {
     return {
       v: 1,
       enc: 'x25519-aes-256-gcm',
       requestId,
       browserPub: BROWSER_PUB,
-      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      expiresAt,
       ephPub: btoa('fedcba9876543210fedcba9876543210'),
       nonce: btoa('0123456789ab'),
       ct: btoa('sealed-dashboard-session-key'),
@@ -435,6 +441,52 @@ describe('dashboard grants', () => {
     expect(entry?.state).toBe('pending');
     expect(entry?.browserPub).toBe(BROWSER_PUB);
     expect(entry?.scopes).toEqual(['read-dashboard']);
+  });
+
+  it('routes a machine-targeted request only to that enrollment and rejects other decisions', async () => {
+    const fx = fixture('dash-targeted');
+    const requestId = crypto.randomUUID();
+    const created = await postHostedDashboardRequest(fx.accountId, requestId, {
+      targetEnrollmentId: fx.sourceEnrollmentId,
+    });
+    expect(created.status).toBe(200);
+    const retargeted = await postHostedDashboardRequest(fx.accountId, requestId, {
+      targetEnrollmentId: fx.workerEnrollmentId,
+    });
+    expect(retargeted.status).toBe(409);
+
+    const targetQueue = expectSuccess<DashboardRequestsResult>(
+      await postRpc('dashboard.requests', {}, fx.sourceAuth),
+    );
+    expect(targetQueue.requests.find((request) => request.requestId === requestId)).toMatchObject({
+      requestId,
+      targetEnrollmentId: fx.sourceEnrollmentId,
+    });
+
+    const otherQueue = expectSuccess<DashboardRequestsResult>(
+      await postRpc('dashboard.requests', {}, fx.workerAuth),
+    );
+    expect(otherQueue.requests.some((request) => request.requestId === requestId)).toBe(false);
+
+    const otherLookup = await postRpc('dashboard.requests', { requestId }, fx.workerAuth);
+    expect(otherLookup.status).toBe(403);
+    expect(isRpcError(otherLookup.body)).toBe(true);
+
+    const otherDecision = await postRpc(
+      'dashboard.decide',
+      { requestId, decision: 'denied' },
+      fx.workerAuth,
+    );
+    expect(otherDecision.status).toBe(403);
+    expect(isRpcError(otherDecision.body)).toBe(true);
+
+    const targetDecision = await postRpc(
+      'dashboard.decide',
+      { requestId, decision: 'denied' },
+      fx.sourceAuth,
+    );
+    expect(targetDecision.status).toBe(200);
+    expect(isRpcError(targetDecision.body)).toBe(false);
   });
 
   it('issuer-bound lookup returns live decision and workspace authorization', async () => {
@@ -576,5 +628,334 @@ describe('dashboard grants', () => {
       challenge: 'different-challenge',
     });
     expect(reused.status).toBe(409);
+  });
+
+  it('hydrates remembered renewals from the trust ceiling and rejects replay or widening', async () => {
+    const fx = fixture('dash-trust-renewal');
+    const trustId = crypto.randomUUID();
+    const origin = 'https://workspace.example';
+    const bindings = [{ workspaceId: 'workspace-1', repositoryIds: ['repo-1'] }];
+    const grantedScopes = ['workspace-read'] as const;
+    const initialRequestId = crypto.randomUUID();
+    const initialExpiresAt = new Date(Date.now() + 600_000).toISOString();
+    const initial = await postHostedDashboardRequest(fx.accountId, initialRequestId, {
+      targetEnrollmentId: fx.sourceEnrollmentId,
+      scopes: [],
+      workspaceBindings: [],
+      origin,
+      expiresAt: initialExpiresAt,
+    });
+    expect(initial.status).toBe(200);
+
+    const remembered = await postRpc(
+      'dashboard.decide',
+      {
+        requestId: initialRequestId,
+        decision: 'approved',
+        grant: grant(initialRequestId, initialExpiresAt),
+        snapshot: snapshot(1),
+        workspaceBindings: bindings,
+        grantedScopes: grantedScopes,
+        browserTrust: {
+          trustId,
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      },
+      fx.sourceAuth,
+    );
+    expect(remembered.status).toBe(200);
+
+    const requestId = crypto.randomUUID();
+    const renewalProof = btoa('renewal-proof-012345678901234567');
+    const expiresAt = new Date(Date.now() + 3_000_000).toISOString();
+    const renewal = await postHostedDashboardRequest(fx.accountId, requestId, {
+      targetEnrollmentId: fx.sourceEnrollmentId,
+      trustId,
+      renewalProof,
+      scopes: [],
+      workspaceBindings: [],
+      origin,
+      challenge: 'fresh-renewal-challenge',
+      expiresAt,
+    });
+    expect(renewal.status).toBe(200);
+
+    const pending = expectSuccess<DashboardRequestsResult>(
+      await postRpc('dashboard.requests', {}, fx.sourceAuth),
+    ).requests.find((entry) => entry.requestId === requestId);
+    expect(pending).toMatchObject({
+      trustId,
+      renewalProof,
+      targetEnrollmentId: fx.sourceEnrollmentId,
+      scopes: grantedScopes,
+      workspaceBindings: bindings,
+    });
+
+    const replay = await postHostedDashboardRequest(fx.accountId, crypto.randomUUID(), {
+      targetEnrollmentId: fx.sourceEnrollmentId,
+      trustId,
+      renewalProof,
+      scopes: [],
+      workspaceBindings: [],
+      origin,
+      challenge: 'replayed-proof',
+      expiresAt,
+    });
+    expect(replay.status).toBe(409);
+
+    const widened = await postHostedDashboardRequest(fx.accountId, crypto.randomUUID(), {
+      targetEnrollmentId: fx.sourceEnrollmentId,
+      trustId,
+      renewalProof: btoa('different-proof-0123456789012345'),
+      scopes: ['workspace-write'],
+      workspaceBindings: [],
+      origin,
+      challenge: 'widened-renewal',
+      expiresAt,
+    });
+    expect(widened.status).toBe(403);
+
+    const approvedRenewal = await postRpc(
+      'dashboard.decide',
+      {
+        requestId,
+        decision: 'approved',
+        grant: grant(requestId, expiresAt),
+        snapshot: snapshot(1),
+        workspaceBindings: bindings,
+        grantedScopes: grantedScopes,
+      },
+      fx.sourceAuth,
+    );
+    expect(approvedRenewal.status).toBe(200);
+  });
+
+  it('revokes every session of a remembered browser, clears command results, and purges trust on account deletion', async () => {
+    const fx = fixture('dash-trust-revoke');
+    const trustId = crypto.randomUUID();
+    const origin = 'https://workspace.example';
+    const bindings = [{ workspaceId: 'workspace-1', repositoryIds: ['repo-1'] }];
+    const scopes = ['workspace-read'] as const;
+    const firstRequestId = crypto.randomUUID();
+    const firstExpiresAt = new Date(Date.now() + 600_000).toISOString();
+    await postHostedDashboardRequest(fx.accountId, firstRequestId, {
+      targetEnrollmentId: fx.sourceEnrollmentId,
+      scopes: [],
+      workspaceBindings: [],
+      origin,
+      expiresAt: firstExpiresAt,
+    });
+    const firstDecision = await postRpc(
+      'dashboard.decide',
+      {
+        requestId: firstRequestId,
+        decision: 'approved',
+        grant: grant(firstRequestId, firstExpiresAt),
+        snapshot: snapshot(1),
+        workspaceBindings: bindings,
+        grantedScopes: scopes,
+        browserTrust: {
+          trustId,
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        },
+      },
+      fx.sourceAuth,
+    );
+    expect(firstDecision.status).toBe(200);
+
+    const secondRequestId = crypto.randomUUID();
+    const secondExpiresAt = new Date(Date.now() + 3_000_000).toISOString();
+    await postHostedDashboardRequest(fx.accountId, secondRequestId, {
+      targetEnrollmentId: fx.sourceEnrollmentId,
+      trustId,
+      renewalProof: btoa('second-renewal-proof-01234567890'),
+      scopes: [],
+      workspaceBindings: [],
+      origin,
+      challenge: 'second-renewal-challenge',
+      expiresAt: secondExpiresAt,
+    });
+    const secondDecision = await postRpc(
+      'dashboard.decide',
+      {
+        requestId: secondRequestId,
+        decision: 'approved',
+        grant: grant(secondRequestId, secondExpiresAt),
+        snapshot: snapshot(1),
+        workspaceBindings: bindings,
+        grantedScopes: scopes,
+      },
+      fx.sourceAuth,
+    );
+    expect(secondDecision.status).toBe(200);
+
+    const thirdRequestId = crypto.randomUUID();
+    const thirdExpiresAt = new Date(Date.now() + 3_000_000).toISOString();
+    await postHostedDashboardRequest(fx.accountId, thirdRequestId, {
+      targetEnrollmentId: fx.sourceEnrollmentId,
+      trustId,
+      renewalProof: btoa('third-renewal-proof-012345678901'),
+      scopes: [],
+      workspaceBindings: [],
+      origin,
+      challenge: 'third-renewal-challenge',
+      expiresAt: thirdExpiresAt,
+    });
+    const thirdDecision = await postRpc(
+      'dashboard.decide',
+      {
+        requestId: thirdRequestId,
+        decision: 'approved',
+        grant: grant(thirdRequestId, thirdExpiresAt),
+        snapshot: snapshot(1),
+        workspaceBindings: bindings,
+        grantedScopes: scopes,
+      },
+      fx.sourceAuth,
+    );
+    expect(thirdDecision.status).toBe(200);
+
+    const completedCommandId = crypto.randomUUID();
+    const completedCommand = {
+      v: 1,
+      enc: 'aes-256-gcm',
+      requestId: firstRequestId,
+      commandId: completedCommandId,
+      operation: 'file.read',
+      workspaceId: 'workspace-1',
+      repositoryId: 'repo-1',
+      expiresAt: firstExpiresAt,
+      nonce: btoa('0123456789ab'),
+      ct: btoa('opaque-dashboard-command-ciphertext'),
+    };
+    const completedSubmit = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/dashboard-command-submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          accountId: fx.accountId,
+          requestId: firstRequestId,
+          command: completedCommand,
+        }),
+      }),
+    );
+    expect(completedSubmit.status).toBe(200);
+    const claimed = expectSuccess<{ commands: Array<{ claimFence: number }> }>(
+      await postRpc('dashboard.command.claim', { requestId: firstRequestId }, fx.sourceAuth),
+    );
+    expect(claimed.commands).toHaveLength(1);
+    await postRpc(
+      'dashboard.command.complete',
+      {
+        requestId: firstRequestId,
+        commandId: completedCommandId,
+        claimFence: claimed.commands[0]?.claimFence,
+        outcome: 'completed',
+        result: { ...completedCommand, ct: btoa('opaque-dashboard-result-ciphertext') },
+      },
+      fx.sourceAuth,
+    );
+
+    const commandExpiresAt = new Date(Date.now() + 300_000).toISOString();
+    const claimedCommandId = crypto.randomUUID();
+    const claimedCommand = {
+      ...completedCommand,
+      requestId: secondRequestId,
+      commandId: claimedCommandId,
+      expiresAt: commandExpiresAt,
+    };
+    const claimedSubmit = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/dashboard-command-submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          accountId: fx.accountId,
+          requestId: secondRequestId,
+          command: claimedCommand,
+        }),
+      }),
+    );
+    expect(claimedSubmit.status).toBe(200);
+    const secondClaimed = expectSuccess<{ commands: Array<{ commandId: string }> }>(
+      await postRpc('dashboard.command.claim', { requestId: secondRequestId }, fx.sourceAuth),
+    );
+    expect(secondClaimed.commands.map((command) => command.commandId)).toEqual([claimedCommandId]);
+
+    const queuedCommandId = crypto.randomUUID();
+    const queuedCommand = {
+      ...completedCommand,
+      requestId: thirdRequestId,
+      commandId: queuedCommandId,
+      expiresAt: commandExpiresAt,
+    };
+    const queuedSubmit = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/dashboard-command-submit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          accountId: fx.accountId,
+          requestId: thirdRequestId,
+          command: queuedCommand,
+        }),
+      }),
+    );
+    expect(queuedSubmit.status).toBe(200);
+
+    const revokeResponse = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/dashboard-trust-revoke', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId: fx.accountId, trustId, origin }),
+      }),
+    );
+    expect(revokeResponse.status).toBe(200);
+    expect(await revokeResponse.json()).toMatchObject({ result: { revoked: true } });
+
+    for (const requestId of [firstRequestId, secondRequestId, thirdRequestId]) {
+      const status = expectSuccess<HostedDashboardStatus>(
+        await postHostedStatus(fx.accountId, requestId),
+      );
+      expect(status.state).toBe('revoked');
+      expect(status.grant).toBeUndefined();
+    }
+    const completedStatusResponse = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/dashboard-command-status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: firstRequestId, commandId: completedCommandId }),
+      }),
+    );
+    const completedStatus = (await completedStatusResponse.json()) as Record<string, unknown>;
+    expect(completedStatus).toMatchObject({ state: 'completed' });
+    expect(completedStatus['result']).toBeUndefined();
+    const claimedStatusResponse = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/dashboard-command-status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: secondRequestId, commandId: claimedCommandId }),
+      }),
+    );
+    expect(await claimedStatusResponse.json()).toMatchObject({ state: 'unknown-outcome' });
+    const queuedStatusResponse = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/dashboard-command-status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId: thirdRequestId, commandId: queuedCommandId }),
+      }),
+    );
+    expect(await queuedStatusResponse.json()).toMatchObject({ state: 'revoked' });
+
+    const purge = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/delete-account', { method: 'POST' }),
+    );
+    expect(purge.status).toBe(200);
+    const deletedRevoke = await accountStub(fx.accountId).fetch(
+      new Request('https://internal.anvil/internal/dashboard-trust-revoke', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId: fx.accountId, trustId, origin }),
+      }),
+    );
+    expect(await deletedRevoke.json()).toMatchObject({ result: { revoked: false } });
   });
 });

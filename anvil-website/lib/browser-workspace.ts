@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   dashboardVerificationCode,
@@ -8,6 +8,7 @@ import {
   decodeDsk,
   encodeBase64,
   generateBrowserKeypair,
+  hmacSha256,
   openBrowserWorkspaceResult,
   randomChallenge,
   randomRequestId,
@@ -20,6 +21,8 @@ import {
   browserWorkspaceCommandStatusAction,
   browserWorkspaceStatusAction,
   requestBrowserWorkspaceAccessAction,
+  revokeBrowserWorkspaceGrantAction,
+  revokeBrowserWorkspaceTrustAction,
   submitBrowserWorkspaceCommandAction,
   type BrowserWorkspaceAccessRequest,
   type BrowserWorkspaceActionResult
@@ -30,15 +33,18 @@ import {
   type BrowserWorkspaceCommandEnvelope,
   type BrowserWorkspaceOperation,
   type BrowserWorkspaceResultEnvelope,
+  type BrowserWorkspaceBinding,
   type DashboardCommandState,
   type DashboardScope,
   type HostedDashboardRequestResult,
   type HostedDashboardStatus
 } from "@/lib/hosted/types";
+import { dashboardRenewalProofMessage } from "@/lib/hosted/types";
 import {
   BrowserWorkspaceKeyStore,
   type BrowserWorkspaceKeyRecord,
-  type BrowserWorkspacePersistence
+  type BrowserWorkspacePersistence,
+  type BrowserWorkspaceTrustRecord
 } from "@/lib/browser-workspace-auth";
 
 const REQUEST_TTL_MS = 60 * 60_000;
@@ -48,6 +54,9 @@ const COMMAND_TTL_MS = 5 * 60_000;
 // changing the command outcome.
 const POLL_INTERVAL_MS = 1_500;
 const DEFAULT_POLL_TIMEOUT_MS = 30_000;
+const TRUST_RENEWAL_WINDOW_MS = 5 * 60_000;
+const TRUST_HARD_MAX_MS = 30 * 24 * 60 * 60_000;
+const useSynchronousBrowserEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 export type BrowserWorkspaceAuthStatus = "locked" | "pending" | "ready" | "ended";
 
@@ -63,6 +72,9 @@ export interface BrowserWorkspaceAuth {
   accountId: string | null;
   backendId: string | null;
   expiresAt: string | null;
+  trustExpiresAt: string | null;
+  remembered: boolean;
+  renewing: boolean;
   scopes: readonly DashboardScope[];
   workspace: BrowserWorkspaceWorkspaceGrant | null;
   persistence: BrowserWorkspacePersistence | null;
@@ -75,9 +87,7 @@ export interface BrowserWorkspaceAuth {
 }
 
 export interface BrowserWorkspaceRequestOptions {
-  workspaceIds: string[];
-  repositoryIds?: string[];
-  scopes?: DashboardScope[];
+  targetEnrollmentId: string;
 }
 
 export interface BrowserWorkspaceCommandInput {
@@ -133,6 +143,7 @@ interface PendingPhase {
   kind: "pending";
   record: BrowserWorkspaceKeyRecord;
   persistence: BrowserWorkspacePersistence;
+  renewal: boolean;
 }
 
 interface ReadyPhase {
@@ -145,6 +156,10 @@ interface ReadyPhase {
   expiresAt: string;
   scopes: DashboardScope[];
   workspace: BrowserWorkspaceWorkspaceGrant;
+  trustId?: string;
+  trustExpiresAt?: string;
+  remembered: boolean;
+  origin: string;
 }
 
 type Phase =
@@ -158,6 +173,7 @@ interface TrackedCommand extends BrowserWorkspaceCommandMetadata {
   accountId: string;
   backendId: string;
   generation: number;
+  trustId?: string;
 }
 
 const TERMINAL_STATES = new Set<DashboardCommandState>([
@@ -176,14 +192,22 @@ function isSafeId(value: string): boolean {
   return /^[A-Za-z0-9_-]{1,200}$/.test(value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function grantWorkspace(inner: DashboardGrantInner): BrowserWorkspaceWorkspaceGrant | null {
-  const binding = inner.workspaceBindings?.[0];
-  const workspace =
-    binding === undefined && inner.workspace === undefined
-      ? null
-      : binding === undefined
-        ? { workspaceId: inner.workspace!.workspaceId, repoIds: inner.workspace!.repoIds }
-        : { workspaceId: binding.workspaceId, repoIds: binding.repositoryIds };
+  let workspace: { workspaceId: unknown; repoIds: unknown } | null = null;
+  if (inner.workspaceBindings !== undefined) {
+    if (!Array.isArray(inner.workspaceBindings) || inner.workspaceBindings.length !== 1) return null;
+    const binding: unknown = inner.workspaceBindings[0];
+    if (!isRecord(binding)) return null;
+    workspace = { workspaceId: binding.workspaceId, repoIds: binding.repositoryIds };
+  } else if (inner.workspace !== undefined) {
+    const legacy: unknown = inner.workspace;
+    if (!isRecord(legacy)) return null;
+    workspace = { workspaceId: legacy.workspaceId, repoIds: legacy.repoIds };
+  }
   if (
     !workspace ||
     typeof workspace.workspaceId !== "string" ||
@@ -210,6 +234,9 @@ function initialAuth(): BrowserWorkspaceAuth {
     accountId: null,
     backendId: null,
     expiresAt: null,
+    trustExpiresAt: null,
+    remembered: false,
+    renewing: false,
     scopes: [],
     workspace: null,
     persistence: null
@@ -225,6 +252,9 @@ function toAuth(phase: Phase): BrowserWorkspaceAuth {
       status: "pending",
       requestId: phase.record.requestId,
       expiresAt: phase.record.expiresAt,
+      trustExpiresAt: null,
+      remembered: false,
+      renewing: phase.renewal,
       persistence: phase.persistence
     };
   }
@@ -234,6 +264,9 @@ function toAuth(phase: Phase): BrowserWorkspaceAuth {
     accountId: phase.accountId,
     backendId: phase.backendId,
     expiresAt: phase.expiresAt,
+    trustExpiresAt: phase.trustExpiresAt ?? null,
+    remembered: phase.remembered,
+    renewing: false,
     scopes: phase.scopes,
     workspace: phase.workspace,
     persistence: phase.persistence
@@ -273,6 +306,12 @@ function resultError(data: unknown): { code: string; message: string } | undefin
     : undefined;
 }
 
+function wipeTrustMaterial(trust: BrowserWorkspaceTrustRecord | null): void {
+  if (trust === null) return;
+  trust.privateKey.fill(0);
+  trust.proofKey.fill(0);
+}
+
 /**
  * Browser client for the Desktop-backed workspace. The DSK and private
  * browser scalar remain in this component instance. Results are returned to
@@ -287,51 +326,174 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
   const tracked = useRef(new Map<string, TrackedCommand>());
   const polls = useRef(new Map<string, Promise<BrowserWorkspaceExecution>>());
   const statusPoll = useRef<Promise<void> | null>(null);
+  const renewalRef = useRef<PendingPhase | null>(null);
+  const [renewing, setRenewing] = useState(false);
+  const ownerScope = useRef(accountScope);
   const [error, setError] = useState<string | null>(null);
   const [derivedCode, setDerivedCode] = useState<{ requestId: string; code: string }>();
 
-  const replacePhase = useCallback((next: Phase) => {
-    sessionGeneration.current += 1;
+  const replacePhase = useCallback((next: Phase, invalidateCommands = true) => {
+    if (invalidateCommands) sessionGeneration.current += 1;
     phaseRef.current = next;
     setPhase(next);
   }, []);
 
+  const ownsCurrentScope = useCallback(
+    (generation: number) => ownerScope.current === accountScope && sessionGeneration.current === generation,
+    [accountScope]
+  );
+
+  const setRenewal = useCallback((pending: PendingPhase | null) => {
+    renewalRef.current = pending;
+    setRenewing(pending !== null);
+  }, []);
+
+  const dropTracked = useCallback((predicate: (command: TrackedCommand) => boolean) => {
+    for (const [commandId, command] of tracked.current) {
+      if (predicate(command)) {
+        command.dsk.fill(0);
+        tracked.current.delete(commandId);
+      }
+    }
+  }, []);
+
   const endSession = useCallback(
     async (reason: NonNullable<BrowserWorkspaceAuth["reason"]>) => {
+      const generation = sessionGeneration.current;
+      if (!ownsCurrentScope(generation)) return;
       const current = phaseRef.current;
+      const renewal = renewalRef.current;
+      const requestIds = new Set<string>();
+      const trustIds = new Set<string>();
       if (current.kind === "pending" || current.kind === "ready") {
-        replacePhase({ kind: "ended", reason });
-        tracked.current.clear();
-        await store.clearAccount(accountScope);
-        return;
+        requestIds.add(current.record.requestId);
+        if (current.record.trustId) trustIds.add(current.record.trustId);
+        if (reason === "revoked" && current.record.trustId) {
+          await store.removeTrust(accountScope, current.record.trustId);
+        } else {
+          await store.remove(accountScope, current.record.requestId);
+        }
       }
-      tracked.current.clear();
-      replacePhase({ kind: "ended", reason });
+      if (renewal !== null) {
+        requestIds.add(renewal.record.requestId);
+        if (renewal.record.trustId) trustIds.add(renewal.record.trustId);
+        if (reason === "revoked" && renewal.record.trustId) {
+          await store.removeTrust(accountScope, renewal.record.trustId);
+        } else {
+          await store.remove(accountScope, renewal.record.requestId);
+        }
+      }
+      if (!ownsCurrentScope(generation)) return;
+      if (current.kind === "pending" || current.kind === "ready") current.record.privateKey.fill(0);
+      if (renewal !== null) renewal.record.privateKey.fill(0);
+      setRenewal(null);
+      dropTracked((command) => requestIds.has(command.requestId) || (command.trustId !== undefined && trustIds.has(command.trustId)));
+      if (current.kind === "ready") current.dsk.fill(0);
+      replacePhase({ kind: "ended", reason }, false);
     },
-    [accountScope, replacePhase, store]
+    [accountScope, dropTracked, ownsCurrentScope, replacePhase, setRenewal, store]
   );
 
   const lock = useCallback(async () => {
+    const generation = sessionGeneration.current;
+    if (!ownsCurrentScope(generation)) return;
     const current = phaseRef.current;
-    if (current.kind === "pending" || current.kind === "ready") {
-      replacePhase({ kind: "locked" });
-      tracked.current.clear();
-      await store.clearAccount(accountScope);
-      setError(null);
-      return;
+    const requestIds = new Set<string>();
+    if (current.kind === "ready" || current.kind === "pending") {
+      requestIds.add(current.record.requestId);
+      current.record.privateKey.fill(0);
     }
+    if (current.kind === "ready") current.dsk.fill(0);
+    const renewal = renewalRef.current;
+    if (renewal !== null) {
+      requestIds.add(renewal.record.requestId);
+      renewal.record.privateKey.fill(0);
+    }
+    for (const command of tracked.current.values()) command.dsk.fill(0);
+    store.clearSessionMemory(accountScope);
+    setRenewal(null);
     tracked.current.clear();
     replacePhase({ kind: "locked" });
+    statusPoll.current = null;
     setError(null);
-  }, [accountScope, replacePhase, store]);
+    for (const requestId of requestIds) await store.remove(accountScope, requestId);
+  }, [accountScope, ownsCurrentScope, replacePhase, setRenewal, store]);
+
+  const disconnect = useCallback(async (): Promise<void> => {
+    const generation = sessionGeneration.current;
+    if (!ownsCurrentScope(generation)) return;
+    const current = phaseRef.current;
+    const renewal = renewalRef.current;
+    const record = current.kind === "pending" || current.kind === "ready"
+      ? current.record
+      : renewal?.record;
+    if (record === undefined) {
+      await lock();
+      return;
+    }
+    try {
+      const result = record.trustId
+        ? await revokeBrowserWorkspaceTrustAction(record.trustId)
+        : await revokeBrowserWorkspaceGrantAction(record.requestId);
+      if (!result.ok) {
+        if (ownsCurrentScope(generation)) setError(result.message);
+        throw new Error(result.message);
+      }
+      if (record.trustId) await store.removeTrust(accountScope, record.trustId);
+      else await store.remove(accountScope, record.requestId);
+      if (!ownsCurrentScope(generation)) return;
+      if (current.kind === "ready") {
+        current.dsk.fill(0);
+        current.record.privateKey.fill(0);
+      } else if (current.kind === "pending") {
+        current.record.privateKey.fill(0);
+      }
+      if (renewal !== null) renewal.record.privateKey.fill(0);
+      const trustId = record.trustId;
+      dropTracked((command) => command.requestId === record.requestId || (trustId !== undefined && command.trustId === trustId));
+      setRenewal(null);
+      replacePhase({ kind: "ended", reason: "revoked" }, false);
+      setError(null);
+    } catch (error) {
+      // Do not erase local proof/key material until the server confirms revoke.
+      if (ownsCurrentScope(generation) && error instanceof Error && !error.message.includes("Try again")) {
+        setError(error.message);
+      }
+      throw error;
+    }
+  }, [accountScope, dropTracked, lock, ownsCurrentScope, replacePhase, setRenewal, store]);
 
   const acceptStatus = useCallback(
-    async (record: BrowserWorkspaceKeyRecord, persistence: BrowserWorkspacePersistence, status: HostedDashboardStatus) => {
+    async (pending: PendingPhase, status: HostedDashboardStatus) => {
+      const { record } = pending;
       const generation = sessionGeneration.current;
+      const isCurrent = () => ownsCurrentScope(generation);
       if (status.state === "denied" || status.state === "expired" || status.state === "revoked") {
-        replacePhase({ kind: "ended", reason: status.state });
-        tracked.current.clear();
-        await store.clearAccount(accountScope);
+        const isRenewalCurrent = renewalRef.current?.record.requestId === record.requestId;
+        await store.remove(accountScope, record.requestId);
+        if (status.state === "revoked" && record.trustId) {
+          await store.removeTrust(accountScope, record.trustId);
+        }
+        if (!isCurrent()) return;
+        if (isRenewalCurrent) setRenewal(null);
+        const current = phaseRef.current;
+        if (!isRenewalCurrent && current.kind === "pending" && current.record.requestId === record.requestId) {
+          replacePhase({ kind: "ended", reason: status.state }, false);
+        } else if (status.state === "revoked" && current.kind === "ready" && current.trustId === record.trustId) {
+          replacePhase({ kind: "ended", reason: "revoked" }, false);
+        }
+        if (status.state === "revoked") {
+          const targetTrust = record.trustId;
+          dropTracked((command) => command.requestId === record.requestId || (targetTrust !== undefined && command.trustId === targetTrust));
+          record.privateKey.fill(0);
+          if (current.kind === "ready" && current.trustId === targetTrust) {
+            current.dsk.fill(0);
+            current.record.privateKey.fill(0);
+          }
+        } else {
+          record.privateKey.fill(0);
+        }
+        if (status.state !== "expired") setError(status.state === "denied" ? "The Desktop declined workspace access." : "This browser connection was revoked.");
         return;
       }
       if (status.state !== "approved" || status.grant === undefined) return;
@@ -352,59 +514,181 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
         status.grant as DashboardGrantEnvelope,
         { backendId: status.backendId as string, accountId: status.accountId as string }
       );
-      if (generation !== sessionGeneration.current || phaseRef.current.kind !== "pending") return;
+      const isCurrentRequest = () =>
+        renewalRef.current?.record.requestId === record.requestId ||
+        (phaseRef.current.kind === "pending" && phaseRef.current.record.requestId === record.requestId);
+      if (!isCurrent() || !isCurrentRequest()) return;
       if (inner === null) {
         setError("Could not open the sealed workspace grant. Request access again.");
         return;
       }
       const workspace = grantWorkspace(inner);
       const expiresAt = Date.parse(inner.expiresAt);
+      const knownScopes: readonly DashboardScope[] = [
+        "read-dashboard",
+        "workspace-read",
+        "workspace-write",
+        "submit-task",
+        "approve-action",
+        "request-handoff",
+        "terminal",
+        "preview"
+      ];
+      const validScopes = Array.isArray(inner.scopes) && inner.scopes.every(
+        (scope: unknown): scope is DashboardScope =>
+          typeof scope === "string" && knownScopes.includes(scope as DashboardScope)
+      );
       if (
         workspace === null ||
+        !validScopes ||
         !Number.isFinite(expiresAt) ||
+        inner.expiresAt !== record.expiresAt ||
         expiresAt <= Date.now() ||
         !inner.scopes.includes("workspace-read")
       ) {
         setError("The Desktop grant has no valid workspace-read binding.");
         return;
       }
-      const scopes = [...new Set(inner.scopes)].filter((scope): scope is DashboardScope =>
-        [
-          "workspace-read",
-          "workspace-write",
-          "submit-task",
-          "approve-action",
-          "request-handoff",
-          "terminal",
-          "preview"
-        ].includes(scope)
-      );
+      const scopes: DashboardScope[] = [...new Set(inner.scopes as DashboardScope[])];
+      const origin = record.origin;
+      const targetEnrollmentId = record.targetEnrollmentId;
+      if (origin === undefined || targetEnrollmentId === undefined || workspace.enrollmentId !== targetEnrollmentId) {
+        setError("The Desktop grant is bound to a different browser origin or machine.");
+        return;
+      }
+      const bindings: BrowserWorkspaceBinding[] = [{
+        workspaceId: workspace.workspaceId,
+        repositoryIds: [...new Set(workspace.repoIds)].sort()
+      }];
+      if (
+        bindings.length !== 1 ||
+        bindings[0]?.workspaceId !== workspace.workspaceId ||
+        JSON.stringify(bindings[0]?.repositoryIds) !== JSON.stringify([...workspace.repoIds].sort())
+      ) {
+        setError("The Desktop grant has an invalid workspace and repository binding.");
+        return;
+      }
+      if (inner.browserTrust !== undefined && !isRecord(inner.browserTrust)) {
+        setError("The Desktop returned invalid remembered-browser approval metadata.");
+        return;
+      }
+      const trust = inner.browserTrust;
+      let savedTrust: BrowserWorkspaceTrustRecord | null = null;
+      let trustPersistence: BrowserWorkspacePersistence | null = null;
+      if (record.trustId !== undefined) {
+        const existing = await store.loadTrust(accountScope, record.trustId);
+        if (!isCurrent() || !isCurrentRequest()) {
+          wipeTrustMaterial(existing);
+          return;
+        }
+        if (
+          existing === null || trust === undefined || trust.trustId !== record.trustId ||
+          trust.targetEnrollmentId !== targetEnrollmentId || trust.expiresAt !== existing.expiresAt ||
+          existing.origin !== origin || existing.targetEnrollmentId !== targetEnrollmentId ||
+          existing.accountId !== status.accountId || existing.browserPub !== record.browserPub ||
+          JSON.stringify(existing.workspaceBindings) !== JSON.stringify(bindings) ||
+          JSON.stringify([...existing.scopes].sort()) !== JSON.stringify([...scopes].sort()) ||
+          trust.proofKey !== undefined
+        ) {
+          setError("The renewal grant does not match this browser's approved trust.");
+          return;
+        }
+        savedTrust = existing;
+        trustPersistence = await store.saveTrust(existing);
+        if (!isCurrent() || !isCurrentRequest()) {
+          wipeTrustMaterial(existing);
+          return;
+        }
+        wipeTrustMaterial(existing);
+      } else if (trust !== undefined) {
+        let proofKey: Uint8Array = new Uint8Array(0);
+        try {
+          if (typeof trust.proofKey === "string") proofKey = new Uint8Array(decodeBase64(trust.proofKey));
+        } catch {
+          proofKey = new Uint8Array(0);
+        }
+        const trustExpiry = Date.parse(trust.expiresAt);
+        if (
+          !/^[A-Za-z0-9_-]{8,80}$/.test(trust.trustId) ||
+          proofKey.byteLength !== 32 ||
+          trust.targetEnrollmentId !== targetEnrollmentId ||
+          !Number.isFinite(trustExpiry) || trustExpiry <= expiresAt ||
+          trustExpiry > Date.now() + TRUST_HARD_MAX_MS + 60_000
+        ) {
+          setError("The Desktop returned invalid remembered-browser approval metadata.");
+          return;
+        }
+        const approvedTrust: BrowserWorkspaceTrustRecord = {
+          accountScope,
+          accountId: status.accountId,
+          trustId: trust.trustId,
+          origin,
+          targetEnrollmentId,
+          browserPub: record.browserPub,
+          privateKey: new Uint8Array(record.privateKey),
+          proofKey,
+          expiresAt: trust.expiresAt,
+          workspaceBindings: bindings,
+          scopes: [...scopes],
+          createdAt: record.createdAt ?? new Date().toISOString()
+        };
+        savedTrust = approvedTrust;
+        trustPersistence = await store.saveTrust(approvedTrust);
+        if (!isCurrent() || !isCurrentRequest()) {
+          wipeTrustMaterial(approvedTrust);
+          return;
+        }
+        wipeTrustMaterial(approvedTrust);
+      } else if (pending.renewal) {
+        setError("The Desktop did not return the remembered browser trust for renewal.");
+        return;
+      }
+      const trustedRecord: BrowserWorkspaceKeyRecord = {
+        ...record,
+        ...(savedTrust === null ? {} : { trustId: savedTrust.trustId })
+      };
+      const sessionPersistence = await store.save(trustedRecord);
+      if (!isCurrent() || !isCurrentRequest()) {
+        trustedRecord.privateKey.fill(0);
+        return;
+      }
       replacePhase({
         kind: "ready",
-        record,
-        persistence,
+        record: trustedRecord,
+        persistence: sessionPersistence,
         accountId: status.accountId,
         backendId: status.backendId,
         dsk: decodeDsk(inner),
         expiresAt: inner.expiresAt,
         scopes,
-        workspace
-      });
+        workspace,
+        ...(savedTrust === null ? {} : { trustId: savedTrust.trustId, trustExpiresAt: savedTrust.expiresAt }),
+        remembered: trustPersistence === "indexeddb",
+        origin
+      }, false);
+      if (renewalRef.current?.record.requestId === record.requestId) setRenewal(null);
       setError(null);
     },
-    [accountScope, replacePhase, store]
+    [accountScope, dropTracked, ownsCurrentScope, replacePhase, setRenewal, store]
   );
 
   const pollStatus = useCallback(async () => {
     const existing = statusPoll.current;
     if (existing !== null) return existing;
+    const generation = sessionGeneration.current;
+    const isCurrent = () => ownsCurrentScope(generation);
+    const token: { promise?: Promise<void> } = {};
     const promise = (async () => {
       const current = phaseRef.current;
-      if (current.kind !== "pending" && current.kind !== "ready") return;
-      const generation = sessionGeneration.current;
-      const record = current.record;
-      if (Date.parse(record.expiresAt) <= Date.now()) {
-        await endSession("expired");
+      const pending = renewalRef.current ?? (current.kind === "pending" ? current : null);
+      if (pending === null && current.kind !== "ready") return;
+      const record = pending?.record ?? (current.kind === "ready" ? current.record : null);
+      if (record === null || record.accountScope !== accountScope) return;
+      if (Date.parse(record.expiresAt) <= Date.now() && pending !== null) {
+        await store.remove(accountScope, record.requestId);
+        if (!isCurrent()) return;
+        if (pending.renewal) setRenewal(null);
+        else if (phaseRef.current.kind === "pending" && phaseRef.current.record.requestId === record.requestId) await endSession("expired");
         return;
       }
       const result = await (async () => {
@@ -415,85 +699,233 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
         }
       })();
       if (!result.ok) {
-        setError(result.message);
+        if (isCurrent()) setError(result.message);
         return;
       }
-      if (generation !== sessionGeneration.current || phaseRef.current !== current) return;
-      if (result.data.state === "revoked" || result.data.state === "expired" || result.data.state === "denied") {
-        await endSession(result.data.state);
-        return;
-      }
-      if (current.kind === "pending") {
-        await acceptStatus(current.record, current.persistence, result.data);
+      if (!isCurrent()) return;
+      if (pending !== null) {
+        await acceptStatus(pending, result.data);
+      } else if (current.kind === "ready" && result.data.state === "revoked") {
+        await endSession("revoked");
+      } else if (current.kind === "ready" && result.data.state === "expired" && current.trustId === undefined) {
+        await endSession("expired");
       }
     })().finally(() => {
-      statusPoll.current = null;
+      if (statusPoll.current === token.promise) statusPoll.current = null;
     });
+    token.promise = promise;
     statusPoll.current = promise;
     return promise;
-  }, [acceptStatus, endSession]);
+  }, [accountScope, acceptStatus, endSession, ownsCurrentScope, setRenewal, store]);
 
   const requestAccess = useCallback(
     async (request: BrowserWorkspaceRequestOptions): Promise<BrowserWorkspaceActionResult<HostedDashboardRequestResult>> => {
-      if (request.workspaceIds.length === 0) {
-        setError("Choose a workspace before requesting access.");
-        return { ok: false, code: "invalid-scope", message: "Choose a workspace before requesting access." };
+      const generation = sessionGeneration.current;
+      const isCurrent = () => ownsCurrentScope(generation);
+      const staleResult: BrowserWorkspaceActionResult<HostedDashboardRequestResult> = {
+        ok: false,
+        code: "scope-changed",
+        message: "The signed-in account changed. Choose a Desktop machine again."
+      };
+      if (!isCurrent()) return staleResult;
+      if (!isSafeId(request.targetEnrollmentId)) {
+        setError("Choose a trusted Desktop machine.");
+        return { ok: false, code: "invalid-scope", message: "Choose a trusted Desktop machine." };
       }
-      const keypair = generateBrowserKeypair();
+      if (typeof window === "undefined") {
+        return { ok: false, code: "unavailable", message: "Open the workspace in a browser to connect." };
+      }
+      const origin = window.location.origin;
+      const trust = await store.findTrust(accountScope, origin, request.targetEnrollmentId);
+      if (!isCurrent()) {
+        wipeTrustMaterial(trust);
+        return staleResult;
+      }
+      const keypair = trust === null ? generateBrowserKeypair() : undefined;
       const expiresAt = new Date(Date.now() + REQUEST_TTL_MS).toISOString();
       const record: BrowserWorkspaceKeyRecord = {
         accountScope,
         requestId: randomRequestId(),
-        browserPub: encodeBase64(keypair.pub),
+        browserPub: trust?.browserPub ?? encodeBase64(keypair!.pub),
         challenge: randomChallenge(),
         expiresAt,
+        origin,
+        targetEnrollmentId: request.targetEnrollmentId,
+        ...(trust === null ? {} : { trustId: trust.trustId }),
         createdAt: new Date().toISOString(),
-        privateKey: new Uint8Array(keypair.priv)
+        privateKey: trust === null ? new Uint8Array(keypair!.priv) : new Uint8Array(trust.privateKey)
       };
+      keypair?.priv.fill(0);
+      const renewal = trust !== null;
+      let renewalProof: string | undefined;
+      try {
+        if (trust !== null) {
+          renewalProof = encodeBase64(await hmacSha256(
+            trust.proofKey,
+            dashboardRenewalProofMessage({
+              accountId: trust.accountId,
+              requestId: record.requestId,
+              trustId: trust.trustId,
+              browserPub: trust.browserPub,
+              origin,
+              targetEnrollmentId: trust.targetEnrollmentId,
+              challenge: record.challenge,
+              expiresAt,
+              workspaceBindings: trust.workspaceBindings,
+              scopes: trust.scopes
+            })
+          ));
+        }
+      } finally {
+        wipeTrustMaterial(trust);
+      }
+      if (!isCurrent()) {
+        record.privateKey.fill(0);
+        return staleResult;
+      }
       const persistence = await store.save(record);
+      if (!isCurrent()) {
+        await store.remove(accountScope, record.requestId);
+        record.privateKey.fill(0);
+        return staleResult;
+      }
       const actionInput: BrowserWorkspaceAccessRequest = {
         requestId: record.requestId,
+        targetEnrollmentId: request.targetEnrollmentId,
         browserPub: record.browserPub,
         challenge: record.challenge,
-        workspaceIds: request.workspaceIds,
-        ...(request.repositoryIds === undefined ? {} : { repositoryIds: request.repositoryIds }),
-        ...(request.scopes === undefined ? {} : { scopes: request.scopes }),
-        expiresAt,
-        ...(typeof window === "undefined" ? {} : { origin: window.location.origin }),
-        ...(typeof navigator === "undefined" ? {} : { userAgent: navigator.userAgent })
+        ...(trust === null ? {} : { trustId: trust.trustId, renewalProof: renewalProof as string }),
+        scopes: [],
+        workspaceBindings: [],
+        expiresAt
       };
+      const previous = phaseRef.current;
+      const pending: PendingPhase = { kind: "pending", record, persistence, renewal };
+      const keepCurrent = renewal && previous.kind === "ready" && previous.trustId === trust?.trustId;
+      if (keepCurrent) setRenewal(pending);
+      else replacePhase(pending, false);
       const result = await requestBrowserWorkspaceAccessAction(actionInput);
+      if (!isCurrent()) return staleResult;
       if (!result.ok) {
         await store.remove(accountScope, record.requestId);
+        if (!isCurrent()) return staleResult;
+        if (keepCurrent) setRenewal(null);
+        else if (phaseRef.current.kind === "pending" && phaseRef.current.record.requestId === record.requestId) {
+          replacePhase(previous, false);
+        }
         setError(result.message);
         return { ok: false, code: result.code, message: result.message };
       }
-      replacePhase({ kind: "pending", record, persistence });
       setError(null);
       return { ok: true, data: result.data };
     },
-    [accountScope, replacePhase, store]
+    [accountScope, ownsCurrentScope, replacePhase, setRenewal, store]
   );
 
   useEffect(() => {
     if (!resumeStoredSession || accountScope.length === 0) return;
+    const generation = sessionGeneration.current;
+    const isCurrent = () => ownsCurrentScope(generation);
     let cancelled = false;
     void store.list(accountScope).then(async (sessions) => {
-      if (cancelled || sessions.length === 0 || phaseRef.current.kind !== "locked") return;
-      const live = sessions.filter((item) => Date.parse(item.record.expiresAt) > Date.now());
+      if (cancelled || !isCurrent() || phaseRef.current.kind !== "locked") {
+        for (const session of sessions) session.record.privateKey.fill(0);
+        return;
+      }
+      const live = sessions.filter((item) =>
+        Date.parse(item.record.expiresAt) > Date.now() &&
+        item.record.targetEnrollmentId !== undefined &&
+        item.record.origin !== undefined
+      );
       for (const session of sessions) {
-        if (!live.includes(session)) void store.remove(accountScope, session.record.requestId);
+        if (!live.includes(session)) {
+          void store.remove(accountScope, session.record.requestId);
+          session.record.privateKey.fill(0);
+        }
       }
       const session = live
-        .sort((a, b) => Date.parse(b.record.expiresAt) - Date.parse(a.record.expiresAt))[0];
-      if (session === undefined) return;
-      replacePhase({ kind: "pending", record: session.record, persistence: session.persistence });
-      await pollStatus();
+        .sort((a, b) => Date.parse(b.record.createdAt ?? "") - Date.parse(a.record.createdAt ?? ""))[0];
+      if (session !== undefined) {
+        if (cancelled || !isCurrent() || phaseRef.current.kind !== "locked") {
+          for (const item of live) item.record.privateKey.fill(0);
+          return;
+        }
+        for (const item of live) {
+          if (item !== session) item.record.privateKey.fill(0);
+        }
+        const pending: PendingPhase = {
+          kind: "pending",
+          record: session.record,
+          persistence: session.persistence,
+          renewal: session.record.trustId !== undefined
+        };
+        if (pending.renewal) setRenewal(pending);
+        replacePhase(pending, false);
+        await pollStatus();
+        return;
+      }
+      const origin = typeof window === "undefined" ? null : window.location.origin;
+      if (origin === null) return;
+      const allTrusts = await store.listTrusts(accountScope);
+      const trusts = allTrusts
+        .filter((trust) => trust.origin === origin && Date.parse(trust.expiresAt) > Date.now())
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      if (cancelled || !isCurrent()) {
+        for (const trust of allTrusts) wipeTrustMaterial(trust);
+        return;
+      }
+      const trust = trusts[0];
+      const targetEnrollmentId = trust?.targetEnrollmentId;
+      for (const candidate of allTrusts) wipeTrustMaterial(candidate);
+      if (targetEnrollmentId !== undefined) {
+        await requestAccess({ targetEnrollmentId });
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [accountScope, pollStatus, replacePhase, resumeStoredSession, store]);
+  }, [accountScope, ownsCurrentScope, pollStatus, replacePhase, requestAccess, resumeStoredSession, setRenewal, store]);
+
+  useSynchronousBrowserEffect(() => {
+    if (ownerScope.current === accountScope) return;
+    const previousScope = ownerScope.current;
+    ownerScope.current = accountScope;
+    const current = phaseRef.current;
+    const renewal = renewalRef.current;
+    if (current.kind === "ready") current.dsk.fill(0);
+    if (current.kind === "ready" || current.kind === "pending") current.record.privateKey.fill(0);
+    if (renewal !== null) renewal.record.privateKey.fill(0);
+    for (const command of tracked.current.values()) command.dsk.fill(0);
+    tracked.current.clear();
+    store.clearMemory(previousScope);
+    statusPoll.current = null;
+    setRenewal(null);
+    setDerivedCode(undefined);
+    setError(null);
+    replacePhase({ kind: "locked" });
+  }, [accountScope, replacePhase, setRenewal, store]);
+
+  useEffect(() => {
+    if (phase.kind !== "ready" || phase.trustId === undefined || phase.trustExpiresAt === undefined) return;
+    let cancelled = false;
+    let starting = false;
+    const renewSoon = () => {
+      if (cancelled || starting || renewalRef.current !== null) return;
+      const sessionRemaining = Date.parse(phase.expiresAt) - Date.now();
+      const trustRemaining = Date.parse(phase.trustExpiresAt!) - Date.now();
+      if (trustRemaining <= 0 || sessionRemaining > TRUST_RENEWAL_WINDOW_MS) return;
+      starting = true;
+      void requestAccess({ targetEnrollmentId: phase.workspace.enrollmentId })
+        .catch(() => undefined)
+        .finally(() => { starting = false; });
+    };
+    renewSoon();
+    const timer = window.setInterval(renewSoon, 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [phase, requestAccess]);
 
   useEffect(() => {
     if (phase.kind !== "pending") return;
@@ -538,7 +970,6 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
       const commandGeneration = trackedCommand.generation;
       const sessionIsCurrent = () =>
         sessionGeneration.current === commandGeneration &&
-        phaseRef.current.kind === "ready" &&
         tracked.current.get(commandId) === trackedCommand;
       const promise = (async (): Promise<BrowserWorkspaceExecution<T>> => {
         const deadline = Date.now() + timeoutMs;
@@ -667,7 +1098,7 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
     const generation = sessionGeneration.current;
     let cancelled = false;
     void store.listPendingCommands(accountScope, phase.record.requestId).then((commands) => {
-      if (cancelled || generation !== sessionGeneration.current || phaseRef.current !== phase) return;
+      if (cancelled || !ownsCurrentScope(generation) || phaseRef.current !== phase) return;
       const now = Date.now();
       for (const pending of commands) {
         if (Date.parse(pending.command.expiresAt) <= now) {
@@ -680,7 +1111,8 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
           ...metadata,
           dsk: phase.dsk,
           accountId: phase.accountId,
-          backendId: phase.backendId,
+        backendId: phase.backendId,
+          trustId: phase.trustId,
           generation
         });
         void pollCommand(pending.command.commandId).catch(() => undefined);
@@ -689,17 +1121,19 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
     return () => {
       cancelled = true;
     };
-  }, [accountScope, phase, pollCommand, store]);
+  }, [accountScope, ownsCurrentScope, phase, pollCommand, store]);
 
   const execute = useCallback(
     async <T = unknown>(input: BrowserWorkspaceCommandInput): Promise<BrowserWorkspaceExecution<T>> => {
       const current = phaseRef.current;
-      if (current.kind !== "ready") {
+      if (current.kind !== "ready" || current.record.accountScope !== accountScope) {
         throw new BrowserWorkspaceCommandError("unissued", "Authorize a workspace before executing a command.", false);
       }
       const commandGeneration = sessionGeneration.current;
       const sessionIsCurrent = () =>
         sessionGeneration.current === commandGeneration && phaseRef.current === current;
+      const commandStillTracked = () =>
+        sessionGeneration.current === commandGeneration && tracked.current.has(commandId);
       if (Date.parse(current.expiresAt) <= Date.now()) {
         await endSession("expired");
         throw new BrowserWorkspaceCommandError("unissued", "The workspace grant expired.", false);
@@ -770,10 +1204,11 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
         dsk: current.dsk,
         accountId: current.accountId,
         backendId: current.backendId,
-        generation: commandGeneration
+        generation: commandGeneration,
+        ...(current.trustId === undefined ? {} : { trustId: current.trustId })
       });
       const submitted = await submitBrowserWorkspaceCommandAction(current.record.requestId, envelope);
-      if (!sessionIsCurrent()) {
+      if (!commandStillTracked()) {
         throw new BrowserWorkspaceCommandError(
           commandId,
           "The browser workspace session ended while this command was being submitted.",
@@ -794,7 +1229,11 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
     [accountScope, endSession, pollCommand, store]
   );
 
-  const auth = toAuth(phase);
+  const phaseAccountScope = phase.kind === "pending" || phase.kind === "ready"
+    ? phase.record.accountScope
+    : accountScope;
+  const auth = toAuth(phaseAccountScope === accountScope ? phase : { kind: "locked" });
+  auth.renewing = renewing;
   if (auth.status === "pending" && derivedCode?.requestId === auth.requestId) {
     auth.verificationCode = derivedCode.code;
   }
@@ -806,6 +1245,7 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
     pollCommand,
     lock,
     refresh: pollStatus,
-    isReady: phase.kind === "ready"
+    disconnect,
+    isReady: phase.kind === "ready" && phase.record.accountScope === accountScope && Date.parse(phase.expiresAt) > Date.now()
   };
 }

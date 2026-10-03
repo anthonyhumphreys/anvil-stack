@@ -8,6 +8,12 @@ import type {
 import { listTargets } from './browser.service.js';
 import { getWorkspace } from './workspace.service.js';
 import {
+  refreshBrowserWorkspaceGrantReferences,
+  revokeBrowserWorkspaceGrant,
+  revokeBrowserWorkspaceTrust,
+  type BrowserWorkspaceGrantReference,
+} from './browser-session-ownership.service.js';
+import {
   attachTerminal,
   closeTerminal,
   createTerminal,
@@ -21,6 +27,7 @@ import {
 /** The browser workspace runtime context is deliberately not an account key. */
 export interface BrowserWorkspaceRuntimeContext {
   grantId: string;
+  trustId?: string;
   workspaceId: string;
   repoIds: readonly string[];
   scopes: readonly string[];
@@ -256,6 +263,8 @@ export interface BrowserWorkspaceTools {
   execute(request: BrowserWorkspaceToolRequest): Promise<BrowserWorkspaceToolResult>;
   /** Close all PTYs owned by a grant when the grant is revoked or expires. */
   revokeGrant(grantId: string): void;
+  /** Close PTYs owned by every renewed grant for one remembered browser trust. */
+  revokeTrust(trustId: string): void;
   /** Test/app-shutdown cleanup for all browser-owned PTYs. */
   dispose(): void;
   getDiagnostics(): { activeTerminals: number; grants: number };
@@ -263,6 +272,7 @@ export interface BrowserWorkspaceTools {
 
 interface OwnedTerminal {
   grantId: string;
+  trustId?: string;
   workspaceId: string;
   repoId: string;
   terminalId: string;
@@ -733,6 +743,12 @@ export function createBrowserWorkspaceTools(
     }
   };
 
+  const revokeTrust = (trustId: string): void => {
+    for (const entry of [...owned.values()]) {
+      if (entry.trustId === trustId) clearOwned(entry, true);
+    }
+  };
+
   const ensureRequest = (
     request: BrowserWorkspaceRequestBase | BrowserWorkspacePreviewRequest,
     scope: 'terminal' | 'preview',
@@ -823,6 +839,7 @@ export function createBrowserWorkspaceTools(
       });
       const entry: OwnedTerminal = {
         grantId: request.context.grantId,
+        ...(request.context.trustId ? { trustId: request.context.trustId } : {}),
         workspaceId: request.context.workspaceId,
         repoId: request.repoId,
         terminalId: session.terminalId,
@@ -879,6 +896,7 @@ export function createBrowserWorkspaceTools(
   return {
     execute,
     revokeGrant,
+    revokeTrust,
     dispose: () => {
       for (const entry of [...owned.values()]) clearOwned(entry, true);
     },
@@ -919,6 +937,20 @@ export function getSharedBrowserWorkspaceTools(): BrowserWorkspaceTools {
 /** Close every browser-owned PTY for a grant; safe before the runtime starts. */
 export function revokeSharedBrowserWorkspaceGrant(grantId: string): void {
   sharedTools?.revokeGrant(grantId);
+  revokeBrowserWorkspaceGrant(grantId);
+}
+
+/** Seed live renewal siblings before a per-request expiry is applied. */
+export function refreshSharedBrowserWorkspaceGrants(
+  references: readonly BrowserWorkspaceGrantReference[],
+): void {
+  refreshBrowserWorkspaceGrantReferences(references);
+}
+
+/** Stop every browser-owned session associated with a revoked remembered trust. */
+export function revokeSharedBrowserWorkspaceTrust(trustId: string): void {
+  sharedTools?.revokeTrust(trustId);
+  revokeBrowserWorkspaceTrust(trustId);
 }
 
 export function disposeSharedBrowserWorkspaceTools(): void {

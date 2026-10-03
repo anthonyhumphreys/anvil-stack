@@ -12,8 +12,7 @@ export function AccountChrome({ children }: Readonly<{ children: React.ReactNode
 
   if (isWorkspace) {
     return (
-      <div className="min-h-screen bg-background">
-        <SiteHeader active="account" />
+      <div className="h-dvh overflow-hidden bg-background">
         <main id="main-content" className="min-w-0">
           {children}
         </main>

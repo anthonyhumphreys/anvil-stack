@@ -257,6 +257,14 @@ describe('account security policy and recovery', () => {
       trustState: 'trusted',
       trustSource: 'manual-approval',
     });
+    const activeTarget = await env.SESSIONS.get(env.SESSIONS.idFromName('sessions')).fetch(
+      new Request('https://internal.anvil/internal/device-active-for-account', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId, enrollmentId: second.enrollmentId }),
+      }),
+    );
+    expect(await activeTarget.json()).toEqual({ active: true });
     expect(
       ((approved as unknown as { recentEvents: Array<Record<string, unknown>> }).recentEvents).find(
         (event) => event.kind === 'device-approved',

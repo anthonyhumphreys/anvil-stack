@@ -1,3 +1,5 @@
+@import "../../anvil-app/src/renderer/styles/chat-theme.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -513,4 +515,31 @@
       animation-range: entry 0% entry 32%;
     }
   }
+}
+
+/* The workspace uses the desktop palette; the public website keeps its own theme. */
+.anvil-chat-theme {
+  --background: from var(--anvil-chat-bg-primary) l c h;
+  --foreground: from var(--anvil-chat-text-primary) l c h;
+  --card: from var(--anvil-chat-bg-secondary) l c h;
+  --card-foreground: from var(--anvil-chat-text-primary) l c h;
+  --popover: from var(--anvil-chat-bg-secondary) l c h;
+  --popover-foreground: from var(--anvil-chat-text-primary) l c h;
+  --primary: from var(--anvil-chat-accent) l c h;
+  --primary-foreground: from var(--anvil-chat-accent-foreground) l c h;
+  --secondary: from var(--anvil-chat-bg-secondary) l c h;
+  --secondary-foreground: from var(--anvil-chat-text-secondary) l c h;
+  --muted: from var(--anvil-chat-bg-tertiary) l c h;
+  --muted-foreground: from var(--anvil-chat-text-tertiary) l c h;
+  --accent: from var(--anvil-chat-accent) l c h;
+  --accent-foreground: from var(--anvil-chat-accent-foreground) l c h;
+  --destructive: from var(--anvil-chat-error) l c h;
+  --destructive-foreground: from var(--anvil-chat-bg-primary) l c h;
+  --border: from var(--anvil-chat-border) l c h;
+  --input: from var(--anvil-chat-border) l c h;
+  --ring: from var(--anvil-chat-accent) l c h;
+  --font-sans: var(--anvil-chat-font-sans);
+  --font-mono: var(--anvil-chat-font-mono);
+  font-family: var(--font-sans);
+  color-scheme: dark;
 }

@@ -44,6 +44,17 @@ import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
 import { FileEditReviewGrid } from './TurnChangesFooter';
 import { buildChatRequestTargetDomId, getChatQuestionTargetId } from './chat-run-outcome';
+import {
+  ChatAssistantMessageActions,
+  ChatAssistantMessageBody,
+  ChatAssistantMessageFrame,
+  ChatAssistantMessageHeader,
+  ChatMessageRow,
+  ChatUserMessageActions,
+  ChatUserMessageFrame,
+  ChatUserMessageHeader,
+  ChatUserMessageSurface,
+} from './shared/ChatPresentation';
 
 interface ChatEventProps {
   event: CodexEvent & { sessionId?: string };
@@ -1852,10 +1863,9 @@ export function AssistantMessage({
   }, [display]);
 
   return (
-    <div className="message-bubble group flex justify-start">
-      <div className="relative w-full">
-        <div
-          className="mb-1.5 flex items-center gap-2 px-1 text-xs font-medium text-text-tertiary"
+    <ChatMessageRow align="start">
+      <ChatAssistantMessageFrame>
+        <ChatAssistantMessageHeader
           role={active ? 'status' : undefined}
           aria-live={active ? 'polite' : undefined}
         >
@@ -1870,20 +1880,20 @@ export function AssistantMessage({
           )}
           <span>{label}</span>
           {active && <span className="font-normal text-text-tertiary">Responding</span>}
-        </div>
-        <div className="max-w-[72ch] break-words px-1 text-sm leading-[1.7] text-text-primary/90">
+        </ChatAssistantMessageHeader>
+        <ChatAssistantMessageBody>
           <MarkdownRenderer content={display} />
-        </div>
-        <div className="message-actions left-0 mt-1">
+        </ChatAssistantMessageBody>
+        <ChatAssistantMessageActions>
           <MessageActionsToolbar
             onCopy={handleCopy}
             onBranch={onBranch}
             onRegenerate={onRegenerate}
             copied={copied}
           />
-        </div>
-      </div>
-    </div>
+        </ChatAssistantMessageActions>
+      </ChatAssistantMessageFrame>
+    </ChatMessageRow>
   );
 }
 
@@ -1917,9 +1927,9 @@ export function UserMessage({
   }, [content]);
 
   return (
-    <div className="message-bubble group flex justify-end">
-      <div className="relative w-fit min-w-0 max-w-[72ch]">
-        <p className="mb-1.5 flex items-center justify-end gap-1.5 text-right text-xs font-medium text-text-tertiary">
+    <ChatMessageRow align="end">
+      <ChatUserMessageFrame>
+        <ChatUserMessageHeader>
           You
           {deliveryIntent && (
             <span className="font-normal">
@@ -1958,19 +1968,13 @@ export function UserMessage({
               Not sent
             </span>
           )}
-        </p>
+        </ChatUserMessageHeader>
         {deliveryError && (
           <p role="status" className="mb-2 text-right text-xs text-warning">
             {deliveryError}
           </p>
         )}
-        <div
-          className={`overflow-hidden rounded-xl border px-4 py-3 text-sm text-text-primary transition-colors ${
-            collapsible
-              ? 'border-border-subtle bg-bg-secondary/45 hover:border-border'
-              : 'border-border bg-bg-secondary/70 hover:border-accent/30'
-          }`}
-        >
+        <ChatUserMessageSurface collapsible={collapsible}>
           <div className={collapsible && !expanded ? 'max-h-64 overflow-hidden' : undefined}>
             {attachments && attachments.length > 0 && (
               <MessageAttachmentList attachments={attachments} />
@@ -1992,8 +1996,8 @@ export function UserMessage({
                 : `Show full request${lineCount > 1 ? ` (${lineCount} lines)` : ''}`}
             </button>
           )}
-        </div>
-        <div className="message-actions right-0 mt-1 flex justify-end">
+        </ChatUserMessageSurface>
+        <ChatUserMessageActions>
           <MessageActionsToolbar
             onCopy={handleCopy}
             onEdit={onEdit}
@@ -2001,9 +2005,9 @@ export function UserMessage({
             copied={copied}
             isUser
           />
-        </div>
-      </div>
-    </div>
+        </ChatUserMessageActions>
+      </ChatUserMessageFrame>
+    </ChatMessageRow>
   );
 }
 

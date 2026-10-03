@@ -27,6 +27,8 @@ export interface ChatStartOptions {
   /** Surface that owns persistence for streamed chat output. */
   origin?: 'desktop' | 'browser';
   provider?: AgentProvider;
+  /** Optional model selected for this session; defaults to the provider setting. */
+  model?: string;
   /** Per-session access override, used for provider-enforced read-only sessions. */
   codexMode?: CodexMode;
   threadId?: string;

@@ -226,6 +226,13 @@ export interface DashboardGrantInner {
   workspace?: { workspaceId: string; repoIds: string[] };
   /** The approving Desktop enrollment is bound into the sealed grant. */
   enrollmentId?: string;
+  browserTrust?: {
+    trustId: string;
+    /** Initial grants carry the proof key; renewals carry metadata only. */
+    proofKey?: string;
+    expiresAt: string;
+    targetEnrollmentId: string;
+  };
 }
 
 export interface SealedSnapshot {
@@ -599,4 +606,18 @@ export function decodeBase64(value: string): Uint8Array {
 
 export function encodeBase64(value: Uint8Array): string {
   return b64encode(value);
+}
+
+/** HMAC-SHA256 renewal proof under a separately-issued browser trust key. */
+export async function hmacSha256(keyBytes: Uint8Array, message: string): Promise<Uint8Array> {
+  if (keyBytes.byteLength !== 32) throw new Error("Dashboard browser trust key must be 32 bytes.");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyBytes as BufferSource,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(message) as BufferSource);
+  return new Uint8Array(signature);
 }

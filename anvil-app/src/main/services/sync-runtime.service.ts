@@ -85,6 +85,7 @@ import {
   type SyncConflictResolutionChoice,
   type SyncConflictView,
   type SyncDashboardGrantApproval,
+  type SyncDashboardGrantDecisionResult,
   type SyncDashboardGrantWorkspace,
   type SessionMeshState,
   type SyncDashboardRequest,
@@ -686,6 +687,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
             repoIds: binding?.repositoryIds ?? [],
           },
           scopes: request.grantedScopes ?? [],
+          ...(request.trustId === undefined ? {} : { trustId: request.trustId }),
         };
       },
       publishBrowserWorkspaceCommandResult: async (
@@ -728,6 +730,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
           workspaceId: input.workspaceId,
           repoIds: input.repoIds,
           scopes: input.scopes as BrowserWorkspaceExecutionContext['scopes'],
+          ...(input.trustId === undefined ? {} : { trustId: input.trustId }),
           expiresAt: Date.parse(input.expiresAt),
           commandId: input.commandId,
         };
@@ -2438,6 +2441,17 @@ function requireDashboardScope(): SyncScope {
 export function listDashboardRequests(): SyncDashboardRequest[] {
   return listDashboardGrants(requireDashboardScope()).map((row) => ({
     requestId: row.requestId,
+    ...(row.request?.targetEnrollmentId === undefined
+      ? {}
+      : { targetEnrollmentId: row.request.targetEnrollmentId }),
+    ...(row.request === null
+      ? {}
+      : {
+          firstMachinePairing:
+            row.request.targetEnrollmentId !== undefined &&
+            row.request.scopes.length === 0 &&
+            (row.request.workspaceBindings?.length ?? 0) === 0,
+        }),
     browserPub: row.browserPub,
     ...(row.request?.challenge === undefined
       ? {}
@@ -2469,21 +2483,25 @@ export function listDashboardWorkspaces(): SyncDashboardGrantWorkspace[] {
 export async function approveDashboardGrant(
   requestId: string,
   approval?: SyncDashboardGrantApproval,
-): Promise<void> {
+): Promise<SyncDashboardGrantDecisionResult> {
   if (approval === undefined) {
     throw new Error('Choose a workspace, repository, and action permissions before approving.');
   }
-  await approveDashboardRequest(requireDashboardScope(), requestId, {
+  return approveDashboardRequest(requireDashboardScope(), requestId, {
     workspace: {
       workspaceId: approval.workspaceId,
       repoIds: approval.repoIds,
     },
     scopes: approval.actionScopes,
+    rememberBrowser: approval.rememberBrowser,
   });
 }
 
-export async function denyDashboardGrant(requestId: string): Promise<void> {
+export async function denyDashboardGrant(
+  requestId: string,
+): Promise<SyncDashboardGrantDecisionResult> {
   await denyDashboardRequest(requireDashboardScope(), requestId);
+  return { decision: 'denied', rememberedBrowser: false, sessionOnly: false };
 }
 
 export async function revokeDashboardAccess(requestId: string): Promise<void> {

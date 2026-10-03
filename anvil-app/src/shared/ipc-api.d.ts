@@ -223,6 +223,7 @@ import type {
   SyncConflictResolutionChoice,
   SyncConflictView,
   SyncDashboardGrantApproval,
+  SyncDashboardGrantDecisionResult,
   SyncDashboardGrantWorkspace,
   SyncDashboardRequest,
   SyncDataExportFileResult,
@@ -896,7 +897,7 @@ export interface AnvilAPI {
       requestId: string,
       decision: 'approved' | 'denied',
       approval?: SyncDashboardGrantApproval,
-    ) => Promise<void>;
+    ) => Promise<SyncDashboardGrantDecisionResult>;
     /** Revoke a live grant — the sealed snapshot stream ends immediately. */
     revokeDashboardAccess: (requestId: string) => Promise<void>;
     /** Export the account's synced entities to a user-chosen JSON file. */

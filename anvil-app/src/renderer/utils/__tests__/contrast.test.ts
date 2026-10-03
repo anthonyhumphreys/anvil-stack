@@ -83,7 +83,22 @@ describe('accent-foreground tokens (DS1)', () => {
     fileURLToPath(new URL('../../styles/global.css', import.meta.url)),
     'utf8',
   );
-  const themes = themeVariables(css);
+  const paletteCss = readFileSync(
+    fileURLToPath(new URL('../../styles/chat-theme.css', import.meta.url)),
+    'utf8',
+  );
+  const palette = new Map(
+    [...paletteCss.matchAll(/--(anvil-chat-[\w-]+)\s*:\s*([^;]+);/g)].map((match) => [
+      match[1],
+      match[2].trim(),
+    ]),
+  );
+  const resolvedCss = css.replace(/var\(--(anvil-chat-[\w-]+)\)/g, (_, name: string) => {
+    const value = palette.get(name);
+    if (!value) throw new Error(`Missing shared palette token: ${name}`);
+    return value;
+  });
+  const themes = themeVariables(resolvedCss);
 
   it('every theme defines both --color-accent and --color-accent-foreground', () => {
     expect(themes.size).toBeGreaterThanOrEqual(6);

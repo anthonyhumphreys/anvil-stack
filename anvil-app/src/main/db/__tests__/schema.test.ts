@@ -36,6 +36,82 @@ it('migrates existing worker nodes to approval mode without enabling them', () =
 });
 
 describe('fresh database schema', () => {
+  it('migrates existing dashboard grants to add remembered browser trust storage', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE mesh_dashboard_grants (
+          backend_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          browser_pub TEXT NOT NULL,
+          dsk_wrapped BLOB,
+          scopes_json TEXT NOT NULL,
+          workspace_id TEXT,
+          repo_ids_json TEXT NOT NULL DEFAULT '[]',
+          enrollment_id TEXT,
+          expires_at TEXT NOT NULL,
+          seq INTEGER NOT NULL DEFAULT 0,
+          state TEXT NOT NULL DEFAULT 'pending',
+          request_json TEXT,
+          last_published_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (backend_id, account_id, request_id)
+        );
+        INSERT INTO mesh_dashboard_grants
+          (backend_id, account_id, request_id, browser_pub, scopes_json, expires_at,
+           created_at, updated_at)
+        VALUES ('backend', 'account', 'request', 'pub', '[]', 'later', 'now', 'now');
+      `);
+
+      applyMigration(db, MIGRATIONS[104]!);
+
+      const grantColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(mesh_dashboard_grants)').all() as Array<{ name: string }>
+        ).map((column) => column.name),
+      );
+      const trustColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(mesh_dashboard_browser_trusts)').all() as Array<{
+            name: string;
+          }>
+        ).map((column) => column.name),
+      );
+      expect(grantColumns.has('trust_id')).toBe(true);
+      expect(trustColumns).toEqual(
+        new Set([
+          'backend_id',
+          'account_id',
+          'trust_id',
+          'proof_key_wrapped',
+          'browser_pub',
+          'origin',
+          'target_enrollment_id',
+          'workspace_bindings_json',
+          'scopes_json',
+          'enrollment_id',
+          'expires_at',
+          'state',
+          'created_at',
+          'updated_at',
+        ]),
+      );
+      expect(db.prepare('SELECT request_id, trust_id FROM mesh_dashboard_grants').get()).toEqual({
+        request_id: 'request',
+        trust_id: null,
+      });
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+          .get('idx_mesh_dashboard_grants_trust'),
+      ).toEqual({ name: 'idx_mesh_dashboard_grants_trust' });
+    } finally {
+      db.close();
+    }
+  });
+
   it('migrates existing chat threads without losing read-only side-question purpose', () => {
     const db = new Database(':memory:');
     try {
@@ -219,7 +295,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(103);
+      expect(SCHEMA_VERSION).toBe(104);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',

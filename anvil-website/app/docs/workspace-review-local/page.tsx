@@ -1,6 +1,5 @@
 import { notFound } from "next/navigation";
 
-import { SiteHeader } from "@/components/site/header";
 import { WorkspaceRoute } from "@/components/workspace/workspace-route";
 import type { WorkspaceViewModel } from "@/components/workspace/types";
 
@@ -79,7 +78,7 @@ const fixtureWorkspace: WorkspaceViewModel = {
       id: "fixture-message-4",
       role: "assistant",
       content:
-        "The editor carries the Desktop revision token, and every panel can fall back to an honest unavailable state.",
+        "The editor checks the Desktop revision before saving.\n\nTo check the project locally:\n\n```sh\npnpm typecheck\n```\n\nThis is a presentation fixture; no command was executed.",
       createdAt: "2026-09-22T08:42:00.000Z",
     },
   ],
@@ -164,15 +163,33 @@ const fixtureWorkspace: WorkspaceViewModel = {
   canApproveActions: false,
 };
 
-export default function WorkspaceReviewPage() {
+export default async function WorkspaceReviewPage({ searchParams }: { searchParams: Promise<{ state?: string }> }) {
   if (process.env.NODE_ENV !== "development") notFound();
+  const entry = (await searchParams).state === "entry";
 
   return (
-    <div className="min-h-screen bg-background">
-      <SiteHeader active="account" />
+    <div className="h-dvh overflow-hidden bg-background">
       <main id="main-content" className="min-w-0">
         <WorkspaceRoute
-          model={fixtureWorkspace}
+          model={entry ? { ...fixtureWorkspace, connection: { state: "unavailable" }, repositories: [], sessions: [], messages: [], approvals: [], files: [], changes: [], tests: [], workflows: [], terminal: undefined } : fixtureWorkspace}
+          onboarding={entry ? {
+            machines: [{ enrollmentId: "fixture-machine", displayName: "Local UI fixture" }],
+            selectedEnrollmentId: "fixture-machine",
+            discoveryDetail: "Presentation only. This route cannot connect to a machine.",
+          } : {
+            machines: [{ enrollmentId: "fixture-machine", displayName: "Local UI fixture" }],
+            currentEnrollmentId: "fixture-machine",
+            selectedEnrollmentId: "fixture-machine",
+          }}
+          execution={entry ? undefined : {
+            chatAvailable: true,
+            providers: [{ provider: "codex", enabled: true, available: true, defaultModel: "fixture-model", models: [{ id: "fixture-model", label: "Fixture model" }], permissionModes: ["read-only", "on-request", "workspace-auto", "full-access"], defaultPermissionMode: "on-request" }],
+            maximumPermissionMode: "full-access",
+            provider: "codex",
+            model: "fixture-model",
+            permissionMode: "on-request",
+          }}
+          targetLabel="Local UI fixture"
           draftScope="local-ui-fixture"
           headerSlot={<span className="rounded border border-accent/40 px-2 py-1 font-mono text-[0.625rem] uppercase tracking-[0.08em] text-accent">Local UI fixture</span>}
         />

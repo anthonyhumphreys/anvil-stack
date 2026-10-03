@@ -25,6 +25,7 @@ const rpc = vi.hoisted(() => vi.fn());
 const provider = vi.hoisted(() => ({
   eventListener: undefined as ((payload: unknown) => void) | undefined,
   getCodexSession: vi.fn(),
+  getCodexSessionModel: vi.fn(() => 'fixture-model'),
   claimSessionForBrowser: vi.fn(),
   listActiveCodexSessions: vi.fn(() => []),
   listPendingApprovalRequests: vi.fn(() => []),
@@ -51,6 +52,17 @@ vi.mock('electron', () => ({
   dialog: {},
 }));
 vi.mock('../codex-session.service.js', () => provider);
+vi.mock('../codex-bridge.service.js', () => ({
+  detectCodexCli: vi.fn(async () => ({
+    installed: true,
+    models: [{ id: 'fixture-model', displayName: 'Fixture model' }],
+  })),
+}));
+vi.mock('../cloud-agent-settings.service.js', () => ({
+  getCloudAgentSettings: vi.fn(() => ({
+    providers: [{ provider: 'codex', connected: true }],
+  })),
+}));
 
 import {
   approveDashboardRequest,
@@ -92,7 +104,7 @@ const scope = {
 const workspaceId = 'workspace-acceptance';
 const repositoryId = 'repository-acceptance';
 const enrollmentId = 'desktop-enrollment-acceptance';
-const commandExpiry = '2099-01-01T00:00:00.000Z';
+let commandExpiry: string;
 
 let tempRoot: string;
 let repoPath: string;
@@ -236,6 +248,7 @@ function executeRealCommand(input: DashboardGrantCommandExecutorInput): Promise<
 }
 
 beforeEach(async () => {
+  commandExpiry = new Date(Date.now() + 30 * 60_000).toISOString();
   cryptoImpl = await websiteCrypto();
   db.exec(
     `DELETE FROM mesh_browser_command_receipts;
@@ -593,7 +606,11 @@ describe('browser workspace grant pump and real executor acceptance', () => {
     });
     queued = [send];
     await pumpBrowserWorkspaceCommands(scope, () => true);
-    expect(provider.sendMessage).toHaveBeenCalledWith(sessionId, 'Inspect this repository');
+    expect(await openPublishedResult(publications.at(-1)!)).toMatchObject({ ok: true });
+    expect(provider.sendMessage).toHaveBeenCalledWith(sessionId, 'Inspect this repository', [], {
+      model: 'fixture-model',
+      permissionMode: 'on-request',
+    });
 
     const history = await browserCommand('command-chat-history', 'chat.history.read', {
       threadId: created.data.id,

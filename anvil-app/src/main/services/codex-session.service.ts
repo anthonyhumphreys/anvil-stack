@@ -81,6 +81,7 @@ import {
 } from './codex-agent-ui.adapter.js';
 import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
 import { supportsNativeResume } from './provider-capability.service.js';
+import { isPermissionMode } from '../../../cloud/contract/permissions.js';
 
 const ACP_PROVIDER_LABELS: Record<AcpAgentProvider, string> = {
   cursor: 'Cursor',
@@ -369,7 +370,7 @@ export async function startSession(
   const mode = runtime?.codexMode ?? modeOverride ?? settings.codexMode ?? 'on-request';
   const configuredModel = resolveSessionModel(
     agentProvider,
-    runtime?.model ?? settings.openaiModel,
+    options?.model ?? runtime?.model ?? settings.openaiModel,
   );
   const gatewayConfig =
     agentProvider === 'llmgateway'
@@ -650,11 +651,23 @@ export async function sendMessage(
   assertSessionActive(session);
   const model = gatewayConfig?.model ?? configuredModel;
 
+  if (options?.permissionMode !== undefined && !isPermissionMode(options.permissionMode)) {
+    throw new Error('Invalid chat permission mode.');
+  }
+  const isSideQuestion =
+    session.appThreadId !== undefined &&
+    getChatThread(session.appThreadId)?.purpose === 'side-question';
+  if (!isSideQuestion && options?.permissionMode !== undefined) {
+    session.modeOverride = options.permissionMode;
+  }
+  const mode = isSideQuestion
+    ? 'read-only'
+    : (options?.permissionMode ?? session.modeOverride ?? settings.codexMode ?? session.mode);
+
   session.status = 'busy';
   setSessionThreadAttention(session, 'working');
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
 
-  const mode = session.modeOverride ?? settings.codexMode ?? session.mode;
   session.model = model;
   const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
     planMode: options?.collaborationMode === 'plan',

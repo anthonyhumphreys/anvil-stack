@@ -29,9 +29,11 @@ import {
 import {
   handleDashboardCommandStatus,
   handleDashboardCommandSubmit,
+  handleDashboardRevoke,
   handleDashboardRequest,
   handleDashboardSnapshot,
   handleDashboardStatus,
+  handleDashboardTrustRevoke,
 } from './dashboard-routes';
 import {
   handleHostedDataStatus,
@@ -425,6 +427,10 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
         // scoped authorization request + sealed grant/snapshot relay.
         case '/internal/hosted/dashboard-request':
           return await handleDashboardRequest(json, env, db);
+        case '/internal/hosted/dashboard-revoke':
+          return await handleDashboardRevoke(json, env, db);
+        case '/internal/hosted/dashboard-trust-revoke':
+          return await handleDashboardTrustRevoke(json, env, db);
         case '/internal/hosted/dashboard-status':
           return await handleDashboardStatus(json, env, db);
         case '/internal/hosted/dashboard-snapshot':

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 103;
+export const SCHEMA_VERSION = 104;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1557,10 +1557,31 @@ CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
   state TEXT NOT NULL DEFAULT 'pending',
   request_json TEXT,
   last_published_at TEXT,
+  trust_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, request_id)
 );
+-- Remembered browser renewal keys are stored only in secure wrapped form.
+CREATE TABLE IF NOT EXISTS mesh_dashboard_browser_trusts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  trust_id TEXT NOT NULL,
+  proof_key_wrapped BLOB NOT NULL,
+  browser_pub TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  target_enrollment_id TEXT NOT NULL,
+  workspace_bindings_json TEXT NOT NULL,
+  scopes_json TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'revoked', 'expired')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, trust_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_dashboard_grants_trust
+  ON mesh_dashboard_grants (backend_id, account_id, trust_id, state);
 -- Browser workspace command receipts. An executing row is a crash fence:
 -- recovery marks it uncertain and never re-runs the command automatically.
 -- Result bytes are safeStorage-wrapped and never exposed to the renderer.
@@ -3665,6 +3686,29 @@ CREATE TABLE IF NOT EXISTS cloud_agent_provider_settings (
   expires_at_ms INTEGER,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+`,
+  104: `
+-- DASH-04: associate short dashboard sessions with a remembered browser trust.
+ALTER TABLE mesh_dashboard_grants ADD COLUMN trust_id TEXT;
+CREATE TABLE IF NOT EXISTS mesh_dashboard_browser_trusts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  trust_id TEXT NOT NULL,
+  proof_key_wrapped BLOB NOT NULL,
+  browser_pub TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  target_enrollment_id TEXT NOT NULL,
+  workspace_bindings_json TEXT NOT NULL,
+  scopes_json TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'revoked', 'expired')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, trust_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_dashboard_grants_trust
+  ON mesh_dashboard_grants (backend_id, account_id, trust_id, state);
 `,
 };
 

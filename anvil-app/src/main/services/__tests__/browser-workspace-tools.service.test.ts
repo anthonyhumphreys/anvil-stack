@@ -348,6 +348,34 @@ describe('browser workspace tools', () => {
     ).rejects.toThrow('not owned');
   });
 
+  it('closes terminals from every renewal when a remembered browser trust is revoked', async () => {
+    const fake = makeAdapter();
+    const tools = createBrowserWorkspaceTools({
+      now: () => clock,
+      resolveRepoCwd: () => '/desktop/repo',
+      terminal: fake.adapter,
+    });
+    const first = await tools.execute({
+      type: 'terminal.create',
+      context: context({ grantId: 'grant-old', trustId: 'browser-trust' }),
+      repoId: 'repo-a',
+    });
+    const second = await tools.execute({
+      type: 'terminal.create',
+      context: context({ grantId: 'grant-renewed', trustId: 'browser-trust' }),
+      repoId: 'repo-a',
+    });
+    if (first.type !== 'terminal.created' || second.type !== 'terminal.created') {
+      throw new Error('expected terminals');
+    }
+
+    tools.revokeTrust('browser-trust');
+
+    expect(fake.close).toHaveBeenCalledWith(first.terminal.terminalId);
+    expect(fake.close).toHaveBeenCalledWith(second.terminal.terminalId);
+    expect(tools.getDiagnostics()).toEqual({ activeTerminals: 0, grants: 0 });
+  });
+
   it('expires a grant before a command and tears down its PTY', async () => {
     const tools = createBrowserWorkspaceTools({
       now: () => clock,

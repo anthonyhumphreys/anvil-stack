@@ -388,6 +388,9 @@ CREATE TABLE IF NOT EXISTS dashboard_requests (
   request_id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
   browser_pub TEXT NOT NULL,
+  target_enrollment_id TEXT,
+  trust_id TEXT,
+  renewal_proof TEXT,
   challenge TEXT NOT NULL,
   scopes TEXT NOT NULL,
   workspace_scopes TEXT NOT NULL DEFAULT '[]',
@@ -407,6 +410,26 @@ CREATE TABLE IF NOT EXISTS dashboard_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_dashboard_requests_account
   ON dashboard_requests (account_id, state);
+-- Remembered browser trust contains only account/origin/device-bound public
+-- authorization metadata. The proof key is end-to-end encrypted inside the
+-- grant and never stored in coordinator state.
+CREATE TABLE IF NOT EXISTS dashboard_trusted_browsers (
+  trust_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  browser_pub TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  target_enrollment_id TEXT NOT NULL,
+  workspace_scopes TEXT NOT NULL,
+  granted_scopes TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  first_request_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_dashboard_trusted_browsers_account
+  ON dashboard_trusted_browsers (account_id, state, expires_at);
 -- browser-workspace/1 command relay. Routing metadata is visible to the
 -- coordinator for scope/expiry enforcement; command and result bodies remain
 -- opaque AES-GCM envelopes opened only by the Desktop grant issuer.

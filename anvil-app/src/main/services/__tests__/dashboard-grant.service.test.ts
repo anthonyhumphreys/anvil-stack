@@ -1,13 +1,17 @@
 import Database from 'better-sqlite3';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
 
-const rpcCalls = vi.hoisted(() => [] as Array<{ operation: string; params: unknown }>);
+const rpcState = vi.hoisted(() => ({
+  calls: [] as Array<{ operation: string; params: unknown }>,
+  requests: [] as unknown[],
+  secureStorageAvailable: true,
+}));
 
 vi.mock('electron', () => ({
   safeStorage: {
-    isEncryptionAvailable: () => true,
+    isEncryptionAvailable: () => rpcState.secureStorageAvailable,
     encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf8'),
     decryptString: (value: Buffer) => value.toString('utf8').slice('enc:'.length),
   },
@@ -16,8 +20,10 @@ vi.mock('electron', () => ({
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('../sync-backend-client.service.js', () => ({
   rpc: async <T>(_: unknown, operation: string, params: unknown): Promise<{ result: T }> => {
-    rpcCalls.push({ operation, params });
-    if (operation === 'dashboard.requests') return { result: { requests: [] } as T };
+    rpcState.calls.push({ operation, params });
+    if (operation === 'dashboard.requests') {
+      return { result: { requests: rpcState.requests } as T };
+    }
     if (operation === 'job.list') return { result: { jobs: [] } as T };
     return { result: { request: {} } as T };
   },
@@ -29,9 +35,16 @@ import {
   dashboardCommandAssociatedData,
   listDashboardGrantWorkspaces,
   pumpBrowserWorkspaceCommands,
+  revokeDashboardGrant,
   resetDashboardGrantForTests,
+  serviceDashboardGrants,
 } from '../dashboard-grant.service';
-import { sealJsonEnvelope, wrapSecretBytes } from '../sync-keyring.service';
+import {
+  dashboardRenewalProofMessage,
+  type DashboardRequest,
+  type DashboardScope,
+} from '../../../../cloud/contract/dashboard';
+import { sealJsonEnvelope, unwrapSecretBytes, wrapSecretBytes } from '../sync-keyring.service';
 
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
@@ -54,7 +67,10 @@ function insertWorkspace(): void {
   ).run('workspace-1', 'repo-1');
 }
 
-function insertPendingGrant(requestId = 'request-1'): void {
+function insertPendingGrant(
+  requestId = 'request-1',
+  overrides: Partial<DashboardRequest> = {},
+): DashboardRequest {
   const request = {
     requestId,
     browserPub: randomBytes(32).toString('base64'),
@@ -63,7 +79,8 @@ function insertPendingGrant(requestId = 'request-1'): void {
     expiresAt: expiry,
     state: 'pending',
     createdAt: new Date().toISOString(),
-  };
+    ...overrides,
+  } as DashboardRequest;
   db.prepare(
     `INSERT INTO mesh_dashboard_grants
       (backend_id, account_id, request_id, browser_pub, scopes_json, expires_at,
@@ -80,6 +97,136 @@ function insertPendingGrant(requestId = 'request-1'): void {
     request.createdAt,
     request.createdAt,
   );
+  return request;
+}
+
+function configureApprovalContext(enrollmentId = 'enrollment-1'): void {
+  configureDashboardGrantContext(() => ({
+    apiUrl: 'https://backend.test/v1',
+    accessToken: 'token',
+    enrollmentId,
+  }));
+}
+
+async function createRememberedTrust(): Promise<{
+  trustId: string;
+  browserPub: string;
+  origin: string;
+  targetEnrollmentId: string;
+  challenge: string;
+  expiresAt: string;
+  workspaceBindings: Array<{ workspaceId: string; repositoryIds: string[] }>;
+  scopes: DashboardScope[];
+  proofKey: Buffer;
+}> {
+  const browserPub = randomBytes(32).toString('base64');
+  const origin = 'https://anvil.dev';
+  const targetEnrollmentId = 'enrollment-1';
+  const challenge = 'first-pairing-challenge';
+  insertPendingGrant('pairing-remembered', {
+    browserPub,
+    origin,
+    targetEnrollmentId,
+    challenge,
+    scopes: [],
+    workspaceBindings: [],
+  });
+  configureApprovalContext();
+  const result = await approveDashboardRequest(scope, 'pairing-remembered', {
+    workspace: { workspaceId: 'workspace-1', repoIds: ['repo-1'] },
+    scopes: ['workspace-write', 'submit-task'],
+    rememberBrowser: true,
+  });
+  expect(result).toEqual({
+    decision: 'approved',
+    rememberedBrowser: true,
+    sessionOnly: false,
+  });
+  const trust = db
+    .prepare(
+      `SELECT trust_id, proof_key_wrapped, origin, target_enrollment_id,
+              workspace_bindings_json, scopes_json, expires_at
+       FROM mesh_dashboard_browser_trusts WHERE backend_id = ? AND account_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId) as {
+    trust_id: string;
+    proof_key_wrapped: Buffer;
+    origin: string;
+    target_enrollment_id: string;
+    workspace_bindings_json: string;
+    scopes_json: string;
+    expires_at: string;
+  };
+  const proofKey = unwrapSecretBytes(trust.proof_key_wrapped);
+  if (proofKey === null) throw new Error('The remembered renewal key was not persisted.');
+  expect(Date.parse(trust.expires_at)).toBeGreaterThan(Date.now() + 29 * 24 * 60 * 60 * 1000);
+  expect(trust.origin).toBe(origin);
+  expect(trust.target_enrollment_id).toBe(targetEnrollmentId);
+  return {
+    trustId: trust.trust_id,
+    browserPub,
+    origin,
+    targetEnrollmentId,
+    challenge,
+    expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    workspaceBindings: JSON.parse(trust.workspace_bindings_json) as Array<{
+      workspaceId: string;
+      repositoryIds: string[];
+    }>,
+    scopes: JSON.parse(trust.scopes_json) as DashboardScope[],
+    proofKey,
+  };
+}
+
+type SignedRenewalRequest = DashboardRequest &
+  Required<
+    Pick<DashboardRequest, 'trustId' | 'origin' | 'targetEnrollmentId' | 'workspaceBindings'>
+  >;
+
+function renewalRequest(
+  trusted: Awaited<ReturnType<typeof createRememberedTrust>>,
+  requestId: string,
+  changes: {
+    accountId?: string;
+    browserPub?: string;
+    origin?: string;
+    targetEnrollmentId?: string;
+    expiresAt?: string;
+    scopes?: DashboardScope[];
+    proofKey?: Buffer;
+  } = {},
+): SignedRenewalRequest {
+  const request: SignedRenewalRequest = {
+    requestId,
+    trustId: trusted.trustId,
+    browserPub: changes.browserPub ?? trusted.browserPub,
+    origin: changes.origin ?? trusted.origin,
+    targetEnrollmentId: changes.targetEnrollmentId ?? trusted.targetEnrollmentId,
+    challenge: `challenge-${requestId}`,
+    expiresAt: changes.expiresAt ?? trusted.expiresAt,
+    workspaceBindings: trusted.workspaceBindings,
+    scopes: changes.scopes ?? trusted.scopes,
+    state: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+  const proofMessage = dashboardRenewalProofMessage({
+    accountId: changes.accountId ?? scope.accountId,
+    requestId,
+    trustId: request.trustId,
+    browserPub: request.browserPub,
+    origin: request.origin,
+    targetEnrollmentId: request.targetEnrollmentId,
+    challenge: request.challenge,
+    expiresAt: request.expiresAt,
+    workspaceBindings: request.workspaceBindings,
+    scopes: request.scopes,
+  });
+  return {
+    ...request,
+    renewalProof: createHmac('sha256', changes.proofKey ?? trusted.proofKey)
+      .update(proofMessage, 'utf8')
+      .digest('base64'),
+  };
 }
 
 function insertApprovedGrant(dsk: Buffer, grantId = 'grant-1'): void {
@@ -116,11 +263,14 @@ function insertApprovedGrant(dsk: Buffer, grantId = 'grant-1'): void {
 }
 
 beforeEach(() => {
-  rpcCalls.length = 0;
+  rpcState.calls.length = 0;
+  rpcState.requests.length = 0;
+  rpcState.secureStorageAvailable = true;
   resetDashboardGrantForTests();
   db.exec(
     `DELETE FROM mesh_browser_command_receipts;
      DELETE FROM mesh_dashboard_grants;
+     DELETE FROM mesh_dashboard_browser_trusts;
      DELETE FROM workspace_repos;
      DELETE FROM repos;
      DELETE FROM workspaces;`,
@@ -186,6 +336,138 @@ describe('dashboard grant workspace approval', () => {
         scopes: ['workspace-read'],
       }),
     ).rejects.toThrow(/outside the selected workspace/);
+  });
+});
+
+describe('remembered browser trust', () => {
+  it('remembers a first machine pairing while keeping its DSK and renewal proof sealed', async () => {
+    const trusted = await createRememberedTrust();
+    const row = db
+      .prepare(
+        `SELECT state, scopes_json, dsk_wrapped, trust_id FROM mesh_dashboard_grants
+         WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+      )
+      .get(scope.backendId, scope.accountId, 'pairing-remembered') as {
+      state: string;
+      scopes_json: string;
+      dsk_wrapped: Buffer;
+      trust_id: string;
+    };
+    const decision = rpcState.calls.find((call) => call.operation === 'dashboard.decide');
+    const params = decision?.params as Record<string, unknown>;
+    const browserTrust = params['browserTrust'] as Record<string, unknown>;
+
+    expect(row.state).toBe('approved');
+    expect(JSON.parse(row.scopes_json)).toEqual([
+      'workspace-read',
+      'workspace-write',
+      'submit-task',
+    ]);
+    expect(row.dsk_wrapped).toBeInstanceOf(Buffer);
+    expect(row.trust_id).toBe(trusted.trustId);
+    expect(Object.keys(browserTrust).sort()).toEqual(['expiresAt', 'trustId']);
+    expect(browserTrust.trustId).toBe(trusted.trustId);
+    expect((params['grant'] as Record<string, unknown>)['ct']).toEqual(expect.any(String));
+    expect(params).not.toHaveProperty('proofKey');
+    expect(params).not.toHaveProperty('browserTrust.proofKey');
+  });
+
+  it('falls back to a session-only approval when secure storage is unavailable', async () => {
+    rpcState.secureStorageAvailable = false;
+    insertPendingGrant('pairing-temporary', {
+      browserPub: randomBytes(32).toString('base64'),
+      origin: 'https://anvil.dev',
+      targetEnrollmentId: 'enrollment-1',
+      scopes: [],
+      workspaceBindings: [],
+    });
+    configureApprovalContext();
+
+    const result = await approveDashboardRequest(scope, 'pairing-temporary', {
+      workspace: { workspaceId: 'workspace-1', repoIds: ['repo-1'] },
+      scopes: [],
+      rememberBrowser: true,
+    });
+
+    expect(result).toEqual({
+      decision: 'approved',
+      rememberedBrowser: false,
+      sessionOnly: true,
+      sessionOnlyReason: 'secure-storage-unavailable',
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM mesh_dashboard_browser_trusts').get()).toEqual(
+      { count: 0 },
+    );
+    expect(
+      db
+        .prepare('SELECT dsk_wrapped FROM mesh_dashboard_grants WHERE request_id = ?')
+        .get('pairing-temporary'),
+    ).toEqual({ dsk_wrapped: null });
+    const decision = rpcState.calls.find((call) => call.operation === 'dashboard.decide');
+    expect(decision?.params).not.toHaveProperty('browserTrust');
+  });
+
+  it.each([
+    { name: 'account', change: { accountId: 'account-other' } },
+    { name: 'origin', change: { origin: 'https://other.example' } },
+    { name: 'browser key', change: { browserPub: randomBytes(32).toString('base64') } },
+    { name: 'target enrollment', change: { targetEnrollmentId: 'enrollment-other' } },
+    { name: 'scopes', change: { scopes: ['workspace-read'] as DashboardScope[] } },
+    { name: 'proof key', change: { proofKey: randomBytes(32) } },
+    {
+      name: 'expiry',
+      change: { expiresAt: new Date(Date.now() - 1_000).toISOString() },
+    },
+  ])('denies a renewal with a mismatched $name', async ({ change }) => {
+    const trusted = await createRememberedTrust();
+    const request = renewalRequest(trusted, `renewal-${Math.random()}`, change);
+    rpcState.requests = [request];
+
+    await serviceDashboardGrants(scope, () => true);
+
+    expect(
+      db
+        .prepare('SELECT state FROM mesh_dashboard_grants WHERE request_id = ?')
+        .get(request.requestId),
+    ).toEqual({ state: 'denied' });
+    expect(rpcState.calls.filter((call) => call.operation === 'dashboard.decide')).toHaveLength(2); // initial approval, then fail-closed renewal denial
+  });
+
+  it('does not replay an already-approved renewal request', async () => {
+    const trusted = await createRememberedTrust();
+    const request = renewalRequest(trusted, 'renewal-replay');
+    rpcState.requests = [request];
+
+    await serviceDashboardGrants(scope, () => true);
+    await serviceDashboardGrants(scope, () => true);
+
+    expect(
+      db
+        .prepare('SELECT state FROM mesh_dashboard_grants WHERE request_id = ?')
+        .get(request.requestId),
+    ).toEqual({ state: 'approved' });
+    expect(
+      rpcState.calls.filter(
+        (call) =>
+          call.operation === 'dashboard.decide' &&
+          (call.params as Record<string, unknown>)['requestId'] === request.requestId,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('revokes the complete browser trust and every grant attached to it', async () => {
+    const trusted = await createRememberedTrust();
+
+    await revokeDashboardGrant(scope, 'pairing-remembered');
+
+    expect(
+      db
+        .prepare('SELECT state FROM mesh_dashboard_browser_trusts WHERE trust_id = ?')
+        .get(trusted.trustId),
+    ).toEqual({ state: 'revoked' });
+    expect(
+      db.prepare('SELECT state FROM mesh_dashboard_grants WHERE trust_id = ?').get(trusted.trustId),
+    ).toEqual({ state: 'revoked' });
   });
 });
 

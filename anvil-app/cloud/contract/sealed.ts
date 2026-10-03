@@ -441,6 +441,15 @@ export interface DashboardGrantInner {
   workspace?: { workspaceId: string; repoIds: string[] };
   /** Enrollment that issued the grant; old grants without it cannot execute commands. */
   enrollmentId?: string;
+  /** Durable browser trust material, present only on an explicitly remembered first grant. */
+  browserTrust?: {
+    trustId: string;
+    /** base64 32-byte HMAC key used only to prove renewal intent. */
+    proofKey?: string;
+    /** ISO-8601 hard trust expiry, separate from this DSK session expiry. */
+    expiresAt: string;
+    targetEnrollmentId: string;
+  };
   /** @deprecated use workspaceBindings. */
   workspaceIds?: string[];
   /** @deprecated use workspaceBindings. */

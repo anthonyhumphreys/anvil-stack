@@ -5,6 +5,16 @@
 // it and opens it with the DSK from the corresponding dashboard grant.
 
 import type { DashboardScope } from './dashboard';
+import type { PermissionMode } from './permissions';
+
+/** Provider ids accepted by the local Desktop chat session contract. */
+export type BrowserWorkspaceAgentProvider =
+  | 'codex'
+  | 'openai'
+  | 'azure'
+  | 'cursor'
+  | 'devin'
+  | 'llmgateway';
 
 export const BROWSER_WORKSPACE_PROFILE = 'browser-workspace/1' as const;
 /** Optional discovery feature name; sync/1 and mesh/1 remain unchanged. */
@@ -28,6 +38,7 @@ export const BROWSER_WORKSPACE_OPERATIONS = [
   'file.read',
   'file.write',
   'chat.thread.list',
+  'chat.execution.options',
   'chat.create',
   'chat.history.read',
   'chat.session.start',
@@ -98,6 +109,7 @@ export const BROWSER_WORKSPACE_OPERATION_SCOPE: Record<BrowserWorkspaceOperation
     'file.read': 'workspace-read',
     'file.write': 'workspace-write',
     'chat.thread.list': 'workspace-read',
+    'chat.execution.options': 'workspace-read',
     'chat.create': 'submit-task',
     'chat.history.read': 'workspace-read',
     'chat.session.start': 'submit-task',
@@ -153,6 +165,8 @@ export const BROWSER_WORKSPACE_COMMAND_VERSION = 1 as const;
 /** Binding supplied by the Desktop grant/relay after envelope validation. */
 export interface BrowserWorkspaceExecutionContext {
   grantId: string;
+  /** Stable browser identity shared by grant renewals, when remembered. */
+  trustId?: string;
   workspaceId: string;
   repoIds: readonly string[];
   scopes: readonly DashboardScope[];
@@ -196,6 +210,40 @@ export interface BrowserWorkspaceThreadListCommand {
   personaId?: string;
 }
 
+/** Execution choices reported by the Desktop bound to this browser grant. */
+export interface BrowserWorkspaceExecutionOptionsCommand {
+  operation: 'chat.execution.options';
+}
+
+export interface BrowserWorkspaceExecutionModelOption {
+  id: string;
+  label: string;
+}
+
+export interface BrowserWorkspaceExecutionProviderOption {
+  provider: BrowserWorkspaceAgentProvider;
+  enabled: boolean;
+  available: boolean;
+  unavailableReason?: string;
+  defaultModel?: string;
+  models: BrowserWorkspaceExecutionModelOption[];
+  permissionModes: PermissionMode[];
+  defaultPermissionMode: PermissionMode;
+}
+
+export interface BrowserWorkspaceExecutionOptions {
+  target: {
+    kind: 'connected-machine';
+    displayName: string;
+    chatAvailable: boolean;
+    unavailableReason?: string;
+  };
+  providers: BrowserWorkspaceExecutionProviderOption[];
+  permissionModes: PermissionMode[];
+  maximumPermissionMode: PermissionMode;
+  defaultPermissionMode: PermissionMode;
+}
+
 export interface BrowserWorkspaceChatCreateCommand {
   operation: 'chat.create';
   personaId: string;
@@ -214,6 +262,9 @@ export interface BrowserWorkspaceChatSessionStartCommand {
   threadId: string;
   repositoryId?: string;
   personaId?: string;
+  provider?: BrowserWorkspaceAgentProvider;
+  model?: string;
+  permissionMode?: PermissionMode;
 }
 
 export interface BrowserWorkspaceChatSendCommand {
@@ -221,6 +272,9 @@ export interface BrowserWorkspaceChatSendCommand {
   threadId: string;
   sessionId: string;
   message: string;
+  provider?: BrowserWorkspaceAgentProvider;
+  model?: string;
+  permissionMode?: PermissionMode;
 }
 
 export interface BrowserWorkspaceChatStatusCommand {
@@ -332,6 +386,7 @@ export type BrowserWorkspaceCommand =
   | BrowserWorkspaceFileReadCommand
   | BrowserWorkspaceFileWriteCommand
   | BrowserWorkspaceThreadListCommand
+  | BrowserWorkspaceExecutionOptionsCommand
   | BrowserWorkspaceChatCreateCommand
   | BrowserWorkspaceChatHistoryCommand
   | BrowserWorkspaceChatSessionStartCommand

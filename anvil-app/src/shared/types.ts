@@ -875,6 +875,8 @@ export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;
   reasoningEffort?: ReasoningEffort;
   model?: string;
+  /** Optional per-turn access selection used by the browser workspace. */
+  permissionMode?: CodexMode;
   serviceTier?: string | null;
 }
 

@@ -145,6 +145,8 @@ interface SessionRow {
   prev_refresh_grace_until: number | null;
   pending_rotated_session: string | null;
   revoked_at: number | null;
+  enrollment_class: EnrollmentClass | null;
+  enrollment_expires_at: number | null;
   proof_method: 'oidc-pkce' | 'workos-device' | 'enrollment-code' | null;
   trust_state: 'pending' | 'trusted' | 'revoked' | null;
   trusted_at: number | null;
@@ -762,6 +764,8 @@ export class SessionCoordinator extends DurableObject<Env> {
         // stub.fetch — index.ts routes no public traffic here.
         case 'POST /internal/device-list-for-account':
           return await this.handleDeviceListForAccount(request);
+        case 'POST /internal/device-active-for-account':
+          return await this.handleDeviceActiveForAccount(request);
         case 'POST /internal/device-rename-for-account':
           return await this.ctx.blockConcurrencyWhile(() =>
             this.handleDeviceRenameForAccount(request),
@@ -2646,28 +2650,32 @@ export class SessionCoordinator extends DurableObject<Env> {
       .exec(
         `SELECT enrollment_id, installation_id, display_name,
                 credential_generation, revoked_at, created_at,
-                enrollment_class, provider, enrollment_expires_at, environment_id
+                enrollment_class, provider, enrollment_expires_at, environment_id, trust_state
          FROM device_sessions WHERE account_id = ? ORDER BY created_at ASC`,
         accountId,
       )
       .toArray() as unknown as SessionRow[];
-    const devices: DeviceSummary[] = rows.map((row) => ({
-      enrollmentId: row.enrollment_id,
-      ...(row.display_name === null ? {} : { displayName: row.display_name }),
-      installationId: row.installation_id,
-      credentialGeneration: row.credential_generation,
-      revoked: row.revoked_at !== null,
-      createdAt: new Date(Number(row.created_at)).toISOString(),
-      self: row.enrollment_id === selfEnrollmentId,
-      ...(row.enrollment_class === null || row.enrollment_class === 'device'
-        ? {}
-        : { enrollmentClass: row.enrollment_class as EnrollmentClass }),
-      ...(typeof row.provider === 'string' ? { provider: row.provider } : {}),
-      ...(row.enrollment_expires_at === null
-        ? {}
-        : { enrollmentExpiresAt: new Date(row.enrollment_expires_at).toISOString() }),
-      ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
-    }));
+    const devices: DeviceSummary[] = rows.map((row) => {
+      const trustState = this.trustState(row);
+      return {
+        enrollmentId: row.enrollment_id,
+        ...(row.display_name === null ? {} : { displayName: row.display_name }),
+        installationId: row.installation_id,
+        credentialGeneration: row.credential_generation,
+        revoked: row.revoked_at !== null,
+        createdAt: new Date(Number(row.created_at)).toISOString(),
+        self: row.enrollment_id === selfEnrollmentId,
+        trustState,
+        ...(row.enrollment_class === null || row.enrollment_class === 'device'
+          ? {}
+          : { enrollmentClass: row.enrollment_class as EnrollmentClass }),
+        ...(typeof row.provider === 'string' ? { provider: row.provider } : {}),
+        ...(row.enrollment_expires_at === null
+          ? {}
+          : { enrollmentExpiresAt: new Date(row.enrollment_expires_at).toISOString() }),
+        ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
+      };
+    });
     return { devices };
   }
 
@@ -2694,6 +2702,35 @@ export class SessionCoordinator extends DurableObject<Env> {
       return authError('malformed-request');
     }
     return Response.json(this.deviceListResult(body['accountId'], null), { status: 200 });
+  }
+
+  /**
+   * Hosted dashboard target gate. The signed hosted Worker calls this on the
+   * internal SessionCoordinator binding so request metadata alone can never
+   * select a pending, revoked, ephemeral, or cross-account enrollment.
+   */
+  private async handleDeviceActiveForAccount(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['accountId'] !== 'string' ||
+      body['accountId'].length === 0 ||
+      typeof body['enrollmentId'] !== 'string' ||
+      body['enrollmentId'].length === 0 ||
+      body['enrollmentId'].length > 128
+    ) {
+      return authError('malformed-request');
+    }
+    const row = this.sessionByEnrollment(body['enrollmentId']);
+    const now = Date.now();
+    const active =
+      row !== null &&
+      row.account_id === body['accountId'] &&
+      row.revoked_at === null &&
+      this.trustState(row) === 'trusted' &&
+      (row.enrollment_class === null || row.enrollment_class === 'device') &&
+      (row.enrollment_expires_at === null || row.enrollment_expires_at > now);
+    return Response.json({ active }, { status: 200 });
   }
 
   /**

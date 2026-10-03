@@ -38,7 +38,7 @@ cd anvil-stack/anvil-registry
 pnpm install --ignore-scripts
 ```
 
-CI is path-filtered: changes under `anvil-app/` run the desktop workflows, changes under `anvil-registry/` run the registry and image workflows, and so on. A change in one project does not trigger the others.
+CI is path-filtered: changes under `anvil-app/` run the desktop workflows, changes under `anvil-registry/` run the registry and image workflows, and so on. Shared chat presentation and palette changes under `anvil-app/` also run website CI because both apps consume those sources. Other project changes stay scoped to their own workflows.
 
 ## Where to start in each project
 

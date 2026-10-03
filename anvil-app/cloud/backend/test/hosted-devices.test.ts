@@ -97,9 +97,129 @@ describe('hosted devices', () => {
       expect(row).toBeDefined();
       expect(row?.self).toBe(false);
       expect(row?.revoked).toBe(false);
+      expect(['pending', 'trusted']).toContain(row?.trustState);
       expect(row?.installationId).toBe(installationId);
       expect(row?.displayName).toBe('Hosted test device');
     }
+  });
+
+  it('marks only active trusted person-owned enrollments as dashboard targets', async () => {
+    const identity = makeIdentity(`dashboard-target-${crypto.randomUUID()}`);
+    const { session, accountId } = await pairAndEnroll(identity, 'inst-dashboard-target');
+    const sessions = env.SESSIONS.get(env.SESSIONS.idFromName('sessions'));
+    const check = (targetAccountId: string, enrollmentId: string) =>
+      sessions.fetch(
+        new Request('https://internal.anvil/internal/device-active-for-account', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ accountId: targetAccountId, enrollmentId }),
+        }),
+      );
+
+    const active = await check(accountId, session.enrollmentId);
+    expect(active.status).toBe(200);
+    expect(await active.json()).toEqual({ active: true });
+
+    const dashboardRequest = (enrollmentId: string) => ({
+      ...identity,
+      request: {
+        requestId: crypto.randomUUID(),
+        targetEnrollmentId: enrollmentId,
+        browserPub: btoa('0123456789abcdef0123456789abcdef'),
+        challenge: 'target-device-check',
+        scopes: [],
+        workspaceBindings: [],
+        origin: 'https://workspace.example',
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      },
+    });
+    const accepted = await signedHostedPost(
+      '/internal/hosted/dashboard-request',
+      dashboardRequest(session.enrollmentId),
+    );
+    expect(accepted.status).toBe(200);
+
+    const unknownTarget = await signedHostedPost(
+      '/internal/hosted/dashboard-request',
+      dashboardRequest(`enr_${crypto.randomUUID()}`),
+    );
+    expect(unknownTarget.status).toBe(403);
+
+    const crossAccount = await check(`acct_${crypto.randomUUID()}`, session.enrollmentId);
+    expect(await crossAccount.json()).toEqual({ active: false });
+
+    await signedHostedPost('/internal/hosted/device-revoke', {
+      ...identity,
+      enrollmentId: session.enrollmentId,
+    });
+    const revoked = await check(accountId, session.enrollmentId);
+    expect(await revoked.json()).toEqual({ active: false });
+    const revokedTarget = await signedHostedPost(
+      '/internal/hosted/dashboard-request',
+      dashboardRequest(session.enrollmentId),
+    );
+    expect(revokedTarget.status).toBe(403);
+  });
+
+  it('lets the signed account owner revoke a session-only dashboard grant by request id', async () => {
+    const identity = makeIdentity(`dashboard-revoke-${crypto.randomUUID()}`);
+    const { session, accountId } = await pairAndEnroll(identity, 'inst-dashboard-revoke');
+    const requestId = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 600_000).toISOString();
+    const requested = await signedHostedPost('/internal/hosted/dashboard-request', {
+      ...identity,
+      request: {
+        requestId,
+        browserPub: btoa('0123456789abcdef0123456789abcdef'),
+        challenge: 'session-only-dashboard-revoke',
+        scopes: ['read-dashboard'],
+        expiresAt,
+      },
+    });
+    expect(requested.status).toBe(200);
+
+    const approved = await postRpc(
+      'dashboard.decide',
+      {
+        requestId,
+        decision: 'approved',
+        grant: {
+          v: 1,
+          enc: 'x25519-aes-256-gcm',
+          requestId,
+          browserPub: btoa('0123456789abcdef0123456789abcdef'),
+          expiresAt,
+          ephPub: btoa('fedcba9876543210fedcba9876543210'),
+          nonce: btoa('0123456789ab'),
+          ct: btoa('sealed-dashboard-session-key'),
+        },
+        snapshot: {
+          enc: 'aes-256-gcm',
+          seq: 1,
+          nonce: btoa('0123456789ab'),
+          ct: btoa('sealed-dashboard-snapshot'),
+        },
+      },
+      `Bearer ${session.accessToken}`,
+    );
+    expect(approved.status).toBe(200);
+
+    const disconnected = await signedHostedPost('/internal/hosted/dashboard-revoke', {
+      ...identity,
+      requestId,
+    });
+    expect(disconnected.status).toBe(200);
+    expect(disconnected.body['revoked']).toBe(true);
+
+    const account = env.ACCOUNT.get(env.ACCOUNT.idFromName(accountId));
+    const statusResponse = await account.fetch(
+      new Request('https://internal.anvil/internal/dashboard-status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId }),
+      }),
+    );
+    expect(await statusResponse.json()).toMatchObject({ result: { state: 'revoked' } });
   });
 
   it('renames a device by enrollmentId and persists it to the list', async () => {

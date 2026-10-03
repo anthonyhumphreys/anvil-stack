@@ -63,6 +63,23 @@ async function forwardToAccount(
   return Response.json(result === undefined ? payload : result, { status: response.status });
 }
 
+/** A browser may route a pairing only to a live trusted person-owned device. */
+async function isActiveTrustedDevice(
+  env: Env,
+  accountId: string,
+  enrollmentId: string,
+): Promise<boolean> {
+  const stub = env.SESSIONS.get(env.SESSIONS.idFromName('sessions'));
+  const response = await stub.fetch('https://internal.anvil/internal/device-active-for-account', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ accountId, enrollmentId }),
+  });
+  if (!response.ok) return false;
+  const result = (await response.json().catch(() => null)) as { active?: unknown } | null;
+  return result?.active === true;
+}
+
 /**
  * `POST /internal/hosted/dashboard-request` — upsert a browser's
  * authorization request `{identity, request: HostedDashboardRequestInput}`.
@@ -81,9 +98,65 @@ export async function handleDashboardRequest(
   if (!isRecord(body) || !isRecord(body['request'])) {
     return rpcErrorResponse(undefined, 'malformed-request');
   }
+  const targetEnrollmentId = body['request']['targetEnrollmentId'];
+  if (targetEnrollmentId !== undefined) {
+    if (
+      typeof targetEnrollmentId !== 'string' ||
+      targetEnrollmentId.length === 0 ||
+      targetEnrollmentId.length > 128
+    ) {
+      return rpcErrorResponse(undefined, 'malformed-request');
+    }
+    if (!(await isActiveTrustedDevice(env, resolved.syncAccountId, targetEnrollmentId))) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'dashboard-target-inactive' });
+    }
+  }
   return forwardToAccount(env, resolved.syncAccountId, '/internal/dashboard-request', {
     ...body['request'],
     accountId: resolved.syncAccountId,
+  });
+}
+
+/** `POST /internal/hosted/dashboard-trust-revoke` revokes one browser trust and its sessions. */
+export async function handleDashboardTrustRevoke(
+  body: unknown,
+  env: Env,
+  db: D1Database,
+): Promise<Response> {
+  const resolved = await resolveSyncAccount(body, db);
+  if (resolved instanceof Response) {
+    return resolved;
+  }
+  if (!isRecord(body) || !isRecord(body['request'])) {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  const request = body['request'];
+  if (typeof request['trustId'] !== 'string' || typeof request['origin'] !== 'string') {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  return forwardToAccount(env, resolved.syncAccountId, '/internal/dashboard-trust-revoke', {
+    accountId: resolved.syncAccountId,
+    trustId: request['trustId'],
+    origin: request['origin'],
+  });
+}
+
+/** `POST /internal/hosted/dashboard-revoke` disconnects one browser session. */
+export async function handleDashboardRevoke(
+  body: unknown,
+  env: Env,
+  db: D1Database,
+): Promise<Response> {
+  const resolved = await resolveSyncAccount(body, db);
+  if (resolved instanceof Response) {
+    return resolved;
+  }
+  if (!isRecord(body) || typeof body['requestId'] !== 'string') {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  return forwardToAccount(env, resolved.syncAccountId, '/internal/dashboard-revoke', {
+    accountId: resolved.syncAccountId,
+    requestId: body['requestId'],
   });
 }
 
