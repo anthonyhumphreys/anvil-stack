@@ -1809,18 +1809,25 @@ async function executeStartSession(
       if (privateCheckpoint === null || typeof privateCheckpoint !== 'object')
         throw new Error('invalid-private-handoff-checkpoint');
       const candidate = privateCheckpoint as SessionCheckpoint;
+      const expectedPins = new Map(
+        manifest.repositories.map((pin) => [pin.repositoryId, pin.commit]),
+      );
+      const seenCheckpointPins = new Set<string>();
       if (
         candidate.sessionId !== remote.sessionId ||
         candidate.sourceGeneration !== remote.sourceGeneration ||
         !Array.isArray(candidate.repositories) ||
-        candidate.repositories.length !== manifest.repositories.length ||
-        candidate.repositories.some((pin, index) => {
-          const expected = manifest.repositories[index];
-          return (
-            expected === undefined ||
-            pin.repositoryId !== expected.repositoryId ||
-            pin.commit !== expected.commit
-          );
+        candidate.repositories.length === 0 ||
+        candidate.repositories.some((pin) => {
+          if (
+            typeof pin.repositoryId !== 'string' ||
+            typeof pin.commit !== 'string' ||
+            seenCheckpointPins.has(pin.repositoryId)
+          )
+            return true;
+          seenCheckpointPins.add(pin.repositoryId);
+          const expectedCommit = expectedPins.get(pin.repositoryId);
+          return expectedCommit === undefined || pin.commit !== expectedCommit;
         })
       )
         throw new Error('private-handoff-checkpoint-does-not-match-authority');

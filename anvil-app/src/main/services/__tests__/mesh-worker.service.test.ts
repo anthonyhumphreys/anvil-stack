@@ -1258,14 +1258,43 @@ describe('start-session executor (SESSION-02)', () => {
 
   it('activates a transferred handoff and records local ownership', async () => {
     const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('ho');
+    const extraRepos: Array<{ portableId: string; repoDir: string; head: string }> = [];
     try {
+      for (const suffix of ['ho-extra-a', 'ho-extra-b']) {
+        const extraDir = mkdtempSync(join(tmpdir(), `anvil-mesh-sess-${suffix}-`));
+        execFileSync('git', ['init'], { cwd: extraDir });
+        execFileSync(
+          'git',
+          ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init'],
+          { cwd: extraDir },
+        );
+        const extraHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: extraDir })
+          .toString()
+          .trim();
+        const extraPortableId = `p-${suffix}`;
+        db.prepare(
+          `INSERT INTO repos (id, name, path, status, created_at, updated_at)
+           VALUES (?, 'repo', ?, 'connected', datetime('now'), datetime('now'))`,
+        ).run(`repo-${suffix}`, extraDir);
+        db.prepare(
+          `INSERT INTO workspace_repo_definitions
+           (workspace_id, portable_id, name, mapped_repo_id, created_at, updated_at)
+           VALUES (?, ?, 'repo', ?, datetime('now'), datetime('now'))`,
+        ).run(workspaceId, extraPortableId, `repo-${suffix}`);
+        extraRepos.push({ portableId: extraPortableId, repoDir: extraDir, head: extraHead });
+      }
       const job = makeSessionJob('job-sess', workspaceId, portableId, head, {
         handoffId: 'ho-1',
         handoffCheckpoint: {
           sessionId: 'sess-logical',
           schemaVersion: 1,
           sourceGeneration: 1,
-          repositories: [{ repositoryId: portableId, commit: head }],
+          // Source session pin order differs from the workspace manifest,
+          // and the source only used a subset of the workspace repositories.
+          repositories: [
+            { repositoryId: extraRepos[0]!.portableId, commit: extraRepos[0]!.head },
+            { repositoryId: portableId, commit: head },
+          ],
           provider: 'codex',
           model: 'gpt-5',
           summary: 'private cloud checkpoint',
@@ -1273,6 +1302,13 @@ describe('start-session executor (SESSION-02)', () => {
           unresolvedApprovals: [],
         },
       });
+      job.inputManifest.repositories = [
+        { repositoryId: portableId, commit: head },
+        ...extraRepos.map(({ portableId: repositoryId, head: commit }) => ({
+          repositoryId,
+          commit,
+        })),
+      ];
       const handoff: Record<string, unknown> = {
         id: 'ho-1',
         sessionId: 'sess-logical',
@@ -1329,6 +1365,7 @@ describe('start-session executor (SESSION-02)', () => {
       expect(row.journal_json).toContain('handoff-completed');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
+      for (const extra of extraRepos) rmSync(extra.repoDir, { recursive: true, force: true });
     }
   });
 
