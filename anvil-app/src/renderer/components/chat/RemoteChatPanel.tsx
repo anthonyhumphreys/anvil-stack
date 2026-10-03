@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AgentProvider, CodexMode } from '../../../shared/types';
 import type { RemoteChatRecord, RemoteCredentialChoice } from '../../../shared/remote-chat';
+import type { CloudAgentProviderStatus } from '../../../shared/cloud-agent';
 import type { ApprovalRecord, SyncAttemptActivity, SyncDevice } from '../../../shared/sync-runtime';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { agentProviderLabel } from '../../utils/agent-display';
 import { chatAccessLevelLabel } from './thread-access';
+import { SettingsLink } from '../shared/SettingsLink';
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const LABELS: Record<string, string> = {
@@ -35,6 +37,8 @@ export function RemoteChatPanel({
   const [open, setOpen] = useState(false);
   const [records, setRecords] = useState<RemoteChatRecord[]>([]);
   const [devices, setDevices] = useState<SyncDevice[]>([]);
+  const [cloudProviders, setCloudProviders] = useState<CloudAgentProviderStatus[]>([]);
+  const [cloudProvidersLoaded, setCloudProvidersLoaded] = useState(false);
   const [target, setTarget] = useState('');
   const [credentialChoice, setCredentialChoice] = useState<RemoteCredentialChoice>('target-local');
   const [selectedId, setSelectedId] = useState('');
@@ -49,7 +53,15 @@ export function RemoteChatPanel({
   const cloudTarget =
     devices.find((device) => device.enrollmentId === target)?.enrollmentClass === 'ephemeral';
   const effectiveCredentialChoice =
-    cloudTarget && credentialChoice === 'target-local' ? 'codex-host-auth' : credentialChoice;
+    cloudTarget && provider !== 'codex'
+      ? 'cloud-provider'
+      : cloudTarget && credentialChoice === 'target-local'
+        ? 'codex-host-auth'
+        : credentialChoice;
+  const cloudProviderStatus = cloudProviders.find((item) => item.provider === provider);
+  const cloudProviderReady =
+    cloudProviderStatus?.enabled === true &&
+    (provider === 'codex' || cloudProviderStatus.connected);
   const unsupportedAccess = isAcpAgentProvider(provider) && permissionMode === 'read-only';
   const active = selected !== undefined && !TERMINAL.has(selected.state);
   const retryHandoff = selected?.state === 'failed' && selected.handoffId !== undefined;
@@ -80,7 +92,10 @@ export function RemoteChatPanel({
           rows.some((row) => row.id === current) ? current : (handoff?.id ?? ''),
         );
       } catch (cause) {
-        if (!disposed) setError(String(cause));
+        if (!disposed) {
+          setError(String(cause));
+          setCloudProvidersLoaded(true);
+        }
       } finally {
         fetching = false;
       }
@@ -117,6 +132,38 @@ export function RemoteChatPanel({
       disposed = true;
     };
   }, [open, workspaceId]);
+
+  useEffect(() => {
+    if (
+      !open ||
+      !devices.some(
+        (device) => device.enrollmentId === target && device.enrollmentClass === 'ephemeral',
+      )
+    ) {
+      setCloudProviders([]);
+      setCloudProvidersLoaded(false);
+      return;
+    }
+    let disposed = false;
+    setCloudProvidersLoaded(false);
+    window.anvil.cloudAgentSettings
+      .get()
+      .then((result) => {
+        if (!disposed) {
+          setCloudProviders(result.providers);
+          setCloudProvidersLoaded(true);
+        }
+      })
+      .catch((cause: unknown) => {
+        if (!disposed) {
+          setError(String(cause));
+          setCloudProvidersLoaded(true);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [open, target, devices]);
 
   const jobId = selected?.jobId ?? selected?.prepareJobId;
   useEffect(() => {
@@ -196,7 +243,11 @@ export function RemoteChatPanel({
         : await window.anvil.syncRuntime.createRemoteChat({
             workspaceId,
             targetEnrollmentId: target,
-            ...(provider === 'codex' ? { credentialChoice: effectiveCredentialChoice } : {}),
+            ...(cloudTarget
+              ? { credentialChoice: effectiveCredentialChoice }
+              : provider === 'codex'
+                ? { credentialChoice: effectiveCredentialChoice }
+                : {}),
             provider,
             model,
             permissionMode,
@@ -276,10 +327,16 @@ export function RemoteChatPanel({
                 supported access mode.
               </p>
             )}
-            {!selected && cloudTarget && provider !== 'codex' && (
+            {!selected && cloudTarget && !cloudProviderReady && cloudProvidersLoaded && (
               <p className="text-xs text-warning">
-                Cloud workers support Codex for launch. Select Codex in the chat header.
+                {provider === 'codex'
+                  ? 'Allow Codex for cloud agents in Cloud agent settings.'
+                  : `${agentProviderLabel(provider)} needs to be enabled and connected for cloud agents.`}{' '}
+                <SettingsLink to="sync#cloud-agents">Open Cloud agent settings</SettingsLink>.
               </p>
+            )}
+            {!selected && cloudTarget && !cloudProvidersLoaded && (
+              <p className="text-xs text-text-secondary">Checking cloud provider access…</p>
             )}
             {!selected && (
               <>
@@ -443,7 +500,7 @@ export function RemoteChatPanel({
                 !canSend ||
                 !prompt.trim() ||
                 (!selected &&
-                  (!target || unsupportedAccess || (cloudTarget && provider !== 'codex')))
+                  (!target || unsupportedAccess || (cloudTarget && !cloudProviderReady)))
               }
             >
               {busy

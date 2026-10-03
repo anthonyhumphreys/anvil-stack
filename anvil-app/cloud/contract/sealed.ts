@@ -227,10 +227,40 @@ export interface CredentialGrantInner {
   env: Record<string, string>;
   /** Validated Codex host account cache, present only for `remote-codex-host-auth`. */
   codexAuthJson?: string;
+  /** Provider identity inside the encrypted `remote-provider-auth` grant. */
+  provider?: 'azure' | 'openai' | 'cursor' | 'devin' | 'llmgateway';
+  /** Devin CLI login cache, present only for a Devin provider grant. */
+  devinCredentialsToml?: string;
 }
 
 /** Maximum cleartext Codex auth cache carried inside an encrypted credential grant. */
 export const MAX_CREDENTIAL_GRANT_CODEX_AUTH_JSON_BYTES = 64 * 1024;
+export const MAX_CREDENTIAL_GRANT_DEVIN_CREDENTIALS_BYTES = 64 * 1024;
+
+/** Reject misplaced or oversized provider auth fields before sealing/using them. */
+export function isValidProviderCredentialGrant(inner: CredentialGrantInner): boolean {
+  if (inner.kind !== 'remote-provider-auth') {
+    return inner.provider === undefined && inner.devinCredentialsToml === undefined;
+  }
+  if (
+    inner.codexAuthJson !== undefined ||
+    !['azure', 'openai', 'cursor', 'devin', 'llmgateway'].includes(inner.provider ?? '')
+  )
+    return false;
+  if (inner.provider === 'devin') {
+    return (
+      typeof inner.devinCredentialsToml === 'string' &&
+      inner.devinCredentialsToml.length > 0 &&
+      new TextEncoder().encode(inner.devinCredentialsToml).byteLength <=
+        MAX_CREDENTIAL_GRANT_DEVIN_CREDENTIALS_BYTES &&
+      Object.keys(inner.env).length === 0
+    );
+  }
+  return (
+    inner.devinCredentialsToml === undefined &&
+    new TextEncoder().encode(JSON.stringify(inner.env)).byteLength <= 64 * 1024
+  );
+}
 
 /**
  * credential-grant envelope: the fence-binding fields are plaintext so the

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
 import type { ExecutionAttempt, MeshJob } from '../../../../cloud/contract/jobs';
+import type { AgentProvider } from '../../../shared/types';
 
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
@@ -934,7 +935,7 @@ describe('start-session executor (SESSION-02)', () => {
       workspaceDefinitionRevision: workspaceDefinitionRevision(workspaceId)!,
       repositories: [{ repositoryId: portableId, commit }],
       bootstrapDigest: 'none',
-      provider: 'codex',
+      provider: (inputs['provider'] as AgentProvider | undefined) ?? 'codex',
       model: 'gpt-5',
       configVersions: {},
       inputs: { workspaceId, prompt: 'do the thing', ...inputs },
@@ -1149,6 +1150,175 @@ describe('start-session executor (SESSION-02)', () => {
         .get(`att-${job.id}`) as { journal_json: string };
       expect(row.journal_json).toContain('credential-grants-applied');
       expect(row.journal_json).not.toContain('real-api-key-grant');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for and scopes a cloud provider grant to the provider and stable Devin session home', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('cloud-provider-devin');
+    const userDataDir = mkdtempSync(join(tmpdir(), 'anvil-provider-auth-home-'));
+    const credentialsToml = 'access_token = "private-devin-token"\n';
+    try {
+      configureMeshWorkerContext(() => ({ ...CTX, userDataDir }));
+      const job = makeSessionJob('job-cloud-provider-devin', workspaceId, portableId, head, {
+        provider: 'devin',
+        authMode: 'cloud-provider',
+        authSessionId: 'stable-devin-session',
+      });
+      vi.mocked(unsealCredentialGrant).mockReturnValue({
+        v: 1,
+        kind: 'remote-provider-auth',
+        provider: 'devin',
+        env: {},
+        devinCredentialsToml: credentialsToml,
+      });
+      let pulls = 0;
+      claimWith(job, (operation) => {
+        if (operation !== 'credential.pull') return {};
+        pulls += 1;
+        return {
+          grants:
+            pulls >= 3
+              ? [
+                  {
+                    jobId: job.id,
+                    attemptId: `att-${job.id}`,
+                    fence: 1,
+                    targetEnrollmentId: 'enr-1',
+                    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                  },
+                ]
+              : [],
+        };
+      });
+
+      await handleJobAvailable(job.id);
+
+      expect(pulls).toBeGreaterThanOrEqual(3);
+      const spec = runTurnMock.mock.calls[0]?.[0];
+      expect(spec).toMatchObject({
+        provider: 'devin',
+        authMode: 'cloud-provider',
+        devinCredentialsToml: credentialsToml,
+        extraEnv: {
+          XDG_DATA_HOME: expect.stringMatching(/\/mesh-provider-data\/[a-f0-9]{64}$/),
+        },
+      });
+      expect(
+        spec?.extraEnv?.XDG_DATA_HOME?.startsWith(join(userDataDir, 'mesh-provider-data')),
+      ).toBe(true);
+      const journal = (
+        db.prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?').get(`att-${job.id}`) as {
+          journal_json: string;
+        }
+      ).journal_json;
+      expect(journal).not.toContain('private-devin-token');
+      expect(journal).not.toContain(credentialsToml);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a cloud provider grant bound to a different provider before provider startup', async () => {
+    const { workspaceId, portableId, repoDir, head } =
+      seedSessionWorkspace('provider-auth-mismatch');
+    try {
+      const job = makeSessionJob('job-provider-auth-mismatch', workspaceId, portableId, head, {
+        provider: 'cursor',
+        authMode: 'cloud-provider',
+        authSessionId: 'stable-cursor-session',
+      });
+      vi.mocked(unsealCredentialGrant).mockReturnValue({
+        v: 1,
+        kind: 'remote-provider-auth',
+        provider: 'devin',
+        env: {},
+        devinCredentialsToml: 'private-token = "secret"',
+      });
+      claimWith(job, (operation) =>
+        operation === 'credential.pull'
+          ? {
+              grants: [
+                {
+                  jobId: job.id,
+                  attemptId: `att-${job.id}`,
+                  fence: 1,
+                  targetEnrollmentId: 'enr-1',
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+              ],
+            }
+          : {},
+      );
+
+      await handleJobAvailable(job.id);
+
+      expect(probeMock).not.toHaveBeenCalled();
+      expect(runTurnMock).not.toHaveBeenCalled();
+      const journal = (
+        db.prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?').get(`att-${job.id}`) as {
+          journal_json: string;
+        }
+      ).journal_json;
+      expect(journal).toContain('provider-auth-grant-provider-mismatch');
+      expect(journal).not.toContain('private-token');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts only supported LLMGateway billing modes from a cloud provider grant', async () => {
+    const { workspaceId, portableId, repoDir, head } =
+      seedSessionWorkspace('provider-auth-gateway');
+    try {
+      const job = makeSessionJob('job-provider-auth-gateway', workspaceId, portableId, head, {
+        provider: 'llmgateway',
+        authMode: 'cloud-provider',
+        authSessionId: 'stable-gateway-session',
+      });
+      vi.mocked(unsealCredentialGrant).mockReturnValue({
+        v: 1,
+        kind: 'remote-provider-auth',
+        provider: 'llmgateway',
+        env: {
+          LLMGATEWAY_API_KEY: 'private-gateway-key',
+          LLMGATEWAY_BILLING_MODE: 'devpass',
+        },
+      });
+      claimWith(job, (operation) =>
+        operation === 'credential.pull'
+          ? {
+              grants: [
+                {
+                  jobId: job.id,
+                  attemptId: `att-${job.id}`,
+                  fence: 1,
+                  targetEnrollmentId: 'enr-1',
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+              ],
+            }
+          : {},
+      );
+
+      await handleJobAvailable(job.id);
+
+      expect(runTurnMock.mock.calls[0]?.[0]).toMatchObject({
+        provider: 'llmgateway',
+        authMode: 'cloud-provider',
+        extraEnv: {
+          LLMGATEWAY_API_KEY: 'private-gateway-key',
+          LLMGATEWAY_BILLING_MODE: 'devpass',
+        },
+      });
+      const journal = (
+        db.prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?').get(`att-${job.id}`) as {
+          journal_json: string;
+        }
+      ).journal_json;
+      expect(journal).not.toContain('private-gateway-key');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

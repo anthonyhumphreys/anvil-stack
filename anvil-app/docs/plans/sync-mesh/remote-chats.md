@@ -40,10 +40,11 @@ after ownership transfers, **Retry on destination** starts a fresh provider turn
 from the checkpoint and preserves destination edits. Recovery also retries
 submission and chat adoption while connected and after restart.
 
-The generic and Cloudflare worker images install Codex for the initial launch.
-Other providers remain available on enrolled desktops and BYO workers with
-those runtimes configured. OpenAI and Azure use Codex app-server; LLMGateway uses the managed
-Codex adapter. For Codex cloud runs, the default is **Use my Codex login from this device**.
+The generic and Cloudflare worker images install pinned Codex, Cursor and Devin
+CLIs. Managed cloud runs support all six Desktop providers when enabled in
+Settings → Sync & Mesh → Cloud agents. Codex is enabled by default; the other
+providers require an explicit opt-in. OpenAI and Azure use Codex app-server;
+LLMGateway uses the managed Codex adapter. For Codex cloud runs, the default is **Use my Codex login from this device**.
 Anvil reads the launching host's `auth.json` from `CODEX_HOME`, or from
 `~/.codex` when that variable is unset. It validates an account-auth cache before
 submitting a new remote chat and before stopping the source for cloud handoff.
@@ -65,7 +66,30 @@ no portable account cache, including when its CLI uses OS keyring storage.
 An explicitly selected saved OpenAI API key remains available with separate API
 billing. Both host caches and API keys use encrypted grants; a worker waits for
 the required grant before spawning. Image builds contain no login state.
-Other providers need destination-local provider setup. Private repository Git
+Cursor uses a one-time browser connection in Cloud agent settings. The official
+Cursor SDK mints a named user API key, with its default 90-day lifetime, that
+Anvil stores encrypted using the same secure-storage/vault mechanism as saved
+integrations. The key is passed only to the selected live worker attempt. This
+uses the user's Cursor plan; standard usage limits and enabled overages apply.
+Expired or revoked connections require reconnecting. Disconnect removes Anvil's
+saved key; revoke it in Cursor's dashboard to invalidate copies already delivered.
+
+Devin Connect reuses a bounded, validated host CLI `credentials.toml`, or starts
+`devin auth login` on the launching host if no login exists. Anvil saves the
+connection encrypted. If the CLI cannot finish browser login, the user can run
+the documented manual-token flow locally and connect again. Workers use a
+protected session data home outside the checkout; the host file is never changed.
+Disconnect prevents subsequent grants without signing out the host CLI.
+
+OpenAI, Azure and LLMGateway reuse the saved provider keys after explicit cloud
+opt-in. Azure also receives endpoint, deployment and API-version configuration;
+LLMGateway retains the chosen devpass/payg catalog mode. Provider grants carry
+only the selected provider's credentials, remain encrypted and are bound to the
+trusted target, job, attempt, fence and lease. Workers wait for the grant before
+spawning. Existing running processes retain credentials already delivered;
+disabling a provider prevents new launches and new grants.
+
+Desktop/BYO destinations retain destination-local provider setup. Private repository Git
 credentials are not automatically copied from Desktop.
 
 OpenAI documents [copying the account auth cache to headless workers](https://developers.openai.com/codex/auth#fallback-authenticate-locally-and-copy-your-auth-cache)
@@ -83,7 +107,7 @@ the candidate commit and results in
 
 ## Verification on 3 October 2026
 
-- Desktop suite: 1,859 passed, 12 skipped; Node and renderer TypeScript, ESLint,
+- Desktop suite: 1,892 passed, 12 skipped; Node and renderer TypeScript, ESLint,
   Electron build and daemon build passed.
 - Backend suite: 440 passed; backend TypeScript passed. Private encrypted job
   inputs allow 512 KiB for workspace/checkpoint context, while public inputs
@@ -91,14 +115,19 @@ the candidate commit and results in
 - Generic Linux arm64 and Cloudflare Linux amd64 worker images built with the
   final daemon. Container checks passed fresh vault setup, restart, missing-key
   refusal, key permissions, Codex 0.154.0, host-cache account reads with optional account IDs, device-code schema support
-  and optional API-provider configuration without ChatGPT account auth. No real provider
+  and optional API-provider configuration without ChatGPT account auth. Cursor
+  2026.09.10-fd3934a and Devin 3000.11.3 passed version and ACP help checks
+  from fresh homes with networking disabled. No real provider
   credentials were used and no inference task ran.
 - Regression coverage includes scoped handoff recovery, preserving destination
   edits after failed activation, native follow-ups, exact preparation pins,
   deferred submission/cancellation, late API-key grants and fresh task-scoped
   workspace installation without the account sync key, host-cache grant binding,
   refreshed-cache preservation, different-user rejection, and explicit headless
-  fallback for new chats and handoff.
+  fallback for new chats and handoff, provider opt-in/disable checks, cancelled
+  and expired Cursor connections, locked credential storage, provider-specific
+  grant binding, Devin private cache reuse, and fresh-worker LLMGateway auth
+  and billing-mode configuration.
 
 Live host-cache authentication and refresh, fallback account sign-in, two-device operation, cloud execution/teardown, private
 repository access and interactive UI acceptance remain pending in ANV-11.

@@ -26,6 +26,7 @@ import { useSyncMeshSetup } from '../../hooks/useSyncMeshSetup';
 import { DashboardAccessPanel } from './DashboardAccessPanel';
 import { DeviceSecurityPanel } from './DeviceSecurityPanel';
 import { CloudEnvironmentsPanel } from './CloudEnvironmentsPanel';
+import { CloudAgentSettingsPanel } from './CloudAgentSettingsPanel';
 import { MeshExecutionsPanel } from './MeshExecutionsPanel';
 import { deviceTrustSourceLabel, deviceTrustStateLabel } from './device-security-labels';
 
@@ -1639,6 +1640,13 @@ export function SyncMeshSettingsPanel(): ReactNode {
       {runtime?.auth.state === 'signed-in' && status?.state === 'active' && (
         <CloudEnvironmentsPanel onError={setError} />
       )}
+
+      <Panel
+        title="Cloud agents"
+        description="Choose providers available to managed cloud agents and connect supported accounts."
+      >
+        <CloudAgentSettingsPanel />
+      </Panel>
 
       <Panel
         title="Build a compatible backend"

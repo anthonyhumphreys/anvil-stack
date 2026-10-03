@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
+  mockIsCloudProviderEnabled,
+  mockReadCloudCredential,
+  mockValidateCloudProvider,
   mockRpc,
   mockSeal,
   mockTrustState,
@@ -9,6 +12,9 @@ const {
   mockReadCodexHostAuthJson,
   mockValidateCodexHostAuthJson,
 } = vi.hoisted(() => ({
+  mockIsCloudProviderEnabled: vi.fn(),
+  mockReadCloudCredential: vi.fn(),
+  mockValidateCloudProvider: vi.fn(),
   mockRpc: vi.fn(),
   mockSeal: vi.fn(),
   mockTrustState: vi.fn(),
@@ -23,6 +29,11 @@ vi.mock('../sync-keyring.service.js', () => ({
   deviceTrustState: mockTrustState,
   listDeviceIdentities: mockIdentities,
   sealCredentialGrant: mockSeal,
+}));
+vi.mock('../cloud-agent-settings.service.js', () => ({
+  isCloudAgentProviderEnabled: mockIsCloudProviderEnabled,
+  readCloudAgentCredential: mockReadCloudCredential,
+  validateCloudAgentProvider: mockValidateCloudProvider,
 }));
 vi.mock('../settings.service.js', () => ({ getSettings: mockGetSettings }));
 vi.mock('../codex-host-auth.js', () => ({
@@ -102,6 +113,8 @@ describe('remote-credentials.service', () => {
     mockIdentities.mockReturnValue([{ enrollmentId: TARGET, pub: 'target-public-key' }]);
     mockTrustState.mockReturnValue('trusted');
     mockGetSettings.mockReturnValue({ openaiApiKey: KEY });
+    mockIsCloudProviderEnabled.mockReturnValue(true);
+    mockReadCloudCredential.mockReturnValue({ env: { CURSOR_API_KEY: 'cursor-fixture-secret' } });
     mockReadCodexHostAuthJson.mockReturnValue(CODEX_AUTH_JSON);
     mockSeal.mockImplementation((input: { env: Record<string, string> }) => ({
       v: 1,
@@ -220,5 +233,71 @@ describe('remote-credentials.service', () => {
       ensureRemoteCredentialGrant({ ...INPUT_BASE, result: jobResult() }),
     ).rejects.toThrow(/usable OpenAI API key/);
     expect(mockRpc).not.toHaveBeenCalled();
+  });
+  it('sends reusable Cursor auth only in an encrypted grant for the chosen attempt', async () => {
+    await ensureRemoteCredentialGrant({
+      ...INPUT_BASE,
+      provider: 'cursor',
+      choice: 'cloud-provider',
+      result: jobResult(),
+    });
+    expect(mockSeal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'remote-provider-auth',
+        provider: 'cursor',
+        env: { CURSOR_API_KEY: 'cursor-fixture-secret' },
+      }),
+    );
+    expect(JSON.stringify(mockRpc.mock.calls)).not.toContain('cursor-fixture-secret');
+  });
+
+  it('sends Devin cache only inside the typed encrypted grant', async () => {
+    mockReadCloudCredential.mockReturnValue({
+      env: {},
+      devinCredentialsToml: 'api_token="devin-fixture-secret"',
+    });
+    await ensureRemoteCredentialGrant({
+      ...INPUT_BASE,
+      provider: 'devin',
+      choice: 'cloud-provider',
+      result: jobResult(),
+    });
+    expect(mockSeal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'remote-provider-auth',
+        provider: 'devin',
+        env: {},
+        devinCredentialsToml: 'api_token="devin-fixture-secret"',
+      }),
+    );
+    expect(JSON.stringify(mockRpc.mock.calls)).not.toContain('devin-fixture-secret');
+  });
+
+  it('rejects a disabled or disconnected cloud provider without depositing a grant', async () => {
+    mockValidateCloudProvider.mockImplementationOnce(() => {
+      throw new Error('Cloud provider is disabled.');
+    });
+    await expect(
+      ensureRemoteCredentialGrant({
+        ...INPUT_BASE,
+        provider: 'cursor',
+        choice: 'cloud-provider',
+        result: jobResult(),
+      }),
+    ).rejects.toThrow(/disabled/);
+    expect(mockSeal).not.toHaveBeenCalled();
+  });
+
+  it('blocks a new cloud Codex grant after cloud access is disabled', async () => {
+    mockIsCloudProviderEnabled.mockReturnValue(false);
+    await expect(
+      ensureRemoteCredentialGrant({
+        ...INPUT_BASE,
+        cloudTarget: true,
+        choice: 'codex-host-auth',
+        result: jobResult(),
+      }),
+    ).rejects.toThrow(/disabled/);
+    expect(mockSeal).not.toHaveBeenCalled();
   });
 });

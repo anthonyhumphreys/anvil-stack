@@ -244,3 +244,23 @@ offline synthetic-cache checks verified the pinned CLI reads account auth with
 and without the optional account ID. No real credentials or inference were used.
 Headless fallback tests include consent, login completion, account verification,
 ambient API-key stripping and explicit handoff selection.
+
+### Cloud provider connection settings, 3 October 2026
+
+Cloud launch now uses the chosen Desktop provider after a per-provider opt-in
+in Cloud agent settings. Cursor connects through the official SDK browser flow
+and stores the resulting expiring user API key encrypted. Devin connects once by
+importing the host CLI login or starting its browser login, with manual-token
+instructions when the CLI requires them. OpenAI, Azure and LLMGateway use saved
+API settings. Encrypted attempt grants support the provider identity and bounded
+Devin cache; credentials never enter public job inputs or chat records. Worker
+images install pinned Cursor and Devin CLIs alongside Codex. Codex host-cache and
+explicit headless fallback flows remain intact. Live provider login, usage and
+cloud execution acceptance remain required in ANV-11.
+
+Verification passed 1,892 desktop tests with 12 skipped, 440 backend tests,
+both desktop TypeScript projects, backend TypeScript, ESLint and Electron/daemon
+builds. Both final worker images built and passed offline vault, Codex host-cache
+and headless/API auth checks, plus Cursor and Devin version/ACP checks from fresh
+homes. The Cursor SDK connection is mocked in regression tests; no real login
+or cloud inference ran. Provider setup and live execution remain acceptance gates.

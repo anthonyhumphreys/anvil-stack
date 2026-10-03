@@ -1,3 +1,4 @@
+import { isCloudAgentProviderEnabled } from './cloud-agent-settings.service.js';
 import type { RemoteCodexAccountAuthChoice } from '../../shared/remote-chat.js';
 // Session handoff orchestration (SESSION-03, spec §11).
 //
@@ -237,7 +238,7 @@ function journalActivationMetadata(input: {
   provider: AgentProvider;
   model: string;
   permissionMode: PermissionMode;
-  authMode: 'target-local' | 'codex-host-auth' | 'codex-account';
+  authMode: 'target-local' | 'codex-host-auth' | 'codex-account' | 'cloud-provider';
 }): void {
   getDb()
     .prepare(
@@ -606,15 +607,17 @@ async function initiateHandoffWithId(input: {
     deviceTrustState(ctx.scope, input.targetEnrollmentId) !== 'trusted'
   )
     throw new Error('handoff target device must be trusted before activation');
-  if (target.enrollmentClass === 'ephemeral' && provider !== 'codex') {
-    throw new Error('Cloud workers currently support Codex handoff sessions only.');
+  if (target.enrollmentClass === 'ephemeral' && !isCloudAgentProviderEnabled(provider)) {
+    throw new Error('Enable this provider in Cloud agent settings before handing off to it.');
   }
   const authMode =
     target.enrollmentClass === 'ephemeral'
-      ? (input.cloudAuthChoice ?? 'codex-host-auth')
+      ? provider === 'codex'
+        ? (input.cloudAuthChoice ?? 'codex-host-auth')
+        : 'cloud-provider'
       : 'target-local';
 
-  validateRemoteCredentialAvailability(authMode);
+  validateRemoteCredentialAvailability(authMode, provider);
 
   journalHandoff(handoffId, input.sessionId, 'source', ctx);
   const created = await handoffRpc<HandoffCreateResult>(
@@ -884,7 +887,12 @@ export async function reconcileHandoffsOnBoot(): Promise<void> {
             activation_provider: AgentProvider | null;
             activation_model: string | null;
             activation_permission_mode: PermissionMode | null;
-            activation_auth_mode: 'target-local' | 'codex-host-auth' | 'codex-account' | null;
+            activation_auth_mode:
+              | 'target-local'
+              | 'codex-host-auth'
+              | 'codex-account'
+              | 'cloud-provider'
+              | null;
           }
         | undefined;
       // source_checkpoint_json is written only after stopSessionAndWait
@@ -1004,7 +1012,12 @@ export async function reconcileHandoffsOnBoot(): Promise<void> {
             activation_provider: AgentProvider | null;
             activation_model: string | null;
             activation_permission_mode: PermissionMode | null;
-            activation_auth_mode: 'target-local' | 'codex-host-auth' | 'codex-account' | null;
+            activation_auth_mode:
+              | 'target-local'
+              | 'codex-host-auth'
+              | 'codex-account'
+              | 'cloud-provider'
+              | null;
           }
         | undefined;
       if (activation?.activation_request_json != null) {

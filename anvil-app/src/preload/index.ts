@@ -100,6 +100,14 @@ import type {
 } from '../shared/agent-ui-intents.js';
 
 const api: AnvilAPI = {
+  cloudAgentSettings: {
+    get: () => ipcRenderer.invoke('cloud-agent-settings:get'),
+    setEnabled: (provider, enabled) =>
+      ipcRenderer.invoke('cloud-agent-settings:set-enabled', provider, enabled),
+    connect: (provider) => ipcRenderer.invoke('cloud-agent-settings:connect', provider),
+    disconnect: (provider) => ipcRenderer.invoke('cloud-agent-settings:disconnect', provider),
+    cancelConnection: (provider) => ipcRenderer.invoke('cloud-agent-settings:cancel', provider),
+  },
   appWindow: {
     getVersion: () => ipcRenderer.invoke('app-window:get-version'),
     getChromeState: () => ipcRenderer.invoke('app-window:get-chrome-state'),

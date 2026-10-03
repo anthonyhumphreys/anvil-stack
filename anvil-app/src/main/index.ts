@@ -13,6 +13,7 @@ import { registerSyncRuntimeHandlers } from './ipc/sync-runtime.ipc.js';
 import { registerCodexRegistryHandlers } from './ipc/codex-registry.ipc.js';
 import { registerCodexUsageHandlers } from './ipc/codex-usage.ipc.js';
 import { registerAnvilCloudHandlers } from './ipc/anvil-cloud.ipc.js';
+import { registerCloudAgentSettingsHandlers } from './ipc/cloud-agent-settings.ipc.js';
 import { registerDiagnosticsHandlers } from './ipc/diagnostics.ipc.js';
 import { registerMetricsHandlers } from './ipc/metrics.ipc.js';
 import { registerMobileCompanionHandlers } from './ipc/mobile-companion.ipc.js';
@@ -375,6 +376,7 @@ app.whenReady().then(() => {
   registerCodexRegistryHandlers();
   registerCodexUsageHandlers();
   registerAnvilCloudHandlers();
+  registerCloudAgentSettingsHandlers();
   registerDiagnosticsHandlers();
   registerMetricsHandlers();
   registerRepoHandlers();

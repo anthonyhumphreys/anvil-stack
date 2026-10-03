@@ -347,3 +347,27 @@ Live authentication, refresh and teardown remain unverified until this run is
 recorded against the final candidate. Host-cache transfer is implemented as the
 agreed default; copying refreshed credentials back to the launch host is outside
 this scope.
+
+
+### Cloud provider connections
+
+- In Settings → Sync & Mesh → Cloud agents, verify only Codex is enabled initially.
+  Enable/disable each provider, restart Desktop and confirm the choices persist.
+- Connect Cursor through the browser once; launch a cloud turn and a follow-up
+  without another login. Check Cursor's usage dashboard. Cancel login, disconnect,
+  expire/revoke the key and confirm no subsequent grant is sent until reconnect.
+  Lock the credential vault and confirm connected-but-locked credentials are
+  recoverable after unlock. Check no key appears in chat, diagnostics or activity.
+- Connect Devin using an existing CLI login. On a clean host, complete browser
+  login, or the documented manual-token fallback if required. Confirm a cloud
+  turn and follow-up use the protected worker data home. Disconnect must not reuse
+  the local host cache automatically or sign out the host CLI.
+- Exercise OpenAI, Azure and LLMGateway with saved keys on a fresh worker with no
+  provider configuration. Verify Azure endpoint/deployment/API version and both
+  LLMGateway billing modes. Handoff each provider and test destination retry.
+- Disabled or unconnected providers must fail before workspace job creation or
+  source shutdown. Codex's explicit headless login must remain available without
+  a portable host auth cache. Confirm node permission ceilings still apply.
+- Inspect final generic arm64 and Cloudflare amd64 images for pinned Codex,
+  Cursor and Devin runtimes; no login state may be present in the built image.
+  Remove the environment and confirm worker credential files disappear.

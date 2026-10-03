@@ -102,7 +102,8 @@ export function registerSyncRuntimeHandlers(): void {
       credentialChoice !== 'target-local' &&
       credentialChoice !== 'codex-host-auth' &&
       credentialChoice !== 'codex-account' &&
-      credentialChoice !== 'openai-api-key'
+      credentialChoice !== 'openai-api-key' &&
+      credentialChoice !== 'cloud-provider'
     ) {
       throw new Error('Unsupported remote credential choice');
     }

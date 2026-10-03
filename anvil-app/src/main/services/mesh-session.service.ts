@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { parse as parseToml } from 'smol-toml';
 
 import {
   handleCodexServerLine,
@@ -45,7 +46,12 @@ export type RemoteSessionProvider = AgentProvider;
 
 export interface RemoteSessionSpec {
   provider: RemoteSessionProvider;
-  authMode?: 'target-local' | 'codex-account' | 'codex-host-auth' | 'openai-api-key';
+  authMode?:
+    | 'target-local'
+    | 'codex-account'
+    | 'codex-host-auth'
+    | 'openai-api-key'
+    | 'cloud-provider';
   /** Encrypted source-host auth cache for the `codex-host-auth` grant. Never logged. */
   codexAuthJson?: string;
   /** Stable private Codex home owned by the worker, outside the checkout. */
@@ -65,6 +71,8 @@ export interface RemoteSessionSpec {
    * Never journaled.
    */
   extraEnv?: Record<string, string>;
+  /** Session-scoped Devin credentials material; written only below XDG_DATA_HOME. */
+  devinCredentialsToml?: string;
   /** Bounds `turn/start` → `turn/completed`; the child dies on expiry. */
   turnTimeoutMs: number;
   /** Bounds spawn → thread/started; defaults to THREAD_READY_TIMEOUT_MS. */
@@ -287,12 +295,64 @@ function sandboxModeToTurnPolicy(
   }
 }
 
-function argsForProvider(provider: RemoteSessionProvider): string[] {
+function argsForProvider(
+  provider: RemoteSessionProvider,
+  extraEnv?: Readonly<Record<string, string>>,
+): string[] {
   switch (provider) {
-    case 'azure':
-      return ['app-server', '-c', 'model_provider="azure"'];
-    case 'openai':
-      return ['app-server', '-c', 'model_provider="openai"'];
+    case 'azure': {
+      const args = [
+        'app-server',
+        '-c',
+        'model_provider="anvil_remote_azure"',
+        '-c',
+        'model_providers.anvil_remote_azure.name="Azure"',
+      ];
+      if (extraEnv?.AZURE_OPENAI_ENDPOINT) {
+        const endpoint = extraEnv.AZURE_OPENAI_ENDPOINT.replace(/\/+$/, '');
+        const baseUrl = /\/openai$/i.test(endpoint) ? endpoint : `${endpoint}/openai`;
+        args.push('-c', `model_providers.anvil_remote_azure.base_url=${JSON.stringify(baseUrl)}`);
+      }
+      if (extraEnv?.AZURE_OPENAI_API_VERSION) {
+        args.push(
+          '-c',
+          `model_providers.anvil_remote_azure.query_params={ "api-version" = ${JSON.stringify(extraEnv.AZURE_OPENAI_API_VERSION)} }`,
+        );
+      }
+      if (extraEnv?.AZURE_OPENAI_API_KEY) {
+        args.push('-c', 'model_providers.anvil_remote_azure.env_key="AZURE_OPENAI_API_KEY"');
+      }
+      if (extraEnv?.AZURE_OPENAI_DEPLOYMENT) {
+        args.push('-c', `model=${JSON.stringify(extraEnv.AZURE_OPENAI_DEPLOYMENT)}`);
+      }
+      args.push(
+        '-c',
+        'model_providers.anvil_remote_azure.wire_api="responses"',
+        '-c',
+        'model_providers.anvil_remote_azure.requires_openai_auth=false',
+      );
+      return args;
+    }
+    case 'openai': {
+      const args = [
+        'app-server',
+        '-c',
+        'model_provider="anvil_remote_openai"',
+        '-c',
+        'model_providers.anvil_remote_openai.name="OpenAI"',
+      ];
+      if (extraEnv?.OPENAI_BASE_URL) {
+        args.push(
+          '-c',
+          `model_providers.anvil_remote_openai.base_url=${JSON.stringify(extraEnv.OPENAI_BASE_URL)}`,
+        );
+      }
+      if (extraEnv?.OPENAI_API_KEY) {
+        args.push('-c', 'model_providers.anvil_remote_openai.env_key="OPENAI_API_KEY"');
+      }
+      args.push('-c', 'model_providers.anvil_remote_openai.requires_openai_auth=false');
+      return args;
+    }
     case 'codex':
     default:
       return ['app-server'];
@@ -347,6 +407,53 @@ async function runDesktopAdapterTurn(
   hooks: RemoteSessionHooks,
   cliVersion: string | null,
 ): Promise<RemoteSessionResult> {
+  if (spec.authMode === 'cloud-provider' && spec.provider === 'devin') {
+    const dataHome = spec.extraEnv?.XDG_DATA_HOME;
+    const credentialsToml = spec.devinCredentialsToml;
+    if (!dataHome || !credentialsToml || Buffer.byteLength(credentialsToml, 'utf8') > 64 * 1024) {
+      throw new Error('devin-provider-auth-invalid');
+    }
+    const devinDir = path.join(dataHome, 'devin');
+    const credentialsPath = path.join(devinDir, 'credentials.toml');
+    const tokenFromToml = (toml: string): string | null => {
+      try {
+        const parsed = parseToml(toml) as Record<string, unknown>;
+        const token = parsed.api_token;
+        return typeof token === 'string' && token.trim().length >= 16 && token.length <= 16_384
+          ? token
+          : null;
+      } catch {
+        return null;
+      }
+    };
+    const grantedToken = tokenFromToml(credentialsToml);
+    if (grantedToken === null) throw new Error('devin-provider-auth-invalid');
+    fs.mkdirSync(dataHome, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(devinDir, { recursive: true, mode: 0o700 });
+    if (fs.lstatSync(dataHome).isSymbolicLink() || fs.lstatSync(devinDir).isSymbolicLink()) {
+      throw new Error('devin-provider-auth-home-invalid');
+    }
+    fs.chmodSync(dataHome, 0o700);
+    fs.chmodSync(devinDir, 0o700);
+    try {
+      fs.writeFileSync(credentialsPath, credentialsToml, {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      });
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) {
+        throw new Error('devin-provider-auth-unavailable');
+      }
+      const existingStat = fs.lstatSync(credentialsPath);
+      if (existingStat.isSymbolicLink() || !existingStat.isFile()) {
+        throw new Error('devin-provider-auth-home-invalid');
+      }
+      const existing = fs.readFileSync(credentialsPath, 'utf8');
+      if (tokenFromToml(existing) !== grantedToken) throw new Error('devin-provider-auth-conflict');
+      fs.chmodSync(credentialsPath, 0o600);
+    }
+  }
   const codexMode =
     spec.sandbox === 'read-only' || spec.permissionMode === 'read-only'
       ? 'read-only'
@@ -502,6 +609,9 @@ export async function runRemoteSessionTurn(
   ) {
     throw new Error('openai-api-key-auth-requires-openai-or-codex-provider');
   }
+  if (spec.authMode === 'cloud-provider' && spec.provider === 'codex') {
+    throw new Error('cloud-provider-auth-provider-invalid');
+  }
   if (spec.provider === 'cursor' || spec.provider === 'devin' || spec.provider === 'llmgateway') {
     return runDesktopAdapterTurn(spec, hooks, cliVersion);
   }
@@ -525,7 +635,10 @@ export async function runRemoteSessionTurn(
     delete env.OPENAI_API_KEY;
     delete env.CODEX_API_KEY;
   }
-  const args = argsForProvider(spec.provider);
+  const args = argsForProvider(
+    spec.provider,
+    spec.authMode === 'cloud-provider' ? spec.extraEnv : undefined,
+  );
   if (hostAuth !== undefined || spec.authMode === 'codex-account') {
     args.push('-c', 'cli_auth_credentials_store="file"', '-c', 'forced_login_method="chatgpt"');
   }

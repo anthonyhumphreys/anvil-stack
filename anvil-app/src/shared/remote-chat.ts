@@ -7,7 +7,8 @@ export type RemoteCredentialChoice =
   | 'target-local'
   | 'codex-host-auth'
   | 'codex-account'
-  | 'openai-api-key';
+  | 'openai-api-key'
+  | 'cloud-provider';
 
 export type RemoteChatState =
   | 'preparing'

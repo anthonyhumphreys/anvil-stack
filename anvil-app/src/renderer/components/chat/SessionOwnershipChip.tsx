@@ -1,4 +1,7 @@
 import type { RemoteCodexAccountAuthChoice } from '../../../shared/remote-chat';
+import type { AgentProvider } from '../../../shared/types';
+import type { CloudAgentProviderStatus } from '../../../shared/cloud-agent';
+import { SettingsLink } from '../shared/SettingsLink';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowRightLeft, Laptop, Loader2 } from 'lucide-react';
@@ -24,9 +27,17 @@ function toErrorMessage(error: unknown): string {
  * device — shown as "this device", not guessed. Mid-flight handoffs render
  * their real state rather than a spinner.
  */
-export function SessionOwnershipChip({ sessionId }: { sessionId: string }): ReactNode {
+export function SessionOwnershipChip({
+  sessionId,
+  provider = 'codex',
+}: {
+  sessionId: string;
+  provider?: AgentProvider;
+}): ReactNode {
   const [meshState, setMeshState] = useState<SessionMeshState | null>(null);
   const [devices, setDevices] = useState<SyncDevice[] | null>(null);
+  const [cloudProviders, setCloudProviders] = useState<CloudAgentProviderStatus[]>([]);
+  const [cloudProvidersLoaded, setCloudProvidersLoaded] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [cloudAuthChoice, setCloudAuthChoice] =
     useState<RemoteCodexAccountAuthChoice>('codex-host-auth');
@@ -61,6 +72,33 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
       window.clearInterval(timer);
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!moveOpen || !devices?.some((device) => device.enrollmentClass === 'ephemeral')) {
+      setCloudProviders([]);
+      setCloudProvidersLoaded(false);
+      return;
+    }
+    let disposed = false;
+    setCloudProvidersLoaded(false);
+    void window.anvil.cloudAgentSettings
+      .get()
+      .then((snapshot) => {
+        if (!disposed) {
+          setCloudProviders(snapshot.providers);
+          setCloudProvidersLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setCloudProviders([]);
+          setCloudProvidersLoaded(true);
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [moveOpen, devices, provider]);
 
   // The device roster is available only after sign-in. A local-only chat has
   // no destination to show and should not display a misleading Move control.
@@ -106,6 +144,12 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
     (d) => d.self !== true && d.revoked !== true && d.trustState === 'trusted',
   );
   const canMove = ownedHere && !inFlight && !moving && targets.length > 0;
+  const cloudProviderStatus = cloudProviders.find((item) => item.provider === provider);
+  const cloudProviderReady =
+    cloudProviderStatus?.enabled === true &&
+    (provider === 'codex' || cloudProviderStatus.connected);
+  const hasCloudTargets = targets.some((device) => device.enrollmentClass === 'ephemeral');
+  const needsCloudConnection = hasCloudTargets && cloudProvidersLoaded && !cloudProviderReady;
 
   const handleMove = async (targetEnrollmentId: string): Promise<void> => {
     setMoving(true);
@@ -116,7 +160,7 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
         sessionId,
         targetEnrollmentId,
         devices.find((device) => device.enrollmentId === targetEnrollmentId)?.enrollmentClass ===
-          'ephemeral'
+          'ephemeral' && provider === 'codex'
           ? cloudAuthChoice
           : undefined,
       );
@@ -174,32 +218,44 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
 
       {moveOpen && canMove && (
         <div className="mt-1.5 space-y-1">
-          {targets.some((device) => device.enrollmentClass === 'ephemeral') && (
-            <label className="flex flex-col gap-1 text-xs text-text-secondary">
-              Cloud Codex login
-              <select
-                value={cloudAuthChoice}
-                onChange={(event) =>
-                  setCloudAuthChoice(event.target.value as RemoteCodexAccountAuthChoice)
-                }
-                disabled={moving}
-                className="rounded-md border border-border bg-bg-secondary px-2 py-1"
-              >
-                <option value="codex-host-auth">Use my Codex login from this device</option>
-                <option value="codex-account">Sign in on the cloud worker</option>
-              </select>
-            </label>
+          {hasCloudTargets && provider !== 'codex' && (
+            <p className="text-xs text-text-secondary">
+              Cloud uses your configured {provider} connection.{' '}
+              <SettingsLink to="sync#cloud-agents">Manage Cloud agent providers</SettingsLink>.
+            </p>
           )}
+          {targets.some((device) => device.enrollmentClass === 'ephemeral') &&
+            provider === 'codex' && (
+              <label className="flex flex-col gap-1 text-xs text-text-secondary">
+                Cloud Codex login
+                <select
+                  value={cloudAuthChoice}
+                  onChange={(event) =>
+                    setCloudAuthChoice(event.target.value as RemoteCodexAccountAuthChoice)
+                  }
+                  disabled={moving}
+                  className="rounded-md border border-border bg-bg-secondary px-2 py-1"
+                >
+                  <option value="codex-host-auth">Use my Codex login from this device</option>
+                  <option value="codex-account">Sign in on the cloud worker</option>
+                </select>
+              </label>
+            )}
           <ul className="space-y-1">
             {targets.map((device) => (
               <li key={device.enrollmentId}>
                 <button
                   type="button"
                   onClick={() => void handleMove(device.enrollmentId)}
-                  disabled={moving}
+                  disabled={
+                    moving || (device.enrollmentClass === 'ephemeral' && !cloudProviderReady)
+                  }
                   className="w-full rounded-md border border-border px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
                 >
                   {device.displayName} · {device.enrollmentId.slice(0, 8)}…
+                  {device.enrollmentClass === 'ephemeral' && !cloudProvidersLoaded
+                    ? ' (checking access)'
+                    : ''}
                 </button>
               </li>
             ))}
@@ -207,6 +263,17 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
         </div>
       )}
 
+      {hasCloudTargets && !cloudProvidersLoaded && moveOpen && (
+        <p className="mt-1 text-xs text-text-secondary">Checking cloud provider access…</p>
+      )}
+      {needsCloudConnection && (
+        <p className="mt-1 text-xs text-warning">
+          {provider === 'codex'
+            ? 'Allow Codex for cloud agents in Cloud agent settings.'
+            : `${provider} needs to be enabled and connected for cloud handoff.`}{' '}
+          <SettingsLink to="sync#cloud-agents">Open Cloud agent settings</SettingsLink>.
+        </p>
+      )}
       {blockers !== null && blockers.length > 0 && (
         <ul className="mt-1.5 space-y-0.5">
           {blockers.map((blocker, index) => (

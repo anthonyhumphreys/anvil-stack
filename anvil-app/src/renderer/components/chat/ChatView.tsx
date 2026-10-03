@@ -677,7 +677,11 @@ export function ChatView({ userRole }: ChatViewProps) {
       />
 
       {!scaffoldModeActive && visibleSessionId && (
-        <SessionOwnershipChip key={visibleSessionId} sessionId={visibleSessionId} />
+        <SessionOwnershipChip
+          key={visibleSessionId}
+          sessionId={visibleSessionId}
+          provider={agentProvider}
+        />
       )}
 
       {!scaffoldModeActive && activeWorkspace && (

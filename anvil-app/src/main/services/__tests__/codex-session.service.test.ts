@@ -36,6 +36,13 @@ import {
 
 const tempDirs: string[] = [];
 
+const gatewayRuntimeMocks = vi.hoisted(() => ({
+  syncGatewayCodexIntegrations: vi.fn(async () => undefined),
+  writeGatewayCodexCatalog: vi.fn(async () => []),
+}));
+
+vi.mock('../llm-gateway-runtime.service.js', () => gatewayRuntimeMocks);
+
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const tempDir of tempDirs.splice(0)) {
@@ -109,6 +116,23 @@ describe('codex session service', () => {
     expect(env.ANVIL_SYNC_TOKEN).toBeUndefined();
     expect(env.PATH).toBe('/usr/bin:/bin');
     expect(env.OPENAI_API_KEY).toBe('sk-from-settings');
+  });
+
+  it('uses a granted LLMGateway key on a fresh worker without a locally saved key', async () => {
+    vi.stubEnv('PATH', '/usr/bin:/bin');
+    const env = await buildCodexProcessEnvironment(
+      'llmgateway',
+      {
+        llmGatewayApiKey: undefined,
+        llmGatewayBillingMode: 'payg',
+      } as Parameters<typeof buildCodexProcessEnvironment>[1],
+      { LLMGATEWAY_API_KEY: 'source-granted-key', LLMGATEWAY_BILLING_MODE: 'devpass' },
+    );
+
+    expect(env.LLMGATEWAY_API_KEY).toBe('source-granted-key');
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.OPENAI_BASE_URL).toBeUndefined();
+    expect(env.CODEX_HOME).toBe('/tmp/anvil-test/codex/llmgateway');
   });
 
   it('keeps Cursor model ids instead of coercing them into the Codex catalog', () => {

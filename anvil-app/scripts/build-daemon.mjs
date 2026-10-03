@@ -16,7 +16,7 @@ await build({
   target: 'node20',
   outfile: join(root, 'dist-daemon/anvil-daemon.mjs'),
   alias: { electron: join(root, 'src/daemon/electron-stub.ts') },
-  external: ['better-sqlite3', 'node-pty'],
+  external: ['better-sqlite3', 'node-pty', '@cursor/sdk'],
   banner: {
     js: "import { createRequire as __daemonCreateRequire } from 'node:module'; const require = __daemonCreateRequire(import.meta.url);",
   },

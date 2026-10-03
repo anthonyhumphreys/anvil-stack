@@ -319,6 +319,12 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
         description: 'Backend connection, enrolled devices, and cloud environments.',
         keywords: ['sync', 'mesh', 'environments', 'devices', 'security'],
       },
+      {
+        id: 'cloud-agents',
+        title: 'Cloud agents',
+        description: 'Provider access and connections for managed cloud agents.',
+        keywords: ['cloud', 'agents', 'cursor', 'devin', 'provider', 'connection'],
+      },
     ],
     component: SyncCategory,
   },

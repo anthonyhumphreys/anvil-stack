@@ -753,6 +753,36 @@ async function renewActiveAttempts(): Promise<void> {
  */
 const attemptGrantEnv = new Map<string, Record<string, string>>();
 const attemptCodexHostAuthJson = new Map<string, string>();
+interface RemoteProviderAuth {
+  provider: AgentProvider;
+  env: Record<string, string>;
+  devinCredentialsToml?: string;
+}
+const attemptProviderAuth = new Map<string, RemoteProviderAuth>();
+
+const PROVIDER_AUTH_ENV: Partial<Record<AgentProvider, readonly string[]>> = {
+  cursor: ['CURSOR_API_KEY'],
+  openai: ['OPENAI_API_KEY', 'OPENAI_BASE_URL'],
+  llmgateway: ['LLMGATEWAY_API_KEY', 'LLMGATEWAY_BILLING_MODE'],
+  azure: [
+    'AZURE_OPENAI_API_KEY',
+    'AZURE_OPENAI_ENDPOINT',
+    'AZURE_OPENAI_API_VERSION',
+    'AZURE_OPENAI_DEPLOYMENT',
+  ],
+  devin: [],
+};
+const PROVIDER_AUTH_REQUIRED_ENV: Partial<Record<AgentProvider, readonly string[]>> = {
+  cursor: ['CURSOR_API_KEY'],
+  openai: ['OPENAI_API_KEY'],
+  llmgateway: ['LLMGATEWAY_API_KEY'],
+  azure: [
+    'AZURE_OPENAI_API_KEY',
+    'AZURE_OPENAI_ENDPOINT',
+    'AZURE_OPENAI_API_VERSION',
+    'AZURE_OPENAI_DEPLOYMENT',
+  ],
+};
 
 async function pullCredentialGrants(attempt: ExecutionAttempt): Promise<void> {
   const ctx = workerContext();
@@ -805,6 +835,59 @@ async function pullCredentialGrants(attempt: ExecutionAttempt): Promise<void> {
       ) {
         attemptCodexHostAuthJson.set(attempt.id, inner.codexAuthJson);
         applied += 1;
+      } else if (
+        inner.kind === 'remote-provider-auth' &&
+        inner.provider !== undefined &&
+        PROVIDER_AUTH_ENV[inner.provider] !== undefined
+      ) {
+        const allowed = PROVIDER_AUTH_ENV[inner.provider]!;
+        const env = inner.env as Record<string, string>;
+        const hasInvalidEnv = Object.entries(env).some(
+          ([name, value]) => !allowed.includes(name) || value.length === 0,
+        );
+        const missingRequiredEnv = (PROVIDER_AUTH_REQUIRED_ENV[inner.provider] ?? []).some(
+          (name) => typeof env[name] !== 'string' || env[name]!.length === 0,
+        );
+        const invalidGatewayBillingMode =
+          inner.provider === 'llmgateway' &&
+          env.LLMGATEWAY_BILLING_MODE !== undefined &&
+          env.LLMGATEWAY_BILLING_MODE !== 'devpass' &&
+          env.LLMGATEWAY_BILLING_MODE !== 'payg';
+        const isDevin = inner.provider === 'devin';
+        const credentials = inner.devinCredentialsToml;
+        if (
+          !hasInvalidEnv &&
+          !missingRequiredEnv &&
+          !invalidGatewayBillingMode &&
+          ((isDevin &&
+            Object.keys(env).length === 0 &&
+            typeof credentials === 'string' &&
+            credentials.length > 0) ||
+            (!isDevin && credentials === undefined && Object.keys(env).length > 0))
+        ) {
+          const previous = attemptProviderAuth.get(attempt.id);
+          if (
+            previous === undefined ||
+            (previous.provider === inner.provider &&
+              JSON.stringify(previous.env) === JSON.stringify(env) &&
+              previous.devinCredentialsToml === credentials)
+          ) {
+            attemptProviderAuth.set(attempt.id, {
+              provider: inner.provider,
+              env: { ...env },
+              ...(credentials === undefined ? {} : { devinCredentialsToml: credentials }),
+            });
+            applied += 1;
+          } else {
+            appendJournal(attempt.id, 'credential-grant-rejected', {
+              reason: 'conflicting-provider-auth',
+            });
+          }
+        } else {
+          appendJournal(attempt.id, 'credential-grant-rejected', {
+            reason: 'provider-auth-shape-invalid',
+          });
+        }
       } else {
         appendJournal(attempt.id, 'credential-grant-rejected', { reason: 'grant-kind-mismatch' });
       }
@@ -972,6 +1055,7 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
     // must pull fresh grants rather than reuse an old incarnation's.
     attemptGrantEnv.delete(attemptId);
     attemptCodexHostAuthJson.delete(attemptId);
+    attemptProviderAuth.delete(attemptId);
   }
 }
 
@@ -1736,6 +1820,31 @@ async function awaitRemoteCodexHostAuth(attempt: ExecutionAttempt): Promise<stri
   throw new Error('provider-codex-host-auth-grant-not-delivered');
 }
 
+/** Wait for the provider-specific grant sealed to this exact live claim. */
+async function awaitRemoteProviderAuth(
+  attempt: ExecutionAttempt,
+  provider: AgentProvider,
+): Promise<RemoteProviderAuth> {
+  const deadline = Math.min(Date.now() + 60_000, Date.parse(attempt.leaseExpiresAt));
+  if (!Number.isFinite(deadline)) throw new Error('provider-credential-lease-invalid');
+  while (Date.now() < deadline) {
+    if (isCancelRequested(attempt.id)) throw new Error('provider-credential-wait-cancelled');
+    const auth = attemptProviderAuth.get(attempt.id);
+    if (auth !== undefined) {
+      if (auth.provider !== provider) throw new Error('provider-auth-grant-provider-mismatch');
+      return auth;
+    }
+    await pullCredentialGrants(attempt);
+    const delivered = attemptProviderAuth.get(attempt.id);
+    if (delivered !== undefined) {
+      if (delivered.provider !== provider) throw new Error('provider-auth-grant-provider-mismatch');
+      return delivered;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error('provider-auth-grant-not-delivered');
+}
+
 function codexAuthSessionId(
   inputs: Record<string, unknown>,
   handoffSessionId: string | null,
@@ -1771,6 +1880,30 @@ function codexAuthHomeForSession(
   mkdirSync(home, { recursive: true, mode: 0o700 });
   if (lstatSync(parent).isSymbolicLink() || lstatSync(home).isSymbolicLink())
     throw new Error('Codex auth home must be a private directory');
+  chmodSync(parent, 0o700);
+  chmodSync(home, 0o700);
+  return home;
+}
+
+function providerDataHomeForSession(
+  userDataDir: string | undefined,
+  scope: SyncScope | undefined,
+  sessionId: string | undefined,
+): string {
+  if (userDataDir === undefined)
+    throw new Error('worker context has no userDataDir for provider auth');
+  if (scope === undefined) throw new Error('provider auth requires a sync scope');
+  if (sessionId === undefined || sessionId.trim().length === 0 || sessionId.length > 512)
+    throw new Error('provider auth requires a stable session identity');
+  const identityHash = createHash('sha256')
+    .update(`${scope.backendId}\0${scope.accountId}\0${scope.datasetEpoch}\0${sessionId}`)
+    .digest('hex');
+  const parent = join(userDataDir, 'mesh-provider-data');
+  const home = join(parent, identityHash);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  if (lstatSync(parent).isSymbolicLink() || lstatSync(home).isSymbolicLink())
+    throw new Error('provider auth home must be a private directory');
   chmodSync(parent, 0o700);
   chmodSync(home, 0o700);
   return home;
@@ -1965,6 +2098,8 @@ async function executeStartSession(
   const authMode = manifest.inputs['authMode'];
   let codexAuthJson: string | undefined;
   let codexAuthHome: string | undefined;
+  let providerAuth: RemoteProviderAuth | undefined;
+  let providerDataHome: string | undefined;
   if (authMode === 'openai-api-key') await awaitRemoteApiKey(attempt);
   if (authMode === 'codex-host-auth') {
     codexAuthJson = await awaitRemoteCodexHostAuth(attempt);
@@ -1977,6 +2112,24 @@ async function executeStartSession(
     const ctx = workerContext();
     codexAuthHome = codexAuthHomeForSession(ctx?.userDataDir, ctx?.scope, authSessionId);
   }
+  if (authMode === 'cloud-provider') {
+    providerAuth = await awaitRemoteProviderAuth(attempt, provider);
+    if (provider === 'devin') {
+      const authSessionId = codexAuthSessionId(
+        manifest.inputs,
+        handoffSessionId,
+        handoffId,
+        prior.resumeThreadId,
+      );
+      const ctx = workerContext();
+      providerDataHome = providerDataHomeForSession(ctx?.userDataDir, ctx?.scope, authSessionId);
+    }
+  }
+
+  const sessionModel =
+    provider === 'azure' && typeof providerAuth?.env.AZURE_OPENAI_DEPLOYMENT === 'string'
+      ? providerAuth.env.AZURE_OPENAI_DEPLOYMENT
+      : manifest.model;
 
   const cliVersion = await probeSessionCli(provider);
   if (cliVersion === null) {
@@ -1997,7 +2150,7 @@ async function executeStartSession(
   // here and `provider-thread` leaves this row as the orphan evidence.
   appendJournal(attemptId, 'provider-spawn', {
     provider,
-    model: manifest.model,
+    model: sessionModel,
     cliVersion,
     creationKey: job.requestId,
     resumeThreadId: prior.resumeThreadId,
@@ -2037,13 +2190,14 @@ async function executeStartSession(
   const result = await runRemoteSessionTurn(
     {
       provider: provider as RemoteSessionProvider,
-      model: manifest.model,
+      model: sessionModel,
       cwd,
       prompt: effectivePrompt,
       ...(manifest.inputs['authMode'] === 'target-local' ||
       manifest.inputs['authMode'] === 'codex-account' ||
       manifest.inputs['authMode'] === 'codex-host-auth' ||
-      manifest.inputs['authMode'] === 'openai-api-key'
+      manifest.inputs['authMode'] === 'openai-api-key' ||
+      manifest.inputs['authMode'] === 'cloud-provider'
         ? { authMode: manifest.inputs['authMode'] }
         : {}),
       ...(codexAuthJson === undefined ? {} : { codexAuthJson }),
@@ -2058,9 +2212,18 @@ async function executeStartSession(
           : {}),
       // ENV-06: grants for this claim are in-memory only and win over
       // ambient provider credentials for the duration of the turn.
-      ...(attemptGrantEnv.get(attempt.id) === undefined
+      ...(attemptGrantEnv.get(attempt.id) === undefined && providerAuth === undefined
         ? {}
-        : { extraEnv: attemptGrantEnv.get(attempt.id) }),
+        : {
+            extraEnv: {
+              ...(attemptGrantEnv.get(attempt.id) ?? {}),
+              ...(providerAuth?.env ?? {}),
+              ...(providerDataHome === undefined ? {} : { XDG_DATA_HOME: providerDataHome }),
+            },
+          }),
+      ...(providerAuth?.devinCredentialsToml === undefined
+        ? {}
+        : { devinCredentialsToml: providerAuth.devinCredentialsToml }),
       turnTimeoutMs,
     },
     {
@@ -3002,7 +3165,12 @@ export interface StartSessionJobInput {
   handoffId?: string;
   /** Controller-verified same-device provider session id for a follow-up. */
   resumeThreadId?: string;
-  authMode?: 'target-local' | 'codex-account' | 'codex-host-auth' | 'openai-api-key';
+  authMode?:
+    | 'target-local'
+    | 'codex-account'
+    | 'codex-host-auth'
+    | 'openai-api-key'
+    | 'cloud-provider';
   /** Stable source-session identity for private Codex host-auth homes. */
   authSessionId?: string;
   /** Reuse the controller's original pins for a provider-thread follow-up. */

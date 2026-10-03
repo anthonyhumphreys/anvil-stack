@@ -1,11 +1,11 @@
 # anvil-worker image
 
 The generic OCI and Cloudflare Sandbox images run the headless Anvil daemon as
-an ephemeral Mesh worker and install the managed Codex CLI. Managed cloud
-environments currently support Codex-backed runs. Cursor, Devin, OpenAI,
-Azure, and LLMGateway remain available on enrolled desktops and BYO
-environments where their provider CLI or credentials have been configured.
-The image build installs no provider credentials or interactive login state.
+an ephemeral Mesh worker and install the runtimes needed by all six managed
+cloud providers: Codex, Cursor, Devin, OpenAI, Azure, and LLMGateway. Codex,
+OpenAI, Azure, and LLMGateway use the pinned Codex CLI; Cursor and Devin use
+their own ACP-capable CLIs. The image build installs no provider credentials
+or interactive login state.
 
 ## Layout
 
@@ -16,6 +16,8 @@ The image build installs no provider credentials or interactive login state.
 | `Dockerfile`            | Generic OCI image (Vercel VCR, AWS microVM rootfs base, local dev)                                                     |
 | `Dockerfile.cloudflare` | `cloudflare/sandbox:next` variant for the Cloudflare provisioner                                                       |
 | `install-codex-cli.sh`  | Installs the pinned Codex CLI version and checks its reported version                                                  |
+| `install-cursor-cli.sh` | Installs pinned Cursor Agent CLI for the image architecture and checks its version and ACP help                         |
+| `install-devin-cli.sh`  | Installs pinned Devin CLI through its versioned installer and checks its version and ACP help                           |
 | `package.json`          | Daemon externals (`better-sqlite3`, `node-pty`) — keep versions in step with `anvil-app/package.json`                  |
 | `prepare.sh`            | Copies `dist-daemon/anvil-daemon.mjs` into the build context                                                           |
 
@@ -30,39 +32,53 @@ docker build -f Dockerfile -t anvil-worker .
 ```
 
 The image pins Codex CLI `0.154.0` to the version managed by
-`src/main/services/codex-runtime.service.ts`. The build checks the installed
-version and fails on a mismatch. Override the pin with a Docker build argument
-only when updating the corresponding compatibility evidence:
+`src/main/services/codex-runtime.service.ts`, Cursor CLI
+`2026.09.10-fd3934a`, and Devin CLI `3000.11.3`. Builds check installed
+versions and Cursor/Devin ACP command help without authenticating. Cursor
+artifacts are pinned by release ID (the vendor installer exposes no checksum
+for that package); Devin's versioned installer verifies download checksums
+against Cognition's release manifest. The generic image
+supports arm64 and the Cloudflare image amd64; both vendors publish Linux
+packages for those architectures. Override a pin only when updating
+compatibility evidence:
 
 ```sh
 docker build -f Dockerfile \
   --build-arg CODEX_CLI_VERSION=0.154.0 \
+  --build-arg CURSOR_CLI_VERSION=2026.09.10-fd3934a \
+  --build-arg DEVIN_CLI_VERSION=3000.11.3 \
   -t anvil-worker .
 ```
 
 For Cloudflare, the wrangler `containers[].image` in `cloud/provisioner`
 points at `Dockerfile.cloudflare`. Run `./prepare.sh` before
 `anvil-cloud mesh provisioner apply`; its `--dry-run` also builds the image.
-Both image variants install Python and C++ build tools for native daemon
-dependencies. See the [deployment runbook](../../../docs/runbooks/hosted-sync/deploy.md)
+Both image variants install Python, make, and g++ so npm can compile
+`better-sqlite3` and `node-pty` when a matching prebuilt native module is not
+available. Their runtime dependencies are declared in `package.json`; generic
+OCI also installs Git for repository checkouts, while Cloudflare inherits Git
+availability from its base image. Curl and CA certificates support CLI
+downloads. See the [deployment runbook](../../../docs/runbooks/hosted-sync/deploy.md)
 for hosted and self-hosted branch-testing commands.
 
 ## Agent CLI installation
 
 Codex is installed from the official npm package at the app's managed runtime
-pin. It is the only runner supported by managed cloud environments and uses an
-encrypted account-auth cache copied from the launching host by default,
+pin and handles Codex, OpenAI, Azure, and LLMGateway provider selections. It
+uses an encrypted account-auth cache copied from the launching host by default,
 or an optional explicitly granted API key. The image contains no login state.
 A host-cache grant is written to a private, session-scoped Codex home; subsequent
 turns preserve the worker's refreshed credentials and native session files.
 The source cache is never overwritten. A missing host cache fails launch early;
-Codex device-code sign-in on the worker remains an explicit fallback. Cursor, Devin, OpenAI,
-Azure, and LLMGateway remain available on enrolled desktops and BYO
-environments with the required provider setup. Cursor and Devin CLIs are
-deliberately absent from managed images. The Codex package download requires
-network access during the image build. The image itself still needs a
-successful build in the target build environment before a release can claim
-image-execution validation.
+Codex device-code sign-in on the worker remains an explicit fallback. Cursor
+Agent and Devin CLI are installed at their own pins and provide the
+`cursor-agent` and `devin` ACP executables used by the desktop runtime. Their
+CLI presence does not include login state or API keys; the worker must receive
+credentials through the existing provider-specific credential flow. Cursor
+and Devin ACP help is checked during image build, without starting an ACP
+session that may require account access. All vendor package downloads require
+build-time network access. The image still needs a successful build in the
+target environment before a release can claim image-execution validation.
 
 ## Bootstrap contract
 

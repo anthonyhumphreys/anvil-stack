@@ -32,6 +32,7 @@ import type {
   CodexSessionCapabilities,
   CodexSessionContinuity,
   MobileApprovalRequest,
+  LlmGatewayBillingMode,
 } from '../../shared/types.js';
 import {
   buildSystemPrompt,
@@ -54,7 +55,7 @@ import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/code
 import { providerSpawnEnv } from './agent-spawn-env.js';
 import { assertSessionTurnAllowed } from './mesh-ownership.service.js';
 import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
-import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
+import { getLlmGatewayCodexConfigArgs, LLM_GATEWAY_KEY_ENV } from '../../shared/llm-gateway.js';
 import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { resolveCodexRuntime } from './codex-runtime.service.js';
@@ -252,6 +253,12 @@ export function resolveSessionModel(provider: AgentProvider, configuredModel: st
   return normaliseCodexModel(configuredModel);
 }
 
+function resolveGatewayBillingMode(value: string | undefined): LlmGatewayBillingMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'devpass' || value === 'payg') return value;
+  throw new Error('llmgateway-billing-mode-invalid');
+}
+
 /** Build a provider-scoped environment without changing the user's Codex state. */
 export async function buildCodexProcessEnvironment(
   provider: AgentProvider,
@@ -262,7 +269,7 @@ export async function buildCodexProcessEnvironment(
   let gatewayHome: string | undefined;
   if (provider === 'openai' && settings.openaiApiKey) env.OPENAI_API_KEY = settings.openaiApiKey;
   if (provider === 'llmgateway') {
-    applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
+    applyLlmGatewayEnvironment(env, extraEnv?.[LLM_GATEWAY_KEY_ENV] ?? settings.llmGatewayApiKey);
     gatewayHome = path.join(app.getPath('userData'), 'codex', 'llmgateway');
     await syncGatewayCodexIntegrations(
       gatewayHome,
@@ -366,7 +373,12 @@ export async function startSession(
   );
   const gatewayConfig =
     agentProvider === 'llmgateway'
-      ? await resolveLlmGatewayModelConfig(configuredModel, settings.reasoningLevel)
+      ? await resolveLlmGatewayModelConfig(
+          configuredModel,
+          settings.reasoningLevel,
+          undefined,
+          resolveGatewayBillingMode(runtime?.extraEnv?.['LLMGATEWAY_BILLING_MODE']),
+        )
       : undefined;
   const model = gatewayConfig?.model ?? configuredModel;
   const codexPolicy = resolvePersonaCodexPolicy(mode, personaId);

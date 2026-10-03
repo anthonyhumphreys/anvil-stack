@@ -34,6 +34,10 @@ let openedTaskResult: unknown = {
   assistantOutput: 'The answer.',
   resumeHandle: 'provider-thread-1',
 };
+let cloudProviderEnabled = true;
+vi.mock('../cloud-agent-settings.service.js', () => ({
+  isCloudAgentProviderEnabled: () => cloudProviderEnabled,
+}));
 let credentialAvailabilityError: Error | null = null;
 let targetTrustState: 'trusted' | 'pending' | 'revoked' | null = 'trusted';
 
@@ -123,6 +127,7 @@ beforeEach(() => {
   openedTaskResult = { assistantOutput: 'The answer.', resumeHandle: 'provider-thread-1' };
   targetTrustState = 'trusted';
   credentialAvailabilityError = null;
+  cloudProviderEnabled = true;
   rpcHandler = () => ({});
   resolveDevice = () => ({
     devices: [{ enrollmentId: 'enr-target', revoked: false, enrollmentClass: 'device' }],
@@ -142,6 +147,34 @@ const input = {
 };
 
 describe('remote chat controller', () => {
+  it.each(['cursor', 'devin', 'openai', 'azure', 'llmgateway'] as const)(
+    'uses configured cloud credentials for %s',
+    async (provider) => {
+      resolveDevice = () => ({
+        devices: [{ enrollmentId: 'enr-target', revoked: false, enrollmentClass: 'ephemeral' }],
+      });
+      const chat = await createRemoteChat({ ...input, provider });
+      expect(chat.credentialChoice).toBe('cloud-provider');
+    },
+  );
+
+  it('rejects disabled cloud providers before preparing any jobs', async () => {
+    resolveDevice = () => ({
+      devices: [{ enrollmentId: 'enr-target', revoked: false, enrollmentClass: 'ephemeral' }],
+    });
+    cloudProviderEnabled = false;
+    await expect(createRemoteChat(input)).rejects.toThrow(/Enable this provider/);
+    expect(calls).toEqual([]);
+  });
+
+  it('rejects missing configured cloud credentials before preparing any jobs', async () => {
+    resolveDevice = () => ({
+      devices: [{ enrollmentId: 'enr-target', revoked: false, enrollmentClass: 'ephemeral' }],
+    });
+    credentialAvailabilityError = new Error('Connect Cursor in Cloud agent settings.');
+    await expect(createRemoteChat(input)).rejects.toThrow(/Connect Cursor/);
+    expect(calls).toEqual([]);
+  });
   it('defaults cloud Codex chats to the launch host login and seals a stable auth session identity', async () => {
     resolveDevice = () => ({
       devices: [{ enrollmentId: 'enr-target', revoked: false, enrollmentClass: 'ephemeral' }],

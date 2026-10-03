@@ -537,6 +537,122 @@ describe('mesh-session provider driver', () => {
     expect(hooks.onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'input_request' }));
   });
 
+  it('writes Devin cloud grant credentials only to its private session data home', async () => {
+    const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-devin-data-'));
+    const credentialsToml = 'api_token = "private-devin-token-long"\n';
+    try {
+      desktopSessionMocks.startSession.mockResolvedValue({
+        id: 'session-devin',
+        providerThreadId: 'devin-session-1',
+      });
+      desktopSessionMocks.sendMessage.mockImplementation(async () => {
+        desktopSessionMocks.listener?.({
+          sessionId: 'session-devin',
+          event: { type: 'turn_outcome', turnOutcome: 'completed', protocolTurnId: 'turn-devin' },
+        });
+      });
+      configureMeshSessionForTests({ probeCli: async () => '1.2.3' });
+
+      await runRemoteSessionTurn(
+        spec({
+          provider: 'devin',
+          authMode: 'cloud-provider',
+          extraEnv: { XDG_DATA_HOME: dataHome },
+          devinCredentialsToml: credentialsToml,
+        }),
+        HOOKS_BASE,
+      );
+
+      const credentialsPath = path.join(dataHome, 'devin', 'credentials.toml');
+      expect(fs.readFileSync(credentialsPath, 'utf8')).toBe(credentialsToml);
+      expect(fs.statSync(path.join(dataHome, 'devin')).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(credentialsPath).mode & 0o777).toBe(0o600);
+      const runtime = desktopSessionMocks.startSession.mock.calls[0]?.[4];
+      expect(runtime).toMatchObject({ extraEnv: { XDG_DATA_HOME: dataHome } });
+      fs.writeFileSync(credentialsPath, 'api_token = "different-devin-account-token"\n', 'utf8');
+      await expect(
+        runRemoteSessionTurn(
+          spec({
+            provider: 'devin',
+            authMode: 'cloud-provider',
+            extraEnv: { XDG_DATA_HOME: dataHome },
+            devinCredentialsToml: credentialsToml,
+          }),
+          HOOKS_BASE,
+        ),
+      ).rejects.toThrow('devin-provider-auth-conflict');
+      expect(desktopSessionMocks.startSession).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(dataHome, { recursive: true, force: true });
+    }
+  });
+
+  it('uses granted Azure endpoint and API version in the isolated Codex invocation', async () => {
+    const server = fakeAppServer();
+    let spawnedArgs: string[] | undefined;
+    configureMeshSessionForTests({
+      spawn: (_command, args) => {
+        spawnedArgs = args;
+        return server.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+
+    await runRemoteSessionTurn(
+      spec({
+        provider: 'azure',
+        authMode: 'cloud-provider',
+        model: 'foundry-deployment',
+        extraEnv: {
+          AZURE_OPENAI_API_KEY: 'azure-key',
+          AZURE_OPENAI_ENDPOINT: 'https://example.azure.com',
+          AZURE_OPENAI_API_VERSION: '2025-04-01-preview',
+          AZURE_OPENAI_DEPLOYMENT: 'foundry-deployment',
+        },
+      }),
+      HOOKS_BASE,
+    );
+
+    expect(spawnedArgs).toEqual(
+      expect.arrayContaining([
+        'model_providers.anvil_remote_azure.base_url="https://example.azure.com/openai"',
+        'model_providers.anvil_remote_azure.query_params={ "api-version" = "2025-04-01-preview" }',
+        'model="foundry-deployment"',
+        'model_providers.anvil_remote_azure.requires_openai_auth=false',
+      ]),
+    );
+  });
+
+  it('uses a private OpenAI provider id and disables ChatGPT account auth for API-key grants', async () => {
+    const server = fakeAppServer();
+    let spawnedArgs: string[] | undefined;
+    configureMeshSessionForTests({
+      spawn: (_command, args) => {
+        spawnedArgs = args;
+        return server.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+
+    await runRemoteSessionTurn(
+      spec({
+        provider: 'openai',
+        authMode: 'cloud-provider',
+        extraEnv: { OPENAI_API_KEY: 'openai-key', OPENAI_BASE_URL: 'https://example.com/v1' },
+      }),
+      HOOKS_BASE,
+    );
+
+    expect(spawnedArgs).toEqual(
+      expect.arrayContaining([
+        'model_provider="anvil_remote_openai"',
+        'model_providers.anvil_remote_openai.name="OpenAI"',
+        'model_providers.anvil_remote_openai.base_url="https://example.com/v1"',
+        'model_providers.anvil_remote_openai.requires_openai_auth=false',
+      ]),
+    );
+  });
+
   it('starts a thread, runs one turn, and stops the process group', async () => {
     const fake = fakeAppServer();
     configureMeshSessionForTests({

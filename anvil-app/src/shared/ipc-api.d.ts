@@ -1,5 +1,11 @@
 import type { RemoteCodexAccountAuthChoice } from './remote-chat';
 import type {
+  CloudAgentConnectionProvider,
+  CloudAgentConnectionResult,
+  CloudAgentSettingsSnapshot,
+} from './cloud-agent.js';
+import type { AgentProvider } from './types.js';
+import type {
   CreateRemoteChatInput,
   SendRemoteChatInput,
   RemoteChatRecord,
@@ -242,6 +248,13 @@ import type {
 } from './sync-device-security';
 
 export interface AnvilAPI {
+  cloudAgentSettings: {
+    get: () => Promise<CloudAgentSettingsSnapshot>;
+    setEnabled: (provider: AgentProvider, enabled: boolean) => Promise<CloudAgentSettingsSnapshot>;
+    connect: (provider: CloudAgentConnectionProvider) => Promise<CloudAgentConnectionResult>;
+    disconnect: (provider: CloudAgentConnectionProvider) => Promise<CloudAgentSettingsSnapshot>;
+    cancelConnection: (provider: CloudAgentConnectionProvider) => Promise<void>;
+  };
   appWindow: {
     getVersion: () => Promise<string>;
     getChromeState: () => Promise<{ isFullScreen: boolean }>;

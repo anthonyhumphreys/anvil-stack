@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 102;
+export const SCHEMA_VERSION = 103;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1622,6 +1622,13 @@ CREATE TABLE IF NOT EXISTS cloud_provider_connections (
   secret_blob BLOB,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cloud_agent_provider_settings (
+  provider TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  credential_blob BLOB,
+  expires_at_ms INTEGER,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_provider_connections_scope
   ON cloud_provider_connections (backend_id, account_id, provider);
@@ -3649,6 +3656,15 @@ ALTER TABLE mesh_handoff_journal ADD COLUMN source_checkpoint_json TEXT;
 ALTER TABLE mesh_handoff_journal ADD COLUMN backend_id TEXT;
 ALTER TABLE mesh_handoff_journal ADD COLUMN account_id TEXT;
 ALTER TABLE mesh_handoff_journal ADD COLUMN scope_epoch TEXT;
+`,
+  103: `
+CREATE TABLE IF NOT EXISTS cloud_agent_provider_settings (
+  provider TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  credential_blob BLOB,
+  expires_at_ms INTEGER,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `,
 };
 

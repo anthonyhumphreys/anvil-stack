@@ -1,3 +1,8 @@
+import {
+  readCloudAgentCredential,
+  validateCloudAgentProvider,
+  isCloudAgentProviderEnabled,
+} from './cloud-agent-settings.service.js';
 import type { AgentProvider } from '../../shared/types.js';
 import type { SyncScope } from '../../shared/sync-mesh.js';
 import type { CredentialDeliverResult } from '../../../cloud/contract/sealed.js';
@@ -11,11 +16,8 @@ import {
 } from './sync-keyring.service.js';
 import { getSettings } from './settings.service.js';
 
-export type RemoteCredentialChoice =
-  | 'target-local'
-  | 'codex-account'
-  | 'openai-api-key'
-  | 'codex-host-auth';
+export type { RemoteCredentialChoice } from '../../shared/remote-chat.js';
+import type { RemoteCredentialChoice } from '../../shared/remote-chat.js';
 
 export interface RemoteCredentialContext {
   apiUrl: string;
@@ -24,6 +26,7 @@ export interface RemoteCredentialContext {
 
 export interface EnsureRemoteCredentialGrantInput {
   choice: RemoteCredentialChoice;
+  cloudTarget?: boolean;
   provider: AgentProvider;
   targetEnrollmentId: string;
   scope: SyncScope;
@@ -52,12 +55,13 @@ export function validateRemoteCredentialChoice(
     choice !== 'target-local' &&
     choice !== 'codex-account' &&
     choice !== 'openai-api-key' &&
-    choice !== 'codex-host-auth'
+    choice !== 'codex-host-auth' &&
+    choice !== 'cloud-provider'
   ) {
     throw new Error('Choose how the remote Codex session authenticates.');
   }
-  if (provider !== 'codex') {
-    throw new Error('Remote credential choices are currently supported for Codex sessions only.');
+  if (choice === 'cloud-provider' ? provider === 'codex' : provider !== 'codex') {
+    throw new Error('Choose credentials appropriate for the remote provider.');
   }
 
   const identity = listDeviceIdentities(sourceScope).find(
@@ -69,7 +73,14 @@ export function validateRemoteCredentialChoice(
 }
 
 /** Check source-side auth configuration without returning or persisting secret material. */
-export function validateRemoteCredentialAvailability(choice: RemoteCredentialChoice): void {
+export function validateRemoteCredentialAvailability(
+  choice: RemoteCredentialChoice,
+  provider?: AgentProvider,
+): void {
+  if (choice === 'cloud-provider') {
+    if (provider === undefined) throw new Error('Choose a cloud agent provider.');
+    validateCloudAgentProvider(provider);
+  }
   if (choice === 'codex-host-auth') {
     validateCodexHostAuthJson(readCodexHostAuthJson());
   }
@@ -89,7 +100,11 @@ export async function ensureRemoteCredentialGrant(
     input.scope,
     input.choice,
   );
-  if (input.choice !== 'openai-api-key' && input.choice !== 'codex-host-auth') {
+  if (
+    input.choice !== 'openai-api-key' &&
+    input.choice !== 'codex-host-auth' &&
+    input.choice !== 'cloud-provider'
+  ) {
     return { delivered: false };
   }
 
@@ -113,6 +128,9 @@ export async function ensureRemoteCredentialGrant(
 
   const marker = `${attempt.id}:${attempt.fence}:${input.targetEnrollmentId}`;
   if (input.deliveredMarker === marker) return { delivered: false, marker };
+
+  if (input.cloudTarget && !isCloudAgentProviderEnabled(input.provider))
+    throw new Error('The selected provider is disabled for cloud agents.');
 
   const current = inFlightDeliveries.get(marker);
   if (current !== undefined) return current;
@@ -143,7 +161,17 @@ async function deliverGrant(
   let kind: string;
   let env: Record<string, string>;
   let codexAuthJson: string | undefined;
-  if (input.choice === 'openai-api-key') {
+  let devinCredentialsToml: string | undefined;
+  let provider: Exclude<AgentProvider, 'codex'> | undefined;
+  if (input.choice === 'cloud-provider') {
+    if (input.provider === 'codex') throw new Error('Choose Codex account authentication.');
+    validateCloudAgentProvider(input.provider);
+    const credential = readCloudAgentCredential(input.provider);
+    kind = 'remote-provider-auth';
+    provider = input.provider;
+    env = credential.env;
+    devinCredentialsToml = credential.devinCredentialsToml;
+  } else if (input.choice === 'openai-api-key') {
     const apiKey = getSettings().openaiApiKey?.trim();
     if (apiKey === undefined || apiKey.length === 0 || isPlaceholderApiKey(apiKey)) {
       throw new Error('Save a usable OpenAI API key before granting it to the remote session.');
@@ -173,6 +201,8 @@ async function deliverGrant(
     kind,
     env,
     ...(codexAuthJson === undefined ? {} : { codexAuthJson }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(devinCredentialsToml === undefined ? {} : { devinCredentialsToml }),
   });
   const response = await rpc<CredentialDeliverResult>(
     { apiUrl: input.context.apiUrl },

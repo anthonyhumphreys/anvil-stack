@@ -791,6 +791,39 @@ describe('credential grants (ENV-06)', () => {
     expect(unsealCredentialGrant(SCOPE, 'enr-stranger', grant)).toBeNull();
   });
 
+  it('round-trips a typed Devin credential cache without exposing it in the envelope', () => {
+    activateEnrollment();
+    const devinCredentialsToml = 'api_token="fixture-devin-secret"';
+    const grant = sealGrant({
+      kind: 'remote-provider-auth',
+      provider: 'devin',
+      env: {},
+      devinCredentialsToml,
+    });
+    expect(unsealCredentialGrant(SCOPE, ENROLLMENT, grant)).toMatchObject({
+      provider: 'devin',
+      devinCredentialsToml,
+    });
+    expect(JSON.stringify(grant)).not.toContain('fixture-devin-secret');
+    expect(() => sealGrant({ kind: 'credential-name', devinCredentialsToml })).toThrow(/invalid/);
+    expect(() =>
+      sealGrant({
+        kind: 'remote-provider-auth',
+        provider: 'cursor',
+        env: { CURSOR_API_KEY: 'fixture' },
+        devinCredentialsToml,
+      }),
+    ).toThrow(/invalid/);
+    expect(() =>
+      sealGrant({
+        kind: 'remote-provider-auth',
+        provider: 'devin',
+        env: {},
+        devinCredentialsToml: 'x'.repeat(65537),
+      }),
+    ).toThrow(/invalid/);
+  });
+
   it('round-trips a bounded Codex host auth cache only in its designated grant kind', () => {
     activateEnrollment();
     const codexAuthJson =

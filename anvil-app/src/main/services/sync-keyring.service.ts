@@ -50,6 +50,7 @@ import {
   taskKeyWrapAssociatedData,
   taskResultAssociatedData,
   type CredentialGrantInner,
+  isValidProviderCredentialGrant,
   type CredentialGrantPayload,
   type DeviceIdentityPayload,
   type KeyringPairedPayload,
@@ -1496,6 +1497,8 @@ export function sealCredentialGrant(input: {
   kind: string;
   env: Record<string, string>;
   codexAuthJson?: string;
+  provider?: CredentialGrantInner['provider'];
+  devinCredentialsToml?: string;
 }): CredentialGrantPayload {
   const aad = credentialGrantAssociatedData({
     jobId: input.jobId,
@@ -1519,7 +1522,13 @@ export function sealCredentialGrant(input: {
     kind: input.kind,
     env: input.env,
     ...(input.codexAuthJson === undefined ? {} : { codexAuthJson: input.codexAuthJson }),
+    ...(input.provider === undefined ? {} : { provider: input.provider }),
+    ...(input.devinCredentialsToml === undefined
+      ? {}
+      : { devinCredentialsToml: input.devinCredentialsToml }),
   };
+  if (!isValidProviderCredentialGrant(inner))
+    throw new Error('Provider credential grant is invalid.');
   const sealed = wrapKeyMaterial(
     Buffer.from(input.recipientPubB64, 'base64'),
     Buffer.from(JSON.stringify(inner), 'utf8'),
@@ -1586,6 +1595,7 @@ export function unsealCredentialGrant(
     ) {
       return null;
     }
+    if (!isValidProviderCredentialGrant(inner)) return null;
     return inner;
   } catch {
     return null;

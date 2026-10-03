@@ -22,6 +22,17 @@ ARG CODEX_CLI_VERSION=0.154.0
 COPY install-codex-cli.sh ./install-codex-cli.sh
 RUN CODEX_CLI_VERSION="$CODEX_CLI_VERSION" sh ./install-codex-cli.sh
 
+ARG TARGETARCH
+ARG CURSOR_CLI_VERSION=2026.09.10-fd3934a
+ARG DEVIN_CLI_VERSION=3000.11.3
+COPY install-cursor-cli.sh ./
+RUN TARGETARCH="$TARGETARCH" CURSOR_CLI_VERSION="$CURSOR_CLI_VERSION" sh ./install-cursor-cli.sh
+
+COPY install-devin-cli.sh ./
+RUN DEVIN_CLI_VERSION="$DEVIN_CLI_VERSION" bash ./install-devin-cli.sh
+
+ENV PATH="/root/.local/bin:${PATH}"
+
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 

@@ -38,6 +38,10 @@ vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
   };
 });
 
+let cloudProviderEnabled = true;
+vi.mock('../cloud-agent-settings.service.js', () => ({
+  isCloudAgentProviderEnabled: () => cloudProviderEnabled,
+}));
 let credentialAvailabilityError: Error | null = null;
 const interruptTurnMock = vi.fn();
 vi.mock('../remote-credentials.service.js', () => ({
@@ -290,6 +294,7 @@ beforeEach(() => {
   loseActivationResponse = false;
   targetTrustState = 'trusted';
   credentialAvailabilityError = null;
+  cloudProviderEnabled = true;
   resetMeshHandoffForTests();
   configureMeshHandoffContext(() => CTX);
   resetRemoteChatForTests();
@@ -381,6 +386,49 @@ describe('initiateHandoff', () => {
       expect(result.ok).toBe(true);
       expect(activationInputs[0]).toMatchObject({ authMode: 'codex-account' });
       expect(stopSessionMock).toHaveBeenCalledWith(sessionId);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the configured provider connection for a non-Codex cloud handoff', async () => {
+    const { repoDir } = makeRepoWithRemote('cloud-cursor');
+    try {
+      const { sessionId } = seedSession('cloud-cursor', repoDir);
+      db.prepare("UPDATE chat_sessions SET provider='cursor' WHERE id=?").run(sessionId);
+      installHandoffFake();
+      const handler = rpcHandler;
+      rpcHandler = (operation, params) =>
+        operation === 'device.list'
+          ? { devices: [{ enrollmentId: 'enr-2', revoked: false, enrollmentClass: 'ephemeral' }] }
+          : handler(operation, params);
+      await initiateHandoff({ sessionId, targetEnrollmentId: 'enr-2' });
+      expect(activationInputs[0]).toMatchObject({
+        provider: 'cursor',
+        authMode: 'cloud-provider',
+        authSessionId: sessionId,
+      });
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a disabled cloud provider before stopping or transferring the source', async () => {
+    const { repoDir } = makeRepoWithRemote('cloud-disabled');
+    try {
+      const { sessionId } = seedSession('cloud-disabled', repoDir);
+      installHandoffFake();
+      const handler = rpcHandler;
+      rpcHandler = (operation, params) =>
+        operation === 'device.list'
+          ? { devices: [{ enrollmentId: 'enr-2', revoked: false, enrollmentClass: 'ephemeral' }] }
+          : handler(operation, params);
+      cloudProviderEnabled = false;
+      await expect(initiateHandoff({ sessionId, targetEnrollmentId: 'enr-2' })).rejects.toThrow(
+        /Enable this provider/,
+      );
+      expect(stopSessionMock).not.toHaveBeenCalled();
+      expect(rpcCalls.some((call) => call.operation === 'handoff.create')).toBe(false);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

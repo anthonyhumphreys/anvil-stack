@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isCloudAgentProviderEnabled } from './cloud-agent-settings.service.js';
 
 import type { AgentProvider } from '../../shared/types.js';
 import type {
@@ -60,6 +61,8 @@ interface StoredChat extends RemoteChatRecord {
   prepareJobId?: string;
   activeTurnId?: string;
   cancelRequested?: boolean;
+  /** Launch policy applies to managed cloud targets, separately from desktop auth choices. */
+  cloudTarget?: boolean;
 }
 
 interface RemoteChatRow {
@@ -287,6 +290,7 @@ export function adoptHandoffRemoteChat(input: {
     model: input.model,
     permissionMode: input.permissionMode,
     ...(input.credentialChoice === undefined ? {} : { credentialChoice: input.credentialChoice }),
+    cloudTarget: input.credentialChoice !== undefined && input.credentialChoice !== 'target-local',
     sourceSessionId: input.sourceSessionId,
     handoffId: input.handoffId,
     state: 'starting',
@@ -352,30 +356,31 @@ export async function createRemoteChat(input: CreateRemoteChatInput): Promise<Re
     throw new Error('Choose an active destination device.');
   if (deviceTrustState(ctx.scope!, input.targetEnrollmentId) !== 'trusted')
     throw new Error('Remote chats can only run on a trusted destination device.');
-  if (input.provider === 'codex') {
-    input = {
-      ...input,
-      credentialChoice:
-        input.credentialChoice ??
-        (targetDevice.enrollmentClass === 'ephemeral' ? 'codex-host-auth' : 'target-local'),
-    };
+  const cloudTarget = targetDevice.enrollmentClass === 'ephemeral';
+  if (cloudTarget && !isCloudAgentProviderEnabled(input.provider)) {
+    throw new Error('Enable this provider in Cloud agent settings before launching it.');
+  }
+  input = {
+    ...input,
+    credentialChoice:
+      input.credentialChoice ??
+      (cloudTarget
+        ? input.provider === 'codex'
+          ? 'codex-host-auth'
+          : 'cloud-provider'
+        : 'target-local'),
+  };
+  if (input.provider === 'codex' || input.credentialChoice !== 'target-local') {
     validateRemoteCredentialChoice(
       input.provider,
       input.targetEnrollmentId,
       ctx.scope!,
       input.credentialChoice,
     );
-    validateRemoteCredentialAvailability(input.credentialChoice!);
-  } else if (input.credentialChoice !== undefined && input.credentialChoice !== 'target-local') {
-    throw new Error('Remote credential choices are only available for Codex sessions.');
+    validateRemoteCredentialAvailability(input.credentialChoice!, input.provider);
   }
-  if (targetDevice.enrollmentClass === 'ephemeral') {
-    if (input.provider !== 'codex')
-      throw new Error('Cloud workers currently support Codex sessions only.');
-    if (input.credentialChoice === 'target-local')
-      throw new Error(
-        'A cloud worker needs your host Codex login, destination sign-in or an OpenAI API key.',
-      );
+  if (cloudTarget && input.credentialChoice === 'target-local') {
+    throw new Error('Connect this provider in Cloud agent settings before launching it.');
   }
   const requestId = input.requestId ?? randomUUID();
   const duplicate = getDb()
@@ -409,6 +414,7 @@ export async function createRemoteChat(input: CreateRemoteChatInput): Promise<Re
     model: input.model,
     permissionMode: input.permissionMode,
     ...(input.credentialChoice === undefined ? {} : { credentialChoice: input.credentialChoice }),
+    cloudTarget,
     state: 'preparing',
     turns: [
       {
@@ -481,6 +487,10 @@ export async function sendRemoteChat(input: SendRemoteChatInput): Promise<Remote
     await remoteChatTick();
     return publicRecord(readStored(input.sessionId) ?? chat);
   }
+  if (chat.cloudTarget && !isCloudAgentProviderEnabled(chat.provider))
+    throw new Error('Enable this provider in Cloud agent settings before continuing it.');
+  if (chat.credentialChoice === 'cloud-provider')
+    validateRemoteCredentialAvailability(chat.credentialChoice, chat.provider);
   const retryHandoffFromCheckpoint = chat.state === 'failed' && chat.handoffId !== undefined;
   if (chat.state !== 'completed' && !retryHandoffFromCheckpoint)
     throw new Error(`remote chat is not ready for a follow-up (${chat.state})`);
@@ -647,9 +657,10 @@ function stateForJob(state: JobSummary['state']): RemoteChatState {
 async function observeJob(chat: StoredChat, turn: StoredTurn, jobId: string): Promise<void> {
   const result = await jobRpc<JobGetResult>('job.get', { jobId }, chat);
   const { job, attempts } = result;
-  if (chat.provider === 'codex' && chat.credentialChoice !== undefined) {
+  if (chat.credentialChoice !== undefined && chat.credentialChoice !== 'target-local') {
     const credential = await ensureRemoteCredentialGrant({
       choice: chat.credentialChoice,
+      cloudTarget: chat.cloudTarget,
       provider: chat.provider,
       targetEnrollmentId: chat.targetEnrollmentId,
       scope: assertScope(chat).scope!,
