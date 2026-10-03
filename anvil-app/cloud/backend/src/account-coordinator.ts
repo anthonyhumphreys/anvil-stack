@@ -6398,9 +6398,8 @@ export class AccountCoordinator extends DurableObject<Env> {
       this.assertNotRevoked(auth);
       this.provisionEnrollment(auth);
       const row = this.readEnvironment(query.environmentId);
-      if (row === null) {
+      if (row === null || !this.environmentVisibleTo(auth, row))
         throw new RpcFailure('not-found', { reason: 'environment' });
-      }
       return { environment: this.environmentView(row) };
     });
     return rpcSuccessResponse(requestId, result);
@@ -6414,9 +6413,12 @@ export class AccountCoordinator extends DurableObject<Env> {
       const rows = this.ctx.storage.sql
         .exec<EnvironmentRow>(
           `SELECT * FROM environments
-           WHERE account_id = ? AND (? OR state NOT IN ('terminated', 'failed'))
+           WHERE account_id = ? AND (? = 0 OR environment_id = ?)
+             AND (? OR state NOT IN ('terminated', 'failed'))
            ORDER BY created_at DESC LIMIT ?`,
           auth.accountId,
+          auth.enrollmentClass === 'ephemeral' ? 1 : 0,
+          auth.enrollmentClass === 'ephemeral' ? this.effectiveEnvironmentId(auth) : null,
           query.includeTerminal === true ? 1 : 0,
           MAX_ENVIRONMENTS_PER_ACCOUNT,
         )
@@ -6457,7 +6459,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       this.provisionEnrollment(auth);
       const now = Date.now();
       const row = this.readEnvironment(query.environmentId);
-      if (row === null) {
+      if (row === null || !this.environmentVisibleTo(auth, row)) {
         throw new RpcFailure('not-found', { reason: 'environment' });
       }
       if (row.reaped_at !== null) {
@@ -6491,6 +6493,15 @@ export class AccountCoordinator extends DurableObject<Env> {
       return { environment: this.environmentView(row) };
     });
     return rpcSuccessResponse(requestId, result);
+  }
+
+  /** Device sessions see account environments; ephemeral workers see only their own. */
+  private environmentVisibleTo(auth: SpikeAuth, row: EnvironmentRow): boolean {
+    if (row.account_id !== auth.accountId) return false;
+    return (
+      auth.enrollmentClass !== 'ephemeral' ||
+      this.effectiveEnvironmentId(auth) === row.environment_id
+    );
   }
 
   /** Snapshot a completed hosted chat and revoke its one-shot worker session. */

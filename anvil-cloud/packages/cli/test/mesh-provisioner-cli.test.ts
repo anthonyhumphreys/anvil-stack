@@ -31,11 +31,23 @@ async function fixture(): Promise<string> {
       main: "src/index.ts",
       compatibility_date: "2026-09-01",
       durable_objects: {
-        bindings: [{ name: "Sandbox", class_name: "Sandbox" }],
+        bindings: [
+          { name: "Sandbox", class_name: "Sandbox" },
+          { name: "ThreadSandbox", class_name: "ThreadSandbox" },
+        ],
       },
-      migrations: [{ tag: "v1", new_sqlite_classes: ["Sandbox"] }],
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["Sandbox"] },
+        { tag: "v2", new_sqlite_classes: ["ThreadSandbox"] },
+      ],
       containers: [
         { class_name: "Sandbox", image: "./Dockerfile", max_instances: 2 },
+        {
+          name: "source-provisioner-thread-snapshots",
+          class_name: "ThreadSandbox",
+          scheduling_policy: "durable_object",
+          images: { base: { dockerfile: "./Dockerfile" } },
+        },
       ],
       vars: { ALLOW_UNAUTHENTICATED: "false" },
     }),
@@ -77,7 +89,14 @@ describe("mesh provisioner CLI", () => {
       name: "mesh-staging-provisioner",
       account_id: "account-staging",
       main: "../src/index.ts",
-      containers: [{ image: "../Dockerfile" }],
+      containers: [
+        { image: "../Dockerfile", max_instances: 2 },
+        {
+          name: "source-provisioner-thread-snapshots",
+          scheduling_policy: "durable_object",
+          images: { base: { dockerfile: "../Dockerfile" } },
+        },
+      ],
     });
     expect(await readFile(path.join(dir, "wrangler.jsonc"), "utf8")).toBe(
       source,

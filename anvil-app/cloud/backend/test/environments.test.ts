@@ -308,6 +308,57 @@ describe('environment lifecycle', () => {
     expect(all.environments.map((env) => env.environmentId)).toContain(fx.environmentId);
   });
 
+  it('limits ephemeral list and reap to the worker’s bound environment', async () => {
+    const fx = fixture('ephemeral-environment-scope');
+    const otherEnvironmentId = `${fx.environmentId}-other`;
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+    await envConnect(fx);
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: otherEnvironmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+
+    const listed = await stubRpc(fx.accountId, fx.envAuth, 'environment.list', {
+      includeTerminal: true,
+    });
+    const listResult = expectSuccess<EnvironmentListResult>(listed);
+    expect(listResult.environments.map((environment) => environment.environmentId)).toEqual([
+      fx.environmentId,
+    ]);
+
+    const otherGet = await stubRpc(fx.accountId, fx.envAuth, 'environment.get', {
+      environmentId: otherEnvironmentId,
+    });
+    expect(isRpcError(otherGet.body)).toBe(true);
+    if (isRpcError(otherGet.body)) expect(otherGet.body.error.code).toBe('not-found');
+
+    const otherReap = await stubRpc(fx.accountId, fx.envAuth, 'environment.reap', {
+      environmentId: otherEnvironmentId,
+    });
+    expect(isRpcError(otherReap.body)).toBe(true);
+    if (isRpcError(otherReap.body)) expect(otherReap.body.error.code).toBe('not-found');
+
+    const ownReap = await stubRpc(fx.accountId, fx.envAuth, 'environment.reap', {
+      environmentId: fx.environmentId,
+    });
+    expect(expectSuccess<EnvironmentReapResult>(ownReap).environment.state).toBe('reap-requested');
+
+    // Ordinary account devices retain their account-wide environment view.
+    const accountList = expectSuccess<EnvironmentListResult>(
+      await postRpc('environment.list', { includeTerminal: true }, fx.provisionerAuth),
+    );
+    expect(accountList.environments.map((environment) => environment.environmentId)).toEqual(
+      expect.arrayContaining([fx.environmentId, otherEnvironmentId]),
+    );
+  });
+
   it('environment target on a missing record is not-found', async () => {
     const fx = fixture('missing');
     const response = await postRpc(
