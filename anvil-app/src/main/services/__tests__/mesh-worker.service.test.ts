@@ -942,12 +942,16 @@ describe('start-session executor (SESSION-02)', () => {
     return job;
   }
 
-  function claimWith(job: MeshJob, extra?: (operation: string, params: unknown) => unknown): void {
+  function claimWith(
+    job: MeshJob,
+    extra?: (operation: string, params: unknown) => unknown,
+    attemptOverrides: Partial<ExecutionAttempt> = {},
+  ): void {
     rpcHandler = (op, params) => {
       if (op === 'job.claim') {
         return {
           job,
-          attempt: makeAttempt(job.id),
+          attempt: { ...makeAttempt(job.id), ...attemptOverrides },
           fence: 1,
           manifest: job.inputManifest,
         };
@@ -1107,6 +1111,11 @@ describe('start-session executor (SESSION-02)', () => {
       const job = makeSessionJob('job-late-grant', workspaceId, portableId, head, {
         authMode: 'openai-api-key',
       });
+      vi.mocked(unsealCredentialGrant).mockReturnValue({
+        v: 1,
+        kind: 'remote-codex-api-key',
+        env: { OPENAI_API_KEY: 'real-api-key-grant' },
+      });
       let pulls = 0;
       claimWith(job, (operation) => {
         if (operation === 'credential.pull') {
@@ -1120,6 +1129,7 @@ describe('start-session executor (SESSION-02)', () => {
                       attemptId: `att-${job.id}`,
                       fence: 1,
                       targetEnrollmentId: 'enr-1',
+                      expiresAt: new Date(Date.now() + 60_000).toISOString(),
                     },
                   ]
                 : [],
@@ -1132,13 +1142,13 @@ describe('start-session executor (SESSION-02)', () => {
       expect(pulls).toBeGreaterThanOrEqual(3);
       expect(probeMock).toHaveBeenCalledTimes(1);
       expect(runTurnMock.mock.calls[0]?.[0].extraEnv).toMatchObject({
-        OPENAI_API_KEY: 'sealed-test-key',
+        OPENAI_API_KEY: 'real-api-key-grant',
       });
       const row = db
         .prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?')
         .get(`att-${job.id}`) as { journal_json: string };
       expect(row.journal_json).toContain('credential-grants-applied');
-      expect(row.journal_json).not.toContain('sealed-test-key');
+      expect(row.journal_json).not.toContain('real-api-key-grant');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -1172,6 +1182,300 @@ describe('start-session executor (SESSION-02)', () => {
       expect(row.journal_json).toContain('provider-credential-wait-cancelled');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for a late launch-host Codex auth grant and passes a stable private home to the runner', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('codex-host-auth');
+    const userDataDir = mkdtempSync(join(tmpdir(), 'anvil-codex-auth-home-'));
+    try {
+      configureMeshWorkerContext(() => ({ ...CTX, userDataDir }));
+      const job = makeSessionJob('job-codex-host-auth', workspaceId, portableId, head, {
+        authMode: 'codex-host-auth',
+        authSessionId: 'remote-session-stable',
+      });
+      const privateAuthJson = '{"tokens":{"access_token":"host-secret"},"accountId":"acct-1"}';
+      vi.mocked(unsealCredentialGrant).mockReturnValue({
+        v: 1,
+        kind: 'remote-codex-host-auth',
+        env: {},
+        codexAuthJson: privateAuthJson,
+      });
+      let pulls = 0;
+      claimWith(job, (operation) => {
+        if (operation === 'credential.pull') {
+          pulls += 1;
+          return {
+            grants:
+              pulls >= 3
+                ? [
+                    {
+                      jobId: job.id,
+                      attemptId: `att-${job.id}`,
+                      fence: 1,
+                      targetEnrollmentId: 'enr-1',
+                      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                    },
+                  ]
+                : [],
+          };
+        }
+        return {};
+      });
+
+      await handleJobAvailable(job.id);
+
+      expect(pulls).toBeGreaterThanOrEqual(3);
+      expect(probeMock).toHaveBeenCalledTimes(1);
+      expect(runTurnMock.mock.calls[0]?.[0]).toMatchObject({
+        authMode: 'codex-host-auth',
+        codexAuthJson: privateAuthJson,
+        codexAuthHome: expect.stringMatching(/\/mesh-codex-auth\/[a-f0-9]{64}$/),
+      });
+      const authHome = runTurnMock.mock.calls[0]?.[0].codexAuthHome;
+      expect(authHome).toBeDefined();
+      expect(authHome?.startsWith(join(userDataDir, 'mesh-codex-auth'))).toBe(true);
+      expect(existsSync(authHome!)).toBe(true);
+      const row = db
+        .prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?')
+        .get(`att-${job.id}`) as { journal_json: string };
+      expect(row.journal_json).not.toContain('host-secret');
+      expect(row.journal_json).not.toContain(privateAuthJson);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let an API-key credential grant satisfy launch-host Codex auth', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace(
+      'codex-host-auth-wrong-kind',
+    );
+    try {
+      const job = makeSessionJob('job-codex-host-auth-wrong-kind', workspaceId, portableId, head, {
+        authMode: 'codex-host-auth',
+        authSessionId: 'remote-session-wrong-kind',
+      });
+      vi.mocked(unsealCredentialGrant).mockReturnValue({
+        v: 1,
+        kind: 'remote-codex-api-key',
+        env: { OPENAI_API_KEY: 'api-key-secret' },
+      });
+      claimWith(
+        job,
+        (operation) => {
+          if (operation === 'credential.pull') {
+            return {
+              grants: [
+                {
+                  jobId: job.id,
+                  attemptId: `att-${job.id}`,
+                  fence: 1,
+                  targetEnrollmentId: 'enr-1',
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+              ],
+            };
+          }
+          return {};
+        },
+        { leaseExpiresAt: new Date(Date.now() + 100).toISOString() },
+      );
+
+      await handleJobAvailable(job.id);
+
+      expect(probeMock).not.toHaveBeenCalled();
+      expect(runTurnMock).not.toHaveBeenCalled();
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get(`att-${job.id}`) as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('provider-codex-host-auth-grant-not-delivered');
+      expect(row.journal_json).not.toContain('api-key-secret');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['attempt-id', 'expired'] as const)(
+    'rejects Codex host-auth grants with an invalid %s before unsealing',
+    async (invalidBinding) => {
+      const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace(
+        `codex-host-auth-${invalidBinding}`,
+      );
+      try {
+        const job = makeSessionJob(
+          `job-codex-host-auth-${invalidBinding}`,
+          workspaceId,
+          portableId,
+          head,
+          { authMode: 'codex-host-auth', authSessionId: `session-${invalidBinding}` },
+        );
+        const opened = vi.mocked(unsealCredentialGrant);
+        opened.mockClear().mockReturnValue({
+          v: 1,
+          kind: 'remote-codex-host-auth',
+          env: {},
+          codexAuthJson: '{"tokens":{}}',
+        });
+        claimWith(
+          job,
+          (operation) => {
+            if (operation !== 'credential.pull') return {};
+            return {
+              grants: [
+                {
+                  jobId: job.id,
+                  attemptId: invalidBinding === 'attempt-id' ? `other-${job.id}` : `att-${job.id}`,
+                  fence: 1,
+                  targetEnrollmentId: 'enr-1',
+                  expiresAt:
+                    invalidBinding === 'expired'
+                      ? new Date(Date.now() - 1_000).toISOString()
+                      : new Date(Date.now() + 60_000).toISOString(),
+                },
+              ],
+            };
+          },
+          { leaseExpiresAt: new Date(Date.now() + 100).toISOString() },
+        );
+
+        await handleJobAvailable(job.id);
+
+        expect(opened).not.toHaveBeenCalled();
+        expect(probeMock).not.toHaveBeenCalled();
+        expect(runTurnMock).not.toHaveBeenCalled();
+        const row = db
+          .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+          .get(`att-${job.id}`) as { state: string; journal_json: string };
+        expect(row.state).toBe('failed');
+        expect(row.journal_json).toContain('binding-or-expiry-mismatch');
+      } finally {
+        rmSync(repoDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('fails before provider probing when a launch-host Codex auth grant is missing', async () => {
+    const { workspaceId, portableId, repoDir, head } =
+      seedSessionWorkspace('codex-host-auth-missing');
+    try {
+      const job = makeSessionJob('job-codex-host-auth-missing', workspaceId, portableId, head, {
+        authMode: 'codex-host-auth',
+        authSessionId: 'remote-session-missing',
+      });
+      vi.mocked(unsealCredentialGrant).mockReturnValue({
+        v: 1,
+        kind: 'remote-codex-host-auth',
+        env: {},
+        codexAuthJson: '{"tokens":{}}',
+      });
+      let pulls = 0;
+      claimWith(
+        job,
+        (operation) => {
+          if (operation === 'credential.pull') {
+            pulls += 1;
+            return { grants: [] };
+          }
+          return {};
+        },
+        { leaseExpiresAt: new Date(Date.now() + 100).toISOString() },
+      );
+
+      await handleJobAvailable(job.id);
+
+      expect(pulls).toBeGreaterThanOrEqual(2);
+      expect(probeMock).not.toHaveBeenCalled();
+      expect(runTurnMock).not.toHaveBeenCalled();
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get(`att-${job.id}`) as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('provider-codex-host-auth-grant-not-delivered');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses the same Codex auth home across native follow-up attempts', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace(
+      'codex-host-auth-followup',
+    );
+    const userDataDir = mkdtempSync(join(tmpdir(), 'anvil-codex-auth-followup-'));
+    try {
+      configureMeshWorkerContext(() => ({ ...CTX, userDataDir }));
+      const stableSessionId = 'remote-followup-session';
+      const authJson = '{"tokens":{"access_token":"session-secret"},"accountId":"acct-1"}';
+      vi.mocked(unsealCredentialGrant).mockReturnValue({
+        v: 1,
+        kind: 'remote-codex-host-auth',
+        env: {},
+        codexAuthJson: authJson,
+      });
+      const firstJob = makeSessionJob(
+        'job-codex-host-auth-followup-a',
+        workspaceId,
+        portableId,
+        head,
+        {
+          authMode: 'codex-host-auth',
+          authSessionId: stableSessionId,
+        },
+      );
+      claimWith(firstJob, (operation) =>
+        operation === 'credential.pull'
+          ? {
+              grants: [
+                {
+                  jobId: firstJob.id,
+                  attemptId: `att-${firstJob.id}`,
+                  fence: 1,
+                  targetEnrollmentId: 'enr-1',
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+              ],
+            }
+          : {},
+      );
+      await handleJobAvailable(firstJob.id);
+      const firstHome = runTurnMock.mock.calls[0]?.[0].codexAuthHome;
+
+      const secondJob = makeSessionJob(
+        'job-codex-host-auth-followup-b',
+        workspaceId,
+        portableId,
+        head,
+        {
+          authMode: 'codex-host-auth',
+          authSessionId: stableSessionId,
+          resumeThreadId: 'thr-mock',
+        },
+      );
+      claimWith(secondJob, (operation) =>
+        operation === 'credential.pull'
+          ? {
+              grants: [
+                {
+                  jobId: secondJob.id,
+                  attemptId: `att-${secondJob.id}`,
+                  fence: 1,
+                  targetEnrollmentId: 'enr-1',
+                  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+                },
+              ],
+            }
+          : {},
+      );
+      await handleJobAvailable(secondJob.id);
+      const secondSpec = runTurnMock.mock.calls[1]?.[0];
+
+      expect(firstHome).toBeDefined();
+      expect(secondSpec?.codexAuthHome).toBe(firstHome);
+      expect(secondSpec?.resumeThreadId).toBe('thr-mock');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
     }
   });
 

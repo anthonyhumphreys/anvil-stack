@@ -323,3 +323,27 @@ Worker version and D1 migration list. Keep Stripe checkout disabled after
 the test unless the separate launch approval is complete. Delete only the
 disposable Stripe test data and test WorkOS identity when the record is
 complete; preserve shared staging infrastructure and its migrations.
+
+### Launch-host Codex authentication
+
+- Launch a fresh managed Codex worker with **Use my Codex login from this device**.
+  Confirm it authenticates with the launching host's account without asking for
+  another device-code login or selecting API billing.
+- Repeat with `CODEX_HOME` pointing to a fixture/profile outside `~/.codex`.
+  Record only account identity and outcomes; never record token/cache contents.
+- Remove or invalidate the host cache in an isolated test profile. Confirm a new
+  launch fails before job creation and handoff fails before stopping the source.
+  Confirm the explicit destination sign-in fallback still works for both new
+  chats and session handoffs.
+- Complete a turn, allow Codex to refresh the worker cache, then send a follow-up.
+  Confirm the native thread and refreshed worker credentials are retained, even
+  when the source snapshot is older. Confirm a different source account cannot
+  silently take over that session.
+- Confirm the cloud credential directory is private, lies outside checkouts and
+  disappears with environment teardown. Confirm job records, activity, logs,
+  renderer responses and build artifacts contain no auth cache contents.
+
+Live authentication, refresh and teardown remain unverified until this run is
+recorded against the final candidate. Host-cache transfer is implemented as the
+agreed default; copying refreshed credentials back to the launch host is outside
+this scope.

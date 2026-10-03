@@ -9,8 +9,10 @@ import type { PermissionMode } from '../../../cloud/contract/permissions.js';
 // orphan behind on timeout or cancellation (spec §9 / audit items 1,2,5,7).
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import path from 'node:path';
 import { promisify } from 'node:util';
 
 import {
@@ -22,6 +24,7 @@ import {
   type CodexProtocolState,
 } from './codex-protocol.service.js';
 import { providerSpawnEnv } from './agent-spawn-env.js';
+import { codexHostAuthIdentity } from './codex-host-auth.js';
 import { getSettings } from './settings.service.js';
 import type { CodexEvent, ReasoningEffort } from '../../shared/types.js';
 import { normaliseReasoningEffort } from '../../shared/codex-models.js';
@@ -42,7 +45,11 @@ export type RemoteSessionProvider = AgentProvider;
 
 export interface RemoteSessionSpec {
   provider: RemoteSessionProvider;
-  authMode?: 'target-local' | 'codex-account' | 'openai-api-key';
+  authMode?: 'target-local' | 'codex-account' | 'codex-host-auth' | 'openai-api-key';
+  /** Encrypted source-host auth cache for the `codex-host-auth` grant. Never logged. */
+  codexAuthJson?: string;
+  /** Stable private Codex home owned by the worker, outside the checkout. */
+  codexAuthHome?: string;
   model: string;
   /** Verified checkout path — mapped or managed; prepared upstream. */
   cwd: string;
@@ -167,6 +174,96 @@ export function satisfiesCliMin(observed: string, min: string): boolean {
     if (d !== 0) return d > 0;
   }
   return true;
+}
+
+interface ProvisionedCodexHostAuth {
+  home: string;
+  identity: string;
+  accountId?: string;
+}
+
+/** Create an isolated durable auth/config home without replacing refreshed tokens. */
+function provisionCodexHostAuth(
+  authJson: string | undefined,
+  authHome: string | undefined,
+): ProvisionedCodexHostAuth {
+  if (authJson === undefined || authHome === undefined || authHome.trim().length === 0) {
+    throw new Error('codex-host-auth-grant-incomplete');
+  }
+  const grantIdentity = codexHostAuthIdentity(authJson);
+  const home = path.resolve(authHome);
+  if (home === path.parse(home).root) throw new Error('codex-host-auth-home-invalid');
+  try {
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+    const homeStat = fs.lstatSync(home);
+    if (!homeStat.isDirectory() || homeStat.isSymbolicLink()) {
+      throw new Error('codex-host-auth-home-invalid');
+    }
+    fs.chmodSync(home, 0o700);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'codex-host-auth-home-invalid') throw error;
+    throw new Error('codex-host-auth-home-unavailable');
+  }
+
+  const authPath = path.join(home, 'auth.json');
+  try {
+    fs.lstatSync(authPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error('codex-host-auth-cache-unavailable');
+    }
+    const temporaryPath = path.join(home, `.auth-${randomUUID()}.tmp`);
+    let fileDescriptor: number | undefined;
+    try {
+      fileDescriptor = fs.openSync(temporaryPath, 'wx', 0o600);
+      fs.writeFileSync(fileDescriptor, authJson, 'utf8');
+      fs.fsyncSync(fileDescriptor);
+      fs.closeSync(fileDescriptor);
+      fileDescriptor = undefined;
+      try {
+        // link is atomic and exclusive, so a concurrent turn's refreshed cache wins.
+        fs.linkSync(temporaryPath, authPath);
+      } catch (linkError) {
+        if ((linkError as NodeJS.ErrnoException).code !== 'EEXIST') throw linkError;
+      }
+    } catch {
+      throw new Error('codex-host-auth-cache-unavailable');
+    } finally {
+      if (fileDescriptor !== undefined) fs.closeSync(fileDescriptor);
+      try {
+        fs.unlinkSync(temporaryPath);
+      } catch {
+        /* A failed temp cleanup does not reveal or log credential content. */
+      }
+    }
+  }
+
+  let existingJson: string;
+  try {
+    const authStat = fs.lstatSync(authPath);
+    if (!authStat.isFile() || authStat.isSymbolicLink()) {
+      throw new Error('codex-host-auth-cache-invalid');
+    }
+    fs.chmodSync(authPath, 0o600);
+    existingJson = fs.readFileSync(authPath, 'utf8');
+  } catch (error) {
+    if (error instanceof Error && error.message === 'codex-host-auth-cache-invalid') throw error;
+    throw new Error('codex-host-auth-cache-unavailable');
+  }
+  let existingIdentity: ReturnType<typeof codexHostAuthIdentity>;
+  try {
+    existingIdentity = codexHostAuthIdentity(existingJson);
+  } catch {
+    throw new Error('codex-host-auth-cache-invalid');
+  }
+  if (existingIdentity.identity !== grantIdentity.identity) {
+    throw new Error('codex-host-auth-account-mismatch');
+  }
+  return {
+    home,
+    identity: grantIdentity.identity,
+    ...(grantIdentity.accountId === undefined ? {} : { accountId: grantIdentity.accountId }),
+  };
 }
 
 function sandboxModeToTurnPolicy(
@@ -395,6 +492,9 @@ export async function runRemoteSessionTurn(
   if (spec.authMode === 'codex-account' && spec.provider !== 'codex') {
     throw new Error('codex-account-auth-requires-codex-provider');
   }
+  if (spec.authMode === 'codex-host-auth' && spec.provider !== 'codex') {
+    throw new Error('codex-host-auth-requires-codex-provider');
+  }
   if (
     spec.authMode === 'openai-api-key' &&
     spec.provider !== 'openai' &&
@@ -405,6 +505,10 @@ export async function runRemoteSessionTurn(
   if (spec.provider === 'cursor' || spec.provider === 'devin' || spec.provider === 'llmgateway') {
     return runDesktopAdapterTurn(spec, hooks, cliVersion);
   }
+  const hostAuth =
+    spec.authMode === 'codex-host-auth'
+      ? provisionCodexHostAuth(spec.codexAuthJson, spec.codexAuthHome)
+      : undefined;
   const settings = getSettings();
   const env = providerSpawnEnv({
     ...(spec.provider === 'openai' || spec.authMode === 'openai-api-key'
@@ -414,7 +518,17 @@ export async function runRemoteSessionTurn(
     // the ambient provider key for this attempt only.
     ...(spec.extraEnv ?? {}),
   });
+  if (hostAuth !== undefined) {
+    env.CODEX_HOME = hostAuth.home;
+  }
+  if (hostAuth !== undefined || spec.authMode === 'codex-account') {
+    delete env.OPENAI_API_KEY;
+    delete env.CODEX_API_KEY;
+  }
   const args = argsForProvider(spec.provider);
+  if (hostAuth !== undefined || spec.authMode === 'codex-account') {
+    args.push('-c', 'cli_auth_credentials_store="file"', '-c', 'forced_login_method="chatgpt"');
+  }
   if (spec.authMode === 'openai-api-key') {
     args.push('-c', 'model_provider="anvil_api"');
     args.push(
@@ -687,7 +801,25 @@ export async function runRemoteSessionTurn(
       capabilities: { experimentalApi: true },
     });
     sendCodexJsonRpcNotification(proc, 'initialized', {});
-    if (spec.authMode === 'codex-account') {
+    if (hostAuth !== undefined) {
+      const result = (await request('account/read', {})) as Record<string, unknown>;
+      const account = result.account;
+      if (typeof account !== 'object' || account === null) {
+        throw new Error('codex-host-auth-account-unavailable');
+      }
+      const accountDetails = account as Record<string, unknown>;
+      if (accountDetails.type !== 'chatgpt') {
+        throw new Error('codex-host-auth-account-unavailable');
+      }
+      const reportedAccountId = accountDetails.accountId ?? accountDetails.account_id;
+      if (
+        hostAuth.accountId !== undefined &&
+        typeof reportedAccountId === 'string' &&
+        reportedAccountId !== hostAuth.accountId
+      ) {
+        throw new Error('codex-host-auth-account-mismatch');
+      }
+    } else if (spec.authMode === 'codex-account') {
       if (spec.provider !== 'codex') {
         throw new Error('codex-account-auth-requires-codex-provider');
       }

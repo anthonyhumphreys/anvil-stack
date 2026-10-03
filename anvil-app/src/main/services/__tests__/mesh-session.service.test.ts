@@ -3,6 +3,9 @@
 // in-band approval auto-decline, resume, and orphan kill.
 
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -166,7 +169,7 @@ function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
           jsonrpc: '2.0',
           id,
           result: {
-            account: isAuthenticated ? { type: 'chatgpt' } : null,
+            account: isAuthenticated ? { type: 'chatgpt', accountId: 'acct-fixture' } : null,
             requiresOpenaiAuth: true,
           },
         });
@@ -195,6 +198,20 @@ const HOOKS_BASE = {
   isCancelled: () => false,
 };
 
+function fixtureIdToken(accountId = 'acct-fixture', userId = 'user-fixture'): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(
+    JSON.stringify({
+      sub: userId,
+      'https://api.openai.com/auth': {
+        chatgpt_account_id: accountId,
+        chatgpt_user_id: userId,
+      },
+    }),
+  ).toString('base64url');
+  return `${header}.${payload}.fixture-signature`;
+}
+
 function spec(overrides: Partial<Parameters<typeof runRemoteSessionTurn>[0]> = {}) {
   return {
     provider: 'codex' as const,
@@ -209,6 +226,7 @@ function spec(overrides: Partial<Parameters<typeof runRemoteSessionTurn>[0]> = {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   resetMeshSessionForTests();
   desktopSessionMocks.listener = null;
   desktopSessionMocks.startSession.mockReset();
@@ -217,9 +235,132 @@ afterEach(() => {
 });
 
 describe('mesh-session provider driver', () => {
+  it('seeds a private durable Codex home and preserves its refreshed host auth cache', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-host-auth-'));
+    const authHome = path.join(tempDir, 'worker-codex');
+    const authJson = JSON.stringify({
+      tokens: {
+        access_token: 'fixture-access',
+        refresh_token: 'fixture-refresh',
+        account_id: 'acct-fixture',
+        id_token: fixtureIdToken(),
+      },
+    });
+    const firstServer = fakeAppServer();
+    let spawnedEnv: NodeJS.ProcessEnv | undefined;
+    let spawnedArgs: string[] | undefined;
+    vi.stubEnv('OPENAI_API_KEY', 'ambient-openai-key');
+    configureMeshSessionForTests({
+      spawn: (_command, args, options) => {
+        spawnedArgs = args;
+        spawnedEnv = options.env as NodeJS.ProcessEnv;
+        return firstServer.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+
+    try {
+      await runRemoteSessionTurn(
+        spec({ authMode: 'codex-host-auth', codexAuthJson: authJson, codexAuthHome: authHome }),
+        HOOKS_BASE,
+      );
+
+      expect(spawnedEnv?.CODEX_HOME).toBe(authHome);
+      expect(spawnedEnv?.OPENAI_API_KEY).toBeUndefined();
+      expect(spawnedEnv?.CODEX_API_KEY).toBeUndefined();
+      expect(spawnedArgs).toEqual(
+        expect.arrayContaining([
+          'cli_auth_credentials_store="file"',
+          'forced_login_method="chatgpt"',
+        ]),
+      );
+      expect(fs.statSync(authHome).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(authHome, 'auth.json')).mode & 0o777).toBe(0o600);
+
+      const refreshedAuth = JSON.stringify({
+        tokens: {
+          access_token: 'fixture-refreshed-access',
+          refresh_token: 'fixture-refreshed-refresh',
+          account_id: 'acct-fixture',
+          id_token: fixtureIdToken(),
+        },
+      });
+      fs.writeFileSync(path.join(authHome, 'auth.json'), refreshedAuth, { mode: 0o600 });
+      const secondServer = fakeAppServer();
+      configureMeshSessionForTests({
+        spawn: () => secondServer.proc,
+        probeCli: async () => '0.44.0',
+      });
+      await runRemoteSessionTurn(
+        spec({ authMode: 'codex-host-auth', codexAuthJson: authJson, codexAuthHome: authHome }),
+        HOOKS_BASE,
+      );
+      expect(fs.readFileSync(path.join(authHome, 'auth.json'), 'utf8')).toBe(refreshedAuth);
+      expect(
+        secondServer.received.some((message) => message['method'] === 'account/login/start'),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses to reuse a worker Codex home for a different host account', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-host-auth-mismatch-'));
+    const authHome = path.join(tempDir, 'worker-codex');
+    fs.mkdirSync(authHome, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      path.join(authHome, 'auth.json'),
+      JSON.stringify({
+        tokens: {
+          access_token: 'other-access',
+          refresh_token: 'other-refresh',
+          account_id: 'acct-fixture',
+          id_token: fixtureIdToken('acct-fixture', 'another-user'),
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const spawn = vi.fn(() => fakeAppServer().proc);
+    configureMeshSessionForTests({ spawn, probeCli: async () => '0.44.0' });
+    try {
+      await expect(
+        runRemoteSessionTurn(
+          spec({
+            authMode: 'codex-host-auth',
+            codexAuthJson: JSON.stringify({
+              tokens: {
+                access_token: 'fixture-access',
+                refresh_token: 'fixture-refresh',
+                account_id: 'acct-fixture',
+                id_token: fixtureIdToken(),
+              },
+            }),
+            codexAuthHome: authHome,
+          }),
+          HOOKS_BASE,
+        ),
+      ).rejects.toThrow('codex-host-auth-account-mismatch');
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('waits for explicit Codex device sign-in and verifies the account before starting a thread', async () => {
     const fake = fakeAppServer({ initiallyAuthenticated: false });
-    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    vi.stubEnv('OPENAI_API_KEY', 'ambient-openai-key');
+    vi.stubEnv('CODEX_API_KEY', 'ambient-codex-key');
+    let spawnedArgs: string[] | undefined;
+    let spawnedEnv: NodeJS.ProcessEnv | undefined;
+    configureMeshSessionForTests({
+      spawn: (_command, args, options) => {
+        spawnedArgs = args;
+        spawnedEnv = options.env as NodeJS.ProcessEnv;
+        return fake.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
     const authenticate = vi.fn(async (request: { verificationUrl: string; userCode: string }) => {
       expect(request).toEqual({
         verificationUrl: 'https://auth.openai.com/codex/device',
@@ -242,6 +383,14 @@ describe('mesh-session provider driver', () => {
     expect(methods.lastIndexOf('account/read')).toBeLessThan(methods.indexOf('thread/start'));
     expect(authenticate).toHaveBeenCalledTimes(1);
     expect(hooks.emitActivity.mock.calls.flat().join(' ')).not.toContain('ABCD-EFGH');
+    expect(spawnedEnv?.OPENAI_API_KEY).toBeUndefined();
+    expect(spawnedEnv?.CODEX_API_KEY).toBeUndefined();
+    expect(spawnedArgs).toEqual(
+      expect.arrayContaining([
+        'cli_auth_credentials_store="file"',
+        'forced_login_method="chatgpt"',
+      ]),
+    );
     expect(result.turnStatus).toBe('completed');
   });
 

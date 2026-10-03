@@ -38,7 +38,16 @@ vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
   };
 });
 
+let credentialAvailabilityError: Error | null = null;
 const interruptTurnMock = vi.fn();
+vi.mock('../remote-credentials.service.js', () => ({
+  validateRemoteCredentialAvailability: (choice: string) => {
+    if (choice === 'codex-host-auth' && credentialAvailabilityError)
+      throw credentialAvailabilityError;
+  },
+  validateRemoteCredentialChoice: vi.fn(),
+  ensureRemoteCredentialGrant: vi.fn(async () => ({ delivered: false })),
+}));
 const stopSessionMock = vi.fn();
 const activationInputs: Array<Record<string, unknown>> = [];
 let loseActivationResponse = false;
@@ -280,6 +289,7 @@ beforeEach(() => {
   submitPreparedJobMock.mockClear();
   loseActivationResponse = false;
   targetTrustState = 'trusted';
+  credentialAvailabilityError = null;
   resetMeshHandoffForTests();
   configureMeshHandoffContext(() => CTX);
   resetRemoteChatForTests();
@@ -352,6 +362,72 @@ describe('evaluateHandoffReadiness', () => {
 });
 
 describe('initiateHandoff', () => {
+  it('allows explicit cloud device-code login when the host cache is unavailable', async () => {
+    const { repoDir } = makeRepoWithRemote('cloud-auth-fallback');
+    try {
+      const { sessionId } = seedSession('cloud-auth-fallback', repoDir);
+      installHandoffFake();
+      const handler = rpcHandler;
+      rpcHandler = (operation, params) =>
+        operation === 'device.list'
+          ? { devices: [{ enrollmentId: 'enr-2', revoked: false, enrollmentClass: 'ephemeral' }] }
+          : handler(operation, params);
+      credentialAvailabilityError = new Error('Host Codex auth is unavailable');
+      const result = await initiateHandoff({
+        sessionId,
+        targetEnrollmentId: 'enr-2',
+        cloudAuthChoice: 'codex-account',
+      });
+      expect(result.ok).toBe(true);
+      expect(activationInputs[0]).toMatchObject({ authMode: 'codex-account' });
+      expect(stopSessionMock).toHaveBeenCalledWith(sessionId);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the launch host Codex login for cloud handoff', async () => {
+    const { repoDir } = makeRepoWithRemote('cloud-auth');
+    try {
+      const { sessionId } = seedSession('cloud-auth', repoDir);
+      installHandoffFake();
+      const handler = rpcHandler;
+      rpcHandler = (operation, params) =>
+        operation === 'device.list'
+          ? { devices: [{ enrollmentId: 'enr-2', revoked: false, enrollmentClass: 'ephemeral' }] }
+          : handler(operation, params);
+      await initiateHandoff({ sessionId, targetEnrollmentId: 'enr-2' });
+      expect(activationInputs[0]).toMatchObject({
+        authMode: 'codex-host-auth',
+        authSessionId: sessionId,
+      });
+      expect(listRemoteChats('w-cloud-auth')[0]?.credentialChoice).toBe('codex-host-auth');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails cloud handoff before stopping the source when host auth is unavailable', async () => {
+    const { repoDir } = makeRepoWithRemote('cloud-auth-missing');
+    try {
+      const { sessionId } = seedSession('cloud-auth-missing', repoDir);
+      installHandoffFake();
+      const handler = rpcHandler;
+      rpcHandler = (operation, params) =>
+        operation === 'device.list'
+          ? { devices: [{ enrollmentId: 'enr-2', revoked: false, enrollmentClass: 'ephemeral' }] }
+          : handler(operation, params);
+      credentialAvailabilityError = new Error('Host Codex auth is unavailable');
+      await expect(initiateHandoff({ sessionId, targetEnrollmentId: 'enr-2' })).rejects.toThrow(
+        'Host Codex auth is unavailable',
+      );
+      expect(stopSessionMock).not.toHaveBeenCalled();
+      expect(rpcCalls.some((call) => call.operation === 'handoff.create')).toBe(false);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(['source-quiescing', 'source-relinquished-and-checkpointed'] as const)(
     'recovers a durably stopped source from its scoped private checkpoint at %s',
     async (initialState) => {

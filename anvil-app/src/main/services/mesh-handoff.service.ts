@@ -1,3 +1,4 @@
+import type { RemoteCodexAccountAuthChoice } from '../../shared/remote-chat.js';
 // Session handoff orchestration (SESSION-03, spec §11).
 //
 // Ownership rule: the backend's `mesh_sessions` row is the generation
@@ -44,6 +45,7 @@ import { isAgentProvider } from '../../shared/agent-providers.js';
 import type { PermissionMode } from '../../../cloud/contract/permissions.js';
 import type { DeviceListResult } from '../../../cloud/contract/auth.js';
 import { adoptHandoffRemoteChat } from './remote-chat.service.js';
+import { validateRemoteCredentialAvailability } from './remote-credentials.service.js';
 
 const execFileAsync = promisify(execFile);
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -235,7 +237,7 @@ function journalActivationMetadata(input: {
   provider: AgentProvider;
   model: string;
   permissionMode: PermissionMode;
-  authMode: 'target-local' | 'codex-account';
+  authMode: 'target-local' | 'codex-host-auth' | 'codex-account';
 }): void {
   getDb()
     .prepare(
@@ -553,6 +555,7 @@ export function initiateHandoff(input: {
   sessionId: string;
   targetEnrollmentId: string;
   handoffId?: string;
+  cloudAuthChoice?: RemoteCodexAccountAuthChoice;
 }): Promise<InitiateHandoffResult> {
   const handoffId = input.handoffId ?? randomUUID();
   if (activeHandoffIds.has(handoffId)) throw new Error(`handoff already active: ${handoffId}`);
@@ -566,6 +569,7 @@ async function initiateHandoffWithId(input: {
   sessionId: string;
   targetEnrollmentId: string;
   handoffId: string;
+  cloudAuthChoice?: RemoteCodexAccountAuthChoice;
 }): Promise<InitiateHandoffResult> {
   const readiness = await evaluateHandoffReadiness(input.sessionId);
   if (!readiness.ok) {
@@ -605,7 +609,12 @@ async function initiateHandoffWithId(input: {
   if (target.enrollmentClass === 'ephemeral' && provider !== 'codex') {
     throw new Error('Cloud workers currently support Codex handoff sessions only.');
   }
-  const authMode = target.enrollmentClass === 'ephemeral' ? 'codex-account' : 'target-local';
+  const authMode =
+    target.enrollmentClass === 'ephemeral'
+      ? (input.cloudAuthChoice ?? 'codex-host-auth')
+      : 'target-local';
+
+  validateRemoteCredentialAvailability(authMode);
 
   journalHandoff(handoffId, input.sessionId, 'source', ctx);
   const created = await handoffRpc<HandoffCreateResult>(
@@ -717,6 +726,7 @@ async function initiateHandoffWithId(input: {
       prompt: 'Continue the handed-off session using its checkpoint context.',
       handoffId,
       authMode,
+      authSessionId: input.sessionId,
       handoffCheckpoint: {
         ...checkpoint,
         repositories: sourcePins.map(({ repositoryId, commit }) => ({ repositoryId, commit })),
@@ -874,7 +884,7 @@ export async function reconcileHandoffsOnBoot(): Promise<void> {
             activation_provider: AgentProvider | null;
             activation_model: string | null;
             activation_permission_mode: PermissionMode | null;
-            activation_auth_mode: 'target-local' | 'codex-account' | null;
+            activation_auth_mode: 'target-local' | 'codex-host-auth' | 'codex-account' | null;
           }
         | undefined;
       // source_checkpoint_json is written only after stopSessionAndWait
@@ -908,6 +918,7 @@ export async function reconcileHandoffsOnBoot(): Promise<void> {
                   prompt: 'Continue the handed-off session using its checkpoint context.',
                   handoffId: row.handoff_id,
                   authMode: recovery.activation_auth_mode,
+                  authSessionId: row.session_id,
                   handoffCheckpoint: {
                     ...checkpoint,
                     repositories: preparation.inputManifest.repositories.map(
@@ -993,7 +1004,7 @@ export async function reconcileHandoffsOnBoot(): Promise<void> {
             activation_provider: AgentProvider | null;
             activation_model: string | null;
             activation_permission_mode: PermissionMode | null;
-            activation_auth_mode: 'target-local' | 'codex-account' | null;
+            activation_auth_mode: 'target-local' | 'codex-host-auth' | 'codex-account' | null;
           }
         | undefined;
       if (activation?.activation_request_json != null) {

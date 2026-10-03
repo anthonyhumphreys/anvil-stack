@@ -226,3 +226,21 @@ behavior, the Codex runtime pin and authentication protocol configuration.
 Live provider execution and signed-in/physical-device acceptance remain pending.
 See [remote chats](remote-chats.md) for the auth decision, interaction limits and
 the remaining acceptance scope.
+
+### 3 October correction: launch-host Codex auth
+
+The earlier device-code default diverged from the agreed launch-host `auth.json`
+strategy. Managed cloud chats and handoff now default to an encrypted copy of
+that account cache. A protected session-scoped worker home retains refreshes and
+native continuation files. Device-code login is an explicit fallback and API
+keys remain separately billed. Missing host credentials fail before launching
+work or stopping the handoff source. The source cache is never overwritten.
+Live cloud auth/refresh/teardown acceptance remains pending.
+
+Local verification for the correction passed 1,859 desktop tests with 12 skipped,
+440 backend tests, both desktop TypeScript projects, backend TypeScript,
+desktop ESLint, and Electron/daemon builds. Both final worker images built;
+offline synthetic-cache checks verified the pinned CLI reads account auth with
+and without the optional account ID. No real credentials or inference were used.
+Headless fallback tests include consent, login completion, account verification,
+ambient API-key stripping and explicit handoff selection.

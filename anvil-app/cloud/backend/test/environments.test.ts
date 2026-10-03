@@ -433,6 +433,45 @@ describe('credential grants', () => {
     expect(pulled.grants[0]?.['attemptId']).toBe(attempt.id);
   });
 
+  it('accepts a bounded host-auth envelope larger than the former 16 KiB cap', async () => {
+    const fx = fixture('large-host-auth-grant');
+    const { job, attempt } = await claimedAttempt(fx);
+    const grant = grantEnvelope({
+      jobId: job.id,
+      attemptId: attempt.id,
+      fence: attempt.fence,
+      targetEnrollmentId: fx.envEnrollmentId,
+      ct: Buffer.alloc(64 * 1024, 7).toString('base64'),
+    });
+    expect(JSON.stringify(grant).length).toBeGreaterThan(16 * 1024);
+    expect(JSON.stringify(grant).length).toBeLessThan(128 * 1024);
+
+    const delivered = expectSuccess<{ delivered: boolean }>(
+      await postRpc('credential.deliver', { grant }, fx.provisionerAuth),
+    );
+    expect(delivered.delivered).toBe(true);
+  });
+
+  it('rejects a credential envelope above the 128 KiB cap', async () => {
+    const fx = fixture('oversized-credential-grant');
+    const { job, attempt } = await claimedAttempt(fx);
+    const grant = grantEnvelope({
+      jobId: job.id,
+      attemptId: attempt.id,
+      fence: attempt.fence,
+      targetEnrollmentId: fx.envEnrollmentId,
+      ct: 'A'.repeat(128 * 1024 - 100),
+    });
+    expect(JSON.stringify(grant).length).toBeGreaterThan(128 * 1024);
+
+    const response = await postRpc('credential.deliver', { grant }, fx.provisionerAuth);
+    expect(response.status).toBe(413);
+    expect(isRpcError(response.body)).toBe(true);
+    if (isRpcError(response.body)) {
+      expect(response.body.error.code).toBe('payload-too-large');
+    }
+  });
+
   it('rejects delivery on a stale fence and pulls by non-claimants', async () => {
     const fx = fixture('grant-fence');
     const { job, attempt } = await claimedAttempt(fx);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AgentProvider, CodexMode } from '../../../shared/types';
-import type { RemoteChatRecord } from '../../../shared/remote-chat';
+import type { RemoteChatRecord, RemoteCredentialChoice } from '../../../shared/remote-chat';
 import type { ApprovalRecord, SyncAttemptActivity, SyncDevice } from '../../../shared/sync-runtime';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { agentProviderLabel } from '../../utils/agent-display';
@@ -36,9 +36,7 @@ export function RemoteChatPanel({
   const [records, setRecords] = useState<RemoteChatRecord[]>([]);
   const [devices, setDevices] = useState<SyncDevice[]>([]);
   const [target, setTarget] = useState('');
-  const [credentialChoice, setCredentialChoice] = useState<
-    'target-local' | 'codex-account' | 'openai-api-key'
-  >('target-local');
+  const [credentialChoice, setCredentialChoice] = useState<RemoteCredentialChoice>('target-local');
   const [selectedId, setSelectedId] = useState('');
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
@@ -51,7 +49,7 @@ export function RemoteChatPanel({
   const cloudTarget =
     devices.find((device) => device.enrollmentId === target)?.enrollmentClass === 'ephemeral';
   const effectiveCredentialChoice =
-    cloudTarget && credentialChoice === 'target-local' ? 'codex-account' : credentialChoice;
+    cloudTarget && credentialChoice === 'target-local' ? 'codex-host-auth' : credentialChoice;
   const unsupportedAccess = isAcpAgentProvider(provider) && permissionMode === 'read-only';
   const active = selected !== undefined && !TERMINAL.has(selected.state);
   const retryHandoff = selected?.state === 'failed' && selected.handoffId !== undefined;
@@ -257,10 +255,14 @@ export function RemoteChatPanel({
                   {!cloudTarget && (
                     <option value="target-local">Use destination's existing login</option>
                   )}
+                  <option value="codex-host-auth">Use my Codex login from this device</option>
                   <option value="codex-account">Sign in to Codex on the destination</option>
                   <option value="openai-api-key">Use my saved OpenAI API key for this chat</option>
                 </select>
-                {credentialChoice === 'openai-api-key' && (
+                {effectiveCredentialChoice === 'codex-host-auth' && (
+                  <span>Uses this device’s Codex login, sent encrypted to the cloud worker.</span>
+                )}
+                {effectiveCredentialChoice === 'openai-api-key' && (
                   <span>
                     Uses separately billed API usage. Sends the key encrypted to this worker for
                     each turn.
@@ -293,7 +295,7 @@ export function RemoteChatPanel({
                     setCredentialChoice(
                       devices.find((device) => device.enrollmentId === event.target.value)
                         ?.enrollmentClass === 'ephemeral'
-                        ? 'codex-account'
+                        ? 'codex-host-auth'
                         : 'target-local',
                     );
                   }}

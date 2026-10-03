@@ -7,6 +7,7 @@ import {
   CRYPTO_ENTITY_DEVICE_IDENTITY,
   CRYPTO_ENTITY_KEYRING_PAIRING,
   CRYPTO_ENTITY_KEYRING_WRAP,
+  MAX_CREDENTIAL_GRANT_CODEX_AUTH_JSON_BYTES,
   decodePairingPayload,
   type KeyringWrapPayload,
   type PairingKeyringPayload,
@@ -788,6 +789,34 @@ describe('credential grants (ENV-06)', () => {
     const grant = sealGrant();
     // A different enrollment has no matching private key.
     expect(unsealCredentialGrant(SCOPE, 'enr-stranger', grant)).toBeNull();
+  });
+
+  it('round-trips a bounded Codex host auth cache only in its designated grant kind', () => {
+    activateEnrollment();
+    const codexAuthJson =
+      '{"tokens":{"access_token":"fixture-access","refresh_token":"fixture-refresh","account_id":"fixture-account"}}';
+    const grant = sealGrant({
+      kind: 'remote-codex-host-auth',
+      env: {},
+      codexAuthJson,
+    });
+    expect(unsealCredentialGrant(SCOPE, ENROLLMENT, grant)).toMatchObject({
+      kind: 'remote-codex-host-auth',
+      env: {},
+      codexAuthJson,
+    });
+    expect(() =>
+      sealGrant({
+        kind: 'remote-codex-host-auth',
+        env: {},
+        codexAuthJson: 'x'.repeat(MAX_CREDENTIAL_GRANT_CODEX_AUTH_JSON_BYTES + 1),
+      }),
+    ).toThrow(/invalid or too large/);
+    expect(() => sealGrant({ kind: 'credential-name', env: {}, codexAuthJson })).toThrow(
+      /invalid or too large/,
+    );
+    const malformed = sealGrant({ env: [] });
+    expect(unsealCredentialGrant(SCOPE, ENROLLMENT, malformed)).toBeNull();
   });
 });
 

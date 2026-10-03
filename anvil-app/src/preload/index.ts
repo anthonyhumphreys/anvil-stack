@@ -1,3 +1,4 @@
+import type { RemoteCodexAccountAuthChoice } from '../shared/remote-chat';
 import type {
   DojoAnalytics,
   DojoPrice,
@@ -917,8 +918,13 @@ const api: AnvilAPI = {
     initiateSessionHandoff: (
       sessionId: string,
       targetEnrollmentId: string,
+      cloudAuthChoice?: RemoteCodexAccountAuthChoice,
     ): Promise<SyncInitiateHandoffResult> =>
-      ipcRenderer.invoke('sync-runtime:session-handoff', { sessionId, targetEnrollmentId }),
+      ipcRenderer.invoke('sync-runtime:session-handoff', {
+        sessionId,
+        targetEnrollmentId,
+        cloudAuthChoice,
+      }),
     observeAttemptActivity: (
       attemptId: string,
       listener: (item: SyncAttemptActivity) => void,

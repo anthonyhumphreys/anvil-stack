@@ -1,11 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockRpc, mockSeal, mockTrustState, mockIdentities, mockGetSettings } = vi.hoisted(() => ({
+const {
+  mockRpc,
+  mockSeal,
+  mockTrustState,
+  mockIdentities,
+  mockGetSettings,
+  mockReadCodexHostAuthJson,
+  mockValidateCodexHostAuthJson,
+} = vi.hoisted(() => ({
   mockRpc: vi.fn(),
   mockSeal: vi.fn(),
   mockTrustState: vi.fn(),
   mockIdentities: vi.fn(),
   mockGetSettings: vi.fn(),
+  mockReadCodexHostAuthJson: vi.fn(),
+  mockValidateCodexHostAuthJson: vi.fn(),
 }));
 
 vi.mock('../sync-backend-client.service.js', () => ({ rpc: mockRpc }));
@@ -15,10 +25,15 @@ vi.mock('../sync-keyring.service.js', () => ({
   sealCredentialGrant: mockSeal,
 }));
 vi.mock('../settings.service.js', () => ({ getSettings: mockGetSettings }));
+vi.mock('../codex-host-auth.js', () => ({
+  readCodexHostAuthJson: mockReadCodexHostAuthJson,
+  validateCodexHostAuthJson: mockValidateCodexHostAuthJson,
+}));
 
 import {
   ensureRemoteCredentialGrant,
   resetRemoteCredentialGrantsForTests,
+  validateRemoteCredentialAvailability,
   validateRemoteCredentialChoice,
 } from '../remote-credentials.service.js';
 import type { JobGetResult } from '../../../../cloud/contract/jobs.js';
@@ -31,6 +46,8 @@ const SCOPE: SyncScope = {
 };
 const TARGET = 'enrollment-target';
 const KEY = 'sk-live-test-secret';
+const CODEX_AUTH_JSON =
+  '{"tokens":{"access_token":"fixture-access-token","refresh_token":"fixture-refresh-token","account_id":"fixture-account"}}';
 
 function jobResult(overrides: Partial<JobGetResult['job']> = {}, fence = 7): JobGetResult {
   return {
@@ -85,6 +102,7 @@ describe('remote-credentials.service', () => {
     mockIdentities.mockReturnValue([{ enrollmentId: TARGET, pub: 'target-public-key' }]);
     mockTrustState.mockReturnValue('trusted');
     mockGetSettings.mockReturnValue({ openaiApiKey: KEY });
+    mockReadCodexHostAuthJson.mockReturnValue(CODEX_AUTH_JSON);
     mockSeal.mockImplementation((input: { env: Record<string, string> }) => ({
       v: 1,
       enc: 'x25519-aes-256-gcm',
@@ -168,6 +186,32 @@ describe('remote-credentials.service', () => {
     }
     expect(mockSeal).not.toHaveBeenCalled();
     expect(mockRpc).not.toHaveBeenCalled();
+  });
+
+  it('preflights host auth without returning or persisting the auth JSON', async () => {
+    validateRemoteCredentialAvailability('codex-host-auth');
+    expect(mockValidateCodexHostAuthJson).toHaveBeenCalledWith(CODEX_AUTH_JSON);
+  });
+
+  it('delivers host auth only inside the sealed, attempt-bound grant', async () => {
+    const result = await ensureRemoteCredentialGrant({
+      ...INPUT_BASE,
+      choice: 'codex-host-auth',
+      result: jobResult(),
+    });
+    expect(result).toEqual({ delivered: true, marker: `attempt-a:7:${TARGET}` });
+    expect(mockSeal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'remote-codex-host-auth',
+        env: {},
+        codexAuthJson: CODEX_AUTH_JSON,
+        attemptId: 'attempt-a',
+        fence: 7,
+        targetEnrollmentId: TARGET,
+      }),
+    );
+    expect(JSON.stringify(mockRpc.mock.calls[0])).not.toContain(CODEX_AUTH_JSON);
+    expect(result.marker).not.toContain(CODEX_AUTH_JSON);
   });
 
   it('refuses missing or placeholder saved API keys', async () => {

@@ -3,6 +3,7 @@ import type { SyncScope } from '../../shared/sync-mesh.js';
 import type { CredentialDeliverResult } from '../../../cloud/contract/sealed.js';
 import type { JobGetResult } from '../../../cloud/contract/jobs.js';
 import { rpc } from './sync-backend-client.service.js';
+import { readCodexHostAuthJson, validateCodexHostAuthJson } from './codex-host-auth.js';
 import {
   deviceTrustState,
   listDeviceIdentities,
@@ -10,7 +11,11 @@ import {
 } from './sync-keyring.service.js';
 import { getSettings } from './settings.service.js';
 
-export type RemoteCredentialChoice = 'target-local' | 'codex-account' | 'openai-api-key';
+export type RemoteCredentialChoice =
+  | 'target-local'
+  | 'codex-account'
+  | 'openai-api-key'
+  | 'codex-host-auth';
 
 export interface RemoteCredentialContext {
   apiUrl: string;
@@ -43,7 +48,12 @@ export function validateRemoteCredentialChoice(
   sourceScope: SyncScope,
   choice: RemoteCredentialChoice | undefined,
 ): asserts choice is RemoteCredentialChoice {
-  if (choice !== 'target-local' && choice !== 'codex-account' && choice !== 'openai-api-key') {
+  if (
+    choice !== 'target-local' &&
+    choice !== 'codex-account' &&
+    choice !== 'openai-api-key' &&
+    choice !== 'codex-host-auth'
+  ) {
     throw new Error('Choose how the remote Codex session authenticates.');
   }
   if (provider !== 'codex') {
@@ -58,10 +68,17 @@ export function validateRemoteCredentialChoice(
   }
 }
 
+/** Check source-side auth configuration without returning or persisting secret material. */
+export function validateRemoteCredentialAvailability(choice: RemoteCredentialChoice): void {
+  if (choice === 'codex-host-auth') {
+    validateCodexHostAuthJson(readCodexHostAuthJson());
+  }
+}
+
 /**
- * Delivers the saved OpenAI API key encrypted to the selected device and bound
- * to the exact live job attempt. Account-login and target-local choices need
- * no source credential grant. The caller persists only the returned marker.
+ * Delivers a selected source credential encrypted to the chosen device and
+ * bound to the exact live attempt. Account-login and target-local choices need
+ * no source grant. The caller persists only the returned marker.
  */
 export async function ensureRemoteCredentialGrant(
   input: EnsureRemoteCredentialGrantInput,
@@ -72,7 +89,9 @@ export async function ensureRemoteCredentialGrant(
     input.scope,
     input.choice,
   );
-  if (input.choice !== 'openai-api-key') return { delivered: false };
+  if (input.choice !== 'openai-api-key' && input.choice !== 'codex-host-auth') {
+    return { delivered: false };
+  }
 
   const { job, attempts } = input.result;
   if (
@@ -121,9 +140,21 @@ async function deliverGrant(
     throw new Error('The selected remote device is no longer trusted.');
   }
 
-  const apiKey = getSettings().openaiApiKey?.trim();
-  if (apiKey === undefined || apiKey.length === 0 || isPlaceholderApiKey(apiKey)) {
-    throw new Error('Save a usable OpenAI API key before granting it to the remote session.');
+  let kind: string;
+  let env: Record<string, string>;
+  let codexAuthJson: string | undefined;
+  if (input.choice === 'openai-api-key') {
+    const apiKey = getSettings().openaiApiKey?.trim();
+    if (apiKey === undefined || apiKey.length === 0 || isPlaceholderApiKey(apiKey)) {
+      throw new Error('Save a usable OpenAI API key before granting it to the remote session.');
+    }
+    kind = 'remote-codex-api-key';
+    env = { OPENAI_API_KEY: apiKey };
+  } else {
+    codexAuthJson = readCodexHostAuthJson();
+    validateCodexHostAuthJson(codexAuthJson);
+    kind = 'remote-codex-host-auth';
+    env = {};
   }
 
   const leaseExpiry = Date.parse(attempt.leaseExpiresAt);
@@ -139,8 +170,9 @@ async function deliverGrant(
     fence: attempt.fence,
     targetEnrollmentId: input.targetEnrollmentId,
     expiresAt: new Date(expiresAtMs).toISOString(),
-    kind: 'remote-codex-api-key',
-    env: { OPENAI_API_KEY: apiKey },
+    kind,
+    env,
+    ...(codexAuthJson === undefined ? {} : { codexAuthJson }),
   });
   const response = await rpc<CredentialDeliverResult>(
     { apiUrl: input.context.apiUrl },

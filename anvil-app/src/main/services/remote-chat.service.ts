@@ -30,6 +30,7 @@ import {
 import {
   ensureRemoteCredentialGrant,
   validateRemoteCredentialChoice,
+  validateRemoteCredentialAvailability,
 } from './remote-credentials.service.js';
 
 interface RemoteChatContext {
@@ -329,18 +330,6 @@ async function submitExactRequest(
 
 export async function createRemoteChat(input: CreateRemoteChatInput): Promise<RemoteChatRecord> {
   const ctx = context();
-  if (input.provider === 'codex') {
-    validateRemoteCredentialChoice(
-      input.provider,
-      input.targetEnrollmentId,
-      ctx.scope!,
-      input.credentialChoice,
-    );
-  } else if (input.credentialChoice !== undefined) {
-    if (input.credentialChoice !== 'target-local') {
-      throw new Error('Remote credential choices are only available for Codex sessions.');
-    }
-  }
   if (
     (input.provider === 'cursor' || input.provider === 'devin') &&
     input.permissionMode === 'read-only'
@@ -363,11 +352,30 @@ export async function createRemoteChat(input: CreateRemoteChatInput): Promise<Re
     throw new Error('Choose an active destination device.');
   if (deviceTrustState(ctx.scope!, input.targetEnrollmentId) !== 'trusted')
     throw new Error('Remote chats can only run on a trusted destination device.');
+  if (input.provider === 'codex') {
+    input = {
+      ...input,
+      credentialChoice:
+        input.credentialChoice ??
+        (targetDevice.enrollmentClass === 'ephemeral' ? 'codex-host-auth' : 'target-local'),
+    };
+    validateRemoteCredentialChoice(
+      input.provider,
+      input.targetEnrollmentId,
+      ctx.scope!,
+      input.credentialChoice,
+    );
+    validateRemoteCredentialAvailability(input.credentialChoice!);
+  } else if (input.credentialChoice !== undefined && input.credentialChoice !== 'target-local') {
+    throw new Error('Remote credential choices are only available for Codex sessions.');
+  }
   if (targetDevice.enrollmentClass === 'ephemeral') {
     if (input.provider !== 'codex')
       throw new Error('Cloud workers currently support Codex sessions only.');
     if (input.credentialChoice === 'target-local')
-      throw new Error('A cloud worker needs Codex sign-in or an OpenAI API key.');
+      throw new Error(
+        'A cloud worker needs your host Codex login, destination sign-in or an OpenAI API key.',
+      );
   }
   const requestId = input.requestId ?? randomUUID();
   const duplicate = getDb()
@@ -524,6 +532,7 @@ export async function sendRemoteChat(input: SendRemoteChatInput): Promise<Remote
     model: chat.model,
     permissionMode: chat.permissionMode,
     ...(chat.credentialChoice === undefined ? {} : { authMode: chat.credentialChoice }),
+    authSessionId: chat.sourceSessionId ?? chat.id,
     prompt: input.prompt,
     manifestPin,
     ...(retryHandoffFromCheckpoint && chat.handoffId !== undefined
@@ -747,6 +756,7 @@ async function tickChat(id: string): Promise<void> {
           model: chat.model,
           permissionMode: chat.permissionMode,
           ...(chat.credentialChoice === undefined ? {} : { authMode: chat.credentialChoice }),
+          authSessionId: chat.sourceSessionId ?? chat.id,
           prompt: active.prompt,
           manifestPin: {
             workspaceDefinitionRevision: prepared.inputManifest.workspaceDefinitionRevision,

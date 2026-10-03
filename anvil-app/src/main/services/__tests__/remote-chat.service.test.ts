@@ -34,6 +34,7 @@ let openedTaskResult: unknown = {
   assistantOutput: 'The answer.',
   resumeHandle: 'provider-thread-1',
 };
+let credentialAvailabilityError: Error | null = null;
 let targetTrustState: 'trusted' | 'pending' | 'revoked' | null = 'trusted';
 
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
@@ -72,6 +73,9 @@ vi.mock('../sync-keyring.service.js', () => ({
 vi.mock('../remote-credentials.service.js', () => ({
   ensureRemoteCredentialGrant: vi.fn(async () => ({ delivered: false })),
   validateRemoteCredentialChoice: vi.fn(),
+  validateRemoteCredentialAvailability: vi.fn(() => {
+    if (credentialAvailabilityError) throw credentialAvailabilityError;
+  }),
 }));
 
 import {
@@ -118,6 +122,7 @@ beforeEach(() => {
   });
   openedTaskResult = { assistantOutput: 'The answer.', resumeHandle: 'provider-thread-1' };
   targetTrustState = 'trusted';
+  credentialAvailabilityError = null;
   rpcHandler = () => ({});
   resolveDevice = () => ({
     devices: [{ enrollmentId: 'enr-target', revoked: false, enrollmentClass: 'device' }],
@@ -137,6 +142,43 @@ const input = {
 };
 
 describe('remote chat controller', () => {
+  it('defaults cloud Codex chats to the launch host login and seals a stable auth session identity', async () => {
+    resolveDevice = () => ({
+      devices: [{ enrollmentId: 'enr-target', revoked: false, enrollmentClass: 'ephemeral' }],
+    });
+    const startInputs: Array<Record<string, unknown>> = [];
+    prepareStart = async (value) => {
+      startInputs.push(value as Record<string, unknown>);
+      return {
+        requestId: (value as { requestId: string }).requestId,
+        inputManifest: {
+          workspaceDefinitionRevision: 'prepared-revision',
+          repositories: [],
+          bootstrapDigest: 'none',
+        },
+        sealedInputs: 'start-sealed',
+      };
+    };
+    rpcHandler = () => ({ job: { id: 'prep-job-1', state: 'completed' }, attempts: [] });
+    const chat = await createRemoteChat({ ...input, provider: 'codex' });
+    expect(chat.credentialChoice).toBe('codex-host-auth');
+    await remoteChatTick();
+    expect(startInputs[0]).toMatchObject({ authMode: 'codex-host-auth', authSessionId: chat.id });
+    expect(JSON.stringify(calls)).not.toContain('access_token');
+  });
+
+  it('rejects unavailable launch-host auth before creating a cloud job', async () => {
+    resolveDevice = () => ({
+      devices: [{ enrollmentId: 'enr-target', revoked: false, enrollmentClass: 'ephemeral' }],
+    });
+    credentialAvailabilityError = new Error('Host Codex auth is unavailable');
+    await expect(createRemoteChat({ ...input, provider: 'codex' })).rejects.toThrow(
+      'Host Codex auth is unavailable',
+    );
+    expect(calls).toEqual([]);
+    expect(listRemoteChats()).toEqual([]);
+  });
+
   it('deduplicates creation and rejects request-id reuse with different parameters', async () => {
     const first = await createRemoteChat(input);
     const duplicate = await createRemoteChat(input);

@@ -51,9 +51,12 @@ for hosted and self-hosted branch-testing commands.
 
 Codex is installed from the official npm package at the app's managed runtime
 pin. It is the only runner supported by managed cloud environments and uses an
-account sign-in on the destination by default, or an optional explicitly granted API key.
-The image contains no login state. A new worker can use Codex device-code
-sign-in through Anvil; the desktop's OAuth cache is not copied. Cursor, Devin, OpenAI,
+encrypted account-auth cache copied from the launching host by default,
+or an optional explicitly granted API key. The image contains no login state.
+A host-cache grant is written to a private, session-scoped Codex home; subsequent
+turns preserve the worker's refreshed credentials and native session files.
+The source cache is never overwritten. A missing host cache fails launch early;
+Codex device-code sign-in on the worker remains an explicit fallback. Cursor, Devin, OpenAI,
 Azure, and LLMGateway remain available on enrolled desktops and BYO
 environments with the required provider setup. Cursor and Devin CLIs are
 deliberately absent from managed images. The Codex package download requires

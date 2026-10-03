@@ -33,7 +33,7 @@ import { platform, totalmem } from 'node:os';
 import { getDb } from '../db/database.js';
 import { join } from 'node:path';
 import { relative, sep } from 'node:path';
-import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { uploadAttemptArtifact } from './mesh-artifact.service.js';
 import { startWorkspaceClone } from './workspace-materialization.service.js';
 import { boundedRemoteAssistantOutput } from './mesh-session-output.js';
@@ -752,6 +752,7 @@ async function renewActiveAttempts(): Promise<void> {
  * are never journaled; only counts and rejections are.
  */
 const attemptGrantEnv = new Map<string, Record<string, string>>();
+const attemptCodexHostAuthJson = new Map<string, string>();
 
 async function pullCredentialGrants(attempt: ExecutionAttempt): Promise<void> {
   const ctx = workerContext();
@@ -769,10 +770,15 @@ async function pullCredentialGrants(attempt: ExecutionAttempt): Promise<void> {
       // seal — a grant for a different fence/target is not ours to open.
       if (
         grant.jobId !== attempt.jobId ||
+        grant.attemptId !== attempt.id ||
         grant.fence !== attempt.fence ||
-        grant.targetEnrollmentId !== ctx.enrollmentId
+        grant.targetEnrollmentId !== ctx.enrollmentId ||
+        !Number.isFinite(Date.parse(grant.expiresAt)) ||
+        Date.parse(grant.expiresAt) <= Date.now()
       ) {
-        appendJournal(attempt.id, 'credential-grant-rejected', { reason: 'binding-mismatch' });
+        appendJournal(attempt.id, 'credential-grant-rejected', {
+          reason: 'binding-or-expiry-mismatch',
+        });
         continue;
       }
       const inner = unsealCredentialGrant(ctx.scope, ctx.enrollmentId, grant);
@@ -780,13 +786,31 @@ async function pullCredentialGrants(attempt: ExecutionAttempt): Promise<void> {
         appendJournal(attempt.id, 'credential-grant-rejected', { reason: 'unseal-failed' });
         continue;
       }
-      for (const [name, value] of Object.entries(inner.env)) {
-        merged[name] = value;
+      if (inner.kind === 'credential-name') {
+        for (const [name, value] of Object.entries(inner.env)) {
+          merged[name] = value;
+        }
+        applied += 1;
+      } else if (
+        inner.kind === 'remote-codex-api-key' &&
+        typeof inner.env.OPENAI_API_KEY === 'string' &&
+        inner.env.OPENAI_API_KEY.length > 0
+      ) {
+        merged.OPENAI_API_KEY = inner.env.OPENAI_API_KEY;
+        applied += 1;
+      } else if (
+        inner.kind === 'remote-codex-host-auth' &&
+        typeof inner.codexAuthJson === 'string' &&
+        inner.codexAuthJson.length > 0
+      ) {
+        attemptCodexHostAuthJson.set(attempt.id, inner.codexAuthJson);
+        applied += 1;
+      } else {
+        appendJournal(attempt.id, 'credential-grant-rejected', { reason: 'grant-kind-mismatch' });
       }
-      applied += 1;
     }
     if (applied > 0) {
-      attemptGrantEnv.set(attempt.id, merged);
+      if (Object.keys(merged).length > 0) attemptGrantEnv.set(attempt.id, merged);
       appendJournal(attempt.id, 'credential-grants-applied', { count: applied });
     }
   } catch (error) {
@@ -947,6 +971,7 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
     // ENV-06: grant material dies with the attempt — a re-fenced attempt
     // must pull fresh grants rather than reuse an old incarnation's.
     attemptGrantEnv.delete(attemptId);
+    attemptCodexHostAuthJson.delete(attemptId);
   }
 }
 
@@ -1695,6 +1720,62 @@ async function awaitRemoteApiKey(attempt: ExecutionAttempt): Promise<void> {
   throw new Error('provider-credential-grant-not-delivered');
 }
 
+/** Wait for the launch-host Codex credential grant without exposing it to logs or env. */
+async function awaitRemoteCodexHostAuth(attempt: ExecutionAttempt): Promise<string> {
+  const deadline = Math.min(Date.now() + 60_000, Date.parse(attempt.leaseExpiresAt));
+  if (!Number.isFinite(deadline)) throw new Error('provider-credential-lease-invalid');
+  while (Date.now() < deadline) {
+    if (isCancelRequested(attempt.id)) throw new Error('provider-credential-wait-cancelled');
+    const authJson = attemptCodexHostAuthJson.get(attempt.id);
+    if (authJson !== undefined) return authJson;
+    await pullCredentialGrants(attempt);
+    const delivered = attemptCodexHostAuthJson.get(attempt.id);
+    if (delivered !== undefined) return delivered;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error('provider-codex-host-auth-grant-not-delivered');
+}
+
+function codexAuthSessionId(
+  inputs: Record<string, unknown>,
+  handoffSessionId: string | null,
+  handoffId: unknown,
+  priorResumeThreadId: string | null,
+): string | undefined {
+  const candidate = inputs['authSessionId'];
+  if (typeof candidate === 'string' && candidate.trim().length > 0 && candidate.length <= 512)
+    return candidate;
+  if (handoffSessionId !== null) return handoffSessionId;
+  if (typeof handoffId === 'string' && handoffId.length > 0) return handoffId;
+  const resumeThreadId = inputs['resumeThreadId'];
+  if (typeof resumeThreadId === 'string' && resumeThreadId.length > 0) return resumeThreadId;
+  return priorResumeThreadId ?? undefined;
+}
+
+function codexAuthHomeForSession(
+  userDataDir: string | undefined,
+  scope: SyncScope | undefined,
+  sessionId: string | undefined,
+): string {
+  if (userDataDir === undefined)
+    throw new Error('worker context has no userDataDir for Codex auth');
+  if (scope === undefined) throw new Error('Codex host auth requires a sync scope');
+  if (sessionId === undefined || sessionId.trim().length === 0 || sessionId.length > 512)
+    throw new Error('Codex host auth requires a stable session identity');
+  const identityHash = createHash('sha256')
+    .update(`${scope.backendId}\0${scope.accountId}\0${scope.datasetEpoch}\0${sessionId}`)
+    .digest('hex');
+  const parent = join(userDataDir, 'mesh-codex-auth');
+  const home = join(parent, identityHash);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  if (lstatSync(parent).isSymbolicLink() || lstatSync(home).isSymbolicLink())
+    throw new Error('Codex auth home must be a private directory');
+  chmodSync(parent, 0o700);
+  chmodSync(home, 0o700);
+  return home;
+}
+
 /**
  * Run one provider turn on the exact prepared workspace. The target caps the
  * selected permission mode; action approvals use the durable mesh approval
@@ -1726,6 +1807,9 @@ async function executeStartSession(
     provider !== 'llmgateway'
   ) {
     throw new Error(`provider-unsupported-remote: ${provider}`);
+  }
+  if (manifest.inputs['authMode'] === 'codex-host-auth' && provider !== 'codex') {
+    throw new Error('provider-codex-host-auth-requires-codex');
   }
 
   const localRevision = workspaceDefinitionRevision(workspaceId);
@@ -1878,7 +1962,21 @@ async function executeStartSession(
     throw new Error('prior-spawn-unresolved: inspect the orphaned provider process first');
   }
 
-  if (manifest.inputs['authMode'] === 'openai-api-key') await awaitRemoteApiKey(attempt);
+  const authMode = manifest.inputs['authMode'];
+  let codexAuthJson: string | undefined;
+  let codexAuthHome: string | undefined;
+  if (authMode === 'openai-api-key') await awaitRemoteApiKey(attempt);
+  if (authMode === 'codex-host-auth') {
+    codexAuthJson = await awaitRemoteCodexHostAuth(attempt);
+    const authSessionId = codexAuthSessionId(
+      manifest.inputs,
+      handoffSessionId,
+      handoffId,
+      prior.resumeThreadId,
+    );
+    const ctx = workerContext();
+    codexAuthHome = codexAuthHomeForSession(ctx?.userDataDir, ctx?.scope, authSessionId);
+  }
 
   const cliVersion = await probeSessionCli(provider);
   if (cliVersion === null) {
@@ -1944,9 +2042,12 @@ async function executeStartSession(
       prompt: effectivePrompt,
       ...(manifest.inputs['authMode'] === 'target-local' ||
       manifest.inputs['authMode'] === 'codex-account' ||
+      manifest.inputs['authMode'] === 'codex-host-auth' ||
       manifest.inputs['authMode'] === 'openai-api-key'
         ? { authMode: manifest.inputs['authMode'] }
         : {}),
+      ...(codexAuthJson === undefined ? {} : { codexAuthJson }),
+      ...(codexAuthHome === undefined ? {} : { codexAuthHome }),
       ...(typeof rawEffort === 'string' ? { reasoningEffort: rawEffort as ReasoningEffort } : {}),
       sandbox,
       permissionMode,
@@ -2588,6 +2689,8 @@ export function resetMeshWorkerForTests(): void {
   contextProvider = null;
   activitySequences.clear();
   controlSequences.clear();
+  attemptGrantEnv.clear();
+  attemptCodexHostAuthJson.clear();
 }
 
 /** Test seam: one heartbeat tick without waiting for the 30s interval. */
@@ -2899,7 +3002,9 @@ export interface StartSessionJobInput {
   handoffId?: string;
   /** Controller-verified same-device provider session id for a follow-up. */
   resumeThreadId?: string;
-  authMode?: 'target-local' | 'codex-account' | 'openai-api-key';
+  authMode?: 'target-local' | 'codex-account' | 'codex-host-auth' | 'openai-api-key';
+  /** Stable source-session identity for private Codex host-auth homes. */
+  authSessionId?: string;
   /** Reuse the controller's original pins for a provider-thread follow-up. */
   manifestPin?: Pick<
     ExecutionManifest,
@@ -2986,6 +3091,7 @@ export async function prepareStartSessionJob(
     ...(input.handoffId === undefined ? {} : { handoffId: input.handoffId }),
     ...(input.resumeThreadId === undefined ? {} : { resumeThreadId: input.resumeThreadId }),
     ...(input.authMode === undefined ? {} : { authMode: input.authMode }),
+    ...(input.authSessionId === undefined ? {} : { authSessionId: input.authSessionId }),
     ...(input.handoffCheckpoint === undefined
       ? {}
       : { handoffCheckpoint: input.handoffCheckpoint }),

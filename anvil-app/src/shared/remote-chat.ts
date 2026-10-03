@@ -1,7 +1,13 @@
+export type RemoteCodexAccountAuthChoice = 'codex-host-auth' | 'codex-account';
+
 import type { PermissionMode } from '../../cloud/contract/permissions.js';
 import type { AgentProvider } from './types.js';
 
-export type RemoteCredentialChoice = 'target-local' | 'codex-account' | 'openai-api-key';
+export type RemoteCredentialChoice =
+  | 'target-local'
+  | 'codex-host-auth'
+  | 'codex-account'
+  | 'openai-api-key';
 
 export type RemoteChatState =
   | 'preparing'

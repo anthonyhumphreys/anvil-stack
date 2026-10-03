@@ -221,15 +221,16 @@ export interface KeyringRotationPayload {
 /** Plaintext sealed inside a credential-grant envelope. */
 export interface CredentialGrantInner {
   v: 1;
-  /**
-   * Grant kind from the `grant:` capability vocabulary — v1 is
-   * `credential-name` (env-var injection); `provider-subscription`
-   * device-login flows ride the same envelope later.
-   */
+  /** Grant kind from the `grant:` capability vocabulary. */
   kind: string;
   /** Environment variables to inject for the attempt (name → value). */
   env: Record<string, string>;
+  /** Validated Codex host account cache, present only for `remote-codex-host-auth`. */
+  codexAuthJson?: string;
 }
+
+/** Maximum cleartext Codex auth cache carried inside an encrypted credential grant. */
+export const MAX_CREDENTIAL_GRANT_CODEX_AUTH_JSON_BYTES = 64 * 1024;
 
 /**
  * credential-grant envelope: the fence-binding fields are plaintext so the

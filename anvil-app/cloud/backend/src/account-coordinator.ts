@@ -719,7 +719,8 @@ const MAX_ENVIRONMENTS_PER_ACCOUNT = 64;
 const MAX_ENVIRONMENT_HANDLE_BYTES = 16 * 1024;
 const ENVIRONMENT_AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** ENV-06: sealed grants are small, few, and short-lived. */
-const MAX_GRANT_ENVELOPE_BYTES = 16 * 1024;
+/** Fits a 64 KiB encrypted Codex auth cache after base64 expansion and bindings. */
+const MAX_GRANT_ENVELOPE_BYTES = 128 * 1024;
 const MAX_GRANTS_PER_ATTEMPT = 16;
 const GRANT_MAX_TTL_MS = 60 * 60 * 1000;
 /**

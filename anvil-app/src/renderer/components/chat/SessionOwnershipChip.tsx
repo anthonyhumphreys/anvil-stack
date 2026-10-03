@@ -1,3 +1,4 @@
+import type { RemoteCodexAccountAuthChoice } from '../../../shared/remote-chat';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowRightLeft, Laptop, Loader2 } from 'lucide-react';
@@ -27,6 +28,8 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
   const [meshState, setMeshState] = useState<SessionMeshState | null>(null);
   const [devices, setDevices] = useState<SyncDevice[] | null>(null);
   const [moveOpen, setMoveOpen] = useState(false);
+  const [cloudAuthChoice, setCloudAuthChoice] =
+    useState<RemoteCodexAccountAuthChoice>('codex-host-auth');
   const [moving, setMoving] = useState(false);
   const [blockers, setBlockers] = useState<SyncHandoffBlocker[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -112,6 +115,10 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
       const result = await window.anvil.syncRuntime.initiateSessionHandoff(
         sessionId,
         targetEnrollmentId,
+        devices.find((device) => device.enrollmentId === targetEnrollmentId)?.enrollmentClass ===
+          'ephemeral'
+          ? cloudAuthChoice
+          : undefined,
       );
       if (result.ok) {
         setMoveOpen(false);
@@ -166,20 +173,38 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
       )}
 
       {moveOpen && canMove && (
-        <ul className="mt-1.5 space-y-1">
-          {targets.map((device) => (
-            <li key={device.enrollmentId}>
-              <button
-                type="button"
-                onClick={() => void handleMove(device.enrollmentId)}
+        <div className="mt-1.5 space-y-1">
+          {targets.some((device) => device.enrollmentClass === 'ephemeral') && (
+            <label className="flex flex-col gap-1 text-xs text-text-secondary">
+              Cloud Codex login
+              <select
+                value={cloudAuthChoice}
+                onChange={(event) =>
+                  setCloudAuthChoice(event.target.value as RemoteCodexAccountAuthChoice)
+                }
                 disabled={moving}
-                className="w-full rounded-md border border-border px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                className="rounded-md border border-border bg-bg-secondary px-2 py-1"
               >
-                {device.displayName} · {device.enrollmentId.slice(0, 8)}…
-              </button>
-            </li>
-          ))}
-        </ul>
+                <option value="codex-host-auth">Use my Codex login from this device</option>
+                <option value="codex-account">Sign in on the cloud worker</option>
+              </select>
+            </label>
+          )}
+          <ul className="space-y-1">
+            {targets.map((device) => (
+              <li key={device.enrollmentId}>
+                <button
+                  type="button"
+                  onClick={() => void handleMove(device.enrollmentId)}
+                  disabled={moving}
+                  className="w-full rounded-md border border-border px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                >
+                  {device.displayName} · {device.enrollmentId.slice(0, 8)}…
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {blockers !== null && blockers.length > 0 && (

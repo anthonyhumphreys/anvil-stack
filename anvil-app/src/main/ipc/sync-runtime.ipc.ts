@@ -100,6 +100,7 @@ export function registerSyncRuntimeHandlers(): void {
     if (
       credentialChoice !== undefined &&
       credentialChoice !== 'target-local' &&
+      credentialChoice !== 'codex-host-auth' &&
       credentialChoice !== 'codex-account' &&
       credentialChoice !== 'openai-api-key'
     ) {
@@ -539,7 +540,18 @@ export function registerSyncRuntimeHandlers(): void {
     ) {
       throw new Error('session-handoff requires sessionId and targetEnrollmentId strings');
     }
-    return initiateSessionHandoff(payload['sessionId'], payload['targetEnrollmentId']);
+    const cloudAuthChoice = payload['cloudAuthChoice'];
+    if (
+      cloudAuthChoice !== undefined &&
+      cloudAuthChoice !== 'codex-host-auth' &&
+      cloudAuthChoice !== 'codex-account'
+    )
+      throw new Error('Unsupported cloud Codex login choice');
+    return initiateSessionHandoff(
+      payload['sessionId'],
+      payload['targetEnrollmentId'],
+      cloudAuthChoice,
+    );
   });
 
   // Attempt activity push channel: per-sender subscriptions scoped by

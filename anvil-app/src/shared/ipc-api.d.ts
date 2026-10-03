@@ -1,3 +1,4 @@
+import type { RemoteCodexAccountAuthChoice } from './remote-chat';
 import type {
   CreateRemoteChatInput,
   SendRemoteChatInput,
@@ -914,6 +915,7 @@ export interface AnvilAPI {
     initiateSessionHandoff: (
       sessionId: string,
       targetEnrollmentId: string,
+      cloudAuthChoice?: RemoteCodexAccountAuthChoice,
     ) => Promise<SyncInitiateHandoffResult>;
     /**
      * Subscribe to an attempt's activity stream (live socket + durable

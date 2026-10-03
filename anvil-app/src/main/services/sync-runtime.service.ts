@@ -1,3 +1,4 @@
+import type { RemoteCodexAccountAuthChoice } from '../../shared/remote-chat.js';
 import {
   configureRemoteChatContext,
   remoteChatOnReady,
@@ -2506,8 +2507,9 @@ export async function getSessionMeshState(sessionId: string): Promise<SessionMes
 export async function initiateSessionHandoff(
   sessionId: string,
   targetEnrollmentId: string,
+  cloudAuthChoice?: RemoteCodexAccountAuthChoice,
 ): Promise<InitiateHandoffResult> {
-  return initiateHandoff({ sessionId, targetEnrollmentId });
+  return initiateHandoff({ sessionId, targetEnrollmentId, cloudAuthChoice });
 }
 
 /**

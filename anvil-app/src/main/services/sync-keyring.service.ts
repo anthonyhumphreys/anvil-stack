@@ -33,6 +33,7 @@ import {
   CRYPTO_ENTITY_KEYRING_PAIRING,
   CRYPTO_ENTITY_KEYRING_ROTATION,
   CRYPTO_ENTITY_KEYRING_WRAP,
+  MAX_CREDENTIAL_GRANT_CODEX_AUTH_JSON_BYTES,
   SEALED_ENTITY_ALG,
   credentialGrantAssociatedData,
   encodePairingPayload,
@@ -1494,6 +1495,7 @@ export function sealCredentialGrant(input: {
   expiresAt: string;
   kind: string;
   env: Record<string, string>;
+  codexAuthJson?: string;
 }): CredentialGrantPayload {
   const aad = credentialGrantAssociatedData({
     jobId: input.jobId,
@@ -1502,7 +1504,22 @@ export function sealCredentialGrant(input: {
     targetEnrollmentId: input.targetEnrollmentId,
     expiresAt: input.expiresAt,
   });
-  const inner: CredentialGrantInner = { v: 1, kind: input.kind, env: input.env };
+  if (
+    (input.codexAuthJson !== undefined &&
+      (input.kind !== 'remote-codex-host-auth' ||
+        Object.keys(input.env).length > 0 ||
+        Buffer.byteLength(input.codexAuthJson, 'utf8') >
+          MAX_CREDENTIAL_GRANT_CODEX_AUTH_JSON_BYTES)) ||
+    (input.kind === 'remote-codex-host-auth' && input.codexAuthJson === undefined)
+  ) {
+    throw new Error('Codex host auth grant is invalid or too large.');
+  }
+  const inner: CredentialGrantInner = {
+    v: 1,
+    kind: input.kind,
+    env: input.env,
+    ...(input.codexAuthJson === undefined ? {} : { codexAuthJson: input.codexAuthJson }),
+  };
   const sealed = wrapKeyMaterial(
     Buffer.from(input.recipientPubB64, 'base64'),
     Buffer.from(JSON.stringify(inner), 'utf8'),
@@ -1544,7 +1561,31 @@ export function unsealCredentialGrant(
   if (plaintext === null) return null;
   try {
     const inner = JSON.parse(plaintext.toString('utf8')) as CredentialGrantInner;
-    if (inner.v !== 1 || typeof inner.env !== 'object' || inner.env === null) return null;
+    if (
+      inner.v !== 1 ||
+      typeof inner.kind !== 'string' ||
+      typeof inner.env !== 'object' ||
+      inner.env === null ||
+      Array.isArray(inner.env) ||
+      Object.values(inner.env).some((value) => typeof value !== 'string')
+    ) {
+      return null;
+    }
+    if (
+      inner.codexAuthJson !== undefined &&
+      (typeof inner.codexAuthJson !== 'string' ||
+        inner.kind !== 'remote-codex-host-auth' ||
+        Object.keys(inner.env).length > 0 ||
+        Buffer.byteLength(inner.codexAuthJson, 'utf8') > MAX_CREDENTIAL_GRANT_CODEX_AUTH_JSON_BYTES)
+    ) {
+      return null;
+    }
+    if (
+      inner.kind === 'remote-codex-host-auth' &&
+      (inner.codexAuthJson === undefined || Object.keys(inner.env).length > 0)
+    ) {
+      return null;
+    }
     return inner;
   } catch {
     return null;
