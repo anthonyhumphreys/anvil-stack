@@ -94,7 +94,8 @@ describe("Mesh provisioner deployment lifecycle", () => {
     expect(containers[1]?.scheduling_policy).toBe("durable_object");
     expect(containers[1]?.name).toBe("mesh-provisioner-test-thread-snapshots");
     expect(
-      (containers[1]?.images as Record<string, Record<string, string>>).base?.dockerfile,
+      (containers[1]?.images as Record<string, Record<string, string>>).base
+        ?.dockerfile,
     ).toBe("../images/thread/Dockerfile.cloudflare");
     expect(config.migrations).toEqual([
       { tag: "v1", new_sqlite_classes: ["Sandbox"] },
@@ -118,21 +119,30 @@ describe("Mesh provisioner deployment lifecycle", () => {
       JSON.stringify({
         name: "anvil-mesh-provisioner",
         main: "src/index.ts",
-        durable_objects: { bindings: [
-          { name: "Sandbox", class_name: "Sandbox" },
-          { name: "ThreadSandbox", class_name: "ThreadSandbox" },
-        ] },
+        durable_objects: {
+          bindings: [
+            { name: "Sandbox", class_name: "Sandbox" },
+            { name: "ThreadSandbox", class_name: "ThreadSandbox" },
+          ],
+        },
         migrations: [
           { tag: "v1", new_sqlite_classes: ["Sandbox"] },
           { tag: "v2", new_sqlite_classes: ["ThreadSandbox"] },
         ],
         containers: [
-          { class_name: "Sandbox", image: "images/Dockerfile.cloudflare", instance_type: "standard-1", max_instances: 20 },
+          {
+            class_name: "Sandbox",
+            image: "images/Dockerfile.cloudflare",
+            instance_type: "standard-1",
+            max_instances: 20,
+          },
           {
             name: "thread-snapshots",
             class_name: "ThreadSandbox",
             scheduling_policy: "durable_object",
-            images: { base: { dockerfile: "images/thread/Dockerfile.cloudflare" } },
+            images: {
+              base: { dockerfile: "images/thread/Dockerfile.cloudflare" },
+            },
           },
         ],
         vars: { ALLOW_UNAUTHENTICATED: "false" },
@@ -146,11 +156,18 @@ describe("Mesh provisioner deployment lifecycle", () => {
       workerName: "mesh-provisioner-test",
     });
     const config = JSON.parse(plan.config.contents) as {
-      containers: Array<{ images?: Record<string, { dockerfile: string }>; image?: string }>;
+      containers: Array<{
+        images?: Record<string, { dockerfile: string }>;
+        image?: string;
+      }>;
     };
     expect(config.containers[0]?.image).toBe("../images/Dockerfile.cloudflare");
-    expect(config.containers[1]?.name).toBe("mesh-provisioner-test-thread-snapshots");
-    expect(config.containers[1]?.images?.base?.dockerfile).toBe("../images/thread/Dockerfile.cloudflare");
+    expect(config.containers[1]?.name).toBe(
+      "mesh-provisioner-test-thread-snapshots",
+    );
+    expect(config.containers[1]?.images?.base?.dockerfile).toBe(
+      "../images/thread/Dockerfile.cloudflare",
+    );
     expect(plan.containerImages).toEqual([
       path.join(root, "images/Dockerfile.cloudflare"),
       path.join(root, "images/thread/Dockerfile.cloudflare"),

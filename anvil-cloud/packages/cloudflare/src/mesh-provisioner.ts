@@ -262,7 +262,11 @@ export async function createMeshProvisionerDeploymentPlan(
     ) {
       const rewritten: JsonObject = {};
       for (const [name, value] of Object.entries(namedImages as JsonObject)) {
-        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          Array.isArray(value)
+        ) {
           rewritten[name] = value;
           continue;
         }
@@ -345,7 +349,8 @@ export async function createMeshProvisionerDeploymentPlan(
     !hasThreadSandboxBinding ||
     typeof threadSandboxContainer !== "object" ||
     threadSandboxContainer === null ||
-    (threadSandboxContainer as JsonObject).scheduling_policy !== "durable_object" ||
+    (threadSandboxContainer as JsonObject).scheduling_policy !==
+      "durable_object" ||
     typeof (threadSandboxContainer as JsonObject).name !== "string"
   ) {
     diagnostics.push({
