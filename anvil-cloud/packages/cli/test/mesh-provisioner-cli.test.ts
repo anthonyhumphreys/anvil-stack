@@ -92,7 +92,7 @@ describe("mesh provisioner CLI", () => {
       containers: [
         { image: "../Dockerfile", max_instances: 2 },
         {
-          name: "source-provisioner-thread-snapshots",
+          name: "mesh-staging-provisioner-thread-snapshots",
           scheduling_policy: "durable_object",
           images: { base: { dockerfile: "../Dockerfile" } },
         },
