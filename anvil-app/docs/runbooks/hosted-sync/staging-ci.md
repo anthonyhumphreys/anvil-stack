@@ -15,6 +15,9 @@ the daemon, deploys the managed provisioner and its container image through the
 guarded CLI, installs the matching provisioner bearer, applies D1 migrations,
 upgrades the backend Worker, and verifies discovery. Docker is available on the
 Ubuntu runner. The workflow does not provision new storage.
+The provisioner uses `standard-1` containers with 4 GiB memory and 8 GB disk.
+The current multi-provider image is about 3.2 GB, exceeding the default `lite`
+disk allowance; the remaining disk supports checkout and development dependencies.
 Existing Worker secrets are preserved. The account, Worker, D1 ID, R2 bucket and
 WorkOS clients remain the existing staging identities. Production remains
 incomplete and cannot be selected by this workflow.

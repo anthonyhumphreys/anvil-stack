@@ -22,6 +22,9 @@
       "class_name": "Sandbox",
       // Build context = ../images/anvil-worker — run its prepare.sh first.
       "image": "../images/anvil-worker/Dockerfile.cloudflare",
+      // The provider CLIs make the image larger than lite's 2 GB disk.
+      // Leave room for repository checkout and dependency installation too.
+      "instance_type": "standard-1",
       "max_instances": 20,
     },
   ],
