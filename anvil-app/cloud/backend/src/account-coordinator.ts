@@ -150,7 +150,10 @@ import {
   type CloudEnvironment,
   type EnvironmentGetResult,
   type EnvironmentListResult,
+  type EnvironmentLimitsResult,
   type EnvironmentProviderId,
+  type EnvironmentResumeResult,
+  type EnvironmentSuspendResult,
   type EnvironmentReapResult,
   type EnvironmentReportResult,
   type EnvironmentState,
@@ -737,6 +740,8 @@ const MANAGED_BOOTSTRAP_TTL_MS = 60 * 60 * 1000;
 const BOOTSTRAP_PAYLOAD_MAX_BYTES = 4096;
 const MANAGED_PROVISION_BATCH = 4;
 const MANAGED_REAP_BATCH = 8;
+const MANAGED_SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const HOSTED_REMOTE_CHAT_IDLE_GRACE_MS = 5 * 60 * 1000;
 const MANAGED_FREE_CAPS = { maxTtlSeconds: 30 * 60, maxConcurrent: 1 } as const;
 const MANAGED_PAID_CAPS = { maxTtlSeconds: 8 * 60 * 60, maxConcurrent: 4 } as const;
 /**
@@ -1765,8 +1770,14 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleEnvironmentGet(auth, rpc.requestId, rpc.params);
         case 'environment.list':
           return this.handleEnvironmentList(auth, rpc.requestId, rpc.params);
+        case 'environment.limits':
+          return await this.handleEnvironmentLimits(auth, rpc.requestId);
         case 'environment.reap':
           return this.handleEnvironmentReap(auth, rpc.requestId, rpc.params);
+        case 'environment.suspend':
+          return await this.handleEnvironmentSuspend(auth, rpc.requestId, rpc.params);
+        case 'environment.resume':
+          return await this.handleEnvironmentResume(auth, rpc.requestId, rpc.params);
         case 'environment.bootstrap':
           return this.handleEnvironmentBootstrap(auth, rpc.requestId, rpc.params);
         // ENV-06 per-attempt sealed credential grants.
@@ -4044,6 +4055,32 @@ export class AccountCoordinator extends DurableObject<Env> {
     // A re-queued job is claimable again: nudge the (preserved) target.
     if (reported.requeueTarget !== null) {
       this.emitJobAvailable(reported.result.job.id, reported.requeueTarget);
+    }
+    if (
+      reported.result.job.state === 'completed' ||
+      reported.result.job.state === 'failed' ||
+      reported.result.job.state === 'cancelled'
+    ) {
+      const job = this.readJob(reported.result.job.id);
+      if (job !== null) {
+        const requested = JSON.parse(job.requested_target) as RequestedTarget;
+        const targetEnvironmentId =
+          requested.kind === 'environment'
+            ? requested.environmentId
+            : this.ctx.storage.sql
+                .exec<{
+                  environment_id: string;
+                }>('SELECT environment_id FROM environments WHERE enrollment_id = ? AND reaped_at IS NULL', job.target_enrollment_id ?? '')
+                .toArray()[0]?.environment_id;
+        if (targetEnvironmentId !== undefined) {
+          const environment = this.readEnvironment(targetEnvironmentId);
+          if (environment !== null && this.isHostedRemoteChatEnvironment(environment)) {
+            await this.scheduleRemoteChatIdleCheckpoint(
+              Date.now() + HOSTED_REMOTE_CHAT_IDLE_GRACE_MS,
+            );
+          }
+        }
+      }
     }
     await this.ensureSweepScheduled();
     return rpcSuccessResponse(requestId, reported.result);
@@ -6344,6 +6381,14 @@ export class AccountCoordinator extends DurableObject<Env> {
       }
       return { environment: this.environmentView(row) };
     });
+    if (report.state === 'enrolled' || report.state === 'running') {
+      const fresh = this.readEnvironment(report.environmentId);
+      if (fresh !== null && this.isHostedRemoteChatEnvironment(fresh)) {
+        this.ctx.waitUntil(
+          this.scheduleRemoteChatIdleCheckpoint(Date.now() + HOSTED_REMOTE_CHAT_IDLE_GRACE_MS),
+        );
+      }
+    }
     return rpcSuccessResponse(requestId, result);
   }
 
@@ -6379,6 +6424,24 @@ export class AccountCoordinator extends DurableObject<Env> {
       return { environments: rows.map((row) => this.environmentView(row)) };
     });
     return rpcSuccessResponse(requestId, result);
+  }
+
+  private async handleEnvironmentLimits(auth: SpikeAuth, requestId: string): Promise<Response> {
+    this.assertNotRevoked(auth);
+    this.provisionEnrollment(auth);
+    if (auth.enrollmentClass === 'ephemeral') {
+      throw new RpcFailure('forbidden', { reason: 'worker-role-not-permitted' });
+    }
+    if (this.env.MANAGED_PROVISIONER === undefined) {
+      throw new RpcFailure('forbidden', { reason: 'provider-unavailable' });
+    }
+    const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, Date.now());
+    if (!access.allowed) throw new RpcFailure('forbidden', { reason: access.reason });
+    const caps = this.managedCaps(access.entitlement);
+    return rpcSuccessResponse(requestId, {
+      maxTtlSeconds: caps.maxTtlSeconds,
+      maxConcurrent: caps.maxConcurrent,
+    } satisfies EnvironmentLimitsResult);
   }
 
   /**
@@ -6428,6 +6491,230 @@ export class AccountCoordinator extends DurableObject<Env> {
       return { environment: this.environmentView(row) };
     });
     return rpcSuccessResponse(requestId, result);
+  }
+
+  /** Snapshot a completed hosted chat and revoke its one-shot worker session. */
+  private async handleEnvironmentSuspend(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const { environmentId } = parseEnvironmentIdParams(params);
+    const transition = this.commit(() => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      if (auth.enrollmentClass === 'ephemeral') {
+        throw new RpcFailure('forbidden', { reason: 'worker-role-not-permitted' });
+      }
+      const row = this.readEnvironment(environmentId);
+      if (row === null || row.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'environment' });
+      }
+      if (
+        row.provider !== 'anvil-managed' ||
+        row.reaped_at !== null ||
+        !['enrolled', 'running', 'suspending', 'suspended'].includes(row.state)
+      ) {
+        throw new RpcFailure('conflict', { reason: 'environment-not-suspendable' });
+      }
+      const active = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM jobs
+           WHERE account_id = ? AND state IN ('queued', 'running', 'awaiting-approval')
+             AND (target_enrollment_id = ? OR
+               json_extract(requested_target, '$.environmentId') = ?)`,
+          auth.accountId,
+          row.enrollment_id ?? '',
+          environmentId,
+        )
+        .one().n;
+      if (active > 0) {
+        throw new RpcFailure('conflict', { reason: 'environment-has-active-jobs' });
+      }
+      const handle =
+        row.handle === null ? null : (JSON.parse(row.handle) as Record<string, unknown>);
+      const providerRef =
+        typeof handle?.['providerRef'] === 'string' ? handle['providerRef'] : null;
+      if (providerRef === null) {
+        throw new RpcFailure('conflict', { reason: 'environment-provider-handle-missing' });
+      }
+      if (row.state !== 'suspended') {
+        const now = Date.now();
+        if (row.enrollment_id !== null) {
+          this.ctx.storage.sql.exec(
+            `UPDATE workers SET revoked_at = ?, lease_expires_at = NULL
+             WHERE enrollment_id = ? AND account_id = ?`,
+            now,
+            row.enrollment_id,
+            auth.accountId,
+          );
+        }
+        this.ctx.storage.sql.exec(
+          `UPDATE environments SET state = 'suspending', enrollment_id = NULL,
+             expires_at = ?, updated_at = ? WHERE environment_id = ? AND account_id = ?`,
+          now + MANAGED_SNAPSHOT_RETENTION_MS,
+          now,
+          environmentId,
+          auth.accountId,
+        );
+      }
+      return { providerRef };
+    });
+
+    const provisioner = this.env.MANAGED_PROVISIONER;
+    if (provisioner === undefined)
+      throw new RpcFailure('unavailable', { reason: 'provider-unavailable' });
+    try {
+      const response = await provisioner.fetch(
+        `https://provisioner.internal/v1/environments/${encodeURIComponent(transition.providerRef)}/suspend`,
+        {
+          method: 'POST',
+          headers:
+            typeof this.env.MANAGED_PROVISIONER_TOKEN === 'string'
+              ? { authorization: `Bearer ${this.env.MANAGED_PROVISIONER_TOKEN}` }
+              : {},
+        },
+      );
+      if (!response.ok) throw new Error('suspend-failed');
+    } catch {
+      throw new RpcFailure('unavailable', { reason: 'environment-suspend-failed' });
+    }
+    this.commit(() => {
+      this.ctx.storage.sql.exec(
+        `UPDATE environments SET state = 'suspended', expires_at = ?, updated_at = ?
+         WHERE environment_id = ? AND account_id = ? AND state = 'suspending'`,
+        Date.now() + MANAGED_SNAPSHOT_RETENTION_MS,
+        Date.now(),
+        environmentId,
+        auth.accountId,
+      );
+    });
+    const row = this.readEnvironment(environmentId);
+    if (row === null) throw new RpcFailure('not-found', { reason: 'environment' });
+    return rpcSuccessResponse(requestId, {
+      environment: this.environmentView(row),
+    } satisfies EnvironmentSuspendResult);
+  }
+
+  /** Restore the same managed DO using a newly minted ephemeral enrollment. */
+  private async handleEnvironmentResume(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const input = parseEnvironmentResumeParams(params);
+    this.assertNotRevoked(auth);
+    this.provisionEnrollment(auth);
+    if (auth.enrollmentClass === 'ephemeral') {
+      throw new RpcFailure('forbidden', { reason: 'worker-role-not-permitted' });
+    }
+    const now = Date.now();
+    const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, now);
+    if (!access.allowed) throw new RpcFailure('forbidden', { reason: access.reason });
+    const caps = this.managedCaps(access.entitlement);
+    if (input.ttlSeconds < 60 || input.ttlSeconds > caps.maxTtlSeconds) {
+      throw new RpcFailure('forbidden', {
+        reason: 'managed-ttl-exceeds-cap',
+        maxTtlSeconds: caps.maxTtlSeconds,
+      });
+    }
+    const prepared = this.commit(() => {
+      // Parked snapshots do not consume live compute slots. Check again
+      // transactionally so concurrent resumes cannot oversubscribe capacity.
+      this.assertManagedProvisionConcurrency(auth.accountId, caps);
+      const row = this.readEnvironment(input.environmentId);
+      if (row === null || row.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'environment' });
+      }
+      if (
+        row.provider !== 'anvil-managed' ||
+        row.reaped_at !== null ||
+        row.state !== 'suspended' ||
+        (row.expires_at !== null && row.expires_at <= now)
+      ) {
+        throw new RpcFailure('conflict', { reason: 'environment-not-resumable' });
+      }
+      const staged = this.ctx.storage.sql
+        .exec<{ payload: string }>(
+          `SELECT payload FROM environment_bootstrap
+           WHERE environment_id = ? AND account_id = ? AND expires_at > ?`,
+          input.environmentId,
+          auth.accountId,
+          now,
+        )
+        .toArray()[0];
+      if (staged === undefined || !isEphemeralEnrollmentCode(staged.payload)) {
+        throw new RpcFailure('conflict', { reason: 'environment-bootstrap-required' });
+      }
+      const handle =
+        row.handle === null ? null : (JSON.parse(row.handle) as Record<string, unknown>);
+      const providerRef =
+        typeof handle?.['providerRef'] === 'string' ? handle['providerRef'] : null;
+      if (providerRef === null)
+        throw new RpcFailure('conflict', { reason: 'environment-provider-handle-missing' });
+      const ttlMs = input.ttlSeconds * 1000;
+      this.ctx.storage.sql.exec(
+        `UPDATE environments SET state = 'provisioning', enrollment_id = NULL,
+           expires_at = ?, updated_at = ? WHERE environment_id = ? AND account_id = ?`,
+        now + ttlMs,
+        now,
+        input.environmentId,
+        auth.accountId,
+      );
+      this.ctx.storage.sql.exec(
+        'DELETE FROM environment_bootstrap WHERE environment_id = ?',
+        input.environmentId,
+      );
+      return { providerRef, payload: staged.payload, row };
+    });
+
+    const provisioner = this.env.MANAGED_PROVISIONER;
+    if (provisioner === undefined)
+      throw new RpcFailure('unavailable', { reason: 'provider-unavailable' });
+    try {
+      const response = await provisioner.fetch(
+        `https://provisioner.internal/v1/environments/${encodeURIComponent(prepared.providerRef)}/boot`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(typeof this.env.MANAGED_PROVISIONER_TOKEN === 'string'
+              ? { authorization: `Bearer ${this.env.MANAGED_PROVISIONER_TOKEN}` }
+              : {}),
+          },
+          body: JSON.stringify({
+            bootstrap: {
+              kind: 'anvil.mesh-environment',
+              schemaVersion: '0.2',
+              environmentId: input.environmentId,
+              provider: 'anvil-managed',
+              backendUrl: this.env.ANVIL_PUBLIC_API_URL ?? '',
+              enrollmentCode: prepared.payload,
+              ttlSeconds: input.ttlSeconds,
+              resumeFromSnapshot: true,
+            },
+          }),
+        },
+      );
+      if (!response.ok) throw new Error('resume-failed');
+    } catch {
+      this.commit(() => {
+        this.ctx.storage.sql.exec(
+          `UPDATE environments SET state = 'suspended', expires_at = ?, updated_at = ?
+           WHERE environment_id = ? AND account_id = ? AND state = 'provisioning'`,
+          now + MANAGED_SNAPSHOT_RETENTION_MS,
+          Date.now(),
+          input.environmentId,
+          auth.accountId,
+        );
+      });
+      throw new RpcFailure('unavailable', { reason: 'environment-resume-failed' });
+    }
+    const row = this.readEnvironment(input.environmentId);
+    if (row === null) throw new RpcFailure('not-found', { reason: 'environment' });
+    return rpcSuccessResponse(requestId, {
+      environment: this.environmentView(row),
+    } satisfies EnvironmentResumeResult);
   }
 
   /**
@@ -6564,15 +6851,17 @@ export class AccountCoordinator extends DurableObject<Env> {
     accountId: string,
     caps: { maxTtlSeconds: number; maxConcurrent: number },
   ): void {
-    // Concurrency counts live managed environments AND managed provision
-    // jobs still in flight — a burst of creates cannot slip the window
+    // Concurrency counts live managed environments and managed provision
+    // jobs still in flight. Parked snapshots consume no compute slot, while a
+    // burst of creates or resumes cannot slip the window
     // between job.create and the claimer writing the environment row.
     const live = this.ctx.storage.sql
       .exec<{ n: number }>(
         `SELECT (
            SELECT COUNT(*) FROM environments
            WHERE account_id = ? AND provider = 'anvil-managed'
-             AND reaped_at IS NULL AND state NOT IN ('terminated', 'failed', 'expired')
+             AND reaped_at IS NULL
+             AND state NOT IN ('suspended', 'terminated', 'failed', 'expired')
          ) + (
            SELECT COUNT(*) FROM jobs
            WHERE account_id = ? AND kind = 'provision-environment'
@@ -6611,6 +6900,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         fence: number;
         environmentId: string;
         ttlSeconds: number;
+        hostedRemoteChat: boolean;
         payload: string | null;
       }[] => {
         const jobs = this.ctx.storage.sql
@@ -6630,6 +6920,7 @@ export class AccountCoordinator extends DurableObject<Env> {
           fence: number;
           environmentId: string;
           ttlSeconds: number;
+          hostedRemoteChat: boolean;
           payload: string | null;
         }[] = [];
         for (const job of jobs) {
@@ -6694,6 +6985,10 @@ export class AccountCoordinator extends DurableObject<Env> {
             fence,
             environmentId,
             ttlSeconds,
+            hostedRemoteChat:
+              manifest.inputs['hostedRemoteChat'] === true &&
+              manifest.inputs['provider'] === 'anvil-managed' &&
+              /^remote-[0-9a-f-]{36}$/i.test(environmentId),
             payload: staged?.payload ?? null,
           });
         }
@@ -6784,7 +7079,10 @@ export class AccountCoordinator extends DurableObject<Env> {
             accountId: job.account_id,
             provider: 'anvil-managed',
             state: 'provisioning',
-            handle: { providerRef: body.providerRef },
+            handle: {
+              providerRef: body.providerRef,
+              ...(item.hostedRemoteChat ? { hostedRemoteChat: true } : {}),
+            },
             jobId: item.jobId,
             createdBy: MANAGED_PROVISIONER_ENROLLMENT,
             expiresAt: Date.now() + item.ttlSeconds * 1000,
@@ -6802,6 +7100,11 @@ export class AccountCoordinator extends DurableObject<Env> {
             },
           });
         });
+        if (item.hostedRemoteChat) {
+          this.ctx.waitUntil(
+            this.scheduleRemoteChatIdleCheckpoint(Date.now() + HOSTED_REMOTE_CHAT_IDLE_GRACE_MS),
+          );
+        }
         finish(
           true,
           {
@@ -6815,13 +7118,56 @@ export class AccountCoordinator extends DurableObject<Env> {
         finish(false, null, error instanceof Error ? error.message : String(error));
       }
     }
+    // Retry suspended checkpoints that committed intent but whose provider
+    // call failed. Enrollment remains revoked, so no new work can start there.
+    const suspending = this.ctx.storage.sql
+      .exec<EnvironmentRow>(
+        `SELECT * FROM environments WHERE provider = 'anvil-managed'
+         AND reaped_at IS NULL AND state = 'suspending' LIMIT ?`,
+        MANAGED_REAP_BATCH,
+      )
+      .toArray();
+    for (const env of suspending) {
+      const handle =
+        env.handle === null ? null : (JSON.parse(env.handle) as Record<string, unknown>);
+      const providerRef =
+        typeof handle?.['providerRef'] === 'string' ? handle['providerRef'] : null;
+      if (providerRef === null) continue;
+      try {
+        const response = await provisioner.fetch(
+          `https://provisioner.internal/v1/environments/${encodeURIComponent(providerRef)}/suspend`,
+          {
+            method: 'POST',
+            headers:
+              typeof this.env.MANAGED_PROVISIONER_TOKEN === 'string'
+                ? { authorization: `Bearer ${this.env.MANAGED_PROVISIONER_TOKEN}` }
+                : {},
+          },
+        );
+        if (!response.ok) continue;
+        this.commit(() => {
+          const now = Date.now();
+          this.ctx.storage.sql.exec(
+            `UPDATE environments SET state = 'suspended', expires_at = ?, updated_at = ?
+             WHERE environment_id = ? AND state = 'suspending'`,
+            now + MANAGED_SNAPSHOT_RETENTION_MS,
+            now,
+            env.environment_id,
+          );
+        });
+      } catch {
+        // Retry on the next managed-work sweep.
+      }
+    }
     // Phase 3: enact provider teardown for managed envs with reap intent.
     const reaping = this.ctx.storage.sql
       .exec<EnvironmentRow>(
         `SELECT * FROM environments
          WHERE provider = 'anvil-managed' AND reaped_at IS NULL
-           AND state IN ('reap-requested', 'expired', 'terminating')
+           AND (state IN ('reap-requested', 'expired', 'terminating')
+             OR (state = 'suspended' AND expires_at <= ?))
          LIMIT ?`,
+        Date.now(),
         MANAGED_REAP_BATCH,
       )
       .toArray();
@@ -8436,6 +8782,164 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
   }
 
+  private isHostedRemoteChatEnvironment(row: EnvironmentRow): boolean {
+    if (row.provider !== 'anvil-managed' || !/^remote-[0-9a-f-]{36}$/i.test(row.environment_id)) {
+      return false;
+    }
+    if (row.handle === null) return false;
+    try {
+      return (JSON.parse(row.handle) as Record<string, unknown>)['hostedRemoteChat'] === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async scheduleRemoteChatIdleCheckpoint(at: number): Promise<void> {
+    const alarm = await this.ctx.storage.getAlarm();
+    if (alarm === null || alarm > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  /** Server-owned fallback: desktop shutdown must not strand a live worker. */
+  private async suspendIdleHostedRemoteChats(now: number): Promise<void> {
+    const rows = this.ctx.storage.sql
+      .exec<EnvironmentRow>(
+        `SELECT * FROM environments WHERE provider = 'anvil-managed'
+         AND state IN ('enrolled', 'running') AND reaped_at IS NULL LIMIT ?`,
+        MAX_ENVIRONMENTS_PER_ACCOUNT,
+      )
+      .toArray()
+      .filter((row) => this.isHostedRemoteChatEnvironment(row));
+    let nextDeadline: number | null = null;
+    for (const row of rows) {
+      const activity = this.ctx.storage.sql
+        .exec<{ updated_at: number | null }>(
+          `SELECT MAX(updated_at) AS updated_at FROM jobs
+           WHERE account_id = ? AND (target_enrollment_id = ? OR
+             json_extract(requested_target, '$.environmentId') = ?)`,
+          row.account_id,
+          row.enrollment_id ?? '',
+          row.environment_id,
+        )
+        .one().updated_at;
+      const idleSince = Math.max(row.updated_at, activity ?? 0);
+      const dueAt = idleSince + HOSTED_REMOTE_CHAT_IDLE_GRACE_MS;
+      const active = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM jobs WHERE account_id = ?
+           AND state IN ('queued', 'running', 'awaiting-approval')
+           AND (target_enrollment_id = ? OR
+             json_extract(requested_target, '$.environmentId') = ?)`,
+          row.account_id,
+          row.enrollment_id ?? '',
+          row.environment_id,
+        )
+        .one().n;
+      if (active > 0) continue;
+      if (dueAt > now) {
+        nextDeadline = nextDeadline === null ? dueAt : Math.min(nextDeadline, dueAt);
+        continue;
+      }
+      const suspended = await this.suspendManagedEnvironment(
+        row.environment_id,
+        row.account_id,
+        true,
+      );
+      if (!suspended) {
+        const retryAt = Date.now() + SWEEP_CONTINUE_MS;
+        nextDeadline = nextDeadline === null ? retryAt : Math.min(nextDeadline, retryAt);
+      }
+    }
+    if (nextDeadline !== null) await this.scheduleRemoteChatIdleCheckpoint(nextDeadline);
+  }
+
+  private async suspendManagedEnvironment(
+    environmentId: string,
+    accountId: string,
+    requireRemoteChat: boolean,
+  ): Promise<boolean> {
+    const transition = this.commit(() => {
+      const row = this.readEnvironment(environmentId);
+      if (
+        row === null ||
+        row.account_id !== accountId ||
+        row.provider !== 'anvil-managed' ||
+        row.reaped_at !== null ||
+        !['enrolled', 'running', 'suspending'].includes(row.state) ||
+        (requireRemoteChat && !this.isHostedRemoteChatEnvironment(row))
+      )
+        return null;
+      const active = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM jobs WHERE account_id = ?
+           AND state IN ('queued', 'running', 'awaiting-approval')
+           AND (target_enrollment_id = ? OR
+             json_extract(requested_target, '$.environmentId') = ?)`,
+          accountId,
+          row.enrollment_id ?? '',
+          environmentId,
+        )
+        .one().n;
+      if (active > 0) return null;
+      let handle: Record<string, unknown> | null = null;
+      try {
+        handle = row.handle === null ? null : (JSON.parse(row.handle) as Record<string, unknown>);
+      } catch {
+        return null;
+      }
+      const providerRef =
+        typeof handle?.['providerRef'] === 'string' ? handle['providerRef'] : null;
+      if (providerRef === null) return null;
+      const now = Date.now();
+      if (row.enrollment_id !== null) {
+        this.ctx.storage.sql.exec(
+          `UPDATE workers SET revoked_at = ?, lease_expires_at = NULL
+           WHERE enrollment_id = ? AND account_id = ?`,
+          now,
+          row.enrollment_id,
+          accountId,
+        );
+      }
+      this.ctx.storage.sql.exec(
+        `UPDATE environments SET state = 'suspending', enrollment_id = NULL,
+         expires_at = ?, updated_at = ? WHERE environment_id = ? AND account_id = ?`,
+        now + MANAGED_SNAPSHOT_RETENTION_MS,
+        now,
+        environmentId,
+        accountId,
+      );
+      return { providerRef };
+    });
+    if (transition === null) return false;
+    const provisioner = this.env.MANAGED_PROVISIONER;
+    if (provisioner === undefined) return false;
+    try {
+      const response = await provisioner.fetch(
+        `https://provisioner.internal/v1/environments/${encodeURIComponent(transition.providerRef)}/suspend`,
+        {
+          method: 'POST',
+          headers:
+            typeof this.env.MANAGED_PROVISIONER_TOKEN === 'string'
+              ? { authorization: `Bearer ${this.env.MANAGED_PROVISIONER_TOKEN}` }
+              : {},
+        },
+      );
+      if (!response.ok) return false;
+    } catch {
+      return false;
+    }
+    this.commit(() => {
+      this.ctx.storage.sql.exec(
+        `UPDATE environments SET state = 'suspended', expires_at = ?, updated_at = ?
+         WHERE environment_id = ? AND account_id = ? AND state = 'suspending'`,
+        Date.now() + MANAGED_SNAPSHOT_RETENTION_MS,
+        Date.now(),
+        environmentId,
+        accountId,
+      );
+    });
+    return true;
+  }
+
   private async runSweep(now: number): Promise<{
     deletedChanges: number;
     deletedReceipts: number;
@@ -8733,6 +9237,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     // reconciliation — same pattern (collect in-commit, fetch post-commit,
     // commit outcomes). No-op without the provisioner binding.
     await this.runManagedWork().catch(() => undefined);
+    await this.suspendIdleHostedRemoteChats(Date.now()).catch(() => undefined);
     const continued =
       deletedChanges === SWEEP_BATCH_ROWS ||
       deletedReceipts === SWEEP_BATCH_ROWS ||
@@ -8744,6 +9249,15 @@ export class AccountCoordinator extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(
       Date.now() + (continued ? SWEEP_CONTINUE_MS : SWEEP_INTERVAL_MS),
     );
+    const nextHostedChat = this.ctx.storage.sql
+      .exec<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM environments WHERE provider = 'anvil-managed'
+       AND state IN ('enrolled', 'running') AND json_extract(handle, '$.hostedRemoteChat') = 1`,
+      )
+      .one().n;
+    if (nextHostedChat > 0) {
+      await this.scheduleRemoteChatIdleCheckpoint(Date.now() + HOSTED_REMOTE_CHAT_IDLE_GRACE_MS);
+    }
     this.emitCurrentFairUseUsageMetric();
     return {
       deletedChanges,
@@ -10863,6 +11377,20 @@ function parseEnvironmentIdParams(params: unknown): { environmentId: string } {
     throw new RpcFailure('malformed-request', { reason: 'environmentId' });
   }
   return { environmentId: params['environmentId'] };
+}
+
+function parseEnvironmentResumeParams(params: unknown): {
+  environmentId: string;
+  ttlSeconds: number;
+} {
+  if (!isRecord(params) || !isBoundedId(params['environmentId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'environmentId' });
+  }
+  const ttlSeconds = params['ttlSeconds'];
+  if (typeof ttlSeconds !== 'number' || !Number.isInteger(ttlSeconds)) {
+    throw new RpcFailure('malformed-request', { reason: 'ttlSeconds' });
+  }
+  return { environmentId: params['environmentId'], ttlSeconds };
 }
 
 function parseEnvironmentBootstrapParams(params: unknown): {

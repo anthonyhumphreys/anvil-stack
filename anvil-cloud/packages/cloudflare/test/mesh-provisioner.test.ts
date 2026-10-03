@@ -35,15 +35,35 @@ async function fixture(): Promise<string> {
     "export {};",
     "utf8",
   );
+  await mkdir(path.join(root, "images/thread"), { recursive: true });
+  await writeFile(
+    path.join(root, "images/thread/Dockerfile.cloudflare"),
+    "FROM scratch",
+    "utf8",
+  );
+  await writeFile(
+    path.join(root, "images/thread/anvil-daemon.mjs"),
+    "export {};",
+    "utf8",
+  );
   await writeFile(
     path.join(root, "wrangler.jsonc"),
     `{
     "name": "anvil-mesh-provisioner",
     "main": "src/index.ts",
     "compatibility_date": "2026-09-01",
-    "durable_objects": { "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }] },
-    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
-    "containers": [{ "class_name": "Sandbox", "image": "images/Dockerfile.cloudflare" }],
+    "durable_objects": { "bindings": [
+      { "name": "Sandbox", "class_name": "Sandbox" },
+      { "name": "ThreadSandbox", "class_name": "ThreadSandbox" }
+    ] },
+    "migrations": [
+      { "tag": "v1", "new_sqlite_classes": ["Sandbox"] },
+      { "tag": "v2", "new_sqlite_classes": ["ThreadSandbox"] }
+    ],
+    "containers": [
+      { "class_name": "Sandbox", "image": "images/Dockerfile.cloudflare", "instance_type": "standard-1", "max_instances": 20 },
+      { "name": "anvil-mesh-provisioner-thread-snapshots", "class_name": "ThreadSandbox", "scheduling_policy": "durable_object", "images": { "base": { "dockerfile": "images/thread/Dockerfile.cloudflare" } } }
+    ],
     "vars": { "ALLOW_UNAUTHENTICATED": "false" },
   }`,
     "utf8",
@@ -66,14 +86,76 @@ describe("Mesh provisioner deployment lifecycle", () => {
     expect(config.name).toBe("mesh-provisioner-test");
     expect(config.account_id).toBe("acct-1");
     expect(config.main).toBe("../src/index.ts");
+    const containers = config.containers as Array<Record<string, unknown>>;
+    expect(containers).toHaveLength(2);
+    expect(containers[0]?.image).toBe("../images/Dockerfile.cloudflare");
+    expect(containers[0]?.instance_type).toBe("standard-1");
+    expect(containers[0]?.max_instances).toBe(20);
+    expect(containers[1]?.scheduling_policy).toBe("durable_object");
+    expect(containers[1]?.name).toBe("mesh-provisioner-test-thread-snapshots");
     expect(
-      (config.containers as Array<Record<string, unknown>>)[0]?.image,
-    ).toBe("../images/Dockerfile.cloudflare");
+      (containers[1]?.images as Record<string, Record<string, string>>).base?.dockerfile,
+    ).toBe("../images/thread/Dockerfile.cloudflare");
+    expect(config.migrations).toEqual([
+      { tag: "v1", new_sqlite_classes: ["Sandbox"] },
+      { tag: "v2", new_sqlite_classes: ["ThreadSandbox"] },
+    ]);
     expect(plan.requiredSecrets).toEqual(["PROVISIONER_TOKEN"]);
+    expect(plan.containerImages).toEqual([
+      path.join(root, "images/Dockerfile.cloudflare"),
+      path.join(root, "images/thread/Dockerfile.cloudflare"),
+    ]);
     expect(plan.diagnostics).toEqual([]);
     expect(await readFile(path.join(root, "wrangler.jsonc"), "utf8")).toContain(
       "anvil-mesh-provisioner",
     );
+  });
+
+  it("rewrites durable-object named image paths for the generated config and retains builds", async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, "wrangler.jsonc"),
+      JSON.stringify({
+        name: "anvil-mesh-provisioner",
+        main: "src/index.ts",
+        durable_objects: { bindings: [
+          { name: "Sandbox", class_name: "Sandbox" },
+          { name: "ThreadSandbox", class_name: "ThreadSandbox" },
+        ] },
+        migrations: [
+          { tag: "v1", new_sqlite_classes: ["Sandbox"] },
+          { tag: "v2", new_sqlite_classes: ["ThreadSandbox"] },
+        ],
+        containers: [
+          { class_name: "Sandbox", image: "images/Dockerfile.cloudflare", instance_type: "standard-1", max_instances: 20 },
+          {
+            name: "thread-snapshots",
+            class_name: "ThreadSandbox",
+            scheduling_policy: "durable_object",
+            images: { base: { dockerfile: "images/thread/Dockerfile.cloudflare" } },
+          },
+        ],
+        vars: { ALLOW_UNAUTHENTICATED: "false" },
+      }),
+      "utf8",
+    );
+    const output = path.join(root, "generated", "wrangler.jsonc");
+    const plan = await createMeshProvisionerDeploymentPlan({
+      provisionerDir: root,
+      configPath: output,
+      workerName: "mesh-provisioner-test",
+    });
+    const config = JSON.parse(plan.config.contents) as {
+      containers: Array<{ images?: Record<string, { dockerfile: string }>; image?: string }>;
+    };
+    expect(config.containers[0]?.image).toBe("../images/Dockerfile.cloudflare");
+    expect(config.containers[1]?.name).toBe("mesh-provisioner-test-thread-snapshots");
+    expect(config.containers[1]?.images?.base?.dockerfile).toBe("../images/thread/Dockerfile.cloudflare");
+    expect(plan.containerImages).toEqual([
+      path.join(root, "images/Dockerfile.cloudflare"),
+      path.join(root, "images/thread/Dockerfile.cloudflare"),
+    ]);
+    expect(plan.diagnostics).toEqual([]);
   });
 
   it("gates a real apply without spawning Wrangler and permits dry run", async () => {

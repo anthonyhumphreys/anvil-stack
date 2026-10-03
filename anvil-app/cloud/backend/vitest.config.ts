@@ -144,6 +144,10 @@ async function provisionerStubBinding(request: Request): Promise<Response> {
   if (request.headers.get('authorization') !== 'Bearer test-managed-token') {
     return json({ error: 'provisioner-stub: missing or wrong bearer' }, 401);
   }
+  const requestBody = request.method === 'GET' || request.method === 'DELETE'
+    ? null
+    : await request.clone().json().catch(() => null);
+  provisionerStubLast = { method: request.method, path: url.pathname, body: requestBody };
   const key = `${request.method} ${url.pathname}`;
   const index = provisionerStubQueue.findIndex((rule) => `${rule.method} ${rule.path}` === key);
   if (index !== -1) {
@@ -151,8 +155,7 @@ async function provisionerStubBinding(request: Request): Promise<Response> {
     return json(rule.body, rule.status);
   }
   if (request.method === 'POST' && url.pathname === '/v1/environments') {
-    const body = (await request.json()) as { environmentId?: string };
-    provisionerStubLast = { method: request.method, path: url.pathname, body };
+    const body = (requestBody ?? {}) as { environmentId?: string };
     return json({ providerRef: `sb-${body.environmentId ?? 'unknown'}` }, 201);
   }
   if (request.method === 'DELETE') {

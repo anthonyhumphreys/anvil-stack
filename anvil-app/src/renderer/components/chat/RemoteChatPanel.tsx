@@ -239,6 +239,7 @@ export function RemoteChatPanel({
             sessionId: selected.id,
             requestId,
             prompt: text,
+            permissionMode,
           })
         : await window.anvil.syncRuntime.createRemoteChat({
             workspaceId,

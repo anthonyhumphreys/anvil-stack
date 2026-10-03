@@ -28,6 +28,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resetVolatileWorkerCredentials } from './snapshot-lifecycle.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DAEMON = join(HERE, 'anvil-daemon.mjs');
@@ -164,6 +165,7 @@ async function main() {
   // process's env for the worker's whole lifetime.
   delete process.env.ANVIL_BOOTSTRAP_JSON;
   mkdirSync(DATA_DIR, { recursive: true });
+  if (boot.resumeFromSnapshot === true) resetVolatileWorkerCredentials(DATA_DIR);
   prepareWorkerStorage(DATA_DIR, process.env.ANVIL_VAULT_KEY_FILE ?? '/run/anvil/vault/worker.key');
 
   // Ephemeral environment: worker on, companion off (no inbound devices will

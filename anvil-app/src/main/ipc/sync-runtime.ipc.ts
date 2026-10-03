@@ -1,12 +1,14 @@
 import { isAgentProvider } from '../../shared/agent-providers.js';
 import {
   createRemoteChat,
+  endRemoteChat,
   listRemoteChats,
   getRemoteChat,
   sendRemoteChat,
   cancelRemoteChat,
 } from '../services/remote-chat.service.js';
 import { isPermissionMode } from '../../../cloud/contract/permissions.js';
+import type { ReasoningEffort } from '../../shared/types.js';
 import { setMeshMaximumPermissionMode } from '../services/mesh-worker.service.js';
 import { ipcMain } from 'electron';
 import {
@@ -25,6 +27,7 @@ import {
   getMeshApprovals,
   getMeshJob,
   getRuntimeStatus,
+  getManagedEnvironmentLimits,
   getDeviceSecurityStatus,
   getSessionMeshState,
   initiateSessionHandoff,
@@ -87,6 +90,19 @@ function requiredText(payload: Record<string, unknown>, field: string, maxLength
   return value;
 }
 
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return (
+    value === 'none' ||
+    value === 'minimal' ||
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh' ||
+    value === 'max' ||
+    value === 'ultra'
+  );
+}
+
 export function registerSyncRuntimeHandlers(): void {
   ipcMain.handle('sync-runtime:remote-chat-create', (_event, payload: unknown) => {
     if (
@@ -97,6 +113,25 @@ export function registerSyncRuntimeHandlers(): void {
       throw new Error('Remote chat requires a supported provider and permission mode');
     }
     const credentialChoice = payload.credentialChoice;
+    const target = payload.target;
+    if (target !== undefined && target !== 'device' && target !== 'anvil-hosted-cloud') {
+      throw new Error('Unsupported remote chat target');
+    }
+    const targetEnrollmentId =
+      typeof payload.targetEnrollmentId === 'string' ? payload.targetEnrollmentId : undefined;
+    const sourceThreadId =
+      typeof payload.sourceThreadId === 'string' ? payload.sourceThreadId : undefined;
+    if (
+      target === 'anvil-hosted-cloud'
+        ? sourceThreadId === undefined
+        : targetEnrollmentId === undefined
+    ) {
+      throw new Error(
+        target === 'anvil-hosted-cloud'
+          ? 'Hosted remote chat requires a source thread id'
+          : 'Remote chat requires a target enrollment id',
+      );
+    }
     if (
       credentialChoice !== undefined &&
       credentialChoice !== 'target-local' &&
@@ -107,11 +142,19 @@ export function registerSyncRuntimeHandlers(): void {
     ) {
       throw new Error('Unsupported remote credential choice');
     }
+    if (payload.reasoningEffort !== undefined && !isReasoningEffort(payload.reasoningEffort)) {
+      throw new Error('Remote chat requires a supported reasoning effort');
+    }
     return createRemoteChat({
       workspaceId: requiredText(payload, 'workspaceId'),
-      targetEnrollmentId: requiredText(payload, 'targetEnrollmentId'),
+      ...(target === undefined ? {} : { target }),
+      ...(targetEnrollmentId === undefined ? {} : { targetEnrollmentId }),
+      ...(sourceThreadId === undefined ? {} : { sourceThreadId }),
       provider: payload.provider,
       model: requiredText(payload, 'model'),
+      ...(payload.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: payload.reasoningEffort }),
       permissionMode: payload.permissionMode,
       prompt: requiredText(payload, 'prompt', 100_000),
       ...(credentialChoice === undefined ? {} : { credentialChoice }),
@@ -130,15 +173,29 @@ export function registerSyncRuntimeHandlers(): void {
   });
   ipcMain.handle('sync-runtime:remote-chat-send', (_event, payload: unknown) => {
     if (!isRecord(payload)) throw new Error('Remote chat send requires an object');
+    if (payload.permissionMode !== undefined && !isPermissionMode(payload.permissionMode)) {
+      throw new Error('Remote chat send requires a supported permission mode');
+    }
+    if (payload.reasoningEffort !== undefined && !isReasoningEffort(payload.reasoningEffort)) {
+      throw new Error('Remote chat send requires a supported reasoning effort');
+    }
     return sendRemoteChat({
       sessionId: requiredText(payload, 'sessionId'),
       requestId: requiredText(payload, 'requestId'),
       prompt: requiredText(payload, 'prompt', 100_000),
+      ...(payload.permissionMode === undefined ? {} : { permissionMode: payload.permissionMode }),
+      ...(payload.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: payload.reasoningEffort }),
     });
   });
   ipcMain.handle('sync-runtime:remote-chat-cancel', (_event, payload: unknown) => {
     if (!isRecord(payload)) throw new Error('Remote chat cancellation requires an id');
     return cancelRemoteChat(requiredText(payload, 'id'));
+  });
+  ipcMain.handle('sync-runtime:remote-chat-end', (_event, payload: unknown) => {
+    if (!isRecord(payload)) throw new Error('Hosted remote chat end requires an id');
+    return endRemoteChat(requiredText(payload, 'id'));
   });
 
   ipcMain.handle('sync-runtime:status', () => getRuntimeStatus());
@@ -186,6 +243,8 @@ export function registerSyncRuntimeHandlers(): void {
   ipcMain.handle('sync-runtime:cloud-environments-list', (_event, includeTerminal: unknown) =>
     listCloudEnvironments(includeTerminal === true),
   );
+
+  ipcMain.handle('sync-runtime:managed-environment-limits', () => getManagedEnvironmentLimits());
 
   ipcMain.handle('sync-runtime:cloud-environment-request', (_event, payload: unknown) => {
     if (!isRecord(payload) || !isEnvironmentProviderId(payload['provider'])) {

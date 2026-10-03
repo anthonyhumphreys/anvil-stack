@@ -9,6 +9,10 @@
         "name": "Sandbox",
         "class_name": "Sandbox",
       },
+      {
+        "name": "ThreadSandbox",
+        "class_name": "ThreadSandbox",
+      },
     ],
   },
   "migrations": [
@@ -16,16 +20,32 @@
       "tag": "v1",
       "new_sqlite_classes": ["Sandbox"],
     },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["ThreadSandbox"],
+    },
   ],
   "containers": [
     {
       "class_name": "Sandbox",
-      // Build context = ../images/anvil-worker — run its prepare.sh first.
+      // Legacy default-policy app: keep the existing app/class, instance size,
+      // and 20-instance cap stable for existing and non-chat environments.
+      // Changing scheduling_policy in place is unsupported by Cloudflare.
       "image": "../images/anvil-worker/Dockerfile.cloudflare",
-      // The provider CLIs make the image larger than lite's 2 GB disk.
-      // Leave room for repository checkout and dependency installation too.
       "instance_type": "standard-1",
       "max_instances": 20,
+    },
+    {
+      "name": "anvil-mesh-provisioner-thread-snapshots",
+      "class_name": "ThreadSandbox",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "base": {
+          // New namespace for remote chat; legacy environment files cannot
+          // be migrated from the default-policy container app.
+          "dockerfile": "../images/anvil-worker/Dockerfile.cloudflare",
+        },
+      },
     },
   ],
   "vars": {

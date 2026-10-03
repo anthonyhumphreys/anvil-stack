@@ -201,6 +201,9 @@ export const PUBLIC_MANIFEST_INPUT_KEYS: ReadonlySet<string> = new Set([
   'resources',
   'connectionId',
   'displayName',
+  // Reserved coordinator lifecycle hint; honored only for Anvil-managed
+  // environments whose ID is in the remote-chat namespace.
+  'hostedRemoteChat',
 ]);
 
 /**

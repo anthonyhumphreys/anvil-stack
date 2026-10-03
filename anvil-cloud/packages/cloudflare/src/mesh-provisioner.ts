@@ -224,6 +224,11 @@ export async function createMeshProvisionerDeploymentPlan(
     if (typeof item !== "object" || item === null || Array.isArray(item))
       return item;
     const container = { ...(item as JsonObject) };
+    if (container.class_name === "ThreadSandbox") {
+      // The additive snapshot application must be unique across staging,
+      // production, and BYO deployments in one Cloudflare account.
+      container.name = `${workerName}-thread-snapshots`;
+    }
     const image = stringValue(container.image);
     if (image) {
       const resolved = path.resolve(provisionerDir, image);
@@ -249,6 +254,55 @@ export async function createMeshProvisionerDeploymentPlan(
         });
       }
     }
+    const namedImages = container.images;
+    if (
+      typeof namedImages === "object" &&
+      namedImages !== null &&
+      !Array.isArray(namedImages)
+    ) {
+      const rewritten: JsonObject = {};
+      for (const [name, value] of Object.entries(namedImages as JsonObject)) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          rewritten[name] = value;
+          continue;
+        }
+        const namedImage = { ...(value as JsonObject) };
+        const dockerfile = stringValue(namedImage.dockerfile);
+        if (dockerfile) {
+          const resolved = path.resolve(provisionerDir, dockerfile);
+          imagePaths.push(resolved);
+          namedImage.dockerfile = relativeSourcePath(configPath, resolved);
+          if (!existsSync(resolved)) {
+            diagnostics.push({
+              code: "PROVISIONER_IMAGE_MISSING",
+              severity: "block",
+              message: `Provisioner container image does not exist: ${resolved}.`,
+              hint: "Run the image prepare step before deploy.",
+            });
+          }
+          if (
+            path.basename(resolved) === "Dockerfile.cloudflare" &&
+            !existsSync(path.join(path.dirname(resolved), "anvil-daemon.mjs"))
+          ) {
+            diagnostics.push({
+              code: "PROVISIONER_IMAGE_MISSING",
+              severity: "block",
+              message: `The staged daemon bundle is missing beside ${resolved}.`,
+              hint: "Run pnpm build:daemon in anvil-app, then cloud/images/anvil-worker/prepare.sh.",
+            });
+          }
+        }
+        const buildContext = stringValue(namedImage.build_context);
+        if (buildContext) {
+          namedImage.build_context = relativeSourcePath(
+            configPath,
+            path.resolve(provisionerDir, buildContext),
+          );
+        }
+        rewritten[name] = namedImage;
+      }
+      container.images = rewritten;
+    }
     return container;
   });
   const hasSandboxBinding =
@@ -268,12 +322,37 @@ export async function createMeshProvisionerDeploymentPlan(
       item !== null &&
       (item as JsonObject).class_name === "Sandbox",
   );
-  if (!hasSandboxBinding || !hasSandboxContainer) {
+  const hasThreadSandboxBinding =
+    typeof config.durable_objects === "object" &&
+    config.durable_objects !== null &&
+    Array.isArray((config.durable_objects as JsonObject).bindings) &&
+    ((config.durable_objects as JsonObject).bindings as unknown[]).some(
+      (item) =>
+        typeof item === "object" &&
+        item !== null &&
+        (item as JsonObject).name === "ThreadSandbox" &&
+        (item as JsonObject).class_name === "ThreadSandbox",
+    );
+  const threadSandboxContainer = containers.find(
+    (item) =>
+      typeof item === "object" &&
+      item !== null &&
+      (item as JsonObject).class_name === "ThreadSandbox",
+  );
+  if (
+    !hasSandboxBinding ||
+    !hasSandboxContainer ||
+    !hasThreadSandboxBinding ||
+    typeof threadSandboxContainer !== "object" ||
+    threadSandboxContainer === null ||
+    (threadSandboxContainer as JsonObject).scheduling_policy !== "durable_object" ||
+    typeof (threadSandboxContainer as JsonObject).name !== "string"
+  ) {
     diagnostics.push({
       code: "PROVISIONER_CONFIG_INVALID",
       severity: "block",
       message:
-        "Provisioner config must declare the Sandbox Durable Object and Sandbox container.",
+        "Provisioner config must preserve the Sandbox app and declare a named ThreadSandbox app using durable_object scheduling.",
     });
   }
   if (

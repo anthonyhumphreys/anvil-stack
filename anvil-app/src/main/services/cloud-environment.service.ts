@@ -287,6 +287,14 @@ function validateEnvironmentRequest(input: RequestEnvironmentInput): void {
   }
   validateEnvironmentTtl(input.ttlSeconds);
   validateEnvironmentResources(input.resources);
+  if (
+    input.hostedRemoteChat === true &&
+    (input.provider !== 'anvil-managed' ||
+      input.environmentId === undefined ||
+      !/^remote-[0-9a-f-]{36}$/i.test(input.environmentId))
+  ) {
+    throw new Error('Hosted remote chat environments require an Anvil-managed remote UUID id.');
+  }
   if (input.environmentId !== undefined && !/^[a-zA-Z0-9._:-]{1,200}$/.test(input.environmentId)) {
     throw new Error(
       'Environment id must contain only letters, numbers, dots, underscores, colons, or hyphens.',
@@ -1055,6 +1063,8 @@ export interface RequestEnvironmentInput {
   displayName?: string;
   /** BYO providers: which stored connection the claimer should use. */
   connectionId?: string;
+  /** Internal hosted chat marker; validated against provider and stable remote ID. */
+  hostedRemoteChat?: boolean;
 }
 
 export interface RequestEnvironmentResult {
@@ -1155,6 +1165,7 @@ async function requestEnvironmentOnce(
     ...(input.resources === undefined ? {} : { resources: input.resources }),
     ...(input.connectionId === undefined ? {} : { connectionId: input.connectionId }),
     ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+    ...(input.hostedRemoteChat === true ? { hostedRemoteChat: true } : {}),
   };
   const manifest: ExecutionManifest = {
     workspaceDefinitionRevision: 'environment',

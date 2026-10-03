@@ -53,8 +53,12 @@ import type {
 } from '../../../cloud/contract/browser-workspace.js';
 import type { HostedEntitlement } from '../../../cloud/contract/entitlements.js';
 import type {
+  CloudEnvironment,
+  EnvironmentResumeResult,
   EnvironmentListResult,
+  EnvironmentLimitsResult,
   EnvironmentReapResult,
+  EnvironmentSuspendResult,
 } from '../../../cloud/contract/environment.js';
 import {
   requestEnvironment,
@@ -543,6 +547,21 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       accessToken: token,
       enrollmentId: fields.enrollmentId,
       scope,
+      requestHostedEnvironment: async ({ environmentId, displayName, purpose }) => {
+        const limits = await getManagedEnvironmentLimits();
+        const result = await requestCloudEnvironment({
+          provider: 'anvil-managed',
+          ttlSeconds: limits.maxTtlSeconds,
+          environmentId,
+          displayName,
+          ...(purpose === 'remote-chat' ? { hostedRemoteChat: true } : {}),
+        });
+        return { job: result.job };
+      },
+      listHostedEnvironments: () => listCloudEnvironments(true),
+      reapHostedEnvironment: (environmentId) => reapCloudEnvironment(environmentId),
+      suspendHostedEnvironment: (environmentId) => suspendCloudEnvironment(environmentId),
+      resumeHostedEnvironment: (environmentId) => resumeCloudEnvironment(environmentId),
     };
   });
   // FLOW-02: node dispatches are source-side; same session context, and
@@ -1544,6 +1563,11 @@ export async function listCloudEnvironments(
   return accountRpc<EnvironmentListResult>('environment.list', { includeTerminal });
 }
 
+/** Current server-authoritative hosted environment limits for this account. */
+export async function getManagedEnvironmentLimits(): Promise<EnvironmentLimitsResult> {
+  return accountRpc<EnvironmentLimitsResult>('environment.limits', {});
+}
+
 /**
  * Durable teardown intent for any environment on the account — managed
  * envs are deleted by the backend's provisioner, BYO envs by the claiming
@@ -1551,6 +1575,34 @@ export async function listCloudEnvironments(
  */
 export async function reapCloudEnvironment(environmentId: string): Promise<EnvironmentReapResult> {
   return accountRpc<EnvironmentReapResult>('environment.reap', { environmentId });
+}
+
+export async function suspendCloudEnvironment(environmentId: string): Promise<CloudEnvironment> {
+  const result = await accountRpc<EnvironmentSuspendResult>('environment.suspend', {
+    environmentId,
+  });
+  return result.environment;
+}
+
+/** Restart the same hosted environment from its private filesystem snapshot. */
+export async function resumeCloudEnvironment(environmentId: string): Promise<CloudEnvironment> {
+  const { maxTtlSeconds: ttlSeconds } = await getManagedEnvironmentLimits();
+  const issued = await issueEnrollmentCode({
+    enrollmentClass: 'ephemeral',
+    provider: 'anvil-managed',
+    sessionTtlSeconds: ttlSeconds,
+    displayName: 'Anvil hosted chat',
+    environmentId,
+  });
+  await accountRpc<{ ok: true }>('environment.bootstrap', {
+    environmentId,
+    payload: issued.code,
+  });
+  const result = await accountRpc<EnvironmentResumeResult>('environment.resume', {
+    environmentId,
+    ttlSeconds,
+  });
+  return result.environment;
 }
 
 /**

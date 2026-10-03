@@ -684,8 +684,11 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'environment.report':
     case 'environment.get':
     case 'environment.list':
+    case 'environment.limits':
     case 'environment.reap':
     case 'environment.bootstrap':
+    case 'environment.suspend':
+    case 'environment.resume':
     case 'credential.deliver':
     case 'credential.pull':
     // E2EE task-key delivery + rotation reports + dashboard grants —

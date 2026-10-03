@@ -55,6 +55,7 @@ export type EnvironmentState =
   | 'provisioning'
   | 'enrolled'
   | 'running'
+  | 'suspending'
   | 'suspended'
   | 'terminating'
   | 'terminated'
@@ -66,6 +67,7 @@ export const ENVIRONMENT_STATES: readonly EnvironmentState[] = [
   'provisioning',
   'enrolled',
   'running',
+  'suspending',
   'suspended',
   'terminating',
   'terminated',
@@ -126,6 +128,8 @@ export interface ProvisionEnvironmentInputs {
   connectionId?: string;
   /** Display label for the environment in device/environment listings. */
   displayName?: string;
+  /** Backend idle-checkpoint policy for Anvil-managed hosted remote chats only. */
+  hostedRemoteChat?: boolean;
 }
 
 // ---- Capability vocabulary -------------------------------------------------
@@ -145,9 +149,7 @@ export function provisionCapability(provider: EnvironmentProviderId): string {
   return `${PROVISION_CAPABILITY_PREFIX}${provider}`;
 }
 
-export function providerFromProvisionCapability(
-  capability: string,
-): EnvironmentProviderId | null {
+export function providerFromProvisionCapability(capability: string): EnvironmentProviderId | null {
   if (!capability.startsWith(PROVISION_CAPABILITY_PREFIX)) return null;
   const provider = capability.slice(PROVISION_CAPABILITY_PREFIX.length);
   return isEnvironmentProviderId(provider) ? provider : null;
@@ -204,6 +206,12 @@ export interface EnvironmentListResult {
   environments: CloudEnvironment[];
 }
 
+/** Account-authorized limits for Anvil-managed hosted environments. */
+export interface EnvironmentLimitsResult {
+  maxTtlSeconds: number;
+  maxConcurrent: number;
+}
+
 /**
  * `environment.reap` (either role): durable cleanup intent. A user marks
  * `reap-requested`; a provisioner-capable worker (or the environment's
@@ -215,6 +223,25 @@ export interface EnvironmentReapParams {
 }
 
 export interface EnvironmentReapResult {
+  environment: CloudEnvironment;
+}
+
+/** `environment.suspend` snapshots and stops a completed managed environment. */
+export interface EnvironmentSuspendParams {
+  environmentId: string;
+}
+
+export interface EnvironmentSuspendResult {
+  environment: CloudEnvironment;
+}
+
+/** `environment.resume` starts a saved environment with a fresh enrollment. */
+export interface EnvironmentResumeParams {
+  environmentId: string;
+  ttlSeconds: number;
+}
+
+export interface EnvironmentResumeResult {
   environment: CloudEnvironment;
 }
 

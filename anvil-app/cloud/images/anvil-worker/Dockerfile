@@ -34,7 +34,7 @@ ENV PATH="/root/.local/bin:${PATH}"
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-COPY anvil-daemon.mjs boot.mjs ./
+COPY anvil-daemon.mjs boot.mjs snapshot-lifecycle.mjs ./
 COPY anvil-worker-boot ./bin/anvil-worker-boot
 RUN chmod +x /opt/anvil/bin/anvil-worker-boot
 

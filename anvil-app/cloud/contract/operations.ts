@@ -63,8 +63,11 @@ export const OPERATIONS = [
   'environment.report',
   'environment.get',
   'environment.list',
+  'environment.limits',
   'environment.reap',
   'environment.bootstrap',
+  'environment.suspend',
+  'environment.resume',
   'credential.deliver',
   'credential.pull',
   // Task-scoped keys + rotation reporting
@@ -136,8 +139,11 @@ export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
   'environment.report': 'mesh/1',
   'environment.get': 'mesh/1',
   'environment.list': 'mesh/1',
+  'environment.limits': 'mesh/1',
   'environment.reap': 'mesh/1',
   'environment.bootstrap': 'mesh/1',
+  'environment.suspend': 'mesh/1',
+  'environment.resume': 'mesh/1',
   'credential.deliver': 'mesh/1',
   'credential.pull': 'mesh/1',
   'taskkey.deliver': 'mesh/1',
@@ -205,8 +211,11 @@ export const OPERATION_ROLE: Record<OperationName, ActorRole> = {
   'environment.report': 'worker',
   'environment.get': 'either',
   'environment.list': 'either',
+  'environment.limits': 'user',
   'environment.reap': 'either',
   'environment.bootstrap': 'user',
+  'environment.suspend': 'user',
+  'environment.resume': 'user',
   'credential.deliver': 'user',
   'credential.pull': 'worker',
   'taskkey.deliver': 'user',
@@ -345,11 +354,16 @@ export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass>
   'environment.report': 'control',
   'environment.get': 'control',
   'environment.list': 'control',
+  'environment.limits': 'control',
   'environment.reap': 'control',
   // Staging a bootstrap payload extends a provision the user is already
   // authorized to request — gated like job.create so a restricted account
   // cannot mint managed capacity through the back door.
   'environment.bootstrap': 'mutating',
+  // Suspend and resume change compute capacity and mint a fresh worker
+  // enrollment, so they are entitlement-gated like provision requests.
+  'environment.suspend': 'mutating',
+  'environment.resume': 'mutating',
   // Grants are scoped to a claimed attempt's existing fence — delivery and
   // pull finish work that mutating job.claim already authorized.
   'credential.deliver': 'control',

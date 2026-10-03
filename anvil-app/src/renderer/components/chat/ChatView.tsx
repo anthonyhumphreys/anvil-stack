@@ -38,7 +38,10 @@ import { RepoSelector } from '../shared/RepoSelector';
 import { GovernanceSelector } from '../shared/GovernanceSelector';
 import { extractFindings, type ExtractedFinding } from '../../utils/finding-parser';
 import type { ExecutionStrategy } from '../../utils/execution-strategy';
-import { RemoteChatPanel } from './RemoteChatPanel';
+import { useChatRunTarget } from './useChatRunTarget';
+import { ChatRunTargetSelect } from './ChatRunTargetSelect';
+import { RemoteThreadTranscript } from './RemoteThreadTranscript';
+import { SettingsLink } from '../shared/SettingsLink';
 import { SessionOwnershipChip } from './SessionOwnershipChip';
 import { buildExecutionTopology } from '../../utils/execution-topology';
 import { CHAT_PREFILL_EVENT } from './AgentUIIntentSurface';
@@ -151,6 +154,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     interrupt,
     stopSession,
     startNewSession,
+    ensureChatThread,
     setModel,
     setReasoningLevel,
     selectThread,
@@ -376,24 +380,46 @@ export function ChatView({ userRole }: ChatViewProps) {
     switchPersona(persona);
   };
 
+  const runTarget = useChatRunTarget({
+    workspaceId: scaffoldModeActive ? undefined : activeWorkspace?.id,
+    threadId: activeThreadId,
+    sourceSessionId: session?.id,
+    provider: modelProvider,
+    model,
+    permissionMode:
+      isItsmPersona || activeThread?.purpose === 'side-question' ? 'read-only' : threadAccess.level,
+    reasoningEffort: reasoningLevel,
+    ensureThread: ensureChatThread,
+  });
   // H13 — label strings name the provider the session actually runs on.
-  const agentProvider = session?.provider ?? modelProvider;
+  const agentProvider = runTarget.record?.provider ?? session?.provider ?? modelProvider;
   const agentLabel = agentProviderLabel(agentProvider) ?? 'The agent';
   // H12 — goals are a Codex capability; when no session is live yet, fall back
   // to provider truth (ACP providers never support them).
-  const goalsSupported = session?.capabilities?.goals ?? !isAcpAgentProvider(agentProvider);
+  const capabilities = runTarget.remote ? undefined : session?.capabilities;
+  const goalsSupported =
+    !runTarget.remote && (capabilities?.goals ?? !isAcpAgentProvider(agentProvider));
   // H9 — provider-truthful access options and the applied provider-side mode.
   const accessOptions = useMemo(
-    () => chatAccessOptionsForProvider(agentProvider, session?.capabilities?.accessModes),
-    [agentProvider, session?.capabilities?.accessModes],
+    () =>
+      chatAccessOptionsForProvider(agentProvider, capabilities?.accessModes).filter(
+        (option) => !runTarget.remote || option.collaborationMode !== 'plan',
+      ),
+    [agentProvider, capabilities?.accessModes, runTarget.remote],
   );
   const appliedAccessMode =
-    session?.appliedMode ??
-    expectedAcpAppliedMode(agentProvider, threadAccess.level, collaborationMode);
+    (!runTarget.remote ? session?.appliedMode : undefined) ??
+    expectedAcpAppliedMode(
+      agentProvider,
+      threadAccess.level,
+      runTarget.remote ? 'default' : collaborationMode,
+    );
   const slashCommands = useMemo(() => buildSlashCommands(agentLabel), [agentLabel]);
+  const combinedThreadStatuses = { ...liveThreadStatuses, ...runTarget.threadStatuses };
 
   const handleChatInputSend = useCallback(
     (message: string, attachments: ChatAttachment[] = []): Promise<boolean> => {
+      if (runTarget.remote) return runTarget.send(message, attachments);
       if (busy) {
         setSendNotice('Choose Guide current run or Queue next to send while the agent is working.');
         return Promise.resolve(false);
@@ -403,7 +429,7 @@ export function ChatView({ userRole }: ChatViewProps) {
         return accepted;
       });
     },
-    [busy, handleComposerSend],
+    [busy, handleComposerSend, runTarget],
   );
 
   const handleAccessOptionSelect = useCallback(
@@ -684,22 +710,13 @@ export function ChatView({ userRole }: ChatViewProps) {
         />
       )}
 
-      {!scaffoldModeActive && activeWorkspace && (
-        <RemoteChatPanel
-          workspaceId={activeWorkspace.id}
-          provider={modelProvider}
-          model={model}
-          permissionMode={threadAccess.level}
-          sourceSessionId={visibleSessionId}
-        />
-      )}
       <div className="flex flex-1 overflow-hidden">
         {!scaffoldModeActive &&
           (isWorkItemLayout ? (
             <WorkItemThreadRail
               threads={threads}
               activeThreadId={activeThreadId}
-              liveThreadStatuses={liveThreadStatuses}
+              liveThreadStatuses={combinedThreadStatuses}
               onSelectWorkItem={(workItem) => void selectWorkItemThread(workItem)}
               onSelectThread={(threadId) => void selectThread(threadId)}
               onCreateThread={(workItem) => void startWorkItemThread(workItem)}
@@ -717,7 +734,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               repos={repos}
               threads={threads}
               activeThreadId={activeThreadId}
-              liveThreadStatuses={liveThreadStatuses}
+              liveThreadStatuses={combinedThreadStatuses}
               onSelectThread={(threadId) => void selectThread(threadId)}
               onCreateThread={() => void startNewSession()}
               onRenameThread={(threadId, title) => void renameThread(threadId, title)}
@@ -740,46 +757,56 @@ export function ChatView({ userRole }: ChatViewProps) {
               onOpenWorkspace={() => navigate('/workspace')}
             />
           )}
-          <ChatTranscript
-            paneKind={paneKind}
-            scaffoldRootPath={activeScaffoldSession?.rootPath}
-            blockedReason={
-              featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.'
-            }
-            onOpenWorkspace={() => navigate('/workspace')}
-            personaId={activePersona?.id ?? 'coder'}
-            hasRepos={activeRepos.length > 0}
-            hasGovernanceDocs={selectedGovernanceDocs.length > 0}
-            isDbExpertPersona={isDbExpertPersona}
-            starterPrompts={starterPrompts}
-            onSuggestionClick={handleSuggestionClick}
-            scaffoldBusyMessage={
-              scaffoldBusy
-                ? scaffoldStatus === 'syncing'
-                  ? 'Scaffold completion was detected. Anvil is connecting the new repositories to this workspace.'
-                  : 'Repositories are being indexed now. Other views stay locked until indexing finishes, then the rest of the workspace will unlock.'
-                : undefined
-            }
-            turns={composedTurns}
-            activeThreadId={activeThreadId}
-            busy={busy}
-            isBaPersona={isBaPersona}
-            personaName={activePersona?.name ?? 'Assistant'}
-            personaColour={personaColour}
-            onBranch={isWorkItemLayout ? undefined : handleBranch}
-            onReuseMessage={handleReuseMessage}
-            changesRepos={repos}
-            changesPreferredRepoId={activeThread?.activeRepoId}
-            error={error}
-            errorProviders={errorRecovery.providers}
-            onErrorRetry={errorRecovery.onRetry}
-            errorRetryLabel={errorRecovery.retryLabel}
-            onSwitchProvider={errorRecovery.onSwitchProvider}
-            messagesContainerRef={messagesContainerRef}
-            messagesEndRef={messagesEndRef}
-            showJumpToLatest={showJumpToLatest}
-            onJumpToLatest={handleJumpToLatest}
-          />
+          {runTarget.record ? (
+            <RemoteThreadTranscript
+              run={runTarget}
+              priorTurns={runTarget.legacyId ? [] : composedTurns}
+              personaName={activePersona?.name ?? 'Assistant'}
+              personaColour={personaColour}
+              onReuseMessage={handleReuseMessage}
+            />
+          ) : (
+            <ChatTranscript
+              paneKind={paneKind}
+              scaffoldRootPath={activeScaffoldSession?.rootPath}
+              blockedReason={
+                featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.'
+              }
+              onOpenWorkspace={() => navigate('/workspace')}
+              personaId={activePersona?.id ?? 'coder'}
+              hasRepos={activeRepos.length > 0}
+              hasGovernanceDocs={selectedGovernanceDocs.length > 0}
+              isDbExpertPersona={isDbExpertPersona}
+              starterPrompts={starterPrompts}
+              onSuggestionClick={handleSuggestionClick}
+              scaffoldBusyMessage={
+                scaffoldBusy
+                  ? scaffoldStatus === 'syncing'
+                    ? 'Scaffold completion was detected. Anvil is connecting the new repositories to this workspace.'
+                    : 'Repositories are being indexed now. Other views stay locked until indexing finishes, then the rest of the workspace will unlock.'
+                  : undefined
+              }
+              turns={composedTurns}
+              activeThreadId={activeThreadId}
+              busy={busy}
+              isBaPersona={isBaPersona}
+              personaName={activePersona?.name ?? 'Assistant'}
+              personaColour={personaColour}
+              onBranch={isWorkItemLayout ? undefined : handleBranch}
+              onReuseMessage={handleReuseMessage}
+              changesRepos={repos}
+              changesPreferredRepoId={activeThread?.activeRepoId}
+              error={error}
+              errorProviders={errorRecovery.providers}
+              onErrorRetry={errorRecovery.onRetry}
+              errorRetryLabel={errorRecovery.retryLabel}
+              onSwitchProvider={errorRecovery.onSwitchProvider}
+              messagesContainerRef={messagesContainerRef}
+              messagesEndRef={messagesEndRef}
+              showJumpToLatest={showJumpToLatest}
+              onJumpToLatest={handleJumpToLatest}
+            />
+          )}
 
           {/* Input */}
           {pendingQuestions[0] && (
@@ -847,30 +874,99 @@ export function ChatView({ userRole }: ChatViewProps) {
               )}
             </div>
           )}
+          {runTarget.legacyRecords.length > 0 && (
+            <label className="mx-4 mb-2 flex items-center gap-2 text-xs text-text-secondary xl:mx-6">
+              Earlier remote chats
+              <select
+                aria-label="Earlier remote chats"
+                value={runTarget.legacyId ?? ''}
+                disabled={runTarget.sending}
+                onChange={(event) => runTarget.setLegacyId(event.target.value || null)}
+                className="max-w-72 rounded-md border border-border bg-bg-secondary px-2 py-1 text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <option value="">Current chat</option>
+                {runTarget.legacyRecords.map((chat) => (
+                  <option key={chat.id} value={chat.id}>
+                    {chat.turns[0]?.prompt.slice(0, 60) ?? 'Remote chat'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {runTarget.remote && runTarget.error && (
+            <p
+              role="alert"
+              className="mx-auto w-full max-w-[1040px] px-4 pb-2 text-sm text-error xl:px-6"
+            >
+              {runTarget.error}
+            </p>
+          )}
+          {runTarget.hosted && !runTarget.record && !runTarget.providerReady && (
+            <p className="mx-auto w-full max-w-[1040px] px-4 pb-2 text-xs text-text-secondary xl:px-6">
+              Enable and connect {agentProviderLabel(modelProvider)} in{' '}
+              <SettingsLink to="sync#cloud-agents">Cloud agent settings</SettingsLink>.
+            </p>
+          )}
+          {runTarget.hosted && !runTarget.record && runTarget.sessionLimitSeconds !== null && (
+            <p className="mx-auto w-full max-w-[1040px] px-4 pb-2 text-xs text-text-secondary xl:px-6">
+              Pauses after 5 idle minutes. Your account allows up to{' '}
+              {runTarget.sessionLimitSeconds >= 3600
+                ? `${runTarget.sessionLimitSeconds / 3600} hours`
+                : `${runTarget.sessionLimitSeconds / 60} minutes`}{' '}
+              per active cloud session.
+            </p>
+          )}
+          {runTarget.remote && !runTarget.record && modelProvider === 'codex' && (
+            <details className="mx-auto w-full max-w-[1040px] px-4 pb-2 text-xs text-text-secondary xl:px-6">
+              <summary className="cursor-pointer">Codex sign-in options</summary>
+              <select
+                aria-label="Codex remote authentication"
+                className="mt-2 rounded-md border border-border bg-surface px-2 py-1.5 text-xs text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                value={runTarget.credentialChoice}
+                onChange={(event) =>
+                  runTarget.setCredentialChoice(
+                    event.target.value as typeof runTarget.credentialChoice,
+                  )
+                }
+              >
+                {!runTarget.hosted && (
+                  <option value="target-local">Use the destination's existing login</option>
+                )}
+                <option value="codex-host-auth">Use my Codex login from this device</option>
+                <option value="codex-account">Sign in on the destination</option>
+                <option value="openai-api-key">Use my saved OpenAI API key</option>
+              </select>
+            </details>
+          )}
           <ChatInput
             onSend={handleChatInputSend}
-            followUpCapabilities={session?.capabilities?.followUp}
-            onFollowUp={followUp}
+            followUpCapabilities={runTarget.remote ? undefined : session?.capabilities?.followUp}
+            onFollowUp={runTarget.remote ? undefined : followUp}
             sideQuestionAvailable={
+              !runTarget.remote &&
               !scaffoldModeActive &&
               !isWorkItemLayout &&
               session?.capabilities?.readOnlySession === true &&
               activeThread?.purpose !== 'side-question'
             }
             onSideQuestion={startSideQuestion}
-            onStop={interrupt}
-            disabled={chatInputDisabled || pendingWorkflowAction !== null}
-            busy={busy}
+            onStop={runTarget.remote ? () => void runTarget.stop() : interrupt}
+            disabled={
+              chatInputDisabled ||
+              pendingWorkflowAction !== null ||
+              runTarget.record?.state === 'ended'
+            }
+            busy={runTarget.remote ? runTarget.busy : busy}
             personaColour={personaColour}
-            model={model}
-            modelProvider={modelProvider}
+            model={runTarget.record?.model ?? model}
+            modelProvider={runTarget.record?.provider ?? modelProvider}
             modelOptions={availableChatModelOptions}
-            onModelChange={handleModelChange}
+            onModelChange={runTarget.record ? undefined : handleModelChange}
             reasoningLevel={reasoningLevel}
             reasoningOptions={reasoningOptions}
             onReasoningChange={handleReasoningChange}
             executionStrategy={executionStrategy}
-            onExecutionStrategyChange={setExecutionStrategy}
+            onExecutionStrategyChange={runTarget.remote ? undefined : setExecutionStrategy}
             codexMode={
               isItsmPersona || activeThread?.purpose === 'side-question'
                 ? 'read-only'
@@ -881,21 +977,26 @@ export function ChatView({ userRole }: ChatViewProps) {
             accessOptions={accessOptions}
             accessAppliedMode={appliedAccessMode}
             onAccessOptionSelect={scaffoldModeActive ? undefined : handleAccessOptionSelect}
-            collaborationMode={collaborationMode}
-            onCollaborationModeChange={scaffoldModeActive ? undefined : setCollaborationMode}
+            collaborationMode={runTarget.remote ? 'default' : collaborationMode}
+            onCollaborationModeChange={
+              scaffoldModeActive || runTarget.remote ? undefined : setCollaborationMode
+            }
             fastMode={fastMode}
-            fastModeAvailable={fastModeTarget.available}
-            onFastModeChange={scaffoldModeActive ? undefined : setFastMode}
+            fastModeAvailable={!runTarget.remote && fastModeTarget.available}
+            onFastModeChange={scaffoldModeActive || runTarget.remote ? undefined : setFastMode}
             showSyntaxHint={isEmpty}
             leadingControls={
               !scaffoldModeActive ? (
-                <ChatPersonaPicker
-                  personas={personas}
-                  activePersona={activePersona}
-                  userRole={userRole}
-                  personaColour={personaColour}
-                  onSelect={handleSwitchPersona}
-                />
+                <>
+                  <ChatPersonaPicker
+                    personas={personas}
+                    activePersona={activePersona}
+                    userRole={userRole}
+                    personaColour={personaColour}
+                    onSelect={handleSwitchPersona}
+                  />
+                  <ChatRunTargetSelect run={runTarget} disabled={busy || !activeWorkspace} />
+                </>
               ) : undefined
             }
             contextControls={

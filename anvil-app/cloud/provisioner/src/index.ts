@@ -6,7 +6,7 @@
  * Routes (Bearer-authenticated unless ALLOW_UNAUTHENTICATED=true):
  *   GET    /v1/health                    → {ok:true}  (connection validation)
  *   POST   /v1/environments              {environmentId, ttlSeconds, bootstrap}
- *   GET    /v1/environments/:id          → {status: 'running'|'unknown'}
+ *   GET    /v1/environments/:id          → running | suspended | unknown
  *   POST   /v1/environments/:id/boot     {bootstrap}  (container-replace recovery)
  *   DELETE /v1/environments/:id          → {ok:true}
  *
@@ -16,13 +16,17 @@
  * CloudEnvironmentHandle.providerRef); durable job context lives in the
  * backend, so a container replacement just needs a fresh /boot call.
  */
-import { getSandbox, type SandboxEnv } from '@cloudflare/sandbox';
+import { getSandbox, type Sandbox, type SandboxEnv } from '@cloudflare/sandbox';
 import { validBootstrap, validTtlSeconds } from './bootstrap';
+import type { MeshEnvironmentBootstrap } from './bootstrap';
+import type { ThreadSandbox } from './checkpointing-sandbox';
 import { bootWithSandbox, isBootProcess } from './lifecycle';
 
 export { Sandbox } from '@cloudflare/sandbox';
+export { ThreadSandbox } from './checkpointing-sandbox';
 
-interface Env extends SandboxEnv {
+interface Env extends SandboxEnv<Sandbox> {
+  ThreadSandbox: DurableObjectNamespace<ThreadSandbox>;
   PROVISIONER_TOKEN?: string;
   ALLOW_UNAUTHENTICATED?: string;
 }
@@ -64,6 +68,16 @@ function sandboxId(raw: string): string | null {
   return /^[A-Za-z0-9_-]{1,120}$/.test(raw) ? raw : null;
 }
 
+function usesThreadSandbox(id: string): boolean {
+  // New remote chats and their isolated staging smoke use the v2 namespace.
+  // Existing environment IDs remain pinned to the legacy namespace forever.
+  return /^remote-[0-9a-f-]{36}$/i.test(id) || /^ci-smoke-[0-9a-f-]{36}$/i.test(id);
+}
+
+function threadSandbox(env: Env, id: string): DurableObjectStub<ThreadSandbox> {
+  return env.ThreadSandbox.get(env.ThreadSandbox.idFromName(id));
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -75,8 +89,7 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/v1/environments') {
       const body = recordBody(await request.json().catch(() => ({}))) as CreateBody;
-      const id =
-        typeof body.environmentId === 'string' ? sandboxId(body.environmentId) : null;
+      const id = typeof body.environmentId === 'string' ? sandboxId(body.environmentId) : null;
       if (id === null) return json({ error: 'invalid environmentId' }, 400);
       if (!validBootstrap(body.bootstrap)) return json({ error: 'invalid bootstrap' }, 400);
       if (body.bootstrap.environmentId !== id) {
@@ -86,22 +99,41 @@ export default {
         return json({ error: 'ttlSeconds must match bootstrap' }, 400);
       }
       try {
-        const { processId, reused } = await bootWithSandbox(getSandbox(env.Sandbox, id), body.bootstrap);
+        const { processId, reused } = usesThreadSandbox(id)
+          ? await threadSandbox(env, id).boot(body.bootstrap as MeshEnvironmentBootstrap)
+          : await (async () => {
+              const sandbox = getSandbox(env.Sandbox, id);
+              await sandbox.setKeepAlive(true);
+              return bootWithSandbox(sandbox, body.bootstrap as MeshEnvironmentBootstrap);
+            })();
         return json({ providerRef: id, processId, reused }, reused ? 200 : 201);
       } catch {
         return json({ error: 'sandbox_boot_failed' }, 502);
       }
     }
 
-    const match = /^\/v1\/environments\/([A-Za-z0-9_-]{1,120})(\/boot)?$/.exec(url.pathname);
+    const match = /^\/v1\/environments\/([A-Za-z0-9_-]{1,120})(\/(?:boot|suspend))?$/.exec(
+      url.pathname,
+    );
     if (match !== null) {
       const id = match[1];
-      const sandbox = getSandbox(env.Sandbox, id);
+      const useThread = usesThreadSandbox(id);
 
       if (request.method === 'GET' && match[2] === undefined) {
         let running;
         try {
-          running = await sandbox.listProcesses();
+          if (useThread) {
+            const sandbox = threadSandbox(env, id);
+            const lifecycle = await sandbox.lifecycleStatus();
+            if (!lifecycle.running) {
+              if (lifecycle.hasSnapshot) return json({ status: 'suspended' });
+              await sandbox.start();
+            }
+            running = await sandbox.listProcesses();
+          } else {
+            // Keep the established path for the immutable default-policy app.
+            running = await getSandbox(env.Sandbox, id).listProcesses();
+          }
         } catch {
           return json({ error: 'sandbox_status_failed' }, 502);
         }
@@ -112,14 +144,31 @@ export default {
         return json({ status: live ? 'running' : 'unknown' });
       }
 
+      if (request.method === 'POST' && match[2] === '/suspend') {
+        if (!useThread) return json({ error: 'snapshots require the thread environment' }, 409);
+        try {
+          const sandbox = threadSandbox(env, id);
+          const result = await sandbox.suspendAndSnapshot();
+          return json({ ok: true, size: result.size });
+        } catch {
+          return json({ error: 'sandbox_suspend_failed' }, 502);
+        }
+      }
+
       if (request.method === 'POST' && match[2] === '/boot') {
+        if (!useThread)
+          return json({ error: 'snapshot restore requires the thread environment' }, 409);
         const body = recordBody(await request.json().catch(() => ({}))) as BootBody;
         if (!validBootstrap(body.bootstrap)) return json({ error: 'invalid bootstrap' }, 400);
         if (body.bootstrap.environmentId !== id) {
           return json({ error: 'bootstrap environmentId mismatch' }, 400);
         }
+        const sandbox = threadSandbox(env, id);
+        if (!(await sandbox.hasSnapshot())) {
+          return json({ error: 'environment_snapshot_missing' }, 409);
+        }
         try {
-          const { processId, reused } = await bootWithSandbox(getSandbox(env.Sandbox, id), body.bootstrap);
+          const { processId, reused } = await sandbox.boot(body.bootstrap);
           return json({ providerRef: id, processId, reused }, reused ? 200 : 201);
         } catch {
           return json({ error: 'sandbox_boot_failed' }, 502);
@@ -128,7 +177,11 @@ export default {
 
       if (request.method === 'DELETE' && match[2] === undefined) {
         try {
-          await sandbox.destroy();
+          if (useThread) {
+            await threadSandbox(env, id).discardSnapshot();
+          } else {
+            await getSandbox(env.Sandbox, id).destroy();
+          }
           return json({ ok: true });
         } catch {
           // Do not claim termination when the provider rejected the request.

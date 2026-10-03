@@ -147,6 +147,7 @@ interface ChatContextValue {
   interrupt: () => Promise<void>;
   stopSession: (sessionId: string) => Promise<void>;
   startNewSession: () => Promise<void>;
+  ensureChatThread: (firstPrompt?: string) => Promise<string>;
   loadHistory: () => Promise<void>;
   clearHistory: () => Promise<void>;
   setModel: (model: string, provider: AgentProvider) => void;
@@ -721,6 +722,28 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       return created;
     },
     [activePersona, activeRepoState, activeReposState, activeWorkspace?.id, applyThreadState],
+  );
+
+  const ensureChatThread = useCallback(
+    async (firstPrompt?: string) => {
+      const thread =
+        activeThreadRef.current ??
+        (await createThreadRecord({
+          title:
+            firstPrompt && activePersona
+              ? buildThreadTitle(firstPrompt, activePersona.name)
+              : undefined,
+        }));
+      if (!thread) throw new Error('Choose a persona before starting a chat.');
+      if (firstPrompt && activePersona && thread.messageCount === 0 && !thread.titleLocked) {
+        const updated = await window.anvil.chat.updateThread(thread.id, {
+          title: buildThreadTitle(firstPrompt, activePersona.name),
+        });
+        if (updated && activeThreadRef.current?.id === thread.id) applyThreadState(updated);
+      }
+      return thread.id;
+    },
+    [activePersona, applyThreadState, createThreadRecord],
   );
 
   const renameThread = useCallback(
@@ -3444,6 +3467,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         interrupt,
         stopSession: stopSessionLive,
         startNewSession,
+        ensureChatThread,
         loadHistory: loadHistoryFn,
         clearHistory: clearHistoryFn,
         setModel: updateModel,

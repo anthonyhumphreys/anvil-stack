@@ -801,6 +801,7 @@ const api: AnvilAPI = {
     getRemoteChat: (id) => ipcRenderer.invoke('sync-runtime:remote-chat-get', { id }),
     sendRemoteChat: (input) => ipcRenderer.invoke('sync-runtime:remote-chat-send', input),
     cancelRemoteChat: (id) => ipcRenderer.invoke('sync-runtime:remote-chat-cancel', { id }),
+    endRemoteChat: (id) => ipcRenderer.invoke('sync-runtime:remote-chat-end', { id }),
 
     status: () => ipcRenderer.invoke('sync-runtime:status'),
     listCloudProviderConnections: (): Promise<CloudEnvironmentProviderConnection[]> =>
@@ -820,6 +821,10 @@ const api: AnvilAPI = {
       includeTerminal = false,
     ): Promise<{ environments: CloudEnvironmentRecord[] }> =>
       ipcRenderer.invoke('sync-runtime:cloud-environments-list', includeTerminal),
+    getManagedEnvironmentLimits: (): Promise<{
+      maxTtlSeconds: number;
+      maxConcurrent: number;
+    }> => ipcRenderer.invoke('sync-runtime:managed-environment-limits'),
     requestCloudEnvironment: (input: {
       provider: EnvironmentProviderId;
       ttlSeconds: number;

@@ -651,10 +651,10 @@ export function CloudEnvironmentsPanel({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h4 className="text-base font-semibold text-text-primary">Cloud environments</h4>
+          <h4 className="text-base font-semibold text-text-primary">Cloud workers</h4>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-text-secondary">
-            Start a temporary worker for jobs that should run away from this computer. Use
-            Anvil-hosted capacity or a provider connection on this device.
+            Choose Run on → Anvil hosted cloud in a chat. Anvil starts its worker automatically.
+            Manage workers here, or create a separate environment for workflow jobs.
           </p>
         </div>
         <button
@@ -682,413 +682,423 @@ export function CloudEnvironmentsPanel({
         </div>
       ) : (
         <>
-          <div
-            className={`grid gap-4 ${compact ? '' : 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'}`}
-          >
+          <details>
+            <summary className="cursor-pointer text-sm font-medium text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+              Advanced: workflow environments and provider connections
+            </summary>
             <div
-              className={`pb-5 ${compact ? 'border-b border-border' : 'border-b border-border lg:border-b-0 lg:border-r lg:pb-0 lg:pr-6'}`}
+              className={`mt-4 grid gap-4 ${compact ? '' : 'lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'}`}
             >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-text-primary">Create an environment</p>
-                  <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-                    Start it here, then choose it as a workflow target when its worker is ready.
-                  </p>
+              <div
+                className={`pb-5 ${compact ? 'border-b border-border' : 'border-b border-border lg:border-b-0 lg:border-r lg:pb-0 lg:pr-6'}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-text-primary">Create an environment</p>
+                    <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+                      Start it here, then choose it as a workflow target when its worker is ready.
+                    </p>
+                  </div>
+                  <Server aria-hidden="true" size={17} className="shrink-0 text-accent" />
                 </div>
-                <Server aria-hidden="true" size={17} className="shrink-0 text-accent" />
-              </div>
-              <div className="mt-4 space-y-3">
-                <label className="block text-xs font-medium text-text-secondary">
-                  Provider
-                  <select
-                    name="environment-provider"
-                    className={`${fieldClass} mt-1`}
-                    value={requestProvider}
-                    required
-                    onChange={(event) => {
-                      const next = event.target.value as EnvironmentProviderId;
-                      setRequestProvider(next);
-                      setRequestConnectionId('');
-                    }}
-                  >
-                    {PROVIDERS.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.label}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="mt-1 block font-normal text-text-tertiary">
-                    {providerMeta(requestProvider).detail}
-                  </span>
-                </label>
-                {providerMeta(requestProvider).requiresConnection && (
-                  <>
-                    <label className="block text-xs font-medium text-text-secondary">
-                      Provider connection
-                      <select
-                        name="environment-connection"
-                        className={`${fieldClass} mt-1`}
-                        value={requestConnectionId}
-                        required
-                        onChange={(event) => setRequestConnectionId(event.target.value)}
-                      >
-                        <option value="">Choose a saved connection</option>
-                        {matchingConnections.map((connection) => (
-                          <option key={connection.id} value={connection.id}>
-                            {connection.displayName ?? providerLabel(connection.provider)}
-                          </option>
-                        ))}
-                      </select>
-                      {!matchingConnections.length && (
-                        <span className="mt-1 block font-normal text-warning">
-                          Save a {providerLabel(requestProvider)} connection below first.
-                        </span>
-                      )}
-                    </label>
-                    {runtime && !runtime.meshWorker.enabled && (
-                      <p className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs leading-relaxed text-warning">
-                        BYO provider requests use this device&apos;s Mesh worker and its local
-                        credentials. Enable Mesh jobs for this device before starting one.
-                      </p>
-                    )}
-                    {runtime?.meshWorker.enabled && !runtime.meshWorker.connected && (
-                      <p className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs leading-relaxed text-warning">
-                        Mesh is enabled but this device is offline. A BYO request will stay queued
-                        until the worker reconnects.
-                      </p>
-                    )}
-                  </>
-                )}
-                <div
-                  className={`grid gap-3 ${compact ? '' : 'sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'}`}
-                >
+                <div className="mt-4 space-y-3">
                   <label className="block text-xs font-medium text-text-secondary">
-                    Lifetime
+                    Provider
                     <select
-                      name="environment-lifetime"
+                      name="environment-provider"
                       className={`${fieldClass} mt-1`}
-                      value={requestTtl}
+                      value={requestProvider}
                       required
-                      onChange={(event) => setRequestTtl(event.target.value)}
+                      onChange={(event) => {
+                        const next = event.target.value as EnvironmentProviderId;
+                        setRequestProvider(next);
+                        setRequestConnectionId('');
+                      }}
                     >
-                      <option value="1800">30 minutes</option>
-                      <option value="3600">1 hour</option>
-                      <option value="14400">4 hours</option>
-                      <option value="28800">8 hours</option>
+                      {PROVIDERS.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.label}
+                        </option>
+                      ))}
                     </select>
+                    <span className="mt-1 block font-normal text-text-tertiary">
+                      {providerMeta(requestProvider).detail}
+                    </span>
                   </label>
-                  <p className="self-end pb-2 text-xs leading-relaxed text-text-tertiary">
-                    The environment ID and provider state stay visible below while it starts.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void requestEnvironment()}
-                  disabled={
-                    requesting ||
-                    pendingRequest?.phase === 'submitting' ||
-                    pendingRequest?.phase === 'queued' ||
-                    pendingRequest?.phase === 'starting' ||
-                    (providerMeta(requestProvider).requiresConnection &&
-                      (!matchingConnections.length || !runtime?.meshWorker.enabled))
-                  }
-                  className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
-                >
-                  {requesting && (
-                    <Loader2
-                      aria-hidden="true"
-                      size={14}
-                      className="animate-spin motion-reduce:animate-none"
-                    />
-                  )}
-                  {requesting
-                    ? 'Starting…'
-                    : pendingRequest?.phase === 'unknown' || pendingRequest?.phase === 'timed-out'
-                      ? 'Retry request'
-                      : 'Start environment'}
-                </button>
-                {pendingRequest && (
-                  <div
-                    className="rounded-md border border-accent/30 bg-accent/5 p-3 text-xs text-text-secondary"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    <div className="flex items-start gap-2">
-                      {(pendingRequest.phase === 'submitting' ||
-                        pendingRequest.phase === 'queued' ||
-                        pendingRequest.phase === 'starting') && (
-                        <Loader2
-                          aria-hidden="true"
-                          size={14}
-                          className="mt-0.5 shrink-0 animate-spin text-accent motion-reduce:animate-none"
-                        />
+                  {providerMeta(requestProvider).requiresConnection && (
+                    <>
+                      <label className="block text-xs font-medium text-text-secondary">
+                        Provider connection
+                        <select
+                          name="environment-connection"
+                          className={`${fieldClass} mt-1`}
+                          value={requestConnectionId}
+                          required
+                          onChange={(event) => setRequestConnectionId(event.target.value)}
+                        >
+                          <option value="">Choose a saved connection</option>
+                          {matchingConnections.map((connection) => (
+                            <option key={connection.id} value={connection.id}>
+                              {connection.displayName ?? providerLabel(connection.provider)}
+                            </option>
+                          ))}
+                        </select>
+                        {!matchingConnections.length && (
+                          <span className="mt-1 block font-normal text-warning">
+                            Save a {providerLabel(requestProvider)} connection below first.
+                          </span>
+                        )}
+                      </label>
+                      {runtime && !runtime.meshWorker.enabled && (
+                        <p className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs leading-relaxed text-warning">
+                          BYO provider requests use this device&apos;s Mesh worker and its local
+                          credentials. Enable Mesh jobs for this device before starting one.
+                        </p>
                       )}
-                      <div className="min-w-0">
-                        <p className="font-medium text-text-primary">
-                          {pendingRequest.phase === 'ready'
-                            ? 'Environment ready for workflow jobs.'
-                            : pendingRequest.phase === 'failed'
-                              ? 'Environment provisioning failed.'
-                              : pendingRequest.phase === 'timed-out'
-                                ? 'Environment is still queued.'
-                                : pendingRequest.phase === 'unknown'
-                                  ? 'We are still checking this environment request.'
-                                  : 'Starting environment…'}
+                      {runtime?.meshWorker.enabled && !runtime.meshWorker.connected && (
+                        <p className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs leading-relaxed text-warning">
+                          Mesh is enabled but this device is offline. A BYO request will stay queued
+                          until the worker reconnects.
                         </p>
-                        <p className="mt-1">
-                          {pendingRequest.phase === 'ready'
-                            ? 'Select it as a workflow target when you configure a run.'
-                            : pendingRequest.phase === 'failed'
-                              ? (pendingRequest.error ?? 'Check the provider connection and retry.')
-                              : pendingRequest.phase === 'timed-out'
-                                ? pendingRequest.error
-                                : pendingRequest.phase === 'unknown'
-                                  ? `${pendingRequest.error ?? 'The request may still be processing.'} Retrying reuses this request.`
-                                  : 'We’ll keep checking until the worker is ready.'}
-                        </p>
-                        <p className="mt-1 font-mono text-xs text-text-tertiary">
-                          {shortId(pendingRequest.environmentId)}
-                          {pendingRequest.jobId ? ` · job ${shortId(pendingRequest.jobId)}` : ''}
-                          {pendingRequest.environmentState
-                            ? ` · ${stateLabel(pendingRequest.environmentState)}`
-                            : pendingRequest.jobState
-                              ? ` · ${stateLabel(pendingRequest.jobState)}`
-                              : ''}
-                        </p>
+                      )}
+                    </>
+                  )}
+                  <div
+                    className={`grid gap-3 ${compact ? '' : 'sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'}`}
+                  >
+                    <label className="block text-xs font-medium text-text-secondary">
+                      Lifetime
+                      <select
+                        name="environment-lifetime"
+                        className={`${fieldClass} mt-1`}
+                        value={requestTtl}
+                        required
+                        onChange={(event) => setRequestTtl(event.target.value)}
+                      >
+                        <option value="1800">30 minutes</option>
+                        <option value="3600">1 hour</option>
+                        <option value="14400">4 hours</option>
+                        <option value="28800">8 hours</option>
+                      </select>
+                    </label>
+                    <p className="self-end pb-2 text-xs leading-relaxed text-text-tertiary">
+                      The environment ID and provider state stay visible below while it starts.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void requestEnvironment()}
+                    disabled={
+                      requesting ||
+                      pendingRequest?.phase === 'submitting' ||
+                      pendingRequest?.phase === 'queued' ||
+                      pendingRequest?.phase === 'starting' ||
+                      (providerMeta(requestProvider).requiresConnection &&
+                        (!matchingConnections.length || !runtime?.meshWorker.enabled))
+                    }
+                    className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
+                  >
+                    {requesting && (
+                      <Loader2
+                        aria-hidden="true"
+                        size={14}
+                        className="animate-spin motion-reduce:animate-none"
+                      />
+                    )}
+                    {requesting
+                      ? 'Starting…'
+                      : pendingRequest?.phase === 'unknown' || pendingRequest?.phase === 'timed-out'
+                        ? 'Retry request'
+                        : 'Start environment'}
+                  </button>
+                  {pendingRequest && (
+                    <div
+                      className="rounded-md border border-accent/30 bg-accent/5 p-3 text-xs text-text-secondary"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <div className="flex items-start gap-2">
+                        {(pendingRequest.phase === 'submitting' ||
+                          pendingRequest.phase === 'queued' ||
+                          pendingRequest.phase === 'starting') && (
+                          <Loader2
+                            aria-hidden="true"
+                            size={14}
+                            className="mt-0.5 shrink-0 animate-spin text-accent motion-reduce:animate-none"
+                          />
+                        )}
+                        <div className="min-w-0">
+                          <p className="font-medium text-text-primary">
+                            {pendingRequest.phase === 'ready'
+                              ? 'Environment ready for workflow jobs.'
+                              : pendingRequest.phase === 'failed'
+                                ? 'Environment provisioning failed.'
+                                : pendingRequest.phase === 'timed-out'
+                                  ? 'Environment is still queued.'
+                                  : pendingRequest.phase === 'unknown'
+                                    ? 'We are still checking this environment request.'
+                                    : 'Starting environment…'}
+                          </p>
+                          <p className="mt-1">
+                            {pendingRequest.phase === 'ready'
+                              ? 'Select it as a workflow target when you configure a run.'
+                              : pendingRequest.phase === 'failed'
+                                ? (pendingRequest.error ??
+                                  'Check the provider connection and retry.')
+                                : pendingRequest.phase === 'timed-out'
+                                  ? pendingRequest.error
+                                  : pendingRequest.phase === 'unknown'
+                                    ? `${pendingRequest.error ?? 'The request may still be processing.'} Retrying reuses this request.`
+                                    : 'We’ll keep checking until the worker is ready.'}
+                          </p>
+                          <p className="mt-1 font-mono text-xs text-text-tertiary">
+                            {shortId(pendingRequest.environmentId)}
+                            {pendingRequest.jobId ? ` · job ${shortId(pendingRequest.jobId)}` : ''}
+                            {pendingRequest.environmentState
+                              ? ` · ${stateLabel(pendingRequest.environmentState)}`
+                              : pendingRequest.jobState
+                                ? ` · ${stateLabel(pendingRequest.jobState)}`
+                                : ''}
+                          </p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="pt-1">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-text-primary">
-                    Saved provider connections
-                  </p>
-                  <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-                    Credentials stay encrypted on this device and are used only to start its
-                    environments.
-                  </p>
-                </div>
-                <KeyRound aria-hidden="true" size={17} className="shrink-0 text-accent" />
-              </div>
-              {connections.length ? (
-                <ul className="mt-3 divide-y divide-border">
-                  {connections.map((connection) => (
-                    <li
-                      key={connection.id}
-                      className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm text-text-primary">
-                          {connection.displayName ?? providerLabel(connection.provider)}
-                        </p>
-                        <p className="mt-0.5 text-xs text-text-tertiary">
-                          {providerLabel(connection.provider)} ·{' '}
-                          {connection.hasSecret ? 'credentials saved' : 'no credentials saved'}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        title="Remove connection"
-                        aria-label={`Remove ${connection.displayName ?? providerLabel(connection.provider)} connection`}
-                        disabled={connectionHasActiveEnvironment(connection.id, localEnvironments)}
-                        onClick={() => void removeConnection(connection)}
-                        className="rounded p-1.5 text-text-tertiary hover:bg-error/10 hover:text-error disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        <Trash2 aria-hidden="true" size={14} />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-3 text-sm text-text-tertiary">
-                  No provider connections saved on this device.
-                </p>
-              )}
-              <button
-                type="button"
-                onClick={() => setShowConnectionForm((open) => !open)}
-                className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent/80"
-              >
-                {showConnectionForm ? (
-                  <X aria-hidden="true" size={14} />
-                ) : (
-                  <Plus aria-hidden="true" size={14} />
-                )}
-                {showConnectionForm ? 'Close connection form' : 'Add provider connection'}
-              </button>
-            </div>
-          </div>
-
-          {showConnectionForm && (
-            <div className="border-t border-border pt-5">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-text-primary">
-                    Add a provider connection
-                  </p>
-                  <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-                    Credentials stay on this device and are not synced to other devices.
-                  </p>
-                </div>
-              </div>
-              <div className={`mt-4 grid gap-3 ${compact ? '' : 'sm:grid-cols-2'}`}>
-                <label className="block text-xs font-medium text-text-secondary sm:col-span-2">
-                  Provider
-                  <select
-                    className={`${fieldClass} mt-1`}
-                    value={draft.provider}
-                    required
-                    onChange={(event) => {
-                      const provider = event.target.value as EnvironmentProviderId;
-                      updateDraft({
-                        provider,
-                        region: provider === 'aws-lambda-microvm' ? 'us-east-1' : '',
-                      });
-                    }}
-                  >
-                    {PROVIDERS.filter((provider) => provider.requiresConnection).map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <ConnectionField
-                  label="Connection name"
-                  value={draft.displayName}
-                  onChange={(value) => updateDraft({ displayName: value })}
-                  placeholder="Production AWS"
-                  required
-                />
-                {draft.provider === 'aws-lambda-microvm' && (
-                  <>
-                    <ConnectionField
-                      label="Region"
-                      value={draft.region}
-                      onChange={(value) => updateDraft({ region: value })}
-                      placeholder="us-east-1"
-                      required
-                    />
-                    <ConnectionField
-                      label="Worker image identifier"
-                      value={draft.imageIdentifier}
-                      onChange={(value) => updateDraft({ imageIdentifier: value })}
-                      placeholder="arn:aws:lambda:…"
-                      required
-                    />
-                    <ConnectionField
-                      label="AWS access key ID"
-                      value={draft.accessKeyId}
-                      onChange={(value) => updateDraft({ accessKeyId: value })}
-                    />
-                    <ConnectionField
-                      label="AWS secret access key"
-                      value={draft.secretAccessKey}
-                      onChange={(value) => updateDraft({ secretAccessKey: value })}
-                      type="password"
-                    />
-                    <ConnectionField
-                      label="Session token"
-                      value={draft.sessionToken}
-                      onChange={(value) => updateDraft({ sessionToken: value })}
-                      type="password"
-                    />
-                    <p className="text-xs text-text-tertiary sm:col-span-2">
-                      Leave the AWS fields empty to use credentials already available to this
-                      device.
-                    </p>
-                  </>
-                )}
-                {draft.provider === 'cloudflare-sandbox' && (
-                  <>
-                    <ConnectionField
-                      label="Provisioner Worker URL"
-                      value={draft.url}
-                      onChange={(value) => updateDraft({ url: value })}
-                      placeholder="https://…workers.dev"
-                      required
-                    />
-                    <ConnectionField
-                      label="Provisioner token"
-                      value={draft.token}
-                      onChange={(value) => updateDraft({ token: value })}
-                      type="password"
-                    />
-                  </>
-                )}
-                {draft.provider === 'vercel-sandbox' && (
-                  <>
-                    <ConnectionField
-                      label="Worker image"
-                      value={draft.image}
-                      onChange={(value) => updateDraft({ image: value })}
-                      placeholder="vcr.vercel.com/…"
-                      required
-                    />
-                    <ConnectionField
-                      label="Vercel token"
-                      value={draft.token}
-                      onChange={(value) => updateDraft({ token: value })}
-                      type="password"
-                      required
-                    />
-                    <ConnectionField
-                      label="Team ID"
-                      value={draft.teamId}
-                      onChange={(value) => updateDraft({ teamId: value })}
-                    />
-                    <ConnectionField
-                      label="Project ID"
-                      value={draft.projectId}
-                      onChange={(value) => updateDraft({ projectId: value })}
-                    />
-                    <ConnectionField
-                      label="Region"
-                      value={draft.region}
-                      onChange={(value) => updateDraft({ region: value })}
-                      placeholder="iad1"
-                    />
-                  </>
-                )}
-              </div>
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void saveConnection()}
-                  disabled={savingConnection}
-                  className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
-                >
-                  {savingConnection && (
-                    <Loader2
-                      aria-hidden="true"
-                      size={14}
-                      className="animate-spin motion-reduce:animate-none"
-                    />
                   )}
-                  {savingConnection ? 'Saving…' : 'Save connection'}
-                </button>
+                </div>
+              </div>
+
+              <div className="pt-1">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-text-primary">
+                      Saved provider connections
+                    </p>
+                    <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+                      Credentials stay encrypted on this device and are used only to start its
+                      environments.
+                    </p>
+                  </div>
+                  <KeyRound aria-hidden="true" size={17} className="shrink-0 text-accent" />
+                </div>
+                {connections.length ? (
+                  <ul className="mt-3 divide-y divide-border">
+                    {connections.map((connection) => (
+                      <li
+                        key={connection.id}
+                        className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm text-text-primary">
+                            {connection.displayName ?? providerLabel(connection.provider)}
+                          </p>
+                          <p className="mt-0.5 text-xs text-text-tertiary">
+                            {providerLabel(connection.provider)} ·{' '}
+                            {connection.hasSecret ? 'credentials saved' : 'no credentials saved'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          title="Remove connection"
+                          aria-label={`Remove ${connection.displayName ?? providerLabel(connection.provider)} connection`}
+                          disabled={connectionHasActiveEnvironment(
+                            connection.id,
+                            localEnvironments,
+                          )}
+                          onClick={() => void removeConnection(connection)}
+                          className="rounded p-1.5 text-text-tertiary hover:bg-error/10 hover:text-error disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Trash2 aria-hidden="true" size={14} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-3 text-sm text-text-tertiary">
+                    No provider connections saved on this device.
+                  </p>
+                )}
                 <button
                   type="button"
-                  onClick={() => {
-                    setDraft(EMPTY_DRAFT);
-                    setShowConnectionForm(false);
-                  }}
-                  className="rounded-md border border-border px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+                  onClick={() => setShowConnectionForm((open) => !open)}
+                  className="mt-4 inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent/80"
                 >
-                  Cancel
+                  {showConnectionForm ? (
+                    <X aria-hidden="true" size={14} />
+                  ) : (
+                    <Plus aria-hidden="true" size={14} />
+                  )}
+                  {showConnectionForm ? 'Close connection form' : 'Add provider connection'}
                 </button>
-                <span className="text-xs text-text-tertiary">
-                  Secrets are encrypted before they touch local storage.
-                </span>
               </div>
             </div>
-          )}
 
+            {showConnectionForm && (
+              <div className="border-t border-border pt-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-text-primary">
+                      Add a provider connection
+                    </p>
+                    <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+                      Credentials stay on this device and are not synced to other devices.
+                    </p>
+                  </div>
+                </div>
+                <div className={`mt-4 grid gap-3 ${compact ? '' : 'sm:grid-cols-2'}`}>
+                  <label className="block text-xs font-medium text-text-secondary sm:col-span-2">
+                    Provider
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={draft.provider}
+                      required
+                      onChange={(event) => {
+                        const provider = event.target.value as EnvironmentProviderId;
+                        updateDraft({
+                          provider,
+                          region: provider === 'aws-lambda-microvm' ? 'us-east-1' : '',
+                        });
+                      }}
+                    >
+                      {PROVIDERS.filter((provider) => provider.requiresConnection).map(
+                        (provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.label}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                  <ConnectionField
+                    label="Connection name"
+                    value={draft.displayName}
+                    onChange={(value) => updateDraft({ displayName: value })}
+                    placeholder="Production AWS"
+                    required
+                  />
+                  {draft.provider === 'aws-lambda-microvm' && (
+                    <>
+                      <ConnectionField
+                        label="Region"
+                        value={draft.region}
+                        onChange={(value) => updateDraft({ region: value })}
+                        placeholder="us-east-1"
+                        required
+                      />
+                      <ConnectionField
+                        label="Worker image identifier"
+                        value={draft.imageIdentifier}
+                        onChange={(value) => updateDraft({ imageIdentifier: value })}
+                        placeholder="arn:aws:lambda:…"
+                        required
+                      />
+                      <ConnectionField
+                        label="AWS access key ID"
+                        value={draft.accessKeyId}
+                        onChange={(value) => updateDraft({ accessKeyId: value })}
+                      />
+                      <ConnectionField
+                        label="AWS secret access key"
+                        value={draft.secretAccessKey}
+                        onChange={(value) => updateDraft({ secretAccessKey: value })}
+                        type="password"
+                      />
+                      <ConnectionField
+                        label="Session token"
+                        value={draft.sessionToken}
+                        onChange={(value) => updateDraft({ sessionToken: value })}
+                        type="password"
+                      />
+                      <p className="text-xs text-text-tertiary sm:col-span-2">
+                        Leave the AWS fields empty to use credentials already available to this
+                        device.
+                      </p>
+                    </>
+                  )}
+                  {draft.provider === 'cloudflare-sandbox' && (
+                    <>
+                      <ConnectionField
+                        label="Provisioner Worker URL"
+                        value={draft.url}
+                        onChange={(value) => updateDraft({ url: value })}
+                        placeholder="https://…workers.dev"
+                        required
+                      />
+                      <ConnectionField
+                        label="Provisioner token"
+                        value={draft.token}
+                        onChange={(value) => updateDraft({ token: value })}
+                        type="password"
+                      />
+                    </>
+                  )}
+                  {draft.provider === 'vercel-sandbox' && (
+                    <>
+                      <ConnectionField
+                        label="Worker image"
+                        value={draft.image}
+                        onChange={(value) => updateDraft({ image: value })}
+                        placeholder="vcr.vercel.com/…"
+                        required
+                      />
+                      <ConnectionField
+                        label="Vercel token"
+                        value={draft.token}
+                        onChange={(value) => updateDraft({ token: value })}
+                        type="password"
+                        required
+                      />
+                      <ConnectionField
+                        label="Team ID"
+                        value={draft.teamId}
+                        onChange={(value) => updateDraft({ teamId: value })}
+                      />
+                      <ConnectionField
+                        label="Project ID"
+                        value={draft.projectId}
+                        onChange={(value) => updateDraft({ projectId: value })}
+                      />
+                      <ConnectionField
+                        label="Region"
+                        value={draft.region}
+                        onChange={(value) => updateDraft({ region: value })}
+                        placeholder="iad1"
+                      />
+                    </>
+                  )}
+                </div>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void saveConnection()}
+                    disabled={savingConnection}
+                    className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
+                  >
+                    {savingConnection && (
+                      <Loader2
+                        aria-hidden="true"
+                        size={14}
+                        className="animate-spin motion-reduce:animate-none"
+                      />
+                    )}
+                    {savingConnection ? 'Saving…' : 'Save connection'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraft(EMPTY_DRAFT);
+                      setShowConnectionForm(false);
+                    }}
+                    className="rounded-md border border-border px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+                  >
+                    Cancel
+                  </button>
+                  <span className="text-xs text-text-tertiary">
+                    Secrets are encrypted before they touch local storage.
+                  </span>
+                </div>
+              </div>
+            )}
+          </details>
           <div className="border-t border-border pt-5">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
               <div>
@@ -1120,7 +1130,7 @@ export function CloudEnvironmentsPanel({
               <div className="py-5 text-center">
                 <p className="text-sm text-text-secondary">No active environments yet.</p>
                 <p className="mt-1 text-xs text-text-tertiary">
-                  Start one above when a workflow needs a temporary worker.
+                  Start a chat on Anvil hosted cloud to create its worker automatically.
                 </p>
               </div>
             )}

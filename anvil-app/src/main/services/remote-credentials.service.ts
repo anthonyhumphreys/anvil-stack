@@ -34,6 +34,8 @@ export interface EnsureRemoteCredentialGrantInput {
   result: JobGetResult;
   /** Persisted by the caller only after a successful delivery. */
   deliveredMarker?: string;
+  /** Present only for a hosted worker tied to a source-owned environment. */
+  hostedEnvironmentId?: string;
 }
 
 export interface EnsureRemoteCredentialGrantResult {
@@ -94,12 +96,24 @@ export function validateRemoteCredentialAvailability(
 export async function ensureRemoteCredentialGrant(
   input: EnsureRemoteCredentialGrantInput,
 ): Promise<EnsureRemoteCredentialGrantResult> {
-  validateRemoteCredentialChoice(
-    input.provider,
-    input.targetEnrollmentId,
-    input.scope,
-    input.choice,
-  );
+  const hostedAuthorized =
+    input.hostedEnvironmentId !== undefined && (await isHostedEnvironmentTarget(input));
+  if (input.hostedEnvironmentId !== undefined && !hostedAuthorized)
+    throw new Error('The hosted environment no longer matches this remote chat.');
+  if (!hostedAuthorized) {
+    validateRemoteCredentialChoice(
+      input.provider,
+      input.targetEnrollmentId,
+      input.scope,
+      input.choice,
+    );
+  } else if (
+    !listDeviceIdentities(input.scope).some(
+      (entry) => entry.enrollmentId === input.targetEnrollmentId,
+    )
+  ) {
+    throw new Error('The hosted worker identity is unavailable for credential delivery.');
+  }
   if (
     input.choice !== 'openai-api-key' &&
     input.choice !== 'codex-host-auth' &&
@@ -134,7 +148,7 @@ export async function ensureRemoteCredentialGrant(
 
   const current = inFlightDeliveries.get(marker);
   if (current !== undefined) return current;
-  const delivery = deliverGrant(input, attempt, marker);
+  const delivery = deliverGrant(input, attempt, marker, hostedAuthorized);
   inFlightDeliveries.set(marker, delivery);
   try {
     return await delivery;
@@ -147,13 +161,14 @@ async function deliverGrant(
   input: EnsureRemoteCredentialGrantInput,
   attempt: JobGetResult['attempts'][number],
   marker: string,
+  hostedAuthorized: boolean,
 ): Promise<EnsureRemoteCredentialGrantResult> {
   const recipient = listDeviceIdentities(input.scope).find(
     (device) => device.enrollmentId === input.targetEnrollmentId,
   );
   if (
     recipient === undefined ||
-    deviceTrustState(input.scope, input.targetEnrollmentId) !== 'trusted'
+    (!hostedAuthorized && deviceTrustState(input.scope, input.targetEnrollmentId) !== 'trusted')
   ) {
     throw new Error('The selected remote device is no longer trusted.');
   }
@@ -214,6 +229,33 @@ async function deliverGrant(
     throw new Error('The backend did not accept the remote credential grant.');
   }
   return { delivered: true, marker };
+}
+
+async function isHostedEnvironmentTarget(
+  input: EnsureRemoteCredentialGrantInput,
+): Promise<boolean> {
+  const listed = await rpc<{
+    environments?: Array<{
+      environmentId: string;
+      provider: string;
+      state: string;
+      enrollmentId?: string;
+    }>;
+  }>(
+    { apiUrl: input.context.apiUrl },
+    'environment.list',
+    { includeTerminal: false },
+    input.context.accessToken,
+  );
+  return (
+    listed.result.environments?.some(
+      (environment) =>
+        environment.environmentId === input.hostedEnvironmentId &&
+        environment.provider === 'anvil-managed' &&
+        ['enrolled', 'running'].includes(environment.state) &&
+        environment.enrollmentId === input.targetEnrollmentId,
+    ) === true
+  );
 }
 
 function isPlaceholderApiKey(value: string): boolean {

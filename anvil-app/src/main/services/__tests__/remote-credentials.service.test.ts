@@ -227,6 +227,40 @@ describe('remote-credentials.service', () => {
     expect(result.marker).not.toContain(CODEX_AUTH_JSON);
   });
 
+  it('allows task-scoped credentials to an environment-bound ephemeral enrollment without ADK trust', async () => {
+    mockTrustState.mockReturnValue('pending');
+    mockRpc.mockImplementation(async (_connection, operation) =>
+      operation === 'environment.list'
+        ? {
+            result: {
+              environments: [
+                {
+                  environmentId: 'remote-chat-env',
+                  provider: 'anvil-managed',
+                  state: 'running',
+                  enrollmentId: TARGET,
+                },
+              ],
+            },
+            serverTime: new Date().toISOString(),
+          }
+        : { result: { delivered: true }, serverTime: new Date().toISOString() },
+    );
+    const result = await ensureRemoteCredentialGrant({
+      ...INPUT_BASE,
+      result: jobResult(),
+      hostedEnvironmentId: 'remote-chat-env',
+    });
+    expect(result.delivered).toBe(true);
+    expect(mockRpc).toHaveBeenCalledWith(
+      { apiUrl: 'https://sync.example' },
+      'environment.list',
+      { includeTerminal: false },
+      'access-token',
+    );
+    expect(mockSeal).toHaveBeenCalledWith(expect.objectContaining({ targetEnrollmentId: TARGET }));
+  });
+
   it('refuses missing or placeholder saved API keys', async () => {
     mockGetSettings.mockReturnValue({ openaiApiKey: '••••••••' });
     await expect(

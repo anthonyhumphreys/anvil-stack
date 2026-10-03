@@ -13,6 +13,7 @@ import type { PermissionMode } from '../../../cloud/contract/permissions.js';
 import type { JobCreateParams, JobGetResult, JobSummary } from '../../../cloud/contract/jobs.js';
 import type { SessionCheckpoint } from '../../../cloud/contract/handoff.js';
 import type { DeviceListResult } from '../../../cloud/contract/auth.js';
+import type { CloudEnvironment } from '../../../cloud/contract/environment.js';
 import type { SyncScope } from '../../shared/sync-mesh.js';
 import type { RemoteCredentialChoice } from '../../shared/remote-chat.js';
 import { getDb } from '../db/database.js';
@@ -39,15 +40,28 @@ interface RemoteChatContext {
   accessToken: string;
   enrollmentId: string;
   scope?: SyncScope;
+  requestHostedEnvironment?: (input: {
+    environmentId: string;
+    displayName: string;
+    purpose: 'remote-chat';
+  }) => Promise<{ job: JobSummary }>;
+  listHostedEnvironments?: () => Promise<{ environments: CloudEnvironment[] }>;
+  reapHostedEnvironment?: (environmentId: string) => Promise<unknown>;
+  suspendHostedEnvironment?: (environmentId: string) => Promise<CloudEnvironment>;
+  resumeHostedEnvironment?: (environmentId: string) => Promise<CloudEnvironment>;
 }
 
 interface StoredTurn extends RemoteChatTurn {
   requestId: string;
+  permissionMode?: PermissionMode;
+  reasoningEffort?: RemoteChatRecord['reasoningEffort'];
   /** Exact sealed job.create params are replayed after a crash/lost response. */
   requestJson?: string;
   /** Provider-native handle remains main-process data. */
   resumeHandle?: string;
   credentialMarker?: string;
+  /** Existing local thread history supplied only on the first remote turn. */
+  providerPrompt?: string;
 }
 
 interface StoredChat extends RemoteChatRecord {
@@ -63,6 +77,21 @@ interface StoredChat extends RemoteChatRecord {
   cancelRequested?: boolean;
   /** Launch policy applies to managed cloud targets, separately from desktop auth choices. */
   cloudTarget?: boolean;
+  cloudProvisionJobId?: string;
+  hostedResumePending?: boolean;
+  hostedPreviousEnrollmentId?: string;
+  hostedResumeManifest?: {
+    workspaceDefinitionRevision: string;
+    repositories: Array<{ repositoryId: string; commit: string }>;
+    bootstrapDigest: string;
+  };
+  hostedRetryManifestPin?: {
+    workspaceDefinitionRevision: string;
+    repositories: Array<{ repositoryId: string; commit: string }>;
+    bootstrapDigest: string;
+  };
+  hostedPrepareRequestId?: string;
+  hostedIdleSince?: string;
 }
 
 interface RemoteChatRow {
@@ -83,6 +112,10 @@ interface RemoteChatRow {
   created_at: string;
   updated_at: string;
 }
+
+const HOSTED_IDLE_GRACE_MS = 5 * 60 * 1000;
+const SOURCE_THREAD_CONTEXT_CHARS = 30_000;
+const SOURCE_THREAD_CONTEXT_TURNS = 40;
 
 let contextProvider: (() => RemoteChatContext | null) | null = null;
 let tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -144,7 +177,13 @@ function save(record: StoredChat): void {
       prior.turns.some((turn) => turn.id === record.activeTurnId)
     )
       return;
-    if (prior.cancelRequested && prior.activeTurnId === record.activeTurnId) {
+    if (
+      prior.cancelRequested &&
+      prior.activeTurnId === record.activeTurnId &&
+      !['completed', 'failed', 'cancelled', 'checkpointing', 'paused', 'ended'].includes(
+        record.state,
+      )
+    ) {
       record.cancelRequested = true;
       record.prepareJobId ??= prior.prepareJobId;
       record.jobId ??= prior.jobId;
@@ -167,7 +206,8 @@ function save(record: StoredChat): void {
         target_enrollment_id, provider, model, permission_mode,
         source_session_id, handoff_id, state, record_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET state=excluded.state, record_json=excluded.record_json,
+       ON CONFLICT(id) DO UPDATE SET target_enrollment_id=excluded.target_enrollment_id,
+        state=excluded.state, record_json=excluded.record_json,
         updated_at=excluded.updated_at`,
     )
     .run(
@@ -195,8 +235,12 @@ function publicRecord(record: StoredChat): RemoteChatRecord {
     id: record.id,
     workspaceId: record.workspaceId,
     targetEnrollmentId: record.targetEnrollmentId,
+    ...(record.target === undefined ? {} : { target: record.target }),
+    ...(record.sourceThreadId === undefined ? {} : { sourceThreadId: record.sourceThreadId }),
+    ...(record.environmentId === undefined ? {} : { environmentId: record.environmentId }),
     provider: record.provider,
     model: record.model,
+    ...(record.reasoningEffort === undefined ? {} : { reasoningEffort: record.reasoningEffort }),
     permissionMode: record.permissionMode,
     ...(record.credentialChoice === undefined ? {} : { credentialChoice: record.credentialChoice }),
     ...(record.sourceSessionId === undefined ? {} : { sourceSessionId: record.sourceSessionId }),
@@ -217,6 +261,79 @@ function publicRecord(record: StoredChat): RemoteChatRecord {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
+}
+
+function providerPromptForSourceThread(sourceThreadId: string | undefined, prompt: string): string {
+  if (sourceThreadId === undefined) return prompt;
+  const messages = getDb()
+    .prepare(
+      `SELECT role, content FROM chat_messages
+       WHERE thread_id = ? AND kind IN ('user', 'assistant')
+       ORDER BY timestamp DESC, rowid DESC LIMIT ?`,
+    )
+    .all(sourceThreadId, SOURCE_THREAD_CONTEXT_TURNS) as Array<{ role: string; content: string }>;
+  const transcript = messages
+    .reverse()
+    .map((message) => `${message.role === 'assistant' ? 'Assistant' : 'User'}: ${message.content}`)
+    .join('\n\n')
+    .slice(-SOURCE_THREAD_CONTEXT_CHARS);
+  if (transcript.trim() === '') return prompt;
+  return [
+    'Continue the existing Anvil chat using this recent conversation for context. The transcript is background; follow the newest user message below.',
+    '<recent_conversation>',
+    transcript,
+    '</recent_conversation>',
+    'Newest user message:',
+    prompt,
+  ].join('\n\n');
+}
+
+function providerPromptForRemoteHistory(chat: StoredChat, prompt: string): string {
+  const transcript = chat.turns
+    .flatMap((turn) => [
+      `User: ${turn.prompt}`,
+      ...(turn.response === undefined ? [] : [`Assistant: ${turn.response}`]),
+    ])
+    .join('\n\n')
+    .slice(-SOURCE_THREAD_CONTEXT_CHARS);
+  const sourceContext = chat.turns[0]?.providerPrompt;
+  const context = [
+    sourceContext && sourceContext !== chat.turns[0]?.prompt ? sourceContext : undefined,
+    transcript,
+  ]
+    .filter((value): value is string => value !== undefined && value.trim() !== '')
+    .join('\n\n');
+  return context === ''
+    ? prompt
+    : [
+        'Continue the existing Anvil chat using this recent conversation for context. The transcript is background; follow the newest user message below.',
+        '<recent_conversation>',
+        context,
+        '</recent_conversation>',
+        'Newest user message:',
+        prompt,
+      ].join('\n\n');
+}
+
+function latestHostedTurnWithRequest(chat: StoredChat): StoredTurn | undefined {
+  return [...chat.turns].reverse().find((turn) => turn.requestJson !== undefined);
+}
+
+function latestHostedResumeHandle(chat: StoredChat): string | undefined {
+  return [...chat.turns].reverse().find((turn) => turn.resumeHandle !== undefined)?.resumeHandle;
+}
+
+async function hostedTargetMatches(chat: StoredChat): Promise<boolean> {
+  if (chat.target !== 'anvil-hosted-cloud' || chat.environmentId === undefined) return false;
+  const list = context().listHostedEnvironments;
+  if (list === undefined) return false;
+  const { environments } = await list();
+  const environment = environments.find((entry) => entry.environmentId === chat.environmentId);
+  return (
+    environment?.provider === 'anvil-managed' &&
+    (environment.state === 'enrolled' || environment.state === 'running') &&
+    environment.enrollmentId === chat.targetEnrollmentId
+  );
 }
 
 function rows(workspaceId?: string): RemoteChatRow[] {
@@ -334,6 +451,13 @@ async function submitExactRequest(
 
 export async function createRemoteChat(input: CreateRemoteChatInput): Promise<RemoteChatRecord> {
   const ctx = context();
+  if (input.target === 'anvil-hosted-cloud') return createHostedRemoteChat(input, ctx);
+  if (input.target !== undefined && input.target !== 'device')
+    throw new Error('Unsupported remote chat target.');
+  const targetEnrollmentId = input.targetEnrollmentId;
+  if (!targetEnrollmentId) throw new Error('Choose an active destination device.');
+  if (input.sourceThreadId !== undefined)
+    assertSourceThreadWorkspace(input.sourceThreadId, input.workspaceId);
   if (
     (input.provider === 'cursor' || input.provider === 'devin') &&
     input.permissionMode === 'read-only'
@@ -350,11 +474,11 @@ export async function createRemoteChat(input: CreateRemoteChatInput): Promise<Re
     },
   );
   const targetDevice = deviceList.devices.find(
-    (device) => device.enrollmentId === input.targetEnrollmentId,
+    (device) => device.enrollmentId === targetEnrollmentId,
   );
   if (targetDevice === undefined || targetDevice.revoked)
     throw new Error('Choose an active destination device.');
-  if (deviceTrustState(ctx.scope!, input.targetEnrollmentId) !== 'trusted')
+  if (deviceTrustState(ctx.scope!, targetEnrollmentId) !== 'trusted')
     throw new Error('Remote chats can only run on a trusted destination device.');
   const cloudTarget = targetDevice.enrollmentClass === 'ephemeral';
   if (cloudTarget && !isCloudAgentProviderEnabled(input.provider)) {
@@ -373,7 +497,7 @@ export async function createRemoteChat(input: CreateRemoteChatInput): Promise<Re
   if (input.provider === 'codex' || input.credentialChoice !== 'target-local') {
     validateRemoteCredentialChoice(
       input.provider,
-      input.targetEnrollmentId,
+      targetEnrollmentId,
       ctx.scope!,
       input.credentialChoice,
     );
@@ -409,9 +533,11 @@ export async function createRemoteChat(input: CreateRemoteChatInput): Promise<Re
     accountId: ctx.scope!.accountId,
     scopeEpoch: ctx.scope!.datasetEpoch,
     workspaceId: input.workspaceId,
-    targetEnrollmentId: input.targetEnrollmentId,
+    targetEnrollmentId,
+    ...(input.sourceThreadId === undefined ? {} : { sourceThreadId: input.sourceThreadId }),
     provider: input.provider,
     model: input.model,
+    ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
     permissionMode: input.permissionMode,
     ...(input.credentialChoice === undefined ? {} : { credentialChoice: input.credentialChoice }),
     cloudTarget,
@@ -421,6 +547,9 @@ export async function createRemoteChat(input: CreateRemoteChatInput): Promise<Re
         id: turnId,
         requestId: `remote-chat-start:${id}:${turnId}`,
         prompt: input.prompt,
+        permissionMode: input.permissionMode,
+        ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+        providerPrompt: providerPromptForSourceThread(input.sourceThreadId, input.prompt),
         state: 'queued',
         createdAt: now,
       },
@@ -476,13 +605,132 @@ export async function createRemoteChat(input: CreateRemoteChatInput): Promise<Re
   return publicRecord(chat);
 }
 
+/**
+ * Hosted allocation is a durable first phase of the remote chat. The record
+ * is saved before requesting capacity, and the stable environment id makes
+ * retries safe if the desktop exits after the backend accepts the request.
+ */
+async function createHostedRemoteChat(
+  input: CreateRemoteChatInput,
+  ctx: RemoteChatContext,
+): Promise<RemoteChatRecord> {
+  if (input.sourceThreadId === undefined || input.sourceThreadId.trim() === '')
+    throw new Error('Hosted cloud chats must be linked to a source chat thread.');
+  assertSourceThreadWorkspace(input.sourceThreadId, input.workspaceId);
+  if (input.provider === 'cursor' || input.provider === 'devin') {
+    if (input.permissionMode === 'read-only')
+      throw new Error(`${input.provider} does not support read-only remote sessions yet.`);
+  }
+  if (!isCloudAgentProviderEnabled(input.provider))
+    throw new Error('Enable this provider in Cloud agent settings before launching it.');
+  const choice =
+    input.credentialChoice ?? (input.provider === 'codex' ? 'codex-host-auth' : 'cloud-provider');
+  if (choice === 'target-local')
+    throw new Error('Hosted cloud chats need a source or cloud-managed credential choice.');
+  validateRemoteCredentialAvailability(choice, input.provider);
+  const requestId = input.requestId ?? randomUUID();
+  const normalized = {
+    ...input,
+    target: 'anvil-hosted-cloud' as const,
+    requestId,
+    credentialChoice: choice,
+  };
+  const duplicate = getDb()
+    .prepare(
+      'SELECT id FROM remote_chats WHERE create_request_id = ? AND backend_id = ? AND account_id = ? AND scope_epoch = ?',
+    )
+    .get(requestId, ctx.scope!.backendId, ctx.scope!.accountId, ctx.scope!.datasetEpoch) as
+    | { id: string }
+    | undefined;
+  if (duplicate !== undefined) {
+    const existing = readStored(duplicate.id);
+    if (existing === null) throw new Error('remote chat request conflicts with another sync scope');
+    if (existing.createPayloadHash !== createPayloadHash(normalized))
+      throw new Error('remote chat request id was reused with different parameters');
+    await remoteChatTick();
+    return publicRecord(readStored(duplicate.id) ?? existing);
+  }
+  const now = new Date().toISOString();
+  const id = randomUUID();
+  const environmentId = `remote-${id}`;
+  const turnId = randomUUID();
+  const chat: StoredChat = {
+    id,
+    createRequestId: requestId,
+    createPayloadHash: createPayloadHash(normalized),
+    backendId: ctx.scope!.backendId,
+    accountId: ctx.scope!.accountId,
+    scopeEpoch: ctx.scope!.datasetEpoch,
+    workspaceId: input.workspaceId,
+    targetEnrollmentId: `pending:${environmentId}`,
+    target: 'anvil-hosted-cloud',
+    sourceThreadId: input.sourceThreadId,
+    environmentId,
+    provider: input.provider,
+    model: input.model,
+    ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+    permissionMode: input.permissionMode,
+    credentialChoice: choice,
+    cloudTarget: true,
+    state: 'provisioning',
+    turns: [
+      {
+        id: turnId,
+        requestId: `remote-chat-start:${id}:${turnId}`,
+        prompt: input.prompt,
+        permissionMode: input.permissionMode,
+        ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+        providerPrompt: providerPromptForSourceThread(input.sourceThreadId, input.prompt),
+        state: 'queued',
+        createdAt: now,
+      },
+    ],
+    activeTurnId: turnId,
+    createdAt: now,
+    updatedAt: now,
+  };
+  save(chat);
+  await requestProvisioning(chat);
+  return publicRecord(readStored(id) ?? chat);
+}
+
+function assertSourceThreadWorkspace(sourceThreadId: string, workspaceId: string): void {
+  const row = getDb()
+    .prepare('SELECT workspace_id, title FROM chat_threads WHERE id = ?')
+    .get(sourceThreadId) as { workspace_id: string } | undefined;
+  if (row === undefined || row.workspace_id !== workspaceId)
+    throw new Error('The source chat thread does not belong to this workspace.');
+}
+
+async function requestProvisioning(chat: StoredChat): Promise<void> {
+  if (chat.environmentId === undefined)
+    throw new Error('Hosted remote chat lost its environment id.');
+  const callback = context().requestHostedEnvironment;
+  if (callback === undefined) throw new Error('Hosted cloud provisioning is unavailable.');
+  const result = await callback({
+    environmentId: chat.environmentId,
+    displayName: `Chat ${chat.sourceThreadId ?? chat.id}`,
+    purpose: 'remote-chat',
+  });
+  const latest = readStored(chat.id);
+  if (latest === null) return;
+  latest.cloudProvisionJobId = result.job.id;
+  latest.error = undefined;
+  latest.state = 'provisioning';
+  save(latest);
+}
+
 export async function sendRemoteChat(input: SendRemoteChatInput): Promise<RemoteChatRecord> {
   context();
   const chat = readStored(input.sessionId);
   if (chat === null) throw new Error(`remote chat not found: ${input.sessionId}`);
   const duplicate = chat.turns.find((turn) => turn.requestId === input.requestId);
   if (duplicate !== undefined) {
-    if (duplicate.prompt !== input.prompt)
+    if (
+      duplicate.prompt !== input.prompt ||
+      (input.permissionMode !== undefined && duplicate.permissionMode !== input.permissionMode) ||
+      (input.reasoningEffort !== undefined && duplicate.reasoningEffort !== input.reasoningEffort)
+    )
       throw new Error('remote chat turn request id was reused with a different prompt');
     await remoteChatTick();
     return publicRecord(readStored(input.sessionId) ?? chat);
@@ -491,17 +739,106 @@ export async function sendRemoteChat(input: SendRemoteChatInput): Promise<Remote
     throw new Error('Enable this provider in Cloud agent settings before continuing it.');
   if (chat.credentialChoice === 'cloud-provider')
     validateRemoteCredentialAvailability(chat.credentialChoice, chat.provider);
+  const nextPermissionMode = input.permissionMode ?? chat.permissionMode;
+  const nextReasoningEffort = input.reasoningEffort ?? chat.reasoningEffort;
   const retryHandoffFromCheckpoint = chat.state === 'failed' && chat.handoffId !== undefined;
-  if (chat.state !== 'completed' && !retryHandoffFromCheckpoint)
+  if (
+    chat.target === 'anvil-hosted-cloud' &&
+    (chat.state === 'paused' || chat.state === 'checkpointing')
+  ) {
+    const previous = latestHostedTurnWithRequest(chat);
+    const previousParams =
+      previous?.requestJson === undefined
+        ? undefined
+        : (JSON.parse(previous.requestJson) as JobCreateParams);
+    const prepareParams =
+      previousParams === undefined && chat.prepareRequestJson !== undefined
+        ? (JSON.parse(chat.prepareRequestJson) as JobCreateParams)
+        : undefined;
+    const resumeManifest =
+      previousParams?.inputManifest ?? prepareParams?.inputManifest ?? chat.hostedResumeManifest;
+    const resumeHandle = latestHostedResumeHandle(chat);
+    const current = readStored(chat.id);
+    if (current === null) throw new Error(`remote chat not found: ${chat.id}`);
+    const existingTurn = current.turns.find((turn) => turn.requestId === input.requestId);
+    if (existingTurn !== undefined) {
+      if (
+        existingTurn.prompt !== input.prompt ||
+        (input.permissionMode !== undefined &&
+          existingTurn.permissionMode !== input.permissionMode) ||
+        (input.reasoningEffort !== undefined &&
+          existingTurn.reasoningEffort !== input.reasoningEffort)
+      )
+        throw new Error('remote chat turn request id was reused with a different prompt');
+      return publicRecord(current);
+    }
+    if (current.state !== 'paused' && current.state !== 'checkpointing')
+      throw new Error(`remote chat is not ready for a follow-up (${current.state})`);
+    const turn: StoredTurn = {
+      id: randomUUID(),
+      requestId: input.requestId,
+      prompt: input.prompt,
+      ...(resumeHandle === undefined
+        ? { providerPrompt: providerPromptForRemoteHistory(chat, input.prompt) }
+        : {}),
+      permissionMode: nextPermissionMode,
+      ...(nextReasoningEffort === undefined ? {} : { reasoningEffort: nextReasoningEffort }),
+      state: 'queued',
+      createdAt: new Date().toISOString(),
+      ...(resumeHandle === undefined ? {} : { resumeHandle }),
+    };
+    current.turns.push(turn);
+    current.activeTurnId = turn.id;
+    current.permissionMode = nextPermissionMode;
+    current.reasoningEffort = nextReasoningEffort;
+    current.cancelRequested = false;
+    current.jobId = undefined;
+    current.hostedResumePending = true;
+    current.hostedPreviousEnrollmentId = current.targetEnrollmentId;
+    if (previousParams !== undefined) {
+      current.hostedResumeManifest = {
+        workspaceDefinitionRevision: previousParams.inputManifest.workspaceDefinitionRevision,
+        repositories: previousParams.inputManifest.repositories,
+        bootstrapDigest: previousParams.inputManifest.bootstrapDigest,
+      };
+      current.hostedRetryManifestPin = undefined;
+      current.hostedPrepareRequestId = undefined;
+    } else {
+      current.hostedResumeManifest = undefined;
+      current.hostedRetryManifestPin =
+        resumeManifest === undefined
+          ? undefined
+          : {
+              workspaceDefinitionRevision: resumeManifest.workspaceDefinitionRevision,
+              repositories: resumeManifest.repositories,
+              bootstrapDigest: resumeManifest.bootstrapDigest,
+            };
+      current.hostedPrepareRequestId = `remote-chat-prepare:${current.id}:${turn.id}`;
+      current.prepareJobId = undefined;
+      current.prepareRequestJson = undefined;
+    }
+    current.state = 'provisioning';
+    current.error = undefined;
+    save(current);
+    await remoteChatTick();
+    return publicRecord(readStored(current.id) ?? current);
+  }
+  const hostedFinalTurn =
+    chat.target === 'anvil-hosted-cloud' && ['failed', 'cancelled'].includes(chat.state);
+  if (chat.state !== 'completed' && !retryHandoffFromCheckpoint && !hostedFinalTurn)
     throw new Error(`remote chat is not ready for a follow-up (${chat.state})`);
   const previous = chat.turns.at(-1);
   if (previous === undefined) throw new Error('remote chat has no previous turn to continue');
-  if (!retryHandoffFromCheckpoint && previous?.resumeHandle === undefined) {
+  const manifestTurn =
+    chat.target === 'anvil-hosted-cloud' ? latestHostedTurnWithRequest(chat) : previous;
+  const resumeHandle =
+    chat.target === 'anvil-hosted-cloud' ? latestHostedResumeHandle(chat) : previous.resumeHandle;
+  if (!retryHandoffFromCheckpoint && resumeHandle === undefined && !hostedFinalTurn) {
     throw new Error('The remote provider session cannot be resumed on this target.');
   }
-  if (previous.requestJson === undefined)
+  if (manifestTurn?.requestJson === undefined)
     throw new Error('The original remote checkout pins are unavailable.');
-  const previousParams = JSON.parse(previous.requestJson) as JobCreateParams;
+  const previousParams = JSON.parse(manifestTurn.requestJson) as JobCreateParams;
   let handoffCheckpoint: SessionCheckpoint | undefined;
   if (retryHandoffFromCheckpoint && chat.handoffId !== undefined) {
     const ctx = context();
@@ -530,9 +867,14 @@ export async function sendRemoteChat(input: SendRemoteChatInput): Promise<Remote
     id: randomUUID(),
     requestId: input.requestId,
     prompt: input.prompt,
+    permissionMode: nextPermissionMode,
+    ...(nextReasoningEffort === undefined ? {} : { reasoningEffort: nextReasoningEffort }),
     state: 'queued',
     createdAt: new Date().toISOString(),
-    ...(previous?.resumeHandle === undefined ? {} : { resumeHandle: previous.resumeHandle }),
+    ...(resumeHandle === undefined ? {} : { resumeHandle }),
+    ...(hostedFinalTurn && resumeHandle === undefined
+      ? { providerPrompt: providerPromptForRemoteHistory(chat, input.prompt) }
+      : {}),
   };
   const params = await prepareStartSessionJob({
     requestId: input.requestId,
@@ -540,10 +882,11 @@ export async function sendRemoteChat(input: SendRemoteChatInput): Promise<Remote
     targetEnrollmentId: chat.targetEnrollmentId,
     provider: chat.provider,
     model: chat.model,
-    permissionMode: chat.permissionMode,
+    reasoningEffort: nextReasoningEffort,
+    permissionMode: nextPermissionMode,
     ...(chat.credentialChoice === undefined ? {} : { authMode: chat.credentialChoice }),
     authSessionId: chat.sourceSessionId ?? chat.id,
-    prompt: input.prompt,
+    prompt: turn.providerPrompt ?? turn.prompt,
     manifestPin,
     ...(retryHandoffFromCheckpoint && chat.handoffId !== undefined
       ? { handoffId: chat.handoffId }
@@ -553,13 +896,20 @@ export async function sendRemoteChat(input: SendRemoteChatInput): Promise<Remote
   });
   const current = readStored(chat.id);
   if (current === null) throw new Error(`remote chat not found: ${chat.id}`);
-  if (current.state !== 'completed' && !(retryHandoffFromCheckpoint && current.state === 'failed'))
+  if (
+    current.state !== 'completed' &&
+    !(retryHandoffFromCheckpoint && current.state === 'failed') &&
+    !(hostedFinalTurn && ['failed', 'cancelled'].includes(current.state))
+  )
     throw new Error(`remote chat is not ready for a follow-up (${current.state})`);
   turn.requestJson = JSON.stringify(params);
   current.turns.push(turn);
   current.activeTurnId = turn.id;
+  current.permissionMode = nextPermissionMode;
+  current.reasoningEffort = nextReasoningEffort;
   current.cancelRequested = false;
   current.jobId = undefined;
+  current.hostedIdleSince = undefined;
   current.state = 'starting';
   current.error = undefined;
   // Persist sealed create params before issuing network effects.
@@ -581,9 +931,12 @@ function createPayloadHash(input: CreateRemoteChatInput): string {
     .update(
       JSON.stringify({
         workspaceId: input.workspaceId,
+        target: input.target ?? 'device',
         targetEnrollmentId: input.targetEnrollmentId,
+        sourceThreadId: input.sourceThreadId ?? null,
         provider: input.provider,
         model: input.model,
+        reasoningEffort: input.reasoningEffort ?? null,
         permissionMode: input.permissionMode,
         credentialChoice: input.credentialChoice ?? null,
         prompt: input.prompt,
@@ -641,7 +994,44 @@ export async function cancelRemoteChat(id: string): Promise<RemoteChatRecord> {
     if (active !== undefined) active.state = 'cancelled';
     save(chat);
   }
+  if (
+    chat.target === 'anvil-hosted-cloud' &&
+    ['completed', 'failed', 'cancelled'].includes(chat.state)
+  ) {
+    chat.hostedIdleSince ??= new Date().toISOString();
+    save(chat);
+  }
   return publicRecord(chat);
+}
+
+/** Stop a hosted environment permanently and release its provider allocation. */
+export async function endRemoteChat(id: string): Promise<RemoteChatRecord> {
+  context();
+  let chat = readStored(id);
+  if (chat === null) throw new Error(`remote chat not found: ${id}`);
+  if (chat.target !== 'anvil-hosted-cloud' || chat.environmentId === undefined)
+    throw new Error('Only Anvil hosted cloud chats can be ended from here.');
+  const environmentId = chat.environmentId;
+  if (!['completed', 'failed', 'cancelled', 'paused', 'ended'].includes(chat.state)) {
+    await cancelRemoteChat(id);
+    chat = readStored(id);
+    if (chat === null) throw new Error(`remote chat not found: ${id}`);
+    if (!['completed', 'failed', 'cancelled', 'paused', 'ended'].includes(chat.state))
+      throw new Error('Wait for the active hosted turn to stop before ending this chat.');
+  }
+  if (chat.state === 'ended') return publicRecord(chat);
+  const reap = context().reapHostedEnvironment;
+  if (reap === undefined) throw new Error('Hosted environment termination is unavailable.');
+  await reap(environmentId);
+  const latest = readStored(id);
+  if (latest === null) throw new Error(`remote chat not found: ${id}`);
+  latest.state = 'ended';
+  latest.cancelRequested = false;
+  latest.hostedResumePending = false;
+  latest.hostedIdleSince = undefined;
+  latest.error = undefined;
+  save(latest);
+  return publicRecord(latest);
 }
 
 function stateForJob(state: JobSummary['state']): RemoteChatState {
@@ -657,7 +1047,13 @@ function stateForJob(state: JobSummary['state']): RemoteChatState {
 async function observeJob(chat: StoredChat, turn: StoredTurn, jobId: string): Promise<void> {
   const result = await jobRpc<JobGetResult>('job.get', { jobId }, chat);
   const { job, attempts } = result;
-  if (chat.credentialChoice !== undefined && chat.credentialChoice !== 'target-local') {
+  if (
+    job.state === 'running' &&
+    chat.credentialChoice !== undefined &&
+    chat.credentialChoice !== 'target-local'
+  ) {
+    if (chat.target === 'anvil-hosted-cloud' && !(await hostedTargetMatches(chat)))
+      throw new Error('The hosted environment no longer matches this remote chat.');
     const credential = await ensureRemoteCredentialGrant({
       choice: chat.credentialChoice,
       cloudTarget: chat.cloudTarget,
@@ -666,6 +1062,9 @@ async function observeJob(chat: StoredChat, turn: StoredTurn, jobId: string): Pr
       scope: assertScope(chat).scope!,
       context: { apiUrl: context().apiUrl, accessToken: context().accessToken },
       result,
+      ...(chat.target === 'anvil-hosted-cloud' && chat.environmentId !== undefined
+        ? { hostedEnvironmentId: chat.environmentId }
+        : {}),
       ...(turn.credentialMarker === undefined ? {} : { deliveredMarker: turn.credentialMarker }),
     });
     if (credential.delivered && credential.marker !== undefined)
@@ -706,9 +1105,163 @@ async function observeJob(chat: StoredChat, turn: StoredTurn, jobId: string): Pr
   }
 }
 
+async function reconcileSuspendedHostedChat(chat: StoredChat): Promise<boolean> {
+  if (
+    chat.target !== 'anvil-hosted-cloud' ||
+    chat.environmentId === undefined ||
+    chat.targetEnrollmentId.startsWith('pending:') ||
+    chat.hostedResumePending === true
+  )
+    return false;
+  const listEnvironments = context().listHostedEnvironments;
+  if (listEnvironments === undefined) return false;
+  const { environments } = await listEnvironments();
+  const environment = environments.find((entry) => entry.environmentId === chat.environmentId);
+  if (environment?.state !== 'suspended') return false;
+
+  if (['completed', 'failed', 'cancelled'].includes(chat.state)) {
+    chat.state = 'paused';
+    chat.hostedIdleSince = undefined;
+    chat.cancelRequested = false;
+    chat.error = undefined;
+    save(chat);
+    return true;
+  }
+
+  const active = chat.turns.find((turn) => turn.id === chat.activeTurnId);
+  if (active?.jobId !== undefined) {
+    await observeJob(chat, active, active.jobId);
+    if (['completed', 'failed', 'cancelled'].includes(chat.state)) {
+      chat.state = 'paused';
+      chat.hostedIdleSince = undefined;
+      chat.cancelRequested = false;
+      chat.error = undefined;
+      save(chat);
+    }
+    return true;
+  }
+
+  if (chat.prepareJobId !== undefined) {
+    const { job } = await jobRpc<JobGetResult>('job.get', { jobId: chat.prepareJobId }, chat);
+    if (['completed', 'failed', 'cancelled', 'unknown-outcome'].includes(job.state)) {
+      if (job.state === 'failed' || job.state === 'cancelled' || job.state === 'unknown-outcome') {
+        chat.state = job.state === 'cancelled' ? 'cancelled' : 'failed';
+        chat.error = job.stateReason ?? `Workspace preparation ${job.state}.`;
+      }
+      chat.state = 'paused';
+      chat.hostedIdleSince = undefined;
+      chat.cancelRequested = false;
+      save(chat);
+    }
+    return true;
+  }
+
+  if (chat.state === 'starting' && active?.requestJson !== undefined) {
+    // The exact request may have been persisted before submit but not recorded
+    // as a job id. The next user turn can safely replay or replace it after
+    // waking this same environment.
+    chat.state = 'paused';
+    chat.hostedIdleSince = undefined;
+    chat.cancelRequested = false;
+    save(chat);
+    return true;
+  }
+  return true;
+}
+
 async function tickChat(id: string): Promise<void> {
   const chat = readStored(id);
-  if (chat === null || ['completed', 'failed', 'cancelled'].includes(chat.state)) return;
+  if (chat === null || ['paused', 'ended'].includes(chat.state)) return;
+  if (chat.target === 'anvil-hosted-cloud' && chat.state === 'checkpointing') {
+    await checkpointHostedChat(chat);
+    return;
+  }
+  if (await reconcileSuspendedHostedChat(chat)) return;
+  if (
+    chat.target === 'anvil-hosted-cloud' &&
+    ['completed', 'failed', 'cancelled'].includes(chat.state)
+  ) {
+    const idleSince =
+      chat.hostedIdleSince === undefined ? Date.now() : Date.parse(chat.hostedIdleSince);
+    if (chat.hostedIdleSince === undefined) {
+      chat.hostedIdleSince = new Date(idleSince).toISOString();
+      save(chat);
+      return;
+    }
+    if (!Number.isFinite(idleSince) || Date.now() - idleSince < HOSTED_IDLE_GRACE_MS) return;
+    await checkpointHostedChat(chat);
+    return;
+  }
+  if (['failed', 'cancelled'].includes(chat.state)) return;
+  if (
+    chat.target === 'anvil-hosted-cloud' &&
+    (chat.targetEnrollmentId.startsWith('pending:') || chat.hostedResumePending === true)
+  ) {
+    if (chat.environmentId === undefined)
+      throw new Error('Hosted remote chat lost its environment id.');
+    const listEnvironments = context().listHostedEnvironments;
+    if (listEnvironments === undefined)
+      throw new Error('Hosted cloud provisioning is unavailable.');
+    const { environments } = await listEnvironments();
+    const environment = environments.find((entry) => entry.environmentId === chat.environmentId);
+    if (environment === undefined) {
+      await requestProvisioning(chat);
+      return;
+    }
+    if (
+      environment.state === 'failed' ||
+      environment.state === 'terminated' ||
+      environment.state === 'expired'
+    ) {
+      chat.state = 'failed';
+      chat.error = `Hosted environment ${environment.state}.`;
+      save(chat);
+      return;
+    }
+    if (environment.state === 'suspended' && chat.hostedResumePending === true) {
+      const resume = context().resumeHostedEnvironment;
+      if (resume === undefined) throw new Error('Hosted environment resume is unavailable.');
+      await resume(chat.environmentId);
+      return;
+    }
+    if (
+      (environment.state !== 'enrolled' && environment.state !== 'running') ||
+      environment.enrollmentId === undefined ||
+      (chat.hostedResumePending === true &&
+        environment.enrollmentId === chat.hostedPreviousEnrollmentId)
+    ) {
+      chat.state = 'provisioning';
+      save(chat);
+      return;
+    }
+    const devices = await jobRpc<DeviceListResult>('device.list', {}, chat);
+    const target = devices.devices.find(
+      (device) => device.enrollmentId === environment.enrollmentId,
+    );
+    if (target === undefined || target.revoked || target.enrollmentClass !== 'ephemeral') {
+      chat.state = 'provisioning';
+      save(chat);
+      return;
+    }
+    // Binding this target to the environment record is the execution-only
+    // authorization. It intentionally does not promote the enrollment in the
+    // account keyring, where trusted means eligible for account-key delivery.
+    chat.targetEnrollmentId = environment.enrollmentId;
+    chat.hostedResumePending = false;
+    chat.hostedPreviousEnrollmentId = undefined;
+    chat.state = 'preparing';
+    save(chat);
+  }
+  if (
+    chat.target === 'anvil-hosted-cloud' &&
+    !chat.targetEnrollmentId.startsWith('pending:') &&
+    !(await hostedTargetMatches(chat))
+  ) {
+    chat.state = 'failed';
+    chat.error = 'The hosted environment no longer matches this remote chat.';
+    save(chat);
+    return;
+  }
   const active = chat.turns.find((turn) => turn.id === chat.activeTurnId);
   if (active === undefined) return;
   if (chat.cancelRequested) {
@@ -718,6 +1271,7 @@ async function tickChat(id: string): Promise<void> {
       const latestActive = latest.turns.find((turn) => turn.id === latest.activeTurnId);
       if (latestActive !== undefined) latestActive.jobId = started.id;
       latest.jobId = started.id;
+      latest.hostedIdleSince = undefined;
       save(latest);
       await cancelRemoteChat(latest.id);
       return;
@@ -726,12 +1280,14 @@ async function tickChat(id: string): Promise<void> {
     if (activeJobId === undefined) {
       chat.state = 'cancelled';
       active.state = 'cancelled';
+      if (chat.target === 'anvil-hosted-cloud') chat.hostedIdleSince ??= new Date().toISOString();
       save(chat);
     } else {
       const { job } = await jobRpc<JobGetResult>('job.get', { jobId: activeJobId }, chat);
       if (job.state === 'cancelled') {
         chat.state = 'cancelled';
         active.state = 'cancelled';
+        if (chat.target === 'anvil-hosted-cloud') chat.hostedIdleSince ??= new Date().toISOString();
       } else if (['completed', 'failed', 'unknown-outcome'].includes(job.state)) {
         await observeJob(chat, active, activeJobId);
       } else {
@@ -742,7 +1298,57 @@ async function tickChat(id: string): Promise<void> {
     }
     return;
   }
+  if (chat.hostedResumeManifest !== undefined && active.requestJson === undefined) {
+    const params = await prepareStartSessionJob({
+      requestId: active.requestId,
+      workspaceId: chat.workspaceId,
+      targetEnrollmentId: chat.targetEnrollmentId,
+      provider: chat.provider,
+      model: chat.model,
+      reasoningEffort: active.reasoningEffort ?? chat.reasoningEffort,
+      permissionMode: chat.permissionMode,
+      ...(chat.credentialChoice === undefined ? {} : { authMode: chat.credentialChoice }),
+      authSessionId: chat.sourceSessionId ?? chat.id,
+      prompt: active.providerPrompt ?? active.prompt,
+      manifestPin: chat.hostedResumeManifest,
+      ...(active.resumeHandle === undefined ? {} : { resumeThreadId: active.resumeHandle }),
+    });
+    const latest = readStored(chat.id);
+    if (latest === null || latest.cancelRequested) return;
+    const latestActive = latest.turns.find((turn) => turn.id === latest.activeTurnId);
+    if (latestActive === undefined) throw new Error('remote chat lost its queued continuation');
+    latestActive.requestJson = JSON.stringify(params);
+    latest.hostedResumeManifest = undefined;
+    latest.state = 'starting';
+    save(latest);
+    const started = await submitExactRequest(latestActive.requestJson, latest);
+    const submitted = readStored(latest.id) ?? latest;
+    const submittedTurn = submitted.turns.find((turn) => turn.id === submitted.activeTurnId);
+    if (submittedTurn !== undefined) submittedTurn.jobId = started.id;
+    submitted.jobId = started.id;
+    save(submitted);
+    return;
+  }
   if (chat.prepareJobId === undefined) {
+    if (
+      chat.target === 'anvil-hosted-cloud' &&
+      chat.prepareRequestJson === undefined &&
+      chat.targetEnrollmentId !== ''
+    ) {
+      const params = await preparePrepareWorkspaceJob({
+        requestId: chat.hostedPrepareRequestId ?? `remote-chat-prepare:${chat.createRequestId}`,
+        workspaceId: chat.workspaceId,
+        targetEnrollmentId: chat.targetEnrollmentId,
+        permissionMode: chat.permissionMode,
+        provider: chat.provider,
+        model: chat.model,
+      });
+      const latest = readStored(chat.id);
+      if (latest === null || latest.cancelRequested) return;
+      latest.prepareRequestJson = JSON.stringify(params);
+      save(latest);
+      return;
+    }
     if (chat.prepareRequestJson === undefined) return;
     const job = await submitExactRequest(chat.prepareRequestJson, chat);
     const latest = readStored(chat.id) ?? chat;
@@ -765,11 +1371,12 @@ async function tickChat(id: string): Promise<void> {
           targetEnrollmentId: chat.targetEnrollmentId,
           provider: chat.provider,
           model: chat.model,
+          reasoningEffort: active.reasoningEffort ?? chat.reasoningEffort,
           permissionMode: chat.permissionMode,
           ...(chat.credentialChoice === undefined ? {} : { authMode: chat.credentialChoice }),
           authSessionId: chat.sourceSessionId ?? chat.id,
-          prompt: active.prompt,
-          manifestPin: {
+          prompt: active.providerPrompt ?? active.prompt,
+          manifestPin: chat.hostedRetryManifestPin ?? {
             workspaceDefinitionRevision: prepared.inputManifest.workspaceDefinitionRevision,
             repositories: prepared.inputManifest.repositories,
             bootstrapDigest: prepared.inputManifest.bootstrapDigest,
@@ -781,6 +1388,8 @@ async function tickChat(id: string): Promise<void> {
         const latestActive = latest.turns.find((turn) => turn.id === active.id);
         if (latestActive === undefined) throw new Error('remote chat lost its active turn');
         latestActive.requestJson = JSON.stringify(params);
+        latest.hostedRetryManifestPin = undefined;
+        latest.hostedPrepareRequestId = undefined;
         save(latest);
       }
       const beforeStart = readStored(chat.id);
@@ -804,6 +1413,7 @@ async function tickChat(id: string): Promise<void> {
     ) {
       chat.state = job.state === 'cancelled' ? 'cancelled' : 'failed';
       chat.error = job.stateReason ?? `Workspace preparation ${job.state}.`;
+      if (chat.target === 'anvil-hosted-cloud') chat.hostedIdleSince ??= new Date().toISOString();
       save(chat);
     } else {
       chat.state =
@@ -814,7 +1424,43 @@ async function tickChat(id: string): Promise<void> {
   }
   if (active.jobId === undefined) throw new Error('remote chat lost exact job.create request');
   await observeJob(chat, active, active.jobId);
+  if (
+    chat.target === 'anvil-hosted-cloud' &&
+    ['completed', 'failed', 'cancelled'].includes(chat.state)
+  )
+    chat.hostedIdleSince ??= new Date().toISOString();
   save(chat);
+}
+
+async function checkpointHostedChat(chat: StoredChat): Promise<void> {
+  if (chat.environmentId === undefined)
+    throw new Error('Hosted remote chat lost its environment id.');
+  const suspend = context().suspendHostedEnvironment;
+  if (suspend === undefined) throw new Error('Hosted environment suspension is unavailable.');
+  const current = readStored(chat.id);
+  if (current === null) return;
+  if (current.state !== 'checkpointing') {
+    if (
+      !['completed', 'failed', 'cancelled'].includes(current.state) ||
+      current.activeTurnId !== chat.activeTurnId
+    )
+      return;
+    const idleSince =
+      current.hostedIdleSince === undefined ? Number.NaN : Date.parse(current.hostedIdleSince);
+    if (!Number.isFinite(idleSince) || Date.now() - idleSince < HOSTED_IDLE_GRACE_MS) return;
+    current.state = 'checkpointing';
+    current.cancelRequested = false;
+    save(current);
+  }
+  const environment = await suspend(chat.environmentId);
+  if (environment.state !== 'suspended')
+    throw new Error(`Hosted environment suspension returned ${environment.state}.`);
+  const latest = readStored(chat.id);
+  if (latest === null) return;
+  if (latest.state !== 'checkpointing' || latest.activeTurnId !== current.activeTurnId) return;
+  latest.state = 'paused';
+  latest.error = undefined;
+  save(latest);
 }
 
 export function remoteChatOnReady(): void {

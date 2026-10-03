@@ -13,10 +13,14 @@ origin.hostname = `${target.provisionerName}.${origin.hostname.slice(target.work
 const token = process.env.MANAGED_PROVISIONER_TOKEN;
 assert.ok(typeof token === 'string' && token.length >= 32, 'Missing provisioner token');
 
-async function request(path, method = 'GET', authenticated = true) {
+async function request(path, method = 'GET', authenticated = true, body = undefined) {
   return fetch(new URL(path, origin), {
     method,
-    headers: authenticated ? { authorization: `Bearer ${token}` } : {},
+    headers: {
+      ...(authenticated ? { authorization: `Bearer ${token}` } : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(90_000),
   });
 }
@@ -49,6 +53,32 @@ try {
   }
   assert.ok(started, 'Sandbox container did not become ready');
   console.log('Sandbox container startup passed.');
+
+  const suspended = await request(`/v1/environments/${id}/suspend`, 'POST');
+  assert.equal(suspended.status, 200, 'Sandbox snapshot request failed');
+  const parked = await request(`/v1/environments/${id}`);
+  assert.equal(parked.status, 200);
+  assert.equal((await parked.json()).status, 'suspended', 'Paused status check woke the snapshot');
+
+  // A deliberately invalid loopback API and fake one-shot code prove the same
+  // filesystem snapshot can boot again without touching a user's account.
+  const restoredResponse = await request(`/v1/environments/${id}/boot`, 'POST', true, {
+    bootstrap: {
+      kind: 'anvil.mesh-environment',
+      schemaVersion: '0.2',
+      environmentId: id,
+      provider: 'anvil-managed',
+      backendUrl: 'http://127.0.0.1:9',
+      enrollmentCode: 'anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD',
+      ttlSeconds: 300,
+      resumeFromSnapshot: true,
+    },
+  });
+  assert.ok(restoredResponse.status === 200 || restoredResponse.status === 201, 'Snapshot restore failed');
+  const restored = await restoredResponse.json();
+  assert.equal(restored.providerRef, id);
+  assert.equal(typeof restored.processId, 'string');
+  console.log('Sandbox snapshot, non-waking status check, and restore passed.');
 } finally {
   const deleted = await request(`/v1/environments/${id}`, 'DELETE');
   assert.equal(deleted.status, 200, 'Sandbox cleanup failed');

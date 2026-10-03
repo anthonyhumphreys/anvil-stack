@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 import { isRpcError, type RpcResponse } from '../../contract/envelope';
@@ -13,14 +13,18 @@ import type {
 import type {
   EnvironmentGetResult,
   EnvironmentListResult,
+  EnvironmentLimitsResult,
   EnvironmentReapResult,
+  EnvironmentResumeResult,
   EnvironmentReportResult,
+  EnvironmentSuspendResult,
 } from '../../contract/environment';
 import type {
   DevicePolicy,
   DevicePolicyPublishResult,
   WorkerConnectResult,
 } from '../../contract/workers';
+import type { AccountCoordinator } from '../src/account-coordinator';
 import { expectSuccess, postRpc, spikeBearer, uniqueIds } from './helpers';
 
 function accountStub(accountId: string) {
@@ -104,9 +108,7 @@ async function envConnect(fx: ReturnType<typeof fixture>) {
   expectSuccess(
     await stubRpc(fx.accountId, fx.envAuth, 'device.policy.publish', allowJobsPolicy()),
   );
-  expectSuccess<WorkerConnectResult>(
-    await stubRpc(fx.accountId, fx.envAuth, 'worker.connect', {}),
-  );
+  expectSuccess<WorkerConnectResult>(await stubRpc(fx.accountId, fx.envAuth, 'worker.connect', {}));
 }
 
 function manifest(): ExecutionManifest {
@@ -145,9 +147,7 @@ async function reportEnvironment(
   auth: string,
   params: Record<string, unknown>,
 ): Promise<EnvironmentReportResult> {
-  return expectSuccess<EnvironmentReportResult>(
-    await postRpc('environment.report', params, auth),
-  );
+  return expectSuccess<EnvironmentReportResult>(await postRpc('environment.report', params, auth));
 }
 
 describe('environment lifecycle', () => {
@@ -221,11 +221,7 @@ describe('environment lifecycle', () => {
 
     // An unresolved environment target cannot be claimed by the provisioner
     // while the environment is still waiting to enroll.
-    const earlyClaim = await postRpc(
-      'job.claim',
-      { jobId: created.job.id },
-      fx.provisionerAuth,
-    );
+    const earlyClaim = await postRpc('job.claim', { jobId: created.job.id }, fx.provisionerAuth);
     expect(earlyClaim.status).toBe(409);
     if (isRpcError(earlyClaim.body)) {
       expect(earlyClaim.body.error.details?.['reason']).toBe('target-not-resolved');
@@ -516,10 +512,19 @@ describe('credential grants', () => {
 describe('managed environments (ENV-09)', () => {
   const MANAGED_ENROLLMENT_CODE = 'anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD';
 
-  function managedManifest(environmentId: string, ttlSeconds: number): ExecutionManifest {
+  function managedManifest(
+    environmentId: string,
+    ttlSeconds: number,
+    hostedRemoteChat = false,
+  ): ExecutionManifest {
     return {
       ...manifest(),
-      inputs: { environmentId, provider: 'anvil-managed', ttlSeconds },
+      inputs: {
+        environmentId,
+        provider: 'anvil-managed',
+        ttlSeconds,
+        ...(hostedRemoteChat ? { hostedRemoteChat: true } : {}),
+      },
     };
   }
 
@@ -528,6 +533,7 @@ describe('managed environments (ENV-09)', () => {
     environmentId: string,
     ttlSeconds = 1800,
     requestId = crypto.randomUUID(),
+    hostedRemoteChat = false,
   ) {
     return postRpc(
       'job.create',
@@ -539,7 +545,7 @@ describe('managed environments (ENV-09)', () => {
           kind: 'auto',
           requirements: { capabilities: ['provision:anvil-managed'] },
         },
-        inputManifest: managedManifest(environmentId, ttlSeconds),
+        inputManifest: managedManifest(environmentId, ttlSeconds, hostedRemoteChat),
       } satisfies JobCreateParams,
       auth,
     );
@@ -551,6 +557,17 @@ describe('managed environments (ENV-09)', () => {
     );
     return (await response.json()) as Record<string, number>;
   }
+
+  it('returns the account tier managed TTL and concurrency caps to signed-in devices only', async () => {
+    const fx = fixture('environment-limits');
+    const limits = expectSuccess<EnvironmentLimitsResult>(
+      await postRpc('environment.limits', {}, fx.provisionerAuth),
+    );
+    expect(limits).toEqual({ maxTtlSeconds: 30 * 60, maxConcurrent: 1 });
+
+    const workerLimits = await stubRpc(fx.accountId, fx.envAuth, 'environment.limits', {});
+    expect(isRpcError(workerLimits.body)).toBe(true);
+  });
 
   /** The stub binding is always injected by vitest.config.ts for this suite. */
   function provisioner(): Fetcher {
@@ -589,25 +606,55 @@ describe('managed environments (ENV-09)', () => {
     return (await response.json()) as never;
   }
 
-  async function waitJobTerminal(
-    auth: string,
-    jobId: string,
-  ): Promise<JobGetResult> {
+  async function waitJobTerminal(auth: string, jobId: string): Promise<JobGetResult> {
     for (let i = 0; i < 60; i++) {
-      const got = expectSuccess<JobGetResult>(
-        await postRpc('job.get', { jobId }, auth),
-      );
+      const got = expectSuccess<JobGetResult>(await postRpc('job.get', { jobId }, auth));
       if (got.job.state === 'completed' || got.job.state === 'failed') return got;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error(`job ${jobId} never reached a terminal state`);
   }
 
+  async function provisionManagedEnvironment(
+    fx: ReturnType<typeof fixture>,
+    hostedRemoteChat = false,
+  ) {
+    await provisionerReset();
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(
+        fx.provisionerAuth,
+        fx.environmentId,
+        1800,
+        crypto.randomUUID(),
+        hostedRemoteChat,
+      ),
+    );
+    await sweepAccount(fx.accountId);
+    await waitJobTerminal(fx.provisionerAuth, created.job.id);
+    await envConnect(fx);
+    expectSuccess<EnvironmentReportResult>(
+      await stubRpc(fx.accountId, fx.envAuth, 'environment.report', {
+        environmentId: fx.environmentId,
+        provider: 'anvil-managed',
+        state: 'enrolled',
+        enrollmentId: fx.envEnrollmentId,
+      }),
+    );
+  }
+
   it('stages a bootstrap payload and rejects malformed ones', async () => {
     const fx = fixture('bootstrap');
     const pairing = await postRpc(
       'environment.bootstrap',
-      { environmentId: fx.environmentId, payload: 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF' },
+      {
+        environmentId: fx.environmentId,
+        payload: 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF',
+      },
       fx.provisionerAuth,
     );
     expect(isRpcError(pairing.body)).toBe(true);
@@ -693,9 +740,9 @@ describe('managed environments (ENV-09)', () => {
     const failures = responses.filter((response) => isRpcError(response.body));
     expect(successes).toHaveLength(1);
     expect(failures).toHaveLength(1);
-    expect((failures[0]?.body as { error?: { details?: { reason?: string } } }).error?.details?.reason).toBe(
-      'managed-concurrency-cap',
-    );
+    expect(
+      (failures[0]?.body as { error?: { details?: { reason?: string } } }).error?.details?.reason,
+    ).toBe('managed-concurrency-cap');
   });
 
   it('skips managed caps for BYO providers', async () => {
@@ -758,6 +805,39 @@ describe('managed environments (ENV-09)', () => {
     expect(record.environment.state).toBe('provisioning');
     expect(record.environment.handle?.['providerRef']).toBe(`sb-${fx.environmentId}`);
     expect(record.environment.jobId).toBe(created.job.id);
+  });
+
+  it('server-side idle sweep suspends only marked hosted chats without a desktop tick', async () => {
+    const base = fixture('idle-hosted-chat');
+    const environmentId = `remote-${crypto.randomUUID()}`;
+    const fx = {
+      ...base,
+      environmentId,
+      envAuth: { ...base.envAuth, environmentId },
+    };
+    await provisionManagedEnvironment(fx, true);
+    await runInDurableObject(accountStub(fx.accountId), (_instance: AccountCoordinator, state) => {
+      state.storage.sql.exec(
+        'UPDATE environments SET updated_at = ? WHERE environment_id = ?',
+        Date.now() - 6 * 60 * 1000,
+        environmentId,
+      );
+    });
+    await provisionerReset();
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${environmentId}/suspend`,
+      body: { ok: true, size: 123 },
+    });
+
+    await sweepAccount(fx.accountId);
+
+    const parked = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId }, fx.provisionerAuth),
+    );
+    expect(parked.environment.state).toBe('suspended');
+    expect(parked.environment.enrollmentId).toBeUndefined();
+    expect((await provisionerLast())?.path).toBe(`/v1/environments/sb-${environmentId}/suspend`);
   });
 
   it('fails the job honestly when no bootstrap payload was staged', async () => {
@@ -824,5 +904,138 @@ describe('managed environments (ENV-09)', () => {
       await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
     );
     expect(record.environment.reapedAt).toBeDefined();
+  });
+
+  it('keeps failed snapshots retryable and only marks suspended after provider confirmation', async () => {
+    const fx = fixture('suspend-retry');
+    await provisionManagedEnvironment(fx);
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/suspend`,
+      status: 502,
+      body: { error: 'snapshot-failed' },
+    });
+
+    const failed = await postRpc(
+      'environment.suspend',
+      { environmentId: fx.environmentId },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(failed.body)).toBe(true);
+    const pending = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(pending.environment.state).toBe('suspending');
+    expect(pending.environment.enrollmentId).toBeUndefined();
+
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/suspend`,
+      body: { ok: true, size: 123 },
+    });
+    await sweepAccount(fx.accountId);
+    const parked = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(parked.environment.state).toBe('suspended');
+  });
+
+  it('does not resume a parked snapshot when live compute is already at its cap', async () => {
+    const parked = fixture('resume-cap-parked');
+    await provisionManagedEnvironment(parked);
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${parked.environmentId}/suspend`,
+      body: { ok: true, size: 123 },
+    });
+    expectSuccess<EnvironmentSuspendResult>(
+      await postRpc(
+        'environment.suspend',
+        { environmentId: parked.environmentId },
+        parked.provisionerAuth,
+      ),
+    );
+
+    const live = {
+      ...parked,
+      environmentId: 'env_resume-cap-live',
+      envAuth: { ...parked.envAuth, environmentId: 'env_resume-cap-live' },
+    };
+    await provisionManagedEnvironment(live);
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: parked.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      parked.provisionerAuth,
+    );
+    const denied = await postRpc(
+      'environment.resume',
+      { environmentId: parked.environmentId, ttlSeconds: 1800 },
+      parked.provisionerAuth,
+    );
+    expect(isRpcError(denied.body)).toBe(true);
+    if (isRpcError(denied.body)) {
+      expect(denied.body.error.details?.['reason']).toBe('managed-concurrency-cap');
+    }
+  });
+
+  it('restores the stable environment with a fresh enrollment and keeps failed boots retryable', async () => {
+    const fx = fixture('resume-retry');
+    await provisionManagedEnvironment(fx);
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/suspend`,
+      body: { ok: true, size: 123 },
+    });
+    expectSuccess<EnvironmentSuspendResult>(
+      await postRpc('environment.suspend', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/boot`,
+      status: 502,
+      body: { error: 'restore-failed' },
+    });
+    const failed = await postRpc(
+      'environment.resume',
+      { environmentId: fx.environmentId, ttlSeconds: 1800 },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(failed.body)).toBe(true);
+    const parked = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(parked.environment.state).toBe('suspended');
+
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/boot`,
+      body: { providerRef: `sb-${fx.environmentId}`, processId: 'restored-worker', reused: false },
+    });
+    const resumed = expectSuccess<EnvironmentResumeResult>(
+      await postRpc(
+        'environment.resume',
+        { environmentId: fx.environmentId, ttlSeconds: 1800 },
+        fx.provisionerAuth,
+      ),
+    );
+    expect(resumed.environment.state).toBe('provisioning');
+    expect(resumed.environment.enrollmentId).toBeUndefined();
+    const last = await provisionerLast();
+    expect(last?.method).toBe('POST');
+    expect(last?.path).toBe(`/v1/environments/sb-${fx.environmentId}/boot`);
+    expect(last?.body?.bootstrap?.['resumeFromSnapshot']).toBe(true);
+    expect(last?.body?.bootstrap?.['enrollmentCode']).toBe(MANAGED_ENROLLMENT_CODE);
+    expect(last?.body?.bootstrap?.['pairing']).toBeUndefined();
   });
 });

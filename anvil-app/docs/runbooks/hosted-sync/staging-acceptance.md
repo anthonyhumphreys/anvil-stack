@@ -209,13 +209,56 @@ dispatch a harmless, bounded remote job targeted to that environment and
 confirm its completed result. Do not use a real repository secret or an
 untrusted manifest command.
 
-Use Settings → Cloud environments to request and observe the worker. For a
-chat, select Codex in the chat header, open **Run on another device** and
-select its ephemeral device. Choose Codex account sign-in or explicitly choose
-a saved OpenAI API key. Verify authentication, a harmless turn, approvals,
-cancellation and a follow-up. Orchestration also exposes environment targets
-for workflow jobs. Record each result separately; reaching `enrolled` proves
-provisioning only.
+The CLI flow above exercises standalone workflow environments. Its manual
+lifetime is separate from the normal chat experience. Settings → Cloud workers
+keeps that flow under **Advanced: workflow environments and provider connections**.
+
+For hosted chats, use the normal chat composer:
+
+1. Enable the intended provider in **Settings → Cloud agents** and connect it
+   if required. For Codex, use this device's login by default; also test the
+   destination sign-in fallback separately.
+2. Start a chat, choose **Run on → Anvil hosted cloud**, choose the provider/model
+   using the normal run settings, and send a harmless prompt. No environment
+   or lifetime selection should be needed. Confirm provisioning progress,
+   response, activity and approvals appear in the main conversation.
+3. Send a follow-up and test cancellation. Confirm the thread stays associated
+   with its cloud worker when navigating away and returning.
+4. Ask the agent to create a harmless uncommitted file and remember a unique
+   phrase. Wait for the idle grace period and confirm **Cloud worker paused**.
+   Verify compute stops. A pending approval or active turn must prevent pausing.
+5. Send another message. Confirm automatic resume, the same uncommitted file,
+   and provider conversation continuity. Record the stable environment ID and
+   the newly enrolled worker ID. Confirm no duplicate thread or turn appears.
+6. End the cloud session. Verify compute stops, the resumable snapshot reference
+   is removed, and further sends cannot silently recreate an ended session.
+   Record any provider retention limit described by the implementation.
+
+Managed idle chats retain the full writable container filesystem, including
+workspace changes and provider-native continuation data, in a snapshot scoped
+to that chat's stable environment identity. Before each checkpoint the worker
+removes its cached Mesh session token and the copied Codex/Devin source-auth
+files; resumed attempts receive fresh scoped grants. Explicit End stops compute
+and removes the snapshot reference from Anvil. Cloudflare snapshots are
+immutable and cannot be deleted directly; Cloudflare retains their bytes for
+up to 30 days, refreshed on restore. Anvil expires and reaps parked sessions
+within that same 30-day window. Resume resets only the volatile worker vault
+and cached source credential fields; it preserves the workspace database,
+keyring, and recovery records.
+
+Cloudflare makes a Container application's scheduling policy immutable. The
+provisioner therefore keeps its original default-policy `Sandbox` app,
+namespace, standard-1 size, and 20-instance cap for existing environments and
+non-chat workflows. New `remote-<uuid>` chats use the additive
+`ThreadSandbox` app and its Durable Object namespace, which supports snapshots.
+Cloudflare cannot transfer files or Durable Object storage from the old app to
+the new one; existing default-policy environments remain on the legacy route
+and are not automatically migrated or promised idle snapshot resume.
+
+Also test **Run on → a trusted remote device** and moving a local conversation
+to a remote target. Earlier messages must remain visible and the initial
+remote prompt must include prior conversation context. Record each result
+separately; reaching `enrolled` proves provisioning only.
 
 Terminate the environment even after a failed job:
 

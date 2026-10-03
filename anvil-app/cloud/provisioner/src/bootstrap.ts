@@ -7,6 +7,8 @@ export interface MeshEnvironmentBootstrap {
   enrollmentCode: string;
   ttlSeconds: number;
   networkPolicy?: string[];
+  /** Set only when starting from the same thread's private saved snapshot. */
+  resumeFromSnapshot?: boolean;
 }
 
 export function validBootstrap(bootstrap: unknown): bootstrap is MeshEnvironmentBootstrap {
@@ -22,7 +24,8 @@ export function validBootstrap(bootstrap: unknown): bootstrap is MeshEnvironment
     Number.isInteger(doc.ttlSeconds) && doc.ttlSeconds > 0 &&
     (doc.provider === undefined || typeof doc.provider === 'string') &&
     (doc.networkPolicy === undefined ||
-      (Array.isArray(doc.networkPolicy) && doc.networkPolicy.every((item) => typeof item === 'string')))
+      (Array.isArray(doc.networkPolicy) && doc.networkPolicy.every((item) => typeof item === 'string'))) &&
+    (doc.resumeFromSnapshot === undefined || typeof doc.resumeFromSnapshot === 'boolean')
   );
 }
 

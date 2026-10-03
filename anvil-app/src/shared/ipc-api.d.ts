@@ -792,6 +792,7 @@ export interface AnvilAPI {
     getRemoteChat: (id: string) => Promise<RemoteChatRecord | null>;
     sendRemoteChat: (input: SendRemoteChatInput) => Promise<RemoteChatRecord>;
     cancelRemoteChat: (id: string) => Promise<RemoteChatRecord>;
+    endRemoteChat: (id: string) => Promise<RemoteChatRecord>;
 
     status: () => Promise<SyncRuntimeStatus>;
     listCloudProviderConnections: () => Promise<CloudEnvironmentProviderConnection[]>;
@@ -806,6 +807,10 @@ export interface AnvilAPI {
     listCloudEnvironments: (
       includeTerminal?: boolean,
     ) => Promise<{ environments: CloudEnvironmentRecord[] }>;
+    getManagedEnvironmentLimits: () => Promise<{
+      maxTtlSeconds: number;
+      maxConcurrent: number;
+    }>;
     requestCloudEnvironment: (input: {
       provider: EnvironmentProviderId;
       ttlSeconds: number;
