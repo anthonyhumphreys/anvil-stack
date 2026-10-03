@@ -10,4 +10,6 @@ export function deploymentVariable(
 
 export function configureWorkosEnvironment(env?: NodeJS.ProcessEnv): void;
 
+export function workosCallbackBaseUrl(env?: NodeJS.ProcessEnv): string | undefined;
+
 export function validateDeploymentEnvironment(env?: NodeJS.ProcessEnv): void;

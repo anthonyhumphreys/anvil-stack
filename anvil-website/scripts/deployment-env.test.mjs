@@ -5,8 +5,36 @@ import {
   configureWorkosEnvironment,
   deploymentEnvironment,
   deploymentVariable,
+  workosCallbackBaseUrl,
   validateDeploymentEnvironment
 } from "../lib/deployment-env.js";
+
+test("AuthKit callback returns to the configured public origin behind a localhost proxy", () => {
+  const baseURL = workosCallbackBaseUrl({
+    ANVIL_DEPLOYMENT_ENV: "staging",
+    ANVIL_STAGING_WORKOS_REDIRECT_URI: "https://staging.anvilstack.dev/auth/callback",
+    NEXT_PUBLIC_WORKOS_REDIRECT_URI: "http://localhost:3000/auth/callback"
+  });
+  assert.equal(new URL("/account?tab=devices", baseURL).href, "https://staging.anvilstack.dev/account?tab=devices");
+});
+
+test("AuthKit callback uses the selected production origin and does not fall back to staging", () => {
+  assert.equal(workosCallbackBaseUrl({
+    ANVIL_DEPLOYMENT_ENV: "production",
+    ANVIL_PRODUCTION_WORKOS_REDIRECT_URI: "https://anvilstack.dev/auth/callback",
+    ANVIL_STAGING_WORKOS_REDIRECT_URI: "https://staging.anvilstack.dev/auth/callback"
+  }), "https://anvilstack.dev");
+  assert.equal(workosCallbackBaseUrl({
+    ANVIL_DEPLOYMENT_ENV: "production",
+    NEXT_PUBLIC_WORKOS_REDIRECT_URI: "http://localhost:3000/auth/callback"
+  }), undefined);
+});
+
+test("local staging login can still return to its configured localhost origin", () => {
+  assert.equal(workosCallbackBaseUrl({
+    NEXT_PUBLIC_WORKOS_REDIRECT_URI: "http://localhost:3000/auth/callback"
+  }), "http://localhost:3000");
+});
 
 function productionEnvironment(overrides = {}) {
   return {

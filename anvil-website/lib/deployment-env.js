@@ -37,6 +37,14 @@ export function deploymentVariable(name, legacyName, env = process.env) {
   return legacyValue || undefined;
 }
 
+/** Public origin for the return redirect after AuthKit exchanges the code.
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function workosCallbackBaseUrl(env = process.env) {
+  const redirectUri = deploymentVariable("WORKOS_REDIRECT_URI", "NEXT_PUBLIC_WORKOS_REDIRECT_URI", env);
+  return redirectUri ? new URL(redirectUri).origin : undefined;
+}
+
 /**
  * AuthKit reads these variables when its module loads. Resolve the selected
  * values before importing AuthKit, and replace its generic SDK aliases with
