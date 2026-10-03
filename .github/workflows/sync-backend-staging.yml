@@ -7,6 +7,12 @@ on:
       - .github/workflows/sync-backend-staging.yml
       - anvil-app/cloud/backend/**
       - anvil-app/cloud/contract/**
+      - anvil-app/cloud/provisioner/**
+      - anvil-app/cloud/images/anvil-worker/**
+      - anvil-app/src/**
+      - anvil-app/scripts/build-daemon.mjs
+      - anvil-app/package.json
+      - anvil-app/pnpm-lock.yaml
       - anvil-cloud/**
   workflow_dispatch:
 
@@ -22,7 +28,7 @@ jobs:
     # The feature branch is allowed for the initial PR #91 rehearsal only.
     if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/feature/sync-mesh--foundations'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     environment: anvil-staging
     defaults:
       run:
@@ -44,10 +50,20 @@ jobs:
           cache-dependency-path: |
             anvil-app/cloud/backend/pnpm-lock.yaml
             anvil-cloud/pnpm-lock.yaml
+            anvil-app/pnpm-lock.yaml
+            anvil-app/cloud/provisioner/pnpm-lock.yaml
       - name: Install backend and deployment CLI dependencies
         run: |
           pnpm install --ignore-workspace --frozen-lockfile
           pnpm --dir ../../../anvil-cloud install --frozen-lockfile
+          pnpm --dir ../provisioner install --ignore-workspace --frozen-lockfile
+          pnpm --dir ../.. install --frozen-lockfile --ignore-scripts
+      - name: Verify provisioner and stage worker daemon
+        run: |
+          pnpm --dir ../provisioner typecheck
+          pnpm --dir ../provisioner test
+          pnpm --dir ../.. build:daemon
+          sh ../images/anvil-worker/prepare.sh
       - name: Verify backend and deployment guards
         run: |
           pnpm typecheck
@@ -87,6 +103,24 @@ jobs:
           }), { mode: 0o600 });
           JS
           pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json plan --json
+      - name: Deploy staging provisioner and worker image
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
+          HOSTED_SERVICE_KEYS: ${{ secrets.HOSTED_SERVICE_KEYS }}
+          MANAGED_PROVISIONER_TOKEN: ${{ secrets.MANAGED_PROVISIONER_TOKEN }}
+          WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
+          WORKOS_WEBHOOK_SECRET: ${{ secrets.WORKOS_WEBHOOK_SECRET }}
+        run: |
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo 'Missing CLOUDFLARE_DEPLOY_API_TOKEN'; exit 1; }
+          docker info > /dev/null
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json provisioner plan --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json provisioner apply --dry-run --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json provisioner apply --test-deployment --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json provisioner secrets --test-deployment --json
+      - name: Check provisioner authentication and container lifecycle
+        env:
+          MANAGED_PROVISIONER_TOKEN: ${{ secrets.MANAGED_PROVISIONER_TOKEN }}
+        run: node ../provisioner/scripts/verify-staging.mjs
       - name: Validate, migrate and deploy staging
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
