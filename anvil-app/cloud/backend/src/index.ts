@@ -13,7 +13,8 @@ import { selfHostAccountPage } from './account-page';
 
 export { AccountCoordinator, SessionCoordinator };
 
-const RPC_BODY_MAX_BYTES = 512 * 1024;
+// Allows the 512 KiB sealed job-input envelope plus bounded manifest/RPC framing.
+const RPC_BODY_MAX_BYTES = 640 * 1024;
 const AUTH_BODY_MAX_BYTES = 16 * 1024;
 
 function normalizePathname(pathname: string): string {

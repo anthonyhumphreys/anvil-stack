@@ -102,6 +102,8 @@ interface ManagedSession {
   /** Access mode pinned by the session caller, such as a read-only side chat. */
   modeOverride?: CodexMode;
   process: ChildProcess;
+  /** Isolated process group captured at spawn time on POSIX. */
+  processGroupId?: number;
   provider: 'codex' | AcpAgentProvider;
   agentProvider: AgentProvider;
   gatewayModels?: import('../../shared/types.js').LlmGatewayModel[];
@@ -137,6 +139,24 @@ interface ManagedSession {
   resolveThreadReady: (() => void) | null;
   rejectThreadReady: ((err: Error) => void) | null;
   origin: 'desktop' | 'browser';
+  /** Internal remote runs stream through the main-process event bus only. */
+  headless: boolean;
+}
+
+/** Main-process-only controls used by Mesh. Never add these to the IPC contract. */
+export interface RemoteSessionRuntimeOptions {
+  provider: AgentProvider;
+  model: string;
+  extraEnv?: Record<string, string>;
+  codexMode: CodexMode;
+  headless: true;
+  bypassEnabledProviderGate: true;
+  onSessionCreated?: (sessionId: string) => void;
+}
+
+/** Keep provider descendants out of Anvil's POSIX process group. */
+export function providerProcessSpawnOptions(): { detached: true } | Record<string, never> {
+  return process.platform === 'win32' ? {} : { detached: true };
 }
 
 type CodexUserInput =
@@ -236,12 +256,14 @@ export function resolveSessionModel(provider: AgentProvider, configuredModel: st
 export async function buildCodexProcessEnvironment(
   provider: AgentProvider,
   settings: ReturnType<typeof getSettings>,
+  extraEnv?: Record<string, string>,
 ): Promise<Record<string, string>> {
   const env: Record<string, string> = providerSpawnEnv();
+  let gatewayHome: string | undefined;
   if (provider === 'openai' && settings.openaiApiKey) env.OPENAI_API_KEY = settings.openaiApiKey;
   if (provider === 'llmgateway') {
     applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
-    const gatewayHome = path.join(app.getPath('userData'), 'codex', 'llmgateway');
+    gatewayHome = path.join(app.getPath('userData'), 'codex', 'llmgateway');
     await syncGatewayCodexIntegrations(
       gatewayHome,
       process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
@@ -250,6 +272,10 @@ export async function buildCodexProcessEnvironment(
     delete env.OPENAI_BASE_URL;
     env.CODEX_HOME = gatewayHome;
   }
+  if (extraEnv) Object.assign(env, extraEnv);
+  // An attempt grant may override provider credentials, but must never point
+  // the isolated gateway runtime back at the user's personal CODEX_HOME.
+  if (gatewayHome) env.CODEX_HOME = gatewayHome;
   return env;
 }
 
@@ -312,10 +338,11 @@ export async function startSession(
   repoIds: string[],
   personaId: string,
   options?: ChatStartOptions,
+  runtime?: RemoteSessionRuntimeOptions,
 ): Promise<CodexSession> {
   const id = randomUUID();
   const settings = getSettings();
-  const agentProvider = options?.provider ?? settings.llmProvider;
+  const agentProvider = runtime?.provider ?? options?.provider ?? settings.llmProvider;
   const isSideQuestion =
     options?.threadId !== undefined && getChatThread(options.threadId)?.purpose === 'side-question';
   const modeOverride = isSideQuestion ? 'read-only' : options?.codexMode;
@@ -327,13 +354,16 @@ export async function startSession(
   const enabledProviders = settings.enabledLlmProviders?.length
     ? settings.enabledLlmProviders
     : [settings.llmProvider];
-  if (!enabledProviders.includes(agentProvider)) {
+  if (!runtime?.bypassEnabledProviderGate && !enabledProviders.includes(agentProvider)) {
     throw new Error(
       `${agentProvider} is not enabled. Activate it in Settings before starting a chat.`,
     );
   }
-  const mode = modeOverride ?? settings.codexMode ?? 'on-request';
-  const configuredModel = resolveSessionModel(agentProvider, settings.openaiModel);
+  const mode = runtime?.codexMode ?? modeOverride ?? settings.codexMode ?? 'on-request';
+  const configuredModel = resolveSessionModel(
+    agentProvider,
+    runtime?.model ?? settings.openaiModel,
+  );
   const gatewayConfig =
     agentProvider === 'llmgateway'
       ? await resolveLlmGatewayModelConfig(configuredModel, settings.reasoningLevel)
@@ -372,7 +402,7 @@ export async function startSession(
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
-  const env = await buildCodexProcessEnvironment(agentProvider, settings);
+  const env = await buildCodexProcessEnvironment(agentProvider, settings, runtime?.extraEnv);
   if (gatewayConfig)
     args.push(...(await writeGatewayCodexCatalog(env.CODEX_HOME, gatewayConfig.models)));
 
@@ -382,6 +412,7 @@ export async function startSession(
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...providerProcessSpawnOptions(),
     });
   } catch (err) {
     throw new Error(
@@ -406,6 +437,7 @@ export async function startSession(
     mode: codexPolicy.sandbox === 'read-only' ? 'read-only' : mode,
     modeOverride,
     process: proc,
+    ...(process.platform !== 'win32' && proc.pid !== undefined ? { processGroupId: proc.pid } : {}),
     provider,
     agentProvider,
     gatewayModels: gatewayConfig?.models,
@@ -424,9 +456,11 @@ export async function startSession(
     resolveThreadReady,
     rejectThreadReady,
     origin: options?.origin ?? 'desktop',
+    headless: runtime?.headless === true,
   };
 
   sessions.set(id, session);
+  runtime?.onSessionCreated?.(id);
 
   // Handle stdout — JSON-RPC events, one per line
   proc.stdout?.on('data', (chunk: Buffer) => {
@@ -440,12 +474,9 @@ export async function startSession(
     }
   });
 
-  proc.stderr?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString().trim();
-    if (text) {
-      console.warn(`[Codex:${id.slice(0, 8)}] stderr: ${text}`);
-    }
-  });
+  // Drain the pipe so a verbose provider cannot block on stderr. Provider stderr
+  // can contain credentials or other sensitive diagnostics, so never log it.
+  proc.stderr?.on('data', () => undefined);
 
   proc.on('exit', (code, signal) => {
     console.log(`[Codex:${id.slice(0, 8)}] exited with code=${code} signal=${signal}`);
@@ -554,7 +585,12 @@ export async function startSession(
   }
 
   // Wait for thread/started before marking ready
-  await waitForThreadReady(threadReady, id);
+  try {
+    await waitForThreadReady(threadReady, id);
+  } catch (error) {
+    if (session.headless) await stopHeadlessSession(id);
+    throw error;
+  }
 
   session.status = 'ready';
   broadcastEvent(id, { type: 'status', status: 'executing' });
@@ -1215,9 +1251,14 @@ export function stopSession(sessionId: string): void {
   session.resolveThreadReady = null;
   session.rejectThreadReady = null;
   try {
-    session.process.kill('SIGTERM');
+    if (session.processGroupId !== undefined) process.kill(-session.processGroupId, 'SIGTERM');
+    else session.process.kill('SIGTERM');
   } catch {
-    /* already dead */
+    try {
+      session.process.kill('SIGTERM');
+    } catch {
+      /* already dead */
+    }
   }
   sessions.delete(sessionId);
   pendingPlanFeedback.delete(sessionId);
@@ -1232,6 +1273,83 @@ export function stopSession(sessionId: string): void {
       pendingApprovalDetails.delete(requestKey);
     }
   }
+}
+
+/** Stop a provider session and wait until its isolated POSIX group is gone. */
+export async function stopSessionAndWait(sessionId: string): Promise<void> {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  const proc = session.process;
+  const processGroupId = session.processGroupId;
+  stopSession(sessionId);
+  await stopManagedProviderProcess(proc, processGroupId);
+}
+
+/** Kill only a process group created for a provider session, never Anvil's group. */
+export async function stopManagedProviderProcess(
+  proc: ChildProcess,
+  processGroupId?: number,
+  graceMs = 3_000,
+): Promise<void> {
+  if (processGroupId !== undefined) {
+    const groupExists = (): boolean => {
+      try {
+        process.kill(-processGroupId, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+      }
+    };
+    const signalGroup = (signal: NodeJS.Signals): void => {
+      try {
+        process.kill(-processGroupId, signal);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    };
+    const waitForGroupExit = async (): Promise<boolean> => {
+      const deadline = Date.now() + graceMs;
+      while (groupExists()) {
+        if (Date.now() >= deadline) return false;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return true;
+    };
+    if (!groupExists()) return;
+    signalGroup('SIGTERM');
+    if (await waitForGroupExit()) return;
+    signalGroup('SIGKILL');
+    if (!(await waitForGroupExit())) throw new Error('provider-process-group-did-not-stop');
+    return;
+  }
+
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  const signalChild = (name: NodeJS.Signals): void => {
+    try {
+      proc.kill(name);
+    } catch {
+      /* Process already exited. */
+    }
+  };
+  const waitForExit = (timeoutMs: number): Promise<boolean> => {
+    if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      proc.once('exit', () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  };
+  signalChild('SIGTERM');
+  if (await waitForExit(graceMs)) return;
+  signalChild('SIGKILL');
+  if (!(await waitForExit(graceMs))) throw new Error('provider-process-did-not-stop');
+}
+
+/** Stop an internal headless Mesh session with the same group cleanup guarantees. */
+export async function stopHeadlessSession(sessionId: string): Promise<void> {
+  await stopSessionAndWait(sessionId);
 }
 
 export function stopAllSessions(): void {
@@ -1262,6 +1380,11 @@ export function listActiveCodexSessions(): CodexSession[] {
 export function getCodexSession(sessionId: string): CodexSession | null {
   const session = sessions.get(sessionId);
   return session ? sessionToPublic(session) : null;
+}
+
+/** Active provider model for durable handoff pinning; absent after the session exits. */
+export function getCodexSessionModel(sessionId: string): string | null {
+  return sessions.get(sessionId)?.model ?? null;
 }
 
 /** Transfer persistence ownership when a browser attaches to an idle Desktop session. */
@@ -2005,6 +2128,7 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
       console.error('[Codex] Event subscriber failed:', error);
     }
   }
+  if (session?.headless) return;
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('chat:event', {
       sessionId,

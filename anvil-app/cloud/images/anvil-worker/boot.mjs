@@ -52,7 +52,9 @@ export function parseBootstrapPayload(raw) {
     throw new Error('bootstrap payload is not valid JSON');
   }
   if (doc?.kind !== 'anvil.mesh-environment' || doc?.schemaVersion !== '0.2') {
-    throw new Error('unrecognized bootstrap document (want kind=anvil.mesh-environment, schemaVersion=0.2)');
+    throw new Error(
+      'unrecognized bootstrap document (want kind=anvil.mesh-environment, schemaVersion=0.2)',
+    );
   }
   for (const field of ['environmentId', 'backendUrl', 'enrollmentCode']) {
     if (typeof doc[field] !== 'string' || doc[field].length === 0) {
@@ -62,7 +64,9 @@ export function parseBootstrapPayload(raw) {
   // Fail closed on the legacy secret-bearing form — an environment must
   // never receive account key material through bootstrap.
   if (typeof doc.pairing === 'string' || doc.enrollmentCode.startsWith('anvil-pair-')) {
-    throw new Error('bootstrap carries account keying material — environments accept enrollment codes only');
+    throw new Error(
+      'bootstrap carries account keying material — environments accept enrollment codes only',
+    );
   }
   if (typeof doc.ttlSeconds !== 'number' || !(doc.ttlSeconds > 0)) {
     throw new Error('bootstrap missing positive ttlSeconds');
@@ -92,12 +96,75 @@ function daemon(args, env) {
   return spawn('node', [DAEMON, ...args], { env, stdio: 'inherit' });
 }
 
+/** Configure unattended storage before spending the single-use enrollment code. */
+export function prepareWorkerStorage(dataDir, keyFilePath, run = spawnSync) {
+  const env = { ...process.env, ANVIL_DATA_DIR: dataDir };
+  const invoke = (args) =>
+    run('node', [DAEMON, ...args], {
+      env,
+      encoding: 'utf8',
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+
+  const readStatus = () => {
+    const result = invoke(['vault', 'status']);
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        'Worker credential storage could not be inspected; enrollment code was not consumed.',
+      );
+    }
+    const lines = String(result.stdout ?? '')
+      .trim()
+      .split(/\r?\n/)
+      .reverse();
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === 'object' && typeof parsed.state === 'string') return parsed;
+      } catch {
+        // The daemon writes startup and migration logs before its JSON status.
+      }
+    }
+    throw new Error(
+      'Worker credential storage returned an invalid status; enrollment code was not consumed.',
+    );
+  };
+
+  let status = readStatus();
+  if (
+    status.state !== 'invalid' &&
+    status.vault?.state !== 'invalid' &&
+    status.vault?.configured === false &&
+    status.vault?.state === 'unavailable'
+  ) {
+    mkdirSync(dirname(keyFilePath), { recursive: true, mode: 0o700 });
+    const setup = invoke(['vault', 'setup', '--key-file', keyFilePath]);
+    if (setup.error || setup.status !== 0) {
+      throw new Error('Worker credential vault setup failed; enrollment code was not consumed.');
+    }
+    status = readStatus();
+  }
+
+  if (
+    status.provider !== 'vault' ||
+    status.state !== 'ready' ||
+    status.vault?.configured !== true ||
+    status.vault.state !== 'ready'
+  ) {
+    throw new Error(
+      'Worker credential storage is locked or unavailable; restore its original key before enrolling.',
+    );
+  }
+}
+
 async function main() {
   const boot = readBootstrap();
   // The enrollment code is consumed once by enroll — don't carry it in this
   // process's env for the worker's whole lifetime.
   delete process.env.ANVIL_BOOTSTRAP_JSON;
   mkdirSync(DATA_DIR, { recursive: true });
+  prepareWorkerStorage(DATA_DIR, process.env.ANVIL_VAULT_KEY_FILE ?? '/run/anvil/vault/worker.key');
 
   // Ephemeral environment: worker on, companion off (no inbound devices will
   // ever talk to a cloud env's companion server).
@@ -116,7 +183,9 @@ async function main() {
     ANVIL_ENVIRONMENT_PROVIDER: boot.provider ?? 'unknown',
   };
 
-  log(`booting environment ${boot.environmentId} (provider=${env.ANVIL_ENVIRONMENT_PROVIDER}, ttl=${boot.ttlSeconds}s)`);
+  log(
+    `booting environment ${boot.environmentId} (provider=${env.ANVIL_ENVIRONMENT_PROVIDER}, ttl=${boot.ttlSeconds}s)`,
+  );
 
   const enroll = daemon(
     ['enroll', '--api-url', boot.backendUrl, '--code', boot.enrollmentCode, '--worker'],

@@ -202,3 +202,27 @@ Platform references:
 [Cloudflare environments](https://developers.cloudflare.com/workers/wrangler/environments/).
 Cloudflare bindings and variables must be configured per environment; WorkOS
 staging and production have separate environment configuration.
+
+
+## Remote follow-up on 3 October 2026
+
+The reviewed handoff, fresh-worker and remote-chat wiring gaps are implemented.
+Remote chats expose Desktop's six provider choices on enrolled desktops/BYO
+workers. Managed cloud launch supports Codex, with destination account sign-in
+as the default and an optional explicit API-key grant. There is no standalone
+Claude provider.
+
+Handoff prepares the target before quiescing the source, carries the checkpoint
+inside the encrypted task inputs, and recovers submission/adoption after
+reconnect or restart. A failed destination activation can explicitly retry a
+fresh turn while retaining destination edits and ownership. Fresh cloud workers
+receive the selected portable definition through the task content key, without
+an account-wide sync key.
+
+Verification passed 1,840 desktop tests with 12 skipped, 438 backend tests,
+desktop/backend TypeScript, desktop ESLint, Electron/daemon builds and both
+worker image builds. Container smoke checks passed vault restart/missing-key
+behavior, the Codex runtime pin and authentication protocol configuration.
+Live provider execution and signed-in/physical-device acceptance remain pending.
+See [remote chats](remote-chats.md) for the auth decision, interaction limits and
+the remaining acceptance scope.

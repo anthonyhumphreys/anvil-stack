@@ -99,7 +99,9 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
       completed === undefined ? 'another device' : deviceName(completed.targetEnrollmentId);
   }
 
-  const targets = (devices ?? []).filter((d) => d.self !== true && d.revoked !== true);
+  const targets = (devices ?? []).filter(
+    (d) => d.self !== true && d.revoked !== true && d.trustState === 'trusted',
+  );
   const canMove = ownedHere && !inFlight && !moving && targets.length > 0;
 
   const handleMove = async (targetEnrollmentId: string): Promise<void> => {

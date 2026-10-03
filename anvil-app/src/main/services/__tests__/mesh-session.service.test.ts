@@ -7,6 +7,17 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const desktopSessionMocks = vi.hoisted(() => ({
+  listener: null as
+    | ((payload: { sessionId: string; event: Record<string, unknown> }) => void)
+    | null,
+  startSession: vi.fn(),
+  sendMessage: vi.fn(),
+  resolveApproval: vi.fn(),
+  resolveInputRequest: vi.fn(),
+  stopHeadlessSession: vi.fn(async () => undefined),
+}));
+
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp', getVersion: () => 'test' },
   safeStorage: {
@@ -19,6 +30,24 @@ vi.mock('../../db/database.js', () => ({ getDb: () => null }));
 vi.mock('../settings.service.js', () => ({
   getSettings: () => ({ openaiApiKey: undefined }),
 }));
+vi.mock('../codex-session.service.js', () => ({
+  providerProcessSpawnOptions: () => (process.platform === 'win32' ? {} : { detached: true }),
+  stopManagedProviderProcess: async (proc: ChildProcess) => {
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGTERM');
+  },
+  startSession: desktopSessionMocks.startSession,
+  sendMessage: desktopSessionMocks.sendMessage,
+  resolveApproval: desktopSessionMocks.resolveApproval,
+  resolveInputRequest: desktopSessionMocks.resolveInputRequest,
+  stopHeadlessSession: desktopSessionMocks.stopHeadlessSession,
+  subscribeToCodexEvents: (listener: typeof desktopSessionMocks.listener) => {
+    desktopSessionMocks.listener = listener;
+    return () => {
+      desktopSessionMocks.listener = null;
+    };
+  },
+}));
+vi.mock('../codex-runtime.service.js', () => ({ resolveCodexRuntime: async () => 'codex' }));
 
 import {
   configureMeshSessionForTests,
@@ -36,6 +65,7 @@ interface FakeServer {
   received: Array<Record<string, unknown>>;
   /** Respond to the next server→client request id (asserts auto-decline). */
   killedWith: string[];
+  notify(document: Record<string, unknown>): void;
 }
 
 interface FakeBehavior {
@@ -46,6 +76,7 @@ interface FakeBehavior {
   /** Delay turn completion until interrupted (cancel path). */
   holdTurn?: boolean;
   turnStatus?: 'completed' | 'failed';
+  initiallyAuthenticated?: boolean;
 }
 
 function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
@@ -54,6 +85,7 @@ function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
     sendApprovalRequest = false,
     holdTurn = false,
     turnStatus = 'completed',
+    initiallyAuthenticated = true,
   } = behavior;
   const proc = new EventEmitter() as MutableProcess & {
     stdout: PassThrough;
@@ -66,7 +98,7 @@ function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
   proc.pid = 0xfffffff0; // never a real pid — group kill ESRCHs into fallback
   proc.exitCode = null;
   proc.signalCode = null;
-  const fake: FakeServer = { proc, received: [], killedWith: [] };
+  let isAuthenticated = initiallyAuthenticated;
   proc.kill = (signal?: NodeJS.Signals | number) => {
     fake.killedWith.push(String(signal ?? 'SIGTERM'));
     queueMicrotask(() => proc.emit('exit', 0, 'SIGTERM'));
@@ -75,6 +107,18 @@ function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
 
   const write = (doc: Record<string, unknown>): void => {
     proc.stdout.write(`${JSON.stringify(doc)}\n`);
+  };
+  const fake: FakeServer = {
+    proc,
+    received: [],
+    killedWith: [],
+    notify: (document) => {
+      const params = document.params as Record<string, unknown> | undefined;
+      if (document.method === 'account/login/completed' && params?.success === true) {
+        isAuthenticated = true;
+      }
+      write(document);
+    },
   };
   let turnId: string | null = null;
   proc.stdin.on('data', (chunk: Buffer) => {
@@ -117,6 +161,26 @@ function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
       } else if (id !== undefined && method === undefined) {
         if (id === 'req-approval-1')
           write({ method: 'turn/completed', params: { turn: { id: turnId, status: turnStatus } } });
+      } else if (method === 'account/read') {
+        write({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            account: isAuthenticated ? { type: 'chatgpt' } : null,
+            requiresOpenaiAuth: true,
+          },
+        });
+      } else if (method === 'account/login/start') {
+        write({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            type: 'chatgptDeviceCode',
+            loginId: 'login-1',
+            verificationUrl: 'https://auth.openai.com/codex/device',
+            userCode: 'ABCD-EFGH',
+          },
+        });
       } else if (id !== undefined) {
         write({ jsonrpc: '2.0', id, result: {} });
       }
@@ -146,9 +210,184 @@ function spec(overrides: Partial<Parameters<typeof runRemoteSessionTurn>[0]> = {
 
 afterEach(() => {
   resetMeshSessionForTests();
+  desktopSessionMocks.listener = null;
+  desktopSessionMocks.startSession.mockReset();
+  desktopSessionMocks.sendMessage.mockReset();
+  desktopSessionMocks.stopHeadlessSession.mockClear();
 });
 
 describe('mesh-session provider driver', () => {
+  it('waits for explicit Codex device sign-in and verifies the account before starting a thread', async () => {
+    const fake = fakeAppServer({ initiallyAuthenticated: false });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const authenticate = vi.fn(async (request: { verificationUrl: string; userCode: string }) => {
+      expect(request).toEqual({
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        userCode: 'ABCD-EFGH',
+      });
+      fake.notify({
+        method: 'account/login/completed',
+        params: { loginId: 'login-1', success: true },
+      });
+      return true;
+    });
+    const hooks = {
+      ...HOOKS_BASE,
+      authenticate,
+    };
+    const result = await runRemoteSessionTurn(spec({ authMode: 'codex-account' }), hooks);
+
+    const methods = fake.received.map((message) => message['method']);
+    expect(methods.indexOf('account/read')).toBeLessThan(methods.indexOf('account/login/start'));
+    expect(methods.lastIndexOf('account/read')).toBeLessThan(methods.indexOf('thread/start'));
+    expect(authenticate).toHaveBeenCalledTimes(1);
+    expect(hooks.emitActivity.mock.calls.flat().join(' ')).not.toContain('ABCD-EFGH');
+    expect(result.turnStatus).toBe('completed');
+  });
+
+  it('does not treat auth UI approval as successful sign-in without the app-server completion', async () => {
+    const fake = fakeAppServer({ initiallyAuthenticated: false });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const authenticate = vi.fn(async () => {
+      fake.notify({
+        method: 'account/login/completed',
+        params: { loginId: 'login-1', success: false },
+      });
+      return true;
+    });
+
+    await expect(
+      runRemoteSessionTurn(spec({ authMode: 'codex-account' }), {
+        ...HOOKS_BASE,
+        authenticate,
+      }),
+    ).rejects.toThrow('codex-account-login-failed');
+    expect(fake.received.some((message) => message['method'] === 'thread/start')).toBe(false);
+  });
+
+  it('uses an OpenAI API-key grant through process-only Codex config overrides', async () => {
+    const fake = fakeAppServer();
+    let spawned: { args: string[]; env: NodeJS.ProcessEnv } | undefined;
+    configureMeshSessionForTests({
+      spawn: (_command, args, options) => {
+        spawned = { args, env: options.env as NodeJS.ProcessEnv };
+        return fake.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+    await runRemoteSessionTurn(
+      spec({
+        provider: 'codex',
+        authMode: 'openai-api-key',
+        extraEnv: { OPENAI_API_KEY: 'grant-key' },
+      }),
+      HOOKS_BASE,
+    );
+
+    expect(spawned?.env.OPENAI_API_KEY).toBe('grant-key');
+    expect(spawned?.args).toEqual(
+      expect.arrayContaining([
+        'model_provider="anvil_api"',
+        'model_providers.anvil_api.name="OpenAI API"',
+        'model_providers.anvil_api.base_url="https://api.openai.com/v1"',
+        'model_providers.anvil_api.wire_api="responses"',
+        'model_providers.anvil_api.env_key="OPENAI_API_KEY"',
+        'model_providers.anvil_api.requires_openai_auth=false',
+      ]),
+    );
+  });
+
+  it('runs ACP providers through the Desktop session adapter and returns bounded output and resume handle', async () => {
+    let probedProvider: string | undefined;
+    configureMeshSessionForTests({
+      probeCli: async (provider) => {
+        probedProvider = provider;
+        return '1.2.3';
+      },
+    });
+    desktopSessionMocks.startSession.mockResolvedValue({
+      id: 'session-cursor',
+      providerThreadId: 'cursor-session-1',
+    });
+    desktopSessionMocks.sendMessage.mockImplementation(async () => {
+      desktopSessionMocks.listener?.({
+        sessionId: 'session-cursor',
+        event: { type: 'text', text: 'Remote answer.' },
+      });
+      desktopSessionMocks.listener?.({
+        sessionId: 'session-cursor',
+        event: { type: 'turn_outcome', turnOutcome: 'completed', protocolTurnId: 'turn-cursor' },
+      });
+    });
+    const hooks = {
+      onThreadStarted: vi.fn(),
+      emitActivity: vi.fn(),
+      isCancelled: () => false,
+      onEvent: vi.fn(),
+    };
+    const result = await runRemoteSessionTurn(
+      spec({
+        provider: 'cursor',
+        resumeThreadId: 'cursor-session-0',
+        extraEnv: { CURSOR_API_KEY: 'attempt-secret' },
+      }),
+      hooks,
+    );
+
+    expect(probedProvider).toBe('cursor');
+    expect(desktopSessionMocks.startSession).toHaveBeenCalledWith(
+      ['/tmp'],
+      [],
+      'coder',
+      expect.objectContaining({ provider: 'cursor', providerThreadId: 'cursor-session-0' }),
+      expect.objectContaining({
+        model: 'gpt-5.6-terra',
+        codexMode: 'workspace-auto',
+        headless: true,
+        bypassEnabledProviderGate: true,
+        extraEnv: { CURSOR_API_KEY: 'attempt-secret' },
+      }),
+    );
+    expect(result).toMatchObject({
+      providerThreadId: 'cursor-session-1',
+      resumeHandle: 'cursor-session-1',
+      turnId: 'turn-cursor',
+      turnStatus: 'completed',
+      assistantOutput: 'Remote answer.',
+      cliVersion: '1.2.3',
+    });
+    expect(hooks.onThreadStarted).toHaveBeenCalledWith('cursor-session-1');
+    expect(hooks.onEvent).toHaveBeenCalledTimes(2);
+    expect(desktopSessionMocks.stopHeadlessSession).toHaveBeenCalledWith('session-cursor');
+  });
+
+  it('fails clearly when an unattended ACP provider asks the user a question', async () => {
+    configureMeshSessionForTests({ probeCli: async () => '1.2.3' });
+    desktopSessionMocks.startSession.mockResolvedValue({
+      id: 'session-cursor',
+      providerThreadId: 'cursor-session-1',
+    });
+    desktopSessionMocks.sendMessage.mockImplementation(async () => {
+      desktopSessionMocks.listener?.({
+        sessionId: 'session-cursor',
+        event: { type: 'input_request', inputRequest: { kind: 'cursor_ask_question' } },
+      });
+    });
+    const hooks = {
+      onThreadStarted: vi.fn(),
+      emitActivity: vi.fn(),
+      isCancelled: () => false,
+      onEvent: vi.fn(),
+    };
+    const result = await runRemoteSessionTurn(spec({ provider: 'cursor' }), hooks);
+
+    expect(result.turnStatus).toBe('failed');
+    expect(hooks.emitActivity).toHaveBeenCalledWith(
+      expect.stringContaining('remote attempts cannot answer questions'),
+    );
+    expect(hooks.onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'input_request' }));
+  });
+
   it('starts a thread, runs one turn, and stops the process group', async () => {
     const fake = fakeAppServer();
     configureMeshSessionForTests({
@@ -234,7 +473,7 @@ describe('mesh-session provider driver', () => {
       approvalPolicy: 'on-request',
     });
   });
-  it.each(['read-only', 'workspace-auto', 'full-access'] as const)(
+  it.each(['read-only', 'workspace-auto'] as const)(
     'does not authorize provider escalation in %s mode',
     async (permissionMode) => {
       const fake = fakeAppServer({ sendApprovalRequest: true, holdTurn: true });
@@ -247,6 +486,19 @@ describe('mesh-session provider driver', () => {
       ).toEqual({ decision: 'decline' });
     },
   );
+  it('honors full-access provider requests without invoking the Mesh approver', async () => {
+    const fake = fakeAppServer({ sendApprovalRequest: true, holdTurn: true });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const approve = vi.fn().mockResolvedValue(false);
+    await runRemoteSessionTurn(spec({ permissionMode: 'full-access' }), {
+      ...HOOKS_BASE,
+      approve,
+    });
+    expect(approve).not.toHaveBeenCalled();
+    expect(
+      fake.received.find((m) => m['id'] === 'req-approval-1' && m['result'])?.['result'],
+    ).toEqual({ decision: 'accept' });
+  });
   it('fails the attempt when the turn reports failed', async () => {
     const fake = fakeAppServer({ turnStatus: 'failed' });
     configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });

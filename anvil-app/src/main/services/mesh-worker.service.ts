@@ -32,9 +32,15 @@ import { promisify } from 'node:util';
 import { platform, totalmem } from 'node:os';
 import { getDb } from '../db/database.js';
 import { join } from 'node:path';
+import { relative, sep } from 'node:path';
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { uploadAttemptArtifact } from './mesh-artifact.service.js';
 import { startWorkspaceClone } from './workspace-materialization.service.js';
+import { boundedRemoteAssistantOutput } from './mesh-session-output.js';
+import {
+  installTaskWorkspaceDefinition,
+  remoteWorkspaceDefinition,
+} from './mesh-workspace-input.service.js';
 import {
   probeSessionCli,
   runRemoteSessionTurn,
@@ -1297,6 +1303,7 @@ async function executePrepareWorkspace(
   // a stale replica prepares the wrong thing silently otherwise.
   // `workspaces.updated_at` is a local clock (remote applies re-stamp it);
   // the manifest pins the canonical payload digest instead.
+  installTaskWorkspaceDefinition(manifest, environmentBinding() !== null);
   const localRevision = workspaceDefinitionRevision(workspaceId);
   if (localRevision === null) {
     throw new Error(`workspace not replicated on this device: ${workspaceId}`);
@@ -1535,6 +1542,108 @@ async function resolveSessionCheckout(
   );
 }
 
+interface RemoteSessionCheckout {
+  repositoryId: string;
+  path: string;
+  mappedRepoId: string | null;
+}
+
+async function readRemoteSessionCheckouts(input: {
+  workspaceId: string;
+  provider: string;
+  providerThreadId: string;
+  repositoryIds: string[];
+}): Promise<RemoteSessionCheckout[] | null> {
+  const ctx = workerContext();
+  if (ctx?.scope === undefined) throw new Error('remote-session-checkout-scope-missing');
+  const row = getDb()
+    .prepare(
+      `SELECT checkouts_json FROM mesh_remote_provider_sessions
+       WHERE backend_id = ? AND account_id = ? AND scope_epoch = ? AND workspace_id = ?
+         AND provider = ? AND provider_thread_id = ?`,
+    )
+    .get(
+      ctx.scope.backendId,
+      ctx.scope.accountId,
+      ctx.scope.datasetEpoch,
+      input.workspaceId,
+      input.provider,
+      input.providerThreadId,
+    ) as { checkouts_json: string } | undefined;
+  if (row === undefined) return null;
+  let checkouts: RemoteSessionCheckout[];
+  try {
+    checkouts = JSON.parse(row.checkouts_json) as RemoteSessionCheckout[];
+  } catch {
+    throw new Error('provider-session-checkout-corrupt');
+  }
+  if (
+    !Array.isArray(checkouts) ||
+    checkouts.length !== input.repositoryIds.length ||
+    input.repositoryIds.some((id) => !checkouts.some((checkout) => checkout.repositoryId === id))
+  )
+    throw new Error('provider-session-checkout-mismatch');
+  const userDataDir = ctx.userDataDir;
+  for (const checkout of checkouts) {
+    const def = getDb()
+      .prepare(
+        'SELECT mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ? AND portable_id = ?',
+      )
+      .get(input.workspaceId, checkout.repositoryId) as
+      | { mapped_repo_id: string | null }
+      | undefined;
+    if (def === undefined || def.mapped_repo_id !== checkout.mappedRepoId) {
+      throw new Error('provider-session-checkout-mapping-changed');
+    }
+    if (checkout.mappedRepoId !== null) {
+      const mappedPath = getDb()
+        .prepare('SELECT path FROM repos WHERE id = ?')
+        .get(checkout.mappedRepoId) as { path: string } | undefined;
+      if (mappedPath?.path !== checkout.path)
+        throw new Error('provider-session-checkout-mapping-changed');
+    } else {
+      if (userDataDir === undefined)
+        throw new Error('worker context has no userDataDir for managed checkouts');
+      const root = join(userDataDir, 'mesh-checkouts', input.workspaceId);
+      const pathFromRoot = relative(root, checkout.path);
+      if (pathFromRoot === '' || pathFromRoot === '..' || pathFromRoot.startsWith(`..${sep}`)) {
+        throw new Error('provider-session-checkout-outside-managed-root');
+      }
+    }
+    if ((await gitHead(checkout.path)) === null)
+      throw new Error('provider-session-checkout-unavailable');
+  }
+  return checkouts;
+}
+
+function persistRemoteSessionCheckouts(input: {
+  workspaceId: string;
+  provider: string;
+  providerThreadId: string;
+  checkouts: RemoteSessionCheckout[];
+}): void {
+  const scope = workerContext()?.scope;
+  if (scope === undefined) throw new Error('remote-session-checkout-scope-missing');
+  getDb()
+    .prepare(
+      `INSERT INTO mesh_remote_provider_sessions
+       (backend_id, account_id, scope_epoch, workspace_id, provider, provider_thread_id, checkouts_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(backend_id, account_id, scope_epoch, workspace_id, provider, provider_thread_id)
+       DO UPDATE SET checkouts_json=excluded.checkouts_json, updated_at=excluded.updated_at`,
+    )
+    .run(
+      scope.backendId,
+      scope.accountId,
+      scope.datasetEpoch,
+      input.workspaceId,
+      input.provider,
+      input.providerThreadId,
+      JSON.stringify(input.checkouts),
+      new Date().toISOString(),
+    );
+}
+
 /**
  * Prior attempts' spawn evidence (spec §9 inspect-before-retry): a prior
  * attempt that journaled `provider-spawn` but never `provider-thread`
@@ -1572,13 +1681,26 @@ function priorSessionEvidence(
   return { unresolvedSpawn, resumeThreadId };
 }
 
+/** Wait for the source to observe this fenced claim and deliver its explicit API-key grant. */
+async function awaitRemoteApiKey(attempt: ExecutionAttempt): Promise<void> {
+  const deadline = Math.min(Date.now() + 60_000, Date.parse(attempt.leaseExpiresAt));
+  if (!Number.isFinite(deadline)) throw new Error('provider-credential-lease-invalid');
+  while (Date.now() < deadline) {
+    if (isCancelRequested(attempt.id)) throw new Error('provider-credential-wait-cancelled');
+    if (attemptGrantEnv.get(attempt.id)?.OPENAI_API_KEY) return;
+    await pullCredentialGrants(attempt);
+    if (attemptGrantEnv.get(attempt.id)?.OPENAI_API_KEY) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error('provider-credential-grant-not-delivered');
+}
+
 /**
- * `start-session`: run one provider turn on the pinned workspace. The
- * attempt journal's `provider-spawn` entry precedes `spawn` so a crash in
- * between is reconstructable; the provider thread id (journaled at
- * `provider-thread`) is the durable handle a retry resumes same-home.
- * Codex-internal approvals are auto-declined — mesh approvals gate the
- * job, not the provider's policy prompts.
+ * Run one provider turn on the exact prepared workspace. The target caps the
+ * selected permission mode; action approvals use the durable mesh approval
+ * path. Provider prompts requiring unattended human input fail explicitly.
+ * The attempt journal records spawn/thread lifecycle and provider output is
+ * returned only inside the sealed task result.
  */
 async function executeStartSession(
   job: MeshJob,
@@ -1595,9 +1717,14 @@ async function executeStartSession(
     throw new Error('start-session requires manifest.inputs.prompt');
   }
   const provider = manifest.provider;
-  if (provider !== 'codex' && provider !== 'azure' && provider !== 'openai') {
-    // SESSION-01 audit: cursor runs ACP session/new only — no resume path,
-    // so it is not a launch provider for remote starts.
+  if (
+    provider !== 'codex' &&
+    provider !== 'azure' &&
+    provider !== 'openai' &&
+    provider !== 'cursor' &&
+    provider !== 'devin' &&
+    provider !== 'llmgateway'
+  ) {
     throw new Error(`provider-unsupported-remote: ${provider}`);
   }
 
@@ -1628,8 +1755,38 @@ async function executeStartSession(
     throw new Error('start-session requires at least one pinned repository');
   }
   const repoPaths: string[] = [];
+  const resumeThreadId = manifest.inputs['resumeThreadId'];
+  const handoffId = manifest.inputs['handoffId'];
+  const savedCheckouts =
+    typeof resumeThreadId === 'string' && resumeThreadId.length > 0
+      ? await readRemoteSessionCheckouts({
+          workspaceId,
+          provider,
+          providerThreadId: resumeThreadId,
+          repositoryIds: manifest.repositories.map((repo) => repo.repositoryId),
+        })
+      : typeof handoffId === 'string' && handoffId.length > 0
+        ? await readRemoteSessionCheckouts({
+            workspaceId,
+            provider,
+            providerThreadId: `handoff:${handoffId}`,
+            repositoryIds: manifest.repositories.map((repo) => repo.repositoryId),
+          })
+        : null;
+  if (typeof resumeThreadId === 'string' && resumeThreadId.length > 0 && savedCheckouts === null)
+    throw new Error('provider-session-checkout-missing');
+  const sessionCheckouts: RemoteSessionCheckout[] = [];
   for (const repo of manifest.repositories) {
-    repoPaths.push(await resolveSessionCheckout(repo.repositoryId, repo.commit, defs, managedRoot));
+    const saved = savedCheckouts?.find((checkout) => checkout.repositoryId === repo.repositoryId);
+    const path =
+      saved?.path ??
+      (await resolveSessionCheckout(repo.repositoryId, repo.commit, defs, managedRoot));
+    repoPaths.push(path);
+    sessionCheckouts.push({
+      repositoryId: repo.repositoryId,
+      path,
+      mappedRepoId: defs.get(repo.repositoryId)?.mapped_repo_id ?? null,
+    });
   }
   const cwd = commonParentDir(repoPaths);
 
@@ -1640,13 +1797,35 @@ async function executeStartSession(
   let handoffCheckpoint: SessionCheckpoint | null = null;
   let handoffTargetGeneration: number | null = null;
   let handoffSessionId: string | null = null;
-  const handoffId = manifest.inputs['handoffId'];
   if (typeof handoffId === 'string' && handoffId.length > 0) {
     const ctx = workerContext();
     const remote = (await meshRpc<HandoffGetResult>('handoff.get', { handoffId })).handoff;
     if (remote.targetEnrollmentId !== ctx?.enrollmentId) {
       throw new Error('handoff-not-for-this-device');
     }
+    const privateCheckpoint = manifest.inputs['handoffCheckpoint'];
+    const openPrivateCheckpoint = (): SessionCheckpoint | null => {
+      if (privateCheckpoint === undefined) return null;
+      if (privateCheckpoint === null || typeof privateCheckpoint !== 'object')
+        throw new Error('invalid-private-handoff-checkpoint');
+      const candidate = privateCheckpoint as SessionCheckpoint;
+      if (
+        candidate.sessionId !== remote.sessionId ||
+        candidate.sourceGeneration !== remote.sourceGeneration ||
+        !Array.isArray(candidate.repositories) ||
+        candidate.repositories.length !== manifest.repositories.length ||
+        candidate.repositories.some((pin, index) => {
+          const expected = manifest.repositories[index];
+          return (
+            expected === undefined ||
+            pin.repositoryId !== expected.repositoryId ||
+            pin.commit !== expected.commit
+          );
+        })
+      )
+        throw new Error('private-handoff-checkpoint-does-not-match-authority');
+      return candidate;
+    };
     if (remote.state === 'ownership-transferred') {
       const activating = (
         await meshRpc<HandoffAdvanceResult>('handoff.advance', {
@@ -1656,17 +1835,32 @@ async function executeStartSession(
         })
       ).handoff;
       appendJournal(attemptId, 'handoff-activating', { handoffId });
-      handoffCheckpoint = openHandoffCheckpoint(activating.checkpoint, handoffId, ctx?.scope);
+      handoffCheckpoint =
+        openPrivateCheckpoint() ??
+        openHandoffCheckpoint(activating.checkpoint, handoffId, ctx?.scope);
       handoffTargetGeneration = activating.targetGeneration;
       handoffSessionId = activating.sessionId;
     } else if (remote.state === 'target-activating') {
       // Re-claim after an earlier activating attempt — the journal's
       // prior-spawn check below still applies.
-      handoffCheckpoint = openHandoffCheckpoint(remote.checkpoint, handoffId, ctx?.scope);
+      handoffCheckpoint =
+        openPrivateCheckpoint() ?? openHandoffCheckpoint(remote.checkpoint, handoffId, ctx?.scope);
       handoffTargetGeneration = remote.targetGeneration;
       handoffSessionId = remote.sessionId;
     } else {
       throw new Error(`handoff-not-transferred: state ${remote.state}`);
+    }
+    if (handoffSessionId !== null && handoffTargetGeneration !== null && ctx !== null) {
+      // The target's verified activation gate is the ownership boundary. A
+      // provider startup failure stays retryable on this device and must not
+      // make the relinquished source appear to own the transferred session.
+      writeSessionOwnership(handoffSessionId, handoffTargetGeneration, ctx.enrollmentId, 'owned');
+      persistRemoteSessionCheckouts({
+        workspaceId,
+        provider,
+        providerThreadId: `handoff:${handoffId}`,
+        checkouts: sessionCheckouts,
+      });
     }
   }
 
@@ -1677,9 +1871,11 @@ async function executeStartSession(
     throw new Error('prior-spawn-unresolved: inspect the orphaned provider process first');
   }
 
-  const cliVersion = await probeSessionCli();
+  if (manifest.inputs['authMode'] === 'openai-api-key') await awaitRemoteApiKey(attempt);
+
+  const cliVersion = await probeSessionCli(provider);
   if (cliVersion === null) {
-    throw new Error('provider-cli-unavailable: codex not on PATH');
+    throw new Error(`provider-cli-unavailable: ${provider} CLI not on PATH`);
   }
   const cliMinVersion = manifest.inputs['cliMinVersion'];
   if (
@@ -1739,10 +1935,19 @@ async function executeStartSession(
       model: manifest.model,
       cwd,
       prompt: effectivePrompt,
+      ...(manifest.inputs['authMode'] === 'target-local' ||
+      manifest.inputs['authMode'] === 'codex-account' ||
+      manifest.inputs['authMode'] === 'openai-api-key'
+        ? { authMode: manifest.inputs['authMode'] }
+        : {}),
       ...(typeof rawEffort === 'string' ? { reasoningEffort: rawEffort as ReasoningEffort } : {}),
       sandbox,
       permissionMode,
-      ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
+      ...(typeof manifest.inputs['resumeThreadId'] === 'string'
+        ? { resumeThreadId: manifest.inputs['resumeThreadId'] }
+        : prior.resumeThreadId !== null
+          ? { resumeThreadId: prior.resumeThreadId }
+          : {}),
       // ENV-06: grants for this claim are in-memory only and win over
       // ambient provider credentials for the duration of the turn.
       ...(attemptGrantEnv.get(attempt.id) === undefined
@@ -1753,23 +1958,56 @@ async function executeStartSession(
     {
       onThreadStarted: (threadId) => {
         appendJournal(attemptId, 'provider-thread', { threadId });
+        persistRemoteSessionCheckouts({
+          workspaceId,
+          provider,
+          providerThreadId: threadId,
+          checkouts: sessionCheckouts,
+        });
       },
       emitActivity: (text) => emitActivity(attempt, text),
       isCancelled: () => isCancelRequested(attemptId),
       approve: (event) => approveProviderAction(job, attempt, permissionMode, event),
+      authenticate: async ({ verificationUrl, userCode }) => {
+        let url: URL;
+        try {
+          url = new URL(verificationUrl);
+        } catch {
+          return false;
+        }
+        if (url.origin !== 'https://auth.openai.com' || url.protocol !== 'https:') return false;
+        const actionDigest = createHash('sha256')
+          .update(canonicalJson({ jobId: job.id, attemptId, verificationUrl: url.href, userCode }))
+          .digest('hex');
+        return (
+          (await requestAndAwaitApproval(
+            job,
+            attempt,
+            actionDigest,
+            undefined,
+            undefined,
+            `Open ${url.href} in your browser, enter code ${userCode}, then approve after Codex confirms sign-in.`,
+          )) === 'approved'
+        );
+      },
     },
   );
 
+  if (typeof result.resumeHandle === 'string' && result.resumeHandle.length > 0) {
+    persistRemoteSessionCheckouts({
+      workspaceId,
+      provider,
+      providerThreadId: result.resumeHandle,
+      checkouts: sessionCheckouts,
+    });
+  }
+
   if (result.turnStatus === 'failed') {
     if (typeof handoffId === 'string' && handoffId.length > 0) {
-      // The turn failed after ownership transferred — mark the handoff
-      // failed; the target keeps owning recovery (no implicit rollback).
-      await meshRpc<HandoffAdvanceResult>('handoff.advance', {
-        handoffId,
-        from: 'target-activating',
-        to: 'failed',
-      }).catch(() => undefined);
-      appendJournal(attemptId, 'handoff-failed', { handoffId });
+      // Keep target-activating as the durable retry gate. The failed job is
+      // visible to the controller; an explicit retry creates a fresh turn
+      // from the transferred checkpoint without restoring source ownership.
+      appendJournal(attemptId, 'handoff-activation-retryable', { handoffId });
     }
     throw new Error('provider-turn-failed');
   }
@@ -1787,10 +2025,6 @@ async function executeStartSession(
       from: 'target-activating',
       to: 'completed',
     }).catch(() => undefined);
-    const ctx = workerContext();
-    if (handoffSessionId !== null && handoffTargetGeneration !== null && ctx !== null) {
-      writeSessionOwnership(handoffSessionId, handoffTargetGeneration, ctx.enrollmentId, 'owned');
-    }
     appendJournal(attemptId, 'handoff-completed', {
       handoffId,
       sessionId: handoffSessionId,
@@ -1802,6 +2036,8 @@ async function executeStartSession(
     ok: result.turnStatus === 'completed' && !result.cancelled,
     workspaceId,
     providerThreadId: result.providerThreadId,
+    resumeHandle: result.resumeHandle,
+    assistantOutput: boundedRemoteAssistantOutput(result.assistantOutput),
     turnId: result.turnId,
     turnStatus: result.turnStatus,
     cliVersion: result.cliVersion,
@@ -2569,9 +2805,9 @@ export interface PrepareWorkspaceJobInput {
  * revision and every repository's resolved HEAD. Unmapped local definitions
  * cannot be pinned — the source can only commit to what it can prove.
  */
-export async function createPrepareWorkspaceJob(
+export async function preparePrepareWorkspaceJob(
   input: PrepareWorkspaceJobInput,
-): Promise<JobSummary> {
+): Promise<JobCreateParams> {
   const revision = workspaceDefinitionRevision(input.workspaceId);
   if (revision === null) {
     throw new Error(`workspace not found: ${input.workspaceId}`);
@@ -2617,14 +2853,23 @@ export async function createPrepareWorkspaceJob(
           kind: 'auto' as const,
           ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
-  return submitSealedJob({
+  return prepareSealedJob({
     requestId: input.requestId,
     kind: 'prepare-workspace',
     requestedTarget,
     manifest,
-    privateInputs: { permissionMode: input.permissionMode ?? getSettings().codexMode },
+    privateInputs: {
+      permissionMode: input.permissionMode ?? getSettings().codexMode,
+      workspaceDefinition: remoteWorkspaceDefinition(input.workspaceId),
+    },
     retryPolicy: 'inspect-before-retry',
   });
+}
+
+export async function createPrepareWorkspaceJob(
+  input: PrepareWorkspaceJobInput,
+): Promise<JobSummary> {
+  return submitPreparedJob(await preparePrepareWorkspaceJob(input));
 }
 
 export interface StartSessionJobInput {
@@ -2634,7 +2879,7 @@ export interface StartSessionJobInput {
   prompt: string;
   targetEnrollmentId?: string;
   requirements?: CapabilityRequirements;
-  provider?: 'codex' | 'azure' | 'openai';
+  provider?: AgentProvider;
   model?: string;
   personaId?: string;
   reasoningEffort?: string;
@@ -2645,6 +2890,16 @@ export interface StartSessionJobInput {
   turnTimeoutMs?: number;
   /** SESSION-03: the handoff this job activates on the target. */
   handoffId?: string;
+  /** Controller-verified same-device provider session id for a follow-up. */
+  resumeThreadId?: string;
+  authMode?: 'target-local' | 'codex-account' | 'openai-api-key';
+  /** Reuse the controller's original pins for a provider-thread follow-up. */
+  manifestPin?: Pick<
+    ExecutionManifest,
+    'workspaceDefinitionRevision' | 'repositories' | 'bootstrapDigest'
+  >;
+  /** Private source context carried under this activation job's task key. */
+  handoffCheckpoint?: SessionCheckpoint;
 }
 
 /**
@@ -2654,36 +2909,48 @@ export interface StartSessionJobInput {
  * session start does not re-run bootstrap), and the provider/model/CLI
  * requirements the worker enforces before spawn.
  */
-export async function createStartSessionJob(input: StartSessionJobInput): Promise<JobSummary> {
+export async function prepareStartSessionJob(
+  input: StartSessionJobInput,
+): Promise<JobCreateParams> {
   const provider: RemoteSessionProvider = input.provider ?? 'codex';
-  const revision = workspaceDefinitionRevision(input.workspaceId);
+  const revision =
+    input.manifestPin?.workspaceDefinitionRevision ??
+    workspaceDefinitionRevision(input.workspaceId);
   if (revision === null) {
     throw new Error(`workspace not found: ${input.workspaceId}`);
   }
-  const commits = await resolveWorkspaceCommits(input.workspaceId);
+  const commits =
+    input.manifestPin === undefined
+      ? await resolveWorkspaceCommits(input.workspaceId)
+      : Object.fromEntries(
+          input.manifestPin.repositories.map((repo) => [repo.repositoryId, repo.commit]),
+        );
   const defs = getDb()
     .prepare(
       `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
     )
     .all(input.workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>;
-  const repositories = defs.map((def) => {
-    const commit = commits[def.portable_id];
-    if (def.mapped_repo_id === null || commit === undefined) {
-      throw new Error(
-        `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
-      );
-    }
-    return { repositoryId: def.portable_id, commit };
-  });
+  const repositories =
+    input.manifestPin?.repositories ??
+    defs.map((def) => {
+      const commit = commits[def.portable_id];
+      if (def.mapped_repo_id === null || commit === undefined) {
+        throw new Error(
+          `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
+        );
+      }
+      return { repositoryId: def.portable_id, commit };
+    });
   const recipe = getWorkspaceBootstrap(input.workspaceId);
   const bootstrapDigest =
-    recipe === null
+    input.manifestPin?.bootstrapDigest ??
+    (recipe === null
       ? 'none'
       : computeBootstrapDigest({
           recipe,
           repositoryCommits: commits,
           executionPolicy: bootstrapManifestPolicy(),
-        });
+        }));
   const model =
     input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
   // The coordinator's manifest carries routing keys only; the prompt and
@@ -2710,6 +2977,11 @@ export async function createStartSessionJob(input: StartSessionJobInput): Promis
     ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
     ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
     ...(input.handoffId === undefined ? {} : { handoffId: input.handoffId }),
+    ...(input.resumeThreadId === undefined ? {} : { resumeThreadId: input.resumeThreadId }),
+    ...(input.authMode === undefined ? {} : { authMode: input.authMode }),
+    ...(input.handoffCheckpoint === undefined
+      ? {}
+      : { handoffCheckpoint: input.handoffCheckpoint }),
   };
   const requestedTarget =
     input.targetEnrollmentId !== undefined
@@ -2718,7 +2990,7 @@ export async function createStartSessionJob(input: StartSessionJobInput): Promis
           kind: 'auto' as const,
           ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
-  return submitSealedJob({
+  return prepareSealedJob({
     requestId: input.requestId,
     kind: 'start-session',
     requestedTarget,
@@ -2726,6 +2998,10 @@ export async function createStartSessionJob(input: StartSessionJobInput): Promis
     privateInputs,
     retryPolicy: 'inspect-before-retry',
   });
+}
+
+export async function createStartSessionJob(input: StartSessionJobInput): Promise<JobSummary> {
+  return submitPreparedJob(await prepareStartSessionJob(input));
 }
 
 export interface CodeTaskJobInput {

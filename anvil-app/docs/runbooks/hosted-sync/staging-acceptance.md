@@ -209,11 +209,13 @@ dispatch a harmless, bounded remote job targeted to that environment and
 confirm its completed result. Do not use a real repository secret or an
 untrusted manifest command.
 
-The current cloud-environment plan marks environment request/observe UI as
-unfinished. If the candidate exposes no way to target a harmless job to the
-environment, record **managed job execution: BLOCKED (no supported target
-UI)**. The provision job reaching `enrolled` is only provisioning evidence,
-not proof that a user job ran.
+Use Settings → Cloud environments to request and observe the worker. For a
+chat, select Codex in the chat header, open **Run on another device** and
+select its ephemeral device. Choose Codex account sign-in or explicitly choose
+a saved OpenAI API key. Verify authentication, a harmless turn, approvals,
+cancellation and a follow-up. Orchestration also exposes environment targets
+for workflow jobs. Record each result separately; reaching `enrolled` proves
+provisioning only.
 
 Terminate the environment even after a failed job:
 

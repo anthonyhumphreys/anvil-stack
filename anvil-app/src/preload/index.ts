@@ -786,6 +786,13 @@ const api: AnvilAPI = {
   },
 
   syncRuntime: {
+    createRemoteChat: (input) => ipcRenderer.invoke('sync-runtime:remote-chat-create', input),
+    listRemoteChats: (workspaceId) =>
+      ipcRenderer.invoke('sync-runtime:remote-chat-list', { workspaceId }),
+    getRemoteChat: (id) => ipcRenderer.invoke('sync-runtime:remote-chat-get', { id }),
+    sendRemoteChat: (input) => ipcRenderer.invoke('sync-runtime:remote-chat-send', input),
+    cancelRemoteChat: (id) => ipcRenderer.invoke('sync-runtime:remote-chat-cancel', { id }),
+
     status: () => ipcRenderer.invoke('sync-runtime:status'),
     listCloudProviderConnections: (): Promise<CloudEnvironmentProviderConnection[]> =>
       ipcRenderer.invoke('sync-runtime:cloud-provider-connections-list'),

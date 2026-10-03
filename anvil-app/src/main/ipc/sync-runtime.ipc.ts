@@ -1,3 +1,11 @@
+import { isAgentProvider } from '../../shared/agent-providers.js';
+import {
+  createRemoteChat,
+  listRemoteChats,
+  getRemoteChat,
+  sendRemoteChat,
+  cancelRemoteChat,
+} from '../services/remote-chat.service.js';
 import { isPermissionMode } from '../../../cloud/contract/permissions.js';
 import { setMeshMaximumPermissionMode } from '../services/mesh-worker.service.js';
 import { ipcMain } from 'electron';
@@ -71,7 +79,66 @@ function isDeviceTrustPolicy(value: unknown): value is SyncDeviceTrustPolicy {
   return value === 'require-approval' || value === 'auto-trust-authenticated';
 }
 
+function requiredText(payload: Record<string, unknown>, field: string, maxLength = 512): string {
+  const value = payload[field];
+  if (typeof value !== 'string' || value.trim().length === 0 || value.length > maxLength) {
+    throw new Error(`Invalid ${field}`);
+  }
+  return value;
+}
+
 export function registerSyncRuntimeHandlers(): void {
+  ipcMain.handle('sync-runtime:remote-chat-create', (_event, payload: unknown) => {
+    if (
+      !isRecord(payload) ||
+      !isAgentProvider(payload.provider) ||
+      !isPermissionMode(payload.permissionMode)
+    ) {
+      throw new Error('Remote chat requires a supported provider and permission mode');
+    }
+    const credentialChoice = payload.credentialChoice;
+    if (
+      credentialChoice !== undefined &&
+      credentialChoice !== 'target-local' &&
+      credentialChoice !== 'codex-account' &&
+      credentialChoice !== 'openai-api-key'
+    ) {
+      throw new Error('Unsupported remote credential choice');
+    }
+    return createRemoteChat({
+      workspaceId: requiredText(payload, 'workspaceId'),
+      targetEnrollmentId: requiredText(payload, 'targetEnrollmentId'),
+      provider: payload.provider,
+      model: requiredText(payload, 'model'),
+      permissionMode: payload.permissionMode,
+      prompt: requiredText(payload, 'prompt', 100_000),
+      ...(credentialChoice === undefined ? {} : { credentialChoice }),
+      ...(payload.requestId === undefined ? {} : { requestId: requiredText(payload, 'requestId') }),
+    });
+  });
+  ipcMain.handle('sync-runtime:remote-chat-list', (_event, payload: unknown) => {
+    if (!isRecord(payload)) throw new Error('Remote chat list requires an object');
+    return listRemoteChats(
+      payload.workspaceId === undefined ? undefined : requiredText(payload, 'workspaceId'),
+    );
+  });
+  ipcMain.handle('sync-runtime:remote-chat-get', (_event, payload: unknown) => {
+    if (!isRecord(payload)) throw new Error('Remote chat get requires an id');
+    return getRemoteChat(requiredText(payload, 'id'));
+  });
+  ipcMain.handle('sync-runtime:remote-chat-send', (_event, payload: unknown) => {
+    if (!isRecord(payload)) throw new Error('Remote chat send requires an object');
+    return sendRemoteChat({
+      sessionId: requiredText(payload, 'sessionId'),
+      requestId: requiredText(payload, 'requestId'),
+      prompt: requiredText(payload, 'prompt', 100_000),
+    });
+  });
+  ipcMain.handle('sync-runtime:remote-chat-cancel', (_event, payload: unknown) => {
+    if (!isRecord(payload)) throw new Error('Remote chat cancellation requires an id');
+    return cancelRemoteChat(requiredText(payload, 'id'));
+  });
+
   ipcMain.handle('sync-runtime:status', () => getRuntimeStatus());
 
   ipcMain.handle('sync-runtime:cloud-provider-connections-list', () =>

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseBootstrapPayload,
+  prepareWorkerStorage,
   readBootstrap,
 } from '../../../../cloud/images/anvil-worker/boot.mjs';
 
@@ -84,5 +88,96 @@ describe('anvil-worker boot payload', () => {
 
   it('fails loudly when no channel carries a payload', () => {
     expect(() => readBootstrap(['node', 'boot.mjs'], {})).toThrow('no bootstrap payload');
+  });
+});
+
+describe('anvil-worker credential storage preflight', () => {
+  const unconfigured = {
+    provider: 'keychain',
+    state: 'unavailable',
+    vault: { configured: false, state: 'unavailable' },
+  };
+  const ready = {
+    provider: 'vault',
+    state: 'ready',
+    vault: { configured: true, mode: 'key-file', state: 'ready' },
+  };
+
+  it('sets up an owner-only key-file vault before enrollment on a fresh worker', () => {
+    const root = mkdtempSync(join(tmpdir(), 'anvil-worker-vault-'));
+    const calls: string[][] = [];
+    const responses = [unconfigured, ready];
+    try {
+      prepareWorkerStorage(
+        join(root, 'data'),
+        join(root, 'run', 'vault', 'worker.key'),
+        (_command, args, options) => {
+          calls.push(args.slice(1));
+          expect(options.env.ANVIL_DATA_DIR).toBe(join(root, 'data'));
+          const status = args.at(-1) === 'status';
+          return {
+            pid: 1,
+            output: [null, null],
+            stdout: status
+              ? `[Database] Opening database at ${join(root, 'data', 'anvil.db')}\n${JSON.stringify(responses.shift())}`
+              : '{}',
+            stderr: '',
+            status: 0,
+            signal: null,
+          };
+        },
+      );
+      expect(calls).toEqual([
+        ['vault', 'status'],
+        ['vault', 'setup', '--key-file', join(root, 'run', 'vault', 'worker.key')],
+        ['vault', 'status'],
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a configured but unavailable vault and refuses enrollment', () => {
+    let calls = 0;
+    expect(() =>
+      prepareWorkerStorage('/data', '/run/vault/worker.key', () => {
+        calls += 1;
+        return {
+          pid: 1,
+          output: [null, null],
+          stdout: JSON.stringify({
+            provider: 'vault',
+            state: 'unavailable',
+            vault: { configured: true, mode: 'key-file', state: 'unavailable' },
+          }),
+          stderr: '',
+          status: 0,
+          signal: null,
+        };
+      }),
+    ).toThrow('restore its original key');
+    expect(calls).toBe(1);
+  });
+
+  it('does not replace invalid existing storage', () => {
+    let calls = 0;
+    expect(() =>
+      prepareWorkerStorage('/data', '/run/vault/worker.key', () => {
+        calls += 1;
+        return {
+          pid: 1,
+          output: [null, null],
+          stdout: JSON.stringify({
+            provider: 'keychain',
+            state: 'invalid',
+            vault: { configured: false, state: 'invalid' },
+          }),
+          stderr: '',
+          status: 0,
+          signal: null,
+        };
+      }),
+    ).toThrow('restore its original key');
+    expect(calls).toBe(1);
   });
 });

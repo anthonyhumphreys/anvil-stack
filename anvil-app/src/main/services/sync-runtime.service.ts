@@ -1,3 +1,8 @@
+import {
+  configureRemoteChatContext,
+  remoteChatOnReady,
+  remoteChatOnGone,
+} from './remote-chat.service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { resolveBackendPaths } from '../../../cloud/contract/discovery.js';
@@ -519,6 +524,26 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       ...(scope === null ? {} : { scope }),
     };
   });
+  configureRemoteChatContext(() => {
+    const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
+    const token = auth?.getAccessToken() ?? null;
+    const scope = currentScope();
+    if (
+      backend === null ||
+      fields === null ||
+      token === null ||
+      scope === null ||
+      !sessionBoundToBackend(backend, fields)
+    )
+      return null;
+    return {
+      apiUrl: apiUrlFor(backend),
+      accessToken: token,
+      enrollmentId: fields.enrollmentId,
+      scope,
+    };
+  });
   // FLOW-02: node dispatches are source-side; same session context, and
   // boot reconciliation re-adopts persisted jobs (never recreates them).
   configureMeshDispatchContext(() => {
@@ -707,6 +732,11 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     armFallbackPoll();
     armDashboardCommandPump();
     meshWorkerOnSyncReady();
+    remoteChatOnReady();
+    startHandoffRecovery();
+    void reconcileHandoffsWhenReady().catch((error: unknown) => {
+      console.warn('[Sync] Handoff recovery will retry on reconnect:', error);
+    });
     // BILL-05: pick up any hosted-access change made while the app was off.
     maybeRefreshHostedEntitlement();
     void requestSync().catch(() => {
@@ -724,6 +754,7 @@ export function resetSyncRuntimeForTests(): void {
   resetMeshObserverForTests();
   resetMeshArtifactForTests();
   resetMeshWorkerForTests();
+  stopHandoffRecovery();
   resetMeshHandoffForTests();
   resetMeshDispatchForTests();
   resetMeshIntegrationForTests();
@@ -815,6 +846,11 @@ function resumeSyncAfterEnrollment(): void {
   armFallbackPoll();
   armDashboardCommandPump();
   meshWorkerOnSyncReady();
+  remoteChatOnReady();
+  startHandoffRecovery();
+  void reconcileHandoffsWhenReady().catch((error: unknown) => {
+    console.warn('[Sync] Handoff recovery will retry on reconnect:', error);
+  });
   void requestSync().catch(() => undefined);
 }
 
@@ -1774,6 +1810,8 @@ export async function resetEncryptedSyncAccount(
   clearSessionRefresh();
   teardownLiveChannel();
   meshWorkerOnSyncGone();
+  remoteChatOnGone();
+  stopHandoffRecovery();
   meshObserverOnGone();
   try {
     await accountRpc('security.reset', { confirmation });
@@ -2575,6 +2613,11 @@ export function enableSync(): SyncRuntimeStatus {
   armFallbackPoll();
   armDashboardCommandPump();
   meshWorkerOnSyncReady();
+  remoteChatOnReady();
+  startHandoffRecovery();
+  void reconcileHandoffsWhenReady().catch((error: unknown) => {
+    console.warn('[Sync] Handoff recovery will retry on reconnect:', error);
+  });
   // Fire-and-forget kick: a superseded/backoff rejection must not surface as
   // an unhandled rejection; the error is already recorded in `lastError`.
   void requestSync().catch(() => undefined);
@@ -2603,6 +2646,8 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   disconnectBackend();
   keyRotationBlockedScopeKey = null;
   meshWorkerOnSyncGone();
+  remoteChatOnGone();
+  stopHandoffRecovery();
   meshObserverOnGone();
   lastError = null;
   sessionExpired = false;
@@ -2688,6 +2733,8 @@ export function stopSyncRuntimeForOneShot(): void {
   clearSessionRefresh();
   teardownLiveChannel();
   meshWorkerOnSyncGone();
+  remoteChatOnGone();
+  stopHandoffRecovery();
   meshObserverOnGone();
 }
 
@@ -3183,6 +3230,8 @@ export function onBackendDisconnected(): void {
   stopPolling();
   teardownLiveChannel();
   meshWorkerOnSyncGone();
+  remoteChatOnGone();
+  stopHandoffRecovery();
   meshObserverOnGone();
 }
 
@@ -3306,6 +3355,11 @@ function connectLiveChannel(): void {
         armFallbackPoll();
         // Catch up anything missed while the channel was down.
         meshWorkerOnSyncReady();
+        remoteChatOnReady();
+        startHandoffRecovery();
+        void reconcileHandoffsWhenReady().catch((error: unknown) => {
+          console.warn('[Sync] Handoff recovery will retry on reconnect:', error);
+        });
         meshObserverOnLive();
         maybeRefreshHostedEntitlement();
         void requestSync().catch(() => undefined);
@@ -3399,4 +3453,30 @@ function teardownLiveChannel(): void {
   liveState = 'offline';
   // onLiveClosed ignores this close: liveSocket is already null.
   socket?.close(1000, 'sync disabled');
+}
+
+let handoffReconciliationInFlight: Promise<void> | null = null;
+function reconcileHandoffsWhenReady(): Promise<void> {
+  if (handoffReconciliationInFlight !== null) return handoffReconciliationInFlight;
+  handoffReconciliationInFlight = reconcileHandoffsOnBoot().finally(() => {
+    handoffReconciliationInFlight = null;
+  });
+  return handoffReconciliationInFlight;
+}
+
+let handoffRecoveryTimer: ReturnType<typeof setInterval> | null = null;
+function startHandoffRecovery(): void {
+  if (handoffRecoveryTimer !== null) return;
+  handoffRecoveryTimer = setInterval(() => {
+    void reconcileHandoffsWhenReady().catch((error: unknown) => {
+      console.warn('[Sync] Handoff recovery will retry:', error);
+    });
+  }, 15_000);
+  handoffRecoveryTimer.unref();
+}
+
+function stopHandoffRecovery(): void {
+  if (handoffRecoveryTimer === null) return;
+  clearInterval(handoffRecoveryTimer);
+  handoffRecoveryTimer = null;
 }

@@ -1,20 +1,23 @@
 # anvil-worker image
 
-The container image every cloud agent environment boots. It runs the headless
-Anvil daemon (`dist-daemon/anvil-daemon.mjs`) as an **ephemeral Mesh worker** —
-there is no second execution protocol; the image enrolls, connects, advertises
-capabilities, and claims jobs exactly like a desktop daemon.
+The generic OCI and Cloudflare Sandbox images run the headless Anvil daemon as
+an ephemeral Mesh worker and install the managed Codex CLI. Managed cloud
+environments currently support Codex-backed runs. Cursor, Devin, OpenAI,
+Azure, and LLMGateway remain available on enrolled desktops and BYO
+environments where their provider CLI or credentials have been configured.
+The image build installs no provider credentials or interactive login state.
 
 ## Layout
 
-| File | Purpose |
-| --- | --- |
-| `boot.mjs` | Bootstrap driver: parse payload → enroll `--pair` → `run` under a TTL watchdog |
-| `anvil-worker-boot` | `/bin/sh` entrypoint provisioners invoke (`/opt/anvil/bin/anvil-worker-boot`) |
-| `Dockerfile` | Generic OCI image (Vercel VCR, AWS microVM rootfs base, local dev) |
-| `Dockerfile.cloudflare` | `cloudflare/sandbox:next`-based variant for the CF provisioner |
-| `package.json` | Daemon externals (`better-sqlite3`, `node-pty`) — keep versions in step with `anvil-app/package.json` |
-| `prepare.sh` | Copies `dist-daemon/anvil-daemon.mjs` into the build context |
+| File                    | Purpose                                                                                                                |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `boot.mjs`              | Validates bootstrap, prepares unattended vault storage, enrolls with a single-use code, then runs under a TTL watchdog |
+| `anvil-worker-boot`     | `/bin/sh` entrypoint provisioners invoke (`/opt/anvil/bin/anvil-worker-boot`)                                          |
+| `Dockerfile`            | Generic OCI image (Vercel VCR, AWS microVM rootfs base, local dev)                                                     |
+| `Dockerfile.cloudflare` | `cloudflare/sandbox:next` variant for the Cloudflare provisioner                                                       |
+| `install-codex-cli.sh`  | Installs the pinned Codex CLI version and checks its reported version                                                  |
+| `package.json`          | Daemon externals (`better-sqlite3`, `node-pty`) — keep versions in step with `anvil-app/package.json`                  |
+| `prepare.sh`            | Copies `dist-daemon/anvil-daemon.mjs` into the build context                                                           |
 
 ## Build
 
@@ -26,63 +29,100 @@ cd cloud/images/anvil-worker
 docker build -f Dockerfile -t anvil-worker .
 ```
 
+The image pins Codex CLI `0.154.0` to the version managed by
+`src/main/services/codex-runtime.service.ts`. The build checks the installed
+version and fails on a mismatch. Override the pin with a Docker build argument
+only when updating the corresponding compatibility evidence:
+
+```sh
+docker build -f Dockerfile \
+  --build-arg CODEX_CLI_VERSION=0.154.0 \
+  -t anvil-worker .
+```
+
 For Cloudflare, the wrangler `containers[].image` in `cloud/provisioner`
 points at `Dockerfile.cloudflare`. Run `./prepare.sh` before
 `anvil-cloud mesh provisioner apply`; its `--dry-run` also builds the image.
-The image installs Python and C++ build tools for native daemon dependencies.
-See the [deployment runbook](../../../docs/runbooks/hosted-sync/deploy.md)
-for the hosted and self-hosted branch-testing commands.
+Both image variants install Python and C++ build tools for native daemon
+dependencies. See the [deployment runbook](../../../docs/runbooks/hosted-sync/deploy.md)
+for hosted and self-hosted branch-testing commands.
+
+## Agent CLI installation
+
+Codex is installed from the official npm package at the app's managed runtime
+pin. It is the only runner supported by managed cloud environments and uses an
+account sign-in on the destination by default, or an optional explicitly granted API key.
+The image contains no login state. A new worker can use Codex device-code
+sign-in through Anvil; the desktop's OAuth cache is not copied. Cursor, Devin, OpenAI,
+Azure, and LLMGateway remain available on enrolled desktops and BYO
+environments with the required provider setup. Cursor and Devin CLIs are
+deliberately absent from managed images. The Codex package download requires
+network access during the image build. The image itself still needs a
+successful build in the target build environment before a release can claim
+image-execution validation.
 
 ## Bootstrap contract
 
 Provisioners deliver a JSON document to the boot script, first channel wins:
 
 1. `argv[2]` — raw JSON (AWS run-hook / generic argv injection)
-2. `$ANVIL_BOOTSTRAP_JSON` — env var (Vercel `env`, Cloudflare `exec` env)
+2. `$ANVIL_BOOTSTRAP_JSON` — env var (Vercel env, Cloudflare exec env)
 3. `$ANVIL_BOOTSTRAP_FILE` — path to a JSON file
 4. `/run/anvil/bootstrap.json` — conventional mount point
 
 ```json
 {
   "kind": "anvil.mesh-environment",
-  "schemaVersion": "0.1",
+  "schemaVersion": "0.2",
   "environmentId": "env_…",
   "provider": "cloudflare-sandbox",
   "backendUrl": "https://sync.anvil.dev",
-  "pairing": "anvil-pair-…",
+  "enrollmentCode": "anvil-ec-…",
   "ttlSeconds": 1800,
   "networkPolicy": { "allowOutbound": ["*"] }
 }
 ```
 
-`pairing` is the consume-once `anvil-pair-…` enrollment payload minted by the
-user's source device (BYO) or staged via `environment.bootstrap` (managed).
-Prefer the env/file channels over argv — argv is visible in process listings.
+`enrollmentCode` is authentication-only and single-use. Account key material
+must never travel through bootstrap; task content keys arrive through wrapped
+task keys after claim. Prefer env or file channels over argv, which is visible
+in process listings.
+
+Before enrolling, boot configures a key-file vault at
+`$ANVIL_VAULT_KEY_FILE` (default `/run/anvil/vault/worker.key`) outside
+`$ANVIL_DATA_DIR` (default `/var/lib/anvil`). The key file is created with
+owner-only permissions. If storage is already configured, boot requires the
+original vault key to be available and refuses enrollment when storage is
+locked, invalid, or unavailable. It does not regenerate a missing key.
+
+The source sends the selected portable workspace definition and handoff
+checkpoint through the encrypted task envelope. The worker receives no account-wide
+sync key. Repository cloning still requires destination access; private Git
+credentials are not automatically transferred.
 
 ## Runtime behavior
 
-- Writes `{worker: true, companion: false}` to `$ANVIL_DATA_DIR/daemon.json`
-  (default `/var/lib/anvil`) — environments never run the companion server.
-- `anvil-daemon enroll --api-url <backendUrl> --pair <pairing> --worker`
-- `anvil-daemon run` with `ANVIL_ENVIRONMENT_ID` / `ANVIL_ENVIRONMENT_PROVIDER`
-  set — the worker service reads these to advertise the `ephemeral-env`
-  capability and self-report `environment.report` `enrolled` on connect.
-- TTL watchdog: SIGTERM at `ttlSeconds`, SIGKILL 60s later; exits 0 on expiry.
-- On container replacement (Cloudflare) the provisioner re-invokes boot with
-  the same bootstrap document — enrollment codes are single-use, so a fresh
-  payload is staged per attempt by the backend's internal claimer.
+- Writes `{worker: true, companion: false}` to `$ANVIL_DATA_DIR/daemon.json` —
+  environments never run the companion server.
+- Runs `anvil-daemon enroll --api-url <backendUrl> --code <enrollmentCode> --worker`.
+- Runs `anvil-daemon run` with `ANVIL_ENVIRONMENT_ID` and
+  `ANVIL_ENVIRONMENT_PROVIDER` set, advertising `ephemeral-env` and reporting
+  environment enrollment on connect.
+- Stops at `ttlSeconds`: SIGTERM first, then SIGKILL after 60 seconds; expiry
+  exits 0.
+- On Cloudflare container replacement, the provisioner obtains a fresh
+  single-use enrollment code for the replacement attempt.
 
 ## Per-provider notes
 
 - **AWS (`aws-lambda-microvm`)** — bake this image (or its rootfs) into the
   microVM image referenced by `ANVIL_AWS_AGENT_SANDBOX_IMAGE`; the run hook
-  delivers the bootstrap JSON as argv.
+  delivers bootstrap JSON as argv.
 - **Cloudflare (`cloudflare-sandbox`)** — built by wrangler from
   `Dockerfile.cloudflare`; the provisioner worker `exec`s the entrypoint with
-  `ANVIL_BOOTSTRAP_JSON` in env. Keep `Dockerfile.cloudflare`'s base tag on the
-  same `@cloudflare/sandbox@next` line as the provisioner package.
-- **Vercel (`vercel-sandbox`)** — `imageRef` points at this image pushed to a
-  registry Vercel can pull; the adapter runs the entrypoint with the bootstrap
-  JSON in env.
-- **Anvil-managed (`anvil-managed`)** — same Cloudflare image, bootstrapped by
-  the hosted provisioner behind the backend's `MANAGED_PROVISIONER` binding.
+  `ANVIL_BOOTSTRAP_JSON` in env. Keep the base tag aligned with the
+  `@cloudflare/sandbox@next` package line.
+- **Vercel (`vercel-sandbox`)** — `imageRef` points at this image in a registry
+  Vercel can pull; the adapter runs the entrypoint with bootstrap JSON in env.
+- **Anvil-managed (`anvil-managed`)** — uses the Cloudflare image through the
+  hosted provisioner behind the backend's `MANAGED_PROVISIONER` binding.

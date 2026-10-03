@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 100;
+export const SCHEMA_VERSION = 102;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -814,10 +814,61 @@ CREATE TABLE IF NOT EXISTS mesh_handoff_journal (
   role TEXT NOT NULL CHECK (role IN ('source', 'target')),
   state TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  activation_request_json TEXT,
+  activation_request_id TEXT,
+  activation_job_id TEXT,
+  preparation_request_json TEXT,
+  preparation_request_id TEXT,
+  preparation_job_id TEXT,
+  activation_workspace_id TEXT,
+  activation_target_enrollment_id TEXT,
+  activation_provider TEXT,
+  activation_model TEXT,
+  activation_permission_mode TEXT,
+  activation_auth_mode TEXT,
+  source_checkpoint_json TEXT,
+  backend_id TEXT,
+  account_id TEXT,
+  scope_epoch TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_handoff_journal_session
   ON mesh_handoff_journal(session_id);
+
+CREATE TABLE IF NOT EXISTS remote_chats (
+  id TEXT PRIMARY KEY,
+  create_request_id TEXT NOT NULL,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  scope_epoch TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  target_enrollment_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  permission_mode TEXT NOT NULL,
+  source_session_id TEXT,
+  handoff_id TEXT,
+  state TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_remote_chats_workspace ON remote_chats(workspace_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_remote_chats_scope ON remote_chats(backend_id, account_id, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_chats_request
+  ON remote_chats(backend_id, account_id, scope_epoch, create_request_id);
+
+CREATE TABLE IF NOT EXISTS mesh_remote_provider_sessions (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  scope_epoch TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  provider_thread_id TEXT NOT NULL,
+  checkouts_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, scope_epoch, workspace_id, provider, provider_thread_id)
+);
 
 -- FLOW-02: parent-side node dispatch records. The dispatch id is the
 -- stable identity — a parent restart re-adopts the recorded job rather
@@ -3540,6 +3591,64 @@ ALTER TABLE sync_entitlement ADD COLUMN device_limit INTEGER NOT NULL DEFAULT 5;
 -- Device-local Mesh permission ceiling. Existing nodes retain approval mode.
 ALTER TABLE mesh_worker_state ADD COLUMN max_permission_mode TEXT NOT NULL DEFAULT 'on-request'
   CHECK (max_permission_mode IN ('read-only', 'on-request', 'workspace-auto', 'full-access'));
+`,
+  101: `
+-- Controller-owned remote chats keep exact sealed job requests so restart
+-- recovery can replay a create safely without asking the renderer to resupply
+-- prompts or provider resume identities.
+CREATE TABLE IF NOT EXISTS remote_chats (
+  id TEXT PRIMARY KEY,
+  create_request_id TEXT NOT NULL,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  scope_epoch TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  target_enrollment_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  permission_mode TEXT NOT NULL,
+  source_session_id TEXT,
+  handoff_id TEXT,
+  state TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_remote_chats_workspace ON remote_chats(workspace_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_remote_chats_scope ON remote_chats(backend_id, account_id, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_chats_request
+  ON remote_chats(backend_id, account_id, scope_epoch, create_request_id);
+CREATE TABLE IF NOT EXISTS mesh_remote_provider_sessions (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  scope_epoch TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  provider_thread_id TEXT NOT NULL,
+  checkouts_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, scope_epoch, workspace_id, provider, provider_thread_id)
+);
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_request_json TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_request_id TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_job_id TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN preparation_request_json TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN preparation_request_id TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN preparation_job_id TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_workspace_id TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_target_enrollment_id TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_provider TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_model TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_permission_mode TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN activation_auth_mode TEXT;
+`,
+  102: `
+-- Preserve the exact checkpoint locally before creating the sealed activation
+-- request, so boot recovery can finish a source-quiescing handoff safely.
+ALTER TABLE mesh_handoff_journal ADD COLUMN source_checkpoint_json TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN backend_id TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN account_id TEXT;
+ALTER TABLE mesh_handoff_journal ADD COLUMN scope_epoch TEXT;
 `,
 };
 

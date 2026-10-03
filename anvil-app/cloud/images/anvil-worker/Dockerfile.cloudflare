@@ -10,13 +10,18 @@ FROM cloudflare/sandbox:next
 
 USER root
 
+WORKDIR /opt/anvil
+
 # cloudflare/sandbox:next ships Node 20+, but native daemon externals may need
 # compiling when a matching prebuild is unavailable for the target platform.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
+  && apt-get install -y --no-install-recommends python3 make g++ curl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/anvil
+ARG CODEX_CLI_VERSION=0.154.0
+COPY install-codex-cli.sh ./install-codex-cli.sh
+RUN CODEX_CLI_VERSION="$CODEX_CLI_VERSION" sh ./install-codex-cli.sh
+
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 

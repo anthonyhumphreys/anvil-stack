@@ -658,7 +658,9 @@ const MAX_CONCURRENT_JOBS = 64;
 /** MESH-02 bounds: metadata-only payloads, never bulk content. */
 const MAX_MANIFEST_REPOSITORIES = 64;
 const MAX_MANIFEST_CONFIG_ENTRIES = 64;
+/** Coordinator-visible routing inputs remain small; sealed private job context has its own cap. */
 const MAX_JOB_INPUTS_BYTES = 32 * 1024;
+const MAX_SEALED_JOB_INPUTS_BYTES = 512 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 /** E2EE: declared result recipients per job — small, one entry per device. */
 const MAX_RESULT_RECIPIENTS = 32;
@@ -9860,9 +9862,9 @@ function parseSealedTaskPayload(value: unknown, field: string): SealedTaskPayloa
     throw new RpcFailure('malformed-request', { reason: field, issue });
   }
   const bytes = utf8ByteLength(JSON.stringify(value));
-  if (bytes > MAX_JOB_INPUTS_BYTES) {
+  if (bytes > MAX_SEALED_JOB_INPUTS_BYTES) {
     throw new RpcFailure('payload-too-large', {
-      limitBytes: MAX_JOB_INPUTS_BYTES,
+      limitBytes: MAX_SEALED_JOB_INPUTS_BYTES,
       actualBytes: bytes,
       field,
     });

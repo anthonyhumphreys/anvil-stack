@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:child_process', () => ({
@@ -23,12 +24,14 @@ import {
   buildCodexProcessEnvironment,
   buildInputResponse,
   buildTurnSteerParams,
+  providerProcessSpawnOptions,
   resolveAcpModelValue,
   resolveAcpSessionMode,
   resolveSessionModel,
   resolvePersonaCodexPolicy,
   resolvePlanFeedbackDelivery,
   resolveSessionCwd,
+  stopManagedProviderProcess,
 } from '../codex-session.service.js';
 
 const tempDirs: string[] = [];
@@ -41,6 +44,41 @@ afterEach(() => {
 });
 
 describe('codex session service', () => {
+  it('isolates provider children in a process group on POSIX', () => {
+    expect(providerProcessSpawnOptions()).toEqual(
+      process.platform === 'win32' ? {} : { detached: true },
+    );
+  });
+
+  it('waits for an isolated provider group to exit even after its parent has exited', async () => {
+    const groupId = 42_731;
+    const termAt = Date.now();
+    const observedSignals: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+    const kill = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      observedSignals.push({ pid, signal: signal ?? 0 });
+      if (pid !== -groupId) throw new Error('must only signal the provider process group');
+      if (signal === 0 && Date.now() - termAt >= 125) {
+        const error = new Error('group exited') as NodeJS.ErrnoException;
+        error.code = 'ESRCH';
+        throw error;
+      }
+      return true;
+    }) as never);
+
+    try {
+      const startedAt = Date.now();
+      await stopManagedProviderProcess({} as ChildProcess, groupId, 500);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
+      expect(observedSignals).toContainEqual({ pid: -groupId, signal: 'SIGTERM' });
+      expect(observedSignals.every(({ pid }) => pid === -groupId)).toBe(true);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
   it('sends native Plan settings and explicitly resets Build turns to default mode', () => {
     expect(buildCodexCollaborationMode('plan', 'gpt-5.6-sol', 'high')).toEqual({
       mode: 'plan',

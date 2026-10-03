@@ -35,15 +35,15 @@ describe('provider capability matrix (SESSION-01 audit)', () => {
     expect(supportsCrossDeviceResume('cursor')).toBe(false);
   });
 
-  it('devin resumes same-home via ACP session/load; llmgateway declares no verified mode', () => {
+  it('Devin resumes via ACP session/load and LLMGateway via its managed Codex runtime', () => {
     const best = bestVerifiedMode('devin');
     expect(best?.mode).toBe('native-resume');
     expect(best?.scope).toBe('same-home');
     expect(supportsCrossDeviceResume('devin')).toBe(false);
 
-    const gateway = getProviderCapability('llmgateway');
-    expect(gateway.modes[0].mode).toBe('unsupported');
-    expect(bestVerifiedMode('llmgateway')).toBeUndefined();
+    expect(getProviderCapability('llmgateway').provider).toBe('llmgateway');
+    expect(bestVerifiedMode('llmgateway')?.mode).toBe('native-resume');
+    expect(bestVerifiedMode('llmgateway')?.scope).toBe('same-home');
     expect(supportsCrossDeviceResume('llmgateway')).toBe(false);
   });
 

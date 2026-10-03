@@ -1,3 +1,8 @@
+import type {
+  CreateRemoteChatInput,
+  SendRemoteChatInput,
+  RemoteChatRecord,
+} from './remote-chat.js';
 import type { ChatThreadPullRequestInput, ChatThreadPullRequestLink } from './types.js';
 import type { RepoIndexJob } from './index-jobs';
 import type { ChangeReviewApi } from './change-review-types.js';
@@ -768,6 +773,12 @@ export interface AnvilAPI {
   };
 
   syncRuntime: {
+    createRemoteChat: (input: CreateRemoteChatInput) => Promise<RemoteChatRecord>;
+    listRemoteChats: (workspaceId?: string) => Promise<RemoteChatRecord[]>;
+    getRemoteChat: (id: string) => Promise<RemoteChatRecord | null>;
+    sendRemoteChat: (input: SendRemoteChatInput) => Promise<RemoteChatRecord>;
+    cancelRemoteChat: (id: string) => Promise<RemoteChatRecord>;
+
     status: () => Promise<SyncRuntimeStatus>;
     listCloudProviderConnections: () => Promise<CloudEnvironmentProviderConnection[]>;
     addCloudProviderConnection: (input: {

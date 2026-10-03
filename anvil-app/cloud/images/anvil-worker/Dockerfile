@@ -5,13 +5,18 @@
 # Build:  ./prepare.sh && docker build -f Dockerfile -t anvil-worker .
 FROM node:22-bookworm-slim
 
+WORKDIR /opt/anvil
+
 # better-sqlite3/node-pty ship prebuilds; the toolchain is belt-and-braces for
 # platforms without one, plus git for code-task checkouts.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ git ca-certificates \
+  && apt-get install -y --no-install-recommends python3 make g++ git ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/anvil
+ARG CODEX_CLI_VERSION=0.154.0
+COPY install-codex-cli.sh ./install-codex-cli.sh
+RUN CODEX_CLI_VERSION="$CODEX_CLI_VERSION" sh ./install-codex-cli.sh
+
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 

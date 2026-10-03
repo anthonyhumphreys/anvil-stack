@@ -2,7 +2,7 @@ import { bootstrapManifestPolicy } from '../../../../cloud/contract/permissions'
 import { computeBootstrapDigest, setWorkspaceBootstrap } from '../bootstrap-policy.service';
 import Database from 'better-sqlite3';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,6 +73,18 @@ vi.mock('../mesh-artifact.service.js', () => ({
   uploadAttemptArtifact: vi.fn(async () => ({ id: 'art-test' })),
 }));
 
+vi.mock('../sync-keyring.service.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../sync-keyring.service.js')>();
+  return {
+    ...original,
+    unsealCredentialGrant: vi.fn(() => ({
+      v: 1,
+      kind: 'credential-name',
+      env: { OPENAI_API_KEY: 'sealed-test-key' },
+    })),
+  };
+});
+
 vi.mock('../mesh-session.service.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../mesh-session.service.js')>();
   return {
@@ -108,6 +120,7 @@ import {
   unsealTaskResult,
 } from '../sync-keyring.service';
 import { workspaceDefinitionRevision } from '../sync-entity-domain';
+import { unsealCredentialGrant } from '../sync-keyring.service';
 import { probeSessionCli, runRemoteSessionTurn } from '../mesh-session.service';
 import type { RemoteSessionHooks, RemoteSessionSpec } from '../mesh-session.service';
 
@@ -929,8 +942,8 @@ describe('start-session executor (SESSION-02)', () => {
     return job;
   }
 
-  function claimWith(job: MeshJob): void {
-    rpcHandler = (op) => {
+  function claimWith(job: MeshJob, extra?: (operation: string, params: unknown) => unknown): void {
+    rpcHandler = (op, params) => {
       if (op === 'job.claim') {
         return {
           job,
@@ -942,6 +955,7 @@ describe('start-session executor (SESSION-02)', () => {
       if (op === 'attempt.report') {
         return { status: 'applied' };
       }
+      if (extra !== undefined) return extra(op, params);
       return {};
     };
   }
@@ -963,6 +977,11 @@ describe('start-session executor (SESSION-02)', () => {
   beforeEach(async () => {
     db.exec('DELETE FROM mesh_session_ownership; DELETE FROM mesh_handoff_journal;');
     probeMock.mockReset().mockResolvedValue('0.44.0');
+    vi.mocked(unsealCredentialGrant).mockReturnValue({
+      v: 1,
+      kind: 'credential-name',
+      env: { OPENAI_API_KEY: 'sealed-test-key' },
+    });
     runTurnMock.mockReset();
     runTurnMock.mockImplementation(async (_spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
       hooks.onThreadStarted('thr-mock');
@@ -972,6 +991,8 @@ describe('start-session executor (SESSION-02)', () => {
         turnStatus: 'completed' as const,
         cliVersion: '0.44.0',
         cancelled: false,
+        assistantOutput: 'answer',
+        resumeHandle: 'thr-mock',
       };
     });
     rpcHandler = (op) =>
@@ -1020,6 +1041,135 @@ describe('start-session executor (SESSION-02)', () => {
       });
       const report = rpcCalls.find((c) => c.operation === 'attempt.report');
       expect((report!.params as { outcome: string }).outcome).toBe('completed');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes a provider session in its persisted checkout after the provider commits changes', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('resume-checkout');
+    try {
+      let turn = 0;
+      runTurnMock.mockImplementation(async (spec, hooks) => {
+        turn += 1;
+        hooks.onThreadStarted('thr-resume-checkout');
+        if (turn === 1) {
+          writeFileSync(join(repoDir, 'provider-work.txt'), 'kept across turns');
+          execFileSync('git', ['add', 'provider-work.txt'], { cwd: repoDir });
+          execFileSync(
+            'git',
+            ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'provider work'],
+            { cwd: repoDir },
+          );
+        }
+        return {
+          providerThreadId: spec.resumeThreadId ?? 'thr-resume-checkout',
+          turnId: `turn-${turn}`,
+          turnStatus: 'completed' as const,
+          cliVersion: '0.44.0',
+          cancelled: false,
+          assistantOutput: `answer ${turn}`,
+          resumeHandle: 'thr-resume-checkout',
+        };
+      });
+
+      const first = makeSessionJob('job-resume-first', workspaceId, portableId, head);
+      claimWith(first);
+      await handleJobAvailable(first.id);
+      const changedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir })
+        .toString()
+        .trim();
+      expect(changedHead).not.toBe(head);
+
+      const followup = makeSessionJob('job-resume-followup', workspaceId, portableId, head, {
+        resumeThreadId: 'thr-resume-checkout',
+      });
+      claimWith(followup);
+      await handleJobAvailable(followup.id);
+
+      expect(runTurnMock).toHaveBeenCalledTimes(2);
+      expect(runTurnMock.mock.calls[1]?.[0]).toMatchObject({
+        cwd: repoDir,
+        resumeThreadId: 'thr-resume-checkout',
+      });
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim()).toBe(
+        changedHead,
+      );
+      expect(readFileSync(join(repoDir, 'provider-work.txt'), 'utf8')).toBe('kept across turns');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for a late API-key grant before probing or starting the provider', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('late-grant');
+    try {
+      const job = makeSessionJob('job-late-grant', workspaceId, portableId, head, {
+        authMode: 'openai-api-key',
+      });
+      let pulls = 0;
+      claimWith(job, (operation) => {
+        if (operation === 'credential.pull') {
+          pulls += 1;
+          return {
+            grants:
+              pulls >= 3
+                ? [
+                    {
+                      jobId: job.id,
+                      attemptId: `att-${job.id}`,
+                      fence: 1,
+                      targetEnrollmentId: 'enr-1',
+                    },
+                  ]
+                : [],
+          };
+        }
+        return {};
+      });
+
+      await handleJobAvailable(job.id);
+      expect(pulls).toBeGreaterThanOrEqual(3);
+      expect(probeMock).toHaveBeenCalledTimes(1);
+      expect(runTurnMock.mock.calls[0]?.[0].extraEnv).toMatchObject({
+        OPENAI_API_KEY: 'sealed-test-key',
+      });
+      const row = db
+        .prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?')
+        .get(`att-${job.id}`) as { journal_json: string };
+      expect(row.journal_json).toContain('credential-grants-applied');
+      expect(row.journal_json).not.toContain('sealed-test-key');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops waiting for an API-key grant when the claimed job is cancelled', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('grant-cancel');
+    try {
+      const job = makeSessionJob('job-grant-cancel', workspaceId, portableId, head, {
+        authMode: 'openai-api-key',
+      });
+      let pulls = 0;
+      claimWith(job, (operation) => {
+        if (operation === 'credential.pull') {
+          pulls += 1;
+          return { grants: [] };
+        }
+        return {};
+      });
+
+      const executing = handleJobAvailable(job.id);
+      await vi.waitFor(() => expect(pulls).toBeGreaterThanOrEqual(2));
+      db.prepare('UPDATE mesh_attempts SET cancel_requested = 1 WHERE id = ?').run(`att-${job.id}`);
+      await executing;
+      expect(probeMock).not.toHaveBeenCalled();
+      expect(runTurnMock).not.toHaveBeenCalled();
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get(`att-${job.id}`) as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('provider-credential-wait-cancelled');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -1111,6 +1261,17 @@ describe('start-session executor (SESSION-02)', () => {
     try {
       const job = makeSessionJob('job-sess', workspaceId, portableId, head, {
         handoffId: 'ho-1',
+        handoffCheckpoint: {
+          sessionId: 'sess-logical',
+          schemaVersion: 1,
+          sourceGeneration: 1,
+          repositories: [{ repositoryId: portableId, commit: head }],
+          provider: 'codex',
+          model: 'gpt-5',
+          summary: 'private cloud checkpoint',
+          artifactRefs: [],
+          unresolvedApprovals: [],
+        },
       });
       const handoff: Record<string, unknown> = {
         id: 'ho-1',
@@ -1120,17 +1281,9 @@ describe('start-session executor (SESSION-02)', () => {
         targetEnrollmentId: 'enr-1',
         sourceGeneration: 1,
         targetGeneration: 2,
-        checkpoint: {
-          sessionId: 'sess-logical',
-          schemaVersion: 1,
-          sourceGeneration: 1,
-          repositories: [{ repositoryId: portableId, commit: head }],
-          provider: 'codex',
-          model: 'gpt-5',
-          summary: 'prior context',
-          artifactRefs: [],
-          unresolvedApprovals: [],
-        },
+        // Cloud ephemeral workers do not receive the account data key.
+        // The checkpoint must come from the task-key sealed private inputs.
+        checkpoint: null,
         cancelledFrom: null,
         cancelReason: null,
         createdAt: '',
@@ -1159,7 +1312,7 @@ describe('start-session executor (SESSION-02)', () => {
 
       // The continuation prompt carries the checkpoint summary.
       const spec = runTurnMock.mock.calls[0]?.[0];
-      expect(spec?.prompt).toContain('prior context');
+      expect(spec?.prompt).toContain('private cloud checkpoint');
       expect(spec?.prompt).toContain('do the thing');
 
       // Local ownership mirror now shows this device owning generation 2.
@@ -1223,12 +1376,13 @@ describe('start-session executor (SESSION-02)', () => {
     }
   });
 
-  it('marks the handoff failed when the activation turn fails', async () => {
+  it('keeps target ownership and allows a fresh checkpoint retry after activation fails', async () => {
     const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('ho-fail');
     try {
-      const job = makeSessionJob('job-sess', workspaceId, portableId, head, {
+      let job = makeSessionJob('job-sess', workspaceId, portableId, head, {
         handoffId: 'ho-3',
       });
+      let turn = 0;
       const handoff: Record<string, unknown> = {
         id: 'ho-3',
         sessionId: 'sess-y',
@@ -1243,13 +1397,28 @@ describe('start-session executor (SESSION-02)', () => {
         createdAt: '',
         updatedAt: '',
       };
-      runTurnMock.mockImplementation(async () => ({
-        providerThreadId: 'thr-x',
-        turnId: 'turn-x',
-        turnStatus: 'failed' as const,
-        cliVersion: '0.44.0',
-        cancelled: false,
-      }));
+      runTurnMock.mockImplementation(async (spec, hooks) => {
+        turn += 1;
+        hooks.onThreadStarted(turn === 1 ? 'thr-failed' : 'thr-retry');
+        if (turn === 1) {
+          writeFileSync(join(repoDir, 'partial-work.txt'), 'preserved for retry');
+          execFileSync('git', ['add', 'partial-work.txt'], { cwd: repoDir });
+          execFileSync(
+            'git',
+            ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'partial provider work'],
+            { cwd: repoDir },
+          );
+        }
+        return {
+          providerThreadId: spec.resumeThreadId ?? (turn === 1 ? 'thr-failed' : 'thr-retry'),
+          turnId: `turn-${turn}`,
+          turnStatus: turn === 1 ? ('failed' as const) : ('completed' as const),
+          cliVersion: '0.44.0',
+          cancelled: false,
+          assistantOutput: 'answer',
+          resumeHandle: turn === 1 ? 'thr-failed' : 'thr-retry',
+        };
+      });
       rpcHandler = (op, rawParams) => {
         const params = rawParams as Record<string, unknown>;
         if (op === 'job.claim') {
@@ -1268,16 +1437,47 @@ describe('start-session executor (SESSION-02)', () => {
       const advances = rpcCalls
         .filter((c) => c.operation === 'handoff.advance')
         .map((c) => (c.params as { to: string }).to);
-      expect(advances).toEqual(['target-activating', 'failed']);
+      expect(advances).toEqual(['target-activating']);
       const row = db
         .prepare('SELECT state FROM mesh_attempts WHERE id = ?')
         .get('att-job-sess') as { state: string };
       expect(row.state).toBe('failed');
-      // The target keeps owning recovery — no ownership restore.
+      // The target ownership mirror is durable before provider startup.
       const ownership = db
-        .prepare('SELECT COUNT(*) AS n FROM mesh_session_ownership WHERE session_id = ?')
-        .get('sess-y') as { n: number };
-      expect(ownership.n).toBe(0);
+        .prepare(
+          'SELECT state, generation, owner_enrollment_id FROM mesh_session_ownership WHERE session_id = ?',
+        )
+        .get('sess-y') as { state: string; generation: number; owner_enrollment_id: string };
+      expect(ownership).toEqual({ state: 'owned', generation: 2, owner_enrollment_id: 'enr-1' });
+
+      const partialHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir })
+        .toString()
+        .trim();
+      expect(partialHead).not.toBe(head);
+      job = makeSessionJob('job-sess-retry', workspaceId, portableId, head, {
+        handoffId: 'ho-3',
+      });
+      rpcHandler = (op, rawParams) => {
+        const params = rawParams as Record<string, unknown>;
+        if (op === 'job.claim') {
+          return { job, attempt: makeAttempt(job.id), fence: 1, manifest: job.inputManifest };
+        }
+        if (op === 'attempt.report') return { status: 'applied' };
+        if (op === 'handoff.get') return { handoff };
+        if (op === 'handoff.advance') {
+          handoff['state'] = params['to'];
+          return { handoff };
+        }
+        return {};
+      };
+      await handleJobAvailable(job.id);
+      expect(runTurnMock).toHaveBeenCalledTimes(2);
+      expect(runTurnMock.mock.calls[1]?.[0]).toMatchObject({ cwd: repoDir });
+      expect(runTurnMock.mock.calls[1]?.[0].resumeThreadId).toBeUndefined();
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim()).toBe(
+        partialHead,
+      );
+      expect(readFileSync(join(repoDir, 'partial-work.txt'), 'utf8')).toBe('preserved for retry');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -1423,6 +1623,8 @@ describe('code-task executor (FLOW-01)', () => {
         turnStatus: 'completed' as const,
         cliVersion: '0.44.0',
         cancelled: false,
+        assistantOutput: 'answer',
+        resumeHandle: 'thr-mock',
       };
     });
     rpcHandler = (op) =>
@@ -1554,6 +1756,8 @@ describe('code-task executor (FLOW-01)', () => {
           turnStatus: 'interrupted',
           cliVersion: '0.44.0',
           cancelled: true,
+          assistantOutput: '',
+          resumeHandle: null,
         };
       });
       await handleJobAvailable(job.id);
@@ -1583,6 +1787,8 @@ describe('code-task executor (FLOW-01)', () => {
           turnStatus: 'completed' as const,
           cliVersion: '0.44.0',
           cancelled: false,
+          assistantOutput: 'answer',
+          resumeHandle: 'thr-mock',
         };
       });
       claimWith(job);
@@ -1683,6 +1889,8 @@ describe('code-task executor (FLOW-01)', () => {
         turnStatus: 'failed' as const,
         cliVersion: '0.44.0',
         cancelled: false,
+        assistantOutput: 'answer',
+        resumeHandle: 'thr-mock',
       }));
       claimWith(job);
       await handleJobAvailable('job-task');
@@ -1722,6 +1930,8 @@ describe('code-task executor (FLOW-01)', () => {
           turnStatus: 'completed' as const,
           cliVersion: '0.44.0',
           cancelled: false,
+          assistantOutput: 'answer',
+          resumeHandle: 'thr-mock',
         };
       });
       claimWith(job);

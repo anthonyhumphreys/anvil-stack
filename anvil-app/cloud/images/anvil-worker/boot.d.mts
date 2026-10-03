@@ -1,3 +1,5 @@
+import type { SpawnSyncReturns } from 'node:child_process';
+
 export interface MeshEnvironmentBootstrap {
   kind: 'anvil.mesh-environment';
   schemaVersion: '0.2';
@@ -10,6 +12,16 @@ export interface MeshEnvironmentBootstrap {
 }
 
 export function parseBootstrapPayload(raw: string): MeshEnvironmentBootstrap;
+
+export function prepareWorkerStorage(
+  dataDir: string,
+  keyFilePath: string,
+  run?: (
+    command: string,
+    args: string[],
+    options: { env: NodeJS.ProcessEnv; encoding: 'utf8'; timeout: number; maxBuffer: number },
+  ) => SpawnSyncReturns<string>,
+): void;
 
 export function readBootstrap(
   argv?: string[],

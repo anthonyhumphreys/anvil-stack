@@ -39,9 +39,9 @@ export interface ProviderCapability {
 }
 
 /**
- * The audited matrix. Codex-protocol providers (codex/azure/openai) all
- * spawn `codex app-server` and share `thread/resume` + `thread/fork`;
- * resume re-reads CLI state under `~/.codex`, so it is same-home only
+ * The audited matrix. Codex-protocol providers (codex/azure/openai/llmgateway)
+ * share `thread/resume` + `thread/fork`; resume re-reads provider state under
+ * the configured CODEX_HOME, so it is same-home only
  * until a second-home fixture proves import. The ACP providers (Cursor,
  * Devin) advertise `agentCapabilities.loadSession` at initialize (probed
  * live: cursor-agent acp, devin acp v3000.11.1) and `codex-session.service.ts`
@@ -102,9 +102,13 @@ const PROVIDER_CAPABILITIES: Record<AgentProvider, ProviderCapability> = {
   },
   llmgateway: {
     provider: 'llmgateway',
-    modes: [{ mode: 'unsupported', scope: 'cross-device', verified: false }],
-    evidence: 'codex-session.service.ts: local managed runtime; no verified mesh continuation',
-    caveat: 'LLMGateway mesh continuation has not been verified.',
+    modes: [
+      { mode: 'native-resume', scope: 'same-home', verified: true },
+      { mode: 'summary-continuation', scope: 'cross-device', verified: false },
+    ],
+    evidence:
+      'codex-session.service.ts: managed Codex runtime uses thread/resume in its isolated CODEX_HOME',
+    caveat: 'native-resume re-opens the gateway thread on the same device only.',
   },
 };
 

@@ -38,6 +38,7 @@ import { RepoSelector } from '../shared/RepoSelector';
 import { GovernanceSelector } from '../shared/GovernanceSelector';
 import { extractFindings, type ExtractedFinding } from '../../utils/finding-parser';
 import type { ExecutionStrategy } from '../../utils/execution-strategy';
+import { RemoteChatPanel } from './RemoteChatPanel';
 import { SessionOwnershipChip } from './SessionOwnershipChip';
 import { buildExecutionTopology } from '../../utils/execution-topology';
 import { CHAT_PREFILL_EVENT } from './AgentUIIntentSurface';
@@ -679,6 +680,15 @@ export function ChatView({ userRole }: ChatViewProps) {
         <SessionOwnershipChip key={visibleSessionId} sessionId={visibleSessionId} />
       )}
 
+      {!scaffoldModeActive && activeWorkspace && (
+        <RemoteChatPanel
+          workspaceId={activeWorkspace.id}
+          provider={modelProvider}
+          model={model}
+          permissionMode={threadAccess.level}
+          sourceSessionId={visibleSessionId}
+        />
+      )}
       <div className="flex flex-1 overflow-hidden">
         {!scaffoldModeActive &&
           (isWorkItemLayout ? (

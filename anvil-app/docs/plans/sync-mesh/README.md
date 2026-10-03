@@ -28,6 +28,7 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 ### Session ownership and portability (landed)
 
 - Cross-device handoff: `requested → target-prepared → source-quiescing → checkpointed → ownership-transferred → activating → completed`, with a durable ownership mirror in the account object.
+- Desktop remote-chat controls and handoff activation are described in [remote chats](remote-chats.md).
 - Provider continuity is explicit per adapter (`native-resume` / `checkpoint-import` / `summary-continuation`); a provider thread ID is not portability proof.
 - Session ownership chip in the execution view; mesh session-view surface (jobs, approvals, activity, handoffs).
 
@@ -47,7 +48,7 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - Providers: AWS Lambda MicroVM (direct SDK), Cloudflare Sandbox (customer-deployed provisioner Worker — reference impl at `cloud/provisioner/`), Vercel Sandbox (`@vercel/sandbox`, non-persistent, `ANVIL_BOOTSTRAP_JSON` channel).
 - ENV-09 `anvil-managed`: backend-internal claimer + consume-once `environment.bootstrap` pairing channel + `MANAGED_PROVISIONER` service binding + hosted entitlement caps (free 30m/1, paid 8h/4) enforced at `job.create`.
 - `anvil-worker` image: `cloud/images/anvil-worker/` — generic OCI Dockerfile + Cloudflare Sandbox variant + `boot.mjs` (env-scrubbing bootstrap → enroll → `anvil-daemon run --worker`).
-- Remaining: renderer/UI surface for environment request+observe. Spec: `cloud-environments.md`.
+- Settings provides provider connections and environment request, observation and teardown. Orchestration can select an environment as a job target. Spec: `cloud-environments.md`.
 - Runbooks: deploy, rollback, reconciliation, webhook failures, entitlement incidents, account deletion, metrics, launch checklist.
 
 ### Cloud-connected companions — MOB-01 (landed)
@@ -65,9 +66,9 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - `defaultPolicyTier` config for zero-touch hosts; desktop still defaults first contact to `pending`.
 - Service templates: `daemon/com.anvil.daemon.plist`, `daemon/anvil-daemon.service`; runbook: `docs/runbooks/hosted-sync/headless-daemon.md`.
 
-## Verified state (25 September 2026)
+## Verified state (2 October 2026, before remote-chat follow-up)
 
-- The desktop suite passed 1,654 tests with 11 skipped; the backend runtime suite passed 356 tests. Desktop lint, typechecks, and build passed. The [PR review](pr-91-review.md) records the exact checks and limits.
+- The desktop suite passed 1,797 tests with 12 skipped. All GitHub checks passed for `bf48b4c`, including desktop, backend/provisioner, cloud, website, Linux and Windows. Desktop lint, typechecks, and build passed. The [PR review](pr-91-review.md) records the exact checks and limits.
 - The current Cloudflare Worker and WorkOS clients are **staging**. The [launch checklist](../../runbooks/hosted-sync/launch-checklist.md) tracks production identity, billing, and operational gates.
 - Real physical-device flows and signed-in hosted acceptance remain unverified; passing local suites is not a launch sign-off.
 
@@ -96,7 +97,7 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 ## Known sharp edges
 
 - Remote verification intentionally retains shell execution, source-policy
-  checks and one-run target-local consent. The [security decision](verification-security-remediation.md)
+  checks and the chosen running mode capped by each destination's local maximum. The [security decision](verification-security-remediation.md)
   records the accepted capability and CodeQL alert #29 disposition.
 - Backend revocation reaches direct connections within ~60s (attestation cache TTL); push invalidation is a Phase 5 candidate.
 - Account-mediated mode needs the host awake with its companion server enabled — the coordinator is directory + durable fallback, not a live proxy (frame relay is Phase 5, optional).

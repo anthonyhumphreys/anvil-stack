@@ -94,6 +94,14 @@ function createParams(overrides: Partial<JobCreateParams> = {}): JobCreateParams
   };
 }
 
+function sealedInputsOfSize(plaintextBytes: number): SealedTaskPayload {
+  return {
+    enc: 'aes-256-gcm',
+    nonce: btoa('0123456789ab'),
+    ct: btoa('x'.repeat(plaintextBytes)),
+  };
+}
+
 async function publishPolicy(auth: string) {
   const policy: DevicePolicy = {
     worker: { allowJobs: true, allowedSources: ['same-account'], maxConcurrentJobs: 2 },
@@ -142,6 +150,59 @@ describe('manifest input allowlist', () => {
     expect(created.job.keyDelivery).toBe('pending');
     // The public manifest stays public — no sensitive keys leak through.
     expect(Object.keys(created.job.inputManifest.inputs)).toEqual(['workspaceId']);
+  });
+
+  it('accepts sealed private inputs larger than the coordinator-visible input limit', async () => {
+    const fx = fixture('large-sealed-create');
+    const sealedInputs = sealedInputsOfSize(256 * 1024);
+    expect(new TextEncoder().encode(JSON.stringify(sealedInputs)).byteLength).toBeGreaterThan(
+      32 * 1024,
+    );
+
+    const created = expectSuccess<JobCreateResult>(
+      await postRpc('job.create', createParams({ sealedInputs }), fx.sourceAuth),
+    );
+    expect(created.job.sealedInputs).toEqual(sealedInputs);
+    expect(created.job.inputManifest.inputs).toEqual({ workspaceId: 'ws-1' });
+  });
+
+  it('rejects sealed private inputs above 512 KiB while retaining the 32 KiB public-input limit', async () => {
+    const fx = fixture('too-large-sealed-create');
+    const tooLargeSealedInputs = sealedInputsOfSize(400 * 1024);
+    expect(
+      new TextEncoder().encode(JSON.stringify(tooLargeSealedInputs)).byteLength,
+    ).toBeGreaterThan(512 * 1024);
+    const sealedResponse = await postRpc(
+      'job.create',
+      createParams({ sealedInputs: tooLargeSealedInputs }),
+      fx.sourceAuth,
+    );
+    expect(sealedResponse.status).toBe(413);
+    expect(isRpcError(sealedResponse.body)).toBe(true);
+    if (isRpcError(sealedResponse.body)) {
+      expect(sealedResponse.body.error.code).toBe('payload-too-large');
+      expect(sealedResponse.body.error.details).toMatchObject({
+        field: 'sealedInputs',
+        limitBytes: 512 * 1024,
+      });
+    }
+
+    const manifestResponse = await postRpc(
+      'job.create',
+      createParams({
+        inputManifest: { ...manifest(), inputs: { workspaceId: 'x'.repeat(33 * 1024) } },
+      }),
+      fx.sourceAuth,
+    );
+    expect(manifestResponse.status).toBe(413);
+    expect(isRpcError(manifestResponse.body)).toBe(true);
+    if (isRpcError(manifestResponse.body)) {
+      expect(manifestResponse.body.error.code).toBe('payload-too-large');
+      expect(manifestResponse.body.error.details).toMatchObject({
+        field: 'manifest.inputs',
+        limitBytes: 32 * 1024,
+      });
+    }
   });
 
   it('reports none keyDelivery when no sealed inputs exist', async () => {
