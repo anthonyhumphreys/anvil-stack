@@ -8,13 +8,19 @@ import { SCHEMA_SQL } from '../../db/schema.js';
 const inMemoryDb = new Database(':memory:');
 inMemoryDb.exec(SCHEMA_SQL);
 
-const { mockScanForRepos, mockConnectRepoPath, mockIndexRepo, mockAddReposToWorkspace } =
-  vi.hoisted(() => ({
-    mockScanForRepos: vi.fn(),
-    mockConnectRepoPath: vi.fn(),
-    mockIndexRepo: vi.fn(),
-    mockAddReposToWorkspace: vi.fn(),
-  }));
+const {
+  mockScanForRepos,
+  mockConnectRepoPath,
+  mockEnqueueIndexJobs,
+  mockWaitForRepoIndexJobs,
+  mockAddReposToWorkspace,
+} = vi.hoisted(() => ({
+  mockScanForRepos: vi.fn(),
+  mockConnectRepoPath: vi.fn(),
+  mockEnqueueIndexJobs: vi.fn(),
+  mockWaitForRepoIndexJobs: vi.fn(),
+  mockAddReposToWorkspace: vi.fn(),
+}));
 
 vi.mock('../../db/database.js', () => ({
   getDb: () => inMemoryDb,
@@ -28,8 +34,9 @@ vi.mock('../repo-connect.service.js', () => ({
   connectRepoPath: mockConnectRepoPath,
 }));
 
-vi.mock('../repo-index.service.js', () => ({
-  indexRepo: mockIndexRepo,
+vi.mock('../repo-index-queue.service.js', () => ({
+  enqueueIndexJobs: mockEnqueueIndexJobs,
+  waitForRepoIndexJobs: mockWaitForRepoIndexJobs,
 }));
 
 vi.mock('../workspace.service.js', () => ({
@@ -125,7 +132,8 @@ describe('maybeCompleteWorkspaceScaffold', () => {
       fileCount: 0,
       branchCount: 0,
     });
-    mockIndexRepo.mockResolvedValue(undefined);
+    mockEnqueueIndexJobs.mockReturnValue([]);
+    mockWaitForRepoIndexJobs.mockResolvedValue([]);
 
     const result = maybeCompleteWorkspaceScaffold(
       'ws-2',
@@ -143,7 +151,8 @@ describe('maybeCompleteWorkspaceScaffold', () => {
 
     expect(mockConnectRepoPath).toHaveBeenCalledWith('/tmp/devhub-root/orders-service');
     expect(mockAddReposToWorkspace).toHaveBeenCalledWith('ws-2', ['repo-1']);
-    expect(mockIndexRepo).toHaveBeenCalledWith('repo-1');
+    expect(mockEnqueueIndexJobs).toHaveBeenCalledWith('repo-1', { reason: 'scaffold' });
+    expect(mockWaitForRepoIndexJobs).toHaveBeenCalledWith('repo-1');
     expect(getWorkspaceScaffoldSession('ws-2')?.status).toBe('completed');
   });
 });

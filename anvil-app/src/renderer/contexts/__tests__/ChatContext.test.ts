@@ -130,6 +130,160 @@ describe('chatMessagesToEntries', () => {
     ).toEqual([]);
   });
 
+  it('resolves approval and input requests only within the originating session', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'approval-a',
+        role: 'system',
+        content: 'Approval needed',
+        timestamp: '2026-04-27T10:00:00.000Z',
+        sessionId: 'session-a',
+        event: { type: 'approval_request', approvalRequestId: 7 },
+      },
+      {
+        id: 'approval-b',
+        role: 'system',
+        content: 'Approval needed in another session',
+        timestamp: '2026-04-27T10:00:01.000Z',
+        sessionId: 'session-b',
+        event: { type: 'approval_request', approvalRequestId: 7 },
+      },
+      {
+        id: 'resolved-a',
+        role: 'system',
+        content: 'Request resolved',
+        timestamp: '2026-04-27T10:00:02.000Z',
+        sessionId: 'session-a',
+        event: { type: 'request_resolved', resolvedRequestId: 7 },
+      },
+    ]);
+
+    expect(entries).toEqual([
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 7, sessionId: 'session-b' },
+      },
+    ]);
+  });
+
+  it('reconstructs follow-up delivery state by request ID across event ordering and transitions', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'delivery-queued',
+        role: 'system',
+        content: 'Follow-up queued',
+        timestamp: '2026-08-20T10:00:00.000Z',
+        sessionId: 'session-1',
+        event: {
+          type: 'follow_up_delivery',
+          followUpRequestId: 'request-1',
+          followUpIntent: 'queue',
+          followUpStatus: 'queued',
+          followUpQueueDepth: 1,
+        },
+      },
+      {
+        id: 'request-1',
+        role: 'user',
+        content: 'Add a summary after the current task',
+        timestamp: '2026-08-20T10:00:01.000Z',
+        sessionId: 'session-1',
+      },
+      {
+        id: 'delivery-failed',
+        role: 'system',
+        content: 'Follow-up rejected',
+        timestamp: '2026-08-20T10:00:02.000Z',
+        sessionId: 'session-1',
+        event: {
+          type: 'follow_up_delivery',
+          followUpRequestId: 'request-1',
+          followUpIntent: 'queue',
+          followUpStatus: 'failed',
+          followUpQueueDepth: 0,
+          followUpError: 'The provider rejected the request.',
+        },
+      },
+    ]);
+
+    expect(entries).toEqual([
+      {
+        kind: 'user',
+        id: 'request-1',
+        requestId: 'request-1',
+        content: 'Add a summary after the current task',
+        delivery: 'failed',
+        deliveryIntent: 'queue',
+        deliveryError: 'The provider rejected the request.',
+        attachments: undefined,
+      },
+    ]);
+  });
+
+  it('restores explicit failed follow-up results saved on the user row', () => {
+    expect(
+      chatMessagesToEntries([
+        {
+          id: 'request-local-failure',
+          role: 'user',
+          content: 'Explain the current output',
+          timestamp: '2026-08-20T10:00:00.000Z',
+          sessionId: 'session-1',
+          event: {
+            type: 'follow_up_delivery',
+            followUpRequestId: 'request-local-failure',
+            followUpIntent: 'guide',
+            followUpStatus: 'failed',
+            followUpQueueDepth: 0,
+            followUpError: 'Session no longer exists.',
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        kind: 'user',
+        id: 'request-local-failure',
+        requestId: 'request-local-failure',
+        content: 'Explain the current output',
+        delivery: 'failed',
+        deliveryIntent: 'guide',
+        deliveryError: 'Session no longer exists.',
+        attachments: undefined,
+      },
+    ]);
+  });
+
+  it('restores persisted thinking events as coalescing reasoning entries', () => {
+    expect(
+      chatMessagesToEntries([
+        {
+          id: 'think-1',
+          role: 'system',
+          content: 'thinking',
+          timestamp: '2026-07-14T10:00:00.000Z',
+          event: { type: 'thinking', text: 'First, check the config.' },
+        },
+        {
+          id: 'think-2',
+          role: 'system',
+          content: 'thinking',
+          timestamp: '2026-07-14T10:00:01.000Z',
+          event: { type: 'thinking', text: ' It points at staging.' },
+        },
+        {
+          id: 'command-1',
+          role: 'system',
+          content: 'Ran pnpm test',
+          timestamp: '2026-07-14T10:00:02.000Z',
+          event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 },
+        },
+      ]),
+    ).toEqual([
+      { kind: 'thinking', content: 'First, check the config. It points at staging.' },
+      { kind: 'event', event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 } },
+    ]);
+  });
+
   it('keeps legacy flattened assistant history readable', () => {
     expect(
       chatMessagesToEntries([
@@ -231,7 +385,7 @@ describe('chatMessagesToEntries', () => {
         role: 'system',
         content: 'Read the file',
         timestamp: '2026-08-07T10:00:02.000Z',
-        event: { type: 'file_read', filePath: 'src/App.tsx' },
+        event: { type: 'command_exec', command: 'cat src/App.tsx', exitCode: 0 },
       },
       {
         id: 'agent-completed',
@@ -262,7 +416,59 @@ describe('chatMessagesToEntries', () => {
         subagent: { id: 'subagent-1', status: 'completed' },
       },
     });
-    expect(entries[2]).toMatchObject({ kind: 'event', event: { type: 'file_read' } });
+    expect(entries[2]).toMatchObject({ kind: 'event', event: { type: 'command_exec' } });
+  });
+
+  it('drops persisted file_read rows — a dead renderer surface (H14)', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'user-1',
+        role: 'user',
+        content: 'Check the config',
+        timestamp: '2026-08-07T10:00:00.000Z',
+      },
+      {
+        id: 'read-1',
+        role: 'system',
+        content: 'Read config',
+        timestamp: '2026-08-07T10:00:01.000Z',
+        event: { type: 'file_read', filePath: 'config.ts' },
+      },
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user' });
+  });
+
+  it('reconstructs persisted thinking rows as coalescing thinking entries (H11)', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'user-1',
+        role: 'user',
+        content: 'Think out loud',
+        timestamp: '2026-08-07T10:00:00.000Z',
+      },
+      {
+        id: 'think-1',
+        role: 'system',
+        content: 'First, check the config.',
+        timestamp: '2026-08-07T10:00:01.000Z',
+        event: { type: 'thinking', text: 'First, check the config.' },
+      },
+      {
+        id: 'think-2',
+        role: 'system',
+        content: ' It points at staging.',
+        timestamp: '2026-08-07T10:00:02.000Z',
+        event: { type: 'thinking', text: ' It points at staging.' },
+      },
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[1]).toMatchObject({
+      kind: 'thinking',
+      content: 'First, check the config. It points at staging.',
+    });
   });
 });
 

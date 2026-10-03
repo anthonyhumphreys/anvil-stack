@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   redactCloudflareSecrets,
+  runCloudflareWranglerDelete,
   runCloudflareWranglerDeploy,
   sanitizeTemporaryCloudflareEnvironment,
   type CloudflareWorkerArtifacts,
@@ -110,6 +111,42 @@ describe("Cloudflare Wrangler execution", () => {
 
     expect(run.mock.calls[1]?.[0].args).toContain("--dry-run");
     expect(run.mock.calls[1]?.[0].args).not.toContain("--temporary");
+  });
+
+  it("deletes through Wrangler with the same isolation rules", async () => {
+    const run = vi
+      .fn<WranglerCommandRunner>()
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: "wrangler 4.120.0",
+        stderr: "",
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "deleted", stderr: "" });
+
+    const result = await runCloudflareWranglerDelete({
+      artifacts,
+      authentication: "temporary",
+      env: { PATH: "/bin", CLOUDFLARE_API_TOKEN: "must-not-pass" },
+      run,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      workerName: artifacts.workerName,
+    });
+    expect(run.mock.calls[1]?.[0].args).toEqual([
+      "delete",
+      "--config",
+      artifacts.config,
+    ]);
+    expect(run.mock.calls[1]?.[0].env).toEqual({
+      PATH: "/bin",
+      FORCE_COLOR: "0",
+      WRANGLER_HIDE_BANNER: "true",
+      WRANGLER_LOG_SANITIZE: "true",
+      WRANGLER_SEND_ERROR_REPORTS: "false",
+      WRANGLER_SEND_METRICS: "false",
+    });
   });
 
   it("redacts claim URLs wherever Wrangler writes them", () => {

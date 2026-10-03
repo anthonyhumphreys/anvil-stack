@@ -18,6 +18,8 @@ import type {
 } from '../../shared/types.js';
 import { normaliseReasoningEffort } from '../../shared/codex-models.js';
 import { getDb } from '../db/database.js';
+import { publishSharedArtifact, revokeSharedArtifact } from './artifact-share.service.js';
+import { BackendRpcError } from './sync-backend-client.service.js';
 
 interface ChatArtifactRow {
   id: string;
@@ -36,6 +38,9 @@ interface ChatArtifactRow {
   source: string | null;
   model: string | null;
   reasoning_effort: string | null;
+  share_id: string | null;
+  shared_url: string | null;
+  shared_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -63,6 +68,9 @@ function mapArtifactRow(row: ChatArtifactRow): ChatArtifact {
     reasoningEffort: row.reasoning_effort
       ? normaliseReasoningEffort(row.reasoning_effort)
       : undefined,
+    shareId: row.share_id ?? undefined,
+    sharedUrl: row.shared_url ?? undefined,
+    sharedAt: row.shared_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -280,6 +288,9 @@ export function listChatArtifacts(threadId: string): ChatArtifact[] {
          source,
          model,
          reasoning_effort,
+         share_id,
+         shared_url,
+         shared_at,
          created_at,
          updated_at
        FROM chat_artifacts
@@ -429,4 +440,123 @@ export function discardChatArtifact(id: string): boolean {
     .prepare("DELETE FROM chat_artifacts WHERE id = ? AND storage_scope = 'session'")
     .run(id);
   return result.changes > 0;
+}
+
+/** Hosted share URLs are served by the marketing site at this base. */
+function shareBaseUrl(): string {
+  const configured = process.env.ANVIL_SHARE_BASE_URL;
+  return typeof configured === 'string' && configured.length > 0
+    ? configured.replace(/\/+$/, '')
+    : 'https://anvilstack.dev';
+}
+
+function shareMediaType(kind: ChatArtifactKind, filePath: string | null): string {
+  if (filePath !== null) {
+    const fromFile = mimeTypeForPath(filePath);
+    if (fromFile !== 'application/octet-stream') return fromFile;
+  }
+  switch (kind) {
+    case 'markdown':
+      return 'text/markdown';
+    case 'html':
+      return 'text/html';
+    case 'csv':
+      return 'text/csv';
+    case 'data':
+      return 'application/json';
+    case 'mermaid':
+    case 'diagram':
+      return 'text/vnd.mermaid';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'pptx':
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    case 'pdf':
+      return 'application/pdf';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    default:
+      return 'text/plain';
+  }
+}
+
+/**
+ * Publishes a chat artifact to the hosted backend and returns the updated
+ * row. Requires an active sync session — the share service throws
+ * otherwise. File-backed artifacts share their on-disk bytes; everything
+ * else shares the stored content. A re-share replaces the previous share
+ * (the old share id is revoked best-effort after the new one publishes).
+ */
+export async function shareChatArtifact(id: string): Promise<ChatArtifact> {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM chat_artifacts WHERE id = ?').get(id) as
+    | ChatArtifactRow
+    | undefined;
+  if (!row) throw new Error('Artifact not found');
+
+  let bytes: Uint8Array;
+  if (row.file_path && existsSync(row.file_path)) {
+    bytes = new Uint8Array(readFileSync(row.file_path));
+  } else {
+    bytes = new TextEncoder().encode(row.content);
+  }
+
+  const { share, shareKey } = await publishSharedArtifact({
+    title: row.title,
+    bytes,
+    mediaType: shareMediaType(parseArtifactKind(row.kind), row.file_path),
+  });
+  // The decryption key lives only in the URL fragment — it never reaches
+  // the website or the sync backend.
+  const sharedUrl = `${shareBaseUrl()}/artifacts/${share.shareId}#k=${shareKey}`;
+  const now = new Date().toISOString();
+
+  // Revoke the superseded share after the new one is live so a revoked
+  // URL never points at content the user re-shared.
+  if (row.share_id && row.share_id !== share.shareId) {
+    await revokeSharedArtifact(row.share_id).catch(() => undefined);
+  }
+
+  db.prepare(
+    `UPDATE chat_artifacts
+     SET share_id = ?, shared_url = ?, shared_at = ?, visibility = 'shareable'
+     WHERE id = ?`,
+  ).run(share.shareId, sharedUrl, now, id);
+
+  const fresh = db.prepare('SELECT * FROM chat_artifacts WHERE id = ?').get(id) as ChatArtifactRow;
+  return mapArtifactRow(fresh);
+}
+
+/**
+ * Revokes an artifact's hosted share and clears its local share metadata.
+ * Idempotent: an unshared artifact returns unchanged.
+ */
+export async function unshareChatArtifact(id: string): Promise<ChatArtifact> {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM chat_artifacts WHERE id = ?').get(id) as
+    | ChatArtifactRow
+    | undefined;
+  if (!row) throw new Error('Artifact not found');
+
+  if (row.share_id) {
+    try {
+      await revokeSharedArtifact(row.share_id);
+    } catch (error) {
+      // The share row is already gone server-side (swept, expired, or the
+      // account was deleted): the goal state holds, so clear locally.
+      // Anything else (auth, transport) may mean the URL is still live —
+      // keep share_id so the user can retry.
+      if (!(error instanceof BackendRpcError) || error.code !== 'not-found') {
+        throw error;
+      }
+    }
+  }
+  db.prepare(
+    `UPDATE chat_artifacts
+     SET share_id = NULL, shared_url = NULL, shared_at = NULL, visibility = 'local'
+     WHERE id = ?`,
+  ).run(id);
+
+  const fresh = db.prepare('SELECT * FROM chat_artifacts WHERE id = ?').get(id) as ChatArtifactRow;
+  return mapArtifactRow(fresh);
 }

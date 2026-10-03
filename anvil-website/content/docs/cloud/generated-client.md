@@ -3,9 +3,9 @@ title: Generated client
 navTitle: Generated client
 description: How Anvil Cloud emits client metadata and browser helpers for calling Cell queries and mutations.
 product: Anvil Cloud
-section: Runtime
+section: Concepts
 journey: build
-order: 135
+order: 160
 ---
 
 # Generated client

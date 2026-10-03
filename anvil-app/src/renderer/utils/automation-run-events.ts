@@ -9,10 +9,10 @@ export type AutomationDisplayEntry =
   | { kind: 'activity'; events: CodexEvent[]; createdAt: string }
   | { kind: 'event'; event: CodexEvent; createdAt: string };
 
+// H14 — `file_read` is a dead renderer surface and is intentionally absent.
 const ACTIVITY_EVENT_TYPES = new Set([
   'tool_call',
   'command_exec',
-  'file_read',
   'file_edit',
   'approval_request',
   'plan_update',

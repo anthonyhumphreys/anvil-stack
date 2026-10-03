@@ -1,0 +1,151 @@
+name: Hosted Sync staging backend
+
+on:
+  push:
+    branches: [develop, feature/sync-mesh--foundations]
+    paths:
+      - .github/workflows/sync-backend-staging.yml
+      - anvil-app/cloud/backend/**
+      - anvil-app/cloud/contract/**
+      - anvil-app/cloud/provisioner/**
+      - anvil-app/cloud/images/anvil-worker/**
+      - anvil-app/src/**
+      - anvil-app/scripts/build-daemon.mjs
+      - anvil-app/package.json
+      - anvil-app/pnpm-lock.yaml
+      - anvil-cloud/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-backend-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # The feature branch is allowed for the initial PR #91 rehearsal only.
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/feature/sync-mesh--foundations'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: anvil-staging
+    defaults:
+      run:
+        working-directory: anvil-app/cloud/backend
+    env:
+      CI: true
+      ANVIL_DEPLOYMENT_ENV: staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            anvil-app/cloud/backend/pnpm-lock.yaml
+            anvil-cloud/pnpm-lock.yaml
+            anvil-app/pnpm-lock.yaml
+            anvil-app/cloud/provisioner/pnpm-lock.yaml
+      - name: Install backend and deployment CLI dependencies
+        run: |
+          pnpm install --ignore-workspace --frozen-lockfile
+          pnpm --dir ../../../anvil-cloud install --frozen-lockfile
+          pnpm --dir ../provisioner install --ignore-workspace --frozen-lockfile
+          pnpm --dir ../.. install --frozen-lockfile --ignore-scripts
+      - name: Verify provisioner and stage worker daemon
+        run: |
+          pnpm --dir ../provisioner typecheck
+          pnpm --dir ../provisioner test
+          pnpm --dir ../.. build:daemon
+          sh ../images/anvil-worker/prepare.sh
+      - name: Verify backend and deployment guards
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm test:hosted-deploy
+          node scripts/verify-hosted-config.mjs --self-check
+      - name: Build deployment CLI
+        working-directory: anvil-cloud
+        run: pnpm build
+      - name: Generate guarded staging configuration
+        env:
+          ANVIL_STAGING_WORKER_VARS_JSON: ${{ vars.ANVIL_STAGING_WORKER_VARS_JSON }}
+        run: |
+          node --input-type=module <<'JS'
+          import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+          import { mergeTargetVars, validateManifest } from './scripts/hosted-deploy.mjs';
+          const manifest = JSON.parse(readFileSync('hosted-targets.ci.json', 'utf8'));
+          const target = validateManifest(manifest, 'staging');
+          const configured = JSON.parse(process.env.ANVIL_STAGING_WORKER_VARS_JSON || '{}');
+          if (configured.HOSTED_CHECKOUT_ENABLED !== 'false') {
+            throw new Error('Staging CI requires explicitly disabled checkout.');
+          }
+          const vars = mergeTargetVars(configured, target);
+          const directory = `.wrangler/mesh/${target.workerName}`;
+          mkdirSync(directory, { recursive: true });
+          writeFileSync(`${directory}/vars.json`, JSON.stringify(vars), { mode: 0o600 });
+          // Seed only the existing D1 identity. Planning retains this binding
+          // rather than producing an unprovisioned database placeholder.
+          writeFileSync(`${directory}/wrangler.jsonc`, JSON.stringify({
+            name: target.workerName,
+            account_id: target.accountId,
+            d1_databases: [{
+              binding: 'HOSTED_DB',
+              database_name: target.databaseName,
+              database_id: target.databaseId,
+            }],
+          }), { mode: 0o600 });
+          JS
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json plan --json
+      - name: Deploy staging provisioner and worker image
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
+          HOSTED_SERVICE_KEYS: ${{ secrets.HOSTED_SERVICE_KEYS }}
+          MANAGED_PROVISIONER_TOKEN: ${{ secrets.MANAGED_PROVISIONER_TOKEN }}
+          WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
+          WORKOS_WEBHOOK_SECRET: ${{ secrets.WORKOS_WEBHOOK_SECRET }}
+        run: |
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo 'Missing CLOUDFLARE_DEPLOY_API_TOKEN'; exit 1; }
+          docker info > /dev/null
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json provisioner plan --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json provisioner apply --dry-run --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json provisioner apply --test-deployment --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json provisioner secrets --test-deployment --json
+      - name: Check provisioner authentication and container lifecycle
+        env:
+          MANAGED_PROVISIONER_TOKEN: ${{ secrets.MANAGED_PROVISIONER_TOKEN }}
+        run: node ../provisioner/scripts/verify-staging.mjs
+      - name: Validate, migrate and deploy staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
+          HOSTED_SERVICE_KEYS: ${{ secrets.HOSTED_SERVICE_KEYS }}
+          MANAGED_PROVISIONER_TOKEN: ${{ secrets.MANAGED_PROVISIONER_TOKEN }}
+          WORKOS_API_KEY: ${{ secrets.WORKOS_API_KEY }}
+          WORKOS_WEBHOOK_SECRET: ${{ secrets.WORKOS_WEBHOOK_SECRET }}
+        run: |
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo 'Missing CLOUDFLARE_DEPLOY_API_TOKEN'; exit 1; }
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json apply --dry-run --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json migrate --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json apply --test-deployment --json
+      - name: Verify deployed staging identity
+        run: |
+          curl --fail --silent --show-error --retry 3 \
+            https://anvil-sync-hosted-staging.still-glitter-7d20.workers.dev/.well-known/anvil-backend \
+            > .wrangler/staging-descriptor.json
+          jq -e '
+            .descriptorVersion == 1 and
+            (.protocols | index("anvil-backend/1")) and
+            (.profiles | index("sync/1")) and
+            (.profiles | index("mesh/1")) and
+            (.authModes | index("workos-device")) and
+            .auth.publicClientId == "client_01M2XPX4PF98H2P7HCNRBZATTE"
+          ' .wrangler/staging-descriptor.json
+      - name: Record staging deployment
+        run: |
+          printf 'Backend candidate: `%s`\n\nCheckout remains disabled. Signed-in and physical-device acceptance is tracked in [ANV-11](https://linear.app/anvil-stack/issue/ANV-11/run-hosted-sync-staging-acceptance-for-pr-91).\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

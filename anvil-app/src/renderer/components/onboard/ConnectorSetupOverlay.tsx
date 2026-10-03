@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   BrainCircuit,
   CheckCircle,
@@ -19,22 +19,50 @@ import type {
   LlmGatewayStatus,
 } from '../../../shared/types';
 import { OnboardingPreviewBar } from './OnboardingPreviewBar';
+import { SettingsLink } from '../shared/SettingsLink';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
 import { CodexRuntimeSetup } from '../settings/CodexRuntimeSetup';
+import { SyncMeshSetupCard } from './SyncMeshSetupCard';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 
+type ConnectorSection = 'llm' | 'sync' | 'workitems' | 'git' | 'confluence';
+
 interface ConnectorSetupOverlayProps {
   onContinue: () => void;
+  /** O3: Back button, rendered beside Continue when provided. */
+  onBack?: () => void;
   preview?: boolean;
   onExitPreview?: () => void;
+  /**
+   * O1/O2: limit which connector cards render. The Welcome step passes
+   * `['llm']` — Work Items, Git provider and Confluence are deferred to
+   * point-of-need prompts and Settings.
+   */
+  sections?: ConnectorSection[];
+  /** Two-step progress label, e.g. "Step 2 of 2" (O4). */
+  stepLabel?: string;
+  /** Header overrides (defaults keep the standalone overlay copy). */
+  title?: string;
+  subtitle?: ReactNode;
 }
 
 export function ConnectorSetupOverlay({
   onContinue,
+  onBack,
   preview = false,
   onExitPreview,
+  sections,
+  stepLabel,
+  title = 'Connect Your Tools',
+  subtitle = (
+    <>
+      Configure each service or skip to{' '}
+      <SettingsLink to="providers#agent-providers">set up later in Settings</SettingsLink>.
+    </>
+  ),
 }: ConnectorSetupOverlayProps) {
+  const showSection = (id: ConnectorSection) => !sections || sections.includes(id);
   const brand = useBrand();
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
@@ -285,507 +313,526 @@ export function ConnectorSetupOverlay({
   };
 
   return (
-    <div className="flex h-screen items-center justify-center overflow-auto bg-bg-primary">
+    <div className="flex h-screen flex-col overflow-y-auto bg-bg-primary">
       <div className="titlebar-drag fixed inset-x-0 top-0 h-10" />
       {preview && onExitPreview && <OnboardingPreviewBar onExit={onExitPreview} />}
-      <div className={`w-full max-w-lg space-y-4 px-6 ${preview ? 'py-24' : 'py-16'}`}>
+      <div
+        className={`mx-auto my-auto w-full max-w-lg shrink-0 space-y-4 px-6 ${preview ? 'py-24' : 'py-16'}`}
+      >
         <div className="text-center">
           <h1 className="text-2xl font-bold text-accent">{brand.appName}</h1>
-          <h2 className="mt-2 text-lg font-semibold text-text-primary">Connect Your Tools</h2>
-          <p className="mt-1 text-sm text-text-secondary">
-            Configure each service or skip to set up later in Settings.
-          </p>
+          <h2 className="mt-2 text-lg font-semibold text-text-primary">{title}</h2>
+          {stepLabel && (
+            <p className="mt-1 text-eyebrow font-semibold uppercase tracking-wider text-text-tertiary">
+              {stepLabel}
+            </p>
+          )}
+          <p className="mt-1 text-sm text-text-secondary">{subtitle}</p>
         </div>
 
         <div className="space-y-2">
           {/* LLM Provider */}
-          <ConnectorCard
-            id="llm"
-            icon={BrainCircuit}
-            title="Primary agent"
-            description="Choose who starts new chats and app-level AI work"
-            expanded={expandedCard === 'llm'}
-            status={llmStatus}
-            isConfigured={configured.has('llm')}
-            onToggle={() => toggle('llm')}
-            onSkip={() => {
-              setExpandedCard(null);
-              markConfigured('llm');
-            }}
-          >
-            <div className="space-y-3">
-              <p className="text-xs text-text-secondary">
-                Choose the primary agent for new chats. You can activate more providers in Settings.
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <ProviderButton
-                  label="Codex CLI"
-                  active={llmProvider === 'codex'}
-                  onClick={() => selectLlmProvider('codex')}
-                />
-                <ProviderButton
-                  label="Cursor CLI"
-                  active={llmProvider === 'cursor'}
-                  onClick={() => selectLlmProvider('cursor')}
-                />
-                <ProviderButton
-                  label="Devin CLI"
-                  active={llmProvider === 'devin'}
-                  onClick={() => selectLlmProvider('devin')}
-                />
-                <ProviderButton
-                  label="OpenAI"
-                  active={llmProvider === 'openai'}
-                  onClick={() => selectLlmProvider('openai')}
-                />
-                <ProviderButton
-                  label="Azure Foundry"
-                  active={llmProvider === 'azure'}
-                  onClick={() => selectLlmProvider('azure')}
-                />
-                <ProviderButton
-                  label="LLMGateway"
-                  active={llmProvider === 'llmgateway'}
-                  onClick={() => selectLlmProvider('llmgateway')}
-                />
-              </div>
-              {llmProvider === 'codex' && (
-                <p className="text-xs text-text-tertiary">
-                  Uses your local Codex CLI — no API key needed.
+          {showSection('llm') && (
+            <ConnectorCard
+              id="llm"
+              icon={BrainCircuit}
+              title="Primary agent"
+              description="Choose who starts new chats and app-level AI work"
+              expanded={expandedCard === 'llm'}
+              status={llmStatus}
+              isConfigured={configured.has('llm')}
+              onToggle={() => toggle('llm')}
+              onSkip={() => {
+                setExpandedCard(null);
+                markConfigured('llm');
+              }}
+            >
+              <div className="space-y-3">
+                <p className="text-xs text-text-secondary">
+                  Choose the primary agent for new chats. You can activate more providers in
+                  Settings.
                 </p>
-              )}
-              {llmProvider === 'cursor' && (
-                <p className="text-xs text-text-tertiary">
-                  Uses your local Cursor CLI login. Run <code>cursor-agent login</code> first.
-                </p>
-              )}
-              {llmProvider === 'devin' && (
-                <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <ProviderButton
+                    label="Codex CLI"
+                    active={llmProvider === 'codex'}
+                    onClick={() => selectLlmProvider('codex')}
+                  />
+                  <ProviderButton
+                    label="Cursor CLI"
+                    active={llmProvider === 'cursor'}
+                    onClick={() => selectLlmProvider('cursor')}
+                  />
+                  <ProviderButton
+                    label="Devin CLI"
+                    active={llmProvider === 'devin'}
+                    onClick={() => selectLlmProvider('devin')}
+                  />
+                  <ProviderButton
+                    label="OpenAI"
+                    active={llmProvider === 'openai'}
+                    onClick={() => selectLlmProvider('openai')}
+                  />
+                  <ProviderButton
+                    label="Azure Foundry"
+                    active={llmProvider === 'azure'}
+                    onClick={() => selectLlmProvider('azure')}
+                  />
+                  <ProviderButton
+                    label="LLMGateway"
+                    active={llmProvider === 'llmgateway'}
+                    onClick={() => selectLlmProvider('llmgateway')}
+                  />
+                </div>
+                {llmProvider === 'codex' && (
                   <p className="text-xs text-text-tertiary">
-                    Devin runs locally through the installed Devin CLI and your Devin account
-                    sign-in — no API key needed.
+                    Uses your local Codex CLI — no API key needed.
                   </p>
-                  {!devinStatus ? (
-                    <p className="flex items-center gap-2 text-xs text-text-secondary">
-                      <Loader2 size={12} className="animate-spin" /> Checking for the Devin CLI…
-                    </p>
-                  ) : !devinStatus.installed ? (
-                    <div className="space-y-2">
-                      <p className="text-xs text-warning">
-                        Devin CLI was not detected on this machine.
-                      </p>
-                      <p className="text-xs text-text-tertiary">
-                        Install it from <code>devin.ai/cli</code>, then check again.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => void refreshDevinStatus()}
-                        className="rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-tertiary"
-                      >
-                        Check again
-                      </button>
-                    </div>
-                  ) : devinStatus.authenticated === false ? (
-                    <div className="space-y-2">
-                      <p className="text-xs text-text-secondary">
-                        {devinStatus.version ?? 'Devin CLI installed'} — sign in to continue.
-                      </p>
-                      <button
-                        type="button"
-                        disabled={preview || devinSigningIn}
-                        onClick={startDevinLogin}
-                        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
-                      >
-                        {devinSigningIn && <Loader2 size={13} className="animate-spin" />}
-                        Sign in with Devin
-                      </button>
-                      <p className="text-xs text-text-tertiary">
-                        Opens a browser login, same as running <code>devin auth login</code>.
-                      </p>
-                    </div>
-                  ) : (
-                    <p className="flex items-center gap-1.5 text-xs text-success">
-                      <CheckCircle size={12} />
-                      {devinStatus.version ?? 'Devin CLI installed'} · {devinStatus.models.length}{' '}
-                      models detected
-                      {devinStatus.defaultModel ? ` · default ${devinStatus.defaultModel}` : ''}
-                    </p>
-                  )}
-                  {devinStatus?.error && <p className="text-xs text-error">{devinStatus.error}</p>}
-                </div>
-              )}
-              {llmProvider === 'openai' && (
-                <>
-                  <Field
-                    label="API Key"
-                    value={settings.openaiApiKey ?? ''}
-                    onChange={(v) => update('openaiApiKey', v)}
-                    type="password"
-                    placeholder="sk-..."
-                  />
-                  <Field
-                    label="Model"
-                    value={settings.openaiModel ?? 'gpt-5.6-sol'}
-                    onChange={(v) => update('openaiModel', v)}
-                    placeholder="gpt-5.6-sol"
-                  />
-                </>
-              )}
-              {llmProvider === 'llmgateway' && (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    <ProviderButton
-                      label="DevPass"
-                      active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
-                      disabled={llmGatewayConnecting}
-                      onClick={() => selectGatewayBillingMode('devpass')}
-                    />
-                    <ProviderButton
-                      label="Pay as you go"
-                      active={settings.llmGatewayBillingMode === 'payg'}
-                      disabled={llmGatewayConnecting}
-                      onClick={() => selectGatewayBillingMode('payg')}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    disabled={preview || llmGatewayConnecting}
-                    onClick={() => void connectLlmGateway()}
-                    className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
-                  >
-                    {llmGatewayConnecting && <Loader2 size={13} className="animate-spin" />}
-                    {settings.llmGatewayApiKey && !settings.llmGatewayApiKey.startsWith('••')
-                      ? 'Verify API key'
-                      : 'Connect in browser'}
-                  </button>
-                  <CodexRuntimeSetup compact disabled={preview} />
-                  <Field
-                    label="API key (alternative)"
-                    value={settings.llmGatewayApiKey ?? ''}
-                    onChange={(value) => update('llmGatewayApiKey', value)}
-                    type="password"
-                    placeholder="llmgtwy_..."
-                  />
-                  <div className="space-y-1">
-                    <label
-                      htmlFor="onboarding-llmgateway-model"
-                      className="block text-xs text-text-secondary"
-                    >
-                      Model
-                    </label>
-                    <select
-                      id="onboarding-llmgateway-model"
-                      value={settings.openaiModel ?? ''}
-                      onChange={(event) => update('openaiModel', event.target.value)}
-                      disabled={preview || !llmGatewayStatus?.models.length}
-                      className="w-full rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
-                    >
-                      {!llmGatewayStatus?.models.length && (
-                        <option value="">Connect to load available models</option>
-                      )}
-                      {(llmGatewayStatus?.models ?? []).map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.displayName} · {model.id}
-                        </option>
-                      ))}
-                    </select>
+                )}
+                {llmProvider === 'cursor' && (
+                  <p className="text-xs text-text-tertiary">
+                    Uses your local Cursor CLI login. Run <code>cursor-agent login</code> first.
+                  </p>
+                )}
+                {llmProvider === 'devin' && (
+                  <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
                     <p className="text-xs text-text-tertiary">
-                      Choose a model from the validated LLMGateway catalog.
+                      Devin runs locally through the installed Devin CLI and your Devin account
+                      sign-in — no API key needed.
                     </p>
+                    {!devinStatus ? (
+                      <p className="flex items-center gap-2 text-xs text-text-secondary">
+                        <Loader2 size={12} className="animate-spin" /> Checking for the Devin CLI…
+                      </p>
+                    ) : !devinStatus.installed ? (
+                      <div className="space-y-2">
+                        <p className="text-xs text-warning">
+                          Devin CLI was not detected on this machine.
+                        </p>
+                        <p className="text-xs text-text-tertiary">
+                          Install it from <code>devin.ai/cli</code>, then check again.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => void refreshDevinStatus()}
+                          className="rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-tertiary"
+                        >
+                          Check again
+                        </button>
+                      </div>
+                    ) : devinStatus.authenticated === false ? (
+                      <div className="space-y-2">
+                        <p className="text-xs text-text-secondary">
+                          {devinStatus.version ?? 'Devin CLI installed'} — sign in to continue.
+                        </p>
+                        <button
+                          type="button"
+                          disabled={preview || devinSigningIn}
+                          onClick={startDevinLogin}
+                          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-accent-foreground disabled:opacity-50"
+                        >
+                          {devinSigningIn && <Loader2 size={13} className="animate-spin" />}
+                          Sign in with Devin
+                        </button>
+                        <p className="text-xs text-text-tertiary">
+                          Opens a browser login, same as running <code>devin auth login</code>.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="flex items-center gap-1.5 text-xs text-success">
+                        <CheckCircle size={12} />
+                        {devinStatus.version ?? 'Devin CLI installed'} · {devinStatus.models.length}{' '}
+                        models detected
+                        {devinStatus.defaultModel ? ` · default ${devinStatus.defaultModel}` : ''}
+                      </p>
+                    )}
+                    {devinStatus?.error && (
+                      <p className="text-xs text-error">{devinStatus.error}</p>
+                    )}
                   </div>
-                </div>
-              )}
-              {llmProvider === 'azure' && (
-                <div className="rounded-md border border-border bg-bg-primary p-3 space-y-2">
-                  <p className="text-xs text-text-primary">
-                    Configure via{' '}
-                    <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-text-primary">
-                      ~/.codex/config.toml
-                    </code>
-                  </p>
-                  <div className="rounded bg-bg-tertiary p-2 font-mono text-xs leading-relaxed space-y-0.5 overflow-x-auto">
-                    <p>
-                      <span className="text-text-secondary">model_provider</span>{' '}
-                      <span className="text-text-tertiary">=</span>{' '}
-                      <span className="text-success">"azure"</span>
-                    </p>
-                    <p />
-                    <p>
-                      <span className="text-text-tertiary">[model_providers.azure]</span>
-                    </p>
-                    <p>
-                      <span className="text-text-secondary">base_url</span>{' '}
-                      <span className="text-text-tertiary">=</span>{' '}
-                      <span className="text-success">
-                        "https://your-resource.cognitiveservices.azure.com/openai/v1"
-                      </span>
-                    </p>
-                    <p>
-                      <span className="text-text-secondary">env_key</span>{' '}
-                      <span className="text-text-tertiary">=</span>{' '}
-                      <span className="text-success">"AZURE_OPENAI_API_KEY"</span>
-                    </p>
-                    <p>
-                      <span className="text-text-secondary">wire_api</span>{' '}
-                      <span className="text-text-tertiary">=</span>{' '}
-                      <span className="text-success">"responses"</span>
-                    </p>
+                )}
+                {llmProvider === 'openai' && (
+                  <>
+                    <Field
+                      label="API Key"
+                      value={settings.openaiApiKey ?? ''}
+                      onChange={(v) => update('openaiApiKey', v)}
+                      type="password"
+                      placeholder="sk-..."
+                    />
+                    <Field
+                      label="Model"
+                      value={settings.openaiModel ?? 'gpt-5.6-sol'}
+                      onChange={(v) => update('openaiModel', v)}
+                      placeholder="gpt-5.6-sol"
+                    />
+                  </>
+                )}
+                {llmProvider === 'llmgateway' && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <ProviderButton
+                        label="DevPass"
+                        active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
+                        disabled={llmGatewayConnecting}
+                        onClick={() => selectGatewayBillingMode('devpass')}
+                      />
+                      <ProviderButton
+                        label="Pay as you go"
+                        active={settings.llmGatewayBillingMode === 'payg'}
+                        disabled={llmGatewayConnecting}
+                        onClick={() => selectGatewayBillingMode('payg')}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      disabled={preview || llmGatewayConnecting}
+                      onClick={() => void connectLlmGateway()}
+                      className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-accent-foreground disabled:opacity-50"
+                    >
+                      {llmGatewayConnecting && <Loader2 size={13} className="animate-spin" />}
+                      {settings.llmGatewayApiKey && !settings.llmGatewayApiKey.startsWith('••')
+                        ? 'Verify API key'
+                        : 'Connect in browser'}
+                    </button>
+                    <CodexRuntimeSetup compact disabled={preview} />
+                    <Field
+                      label="API key (alternative)"
+                      value={settings.llmGatewayApiKey ?? ''}
+                      onChange={(value) => update('llmGatewayApiKey', value)}
+                      type="password"
+                      placeholder="llmgtwy_..."
+                    />
+                    <div className="space-y-1">
+                      <label
+                        htmlFor="onboarding-llmgateway-model"
+                        className="block text-xs text-text-secondary"
+                      >
+                        Model
+                      </label>
+                      <select
+                        id="onboarding-llmgateway-model"
+                        value={settings.openaiModel ?? ''}
+                        onChange={(event) => update('openaiModel', event.target.value)}
+                        disabled={preview || !llmGatewayStatus?.models.length}
+                        className="w-full rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
+                      >
+                        {!llmGatewayStatus?.models.length && (
+                          <option value="">Connect to load available models</option>
+                        )}
+                        {(llmGatewayStatus?.models ?? []).map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.displayName} · {model.id}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-text-tertiary">
+                        Choose a model from the validated LLMGateway catalog.
+                      </p>
+                    </div>
                   </div>
-                  <a
-                    href="https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/codex?tabs=npm"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-block text-xs text-info hover:underline"
-                  >
-                    Full setup guide ↗
-                  </a>
+                )}
+                {llmProvider === 'azure' && (
+                  <div className="rounded-md border border-border bg-bg-primary p-3 space-y-2">
+                    <p className="text-xs text-text-primary">
+                      Configure via{' '}
+                      <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-text-primary">
+                        ~/.codex/config.toml
+                      </code>
+                    </p>
+                    <div className="rounded bg-bg-tertiary p-2 font-mono text-xs leading-relaxed space-y-0.5 overflow-x-auto">
+                      <p>
+                        <span className="text-text-secondary">model_provider</span>{' '}
+                        <span className="text-text-tertiary">=</span>{' '}
+                        <span className="text-success">"azure"</span>
+                      </p>
+                      <p />
+                      <p>
+                        <span className="text-text-tertiary">[model_providers.azure]</span>
+                      </p>
+                      <p>
+                        <span className="text-text-secondary">base_url</span>{' '}
+                        <span className="text-text-tertiary">=</span>{' '}
+                        <span className="text-success">
+                          "https://your-resource.cognitiveservices.azure.com/openai/v1"
+                        </span>
+                      </p>
+                      <p>
+                        <span className="text-text-secondary">env_key</span>{' '}
+                        <span className="text-text-tertiary">=</span>{' '}
+                        <span className="text-success">"AZURE_OPENAI_API_KEY"</span>
+                      </p>
+                      <p>
+                        <span className="text-text-secondary">wire_api</span>{' '}
+                        <span className="text-text-tertiary">=</span>{' '}
+                        <span className="text-success">"responses"</span>
+                      </p>
+                    </div>
+                    <a
+                      href="https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/codex?tabs=npm"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block text-xs text-info hover:underline"
+                    >
+                      Full setup guide ↗
+                    </a>
+                  </div>
+                )}
+                {llmProvider !== 'azure' && (
+                  <TestButton
+                    status={llmStatus}
+                    onClick={testLlm}
+                    label="Test Connection"
+                    disabled={preview}
+                  />
+                )}
+              </div>
+            </ConnectorCard>
+          )}
+
+          {/* Sync is the account and device foundation for the optional delivery tools below. */}
+          {showSection('sync') && <SyncMeshSetupCard preview={preview} />}
+
+          {/* Work Items */}
+          {showSection('workitems') && (
+            <ConnectorCard
+              id="workitems"
+              icon={ClipboardList}
+              title="Work Items"
+              description="Track tasks with ADO, Linear, or Jira"
+              expanded={expandedCard === 'workitems'}
+              status={wiStatus}
+              isConfigured={configured.has('workitems')}
+              onToggle={() => toggle('workitems')}
+              onSkip={() => {
+                setExpandedCard(null);
+                markConfigured('workitems');
+              }}
+            >
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <ProviderButton
+                    label="Azure DevOps"
+                    active={wiProvider === 'ado'}
+                    onClick={() => update('workItemProvider', 'ado')}
+                  />
+                  <ProviderButton
+                    label="Linear"
+                    active={wiProvider === 'linear'}
+                    onClick={() => update('workItemProvider', 'linear')}
+                  />
+                  <ProviderButton
+                    label="Jira"
+                    active={wiProvider === 'jira'}
+                    onClick={() => update('workItemProvider', 'jira')}
+                  />
                 </div>
-              )}
-              {llmProvider !== 'azure' && (
+                {wiProvider === 'ado' && (
+                  <>
+                    <Field
+                      label="Organisation URL"
+                      value={settings.adoOrganizationUrl ?? ''}
+                      onChange={(v) => update('adoOrganizationUrl', v)}
+                      placeholder="https://dev.azure.com/your-org"
+                    />
+                    <Field
+                      label="Project"
+                      value={settings.adoProject ?? ''}
+                      onChange={(v) => update('adoProject', v)}
+                    />
+                    <Field
+                      label="PAT"
+                      value={settings.adoPat ?? ''}
+                      onChange={(v) => update('adoPat', v)}
+                      type="password"
+                    />
+                  </>
+                )}
+                {wiProvider === 'linear' && (
+                  <>
+                    <Field
+                      label="API Key"
+                      value={settings.linearApiKey ?? ''}
+                      onChange={(v) => update('linearApiKey', v)}
+                      type="password"
+                      placeholder="lin_api_..."
+                    />
+                  </>
+                )}
+                {wiProvider === 'jira' && (
+                  <>
+                    <Field
+                      label="Host"
+                      value={settings.jiraHost ?? ''}
+                      onChange={(v) => update('jiraHost', v)}
+                      placeholder="mycompany.atlassian.net"
+                    />
+                    <Field
+                      label="Project Key"
+                      value={settings.jiraProject ?? ''}
+                      onChange={(v) => update('jiraProject', v)}
+                      placeholder="ENG"
+                    />
+                    <Field
+                      label="Email"
+                      value={settings.jiraEmail ?? ''}
+                      onChange={(v) => update('jiraEmail', v)}
+                    />
+                    <Field
+                      label="API Token"
+                      value={settings.jiraApiToken ?? ''}
+                      onChange={(v) => update('jiraApiToken', v)}
+                      type="password"
+                    />
+                  </>
+                )}
                 <TestButton
-                  status={llmStatus}
-                  onClick={testLlm}
+                  status={wiStatus}
+                  onClick={testWi}
                   label="Test Connection"
                   disabled={preview}
                 />
-              )}
-            </div>
-          </ConnectorCard>
-
-          {/* Work Items */}
-          <ConnectorCard
-            id="workitems"
-            icon={ClipboardList}
-            title="Work Items"
-            description="Track tasks with ADO, Linear, or Jira"
-            expanded={expandedCard === 'workitems'}
-            status={wiStatus}
-            isConfigured={configured.has('workitems')}
-            onToggle={() => toggle('workitems')}
-            onSkip={() => {
-              setExpandedCard(null);
-              markConfigured('workitems');
-            }}
-          >
-            <div className="space-y-3">
-              <div className="flex gap-2">
-                <ProviderButton
-                  label="Azure DevOps"
-                  active={wiProvider === 'ado'}
-                  onClick={() => update('workItemProvider', 'ado')}
-                />
-                <ProviderButton
-                  label="Linear"
-                  active={wiProvider === 'linear'}
-                  onClick={() => update('workItemProvider', 'linear')}
-                />
-                <ProviderButton
-                  label="Jira"
-                  active={wiProvider === 'jira'}
-                  onClick={() => update('workItemProvider', 'jira')}
-                />
               </div>
-              {wiProvider === 'ado' && (
-                <>
-                  <Field
-                    label="Organisation URL"
-                    value={settings.adoOrganizationUrl ?? ''}
-                    onChange={(v) => update('adoOrganizationUrl', v)}
-                    placeholder="https://dev.azure.com/your-org"
-                  />
-                  <Field
-                    label="Project"
-                    value={settings.adoProject ?? ''}
-                    onChange={(v) => update('adoProject', v)}
-                  />
-                  <Field
-                    label="PAT"
-                    value={settings.adoPat ?? ''}
-                    onChange={(v) => update('adoPat', v)}
-                    type="password"
-                  />
-                </>
-              )}
-              {wiProvider === 'linear' && (
-                <>
-                  <Field
-                    label="API Key"
-                    value={settings.linearApiKey ?? ''}
-                    onChange={(v) => update('linearApiKey', v)}
-                    type="password"
-                    placeholder="lin_api_..."
-                  />
-                </>
-              )}
-              {wiProvider === 'jira' && (
-                <>
-                  <Field
-                    label="Host"
-                    value={settings.jiraHost ?? ''}
-                    onChange={(v) => update('jiraHost', v)}
-                    placeholder="mycompany.atlassian.net"
-                  />
-                  <Field
-                    label="Project Key"
-                    value={settings.jiraProject ?? ''}
-                    onChange={(v) => update('jiraProject', v)}
-                    placeholder="ENG"
-                  />
-                  <Field
-                    label="Email"
-                    value={settings.jiraEmail ?? ''}
-                    onChange={(v) => update('jiraEmail', v)}
-                  />
-                  <Field
-                    label="API Token"
-                    value={settings.jiraApiToken ?? ''}
-                    onChange={(v) => update('jiraApiToken', v)}
-                    type="password"
-                  />
-                </>
-              )}
-              <TestButton
-                status={wiStatus}
-                onClick={testWi}
-                label="Test Connection"
-                disabled={preview}
-              />
-            </div>
-          </ConnectorCard>
+            </ConnectorCard>
+          )}
 
           {/* Git Provider */}
-          <ConnectorCard
-            id="git"
-            icon={GitFork}
-            title="Git Provider"
-            description="Browse and clone remote repos"
-            expanded={expandedCard === 'git'}
-            status={gitStatus}
-            isConfigured={configured.has('git')}
-            onToggle={() => toggle('git')}
-            onSkip={() => {
-              setExpandedCard(null);
-              markConfigured('git');
-            }}
-          >
-            <div className="space-y-3">
-              <div className="flex gap-2">
-                <ProviderButton
-                  label="GitHub"
-                  active={gitProvider === 'github'}
-                  onClick={() => setGitProvider('github')}
-                />
-                <ProviderButton
-                  label="Azure DevOps"
-                  active={gitProvider === 'ado'}
-                  onClick={() => setGitProvider('ado')}
-                />
-              </div>
-              {gitProvider === 'github' && (
-                <div className="rounded-md border border-border bg-bg-primary p-3">
-                  {ghUsername ? (
-                    <div className="flex items-center gap-2">
-                      <CheckCircle size={14} className="text-success" />
-                      <span className="text-xs text-text-primary">
-                        Authenticated as{' '}
-                        <span className="font-medium text-accent">{ghUsername}</span>
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="space-y-1.5">
-                      <p className="text-xs text-text-secondary">
-                        GitHub uses the{' '}
-                        <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-accent">
-                          gh
-                        </code>{' '}
-                        CLI for authentication.
-                      </p>
-                      {ghError && (
-                        <div className="flex items-center gap-1.5 text-xs text-warning">
-                          <XCircle size={12} />
-                          {ghError}
-                        </div>
-                      )}
-                      <p className="text-[10px] text-text-tertiary">
-                        Run{' '}
-                        <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-accent">
-                          gh auth login
-                        </code>{' '}
-                        in your terminal, then click Save.
-                      </p>
-                    </div>
-                  )}
+          {showSection('git') && (
+            <ConnectorCard
+              id="git"
+              icon={GitFork}
+              title="Git Provider"
+              description="Browse and clone remote repos"
+              expanded={expandedCard === 'git'}
+              status={gitStatus}
+              isConfigured={configured.has('git')}
+              onToggle={() => toggle('git')}
+              onSkip={() => {
+                setExpandedCard(null);
+                markConfigured('git');
+              }}
+            >
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <ProviderButton
+                    label="GitHub"
+                    active={gitProvider === 'github'}
+                    onClick={() => setGitProvider('github')}
+                  />
+                  <ProviderButton
+                    label="Azure DevOps"
+                    active={gitProvider === 'ado'}
+                    onClick={() => setGitProvider('ado')}
+                  />
                 </div>
-              )}
-              {gitProvider === 'ado' && (
-                <>
-                  <Field
-                    label="Organisation URL"
-                    value={settings.adoOrganizationUrl ?? ''}
-                    onChange={(v) => update('adoOrganizationUrl', v)}
-                    placeholder="https://dev.azure.com/your-org"
-                  />
-                  <Field
-                    label="Project"
-                    value={settings.adoProject ?? ''}
-                    onChange={(v) => update('adoProject', v)}
-                  />
-                  <Field
-                    label="PAT"
-                    value={settings.adoPat ?? ''}
-                    onChange={(v) => update('adoPat', v)}
-                    type="password"
-                  />
-                  <p className="text-xs text-text-tertiary">
-                    Uses the same ADO credentials as Work Items if already configured.
-                  </p>
-                </>
-              )}
-              <TestButton status={gitStatus} onClick={saveGit} label="Save" disabled={preview} />
-            </div>
-          </ConnectorCard>
+                {gitProvider === 'github' && (
+                  <div className="rounded-md border border-border bg-bg-primary p-3">
+                    {ghUsername ? (
+                      <div className="flex items-center gap-2">
+                        <CheckCircle size={14} className="text-success" />
+                        <span className="text-xs text-text-primary">
+                          Authenticated as{' '}
+                          <span className="font-medium text-accent">{ghUsername}</span>
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <p className="text-xs text-text-secondary">
+                          GitHub uses the{' '}
+                          <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-accent">
+                            gh
+                          </code>{' '}
+                          CLI for authentication.
+                        </p>
+                        {ghError && (
+                          <div className="flex items-center gap-1.5 text-xs text-warning">
+                            <XCircle size={12} />
+                            {ghError}
+                          </div>
+                        )}
+                        <p className="text-xs text-text-tertiary">
+                          Run{' '}
+                          <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-accent">
+                            gh auth login
+                          </code>{' '}
+                          in your terminal, then click Save.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {gitProvider === 'ado' && (
+                  <>
+                    <Field
+                      label="Organisation URL"
+                      value={settings.adoOrganizationUrl ?? ''}
+                      onChange={(v) => update('adoOrganizationUrl', v)}
+                      placeholder="https://dev.azure.com/your-org"
+                    />
+                    <Field
+                      label="Project"
+                      value={settings.adoProject ?? ''}
+                      onChange={(v) => update('adoProject', v)}
+                    />
+                    <Field
+                      label="PAT"
+                      value={settings.adoPat ?? ''}
+                      onChange={(v) => update('adoPat', v)}
+                      type="password"
+                    />
+                    <p className="text-xs text-text-tertiary">
+                      Uses the same ADO credentials as Work Items if already configured.
+                    </p>
+                  </>
+                )}
+                <TestButton status={gitStatus} onClick={saveGit} label="Save" disabled={preview} />
+              </div>
+            </ConnectorCard>
+          )}
 
           {/* Confluence */}
-          <ConnectorCard
-            id="confluence"
-            icon={FileText}
-            title="Confluence"
-            description="Search team docs and knowledge base"
-            expanded={expandedCard === 'confluence'}
-            status={confluenceStatus}
-            isConfigured={configured.has('confluence')}
-            onToggle={() => toggle('confluence')}
-            onSkip={() => {
-              setExpandedCard(null);
-              markConfigured('confluence');
-            }}
-          >
-            <div className="space-y-3">
-              <Field
-                label="Base URL"
-                value={settings.confluenceBaseUrl ?? ''}
-                onChange={(v) => update('confluenceBaseUrl', v)}
-                placeholder="https://confluence.internal.company.com"
-              />
-              <Field
-                label="Space Key"
-                value={settings.confluenceSpaceKey ?? ''}
-                onChange={(v) => update('confluenceSpaceKey', v)}
-              />
-              <Field
-                label="PAT"
-                value={settings.confluencePat ?? ''}
-                onChange={(v) => update('confluencePat', v)}
-                type="password"
-              />
-              <TestButton
-                status={confluenceStatus}
-                onClick={testConfluence}
-                label="Test Connection"
-                disabled={preview}
-              />
-            </div>
-          </ConnectorCard>
+          {showSection('confluence') && (
+            <ConnectorCard
+              id="confluence"
+              icon={FileText}
+              title="Confluence"
+              description="Search team docs and knowledge base"
+              expanded={expandedCard === 'confluence'}
+              status={confluenceStatus}
+              isConfigured={configured.has('confluence')}
+              onToggle={() => toggle('confluence')}
+              onSkip={() => {
+                setExpandedCard(null);
+                markConfigured('confluence');
+              }}
+            >
+              <div className="space-y-3">
+                <Field
+                  label="Base URL"
+                  value={settings.confluenceBaseUrl ?? ''}
+                  onChange={(v) => update('confluenceBaseUrl', v)}
+                  placeholder="https://confluence.internal.company.com"
+                />
+                <Field
+                  label="Space Key"
+                  value={settings.confluenceSpaceKey ?? ''}
+                  onChange={(v) => update('confluenceSpaceKey', v)}
+                />
+                <Field
+                  label="PAT"
+                  value={settings.confluencePat ?? ''}
+                  onChange={(v) => update('confluencePat', v)}
+                  type="password"
+                />
+                <TestButton
+                  status={confluenceStatus}
+                  onClick={testConfluence}
+                  label="Test Connection"
+                  disabled={preview}
+                />
+              </div>
+            </ConnectorCard>
+          )}
         </div>
 
         {testError && (
@@ -794,14 +841,23 @@ export function ConnectorSetupOverlay({
           </div>
         )}
 
-        <div className="text-center">
+        <div className="flex items-center justify-center gap-3">
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="rounded-lg border border-border px-6 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              Back
+            </button>
+          )}
           <button
             onClick={async () => {
               // Persist any settings the user entered before moving on
               await saveSettings();
               onContinue();
             }}
-            className="rounded-lg bg-accent px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent/90"
+            className="rounded-lg bg-accent px-8 py-2.5 text-sm font-semibold text-accent-foreground transition-colors hover:bg-accent/90"
           >
             Continue
           </button>
@@ -860,7 +916,7 @@ function ConnectorCard({
             <span className="text-sm font-semibold text-text-primary">{title}</span>
             {isConfigured && status === 'ok' && <CheckCircle size={14} className="text-success" />}
             {isConfigured && status !== 'ok' && status !== 'error' && (
-              <span className="text-[10px] text-text-tertiary">skipped</span>
+              <span className="text-xs text-text-tertiary">skipped</span>
             )}
           </div>
           <span className="text-xs text-text-tertiary">{description}</span>

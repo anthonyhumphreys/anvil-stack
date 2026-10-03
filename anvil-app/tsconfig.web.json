@@ -16,5 +16,13 @@
     "sourceMap": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*"]
+  "include": [
+    "src/renderer/**/*",
+    "src/shared/**/*",
+    "cloud/contract/**/*.ts",
+    "cloud/contract/**/*.json",
+    "cloud/provisioner/src/bootstrap.ts",
+    "cloud/provisioner/src/lifecycle.ts",
+    "mobile/lib/home-summary.ts"
+  ]
 }

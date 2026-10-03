@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ArrowRight, ClipboardList, FileWarning, Send, Trash2 } from 'lucide-react';
+import { ConfirmDialog } from '../ui';
 
 type ItsmRecordType = 'incident' | 'request' | 'problem' | 'change' | 'service';
 
@@ -118,8 +119,9 @@ export function ItsmWorkbench({ workspaceId, onPrompt }: ItsmWorkbenchProps) {
     setContext((current) => ({ ...current, [field]: value }));
   };
 
+  const [confirmClear, setConfirmClear] = useState(false);
+
   const clearContext = () => {
-    if (!window.confirm('Clear the saved ITSM context for this workspace?')) return;
     try {
       window.localStorage.removeItem(storageKey);
     } catch {
@@ -234,7 +236,7 @@ export function ItsmWorkbench({ workspaceId, onPrompt }: ItsmWorkbenchProps) {
       <div className="flex items-center justify-between gap-2 border-t border-border/60 px-3 py-2.5">
         <button
           type="button"
-          onClick={clearContext}
+          onClick={() => setConfirmClear(true)}
           className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-text-tertiary transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/40"
         >
           <Trash2 size={12} />
@@ -251,12 +253,25 @@ export function ItsmWorkbench({ workspaceId, onPrompt }: ItsmWorkbenchProps) {
               ),
             )
           }
-          className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           <Send size={12} />
           Review context
         </button>
       </div>
+
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear the saved ITSM context?"
+        description="This removes the locally saved context for this workspace. You can fill it in again afterwards."
+        confirmLabel="Clear context"
+        tone="danger"
+        onConfirm={() => {
+          setConfirmClear(false);
+          clearContext();
+        }}
+        onCancel={() => setConfirmClear(false)}
+      />
     </div>
   );
 }

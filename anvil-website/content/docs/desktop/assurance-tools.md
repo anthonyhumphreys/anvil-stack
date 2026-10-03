@@ -3,9 +3,9 @@ title: Assurance tools
 navTitle: Assurance tools
 description: Code review, security audits, dynamic pentests, dependency checks, database analysis, and compliance drafts in Anvil Desktop.
 product: Anvil Desktop
-section: Assurance
-journey: reference
-order: 118
+section: Concepts
+journey: learn
+order: 250
 ---
 
 # Assurance tools

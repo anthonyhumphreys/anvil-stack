@@ -1,7 +1,15 @@
 import { writeGatewayCodexCatalog } from './llm-gateway-runtime.service.js';
 import { previewBuild } from '../../shared/preview-build.js';
 import { app } from 'electron';
-import { getWorkflowTemplate, startWorkflowRun, waitForWorkflowRun } from './workflow.service.js';
+import {
+  buildCodexWorkflowArgs,
+  getWorkflowTemplate,
+  startWorkflowRun,
+  waitForWorkflowRun,
+} from './workflow.service.js';
+import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
+import { providerSpawnEnv } from './agent-spawn-env.js';
+import { acpProviderLabel, buildAcpPrintInvocation } from './acp-print-cli.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,6 +23,7 @@ import type {
   AutomationTriageItem,
   AutomationRunWorktree,
   CodexEvent,
+  CodexMode,
   WatchtowerEvent,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
@@ -59,7 +68,6 @@ import { addWorktree, getFullStatus, removeWorktree } from './git.service.js';
 import { notifyIfUnfocused } from './notification.service.js';
 import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
-import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import {
   buildCodexProcessEnvironment,
@@ -459,14 +467,31 @@ async function runCodexAutomation(
   }
 
   const cwd = commonParentDir(worktrees.map((worktree) => worktree.path));
-  const env = await buildCodexProcessEnvironment(settings.llmProvider, settings);
+  const provider = settings.llmProvider;
 
-  const args =
-    settings.llmProvider === 'llmgateway' ? getLlmGatewayCodexConfigArgs() : ['app-server'];
-  const executable = settings.llmProvider === 'llmgateway' ? await resolveCodexRuntime() : 'codex';
+  // H6: run the configured provider, never a hard-coded Codex. ACP providers
+  // (Cursor/Devin) run a one-shot print-mode invocation; Codex-family
+  // providers spawn `codex app-server` with their provider-specific args.
+  if (isAcpAgentProvider(provider)) {
+    return runAcpPrintAutomation({
+      runId,
+      provider,
+      cwd,
+      personaId,
+      systemPrompt,
+      prompt,
+      model: settings.openaiModel,
+      accessMode: settings.codexMode ?? 'on-request',
+    });
+  }
+
+  const env = await buildCodexProcessEnvironment(provider, settings);
+
+  const args = buildCodexWorkflowArgs(provider);
+  const executable = provider === 'llmgateway' ? await resolveCodexRuntime() : 'codex';
   const model = settings.openaiModel;
   const gatewayConfig =
-    settings.llmProvider === 'llmgateway'
+    provider === 'llmgateway'
       ? await resolveLlmGatewayModelConfig(model, settings.reasoningLevel)
       : undefined;
   if (gatewayConfig)
@@ -567,6 +592,106 @@ async function runCodexAutomation(
       approvalPolicy: personaPolicy.approvalPolicy,
       sandbox: personaPolicy.sandbox,
       model: gatewayConfig?.model ?? model,
+    });
+  });
+}
+
+/**
+ * One-shot print-mode run for ACP providers (H6). A Cursor/Devin-primary
+ * install must never spawn `codex app-server`; the ACP CLIs have no
+ * non-interactive streaming protocol, so the run captures only the final
+ * text — the run event log records that limitation explicitly. Same
+ * allowlisted spawn env and persona-clamped permission mapping as the
+ * workflow ACP path (acp-print-cli.ts).
+ */
+async function runAcpPrintAutomation(input: {
+  runId: string;
+  provider: AcpAgentProvider;
+  cwd: string;
+  personaId: string;
+  systemPrompt: string;
+  prompt: string;
+  model?: string;
+  accessMode: CodexMode;
+}): Promise<{ assistantMessage: string }> {
+  const label = acpProviderLabel(input.provider);
+  const policy = resolvePersonaCodexPolicy(input.accessMode, input.personaId);
+  const { executable, args } = buildAcpPrintInvocation({
+    provider: input.provider,
+    model: input.model,
+    mode: input.accessMode,
+    policy,
+    prompt: [input.systemPrompt, input.prompt].filter(Boolean).join('\n\n'),
+  });
+  appendAutomationRunEvent(
+    input.runId,
+    'system',
+    `${label} automation step runs in one-shot print mode; tool calls, file edits and reasoning are not captured.`,
+    { executionMode: 'acp-print', provider: input.provider },
+  );
+  const proc = spawn(executable, args, {
+    cwd: input.cwd,
+    env: providerSpawnEnv(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  return new Promise((resolve, reject) => {
+    let output = '';
+    let stderr = '';
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!proc.killed) proc.kill('SIGTERM');
+      settle(null, new Error(`${label} automation run timed out after 10 minutes.`));
+    }, 600_000);
+    const settle = (result: { assistantMessage: string } | null, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      proc.stdout?.removeAllListeners();
+      proc.stderr?.removeAllListeners();
+      proc.removeAllListeners();
+      if (proc.pid && !proc.killed) {
+        try {
+          proc.kill('SIGTERM');
+        } catch {
+          /* already exited */
+        }
+      }
+      if (error) reject(error);
+      else if (result) resolve(result);
+    };
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+      const text = chunk.toString().trim();
+      if (text) appendAutomationRunEvent(input.runId, 'system', text);
+    });
+    proc.on('error', (error) => {
+      settle(null, new Error(`Failed to start ${label} automation run: ${error.message}`));
+    });
+    proc.on('exit', (code, signal) => {
+      if (code === 0) {
+        const assistantMessage = output.trim();
+        if (!assistantMessage) {
+          settle(
+            null,
+            new Error(stderr.trim() || `${label} returned no output for this automation run.`),
+          );
+          return;
+        }
+        settle({ assistantMessage });
+        return;
+      }
+      settle(
+        null,
+        new Error(
+          stderr.trim() ||
+            `${label} automation run exited before completion (code=${code}, signal=${signal}).`,
+        ),
+      );
     });
   });
 }
@@ -780,6 +905,12 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
         repoIds: automation.repoIds,
         kickoff: automation.prompt,
         sourceAutomationRunId: run.id,
+        trigger: {
+          kind: run.triggerContext?.type ?? automation.watchEvent ?? run.trigger,
+          ...(typeof run.triggerContext?.metadata?.headSha === 'string'
+            ? { headSha: run.triggerContext.metadata.headSha }
+            : {}),
+        },
         executionPaths: preparedWorktrees.map((tree) => ({ id: tree.repoId, path: tree.path })),
       });
       appendAutomationRunEvent(run.id, 'system', `Workflow launched: ${workflow.templateName}`, {

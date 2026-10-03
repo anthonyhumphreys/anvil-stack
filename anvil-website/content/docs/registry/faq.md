@@ -3,9 +3,9 @@ title: Frequently asked questions
 navTitle: FAQ
 description: Quick answers about policy decisions, false positives, private packages, CI behavior, and performance.
 product: Anvil Registry
-section: Getting started
-journey: build
-order: 4
+section: Reference
+journey: reference
+order: 160
 ---
 
 # Frequently asked questions

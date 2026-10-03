@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowRight, Bot, GitFork, Plus, Trash2, UserCheck } from 'lucide-react';
 import type {
   AgentProvider,
@@ -11,11 +11,18 @@ import type {
   WorkflowNode,
   WorkflowOrchestration,
   WorkflowRun,
+  WorkflowTargetPolicy,
 } from '../../../shared/types';
+import type {
+  CloudEnvironmentProviderConnection,
+  CloudEnvironmentRecord,
+  SyncDevice,
+} from '../../../shared/sync-runtime';
 import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { orchestrationConfig, TEAM_STRATEGIES } from '../../../shared/workflow-orchestration';
 import { buildProviderModelOptions } from '../../utils/chat-model-options';
+import { SettingsLink } from '../shared/SettingsLink';
 
 const fieldClass = 'workflow-input';
 
@@ -224,21 +231,35 @@ export function OrchestrationPanel({
                       ))}
                     </select>
                     <p className="mt-1 text-xs text-text-tertiary">
-                      {profile.provider === 'cursor'
-                        ? cursorStatus?.models.length
-                          ? `${cursorStatus.models.length} models detected from Cursor CLI.`
-                          : "Cursor's model catalog is unavailable. Auto uses Cursor's default."
-                        : profile.provider === 'devin'
-                          ? devinStatus?.models.length
-                            ? `${devinStatus.models.length} models detected from Devin CLI.`
-                            : "Devin's model catalog is unavailable. Auto uses Devin's default."
-                          : profile.provider === 'llmgateway'
-                            ? llmGatewayStatus?.models.length
-                              ? `${llmGatewayStatus.models.filter((model) => !model.hidden).length} models available from LLMGateway.`
-                              : 'LLMGateway model catalog is unavailable. Connect or refresh it in Settings.'
-                            : codexStatus?.models?.length
-                              ? `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
-                              : 'Using the built-in model catalog.'}
+                      {profile.provider === 'cursor' ? (
+                        cursorStatus?.models.length ? (
+                          `${cursorStatus.models.length} models detected from Cursor CLI.`
+                        ) : (
+                          "Cursor's model catalog is unavailable. Auto uses Cursor's default."
+                        )
+                      ) : profile.provider === 'devin' ? (
+                        devinStatus?.models.length ? (
+                          `${devinStatus.models.length} models detected from Devin CLI.`
+                        ) : (
+                          "Devin's model catalog is unavailable. Auto uses Devin's default."
+                        )
+                      ) : profile.provider === 'llmgateway' ? (
+                        llmGatewayStatus?.models.length ? (
+                          `${llmGatewayStatus.models.filter((model) => !model.hidden).length} models available from LLMGateway.`
+                        ) : (
+                          <>
+                            LLMGateway model catalog is unavailable.{' '}
+                            <SettingsLink to="providers#agent-providers">
+                              Connect or refresh it in Settings
+                            </SettingsLink>
+                            .
+                          </>
+                        )
+                      ) : codexStatus?.models?.length ? (
+                        `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
+                      ) : (
+                        'Using the built-in model catalog.'
+                      )}
                     </p>
                   </label>
                   {profile.provider === 'llmgateway' &&
@@ -351,6 +372,69 @@ export function TeamSettings({
   profiles: WorkflowAgentProfile[];
   onChange: (patch: Partial<WorkflowNode>) => void;
 }) {
+  const [devices, setDevices] = useState<SyncDevice[] | null>(null);
+  const [deviceError, setDeviceError] = useState(false);
+  const [environments, setEnvironments] = useState<CloudEnvironmentRecord[] | null>(null);
+  const [providerConnections, setProviderConnections] = useState<
+    CloudEnvironmentProviderConnection[] | null
+  >(null);
+  const [environmentError, setEnvironmentError] = useState(false);
+
+  useEffect(() => {
+    if (node.target?.kind !== 'device') return;
+    let active = true;
+    void window.anvil.syncRuntime.listDevices().then(
+      (list) => {
+        if (active) {
+          setDevices(list.filter((device) => !device.revoked && !device.self));
+          setDeviceError(false);
+        }
+      },
+      () => {
+        if (active) setDeviceError(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [node.target?.kind]);
+
+  useEffect(() => {
+    if (
+      node.target?.kind !== 'existing-environment' &&
+      node.target?.kind !== 'provisioned-environment'
+    ) {
+      return;
+    }
+    let active = true;
+    void Promise.all([
+      window.anvil.syncRuntime.listCloudEnvironments(false),
+      window.anvil.syncRuntime.listCloudProviderConnections(),
+    ]).then(
+      ([environmentResult, connectionResult]) => {
+        if (!active) return;
+        setEnvironments(environmentResult.environments);
+        setProviderConnections(connectionResult);
+        setEnvironmentError(false);
+      },
+      () => {
+        if (active) setEnvironmentError(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [node.target?.kind]);
+  const selectedEnrollmentId = node.target?.kind === 'device' ? node.target.enrollmentId : '';
+  const automaticTarget = node.target?.kind === 'auto' ? node.target : null;
+  const existingEnvironmentTarget =
+    node.target?.kind === 'existing-environment' ? node.target : null;
+  const provisionedEnvironmentTarget =
+    node.target?.kind === 'provisioned-environment' ? node.target : null;
+  const activeEnvironments = environments?.filter((environment) =>
+    ['provisioning', 'enrolled', 'running', 'suspended'].includes(environment.state),
+  );
+
   return (
     <div className="space-y-3 border-t border-border pt-4">
       <label className="block text-xs font-semibold text-text-secondary">
@@ -434,6 +518,258 @@ export function TeamSettings({
               )}
             </div>
           )}
+          <div className="space-y-2 border-t border-border pt-4">
+            <label className="block text-xs font-semibold text-text-secondary">
+              Where should this step run?
+              <select
+                className={`${fieldClass} mt-2`}
+                value={node.target?.kind ?? 'local'}
+                onChange={(event) => {
+                  const kind = event.target.value as WorkflowTargetPolicy['kind'];
+                  onChange(
+                    kind === 'local'
+                      ? { target: undefined }
+                      : kind === 'device'
+                        ? { target: { kind, enrollmentId: '' } }
+                        : kind === 'auto'
+                          ? { target: { kind, requirements: { capabilities: [] } } }
+                          : kind === 'existing-environment'
+                            ? { target: { kind, environmentId: '' } }
+                            : {
+                                target: {
+                                  kind,
+                                  provider: 'anvil-managed',
+                                  ttlSeconds: 1800,
+                                },
+                              },
+                  );
+                }}
+              >
+                <option value="local">On this device</option>
+                <option value="device">On another device</option>
+                <option value="auto">On any available device</option>
+                <option value="existing-environment">In an existing cloud environment</option>
+                <option value="provisioned-environment">In a new cloud environment</option>
+              </select>
+            </label>
+            <p className="text-xs leading-relaxed text-text-tertiary">
+              {node.target?.kind === 'device'
+                ? 'Choose an enrolled device. On that device, enable its Mesh worker and keep the daemon running; signing in alone does not allow jobs.'
+                : node.target?.kind === 'auto'
+                  ? 'Anvil chooses an available device that allows jobs and meets the requirements below.'
+                  : node.target?.kind === 'existing-environment'
+                    ? 'Use a cloud environment already connected to this account.'
+                    : node.target?.kind === 'provisioned-environment'
+                      ? 'Create a temporary cloud environment for this step.'
+                      : 'Run this step here, without sending it to another device.'}
+            </p>
+            {node.target?.kind === 'device' && (
+              <label className="block text-xs font-semibold text-text-secondary">
+                Device
+                <select
+                  className={`${fieldClass} mt-2`}
+                  value={selectedEnrollmentId}
+                  onChange={(event) =>
+                    onChange({ target: { kind: 'device', enrollmentId: event.target.value } })
+                  }
+                  disabled={devices === null}
+                >
+                  <option value="">Choose a device</option>
+                  {selectedEnrollmentId &&
+                    !devices?.some((device) => device.enrollmentId === selectedEnrollmentId) && (
+                      <option value={selectedEnrollmentId}>Saved device (unavailable)</option>
+                    )}
+                  {devices?.map((device) => (
+                    <option key={device.enrollmentId} value={device.enrollmentId}>
+                      {device.displayName || `Device ${device.enrollmentId.slice(0, 8)}`}
+                    </option>
+                  ))}
+                </select>
+                {devices?.length === 0 && (
+                  <span className="mt-2 block font-normal text-text-tertiary">
+                    No other devices are connected to this account yet.
+                  </span>
+                )}
+                {deviceError && (
+                  <span className="mt-2 block font-normal text-warning">
+                    Could not load devices. Check your connection and reopen this step.
+                  </span>
+                )}
+              </label>
+            )}
+            {automaticTarget && (
+              <input
+                className={fieldClass}
+                placeholder="Capabilities, comma separated"
+                aria-label="Automatic placement capabilities"
+                value={automaticTarget.requirements.capabilities.join(', ')}
+                onChange={(event) =>
+                  onChange({
+                    target: {
+                      ...automaticTarget,
+                      requirements: {
+                        ...automaticTarget.requirements,
+                        capabilities: event.target.value
+                          .split(',')
+                          .map((value) => value.trim())
+                          .filter(Boolean),
+                      },
+                    },
+                  })
+                }
+              />
+            )}
+            {existingEnvironmentTarget && (
+              <div>
+                <select
+                  className={fieldClass}
+                  aria-label="Existing environment"
+                  value={existingEnvironmentTarget.environmentId}
+                  required
+                  onChange={(event) =>
+                    onChange({
+                      target: { ...existingEnvironmentTarget, environmentId: event.target.value },
+                    })
+                  }
+                  disabled={environments === null && !environmentError}
+                >
+                  <option value="">Choose an active environment</option>
+                  {existingEnvironmentTarget.environmentId &&
+                    !activeEnvironments?.some(
+                      (environment) =>
+                        environment.environmentId === existingEnvironmentTarget.environmentId,
+                    ) && (
+                      <option value={existingEnvironmentTarget.environmentId}>
+                        Saved environment (unavailable)
+                      </option>
+                    )}
+                  {activeEnvironments?.map((environment) => (
+                    <option key={environment.environmentId} value={environment.environmentId}>
+                      {environment.environmentId} · {environment.provider} · {environment.state}
+                    </option>
+                  ))}
+                </select>
+                {activeEnvironments?.length === 0 && (
+                  <span className="mt-2 block text-xs font-normal text-text-tertiary">
+                    No active environments yet.{' '}
+                    <SettingsLink to="sync#sync-mesh">
+                      Start one in Settings → Sync &amp; Mesh
+                    </SettingsLink>
+                    .
+                  </span>
+                )}
+                {environmentError && (
+                  <>
+                    <span className="mt-2 block text-xs font-normal text-warning">
+                      Could not load environments. Paste an environment id below instead.
+                    </span>
+                    <input
+                      className={`${fieldClass} mt-2`}
+                      placeholder="Environment id"
+                      aria-label="Existing environment id"
+                      value={existingEnvironmentTarget.environmentId}
+                      onChange={(event) =>
+                        onChange({
+                          target: {
+                            ...existingEnvironmentTarget,
+                            environmentId: event.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </>
+                )}
+              </div>
+            )}
+            {provisionedEnvironmentTarget && (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    className={fieldClass}
+                    aria-label="Environment provider"
+                    value={provisionedEnvironmentTarget.provider}
+                    required
+                    onChange={(event) =>
+                      onChange({
+                        target: {
+                          ...provisionedEnvironmentTarget,
+                          provider: event.target.value as Extract<
+                            WorkflowTargetPolicy,
+                            { kind: 'provisioned-environment' }
+                          >['provider'],
+                          connectionId: undefined,
+                        },
+                      })
+                    }
+                  >
+                    <option value="anvil-managed">Anvil managed</option>
+                    <option value="aws-lambda-microvm">AWS microVM</option>
+                    <option value="cloudflare-sandbox">Cloudflare Sandbox</option>
+                    <option value="vercel-sandbox">Vercel Sandbox</option>
+                  </select>
+                  <input
+                    className={fieldClass}
+                    type="number"
+                    min={60}
+                    max={604800}
+                    step={60}
+                    aria-label="Environment lifetime in seconds"
+                    value={provisionedEnvironmentTarget.ttlSeconds}
+                    required
+                    onChange={(event) =>
+                      onChange({
+                        target: {
+                          ...provisionedEnvironmentTarget,
+                          ttlSeconds: Number(event.target.value),
+                        },
+                      })
+                    }
+                  />
+                </div>
+                {provisionedEnvironmentTarget.provider !== 'anvil-managed' && (
+                  <>
+                    <select
+                      className={fieldClass}
+                      aria-label="Provider connection"
+                      value={provisionedEnvironmentTarget.connectionId ?? ''}
+                      onChange={(event) =>
+                        onChange({
+                          target: {
+                            ...provisionedEnvironmentTarget,
+                            connectionId: event.target.value || undefined,
+                          },
+                        })
+                      }
+                      disabled={providerConnections === null && !environmentError}
+                    >
+                      <option value="">Use first matching connection</option>
+                      {providerConnections
+                        ?.filter(
+                          (connection) =>
+                            connection.provider === provisionedEnvironmentTarget.provider,
+                        )
+                        .map((connection) => (
+                          <option key={connection.id} value={connection.id}>
+                            {connection.displayName ?? connection.provider}
+                          </option>
+                        ))}
+                    </select>
+                    {providerConnections?.filter(
+                      (connection) => connection.provider === provisionedEnvironmentTarget.provider,
+                    ).length === 0 && (
+                      <span className="block text-xs font-normal text-warning">
+                        No matching provider connection is saved on this device. Add one in
+                        Settings.
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            <p className="text-xs leading-relaxed text-text-tertiary">
+              Remote steps use the run&apos;s frozen repository pins.
+            </p>
+          </div>
         </>
       )}
     </div>
@@ -467,7 +803,27 @@ export function RunInspector({
           <p className="mt-2 text-xs text-text-secondary">
             {state.status} · depth {node.depth ?? 0} · {state.attempts?.length ?? 0} attempts
           </p>
-          {state.status === 'waiting' && (
+          {!run.convergence &&
+            run.nodeRuns.some((candidate) => candidate.remote?.dispatchId !== undefined) &&
+            run.nodeRuns.every((candidate) => candidate.status === 'completed') && (
+              <button
+                disabled={busy}
+                className="mt-3 rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                onClick={() => onCommand(() => window.anvil.workflow.convergeRun(run.id))}
+              >
+                Converge Mesh results
+              </button>
+            )}
+          {state.remote && (
+            <p className="mt-1 break-words text-xs text-text-tertiary">
+              Dispatch {state.remote.dispatchId}
+              {state.remote.jobId ? ` · job ${state.remote.jobId}` : ''}
+              {state.remote.resolvedEnrollmentId
+                ? ` · worker ${state.remote.resolvedEnrollmentId}`
+                : ''}
+            </p>
+          )}
+          {state.status === 'waiting' && node.kind === 'human' && (
             <div className="mt-3 space-y-2">
               <p className="text-xs leading-relaxed text-text-secondary">{node.prompt}</p>
               <textarea
@@ -501,6 +857,35 @@ export function RunInspector({
               <p className="text-xs text-text-tertiary">
                 Resume the run after resolving its decisions.
               </p>
+            </div>
+          )}
+          {state.status === 'waiting' && node.kind !== 'human' && state.remote && (
+            <div className="mt-3 space-y-2 rounded-lg border border-warning/30 bg-warning/5 p-3">
+              <p className="text-xs text-text-secondary">
+                Remote execution is waiting on {state.remote.state.replaceAll('-', ' ')}.
+              </p>
+              {state.remote.placementExplanation && (
+                <p className="text-xs text-text-tertiary">{state.remote.placementExplanation}</p>
+              )}
+              {state.remote.state === 'unknown-outcome' ? (
+                <button
+                  disabled={busy}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                  onClick={() =>
+                    onCommand(() => window.anvil.workflow.inspectNode(run.id, node.id))
+                  }
+                >
+                  Mark inspected
+                </button>
+              ) : (
+                <button
+                  disabled={busy}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                  onClick={() => onCommand(() => window.anvil.workflow.resumeRun(run.id))}
+                >
+                  Check again
+                </button>
+              )}
             </div>
           )}
           {['failed', 'interrupted'].includes(state.status) && node.kind !== 'human' && (
@@ -558,6 +943,29 @@ export function RunInspector({
         <p className="text-xs text-text-secondary">
           Select a graph node to inspect its attempts, handoff, or human decision.
         </p>
+      )}
+      {run.convergence && (
+        <details
+          className="mt-4 text-xs text-text-secondary"
+          open={run.convergence.state !== 'integrated'}
+        >
+          <summary className="cursor-pointer">Mesh convergence · {run.convergence.state}</summary>
+          <p className="mt-2 break-words text-text-tertiary">
+            Integration {run.convergence.integrationId} retained its worktrees for inspection.
+          </p>
+          {run.convergence.repositories.flatMap((repository) => repository.conflicts).length >
+            0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-error">
+              {run.convergence.repositories
+                .flatMap((repository) => repository.conflicts)
+                .map((conflict) => (
+                  <li key={`${conflict.dispatchId}:${conflict.ref}`}>
+                    {conflict.dispatchId}: {conflict.conflictedFiles.join(', ') || 'conflict'}
+                  </li>
+                ))}
+            </ul>
+          )}
+        </details>
       )}
       <details className="mt-4 text-xs text-text-secondary">
         <summary className="cursor-pointer">

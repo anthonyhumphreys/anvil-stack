@@ -3,9 +3,9 @@ title: Workspaces, repositories, and activity
 navTitle: Workspaces and repositories
 description: Create workspaces, connect and index repositories, follow active work, capture notes, and generate onboarding artifacts.
 product: Anvil Desktop
-section: Core workspace
+section: Guides
 journey: build
-order: 109
+order: 40
 ---
 
 # Workspaces, repositories, and activity

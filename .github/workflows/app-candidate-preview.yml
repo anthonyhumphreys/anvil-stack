@@ -19,6 +19,10 @@ permissions:
 jobs:
   preview:
     runs-on: macos-15
+    environment: anvil-staging
+    env:
+      ANVIL_DEPLOYMENT_ENV: staging
+      ANVIL_STAGING_HOSTED_BACKEND_URL: ${{ vars.ANVIL_STAGING_HOSTED_BACKEND_URL }}
     steps:
       - name: Verify candidate
         id: candidate

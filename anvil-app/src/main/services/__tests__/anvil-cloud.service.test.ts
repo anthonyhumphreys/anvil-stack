@@ -17,10 +17,7 @@ vi.mock('node:fs', async () => {
   };
 });
 
-import {
-  getAnvilCloudWorkbenchSnapshot,
-  runAnvilCloudCommand,
-} from '../anvil-cloud.service.js';
+import { getAnvilCloudWorkbenchSnapshot, runAnvilCloudCommand } from '../anvil-cloud.service.js';
 
 beforeEach(() => {
   vi.clearAllMocks();

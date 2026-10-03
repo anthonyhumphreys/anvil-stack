@@ -1,0 +1,30 @@
+/* Default desktop chat palette, shared by the Electron and browser surfaces. */
+:root,
+.anvil-chat-theme {
+  --anvil-chat-font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --anvil-chat-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --anvil-chat-bg-primary: #0b1020;
+  --anvil-chat-bg-secondary: #111827;
+  --anvil-chat-bg-tertiary: #172033;
+  --anvil-chat-bg-elevated: #1f2a44;
+  --anvil-chat-bg-hover: #24314f;
+  --anvil-chat-border: #33415f;
+  --anvil-chat-border-subtle: #25304a;
+  --anvil-chat-text-primary: #f8fbff;
+  --anvil-chat-text-secondary: #cbd6e6;
+  --anvil-chat-text-tertiary: #95a3b8;
+  --anvil-chat-text-muted: #8492a8;
+  --anvil-chat-accent: #ff8a3d;
+  --anvil-chat-accent-glow: rgba(255, 138, 61, 0.22);
+  --anvil-chat-accent-foreground: #0b1020;
+  --anvil-chat-scrim: rgba(0, 0, 0, 0.55);
+  --anvil-chat-success: #48d597;
+  --anvil-chat-warning: #ffd166;
+  --anvil-chat-info: #5ec8ff;
+  --anvil-chat-error: #ff6b8a;
+  --anvil-chat-persona-coder: #48d597;
+  --anvil-chat-persona-architect: #5ec8ff;
+  --anvil-chat-persona-security: #ff6b8a;
+  --anvil-chat-persona-reviewer: #ffd166;
+  --anvil-chat-persona-docs: #a78bfa;
+}

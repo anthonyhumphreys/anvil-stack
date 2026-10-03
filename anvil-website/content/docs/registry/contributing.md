@@ -3,9 +3,9 @@ title: Contributing to Anvil Registry
 navTitle: Contributing
 description: Development setup, workspace commands, and review expectations for Anvil Registry and Anvil Node Base.
 product: Anvil Registry
-section: Project
+section: Reference
 journey: reference
-order: 20
+order: 190
 ---
 
 # Contributing to Anvil Registry

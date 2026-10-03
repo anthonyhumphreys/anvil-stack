@@ -28,7 +28,7 @@ export function SecurityActions({
       <div className="flex-1" />
       <button
         onClick={onCreateWorkItems}
-        className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
+        className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90"
       >
         <TicketPlus size={14} />
         Create Work Items ({selectedCount})

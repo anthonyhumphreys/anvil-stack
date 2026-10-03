@@ -3,9 +3,9 @@ title: Registry rollout guide
 navTitle: Rollout guide
 description: A staged adoption path for Anvil Registry and Anvil Node Base across local trials, CI, policy tuning, and deployment.
 product: Anvil Registry
-section: Operations
+section: Guides
 journey: build
-order: 8
+order: 60
 ---
 
 # Registry rollout guide

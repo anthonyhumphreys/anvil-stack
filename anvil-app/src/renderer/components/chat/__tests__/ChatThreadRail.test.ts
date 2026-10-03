@@ -4,6 +4,7 @@ import {
   canSettleThread,
   getThreadActionVisibilityClass,
   getThreadDisplayState,
+  partitionNeedsUserThreads,
   partitionThreads,
   shouldSelectThreadFromKey,
 } from '../ChatThreadRail';
@@ -86,5 +87,17 @@ describe('work inbox lifecycle', () => {
         false,
       ),
     ).toBe('idle');
+  });
+
+  it('puts approval and input threads in the waiting-for-user group in their existing order', () => {
+    const idle = makeThread({ id: 'idle' });
+    const input = makeThread({ id: 'input', attentionState: 'input' });
+    const failed = makeThread({ id: 'failed', attentionState: 'failed' });
+    const approval = makeThread({ id: 'approval', attentionState: 'approval' });
+
+    expect(partitionNeedsUserThreads([idle, input, failed, approval])).toEqual({
+      needsUserThreads: [input, approval],
+      otherActiveThreads: [idle, failed],
+    });
   });
 });

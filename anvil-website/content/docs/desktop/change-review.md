@@ -3,9 +3,9 @@ title: Evidence-backed change review
 navTitle: Change review
 description: Replay base and candidate scenarios, inspect screenshots and traces, and record acceptance against a specific source snapshot and criteria version.
 product: Anvil Desktop
-section: Assurance
+section: Guides
 journey: build
-order: 119
+order: 130
 ---
 
 # Evidence-backed change review

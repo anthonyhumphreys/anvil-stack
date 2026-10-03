@@ -1,0 +1,48 @@
+{
+  "protocol": "anvil-chat-replay-task-benchmark-v1",
+  "capturedAt": null,
+  "systemInfo": null,
+  "browser": null,
+  "viewport": null,
+  "scenarioRuns": [],
+  "tools": [
+    {
+      "name": "Codex",
+      "status": "unmeasured",
+      "version": null,
+      "model": null,
+      "trials": []
+    },
+    {
+      "name": "Claude",
+      "status": "unmeasured",
+      "version": null,
+      "model": null,
+      "trials": []
+    },
+    {
+      "name": "t3code",
+      "status": "unmeasured",
+      "version": null,
+      "model": null,
+      "trials": []
+    },
+    {
+      "name": "Anvil",
+      "status": "unmeasured",
+      "version": null,
+      "model": null,
+      "trials": []
+    }
+  ],
+  "trialFields": {
+    "scenarioId": null,
+    "completionTimeMs": null,
+    "errorCount": null,
+    "unsupportedClaims": [],
+    "contextTokens": null,
+    "contextTokensUnavailableReason": null,
+    "confidence1To5": null,
+    "notes": null
+  }
+}

@@ -34,7 +34,8 @@ import type {
   CicdValidationFinding,
   RepoInfo,
 } from '../../../shared/types';
-import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
+import { ViewHeader } from '../layout/ViewScaffold';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
 
@@ -76,7 +77,7 @@ interface DrilldownNode {
 
 export function CicdView() {
   const navigate = useNavigate();
-  const { activeWorkspace, repos } = useWorkspace();
+  const { activeWorkspace, repos, featureAvailability } = useWorkspace();
   const [selectedRepoId, setSelectedRepoId] = useState(repos[0]?.id ?? '');
   const [analysis, setAnalysis] = useState<CicdPipelineAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
@@ -203,13 +204,12 @@ export function CicdView() {
     setChatInput('');
   }
 
-  if (repos.length === 0) {
+  if (!featureAvailability.repoFeaturesEnabled) {
     return (
-      <EmptyState
+      <RepoFeatureEmptyState
         icon={Workflow}
-        title="Connect a repository for CI/CD"
+        featureLabel="CI/CD tools"
         description="Anvil needs pipeline files and repository context before it can map or validate delivery flows."
-        className="h-full"
       />
     );
   }
@@ -582,7 +582,7 @@ function PhaseCard({
     >
       <div className="flex items-start justify-between gap-3">
         <NodeIcon node={node} />
-        <span className="rounded-full border border-border-subtle bg-bg-primary px-2 py-1 text-[10px] uppercase tracking-wide text-text-tertiary">
+        <span className="rounded-full border border-border-subtle bg-bg-primary px-2 py-1 text-eyebrow uppercase tracking-wide text-text-tertiary">
           {node.type}
         </span>
       </div>

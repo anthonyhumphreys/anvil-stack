@@ -12,12 +12,14 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { EnvelopeBoundary } from "@/components/site/envelope-boundary";
 import { groupProductDocs, type DocMeta } from "@/lib/docs";
 import { journeyById, type ProductId } from "@/lib/docs-navigation";
-import { productLines } from "@/lib/site";
+import { productLines, syncDocsProduct } from "@/lib/site";
 
 const startHref: Record<Exclude<ProductId, "start" | "project">, string> = {
   desktop: "/docs/desktop/installation",
+  sync: "/docs/sync/overview",
   cloud: "/docs/cloud/quickstart",
   registry: "/docs/registry/quickstart",
   "node-base": "/docs/node-base/safe-mode"
@@ -25,6 +27,7 @@ const startHref: Record<Exclude<ProductId, "start" | "project">, string> = {
 
 const statusLabel: Record<Exclude<ProductId, "start" | "project">, string> = {
   desktop: "Active development",
+  sync: "Alpha — hosted preview",
   cloud: "Alpha",
   registry: "Alpha",
   "node-base": "Companion surface"
@@ -37,7 +40,10 @@ export function ProductDocsLanding({
   productId: Exclude<ProductId, "start" | "project">;
   docs: Array<DocMeta & { slug: string; segments: string[] }>;
 }) {
-  const product = productLines.find((entry) => entry.id === productId);
+  const product =
+    productId === "sync"
+      ? syncDocsProduct
+      : productLines.find((entry) => entry.id === productId);
   if (!product) return null;
   const journeys = groupProductDocs(docs, productId);
 
@@ -147,6 +153,10 @@ function JourneyLink({ entry }: { entry: { slug: string; navTitle: string } }) {
 }
 
 function ProductProof({ productId }: { productId: Exclude<ProductId, "start" | "project"> }) {
+  if (productId === "sync") {
+    return <EnvelopeBoundary />;
+  }
+
   if (productId === "desktop") {
     return (
       <figure className="overflow-hidden rounded-lg border bg-[oklch(0.13_0.014_205)]">

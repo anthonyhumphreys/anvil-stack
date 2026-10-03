@@ -3,9 +3,9 @@ title: Build and release
 navTitle: Build and release
 description: Development, testing, packaging, signing, and distribution notes for Anvil Desktop.
 product: Anvil Desktop
-section: Engineering
+section: Guides
 journey: build
-order: 132
+order: 230
 ---
 
 # Build and release

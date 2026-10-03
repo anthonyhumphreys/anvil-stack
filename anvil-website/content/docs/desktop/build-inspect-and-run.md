@@ -3,9 +3,9 @@ title: Build, inspect, and run
 navTitle: Build and inspect
 description: Run repository commands, inspect CI pipelines, preview web and mobile apps, and send runtime evidence back to Chat.
 product: Anvil Desktop
-section: Delivery tools
+section: Guides
 journey: build
-order: 114
+order: 120
 ---
 
 # Build, inspect, and run

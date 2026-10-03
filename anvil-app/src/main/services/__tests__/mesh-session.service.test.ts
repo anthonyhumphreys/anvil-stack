@@ -1,0 +1,804 @@
+// Focused coverage for the remote `start-session` provider driver:
+// journal-first spawn contract, thread ready/turn bounds, cancellation,
+// in-band approval auto-decline, resume, and orphan kill.
+
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const desktopSessionMocks = vi.hoisted(() => ({
+  listener: null as
+    | ((payload: { sessionId: string; event: Record<string, unknown> }) => void)
+    | null,
+  startSession: vi.fn(),
+  sendMessage: vi.fn(),
+  resolveApproval: vi.fn(),
+  resolveInputRequest: vi.fn(),
+  stopHeadlessSession: vi.fn(async () => undefined),
+}));
+
+vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf-8'),
+    decryptString: (encrypted: Buffer) => encrypted.toString('utf-8').slice('enc:'.length),
+  },
+}));
+vi.mock('../../db/database.js', () => ({ getDb: () => null }));
+vi.mock('../settings.service.js', () => ({
+  getSettings: () => ({ openaiApiKey: undefined }),
+}));
+vi.mock('../codex-session.service.js', () => ({
+  providerProcessSpawnOptions: () => (process.platform === 'win32' ? {} : { detached: true }),
+  stopManagedProviderProcess: async (proc: ChildProcess) => {
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGTERM');
+  },
+  startSession: desktopSessionMocks.startSession,
+  sendMessage: desktopSessionMocks.sendMessage,
+  resolveApproval: desktopSessionMocks.resolveApproval,
+  resolveInputRequest: desktopSessionMocks.resolveInputRequest,
+  stopHeadlessSession: desktopSessionMocks.stopHeadlessSession,
+  subscribeToCodexEvents: (listener: typeof desktopSessionMocks.listener) => {
+    desktopSessionMocks.listener = listener;
+    return () => {
+      desktopSessionMocks.listener = null;
+    };
+  },
+}));
+vi.mock('../codex-runtime.service.js', () => ({ resolveCodexRuntime: async () => 'codex' }));
+
+import {
+  configureMeshSessionForTests,
+  killProcessGroup,
+  resetMeshSessionForTests,
+  runRemoteSessionTurn,
+  satisfiesCliMin,
+} from '../mesh-session.service.js';
+
+type MutableProcess = { -readonly [K in keyof ChildProcess]: ChildProcess[K] };
+
+interface FakeServer {
+  proc: MutableProcess;
+  /** JSON-RPC messages the driver wrote to the child's stdin. */
+  received: Array<Record<string, unknown>>;
+  /** Respond to the next server→client request id (asserts auto-decline). */
+  killedWith: string[];
+  notify(document: Record<string, unknown>): void;
+}
+
+interface FakeBehavior {
+  /** Respond to thread/start (false → never respond: ready-timeout path). */
+  threadReady?: boolean;
+  /** Emit a command approval request mid-turn (tests auto-decline). */
+  sendApprovalRequest?: boolean;
+  /** Delay turn completion until interrupted (cancel path). */
+  holdTurn?: boolean;
+  turnStatus?: 'completed' | 'failed';
+  initiallyAuthenticated?: boolean;
+}
+
+function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
+  const {
+    threadReady = true,
+    sendApprovalRequest = false,
+    holdTurn = false,
+    turnStatus = 'completed',
+    initiallyAuthenticated = true,
+  } = behavior;
+  const proc = new EventEmitter() as MutableProcess & {
+    stdout: PassThrough;
+    stdin: PassThrough;
+    stderr: PassThrough;
+  };
+  proc.stdout = new PassThrough();
+  proc.stderr = new PassThrough();
+  proc.stdin = new PassThrough();
+  proc.pid = 0xfffffff0; // never a real pid — group kill ESRCHs into fallback
+  proc.exitCode = null;
+  proc.signalCode = null;
+  let isAuthenticated = initiallyAuthenticated;
+  proc.kill = (signal?: NodeJS.Signals | number) => {
+    fake.killedWith.push(String(signal ?? 'SIGTERM'));
+    queueMicrotask(() => proc.emit('exit', 0, 'SIGTERM'));
+    return true;
+  };
+
+  const write = (doc: Record<string, unknown>): void => {
+    proc.stdout.write(`${JSON.stringify(doc)}\n`);
+  };
+  const fake: FakeServer = {
+    proc,
+    received: [],
+    killedWith: [],
+    notify: (document) => {
+      const params = document.params as Record<string, unknown> | undefined;
+      if (document.method === 'account/login/completed' && params?.success === true) {
+        isAuthenticated = true;
+      }
+      write(document);
+    },
+  };
+  let turnId: string | null = null;
+  proc.stdin.on('data', (chunk: Buffer) => {
+    for (const line of chunk.toString().split('\n')) {
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line) as Record<string, unknown>;
+      fake.received.push(msg);
+      const method = msg['method'] as string | undefined;
+      const id = msg['id'];
+      if (method === 'thread/start' || method === 'thread/resume') {
+        if (!threadReady) continue;
+        const threadId =
+          method === 'thread/resume'
+            ? ((msg['params'] as Record<string, unknown>)['threadId'] as string)
+            : 'thr-fake-1';
+        write({ jsonrpc: '2.0', id, result: { thread: { id: threadId } } });
+      } else if (method === 'turn/start') {
+        write({ jsonrpc: '2.0', id, result: {} });
+        turnId = 'turn-1';
+        write({ method: 'turn/started', params: { turn: { id: turnId } } });
+        if (sendApprovalRequest) {
+          write({
+            jsonrpc: '2.0',
+            id: 'req-approval-1',
+            method: 'item/commandExecution/requestApproval',
+            params: { command: 'rm -rf /', reason: 'wants power' },
+          });
+        }
+        if (!holdTurn) {
+          write({ method: 'turn/completed', params: { turn: { id: turnId, status: turnStatus } } });
+        }
+      } else if (method === 'turn/interrupt') {
+        write({ jsonrpc: '2.0', id, result: {} });
+        if (turnId !== null) {
+          write({
+            method: 'turn/completed',
+            params: { turn: { id: turnId, status: 'interrupted' } },
+          });
+        }
+      } else if (id !== undefined && method === undefined) {
+        if (id === 'req-approval-1')
+          write({ method: 'turn/completed', params: { turn: { id: turnId, status: turnStatus } } });
+      } else if (method === 'account/read') {
+        write({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            account: isAuthenticated ? { type: 'chatgpt', accountId: 'acct-fixture' } : null,
+            requiresOpenaiAuth: true,
+          },
+        });
+      } else if (method === 'account/login/start') {
+        write({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            type: 'chatgptDeviceCode',
+            loginId: 'login-1',
+            verificationUrl: 'https://auth.openai.com/codex/device',
+            userCode: 'ABCD-EFGH',
+          },
+        });
+      } else if (id !== undefined) {
+        write({ jsonrpc: '2.0', id, result: {} });
+      }
+    }
+  });
+  return fake;
+}
+
+const HOOKS_BASE = {
+  onThreadStarted: vi.fn(),
+  emitActivity: vi.fn(),
+  isCancelled: () => false,
+};
+
+function fixtureIdToken(accountId = 'acct-fixture', userId = 'user-fixture'): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(
+    JSON.stringify({
+      sub: userId,
+      'https://api.openai.com/auth': {
+        chatgpt_account_id: accountId,
+        chatgpt_user_id: userId,
+      },
+    }),
+  ).toString('base64url');
+  return `${header}.${payload}.fixture-signature`;
+}
+
+function spec(overrides: Partial<Parameters<typeof runRemoteSessionTurn>[0]> = {}) {
+  return {
+    provider: 'codex' as const,
+    model: 'gpt-5.6-terra',
+    cwd: '/tmp',
+    prompt: 'do the thing',
+    sandbox: 'workspace-write' as const,
+    turnTimeoutMs: 5_000,
+    threadReadyTimeoutMs: 300,
+    ...overrides,
+  };
+}
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetMeshSessionForTests();
+  desktopSessionMocks.listener = null;
+  desktopSessionMocks.startSession.mockReset();
+  desktopSessionMocks.sendMessage.mockReset();
+  desktopSessionMocks.stopHeadlessSession.mockClear();
+});
+
+describe('mesh-session provider driver', () => {
+  it('seeds a private durable Codex home and preserves its refreshed host auth cache', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-host-auth-'));
+    const authHome = path.join(tempDir, 'worker-codex');
+    const authJson = JSON.stringify({
+      tokens: {
+        access_token: 'fixture-access',
+        refresh_token: 'fixture-refresh',
+        account_id: 'acct-fixture',
+        id_token: fixtureIdToken(),
+      },
+    });
+    const firstServer = fakeAppServer();
+    let spawnedEnv: NodeJS.ProcessEnv | undefined;
+    let spawnedArgs: string[] | undefined;
+    vi.stubEnv('OPENAI_API_KEY', 'ambient-openai-key');
+    configureMeshSessionForTests({
+      spawn: (_command, args, options) => {
+        spawnedArgs = args;
+        spawnedEnv = options.env as NodeJS.ProcessEnv;
+        return firstServer.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+
+    try {
+      await runRemoteSessionTurn(
+        spec({ authMode: 'codex-host-auth', codexAuthJson: authJson, codexAuthHome: authHome }),
+        HOOKS_BASE,
+      );
+
+      expect(spawnedEnv?.CODEX_HOME).toBe(authHome);
+      expect(spawnedEnv?.OPENAI_API_KEY).toBeUndefined();
+      expect(spawnedEnv?.CODEX_API_KEY).toBeUndefined();
+      expect(spawnedArgs).toEqual(
+        expect.arrayContaining([
+          'cli_auth_credentials_store="file"',
+          'forced_login_method="chatgpt"',
+        ]),
+      );
+      expect(fs.statSync(authHome).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(authHome, 'auth.json')).mode & 0o777).toBe(0o600);
+
+      const refreshedAuth = JSON.stringify({
+        tokens: {
+          access_token: 'fixture-refreshed-access',
+          refresh_token: 'fixture-refreshed-refresh',
+          account_id: 'acct-fixture',
+          id_token: fixtureIdToken(),
+        },
+      });
+      fs.writeFileSync(path.join(authHome, 'auth.json'), refreshedAuth, { mode: 0o600 });
+      const secondServer = fakeAppServer();
+      configureMeshSessionForTests({
+        spawn: () => secondServer.proc,
+        probeCli: async () => '0.44.0',
+      });
+      await runRemoteSessionTurn(
+        spec({ authMode: 'codex-host-auth', codexAuthJson: authJson, codexAuthHome: authHome }),
+        HOOKS_BASE,
+      );
+      expect(fs.readFileSync(path.join(authHome, 'auth.json'), 'utf8')).toBe(refreshedAuth);
+      expect(
+        secondServer.received.some((message) => message['method'] === 'account/login/start'),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses to reuse a worker Codex home for a different host account', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-host-auth-mismatch-'));
+    const authHome = path.join(tempDir, 'worker-codex');
+    fs.mkdirSync(authHome, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      path.join(authHome, 'auth.json'),
+      JSON.stringify({
+        tokens: {
+          access_token: 'other-access',
+          refresh_token: 'other-refresh',
+          account_id: 'acct-fixture',
+          id_token: fixtureIdToken('acct-fixture', 'another-user'),
+        },
+      }),
+      { mode: 0o600 },
+    );
+    const spawn = vi.fn(() => fakeAppServer().proc);
+    configureMeshSessionForTests({ spawn, probeCli: async () => '0.44.0' });
+    try {
+      await expect(
+        runRemoteSessionTurn(
+          spec({
+            authMode: 'codex-host-auth',
+            codexAuthJson: JSON.stringify({
+              tokens: {
+                access_token: 'fixture-access',
+                refresh_token: 'fixture-refresh',
+                account_id: 'acct-fixture',
+                id_token: fixtureIdToken(),
+              },
+            }),
+            codexAuthHome: authHome,
+          }),
+          HOOKS_BASE,
+        ),
+      ).rejects.toThrow('codex-host-auth-account-mismatch');
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for explicit Codex device sign-in and verifies the account before starting a thread', async () => {
+    const fake = fakeAppServer({ initiallyAuthenticated: false });
+    vi.stubEnv('OPENAI_API_KEY', 'ambient-openai-key');
+    vi.stubEnv('CODEX_API_KEY', 'ambient-codex-key');
+    let spawnedArgs: string[] | undefined;
+    let spawnedEnv: NodeJS.ProcessEnv | undefined;
+    configureMeshSessionForTests({
+      spawn: (_command, args, options) => {
+        spawnedArgs = args;
+        spawnedEnv = options.env as NodeJS.ProcessEnv;
+        return fake.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+    const authenticate = vi.fn(async (request: { verificationUrl: string; userCode: string }) => {
+      expect(request).toEqual({
+        verificationUrl: 'https://auth.openai.com/codex/device',
+        userCode: 'ABCD-EFGH',
+      });
+      fake.notify({
+        method: 'account/login/completed',
+        params: { loginId: 'login-1', success: true },
+      });
+      return true;
+    });
+    const hooks = {
+      ...HOOKS_BASE,
+      authenticate,
+    };
+    const result = await runRemoteSessionTurn(spec({ authMode: 'codex-account' }), hooks);
+
+    const methods = fake.received.map((message) => message['method']);
+    expect(methods.indexOf('account/read')).toBeLessThan(methods.indexOf('account/login/start'));
+    expect(methods.lastIndexOf('account/read')).toBeLessThan(methods.indexOf('thread/start'));
+    expect(authenticate).toHaveBeenCalledTimes(1);
+    expect(hooks.emitActivity.mock.calls.flat().join(' ')).not.toContain('ABCD-EFGH');
+    expect(spawnedEnv?.OPENAI_API_KEY).toBeUndefined();
+    expect(spawnedEnv?.CODEX_API_KEY).toBeUndefined();
+    expect(spawnedArgs).toEqual(
+      expect.arrayContaining([
+        'cli_auth_credentials_store="file"',
+        'forced_login_method="chatgpt"',
+      ]),
+    );
+    expect(result.turnStatus).toBe('completed');
+  });
+
+  it('does not treat auth UI approval as successful sign-in without the app-server completion', async () => {
+    const fake = fakeAppServer({ initiallyAuthenticated: false });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const authenticate = vi.fn(async () => {
+      fake.notify({
+        method: 'account/login/completed',
+        params: { loginId: 'login-1', success: false },
+      });
+      return true;
+    });
+
+    await expect(
+      runRemoteSessionTurn(spec({ authMode: 'codex-account' }), {
+        ...HOOKS_BASE,
+        authenticate,
+      }),
+    ).rejects.toThrow('codex-account-login-failed');
+    expect(fake.received.some((message) => message['method'] === 'thread/start')).toBe(false);
+  });
+
+  it('uses an OpenAI API-key grant through process-only Codex config overrides', async () => {
+    const fake = fakeAppServer();
+    let spawned: { args: string[]; env: NodeJS.ProcessEnv } | undefined;
+    configureMeshSessionForTests({
+      spawn: (_command, args, options) => {
+        spawned = { args, env: options.env as NodeJS.ProcessEnv };
+        return fake.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+    await runRemoteSessionTurn(
+      spec({
+        provider: 'codex',
+        authMode: 'openai-api-key',
+        extraEnv: { OPENAI_API_KEY: 'grant-key' },
+      }),
+      HOOKS_BASE,
+    );
+
+    expect(spawned?.env.OPENAI_API_KEY).toBe('grant-key');
+    expect(spawned?.args).toEqual(
+      expect.arrayContaining([
+        'model_provider="anvil_api"',
+        'model_providers.anvil_api.name="OpenAI API"',
+        'model_providers.anvil_api.base_url="https://api.openai.com/v1"',
+        'model_providers.anvil_api.wire_api="responses"',
+        'model_providers.anvil_api.env_key="OPENAI_API_KEY"',
+        'model_providers.anvil_api.requires_openai_auth=false',
+      ]),
+    );
+  });
+
+  it('runs ACP providers through the Desktop session adapter and returns bounded output and resume handle', async () => {
+    let probedProvider: string | undefined;
+    configureMeshSessionForTests({
+      probeCli: async (provider) => {
+        probedProvider = provider;
+        return '1.2.3';
+      },
+    });
+    desktopSessionMocks.startSession.mockResolvedValue({
+      id: 'session-cursor',
+      providerThreadId: 'cursor-session-1',
+    });
+    desktopSessionMocks.sendMessage.mockImplementation(async () => {
+      desktopSessionMocks.listener?.({
+        sessionId: 'session-cursor',
+        event: { type: 'text', text: 'Remote answer.' },
+      });
+      desktopSessionMocks.listener?.({
+        sessionId: 'session-cursor',
+        event: { type: 'turn_outcome', turnOutcome: 'completed', protocolTurnId: 'turn-cursor' },
+      });
+    });
+    const hooks = {
+      onThreadStarted: vi.fn(),
+      emitActivity: vi.fn(),
+      isCancelled: () => false,
+      onEvent: vi.fn(),
+    };
+    const result = await runRemoteSessionTurn(
+      spec({
+        provider: 'cursor',
+        resumeThreadId: 'cursor-session-0',
+        extraEnv: { CURSOR_API_KEY: 'attempt-secret' },
+      }),
+      hooks,
+    );
+
+    expect(probedProvider).toBe('cursor');
+    expect(desktopSessionMocks.startSession).toHaveBeenCalledWith(
+      ['/tmp'],
+      [],
+      'coder',
+      expect.objectContaining({ provider: 'cursor', providerThreadId: 'cursor-session-0' }),
+      expect.objectContaining({
+        model: 'gpt-5.6-terra',
+        codexMode: 'workspace-auto',
+        headless: true,
+        bypassEnabledProviderGate: true,
+        extraEnv: { CURSOR_API_KEY: 'attempt-secret' },
+      }),
+    );
+    expect(result).toMatchObject({
+      providerThreadId: 'cursor-session-1',
+      resumeHandle: 'cursor-session-1',
+      turnId: 'turn-cursor',
+      turnStatus: 'completed',
+      assistantOutput: 'Remote answer.',
+      cliVersion: '1.2.3',
+    });
+    expect(hooks.onThreadStarted).toHaveBeenCalledWith('cursor-session-1');
+    expect(hooks.onEvent).toHaveBeenCalledTimes(2);
+    expect(desktopSessionMocks.stopHeadlessSession).toHaveBeenCalledWith('session-cursor');
+  });
+
+  it('fails clearly when an unattended ACP provider asks the user a question', async () => {
+    configureMeshSessionForTests({ probeCli: async () => '1.2.3' });
+    desktopSessionMocks.startSession.mockResolvedValue({
+      id: 'session-cursor',
+      providerThreadId: 'cursor-session-1',
+    });
+    desktopSessionMocks.sendMessage.mockImplementation(async () => {
+      desktopSessionMocks.listener?.({
+        sessionId: 'session-cursor',
+        event: { type: 'input_request', inputRequest: { kind: 'cursor_ask_question' } },
+      });
+    });
+    const hooks = {
+      onThreadStarted: vi.fn(),
+      emitActivity: vi.fn(),
+      isCancelled: () => false,
+      onEvent: vi.fn(),
+    };
+    const result = await runRemoteSessionTurn(spec({ provider: 'cursor' }), hooks);
+
+    expect(result.turnStatus).toBe('failed');
+    expect(hooks.emitActivity).toHaveBeenCalledWith(
+      expect.stringContaining('remote attempts cannot answer questions'),
+    );
+    expect(hooks.onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'input_request' }));
+  });
+
+  it('writes Devin cloud grant credentials only to its private session data home', async () => {
+    const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-devin-data-'));
+    const credentialsToml = 'api_token = "private-devin-token-long"\n';
+    try {
+      desktopSessionMocks.startSession.mockResolvedValue({
+        id: 'session-devin',
+        providerThreadId: 'devin-session-1',
+      });
+      desktopSessionMocks.sendMessage.mockImplementation(async () => {
+        desktopSessionMocks.listener?.({
+          sessionId: 'session-devin',
+          event: { type: 'turn_outcome', turnOutcome: 'completed', protocolTurnId: 'turn-devin' },
+        });
+      });
+      configureMeshSessionForTests({ probeCli: async () => '1.2.3' });
+
+      await runRemoteSessionTurn(
+        spec({
+          provider: 'devin',
+          authMode: 'cloud-provider',
+          extraEnv: { XDG_DATA_HOME: dataHome },
+          devinCredentialsToml: credentialsToml,
+        }),
+        HOOKS_BASE,
+      );
+
+      const credentialsPath = path.join(dataHome, 'devin', 'credentials.toml');
+      expect(fs.readFileSync(credentialsPath, 'utf8')).toBe(credentialsToml);
+      expect(fs.statSync(path.join(dataHome, 'devin')).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(credentialsPath).mode & 0o777).toBe(0o600);
+      const runtime = desktopSessionMocks.startSession.mock.calls[0]?.[4];
+      expect(runtime).toMatchObject({ extraEnv: { XDG_DATA_HOME: dataHome } });
+      fs.writeFileSync(credentialsPath, 'api_token = "different-devin-account-token"\n', 'utf8');
+      await expect(
+        runRemoteSessionTurn(
+          spec({
+            provider: 'devin',
+            authMode: 'cloud-provider',
+            extraEnv: { XDG_DATA_HOME: dataHome },
+            devinCredentialsToml: credentialsToml,
+          }),
+          HOOKS_BASE,
+        ),
+      ).rejects.toThrow('devin-provider-auth-conflict');
+      expect(desktopSessionMocks.startSession).toHaveBeenCalledTimes(1);
+    } finally {
+      fs.rmSync(dataHome, { recursive: true, force: true });
+    }
+  });
+
+  it('uses granted Azure endpoint and API version in the isolated Codex invocation', async () => {
+    const server = fakeAppServer();
+    let spawnedArgs: string[] | undefined;
+    configureMeshSessionForTests({
+      spawn: (_command, args) => {
+        spawnedArgs = args;
+        return server.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+
+    await runRemoteSessionTurn(
+      spec({
+        provider: 'azure',
+        authMode: 'cloud-provider',
+        model: 'foundry-deployment',
+        extraEnv: {
+          AZURE_OPENAI_API_KEY: 'azure-key',
+          AZURE_OPENAI_ENDPOINT: 'https://example.azure.com',
+          AZURE_OPENAI_API_VERSION: '2025-04-01-preview',
+          AZURE_OPENAI_DEPLOYMENT: 'foundry-deployment',
+        },
+      }),
+      HOOKS_BASE,
+    );
+
+    expect(spawnedArgs).toEqual(
+      expect.arrayContaining([
+        'model_providers.anvil_remote_azure.base_url="https://example.azure.com/openai"',
+        'model_providers.anvil_remote_azure.query_params={ "api-version" = "2025-04-01-preview" }',
+        'model="foundry-deployment"',
+        'model_providers.anvil_remote_azure.requires_openai_auth=false',
+      ]),
+    );
+  });
+
+  it('uses a private OpenAI provider id and disables ChatGPT account auth for API-key grants', async () => {
+    const server = fakeAppServer();
+    let spawnedArgs: string[] | undefined;
+    configureMeshSessionForTests({
+      spawn: (_command, args) => {
+        spawnedArgs = args;
+        return server.proc;
+      },
+      probeCli: async () => '0.44.0',
+    });
+
+    await runRemoteSessionTurn(
+      spec({
+        provider: 'openai',
+        authMode: 'cloud-provider',
+        extraEnv: { OPENAI_API_KEY: 'openai-key', OPENAI_BASE_URL: 'https://example.com/v1' },
+      }),
+      HOOKS_BASE,
+    );
+
+    expect(spawnedArgs).toEqual(
+      expect.arrayContaining([
+        'model_provider="anvil_remote_openai"',
+        'model_providers.anvil_remote_openai.name="OpenAI"',
+        'model_providers.anvil_remote_openai.base_url="https://example.com/v1"',
+        'model_providers.anvil_remote_openai.requires_openai_auth=false',
+      ]),
+    );
+  });
+
+  it('starts a thread, runs one turn, and stops the process group', async () => {
+    const fake = fakeAppServer();
+    configureMeshSessionForTests({
+      spawn: () => fake.proc,
+      probeCli: async () => '0.44.0',
+    });
+    const hooks = { ...HOOKS_BASE, onThreadStarted: vi.fn(), emitActivity: vi.fn() };
+    const result = await runRemoteSessionTurn(spec(), hooks);
+
+    expect(result.turnStatus).toBe('completed');
+    expect(result.providerThreadId).toBe('thr-fake-1');
+    expect(result.turnId).toBeNull(); // cleared by turn/completed
+    expect(result.cliVersion).toBe('0.44.0');
+    expect(result.cancelled).toBe(false);
+    expect(hooks.onThreadStarted).toHaveBeenCalledWith('thr-fake-1');
+    // The driver spawned detached and killed the group on exit.
+    expect(fake.killedWith).toContain('SIGTERM');
+    const methods = fake.received.map((m) => m['method']);
+    expect(methods).toEqual(
+      expect.arrayContaining(['initialize', 'initialized', 'thread/start', 'turn/start']),
+    );
+    const turnStart = fake.received.find((m) => m['method'] === 'turn/start');
+    expect((turnStart?.['params'] as Record<string, unknown>)['approvalPolicy']).toBe('never');
+  });
+
+  it('resumes a prior provider thread via thread/resume', async () => {
+    const fake = fakeAppServer();
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const result = await runRemoteSessionTurn(spec({ resumeThreadId: 'thr-prior-9' }), HOOKS_BASE);
+    expect(result.providerThreadId).toBe('thr-prior-9');
+    expect(fake.received.some((m) => m['method'] === 'thread/resume')).toBe(true);
+    expect(fake.received.some((m) => m['method'] === 'thread/start')).toBe(false);
+  });
+
+  it('times out a thread that never starts and kills the child', async () => {
+    const fake = fakeAppServer({ threadReady: false });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    await expect(runRemoteSessionTurn(spec(), HOOKS_BASE)).rejects.toThrow('thread-ready-timeout');
+    expect(fake.killedWith).toContain('SIGTERM');
+  });
+
+  it('interrupts the turn and reports cancelled when the attempt flag lands', async () => {
+    const fake = fakeAppServer({ holdTurn: true });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    let cancelled = false;
+    const hooks = {
+      onThreadStarted: vi.fn(),
+      emitActivity: vi.fn(),
+      isCancelled: () => cancelled,
+    };
+    const run = runRemoteSessionTurn(spec(), hooks);
+    // Let the turn start, then flag cancellation.
+    setTimeout(() => {
+      cancelled = true;
+    }, 100);
+    const result = await run;
+    expect(result.cancelled).toBe(true);
+    expect(result.turnStatus).toBe('interrupted');
+    expect(fake.received.some((m) => m['method'] === 'turn/interrupt')).toBe(true);
+  });
+
+  it('auto-declines provider approval requests instead of stalling', async () => {
+    const fake = fakeAppServer({ sendApprovalRequest: true });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const result = await runRemoteSessionTurn(spec(), HOOKS_BASE);
+    expect(result.turnStatus).toBe('completed');
+    const decline = fake.received.find(
+      (m) => m['id'] === 'req-approval-1' && m['result'] !== undefined,
+    );
+    expect((decline?.['result'] as Record<string, unknown>)['decision']).toBe('decline');
+  });
+
+  it('routes approval mode to the Mesh approver and accepts only a live decision', async () => {
+    const fake = fakeAppServer({ sendApprovalRequest: true, holdTurn: true });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const approve = vi.fn().mockResolvedValue(true);
+    await runRemoteSessionTurn(spec({ permissionMode: 'on-request' }), { ...HOOKS_BASE, approve });
+    expect(approve).toHaveBeenCalledWith(expect.objectContaining({ approvalCommand: 'rm -rf /' }));
+    expect(
+      fake.received.find((m) => m['id'] === 'req-approval-1' && m['result'])?.['result'],
+    ).toEqual({ decision: 'accept' });
+    expect(fake.received.find((m) => m['method'] === 'turn/start')?.['params']).toMatchObject({
+      approvalPolicy: 'on-request',
+    });
+  });
+  it.each(['read-only', 'workspace-auto'] as const)(
+    'does not authorize provider escalation in %s mode',
+    async (permissionMode) => {
+      const fake = fakeAppServer({ sendApprovalRequest: true, holdTurn: true });
+      configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+      const approve = vi.fn().mockResolvedValue(true);
+      await runRemoteSessionTurn(spec({ permissionMode }), { ...HOOKS_BASE, approve });
+      expect(approve).not.toHaveBeenCalled();
+      expect(
+        fake.received.find((m) => m['id'] === 'req-approval-1' && m['result'])?.['result'],
+      ).toEqual({ decision: 'decline' });
+    },
+  );
+  it('honors full-access provider requests without invoking the Mesh approver', async () => {
+    const fake = fakeAppServer({ sendApprovalRequest: true, holdTurn: true });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const approve = vi.fn().mockResolvedValue(false);
+    await runRemoteSessionTurn(spec({ permissionMode: 'full-access' }), {
+      ...HOOKS_BASE,
+      approve,
+    });
+    expect(approve).not.toHaveBeenCalled();
+    expect(
+      fake.received.find((m) => m['id'] === 'req-approval-1' && m['result'])?.['result'],
+    ).toEqual({ decision: 'accept' });
+  });
+  it('fails the attempt when the turn reports failed', async () => {
+    const fake = fakeAppServer({ turnStatus: 'failed' });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    const result = await runRemoteSessionTurn(spec(), HOOKS_BASE);
+    expect(result.turnStatus).toBe('failed');
+    expect(fake.killedWith.length).toBeGreaterThan(0);
+  });
+
+  it('kills the process group when the turn exceeds its timeout', async () => {
+    const fake = fakeAppServer({ holdTurn: true });
+    configureMeshSessionForTests({ spawn: () => fake.proc, probeCli: async () => '0.44.0' });
+    await expect(runRemoteSessionTurn(spec({ turnTimeoutMs: 200 }), HOOKS_BASE)).rejects.toThrow(
+      'turn-timeout-exceeded',
+    );
+    expect(fake.killedWith).toContain('SIGTERM');
+  });
+});
+
+describe('satisfiesCliMin', () => {
+  it('compares version tuples', () => {
+    expect(satisfiesCliMin('0.44.0', '0.40.0')).toBe(true);
+    expect(satisfiesCliMin('0.44.0', '0.44.0')).toBe(true);
+    expect(satisfiesCliMin('0.44.0', '0.44.1')).toBe(false);
+    expect(satisfiesCliMin('1.0.0', '0.99.9')).toBe(true);
+    expect(satisfiesCliMin('0.4', '0.4.0')).toBe(true);
+  });
+});
+
+describe('killProcessGroup', () => {
+  it('returns immediately for an already-exited process', async () => {
+    const proc = new EventEmitter() as MutableProcess;
+    proc.exitCode = 0;
+    proc.signalCode = null;
+    proc.kill = vi.fn(() => true);
+    await killProcessGroup(proc);
+    expect(proc.kill).not.toHaveBeenCalled();
+  });
+});

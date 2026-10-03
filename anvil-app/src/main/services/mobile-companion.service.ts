@@ -10,6 +10,9 @@ import type {
   CarPlayDriveSnapshot,
   CarPlayNoteRequest,
   CarPlaySessionSummary,
+  CompanionEnrollmentPolicy,
+  CompanionPolicyState,
+  CompanionPolicyTier,
   MobileChatThreadSummary,
   MobileCompanionAdvertisedAddress,
   MobileCompanionClientType,
@@ -37,6 +40,10 @@ import {
   isCarPlayApprovable,
 } from '../../shared/companion-policy.js';
 import { getDb } from '../db/database.js';
+import {
+  clearCompanionAuthCaches,
+  registerCompanionAuthCacheInvalidator,
+} from './companion-auth-cache.service.js';
 import { getSettings } from './settings.service.js';
 import { getWorkspace, listWorkspaces } from './workspace.service.js';
 import { emitCompanionEvent, onCompanionEvent } from './companion-events.service.js';
@@ -67,6 +74,12 @@ import {
   getItem as getLifecycleItem,
   listItems as listLifecycleItems,
 } from './lifecycle.service.js';
+import {
+  attestDeviceAccessToken,
+  getRuntimeStatus,
+  publishCompanionAdvertisement,
+} from './sync-runtime.service.js';
+import type { CompanionEndpoint } from '../../../cloud/contract/companion.js';
 
 interface MobileCompanionSettingsRow {
   enabled: number;
@@ -84,6 +97,56 @@ interface MobileCompanionDeviceRow {
   last_seen_at: string | null;
   revoked_at: string | null;
 }
+
+// ---- MOB-01 enrollment attestation + per-enrollment policy -------------
+// Two credential kinds reach this server: legacy paired-device bearer
+// tokens (mobile_companion_devices) and account device-session access
+// tokens. The latter are attested through the backend (`session.attest`)
+// and authorized by the per-enrollment policy table — enrollment proves
+// identity, the host decides authority (auto-authenticate ≠
+// auto-authorize).
+
+interface CompanionEnrollmentPolicyRow {
+  enrollment_id: string;
+  account_id: string;
+  display_name: string | null;
+  tier: CompanionPolicyState;
+  first_seen_at: string;
+  decided_at: string | null;
+  updated_at: string;
+}
+
+type CompanionRequestAuth =
+  | { kind: 'paired'; device: MobileCompanionDeviceRow }
+  | { kind: 'enrollment'; enrollmentId: string; accountId: string; tier: CompanionPolicyTier };
+
+type CompanionAuthResult =
+  | { ok: true; auth: CompanionRequestAuth }
+  | { ok: false; status: number; error: string; enrollmentId?: string };
+
+const TIER_RANK: Record<CompanionPolicyTier, number> = { observe: 1, approve: 2, steer: 3 };
+const ATTEST_POSITIVE_TTL_MS = 60_000;
+const ATTEST_NEGATIVE_TTL_MS = 15_000;
+const EVENT_STREAM_TICKET_TTL_MS = 15_000;
+const EVENT_STREAM_TICKET_MAX = 256;
+const EXPO_WEB_PORT = '8081';
+const attestCache = new Map<
+  string,
+  {
+    enrollmentId: string | null;
+    accountId: string;
+    authExpiresAt: string | null;
+    expiresAt: number;
+  }
+>();
+const eventStreamTickets = new Map<
+  string,
+  { auth: CompanionRequestAuth; authExpiresAt: string | null; expiresAt: number }
+>();
+registerCompanionAuthCacheInvalidator(() => {
+  attestCache.clear();
+  eventStreamTickets.clear();
+});
 
 interface ChatThreadRow {
   id: string;
@@ -302,9 +365,15 @@ export async function startMobileCompanionServer(): Promise<void> {
       resolve();
     });
   });
+
+  startAdvertisementLoop();
 }
 
 export async function stopMobileCompanionServer(): Promise<void> {
+  if (advertiseTimer !== null) {
+    clearInterval(advertiseTimer);
+    advertiseTimer = null;
+  }
   if (!server) {
     serverRunning = false;
     return;
@@ -316,6 +385,47 @@ export async function stopMobileCompanionServer(): Promise<void> {
     closing.close(() => resolve());
   });
   serverRunning = false;
+}
+
+// ---- MOB-01 endpoint advertisement -------------------------------------
+// While the companion server runs and this host is signed in, publish its
+// dialable endpoints (TS → LAN → loopback) to the account object so
+// enrolled companions can find it. Refreshed well inside the ad TTL;
+// unsigned/offline hosts simply stay unadvertised.
+
+const ADVERTISE_REFRESH_MS = 10 * 60 * 1000;
+let advertiseTimer: ReturnType<typeof setInterval> | null = null;
+
+function currentCompanionEndpoints(): CompanionEndpoint[] {
+  const settings = ensureMobileCompanionSettings();
+  return getAdvertisedAddresses(settings.port).map((address) => {
+    const parsed = new URL(address.url);
+    return {
+      kind: address.kind,
+      host: parsed.hostname,
+      port: Number(parsed.port) || settings.port,
+    };
+  });
+}
+
+async function advertiseCompanionPresence(): Promise<void> {
+  try {
+    await publishCompanionAdvertisement({
+      endpoints: currentCompanionEndpoints(),
+      capabilities: ['observe', 'approve', 'steer'],
+    });
+  } catch {
+    // Signed out or unreachable — this host simply isn't advertised.
+  }
+}
+
+function startAdvertisementLoop(): void {
+  if (advertiseTimer !== null) return;
+  void advertiseCompanionPresence();
+  advertiseTimer = setInterval(() => {
+    void advertiseCompanionPresence();
+  }, ADVERTISE_REFRESH_MS);
+  advertiseTimer.unref();
 }
 
 export async function createMobilePairingTicket(): Promise<MobilePairingTicket> {
@@ -388,6 +498,7 @@ export function revokeMobileCompanionDevice(deviceId: string): void {
        WHERE id = ?`,
     )
     .run(new Date().toISOString(), deviceId);
+  clearCompanionAttestationCache();
 }
 
 export function listMobileQuickActions(): MobileQuickAction[] {
@@ -468,7 +579,7 @@ function getAdvertisedAddresses(port: number): MobileCompanionAdvertisedAddress[
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  setCommonHeaders(res);
+  setCommonHeaders(req, res);
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -479,6 +590,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const pathParts = url.pathname.split('/').filter(Boolean);
 
   if (req.method === 'GET' && url.pathname === '/health') {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      sendJson(res, 404, { error: 'Mobile companion endpoint not found.' });
+      return;
+    }
     sendJson(res, 200, { ok: true, status: await getMobileCompanionStatus(), error: serverError });
     return;
   }
@@ -489,15 +604,44 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  const allowQueryToken =
-    req.method === 'GET' && (url.pathname === '/api/events' || isChatAttachmentRoute(pathParts));
-  const device = authenticateRequest(req, allowQueryToken);
-  if (!device) {
-    sendJson(res, 401, { error: 'Missing or invalid mobile companion token.' });
+  const streamTicket =
+    req.method === 'GET' && url.pathname === '/api/events' ? url.searchParams.get('ticket') : null;
+  const authn =
+    streamTicket === null ? await authenticateRequest(req) : consumeEventStreamTicket(streamTicket);
+  if (!authn.ok) {
+    sendJson(res, authn.status, {
+      error: authn.error,
+      ...(authn.enrollmentId === undefined ? {} : { enrollmentId: authn.enrollmentId }),
+    });
     return;
   }
 
-  touchDevice(device.id);
+  // Per-enrollment policy gates what an account credential may do; paired
+  // tokens keep their existing full-access semantics.
+  if (authn.auth.kind === 'enrollment') {
+    const required = requiredCompanionTier(req.method ?? 'GET', pathParts);
+    if (TIER_RANK[authn.auth.tier] < TIER_RANK[required]) {
+      sendJson(res, 403, {
+        error: `This device does not have '${required}' access on the host.`,
+        required,
+        granted: authn.auth.tier,
+      });
+      return;
+    }
+  } else {
+    touchDevice(authn.auth.device.id);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/events/ticket') {
+    const issued = issueEventStreamTicket(authn.auth);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    sendJson(res, 201, {
+      ticket: issued.ticket,
+      expiresAt: new Date(issued.expiresAt).toISOString(),
+    });
+    return;
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/overview') {
     sendJson(res, 200, getMobileOverview(url.searchParams.get('workspaceId') ?? undefined));
@@ -813,18 +957,282 @@ function createCompanionDevice(
   };
 }
 
-function authenticateRequest(
-  req: IncomingMessage,
-  allowQueryToken = false,
-): MobileCompanionDeviceRow | null {
+/**
+ * MOB-01: verifies a bearer that is not a paired-device token by attesting
+ * it through the backend (`session.attest` via sync-runtime). A token is
+ * valid only when it resolves to a non-revoked enrollment on THIS host's
+ * signed-in account. Cache entries are bound to the current host session and
+ * positive attestations age out in 60s, bounding remote revoke propagation.
+ * Failures age out in 15s to keep bad tokens cheap.
+ */
+async function attestEnrollment(
+  token: string,
+): Promise<{ enrollmentId: string; accountId: string } | null> {
+  const tokenHash = hashToken(token);
+  const now = Date.now();
+  const snapshot = getRuntimeStatus().auth;
+  if (snapshot.state !== 'signed-in' || snapshot.accountId === null) {
+    // Signed out: attestation is impossible. P2P paired tokens still work.
+    return null;
+  }
+  const cached = attestCache.get(tokenHash);
+  if (cached !== undefined && cached.expiresAt > now) {
+    if (cached.accountId === snapshot.accountId && cached.authExpiresAt === snapshot.expiresAt) {
+      if (cached.enrollmentId === null) return null;
+      return { enrollmentId: cached.enrollmentId, accountId: cached.accountId };
+    }
+    attestCache.delete(tokenHash);
+  }
+  const claims = await attestDeviceAccessToken(token).catch(() => null);
+  const verified = claims !== null && claims.accountId === snapshot.accountId ? claims : null;
+  const currentAuth = getRuntimeStatus().auth;
+  if (
+    currentAuth.state !== 'signed-in' ||
+    currentAuth.accountId !== snapshot.accountId ||
+    currentAuth.expiresAt !== snapshot.expiresAt
+  ) {
+    return null;
+  }
+  attestCache.set(tokenHash, {
+    enrollmentId: verified === null ? null : verified.enrollmentId,
+    accountId: snapshot.accountId,
+    authExpiresAt: snapshot.expiresAt,
+    expiresAt: now + (verified === null ? ATTEST_NEGATIVE_TTL_MS : ATTEST_POSITIVE_TTL_MS),
+  });
+  return verified === null
+    ? null
+    : { enrollmentId: verified.enrollmentId, accountId: verified.accountId };
+}
+
+/** Drops all cached attestations (sign-in changes, revocation notices). */
+export function clearCompanionAttestationCache(): void {
+  clearCompanionAuthCaches();
+}
+
+function issueEventStreamTicket(auth: CompanionRequestAuth): { ticket: string; expiresAt: number } {
+  const now = Date.now();
+  for (const [key, ticket] of eventStreamTickets) {
+    if (ticket.expiresAt <= now) eventStreamTickets.delete(key);
+  }
+  while (eventStreamTickets.size >= EVENT_STREAM_TICKET_MAX) {
+    const oldest = eventStreamTickets.keys().next().value;
+    if (oldest === undefined) break;
+    eventStreamTickets.delete(oldest);
+  }
+
+  const ticket = randomToken(32);
+  const expiresAt = now + EVENT_STREAM_TICKET_TTL_MS;
+  const snapshot = getRuntimeStatus().auth;
+  eventStreamTickets.set(hashToken(ticket), {
+    auth,
+    authExpiresAt: snapshot.state === 'signed-in' ? snapshot.expiresAt : null,
+    expiresAt,
+  });
+  return { ticket, expiresAt };
+}
+
+function consumeEventStreamTicket(ticket: string): CompanionAuthResult {
+  const key = hashToken(ticket);
+  const state = eventStreamTickets.get(key);
+  eventStreamTickets.delete(key);
+  if (state === undefined || state.expiresAt <= Date.now()) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+
+  if (state.auth.kind === 'paired') {
+    const device = getDb()
+      .prepare(
+        `SELECT * FROM mobile_companion_devices
+         WHERE id = ? AND token_hash = ? AND revoked_at IS NULL`,
+      )
+      .get(state.auth.device.id, state.auth.device.token_hash) as
+      | MobileCompanionDeviceRow
+      | undefined;
+    return device === undefined
+      ? { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' }
+      : { ok: true, auth: { kind: 'paired', device } };
+  }
+
+  const snapshot = getRuntimeStatus().auth;
+  if (
+    snapshot.state !== 'signed-in' ||
+    snapshot.accountId !== state.auth.accountId ||
+    snapshot.expiresAt !== state.authExpiresAt
+  ) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+  const policy = readPolicyRow(state.auth.enrollmentId);
+  if (policy === undefined || policy.account_id !== state.auth.accountId) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+  if (policy.tier === 'pending') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device is waiting for approval on the host.',
+      enrollmentId: state.auth.enrollmentId,
+    };
+  }
+  if (policy.tier === 'denied') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device was denied access on the host.',
+      enrollmentId: state.auth.enrollmentId,
+    };
+  }
+  return {
+    ok: true,
+    auth: {
+      kind: 'enrollment',
+      enrollmentId: state.auth.enrollmentId,
+      accountId: state.auth.accountId,
+      tier: policy.tier,
+    },
+  };
+}
+
+function readPolicyRow(enrollmentId: string): CompanionEnrollmentPolicyRow | undefined {
+  return getDb()
+    .prepare('SELECT * FROM companion_enrollment_policies WHERE enrollment_id = ?')
+    .get(enrollmentId) as CompanionEnrollmentPolicyRow | undefined;
+}
+
+function mapPolicyRow(row: CompanionEnrollmentPolicyRow): CompanionEnrollmentPolicy {
+  return {
+    enrollmentId: row.enrollment_id,
+    accountId: row.account_id,
+    displayName: row.display_name,
+    tier: row.tier,
+    firstSeenAt: row.first_seen_at,
+    decidedAt: row.decided_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * First contact from a verified enrollment creates a `pending` policy row
+ * and surfaces it (settings event) — the host decides the tier; nothing is
+ * granted by account membership alone. Best-effort name enrichment runs
+ * in the background through `device.list`.
+ */
+// DAEMON-01: headless hosts have no first-contact approval UX, so a daemon
+// may set a default tier for first-seen enrollments. Desktops leave this
+// null — every new enrollment still lands as pending there.
+let defaultPolicyTier: 'observe' | 'approve' | 'steer' | 'denied' | null = null;
+
+export function setCompanionDefaultPolicyTier(
+  tier: 'observe' | 'approve' | 'steer' | 'denied' | null,
+): void {
+  defaultPolicyTier = tier;
+}
+
+function ensurePolicyRow(enrollmentId: string, accountId: string): CompanionEnrollmentPolicyRow {
+  const existing = readPolicyRow(enrollmentId);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const now = new Date().toISOString();
+  const tier = defaultPolicyTier ?? 'pending';
+  getDb()
+    .prepare(
+      `INSERT INTO companion_enrollment_policies
+       (enrollment_id, account_id, display_name, tier, first_seen_at, decided_at, updated_at)
+       VALUES (?, ?, NULL, ?, ?, ?, ?)`,
+    )
+    .run(enrollmentId, accountId, tier, now, tier === 'pending' ? null : now, now);
+  emitCompanionEvent('settings');
+  void enrichPendingPolicyName(enrollmentId);
+  return readPolicyRow(enrollmentId) as CompanionEnrollmentPolicyRow;
+}
+
+async function enrichPendingPolicyName(enrollmentId: string): Promise<void> {
+  try {
+    const { listDevices } = await import('./sync-runtime.service.js');
+    const { devices } = await listDevices();
+    const match = devices.find((d) => d.enrollmentId === enrollmentId);
+    if (match?.displayName !== undefined && match.displayName !== null) {
+      getDb()
+        .prepare(
+          'UPDATE companion_enrollment_policies SET display_name = ? WHERE enrollment_id = ?',
+        )
+        .run(match.displayName, enrollmentId);
+    }
+  } catch {
+    // Name enrichment is cosmetic; a null displayName falls back to the id.
+  }
+}
+
+function touchPolicy(enrollmentId: string): void {
+  getDb()
+    .prepare('UPDATE companion_enrollment_policies SET updated_at = ? WHERE enrollment_id = ?')
+    .run(new Date().toISOString(), enrollmentId);
+}
+
+export function listCompanionEnrollmentPolicies(): CompanionEnrollmentPolicy[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM companion_enrollment_policies ORDER BY first_seen_at DESC')
+    .all() as CompanionEnrollmentPolicyRow[];
+  return rows.map(mapPolicyRow);
+}
+
+/**
+ * Host decision on an enrollment. `pending` resets to undecided; 'denied'
+ * blocks without deleting the audit row.
+ */
+export function setCompanionEnrollmentPolicy(
+  enrollmentId: string,
+  tier: CompanionPolicyState,
+): CompanionEnrollmentPolicy | null {
+  const row = readPolicyRow(enrollmentId);
+  if (row === undefined) return null;
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `UPDATE companion_enrollment_policies
+       SET tier = ?, decided_at = ?, updated_at = ? WHERE enrollment_id = ?`,
+    )
+    .run(tier, tier === 'pending' ? null : now, now, enrollmentId);
+  emitCompanionEvent('settings');
+  const updated = readPolicyRow(enrollmentId);
+  return updated === undefined ? null : mapPolicyRow(updated);
+}
+
+/** Forgets an enrollment row entirely; the next contact re-pends. */
+export function removeCompanionEnrollmentPolicy(enrollmentId: string): void {
+  getDb()
+    .prepare('DELETE FROM companion_enrollment_policies WHERE enrollment_id = ?')
+    .run(enrollmentId);
+  emitCompanionEvent('settings');
+}
+
+/** Minimum tier each request needs; paired tokens bypass tiering entirely. */
+function requiredCompanionTier(
+  method: string | undefined,
+  pathParts: string[],
+): CompanionPolicyTier {
+  if (method === 'POST' && pathParts[0] === 'api' && pathParts[1] === 'events') {
+    return 'observe';
+  }
+  if (method === 'GET' || method === 'HEAD') return 'observe';
+  if (pathParts[0] === 'api' && pathParts[1] === 'approvals') return 'approve';
+  if (
+    pathParts[0] === 'api' &&
+    pathParts[1] === 'chat' &&
+    pathParts[2] === 'file-mentions' &&
+    pathParts[3] === 'search'
+  ) {
+    return 'observe';
+  }
+  return 'steer';
+}
+
+async function authenticateRequest(req: IncomingMessage): Promise<CompanionAuthResult> {
   const header = req.headers.authorization;
-  const eventStreamToken = allowQueryToken
-    ? new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('access_token')
-    : null;
-  const token = header?.startsWith('Bearer ')
-    ? header.slice('Bearer '.length).trim()
-    : eventStreamToken?.trim();
-  if (!token) return null;
+  const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : null;
+  if (!token) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
   const tokenHash = hashToken(token);
   const row = getDb()
     .prepare(
@@ -832,7 +1240,41 @@ function authenticateRequest(
        WHERE token_hash = ? AND revoked_at IS NULL`,
     )
     .get(tokenHash) as MobileCompanionDeviceRow | undefined;
-  return row ?? null;
+  if (row !== undefined) {
+    return { ok: true, auth: { kind: 'paired', device: row } };
+  }
+  // Enrollment credential path: attest → same-account check → host policy.
+  const attested = await attestEnrollment(token);
+  if (attested === null) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+  const policy = ensurePolicyRow(attested.enrollmentId, attested.accountId);
+  touchPolicy(attested.enrollmentId);
+  if (policy.tier === 'pending') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device is waiting for approval on the host.',
+      enrollmentId: attested.enrollmentId,
+    };
+  }
+  if (policy.tier === 'denied') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device was denied access on the host.',
+      enrollmentId: attested.enrollmentId,
+    };
+  }
+  return {
+    ok: true,
+    auth: {
+      kind: 'enrollment',
+      enrollmentId: attested.enrollmentId,
+      accountId: attested.accountId,
+      tier: policy.tier,
+    },
+  };
 }
 
 function touchDevice(deviceId: string): void {
@@ -1044,7 +1486,12 @@ export function listCarPlayApprovalRequests(): CarPlayApprovalRequest[] {
     return {
       ...approval,
       id,
-      title: approval.kind === 'command' ? 'Command approval' : 'File change approval',
+      title:
+        approval.kind === 'command'
+          ? 'Command approval'
+          : approval.kind === 'file_change'
+            ? 'File change approval'
+            : 'Permission request',
       workspaceId: workspace?.id,
       workspaceName: workspace?.name,
       repo: repo?.name ?? repo?.path ?? approval.repoName,
@@ -2345,15 +2792,52 @@ async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 }
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
-  setCommonHeaders(res);
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
 }
 
-function setCommonHeaders(res: ServerResponse): void {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+function setCommonHeaders(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  res.setHeader('Vary', 'Origin');
+  if (!isSameHostOrigin(origin, req.socket.localAddress, req.socket.remoteAddress)) return;
+  res.setHeader('Access-Control-Allow-Origin', new URL(origin).origin);
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+}
+
+function isSameHostOrigin(
+  origin: string,
+  localAddress: string | undefined,
+  remoteAddress: string | undefined,
+): boolean {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    const originHost = normalizeAddress(url.hostname);
+    const localHost = normalizeAddress(localAddress ?? '');
+    const remoteHost = normalizeAddress(remoteAddress ?? '');
+    const sameHost = originHost === localHost;
+    const localLoopbackOrigin =
+      isLoopbackAddress(originHost) &&
+      ((isLoopbackAddress(localHost) && isLoopbackAddress(remoteHost)) ||
+        (localHost !== '' && localHost === remoteHost));
+    return (sameHost || localLoopbackOrigin) && url.port === EXPO_WEB_PORT;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeAddress(address: string): string {
+  return address
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/^::ffff:/, '');
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  const normalized = normalizeAddress(address ?? '');
+  return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
 }
 
 function isChatAttachmentRoute(pathParts: string[]): boolean {
@@ -2382,7 +2866,6 @@ function sendChatAttachment(res: ServerResponse, attachmentId: string): void {
     return;
   }
 
-  setCommonHeaders(res);
   res.writeHead(200, {
     'Content-Type': attachment.mimeType || 'application/octet-stream',
     'Content-Length': fileStat.size,

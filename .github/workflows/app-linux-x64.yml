@@ -28,6 +28,11 @@ jobs:
   package:
     name: Build AppImage, deb, and pacman packages
     runs-on: ubuntu-24.04
+    environment: ${{ github.ref_type == 'tag' && 'anvil-production' || 'anvil-staging' }}
+    env:
+      ANVIL_DEPLOYMENT_ENV: ${{ github.ref_type == 'tag' && 'production' || 'staging' }}
+      ANVIL_STAGING_HOSTED_BACKEND_URL: ${{ vars.ANVIL_STAGING_HOSTED_BACKEND_URL }}
+      ANVIL_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.ANVIL_PRODUCTION_HOSTED_BACKEND_URL }}
 
     steps:
       - name: Checkout

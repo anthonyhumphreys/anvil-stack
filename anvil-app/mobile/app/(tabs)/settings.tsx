@@ -1,7 +1,17 @@
 import { MaterialIcons } from '@react-native-vector-icons/material-icons';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
+import type { DevicePresenceEntry } from '../../../cloud/contract/companion';
+import {
+  enrollWithCode,
+  getAccountConnection,
+  getAccountPresence,
+  signOutAccount,
+  type AccountConnection,
+} from '@/lib/anvil-account';
+import { dialAccountHosts } from '@/lib/account-dial';
+import { removeAccountConnections } from '@/lib/anvil-api';
 import {
   ActionButton,
   EmptyState,
@@ -38,6 +48,64 @@ export default function SettingsScreen() {
   const [deviceName, setDeviceName] = useState('Anvil Mobile');
   const [manualBaseUrl, setManualBaseUrl] = useState('');
   const [manualToken, setManualToken] = useState('');
+  const [account, setAccount] = useState<AccountConnection | null>(null);
+  const [accountDevices, setAccountDevices] = useState<DevicePresenceEntry[]>([]);
+  const [accountApiUrl, setAccountApiUrl] = useState('');
+  const [accountCode, setAccountCode] = useState('');
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+
+  const refreshAccount = async () => {
+    const connection = await getAccountConnection();
+    setAccount(connection);
+    if (!connection) {
+      setAccountDevices([]);
+      return;
+    }
+    try {
+      const presence = await getAccountPresence();
+      setAccountDevices(presence.devices);
+      await dialAccountHosts();
+    } catch (err) {
+      setAccountError(err instanceof Error ? err.message : 'Failed to load account devices');
+    }
+  };
+
+  useEffect(() => {
+    void refreshAccount();
+  }, []);
+
+  const connectAccount = async () => {
+    setAccountBusy(true);
+    setAccountError(null);
+    try {
+      await enrollWithCode(accountApiUrl, accountCode, deviceName);
+      setAccountCode('');
+      await refreshAccount();
+    } catch (err) {
+      setAccountError(err instanceof Error ? err.message : 'Failed to connect account');
+    } finally {
+      setAccountBusy(false);
+    }
+  };
+
+  const confirmSignOutAccount = () => {
+    Alert.alert('Sign out of account?', 'This device loses access to account-connected hosts.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            await signOutAccount();
+            await removeAccountConnections();
+            await refreshAccount();
+            await refresh();
+          })();
+        },
+      },
+    ]);
+  };
 
   const handleBarcode = async (result: BarcodeScanningResult) => {
     if (!scanning || pairingInFlightRef.current) return;
@@ -156,6 +224,102 @@ export default function SettingsScreen() {
       <Panel>
         <View style={panelHeaderStyle}>
           <View style={iconBoxStyle}>
+            <MaterialIcons
+              name={account ? 'cloud-done' : 'cloud-off'}
+              size={18}
+              color={account ? companionColors.green : companionColors.subtle}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={titleStyle}>Anvil account</Text>
+            <Text style={bodyStyle}>
+              {account
+                ? `Signed in as ${account.session.accountId}`
+                : 'Sign in to reach every enrolled host — no LAN pairing needed.'}
+            </Text>
+          </View>
+        </View>
+        {account ? (
+          <>
+            {accountDevices.length > 0 ? (
+              accountDevices.map((device) => (
+                <View key={device.enrollmentId} style={accountDeviceRowStyle}>
+                  <MaterialIcons
+                    name="circle"
+                    size={10}
+                    color={device.online ? companionColors.green : companionColors.faint}
+                  />
+                  <View style={{ flex: 1, gap: 2 }}>
+                    <Text numberOfLines={1} style={titleStyle}>
+                      {device.self ? 'This device' : device.enrollmentId}
+                    </Text>
+                    <Text numberOfLines={1} style={subtleStyle}>
+                      {device.online
+                        ? `online · ${(device.endpoints ?? [])
+                            .map((endpoint) => endpoint.kind)
+                            .join(', ') || 'cloud only'}`
+                        : `last seen ${new Date(device.lastSeenAt).toLocaleString()}`}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            ) : (
+              <EmptyState title="No devices" body="No other enrollments are online." />
+            )}
+            <ActionButton
+              label={accountBusy ? 'Working…' : 'Refresh devices'}
+              variant="secondary"
+              disabled={accountBusy}
+              onPress={() => void refreshAccount()}
+            />
+            <ActionButton
+              label="Sign out of account"
+              variant="danger"
+              onPress={confirmSignOutAccount}
+            />
+          </>
+        ) : (
+          <>
+            <TextInput
+              value={accountApiUrl}
+              onChangeText={setAccountApiUrl}
+              placeholder="https://your-anvil-backend"
+              placeholderTextColor={companionColors.faint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              style={inputStyle}
+            />
+            <TextInput
+              value={accountCode}
+              onChangeText={setAccountCode}
+              placeholder="Enrollment code"
+              placeholderTextColor={companionColors.faint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={inputStyle}
+            />
+            <Text style={subtleStyle}>
+              Mint a code from the account website (Connect a device) or desktop Sync &amp; Mesh
+              settings.
+            </Text>
+            <ActionButton
+              label={accountBusy ? 'Connecting…' : 'Connect account'}
+              disabled={accountBusy || !accountApiUrl.trim() || !accountCode.trim()}
+              onPress={() => void connectAccount()}
+            />
+          </>
+        )}
+        {accountError ? (
+          <Text selectable style={{ color: companionColors.red, fontWeight: '800' }}>
+            {accountError}
+          </Text>
+        ) : null}
+      </Panel>
+
+      <Panel>
+        <View style={panelHeaderStyle}>
+          <View style={iconBoxStyle}>
             <MaterialIcons name="qr-code-scanner" size={18} color={companionColors.accentInk} />
           </View>
           <View style={{ flex: 1 }}>
@@ -233,9 +397,18 @@ export default function SettingsScreen() {
                       {host.deviceName || hostLabel(host.baseUrl)}
                     </Text>
                     <Text selectable numberOfLines={1} style={subtleStyle}>
-                      {host.baseUrl}
+                      {host.requiresHostApproval
+                        ? 'waiting for approval on host'
+                        : host.baseUrl}
                     </Text>
                   </View>
+                  {host.authMode === 'account' ? (
+                    <MaterialIcons
+                      name="cloud-done"
+                      size={16}
+                      color={companionColors.accentInk}
+                    />
+                  ) : null}
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() =>
@@ -382,6 +555,16 @@ const hostIconStyle = {
   width: 34,
   height: 34,
   borderRadius: 9,
+};
+const accountDeviceRowStyle = {
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 10,
+  borderWidth: 1,
+  borderColor: companionColors.borderSubtle,
+  borderRadius: 8,
+  backgroundColor: companionColors.surfaceMuted,
+  padding: 10,
 };
 const forgetButtonStyle = {
   alignItems: 'center' as const,

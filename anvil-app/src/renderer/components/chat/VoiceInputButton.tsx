@@ -29,7 +29,7 @@ export function VoiceInputButton({
 
   if (!isSupported) return null;
 
-  const activeColour = STATUS_COLOURS[status] || colour || '#b5121b';
+  const activeColour = STATUS_COLOURS[status] || colour || 'var(--color-accent)';
 
   return (
     <button
@@ -38,7 +38,9 @@ export function VoiceInputButton({
       disabled={(disabled && !isListening) || status === 'processing'}
       className="flex h-9 w-9 items-center justify-center rounded-xl transition-[background-color,color,transform] duration-200 hover:bg-bg-tertiary disabled:opacity-30"
       style={{
-        backgroundColor: isListening ? activeColour : `${activeColour}20`,
+        backgroundColor: isListening
+          ? activeColour
+          : `color-mix(in srgb, ${activeColour} 12.5%, transparent)`,
       }}
       title={
         status === 'processing'

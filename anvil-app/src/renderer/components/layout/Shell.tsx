@@ -4,7 +4,7 @@ import { Sidebar } from './Sidebar';
 import { StatusBar } from './StatusBar';
 import { CommandPalette } from './CommandPalette';
 import { WorkspaceCreator } from '../workspace/WorkspaceCreator';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
 import type { UserRole } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
 import { TerminalPanel } from '../terminal/TerminalPanel';
@@ -28,7 +28,15 @@ interface ShellProps {
 }
 
 export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: ShellProps) {
-  const { activeScaffoldSession, switchWorkspace, refreshWorkspaces } = useWorkspace();
+  const {
+    activeScaffoldSession,
+    repos,
+    switchWorkspace,
+    refreshWorkspaces,
+    workspaceSwitchNotice,
+    undoWorkspaceSwitch,
+    dismissWorkspaceSwitchNotice,
+  } = useWorkspace();
   const [showCreator, setShowCreator] = useState(false);
   const [editorMounted, setEditorMounted] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -45,6 +53,13 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
   const isToolWindow = new URLSearchParams(location.search).get('toolWindow') === '1';
 
   const toggleTerminal = useCallback(() => setTerminalOpen((prev) => !prev), []);
+
+  // WS7: the "Switched to X" toast auto-dismisses after a few seconds.
+  useEffect(() => {
+    if (!workspaceSwitchNotice) return;
+    const timeout = window.setTimeout(dismissWorkspaceSwitchNotice, 6000);
+    return () => window.clearTimeout(timeout);
+  }, [workspaceSwitchNotice, dismissWorkspaceSwitchNotice]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -67,20 +82,26 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [navigate, toggleTerminal]);
 
+  // Q4: scaffold route locks lift as soon as any repo reaches the `mapped`
+  // tier — enrichment keeps running in the background and Chat/Settings stay
+  // available throughout. Failed sessions also unlock (the workspace view
+  // surfaces the error with a Retry affordance).
   useEffect(() => {
     if (!activeScaffoldSession) return;
     if (
       activeScaffoldSession.status === 'completed' ||
-      activeScaffoldSession.status === 'cancelled'
+      activeScaffoldSession.status === 'cancelled' ||
+      activeScaffoldSession.status === 'failed'
     ) {
       return;
     }
+    if (repos.some(repoIsMapped)) return; // unlocked at the mapped tier
 
     const allowedPaths = new Set(['/chat', '/settings']);
     if (!allowedPaths.has(location.pathname)) {
       navigate('/chat', { replace: true });
     }
-  }, [activeScaffoldSession, location.pathname, navigate]);
+  }, [activeScaffoldSession, repos, location.pathname, navigate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -215,6 +236,33 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
           onToggleTerminal={() => setTerminalOpen((prev) => !prev)}
           terminalOpen={terminalOpen}
         />
+        {/* WS7: workspace-switch confirmation with Undo. */}
+        {workspaceSwitchNotice && (
+          <div
+            role="status"
+            className="fixed bottom-12 right-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm shadow-[0_16px_40px_rgba(0,0,0,0.32)]"
+          >
+            <span className="text-text-secondary">
+              Switched to{' '}
+              <span className="font-medium text-text-primary">{workspaceSwitchNotice.toName}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => void undoWorkspaceSwitch()}
+              className="rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10"
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={dismissWorkspaceSwitchNotice}
+              aria-label="Dismiss"
+              className="rounded-md px-1.5 py-1 text-xs text-text-tertiary hover:text-text-primary"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         {showCreator && (
           <WorkspaceCreator
             onCreated={async () => {

@@ -21,6 +21,7 @@ import {
   listAnvilCloudExecutions,
   saveAnvilCloudExecutionConnection,
   startAnvilCloudExecution,
+  testAnvilCloudExecutionConnection,
 } from '../anvil-cloud-execution.service.js';
 
 beforeEach(() => {
@@ -113,6 +114,7 @@ describe('Anvil Cloud remote execution service', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       'https://cloud.example.test/v1/executions',
       expect.objectContaining({
+        redirect: 'error',
         headers: expect.objectContaining({
           authorization: 'Bearer a-secure-control-token',
         }),
@@ -121,6 +123,47 @@ describe('Anvil Cloud remote execution service', () => {
     expect(JSON.stringify(getAnvilCloudExecutionConnection())).not.toContain(
       'a-secure-control-token',
     );
+  });
+
+  it('loads provider capabilities when checking a saved connection', async () => {
+    saveAnvilCloudExecutionConnection({
+      endpoint: 'https://cloud.example.test',
+      token: 'a-secure-control-token',
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ executions: [] }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          providers: [
+            {
+              id: 'aws-lambda-microvm',
+              capabilities: {
+                modes: ['read-only'],
+                modelAuth: ['control-plane', 'provider-subscription'],
+                subscriptionProviders: ['codex'],
+              },
+              availability: { configured: true, reasons: [] },
+            },
+          ],
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(testAnvilCloudExecutionConnection()).resolves.toMatchObject({
+      ok: true,
+      providers: [
+        expect.objectContaining({
+          id: 'aws-lambda-microvm',
+          capabilities: expect.objectContaining({ subscriptionProviders: ['codex'] }),
+        }),
+      ],
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://cloud.example.test/v1/executions',
+      'https://cloud.example.test/v1/execution-providers',
+    ]);
   });
 
   it('archives committed files, uploads a snapshot, and starts a read-only lease', async () => {
@@ -208,9 +251,39 @@ describe('Anvil Cloud remote execution service', () => {
     });
     expect(execFileMock).toHaveBeenCalledWith(
       'git',
-      expect.arrayContaining(['archive', '--format=tar', 'HEAD', ':(exclude)**/.env']),
+      expect.arrayContaining(['archive', '--format=tar', 'a'.repeat(40), ':(exclude)**/.env']),
       expect.objectContaining({ encoding: 'buffer' }),
       expect.any(Function),
+    );
+  });
+
+  it('fails closed when a successful execution list is malformed', async () => {
+    saveAnvilCloudExecutionConnection({
+      endpoint: 'https://cloud.example.test',
+      token: 'a-secure-control-token',
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ executions: { unexpected: true } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(listAnvilCloudExecutions()).rejects.toThrow('returned no execution list');
+  });
+
+  it('fails closed when an execution list contains a malformed lease', async () => {
+    saveAnvilCloudExecutionConnection({
+      endpoint: 'https://cloud.example.test',
+      token: 'a-secure-control-token',
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ executions: [{ id: 'missing-contract-fields' }] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(listAnvilCloudExecutions()).rejects.toThrow(
+      'returned a malformed execution lease',
     );
   });
 });

@@ -1,7 +1,4 @@
-import type {
-  LocalLlmCapabilities,
-  LocalLlmProvider,
-} from '../../shared/types.js';
+import type { LocalLlmCapabilities, LocalLlmProvider } from '../../shared/types.js';
 import {
   callAppleFoundationModel,
   getAppleLocalModelStatus,
@@ -55,7 +52,10 @@ export function getDefaultLocalLlmEndpoint(provider: LocalLlmProvider): string {
   return provider === 'apple' ? '' : DEFAULT_ENDPOINTS[provider];
 }
 
-function normaliseOpenAiBaseUrl(provider: Exclude<LocalLlmProvider, 'apple'>, value: string): string {
+function normaliseOpenAiBaseUrl(
+  provider: Exclude<LocalLlmProvider, 'apple'>,
+  value: string,
+): string {
   const endpoint = (value.trim() || DEFAULT_ENDPOINTS[provider]).replace(/\/+$/, '');
   return endpoint.endsWith('/v1') ? endpoint : `${endpoint}/v1`;
 }
@@ -168,7 +168,9 @@ export function isLikelyLocalModelRefusal(value: string): boolean {
   return /(?:i apologize|i'm sorry|cannot assist|can't assist|unable to assist)/i.test(value);
 }
 
-export function parseLocalLlmRouteResponse(content: string | undefined | null): LocalLlmRoute | null {
+export function parseLocalLlmRouteResponse(
+  content: string | undefined | null,
+): LocalLlmRoute | null {
   if (!content) return null;
   const trimmed = content.trim();
   const jsonMatch = trimmed.match(/\{[\s\S]*\}/);

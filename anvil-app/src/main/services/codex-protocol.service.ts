@@ -28,6 +28,8 @@ export interface CodexProtocolState {
   acpCostUsd?: number;
   pendingFileChanges?: Map<string, Map<string, PendingFileChange>>;
   assistantPhases?: Map<string, ChatAssistantPhase>;
+  /** Per-toolCallId tracking for ACP tool_call/tool_call_update lifecycles. */
+  acpToolCalls?: Map<string, AcpToolCallState>;
   /** Display name for the connected agent (e.g. 'Cursor', 'Devin'). */
   agentLabel?: string;
 }
@@ -35,6 +37,31 @@ export interface CodexProtocolState {
 interface PendingFileChange {
   filePath: string;
   diff: string;
+}
+
+interface AcpToolCallState {
+  kind?: string;
+  command?: string;
+  lastExecSignature?: string;
+  /** path → last emitted diff body, so repeated content snapshots don't re-emit. */
+  emittedDiffs: Map<string, string>;
+}
+
+/**
+ * Single emission point for provider-facing events. Stamps the connected
+ * agent's display label (set on `CodexProtocolState.agentLabel` by the
+ * session layer for ACP providers) so shared UI copy can name the agent.
+ */
+function emitEvent(
+  state: CodexProtocolState,
+  callbacks: CodexProtocolCallbacks,
+  event: CodexEvent,
+): void {
+  const stamped: CodexEvent =
+    state.agentLabel && event.agentLabel === undefined
+      ? { ...event, agentLabel: state.agentLabel }
+      : event;
+  callbacks.onEvent?.(stamped);
 }
 
 export interface CodexProtocolCallbacks {
@@ -55,6 +82,8 @@ export interface CodexProtocolCallbacks {
     code?: number;
     message: string;
   }) => boolean | void;
+  /** Called for successful responses to requests sent by the local client. */
+  onResponse?: (response: { requestId: JsonRpcRequestId; result: unknown }) => void;
   onLog?: (message: string) => void;
 }
 
@@ -86,11 +115,20 @@ export function sendCodexJsonRpc(
   method: string,
   params: Record<string, unknown>,
 ): boolean {
+  return sendCodexJsonRpcWithId(proc, method, params, randomUUID());
+}
+
+export function sendCodexJsonRpcWithId(
+  proc: ChildProcess,
+  method: string,
+  params: Record<string, unknown>,
+  requestId: JsonRpcRequestId,
+): boolean {
   return writeCodexJsonRpcLine(proc, {
     jsonrpc: '2.0',
     method,
     params,
-    id: randomUUID(),
+    id: requestId,
   });
 }
 
@@ -156,7 +194,7 @@ export function handleCodexServerLine(
     msg = JSON.parse(line);
   } catch {
     if (line.length > 0) {
-      callbacks.onEvent?.({ type: 'text', text: line });
+      emitEvent(state, callbacks, { type: 'text', text: line });
     }
     return;
   }
@@ -177,13 +215,14 @@ export function handleCodexServerLine(
       if (!state.threadId) {
         callbacks.onThreadError?.(err.message ?? 'Agent request failed');
       }
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'error',
         errorMessage: err.message ?? 'Unknown error',
       });
       return;
     }
 
+    callbacks.onResponse?.({ requestId, result: msg.result });
     const result = msg.result as Record<string, unknown> | undefined;
     const thread = result?.thread as Record<string, unknown> | undefined;
     const threadId = (thread?.id ?? result?.threadId ?? result?.sessionId) as string | null;
@@ -200,15 +239,15 @@ export function handleCodexServerLine(
           : stopReason === 'end_turn'
             ? 'completed'
             : 'failed';
-      callbacks.onEvent?.({ type: 'turn_outcome', turnOutcome: outcome });
+      emitEvent(state, callbacks, { type: 'turn_outcome', turnOutcome: outcome });
       if (outcome === 'failed') {
-        callbacks.onEvent?.({
+        emitEvent(state, callbacks, {
           type: 'status',
           status: 'error',
           errorMessage: `${acpAgentLabel(state)} ended the turn early (${stopReason}).`,
         });
       } else {
-        callbacks.onEvent?.({ type: 'status', status: 'complete' });
+        emitEvent(state, callbacks, { type: 'status', status: 'complete' });
       }
       callbacks.onTurnCompleted?.(outcome);
     }
@@ -244,7 +283,7 @@ export function handleCodexServerLine(
           Number.isSafeInteger(size) &&
           size > 0
         ) {
-          callbacks.onEvent?.({
+          emitEvent(state, callbacks, {
             type: 'usage_context',
             contextUsage: { used, size },
             observedCostUsd,
@@ -252,13 +291,13 @@ export function handleCodexServerLine(
         }
       } else if (kind === 'agent_message_chunk') {
         const text = extractAcpText(update?.content);
-        if (text) callbacks.onEvent?.({ type: 'text', text });
+        if (text) emitEvent(state, callbacks, { type: 'text', text });
       } else if (kind === 'agent_thought_chunk') {
         const text = extractAcpText(update?.content);
-        if (text) callbacks.onEvent?.({ type: 'thinking', text });
+        if (text) emitEvent(state, callbacks, { type: 'thinking', text });
       } else if (kind === 'plan') {
         const entries = Array.isArray(update?.entries) ? update.entries : [];
-        callbacks.onEvent?.({
+        emitEvent(state, callbacks, {
           type: 'plan_update',
           plan: {
             steps: entries.flatMap((entry, index) => {
@@ -275,24 +314,7 @@ export function handleCodexServerLine(
           },
         });
       } else if (kind === 'tool_call' || kind === 'tool_call_update') {
-        callbacks.onEvent?.({
-          type: 'tool_call',
-          itemId: typeof update?.toolCallId === 'string' ? update.toolCallId : undefined,
-          toolStatus:
-            update?.status === 'failed'
-              ? 'failed'
-              : update?.status === 'completed'
-                ? 'completed'
-                : 'running',
-          // Only the initial tool_call gets a generic fallback — updates must
-          // leave toolName undefined so the renderer keeps the first title.
-          toolName:
-            (update?.title as string) ??
-            acpToolKindLabel(update?.kind) ??
-            (kind === 'tool_call' ? `${acpAgentLabel(state)} tool` : undefined),
-          toolInput: isRecord(update?.rawInput) ? update.rawInput : {},
-          toolOutput: extractAcpToolOutput(update),
-        });
+        emitAcpToolCallUpdate(state, update, kind, callbacks);
       } else if (
         kind === 'config_option_update' ||
         kind === 'current_mode_update' ||
@@ -310,7 +332,13 @@ export function handleCodexServerLine(
       const toolCall = params?.toolCall as Record<string, unknown> | undefined;
       const metadata = isRecord(params?._meta) ? params._meta : undefined;
       const permissionMeta = isRecord(metadata?.permission) ? metadata.permission : undefined;
-      callbacks.onEvent?.({
+      const rawInput = isRecord(toolCall?.rawInput) ? toolCall.rawInput : undefined;
+      const toolKind = typeof toolCall?.kind === 'string' ? toolCall.kind : undefined;
+      // Keep approvalKind 'permissions': buildApprovalResponse only produces the
+      // ACP `outcome.selected` reply for that kind — reclassifying it as
+      // 'command' would send the Codex-style `{decision}` response instead.
+      // Command/cwd detail rides along as approvalCommand/approvalCwd.
+      emitEvent(state, callbacks, {
         type: 'approval_request',
         approvalRequestId: requestId,
         approvalKind: 'permissions',
@@ -318,12 +346,15 @@ export function handleCodexServerLine(
           isRecord(permissionMeta) && typeof permissionMeta.description === 'string'
             ? permissionMeta.description
             : undefined,
+        approvalCommand: extractAcpCommand(rawInput, toolCall?.title, toolKind),
+        approvalCwd: typeof rawInput?.cwd === 'string' ? rawInput.cwd : undefined,
         toolName:
           typeof toolCall?.title === 'string'
             ? toolCall.title
             : (acpToolKindLabel(toolCall?.kind) ?? `${acpAgentLabel(state)} tool`),
-        toolInput: isRecord(toolCall?.rawInput) ? toolCall.rawInput : undefined,
+        toolInput: rawInput,
         approvalPermissions: { options: Array.isArray(params?.options) ? params.options : [] },
+        protocolThreadId: typeof params?.sessionId === 'string' ? params.sessionId : undefined,
       });
       break;
     }
@@ -331,7 +362,7 @@ export function handleCodexServerLine(
     case 'cursor/ask_question': {
       const params = msg.params as Record<string, unknown>;
       const questions = parseCursorQuestions(params?.questions);
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'input_request',
         inputRequestId: requestId,
         inputRequest: {
@@ -346,7 +377,7 @@ export function handleCodexServerLine(
     case 'cursor/create_plan': {
       const params = msg.params as Record<string, unknown>;
       if (typeof params?.plan !== 'string') break;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'input_request',
         inputRequestId: requestId,
         inputRequest: {
@@ -360,7 +391,7 @@ export function handleCodexServerLine(
 
     case 'elicitation/create': {
       const params = msg.params as Record<string, unknown>;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'input_request',
         inputRequestId: requestId,
         protocolThreadId: typeof params?.sessionId === 'string' ? params.sessionId : undefined,
@@ -397,7 +428,7 @@ export function handleCodexServerLine(
         (flag): flag is 'waitingOnApproval' | 'waitingOnUserInput' =>
           flag === 'waitingOnApproval' || flag === 'waitingOnUserInput',
       );
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'thread_status',
         protocolThreadId: typeof params?.threadId === 'string' ? params.threadId : undefined,
         threadActiveFlags,
@@ -424,7 +455,7 @@ export function handleCodexServerLine(
           }
         : last;
       if (!delta || !isValidUsage(delta) || delta.input + delta.output === 0) break;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'usage',
         usage: delta,
         usageId: `${state.threadId}:${state.turnId}:${total.input}:${total.cachedInput}:${total.output}`,
@@ -434,7 +465,7 @@ export function handleCodexServerLine(
     }
 
     case 'thread/compacted':
-      callbacks.onEvent?.({ type: 'context_compaction' });
+      emitEvent(state, callbacks, { type: 'context_compaction' });
       break;
 
     case 'turn/started': {
@@ -442,7 +473,7 @@ export function handleCodexServerLine(
       const turn = params?.turn as Record<string, unknown> | undefined;
       state.turnId = (turn?.id ?? params?.turnId) as string | null;
       callbacks.onTurnIdChanged?.(state.turnId);
-      callbacks.onEvent?.({ type: 'status', status: 'thinking' });
+      emitEvent(state, callbacks, { type: 'status', status: 'thinking' });
       callbacks.onTurnStarted?.();
       break;
     }
@@ -456,7 +487,7 @@ export function handleCodexServerLine(
           ? rawStatus
           : 'completed';
       flushAllPendingFileChanges(state, callbacks);
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'turn_outcome',
         turnOutcome: status,
         protocolTurnId: state.turnId ?? undefined,
@@ -465,14 +496,14 @@ export function handleCodexServerLine(
       callbacks.onTurnIdChanged?.(null);
       if (status === 'failed') {
         const error = turn?.error as Record<string, unknown> | undefined;
-        callbacks.onEvent?.({
+        emitEvent(state, callbacks, {
           type: 'status',
           status: 'error',
           errorMessage:
             typeof error?.message === 'string' ? error.message : 'Codex turn failed to complete.',
         });
       } else {
-        callbacks.onEvent?.({ type: 'status', status: 'complete' });
+        emitEvent(state, callbacks, { type: 'status', status: 'complete' });
       }
       callbacks.onTurnCompleted?.(status);
       break;
@@ -481,19 +512,19 @@ export function handleCodexServerLine(
     case 'turn/plan/updated': {
       const params = msg.params as Record<string, unknown>;
       const plan = parsePlanSnapshot(params);
-      callbacks.onEvent?.({ type: 'plan_update', plan });
+      emitEvent(state, callbacks, { type: 'plan_update', plan });
       break;
     }
 
     case 'thread/goal/updated': {
       const params = msg.params as Record<string, unknown>;
       const goal = parseGoalSnapshot(params?.goal);
-      if (goal) callbacks.onEvent?.({ type: 'goal_update', goal });
+      if (goal) emitEvent(state, callbacks, { type: 'goal_update', goal });
       break;
     }
 
     case 'thread/goal/cleared':
-      callbacks.onEvent?.({ type: 'goal_cleared' });
+      emitEvent(state, callbacks, { type: 'goal_cleared' });
       break;
 
     case 'item/agentMessage/delta': {
@@ -501,7 +532,7 @@ export function handleCodexServerLine(
       const delta = params?.delta as string;
       const itemId = getItemId(params);
       const assistantPhase = parseAssistantPhase(params?.phase) ?? getAssistantPhase(state, itemId);
-      if (delta) callbacks.onEvent?.({ type: 'text', text: delta, itemId, assistantPhase });
+      if (delta) emitEvent(state, callbacks, { type: 'text', text: delta, itemId, assistantPhase });
       break;
     }
 
@@ -516,7 +547,7 @@ export function handleCodexServerLine(
           getAssistantPhaseMap(state).set(itemId, assistantPhase);
         }
       } else if (itemType === 'commandExecution') {
-        callbacks.onEvent?.({
+        emitEvent(state, callbacks, {
           type: 'command_exec',
           itemId: getItemId(params, item),
           command: (item?.command as string) ?? '',
@@ -525,7 +556,7 @@ export function handleCodexServerLine(
       } else if (itemType === 'fileChange') {
         recordFileChanges(state, buildItemKey(state, params, item), getChanges(item), 'replace');
       } else if (itemType === 'tool_call') {
-        callbacks.onEvent?.({
+        emitEvent(state, callbacks, {
           type: 'tool_call',
           toolName: (params?.toolName as string) ?? (item?.tool as string) ?? '',
           toolInput:
@@ -535,7 +566,7 @@ export function handleCodexServerLine(
         });
       } else if (itemType === 'collabAgentToolCall' || itemType === 'subAgentActivity') {
         const subagent = parseSubagentUpdate(item);
-        if (subagent) callbacks.onEvent?.({ type: 'subagent_update', subagent });
+        if (subagent) emitEvent(state, callbacks, { type: 'subagent_update', subagent });
       }
       break;
     }
@@ -545,7 +576,7 @@ export function handleCodexServerLine(
       const item = params?.item as Record<string, unknown> | undefined;
       const itemType = item?.type as string;
       if (itemType === 'commandExecution') {
-        callbacks.onEvent?.({
+        emitEvent(state, callbacks, {
           type: 'command_exec',
           itemId: getItemId(params, item),
           command: (item?.command as string) ?? '',
@@ -560,7 +591,7 @@ export function handleCodexServerLine(
         emitCompletedFileChanges(state, itemKey, getChanges(item), callbacks);
       } else if (itemType === 'collabAgentToolCall' || itemType === 'subAgentActivity') {
         const subagent = parseSubagentUpdate(item);
-        if (subagent) callbacks.onEvent?.({ type: 'subagent_update', subagent });
+        if (subagent) emitEvent(state, callbacks, { type: 'subagent_update', subagent });
       }
       break;
     }
@@ -573,7 +604,7 @@ export function handleCodexServerLine(
 
     case 'item/fileChange/requestApproval': {
       const params = msg.params as Record<string, unknown>;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'approval_request',
         approvalRequestId: requestId,
         approvalKind: 'file_change',
@@ -585,7 +616,7 @@ export function handleCodexServerLine(
 
     case 'item/commandExecution/requestApproval': {
       const params = msg.params as Record<string, unknown>;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'approval_request',
         approvalRequestId: requestId,
         approvalKind: 'command',
@@ -598,7 +629,7 @@ export function handleCodexServerLine(
 
     case 'item/permissions/requestApproval': {
       const params = msg.params as Record<string, unknown>;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'approval_request',
         approvalRequestId: requestId,
         approvalKind: 'permissions',
@@ -612,7 +643,7 @@ export function handleCodexServerLine(
 
     case 'item/tool/requestUserInput': {
       const params = msg.params as Record<string, unknown>;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'input_request',
         inputRequestId: requestId,
         protocolThreadId: typeof params?.threadId === 'string' ? params.threadId : undefined,
@@ -629,7 +660,7 @@ export function handleCodexServerLine(
     case 'mcpServer/elicitation/request': {
       const params = msg.params as Record<string, unknown>;
       const mode = parseElicitationMode(params?.mode);
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'input_request',
         inputRequestId: requestId,
         protocolThreadId: typeof params?.threadId === 'string' ? params.threadId : undefined,
@@ -649,7 +680,7 @@ export function handleCodexServerLine(
       const params = msg.params as Record<string, unknown>;
       const resolvedRequestId = params?.requestId;
       if (isJsonRpcRequestId(resolvedRequestId)) {
-        callbacks.onEvent?.({ type: 'request_resolved', resolvedRequestId });
+        emitEvent(state, callbacks, { type: 'request_resolved', resolvedRequestId });
         callbacks.onServerRequestResolved?.(resolvedRequestId);
       }
       break;
@@ -671,7 +702,7 @@ export function handleCodexServerLine(
 
     case 'item/commandExecution/outputDelta': {
       const params = msg.params as Record<string, unknown>;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'command_exec',
         command: '',
         output: limitTail((params?.delta as string) ?? '', MAX_RENDERED_COMMAND_OUTPUT_CHARS),
@@ -683,13 +714,13 @@ export function handleCodexServerLine(
     case 'item/reasoning/textDelta': {
       const params = msg.params as Record<string, unknown>;
       const delta = params?.delta as string;
-      if (delta) callbacks.onEvent?.({ type: 'thinking', text: delta });
+      if (delta) emitEvent(state, callbacks, { type: 'thinking', text: delta });
       break;
     }
 
     case 'error': {
       const params = msg.params as Record<string, unknown>;
-      callbacks.onEvent?.({
+      emitEvent(state, callbacks, {
         type: 'error',
         errorMessage: (params?.message as string) ?? 'Unknown error',
       });
@@ -701,7 +732,7 @@ export function handleCodexServerLine(
       const delta = params?.delta as string;
       const itemId = getItemId(params);
       const assistantPhase = parseAssistantPhase(params?.phase) ?? getAssistantPhase(state, itemId);
-      if (delta) callbacks.onEvent?.({ type: 'text', text: delta, itemId, assistantPhase });
+      if (delta) emitEvent(state, callbacks, { type: 'text', text: delta, itemId, assistantPhase });
       break;
     }
 
@@ -709,7 +740,7 @@ export function handleCodexServerLine(
       const params = msg.params as Record<string, unknown>;
       const delta = params?.delta as string;
       if (delta) {
-        callbacks.onEvent?.({
+        emitEvent(state, callbacks, {
           type: 'command_exec',
           command: '',
           output: limitTail(delta, MAX_RENDERED_COMMAND_OUTPUT_CHARS),
@@ -824,6 +855,273 @@ function extractAcpToolOutput(update: Record<string, unknown> | undefined): stri
 
   if (parts.length === 0) return undefined;
   return limitTail(parts.join('\n'), MAX_RENDERED_COMMAND_OUTPUT_CHARS);
+}
+
+/**
+ * Normalise one ACP `tool_call`/`tool_call_update` session update into the
+ * shared event contract:
+ * - `kind: 'execute'` becomes `command_exec` (command, output, exit code)
+ *   instead of a generic tool row, matching Codex `commandExecution` items.
+ * - `content` blocks of `type: 'diff'` become real `file_edit` events so
+ *   DiffViewer, "Review changes" and Agent Runs counts work for ACP agents.
+ * - Everything else stays a `tool_call` event, merged downstream by itemId.
+ */
+function emitAcpToolCallUpdate(
+  state: CodexProtocolState,
+  update: Record<string, unknown> | undefined,
+  updateKind: unknown,
+  callbacks: CodexProtocolCallbacks,
+): void {
+  const toolCallId = typeof update?.toolCallId === 'string' ? update.toolCallId : undefined;
+  const tracked = getAcpToolCallTracking(state, toolCallId);
+  const kind = typeof update?.kind === 'string' ? update.kind : tracked?.kind;
+  if (tracked && typeof update?.kind === 'string') tracked.kind = update.kind;
+
+  const rawInput = isRecord(update?.rawInput) ? update.rawInput : undefined;
+  const command = extractAcpCommand(rawInput, update?.title, kind);
+  if (tracked && command) tracked.command = command;
+
+  if (kind === 'execute') {
+    const resolvedCommand = command ?? tracked?.command;
+    const { output, exitCode } = extractAcpCommandResult(update);
+    const toolStatus = acpToolStatus(update?.status);
+    const signature = JSON.stringify([
+      resolvedCommand ?? '',
+      output ?? '',
+      exitCode ?? null,
+      toolStatus,
+    ]);
+    if (!tracked || tracked.lastExecSignature !== signature) {
+      if (tracked) tracked.lastExecSignature = signature;
+      emitEvent(state, callbacks, {
+        type: 'command_exec',
+        itemId: toolCallId,
+        command: resolvedCommand ?? '',
+        output: output ?? '',
+        exitCode,
+        toolStatus,
+      });
+    }
+  } else {
+    emitEvent(state, callbacks, {
+      type: 'tool_call',
+      itemId: toolCallId,
+      toolStatus: acpToolStatus(update?.status),
+      // Only the initial tool_call gets a generic fallback — updates must
+      // leave toolName undefined so the renderer keeps the first title.
+      toolName:
+        (update?.title as string) ??
+        acpToolKindLabel(update?.kind) ??
+        (updateKind === 'tool_call' ? `${acpAgentLabel(state)} tool` : undefined),
+      toolInput: rawInput ?? {},
+      toolOutput: extractAcpToolOutput(update),
+    });
+  }
+
+  for (const diff of extractAcpDiffBlocks(update)) {
+    if (tracked) {
+      if (tracked.emittedDiffs.get(diff.path) === diff.diff) continue;
+      tracked.emittedDiffs.set(diff.path, diff.diff);
+    }
+    emitEvent(state, callbacks, {
+      type: 'file_edit',
+      itemId: toolCallId,
+      filePath: diff.path,
+      diff: diff.diff,
+    });
+  }
+}
+
+function getAcpToolCallTracking(
+  state: CodexProtocolState,
+  toolCallId: string | undefined,
+): AcpToolCallState | null {
+  if (!toolCallId) return null;
+  if (!state.acpToolCalls) state.acpToolCalls = new Map<string, AcpToolCallState>();
+  let tracked = state.acpToolCalls.get(toolCallId);
+  if (!tracked) {
+    tracked = { emittedDiffs: new Map<string, string>() };
+    state.acpToolCalls.set(toolCallId, tracked);
+  }
+  return tracked;
+}
+
+function acpToolStatus(status: unknown): 'running' | 'completed' | 'failed' {
+  if (status === 'failed') return 'failed';
+  if (status === 'completed') return 'completed';
+  return 'running';
+}
+
+/**
+ * Pull the shell command out of an ACP tool call's rawInput. Cursor titles
+ * execute calls as the command wrapped in backticks, so a backticked title
+ * is the fallback when rawInput doesn't carry it.
+ */
+function extractAcpCommand(
+  rawInput: Record<string, unknown> | undefined,
+  title: unknown,
+  kind: string | undefined,
+): string | undefined {
+  const candidate = rawInput?.command ?? rawInput?.cmd ?? rawInput?.shell_command;
+  if (typeof candidate === 'string' && candidate.trim()) return candidate;
+  if (Array.isArray(candidate) && candidate.every((part) => typeof part === 'string')) {
+    const joined = candidate.join(' ').trim();
+    if (joined) return joined;
+  }
+  if (kind === 'execute' && typeof title === 'string') {
+    const trimmed = title.trim();
+    if (trimmed.length > 2 && trimmed.startsWith('`') && trimmed.endsWith('`')) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Output and exit status for an ACP `execute` tool call. Content blocks of
+ * `type: 'content'` carry rendered terminal text; structured `rawOutput`
+ * may carry output/exit code fields. Nothing is fabricated — when the agent
+ * doesn't report an exit code, `exitCode` stays undefined.
+ */
+function extractAcpCommandResult(update: Record<string, unknown> | undefined): {
+  output?: string;
+  exitCode?: number;
+} {
+  if (!update) return {};
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const push = (text: string) => {
+    const trimmed = text.trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      parts.push(trimmed);
+    }
+  };
+
+  const content = update.content;
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      if (isRecord(item) && item.type === 'content') {
+        push(extractAcpText(item.content));
+      }
+    }
+  }
+
+  let exitCode: number | undefined;
+  const rawOutput = update.rawOutput;
+  if (typeof rawOutput === 'string') {
+    push(rawOutput);
+  } else if (isRecord(rawOutput)) {
+    for (const key of ['output', 'formattedOutput', 'formatted_output', 'stdout', 'stderr']) {
+      const value = rawOutput[key];
+      if (typeof value === 'string') push(value);
+    }
+    const code =
+      rawOutput.exitCode ?? rawOutput.exit_code ?? rawOutput.exitStatus ?? rawOutput.code;
+    if (typeof code === 'number' && Number.isInteger(code)) {
+      exitCode = code;
+    } else if (typeof code === 'string' && /^-?\d+$/.test(code.trim())) {
+      exitCode = Number.parseInt(code.trim(), 10);
+    }
+  }
+
+  return {
+    output:
+      parts.length > 0 ? limitTail(parts.join('\n'), MAX_RENDERED_COMMAND_OUTPUT_CHARS) : undefined,
+    exitCode,
+  };
+}
+
+/**
+ * Extract `type: 'diff'` content blocks and rebuild a unified diff from the
+ * offered `oldText`/`newText` pair. When the agent only reports the path
+ * (or provides no usable text), the diff is left empty — the renderer shows
+ * its "no renderable patch" fallback.
+ */
+function extractAcpDiffBlocks(
+  update: Record<string, unknown> | undefined,
+): Array<{ path: string; diff: string }> {
+  const content = update?.content;
+  if (!Array.isArray(content)) return [];
+  const diffs: Array<{ path: string; diff: string }> = [];
+  for (const item of content) {
+    if (!isRecord(item) || item.type !== 'diff' || typeof item.path !== 'string' || !item.path) {
+      continue;
+    }
+    diffs.push({
+      path: item.path,
+      diff: limitMiddle(
+        buildUnifiedDiffFromTexts(item.path, item.oldText, item.newText),
+        MAX_RENDERED_DIFF_CHARS,
+      ),
+    });
+  }
+  return diffs;
+}
+
+/**
+ * Rebuild a single-hunk unified diff from before/after file text using the
+ * common prefix/suffix. Interleaved changes collapse into one larger hunk —
+ * correct but less minimal than a full Myers diff.
+ */
+function buildUnifiedDiffFromTexts(filePath: string, oldText: unknown, newText: unknown): string {
+  if (typeof newText !== 'string') return '';
+  const isNewFile = oldText === null || oldText === undefined;
+  const oldString = typeof oldText === 'string' ? oldText : '';
+  if (!isNewFile && oldString === newText) return '';
+
+  const oldLines = splitDiffLines(oldString);
+  const newLines = splitDiffLines(newText);
+
+  let prefix = 0;
+  while (
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
+  ) {
+    prefix++;
+  }
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  const removed = oldLines.slice(prefix, oldLines.length - suffix);
+  const added = newLines.slice(prefix, newLines.length - suffix);
+  const context = 3;
+  const headContext = oldLines.slice(Math.max(0, prefix - context), prefix);
+  const tailContext = oldLines.slice(
+    oldLines.length - suffix,
+    Math.min(oldLines.length, oldLines.length - suffix + context),
+  );
+
+  const oldCount = headContext.length + removed.length + tailContext.length;
+  const newCount = headContext.length + added.length + tailContext.length;
+  const oldStart = oldCount === 0 ? prefix - headContext.length : prefix - headContext.length + 1;
+  const newStart = newCount === 0 ? prefix - headContext.length : prefix - headContext.length + 1;
+
+  const lines = [
+    isNewFile ? '--- /dev/null' : `--- a/${filePath}`,
+    newLines.length === 0 ? '+++ /dev/null' : `+++ b/${filePath}`,
+    `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`,
+    ...headContext.map((line) => ` ${line}`),
+    ...removed.map((line) => `-${line}`),
+    ...added.map((line) => `+${line}`),
+    ...tailContext.map((line) => ` ${line}`),
+  ];
+  return lines.join('\n');
+}
+
+function splitDiffLines(text: string): string[] {
+  if (text === '') return [];
+  const lines = text.split('\n');
+  // A trailing newline is a line terminator, not an extra empty line.
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
 }
 
 function parseAcpPlanStatus(value: unknown): ChatPlanStepStatus {
@@ -1144,7 +1442,7 @@ function emitCompletedFileChanges(
 
     if (!resolvedFilePath && !resolvedDiff) continue;
 
-    callbacks.onEvent?.({
+    emitEvent(state, callbacks, {
       type: 'file_edit',
       filePath: resolvedFilePath,
       diff: limitMiddle(resolvedDiff, MAX_RENDERED_DIFF_CHARS),
@@ -1154,7 +1452,7 @@ function emitCompletedFileChanges(
 
   for (const [key, change] of pendingByFile ?? []) {
     if (emittedKeys.has(key)) continue;
-    callbacks.onEvent?.({
+    emitEvent(state, callbacks, {
       type: 'file_edit',
       filePath: change.filePath,
       diff: change.diff,
@@ -1173,7 +1471,7 @@ function flushPendingFileChanges(
   if (!pendingByFile) return;
 
   for (const change of pendingByFile.values()) {
-    callbacks.onEvent?.({
+    emitEvent(state, callbacks, {
       type: 'file_edit',
       filePath: change.filePath,
       diff: change.diff,

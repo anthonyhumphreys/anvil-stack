@@ -3,9 +3,9 @@ title: Anvil Cloud
 navTitle: Overview
 description: Build Anvil Cells with typed contracts, local runtime, generated manifests, and adapter-based deployment.
 product: Anvil Cloud
-section: Overview
+section: Start here
 journey: learn
-order: 100
+order: 10
 ---
 
 # Anvil Cloud

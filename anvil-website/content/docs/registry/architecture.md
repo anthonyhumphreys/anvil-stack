@@ -5,7 +5,7 @@ description: How Anvil Registry, the worker, persistence, object storage, queuei
 product: Anvil Registry
 section: Concepts
 journey: learn
-order: 3
+order: 90
 ---
 
 # Architecture

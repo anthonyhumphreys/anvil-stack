@@ -105,17 +105,115 @@ describe('composeChatTurns', () => {
       { kind: 'user', content: 'Think out loud' },
       { kind: 'thinking', content: 'First, check the config.' },
       { kind: 'thinking', content: ' It points at staging.' },
-      { kind: 'event', event: { type: 'file_read', filePath: 'config.ts' } },
+      { kind: 'event', event: { type: 'command_exec', command: 'cat config.ts' } },
       { kind: 'thinking', content: 'Now read the file.' },
       { kind: 'assistant', content: 'Found it.', phase: 'final' },
     ]);
 
     expect(turns[0].work).toEqual([
-      { kind: 'thinking', content: 'First, check the config. It points at staging.', sourceIndex: 2 },
+      {
+        kind: 'thinking',
+        content: 'First, check the config. It points at staging.',
+        sourceIndex: 2,
+      },
       expect.objectContaining({ kind: 'event' }),
       { kind: 'thinking', content: 'Now read the file.', sourceIndex: 4 },
     ]);
     expect(turns[0].answer?.content).toBe('Found it.');
+  });
+
+  it('drops file_read events — a dead renderer surface (H14)', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'Check it' },
+      { kind: 'event', event: { type: 'file_read', filePath: 'config.ts' } },
+      { kind: 'event', event: { type: 'command_exec', command: 'ls' } },
+      { kind: 'assistant', content: 'Done.', phase: 'final' },
+    ]);
+
+    expect(turns[0].work).toEqual([
+      expect.objectContaining({
+        kind: 'event',
+        event: expect.objectContaining({ type: 'command_exec' }),
+      }),
+    ]);
+  });
+
+  it('aggregates usage deltas and context snapshots into a per-turn rollup (H5)', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'Do work' },
+      {
+        kind: 'event',
+        event: {
+          type: 'usage',
+          usage: { input: 1000, cachedInput: 200, output: 100 },
+          usageId: 'u-1',
+          model: 'gpt-5.6-sol',
+          usagePrice: {
+            provider: 'codex',
+            model: 'gpt-5.6-sol',
+            input: 2,
+            cachedInput: 1,
+            output: 8,
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      },
+      // Duplicate usageId must not double-count.
+      {
+        kind: 'event',
+        event: {
+          type: 'usage',
+          usage: { input: 1000, cachedInput: 200, output: 100 },
+          usageId: 'u-1',
+        },
+      },
+      {
+        kind: 'event',
+        event: {
+          type: 'usage_context',
+          contextUsage: { used: 50_000, size: 200_000 },
+          observedCostUsd: 0.0125,
+        },
+      },
+      { kind: 'assistant', content: 'Done.', phase: 'final' },
+    ]);
+
+    expect(turns[0].work).toEqual([]);
+    expect(turns[0].usage).toEqual({
+      inputTokens: 1000,
+      cachedInputTokens: 200,
+      outputTokens: 100,
+      contextUsed: 50_000,
+      contextSize: 200_000,
+      // (800*2 + 200*1 + 100*8) / 1e6 = 0.0026 priced + 0.0125 observed
+      costUsd: expect.closeTo(0.0151, 4),
+      model: 'gpt-5.6-sol',
+    });
+  });
+
+  it('takes the latest context snapshot rather than summing it', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'Do work' },
+      { kind: 'event', event: { type: 'usage_context', contextUsage: { used: 10, size: 100 } } },
+      { kind: 'event', event: { type: 'usage_context', contextUsage: { used: 40, size: 100 } } },
+      { kind: 'assistant', content: 'Done.', phase: 'final' },
+    ]);
+
+    expect(turns[0].usage?.contextUsed).toBe(40);
+    expect(turns[0].usage?.contextSize).toBe(100);
+  });
+
+  it('carries the queued delivery marker on the user entry (H2)', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'First' },
+      { kind: 'assistant', content: 'Working.', phase: 'progress' },
+      { kind: 'user', content: 'Follow-up', delivery: 'queued' },
+    ]);
+
+    expect(turns).toHaveLength(2);
+    expect(turns[1].user?.delivery).toBe('queued');
+    expect(turns[1].work).toEqual([]);
+    expect(turns[1].answer).toBeNull();
   });
 
   it('keeps a final answer separate from an untagged trailing progress update', () => {

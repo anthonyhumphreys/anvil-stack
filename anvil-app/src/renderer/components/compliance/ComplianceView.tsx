@@ -14,8 +14,9 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import type { ComplianceDocType, ComplianceDocument } from '../../../shared/types';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
-import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
+import { InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 
 const DOC_TYPES: {
   type: ComplianceDocType;
@@ -45,8 +46,9 @@ const DOC_TYPES: {
 ];
 
 export function ComplianceView() {
-  const { repos } = useWorkspace();
-  const indexedRepos = useMemo(() => repos.filter((r) => r.status === 'indexed'), [repos]);
+  const { repos, featureAvailability } = useWorkspace();
+  // Tiered indexing (§4.1): mapped repos are usable; enrichment is optional.
+  const indexedRepos = useMemo(() => repos.filter(repoIsMapped), [repos]);
 
   const [selectedRepoId, setSelectedRepoId] = useState('');
   const [existingDocs, setExistingDocs] = useState<ComplianceDocument[]>([]);
@@ -119,13 +121,12 @@ export function ComplianceView() {
     return map;
   }, [existingDocs]);
 
-  if (indexedRepos.length === 0) {
+  if (!featureAvailability.repoFeaturesEnabled || indexedRepos.length === 0) {
     return (
-      <EmptyState
+      <RepoFeatureEmptyState
         icon={Scale}
-        title="Index a repository for compliance work"
+        featureLabel="Compliance tools"
         description="Compliance tools need repository evidence before they can draft a DPIA, privacy policy, or terms of service."
-        className="h-full"
       />
     );
   }
@@ -205,7 +206,7 @@ export function ComplianceView() {
                       <div className="flex items-center gap-2">
                         <h3 className="text-sm font-semibold text-text-primary">{label}</h3>
                         {existing && (
-                          <span className="flex items-center gap-0.5 rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">
+                          <span className="flex items-center gap-0.5 rounded bg-success/10 px-1.5 py-0.5 text-eyebrow font-medium text-success">
                             <Check size={10} />
                             Generated
                           </span>
@@ -214,7 +215,7 @@ export function ComplianceView() {
                       <p className="mt-1 text-xs text-text-secondary">{description}</p>
 
                       {existing && (
-                        <p className="mt-1 flex items-center gap-1 text-[10px] text-text-tertiary">
+                        <p className="mt-1 flex items-center gap-1 text-xs text-text-tertiary">
                           <Clock size={10} />
                           {new Date(existing.generatedAt).toLocaleDateString()} at{' '}
                           {new Date(existing.generatedAt).toLocaleTimeString()}

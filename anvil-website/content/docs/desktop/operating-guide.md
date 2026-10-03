@@ -3,9 +3,9 @@ title: Operating guide
 navTitle: Operating guide
 description: Set up Anvil Desktop and run delivery workflows with real evidence.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 110
+order: 210
 ---
 
 # Operating guide

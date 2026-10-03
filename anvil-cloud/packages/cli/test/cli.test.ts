@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   isPnpmVersionSupported,
@@ -38,9 +38,91 @@ describe("main", () => {
     expect(output).toContain("anvil-cloud manifest diff");
     expect(output).toContain("anvil-cloud auth test");
     expect(output).toContain("anvil-cloud executions conformance");
+    expect(output).toContain("anvil-cloud executions providers");
     expect(output).toContain(
       "anvil-cloud destroy --preview --app <name> [--name branch] --yes",
     );
+  });
+
+  it("bootstraps and manages a self-hosted account through the supported API", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalAdmin = process.env.ANVIL_MESH_ADMIN_TOKEN;
+    const originalAccess = process.env.ANVIL_MESH_ACCESS_TOKEN;
+    process.env.ANVIL_MESH_ADMIN_TOKEN = "admin-secret";
+    process.env.ANVIL_MESH_ACCESS_TOKEN = "device-secret";
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname;
+        expect(init?.headers).toEqual(
+          expect.objectContaining({
+            Authorization: expect.stringMatching(/^Bearer /),
+          }),
+        );
+        if (path === "/v1/enrollment-codes") {
+          return new Response(JSON.stringify({ code: "enroll-123" }), {
+            status: 200,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            requestId: "request",
+            result: {
+              devices: [
+                {
+                  enrollmentId: "device-1",
+                  displayName: "Laptop",
+                  revoked: false,
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      },
+    );
+    globalThis.fetch = fetchMock as typeof fetch;
+    try {
+      const bootstrap = await captureStdout(() =>
+        main([
+          "mesh",
+          "account",
+          "bootstrap",
+          "--url",
+          "https://mesh.example",
+          "--account",
+          "acct-1",
+          "--json",
+        ]),
+      );
+      expect(JSON.parse(bootstrap)).toMatchObject({
+        ok: true,
+        accountId: "acct-1",
+        code: "enroll-123",
+      });
+      const devices = await captureStdout(() =>
+        main([
+          "mesh",
+          "account",
+          "devices",
+          "--url",
+          "https://mesh.example",
+          "--json",
+        ]),
+      );
+      expect(JSON.parse(devices)).toMatchObject({
+        ok: true,
+        result: { devices: [{ enrollmentId: "device-1" }] },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalAdmin === undefined)
+        delete process.env.ANVIL_MESH_ADMIN_TOKEN;
+      else process.env.ANVIL_MESH_ADMIN_TOKEN = originalAdmin;
+      if (originalAccess === undefined)
+        delete process.env.ANVIL_MESH_ACCESS_TOKEN;
+      else process.env.ANVIL_MESH_ACCESS_TOKEN = originalAccess;
+    }
   });
 
   it("reports workflow progress summaries from local state", async () => {
@@ -2062,6 +2144,267 @@ describe("main", () => {
     }
   });
 
+  it("emits a Mesh backend deployment plan as stable JSON", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-mesh-"));
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      const backendDir = await writeMeshBackendFixture(rootDir);
+
+      const output = await captureStdout(() =>
+        main([
+          "mesh",
+          "plan",
+          "--backend",
+          backendDir,
+          "--name",
+          "mesh-backend",
+          "--first-deploy",
+          "--base-url",
+          "https://mesh.example.com",
+          "--oidc-issuer",
+          "https://issuer.example.com",
+          "--oidc-client-id",
+          "anvil-desktop",
+          "--write",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        command: "mesh plan",
+        plan: {
+          schemaVersion: "0.1",
+          recipe: "anvil-mesh-backend",
+          adapter: "cloudflare",
+          stage: "production",
+          workerName: "mesh-backend",
+          migrationMode: "create",
+          durableObjects: [
+            { binding: "ACCOUNT", className: "AccountCoordinator" },
+            { binding: "SESSIONS", className: "SessionCoordinator" },
+          ],
+          connection: {
+            ready: true,
+            baseUrl: "https://mesh.example.com",
+            descriptorUrl: "https://mesh.example.com/.well-known/anvil-backend",
+          },
+          gates: expect.arrayContaining([
+            expect.objectContaining({
+              id: "anvil-mesh-provider-evidence-gate",
+              severity: "block",
+            }),
+          ]),
+        },
+        configWritten: path.join(backendDir, "wrangler.mesh.jsonc"),
+      });
+      const generated = JSON.parse(
+        await readFile(path.join(backendDir, "wrangler.mesh.jsonc"), "utf8"),
+      );
+      expect(generated.migrations).toEqual([
+        { tag: "v1", new_sqlite_classes: ["AccountCoordinator"] },
+        { tag: "v2", new_sqlite_classes: ["SessionCoordinator"] },
+      ]);
+      expect(output).not.toContain("ENROLLMENT_ADMIN_TOKEN");
+      expect(output).not.toContain("ANVIL_DEV_SPIKE");
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps mesh apply and remove gated without provider evidence", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-mesh-"));
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      const backendDir = await writeMeshBackendFixture(rootDir);
+
+      const applyOutput = await captureStdout(() =>
+        main([
+          "mesh",
+          "apply",
+          "--backend",
+          backendDir,
+          "--name",
+          "mesh-backend",
+          "--json",
+        ]),
+      );
+      const applyPayload = JSON.parse(applyOutput) as Record<string, unknown>;
+
+      expect(applyPayload).toMatchObject({
+        ok: false,
+        command: "mesh apply",
+        result: {
+          gated: true,
+          diagnostics: [
+            expect.objectContaining({
+              code: "MESH_PROVIDER_EVIDENCE_REQUIRED",
+            }),
+          ],
+        },
+      });
+      expect(process.exitCode).toBe(2);
+
+      process.exitCode = undefined;
+      const removeOutput = await captureStdout(() =>
+        main([
+          "mesh",
+          "remove",
+          "--backend",
+          backendDir,
+          "--name",
+          "mesh-backend",
+          "--json",
+        ]),
+      );
+      const removePayload = JSON.parse(removeOutput) as Record<string, unknown>;
+
+      expect(removePayload).toMatchObject({
+        ok: false,
+        command: "mesh remove",
+        result: {
+          gated: true,
+          diagnostics: [
+            expect.objectContaining({
+              code: "MESH_PROVIDER_EVIDENCE_REQUIRED",
+            }),
+          ],
+        },
+      });
+      expect(process.exitCode).toBe(2);
+
+      process.exitCode = undefined;
+      const arbitraryEvidenceOutput = await captureStdout(() =>
+        main([
+          "mesh",
+          "remove",
+          "--backend",
+          backendDir,
+          "--name",
+          "mesh-backend",
+          "--evidence",
+          "fake-reference",
+          "--json",
+        ]),
+      );
+      const arbitraryEvidencePayload = JSON.parse(
+        arbitraryEvidenceOutput,
+      ) as Record<string, unknown>;
+      expect(arbitraryEvidencePayload).toMatchObject({
+        ok: false,
+        command: "mesh remove",
+        result: {
+          gated: true,
+          diagnostics: [
+            expect.objectContaining({
+              code: "MESH_PROVIDER_EVIDENCE_INVALID",
+            }),
+          ],
+        },
+      });
+      expect(process.exitCode).toBe(2);
+    } finally {
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks an enrollment-admin apply when its operator token is missing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-mesh-"));
+    const originalExitCode = process.exitCode;
+    const originalAdminToken = process.env.ANVIL_MESH_ADMIN_TOKEN;
+
+    try {
+      process.exitCode = undefined;
+      delete process.env.ANVIL_MESH_ADMIN_TOKEN;
+      const backendDir = await writeMeshBackendFixture(rootDir);
+      const output = await captureStdout(() =>
+        main([
+          "mesh",
+          "apply",
+          "--backend",
+          backendDir,
+          "--name",
+          "mesh-backend",
+          "--enrollment-admin",
+          "--evidence",
+          "approved-smoke",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        command: "mesh apply",
+        result: {
+          gated: true,
+          diagnostics: [
+            expect.objectContaining({ code: "MESH_REQUIRED_SECRET_MISSING" }),
+          ],
+        },
+      });
+      expect(process.exitCode).toBe(2);
+    } finally {
+      if (originalAdminToken === undefined)
+        delete process.env.ANVIL_MESH_ADMIN_TOKEN;
+      else process.env.ANVIL_MESH_ADMIN_TOKEN = originalAdminToken;
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits a pinnable mesh connection record", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-mesh-"));
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      const out = path.join(rootDir, "connection.json");
+
+      const output = await captureStdout(() =>
+        main([
+          "mesh",
+          "connection",
+          "--name",
+          "mesh-backend",
+          "--base-url",
+          "https://mesh.example.com",
+          "--out",
+          out,
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        command: "mesh connection",
+        connection: {
+          kind: "anvil-mesh-backend",
+          workerName: "mesh-backend",
+          baseUrl: "https://mesh.example.com",
+          descriptorUrl: "https://mesh.example.com/.well-known/anvil-backend",
+        },
+        written: out,
+      });
+      expect(JSON.parse(await readFile(out, "utf8"))).toMatchObject({
+        descriptorUrl: "https://mesh.example.com/.well-known/anvil-backend",
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("aggregates Guard and preview plan review into a trust report", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
     const originalCwd = process.cwd();
@@ -3729,6 +4072,41 @@ async function createAgentCell(
 
 function toPosixPath(value: string): string {
   return value.split(path.sep).join("/");
+}
+
+async function writeMeshBackendFixture(rootDir: string): Promise<string> {
+  const backendDir = path.join(rootDir, "backend");
+  await mkdir(path.join(backendDir, "src"), { recursive: true });
+  await writeFile(
+    path.join(backendDir, "wrangler.jsonc"),
+    `{
+  "name": "anvil-backend-spike",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "ACCOUNT", "class_name": "AccountCoordinator" },
+      { "name": "SESSIONS", "class_name": "SessionCoordinator" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AccountCoordinator"] },
+    { "tag": "v2", "new_sqlite_classes": ["SessionCoordinator"] },
+  ],
+  "r2_buckets": [
+    { "binding": "ARTIFACTS", "bucket_name": "anvil-spike-artifacts" },
+  ],
+}
+`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(backendDir, "src", "index.ts"),
+    "export default { fetch: () => new Response('ok') };\n",
+    "utf8",
+  );
+
+  return backendDir;
 }
 
 async function startDoctorHealthServer(

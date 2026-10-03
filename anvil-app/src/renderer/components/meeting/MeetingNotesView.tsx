@@ -345,7 +345,7 @@ function Metric({ label, value }: { label: string; value: number }) {
   return (
     <div className="border-r border-border px-4 py-2 last:border-r-0">
       <div className="text-lg font-semibold tabular-nums">{value}</div>
-      <div className="text-[11px] uppercase text-text-tertiary">{label}</div>
+      <div className="text-eyebrow uppercase text-text-tertiary">{label}</div>
     </div>
   );
 }

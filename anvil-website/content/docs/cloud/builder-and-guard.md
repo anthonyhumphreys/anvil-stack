@@ -3,9 +3,9 @@ title: Builder and Guard
 navTitle: Builder and Guard
 description: How the Anvil Builder checks, bundles, extracts manifests, and enforces alpha import and capability policy.
 product: Anvil Cloud
-section: Runtime
+section: Concepts
 journey: build
-order: 130
+order: 150
 ---
 
 # Builder and Guard

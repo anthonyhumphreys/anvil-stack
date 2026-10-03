@@ -3,9 +3,9 @@ title: Troubleshooting
 navTitle: Troubleshooting
 description: Fix permission, capability, reporting, and strict-mode issues when running Anvil Node Base.
 product: Anvil Node Base
-section: Guides
+section: Reference
 journey: reference
-order: 11
+order: 60
 ---
 
 # Troubleshooting

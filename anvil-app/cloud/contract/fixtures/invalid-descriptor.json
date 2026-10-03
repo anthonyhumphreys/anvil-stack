@@ -1,0 +1,21 @@
+{
+  "descriptorVersion": 1,
+  "deploymentId": "deadbeef-0000-4000-8000-000000000000",
+  "displayName": "Broken backend",
+  "protocols": ["anvil-backend/0"],
+  "profiles": ["sync/1"],
+  "apiPath": "/v1",
+  "socketPath": "v1/connect",
+  "authModes": ["oidc-pkce"],
+  "auth": {
+    "issuer": "https://identity.example.org",
+    "publicClientId": "anvil-desktop",
+    "scopes": ["openid"]
+  },
+  "limits": {
+    "entityBytes": 65536,
+    "pageBytes": 262144,
+    "batchChanges": 50,
+    "liveFrameBytes": 16384
+  }
+}

@@ -253,6 +253,26 @@ export type AgentExecutionProviderCapabilities = {
   patches: boolean;
 };
 
+/**
+ * Configuration status exposed to clients that need to choose an execution
+ * target before they have a complete execution request.
+ *
+ * Request-specific support still belongs to `supports()`. This status only
+ * answers whether the adapter can be used at all in the current control-plane
+ * process, such as whether its worker image or endpoint is configured.
+ */
+export type AgentExecutionProviderAvailability = {
+  /** Configuration is present. This does not perform a live provider probe. */
+  configured: boolean;
+  reasons: string[];
+};
+
+export type AgentExecutionProviderDescriptor = {
+  id: string;
+  capabilities: AgentExecutionProviderCapabilities;
+  availability: AgentExecutionProviderAvailability;
+};
+
 export type AgentExecutionProviderSupport = {
   supported: boolean;
   reasons: string[];
@@ -266,6 +286,8 @@ export type AgentExecutionProviderSupport = {
  */
 export interface AgentExecutionProvider extends AgentSandboxProvider {
   readonly executionCapabilities: AgentExecutionProviderCapabilities;
+  /** Describe adapter-level readiness without starting a sandbox. */
+  describe?(): AgentExecutionProviderAvailability;
   supports(request: AgentExecutionRequest): AgentExecutionProviderSupport;
   prepareWorkspace(
     session: AgentSandboxSession,

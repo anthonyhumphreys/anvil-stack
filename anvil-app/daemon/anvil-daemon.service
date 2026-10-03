@@ -1,0 +1,20 @@
+# systemd user unit for anvil-daemon (DAEMON-01).
+# Install: copy to ~/.config/systemd/user/anvil-daemon.service,
+# replace __ANVIL_APP_DIR__, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now anvil-daemon
+# For a system-level service, move to /etc/systemd/system/ and set User=.
+[Unit]
+Description=Anvil headless host daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__ANVIL_APP_DIR__
+Environment=ANVIL_DATA_DIR=%h/.anvil-daemon
+ExecStart=/usr/bin/env node __ANVIL_APP_DIR__/dist-daemon/anvil-daemon.mjs run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

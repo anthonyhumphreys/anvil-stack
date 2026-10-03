@@ -23,8 +23,13 @@ export function initializeTelemetry(options: TelemetryStartupOptions): boolean {
       sendDefaultPii: false,
       maxBreadcrumbs: 0,
       tracesSampleRate: 0,
-      autoSessionTracking: false,
-      attachScreenshot: false,
+      integrations: (integrations) =>
+        integrations.filter(
+          (integration) =>
+            !['MainProcessSession', 'BrowserWindowSession', 'Screenshots'].includes(
+              integration.name,
+            ),
+        ),
     });
     console.log('[Telemetry] Crash reporting is enabled');
     return true;

@@ -1,8 +1,11 @@
 import { getPreferenceValues } from '@raycast/api';
+import { forgetDialedHost, resolveAccountTarget } from './account';
 
 export interface Preferences {
-  baseUrl: string;
-  token: string;
+  baseUrl?: string;
+  token?: string;
+  accountApiUrl?: string;
+  accountEnrollmentCode?: string;
 }
 
 export interface CodexSession {
@@ -137,18 +140,29 @@ export async function startWorkflow(input: StartWorkflowInput): Promise<StartWor
 
 async function fetchJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const preferences = getPreferenceValues<Preferences>();
-  const baseUrl = preferences.baseUrl.replace(/\/+$/, '');
-  const response = await fetch(`${baseUrl}${path}`, {
+  const baseUrl = preferences.baseUrl?.trim().replace(/\/+$/, '');
+  const token = preferences.token?.trim();
+
+  // Paired mode wins when configured — it needs no account and no network
+  // discovery. Otherwise fall back to account-connected mode.
+  const target =
+    baseUrl && token ? { baseUrl, token } : await resolveAccountTarget();
+
+  const response = await fetch(`${target.baseUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${preferences.token}`,
+      Authorization: `Bearer ${target.token}`,
       ...(init.headers ?? {}),
     },
   });
   const text = await response.text();
   const body = text ? JSON.parse(text) : {};
   if (!response.ok) {
+    // Account mode: a dead route or stale bearer is worth one redial.
+    if (!(baseUrl && token) && (response.status === 401 || response.status >= 500)) {
+      await forgetDialedHost();
+    }
     const message =
       body && typeof body === 'object' && 'error' in body
         ? String((body as { error: unknown }).error)

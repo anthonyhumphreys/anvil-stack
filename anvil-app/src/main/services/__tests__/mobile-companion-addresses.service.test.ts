@@ -6,6 +6,7 @@ const { getDbMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('node:os', () => ({
+  homedir: vi.fn(() => '/tmp'),
   networkInterfaces: vi.fn(),
 }));
 

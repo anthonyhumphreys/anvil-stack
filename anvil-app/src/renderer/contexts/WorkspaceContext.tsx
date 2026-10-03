@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import type {
+  CodexMode,
   RepoInfo,
   Workspace,
   WorkspaceCreateOptions,
@@ -18,6 +19,7 @@ import type {
   WorkspaceSummary,
   WorkspaceActivitySummary,
 } from '../../shared/types';
+import { useOptionalRepoIndex } from './RepoIndexContext';
 
 interface WorkspaceContextValue {
   workspaces: WorkspaceSummary[];
@@ -43,6 +45,20 @@ interface WorkspaceContextValue {
     sections?: Array<'workitems' | 'docs' | 'launch'>,
   ) => Promise<WorkspacePreferences | null>;
   refreshWorkspaces: () => Promise<void>;
+  /**
+   * WS7: set for a few seconds after a workspace switch so the shell can show
+   * a "Switched to X" toast with Undo.
+   */
+  workspaceSwitchNotice: { fromId: string; fromName: string; toName: string } | null;
+  undoWorkspaceSwitch: () => Promise<void>;
+  dismissWorkspaceSwitchNotice: () => void;
+  /**
+   * J10 seam: per-workspace default access level. Persisted per workspace in
+   * localStorage until the `workspace_preferences.access` section lands; the
+   * Settings → Workspace panel should read/write through this pair.
+   */
+  workspaceAccessDefault: CodexMode | null;
+  setWorkspaceAccessDefault: (level: CodexMode | null) => void;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -67,6 +83,136 @@ export function useWorkspace(): WorkspaceContextValue {
   return ctx;
 }
 
+/** True once the fast structural pass has run — the tier that unlocks repo features. */
+export function repoIsMapped(repo: RepoInfo): boolean {
+  return repo.indexTier === 'mapped' || repo.indexTier === 'enriched' || repo.status === 'indexed';
+}
+
+/** True while the repo has a queued/running index job or is mid-index. */
+export function repoIsIndexing(repo: RepoInfo): boolean {
+  return repo.status === 'indexing';
+}
+
+export interface FeatureAvailabilityInput {
+  repos: RepoInfo[];
+  scaffoldSession: WorkspaceScaffoldSession | null;
+  /** Repo ids with a queued/running index job (from RepoIndexContext). */
+  activeJobRepoIds: ReadonlySet<string>;
+  /** Repo ids whose latest index job failed. */
+  failedJobRepoIds: ReadonlySet<string>;
+  /** False until the index-job list has hydrated — avoids flashing errors. */
+  jobsHydrated: boolean;
+}
+
+/**
+ * Truthful feature availability (J2/J4, §4.1):
+ * - Chat is never disabled by indexing — it improves context, it isn't a gate.
+ * - Repo features unlock per-repo at the `mapped` tier.
+ * - `preparing` only while a job is actually queued/running; `needs-attention`
+ *   when indexing failed or never ran.
+ */
+export function computeFeatureAvailability(
+  input: FeatureAvailabilityInput,
+): WorkspaceFeatureAvailability {
+  const { repos, scaffoldSession, activeJobRepoIds, failedJobRepoIds, jobsHydrated } = input;
+
+  if (scaffoldSession) {
+    if (scaffoldSession.status === 'indexing') {
+      const anyMapped = repos.some(repoIsMapped);
+      return {
+        statusLabel: 'indexing',
+        chatEnabled: true,
+        repoFeaturesEnabled: anyMapped,
+        repoFeatureReason: anyMapped
+          ? undefined
+          : 'Workspace setup is finishing. Repositories are being indexed.',
+      };
+    }
+
+    if (scaffoldSession.status === 'active' || scaffoldSession.status === 'syncing') {
+      return {
+        statusLabel: 'scaffolding',
+        chatEnabled: true,
+        repoFeaturesEnabled: false,
+        repoFeatureReason: 'Workspace setup is in progress in Chat.',
+      };
+    }
+
+    if (scaffoldSession.status === 'failed') {
+      return {
+        statusLabel: 'scaffolding',
+        chatEnabled: true,
+        repoFeaturesEnabled: repos.some(repoIsMapped),
+        repoFeatureReason:
+          scaffoldSession.errorMessage ??
+          'Workspace setup hit a problem. Continue in Chat to finish scaffolding.',
+      };
+    }
+  }
+
+  if (repos.length === 0) {
+    return {
+      statusLabel: 'empty',
+      chatEnabled: true,
+      repoFeaturesEnabled: false,
+      repoFeatureReason:
+        'Add repositories later to unlock repo-powered features. Documentation, governance, and chat are available now.',
+    };
+  }
+
+  const anyMapped = repos.some(repoIsMapped);
+  const anyActive = repos.some((repo) => activeJobRepoIds.has(repo.id) || repoIsIndexing(repo));
+  const anyFailed = repos.some((repo) => repo.status === 'error' || failedJobRepoIds.has(repo.id));
+
+  if (anyActive) {
+    return {
+      statusLabel: 'preparing',
+      chatEnabled: true,
+      repoFeaturesEnabled: anyMapped,
+      repoFeatureReason: anyMapped
+        ? undefined
+        : 'Repositories are being indexed — repo features unlock as soon as the structural pass finishes.',
+    };
+  }
+
+  if (anyMapped) {
+    return {
+      statusLabel: 'ready',
+      chatEnabled: true,
+      repoFeaturesEnabled: true,
+    };
+  }
+
+  if (anyFailed) {
+    return {
+      statusLabel: 'needs-attention',
+      chatEnabled: true,
+      repoFeaturesEnabled: false,
+      repoFeatureReason:
+        'Repository indexing failed. Open the Workspace view to see the error and retry.',
+    };
+  }
+
+  if (!jobsHydrated) {
+    // Jobs are still loading — assume indexing may be queued rather than
+    // flashing a misleading "needs attention".
+    return {
+      statusLabel: 'preparing',
+      chatEnabled: true,
+      repoFeaturesEnabled: false,
+      repoFeatureReason: 'Checking repository indexing status…',
+    };
+  }
+
+  return {
+    statusLabel: 'needs-attention',
+    chatEnabled: true,
+    repoFeaturesEnabled: false,
+    repoFeatureReason:
+      'Repositories are connected but not indexed yet. Open the Workspace view to start indexing.',
+  };
+}
+
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [workspaceActivity, setWorkspaceActivity] = useState<WorkspaceActivitySummary[]>([]);
@@ -75,66 +221,34 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [initialWorkspaceId] = useState(() => readInitialWorkspaceIdFromLocation(window.location));
   const activeWorkspaceLoadVersionRef = useRef(0);
   const desiredWorkspaceIdRef = useRef<string | null>(null);
+  const [workspaceSwitchNotice, setWorkspaceSwitchNotice] = useState<{
+    fromId: string;
+    fromName: string;
+    toName: string;
+  } | null>(null);
+  const [workspaceAccessDefault, setWorkspaceAccessDefaultState] = useState<CodexMode | null>(null);
+
+  const repoIndex = useOptionalRepoIndex();
 
   const repos = activeWorkspace?.repos ?? [];
   const activeScaffoldSession = activeWorkspace?.scaffoldSession ?? null;
 
   const featureAvailability: WorkspaceFeatureAvailability = (() => {
-    if (activeScaffoldSession) {
-      if (activeScaffoldSession.status === 'indexing') {
-        return {
-          statusLabel: 'indexing',
-          chatEnabled: true,
-          repoFeaturesEnabled: false,
-          repoFeatureReason: 'Workspace setup is finishing. Repositories are being indexed.',
-        };
-      }
-
-      if (activeScaffoldSession.status === 'active' || activeScaffoldSession.status === 'syncing') {
-        return {
-          statusLabel: 'scaffolding',
-          chatEnabled: true,
-          repoFeaturesEnabled: false,
-          repoFeatureReason: 'Workspace setup is in progress in Chat.',
-        };
-      }
-
-      if (activeScaffoldSession.status === 'failed') {
-        return {
-          statusLabel: 'scaffolding',
-          chatEnabled: true,
-          repoFeaturesEnabled: false,
-          repoFeatureReason:
-            activeScaffoldSession.errorMessage ??
-            'Workspace setup hit a problem. Continue in Chat to finish scaffolding.',
-        };
+    const activeJobRepoIds = new Set<string>();
+    const failedJobRepoIds = new Set<string>();
+    if (repoIndex) {
+      for (const repo of repos) {
+        if (repoIndex.activeJobForRepo(repo.id)) activeJobRepoIds.add(repo.id);
+        if (repoIndex.lastErrorForRepo(repo.id)) failedJobRepoIds.add(repo.id);
       }
     }
-
-    if (repos.length === 0) {
-      return {
-        statusLabel: 'empty',
-        chatEnabled: true,
-        repoFeaturesEnabled: false,
-        repoFeatureReason:
-          'Add repositories later to unlock repo-powered features. Documentation, governance, and chat are available now.',
-      };
-    }
-
-    if (repos.some((repo) => repo.status === 'indexed')) {
-      return {
-        statusLabel: 'ready',
-        chatEnabled: true,
-        repoFeaturesEnabled: true,
-      };
-    }
-
-    return {
-      statusLabel: 'indexing',
-      chatEnabled: false,
-      repoFeaturesEnabled: false,
-      repoFeatureReason: 'Index repositories to unlock this feature.',
-    };
+    return computeFeatureAvailability({
+      repos,
+      scaffoldSession: activeScaffoldSession,
+      activeJobRepoIds,
+      failedJobRepoIds,
+      jobsHydrated: repoIndex?.hydrated ?? false,
+    });
   })();
 
   const loadActiveWorkspace = useCallback(async (id: string, select = false) => {
@@ -265,14 +379,85 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     loadWorkspaces,
   ]);
 
+  // Refresh workspace/repo data when index jobs settle so `indexTier`,
+  // `status` and summaries reflect the completed pass (replaces the old
+  // per-view polling).
+  const settledJobsVersion = repoIndex?.settledJobsVersion ?? 0;
+  const prevSettledVersionRef = useRef(settledJobsVersion);
+  useEffect(() => {
+    if (settledJobsVersion === prevSettledVersionRef.current) return;
+    prevSettledVersionRef.current = settledJobsVersion;
+    void loadWorkspaces();
+    if (desiredWorkspaceIdRef.current) {
+      void loadActiveWorkspace(desiredWorkspaceIdRef.current);
+    }
+  }, [settledJobsVersion, loadWorkspaces, loadActiveWorkspace]);
+
+  // J10 seam: per-workspace default access level. Persisted in localStorage
+  // until `workspace_preferences.access` exists — the Settings → Workspace
+  // panel (later wave) reads/writes through this context pair so only the
+  // storage adapter changes.
+  const accessDefaultKey = activeWorkspace
+    ? `anvil:workspace-access-default:${activeWorkspace.id}`
+    : null;
+  useEffect(() => {
+    if (!accessDefaultKey) {
+      setWorkspaceAccessDefaultState(null);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(accessDefaultKey);
+      setWorkspaceAccessDefaultState((raw as CodexMode | null) ?? null);
+    } catch {
+      setWorkspaceAccessDefaultState(null);
+    }
+  }, [accessDefaultKey]);
+
+  const setWorkspaceAccessDefault = useCallback(
+    (level: CodexMode | null) => {
+      setWorkspaceAccessDefaultState(level);
+      if (!accessDefaultKey) return;
+      try {
+        if (level === null) window.localStorage.removeItem(accessDefaultKey);
+        else window.localStorage.setItem(accessDefaultKey, level);
+      } catch {
+        /* localStorage unavailable — keep the in-memory value */
+      }
+    },
+    [accessDefaultKey],
+  );
+
   const switchWorkspace = useCallback(
     async (id: string) => {
+      const previous = activeWorkspace;
       await loadActiveWorkspace(id, true);
       if (desiredWorkspaceIdRef.current !== id) return;
       await window.anvil.settings.update({ activeWorkspaceId: id });
+      // WS7: surface the switch so the shell can offer an Undo toast.
+      const next = workspaces.find((ws) => ws.id === id);
+      if (previous && previous.id !== id) {
+        setWorkspaceSwitchNotice({
+          fromId: previous.id,
+          fromName: previous.name,
+          toName: next?.name ?? 'workspace',
+        });
+      }
     },
-    [loadActiveWorkspace],
+    [loadActiveWorkspace, activeWorkspace, workspaces],
   );
+
+  const undoWorkspaceSwitch = useCallback(async () => {
+    const notice = workspaceSwitchNotice;
+    setWorkspaceSwitchNotice(null);
+    if (!notice) return;
+    await loadActiveWorkspace(notice.fromId, true);
+    if (desiredWorkspaceIdRef.current !== notice.fromId) return;
+    await window.anvil.settings.update({ activeWorkspaceId: notice.fromId });
+  }, [loadActiveWorkspace, workspaceSwitchNotice]);
+
+  const dismissWorkspaceSwitchNotice = useCallback(() => {
+    setWorkspaceSwitchNotice(null);
+  }, []);
 
   const createWorkspace = useCallback(
     async (opts: WorkspaceCreateOptions): Promise<Workspace> => {
@@ -385,6 +570,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         updatePreferences,
         clearPreferences,
         refreshWorkspaces,
+        workspaceSwitchNotice,
+        undoWorkspaceSwitch,
+        dismissWorkspaceSwitchNotice,
+        workspaceAccessDefault,
+        setWorkspaceAccessDefault,
       }}
     >
       {children}

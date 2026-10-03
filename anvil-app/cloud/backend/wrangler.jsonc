@@ -1,0 +1,76 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "anvil-backend-spike",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACCOUNT",
+        "class_name": "AccountCoordinator",
+      },
+      {
+        "name": "SESSIONS",
+        "class_name": "SessionCoordinator",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AccountCoordinator"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SessionCoordinator"],
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "anvil-spike-artifacts",
+    },
+  ],
+  "vars": {
+    // AUTH-01: set OIDC_ISSUER + OIDC_CLIENT_ID to advertise `oidc-pkce`.
+    // Set ENROLLMENT_ADMIN_TOKEN (secret) to enable admin code issuance.
+    // ANVIL_DEV_SPIKE intentionally absent here: the top-level env is what
+    // `wrangler deploy` ships, and the spike bearer must fail closed there.
+    // Tests inject it through vitest-pool miniflare bindings; local `wrangler
+    // dev` gets it through env.dev below.
+  },
+  "env": {
+    // `wrangler dev --env dev`: development fixture only. Bindings are NOT
+    // inherited from the top level by named environments, so they repeat here.
+    "dev": {
+      "name": "anvil-backend-spike-dev",
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ACCOUNT",
+            "class_name": "AccountCoordinator",
+          },
+          {
+            "name": "SESSIONS",
+            "class_name": "SessionCoordinator",
+          },
+        ],
+      },
+      "r2_buckets": [
+        {
+          "binding": "ARTIFACTS",
+          "bucket_name": "anvil-spike-artifacts",
+        },
+      ],
+      "vars": {
+        // DEVELOPMENT ONLY: enables the `spike:<account>:<enrollment>` bearer
+        // for local tests and fixtures. Never set on a real deployment.
+        "ANVIL_DEV_SPIKE": "true",
+        // DEVELOPMENT ONLY: lets local fixtures/acceptance runs mint enrollment
+        // codes without an OIDC issuer. A real deployment sets this as a
+        // secret — or omits it entirely.
+        "ENROLLMENT_ADMIN_TOKEN": "dev-admin-token",
+      },
+    },
+  },
+}

@@ -175,7 +175,7 @@ export function RepositoryTwin({
                       <div className="truncate text-sm font-semibold text-text-primary">
                         {district.node.name}
                       </div>
-                      <div className="truncate font-mono text-[11px] text-text-tertiary">
+                      <div className="truncate font-mono text-xs text-text-tertiary">
                         {district.node.path}
                       </div>
                     </div>
@@ -199,13 +199,13 @@ export function RepositoryTwin({
                             }),
                           )
                         }
-                        className="block w-full truncate rounded px-1.5 py-1 text-left font-mono text-[11px] text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+                        className="block w-full truncate rounded px-1.5 py-1 text-left font-mono text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
                       >
                         {file.path}
                       </button>
                     ))}
                   </div>
-                  <div className="mt-2 flex items-center gap-1 text-[11px] text-text-tertiary">
+                  <div className="mt-2 flex items-center gap-1 text-xs text-text-tertiary">
                     <Network size={11} />
                     {district.connectedNodes.length > 0
                       ? `${district.connectedNodes.length} connected district${district.connectedNodes.length === 1 ? '' : 's'}`

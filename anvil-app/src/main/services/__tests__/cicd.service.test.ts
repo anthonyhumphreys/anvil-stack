@@ -39,18 +39,20 @@ describe('cicd.service', () => {
     );
     writeFileSync(
       join(repoPath, '.github', 'workflows', 'deploy.yml'),
-      ['name: Deploy', 'on:', '  workflow_call:', 'jobs:', '  release:', '    runs-on: ubuntu-latest'].join(
-        '\n',
-      ),
+      [
+        'name: Deploy',
+        'on:',
+        '  workflow_call:',
+        'jobs:',
+        '  release:',
+        '    runs-on: ubuntu-latest',
+      ].join('\n'),
     );
 
     const analysis = await analyzeCicdPipelines('repo-1', 'demo', repoPath);
 
     expect(analysis.files.map((file) => file.path)).toEqual(
-      expect.arrayContaining([
-        '.github/workflows/ci.yml',
-        '.github/workflows/deploy.yml',
-      ]),
+      expect.arrayContaining(['.github/workflows/ci.yml', '.github/workflows/deploy.yml']),
     );
     expect(analysis.nodes).toEqual(
       expect.arrayContaining([
@@ -116,7 +118,10 @@ describe('cicd.service', () => {
 
   it('returns validation findings for malformed YAML and empty workflows', async () => {
     mkdirSync(join(repoPath, '.github', 'workflows'), { recursive: true });
-    writeFileSync(join(repoPath, '.github', 'workflows', 'broken.yml'), 'name: Broken\njobs:\n  nope: [');
+    writeFileSync(
+      join(repoPath, '.github', 'workflows', 'broken.yml'),
+      'name: Broken\njobs:\n  nope: [',
+    );
 
     const analysis = await analyzeCicdPipelines('repo-3', 'demo', repoPath);
 

@@ -146,10 +146,7 @@ export function buildRepositoryMapGraph({
       );
       continue;
     }
-    if (
-      parsedSourceBytes + file.sizeBytes >
-      REPOSITORY_MAP_GRAPH_LIMITS.parsedSourceBytes
-    ) {
+    if (parsedSourceBytes + file.sizeBytes > REPOSITORY_MAP_GRAPH_LIMITS.parsedSourceBytes) {
       warnings.add(
         `Limited source inspection to ${Math.round(REPOSITORY_MAP_GRAPH_LIMITS.parsedSourceBytes / 1_000_000)} MB.`,
       );
@@ -390,9 +387,7 @@ function parseSourceFile(filePath: string, source: string): ParsedSourceFile {
     }
 
     if (ts.isExportAssignment(statement)) {
-      symbols.push(
-        createSymbol(sourceFile, statement, 'default export', 'export', true),
-      );
+      symbols.push(createSymbol(sourceFile, statement, 'default export', 'export', true));
     }
   }
 
@@ -419,7 +414,9 @@ function createSymbol(
 function hasExportModifier(node: ts.Node): boolean {
   return Boolean(
     ts.canHaveModifiers(node) &&
-      ts.getModifiers(node)?.some(
+    ts
+      .getModifiers(node)
+      ?.some(
         (modifier) =>
           modifier.kind === ts.SyntaxKind.ExportKeyword ||
           modifier.kind === ts.SyntaxKind.DefaultKeyword,
@@ -494,7 +491,9 @@ function addEdge(
 
 function compareGraphNodes(a: RepositoryMapGraphNode, b: RepositoryMapGraphNode): number {
   const order = { repository: 0, module: 1, directory: 2, file: 3, symbol: 4 };
-  return order[a.kind] - order[b.kind] || a.path.localeCompare(b.path) || a.name.localeCompare(b.name);
+  return (
+    order[a.kind] - order[b.kind] || a.path.localeCompare(b.path) || a.name.localeCompare(b.name)
+  );
 }
 
 function repositoryNodeId(repoId: string): string {

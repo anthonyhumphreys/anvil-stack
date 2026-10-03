@@ -1,0 +1,5 @@
+# Standalone package: the presence of this file makes pnpm treat
+# cloud/backend as its own workspace root so `pnpm install` here does not
+# walk up and join the anvil-app workspace (mobile, updates-worker).
+packages:
+  - "."

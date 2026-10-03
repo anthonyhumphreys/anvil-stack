@@ -106,7 +106,10 @@ function getFormatter(timezone: string): Intl.DateTimeFormat {
   });
 }
 
-function getZonedParts(date: Date, timezone: string): {
+function getZonedParts(
+  date: Date,
+  timezone: string,
+): {
   minute: number;
   hour: number;
   dayOfMonth: number;

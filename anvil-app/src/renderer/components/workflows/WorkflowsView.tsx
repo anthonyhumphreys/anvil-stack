@@ -1,3 +1,4 @@
+import { isPermissionMode } from '../../../../cloud/contract/permissions';
 import { WorkflowLaunchpad } from './WorkflowLaunchpad';
 import {
   OrchestrationPanel,
@@ -66,6 +67,7 @@ import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../sha
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildProviderModelOptions } from '../../utils/chat-model-options';
+import { SettingsLink } from '../shared/SettingsLink';
 
 type WorkflowCanvasData = {
   node: WorkflowNode;
@@ -133,7 +135,7 @@ function WorkflowStepNode({ data, selected }: NodeProps<Node<WorkflowCanvasData>
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-text-primary">{data.node.name}</div>
-          <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-[0.08em] text-text-tertiary">
+          <div className="mt-1 flex flex-wrap gap-1.5 text-eyebrow uppercase tracking-[0.08em] text-text-tertiary">
             <span>{data.node.kind === 'human' ? 'Your decision' : data.node.personaId}</span>
             {data.node.kind !== 'human' && (
               <>
@@ -656,7 +658,7 @@ export function WorkflowsView() {
                   <div className="truncate text-sm font-medium text-text-primary">
                     {template.name}
                   </div>
-                  <div className="mt-1 flex items-center gap-2 text-[11px] text-text-tertiary">
+                  <div className="mt-1 flex items-center gap-2 text-xs text-text-tertiary">
                     <span>
                       {template.nodes.length} {template.nodes.length === 1 ? 'step' : 'steps'}
                     </span>
@@ -690,7 +692,7 @@ export function WorkflowsView() {
                       {run.templateName}
                     </span>
                   </div>
-                  <div className="mt-1 truncate text-[11px] text-text-tertiary">{run.kickoff}</div>
+                  <div className="mt-1 truncate text-xs text-text-tertiary">{run.kickoff}</div>
                 </button>
               ))}
           </div>
@@ -1200,9 +1202,35 @@ function Inspector({
                 ))}
               </select>
               <p className="mt-1 text-xs text-text-tertiary">
-                Only providers activated in Settings are available here.
+                Only providers{' '}
+                <SettingsLink to="providers#agent-providers">activated in Settings</SettingsLink>{' '}
+                are available here.
               </p>
             </Field>
+            {node.target !== undefined && node.target.kind !== 'local' && (
+              <Field label="Running mode">
+                <select
+                  className="workflow-input"
+                  value={node.permissionMode ?? ''}
+                  onChange={(event) =>
+                    onChange({
+                      permissionMode: isPermissionMode(event.target.value)
+                        ? event.target.value
+                        : undefined,
+                    })
+                  }
+                >
+                  <option value="">Use current running mode</option>
+                  <option value="read-only">Read only</option>
+                  <option value="on-request">Ask for extra access</option>
+                  <option value="workspace-auto">Auto in workspace</option>
+                  <option value="full-access">Full access</option>
+                </select>
+                <p className="mt-1 text-xs text-text-tertiary">
+                  The target device's maximum can reduce this mode.
+                </p>
+              </Field>
+            )}
             <Field label="Model">
               <input
                 list={`workflow-models-${node.id}`}
@@ -1427,7 +1455,7 @@ function SupervisorPanel({
             className="w-full resize-none bg-transparent px-1 text-sm text-text-primary outline-none placeholder:text-text-muted"
           />
           <div className="mt-1 flex items-center justify-between">
-            <span className="text-[10px] text-text-muted">Enter to ask</span>
+            <span className="text-xs text-text-muted">Enter to ask</span>
             <button
               onClick={onAsk}
               disabled={asking || !question.trim()}
@@ -1477,7 +1505,7 @@ function SectionLabel({
 }) {
   return (
     <div
-      className={`mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-muted ${className}`}
+      className={`mb-2 px-1 text-eyebrow font-semibold uppercase tracking-[0.14em] text-text-muted ${className}`}
     >
       {children}
     </div>

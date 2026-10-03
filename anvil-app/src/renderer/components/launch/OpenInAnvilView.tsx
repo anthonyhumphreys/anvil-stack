@@ -66,7 +66,7 @@ export function OpenInAnvilView() {
     setCurrentStep(null);
     setCloneStatuses({});
     if (workspaces.length > 0) {
-      navigate('/repos', { replace: true });
+      navigate('/workspace', { replace: true });
     }
   }, [navigate, workspaces.length]);
 
@@ -140,7 +140,7 @@ export function OpenInAnvilView() {
       } else if (intent.docsParentId) {
         navigate('/docs', { replace: true });
       } else {
-        navigate('/repos', { replace: true });
+        navigate('/workspace', { replace: true });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create workspace from deep link.');
@@ -292,7 +292,7 @@ export function OpenInAnvilView() {
             type="button"
             onClick={handleConfirm}
             disabled={creating}
-            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50"
+            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
           >
             {creating ? (
               <span className="inline-flex items-center gap-2">
