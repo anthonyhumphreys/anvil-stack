@@ -322,82 +322,89 @@ export function DevicesCategory() {
                 </div>
               )}
             </div>
-
-            <div className="space-y-2">
-              <p className="text-eyebrow uppercase text-text-tertiary">Account-connected devices</p>
-              <p className="text-sm text-text-secondary">
-                Devices signed in to your Anvil account must be approved here before they can
-                observe, approve, or steer this machine.
-              </p>
-              {enrollmentPolicies.length === 0 ? (
-                <p className="text-sm text-text-tertiary">No account devices have connected yet.</p>
-              ) : (
-                <div className="space-y-2">
-                  {enrollmentPolicies.map((policy) => (
-                    <div
-                      key={policy.enrollmentId}
-                      className="rounded-md border border-border bg-bg-primary px-3 py-2"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-text-primary">
-                            {policy.displayName ?? policy.enrollmentId}
-                          </p>
-                          <p className="text-xs text-text-tertiary">
-                            {policy.tier === 'pending'
-                              ? `Requested access ${new Date(policy.firstSeenAt).toLocaleString()}`
-                              : policy.tier === 'denied'
-                                ? 'Denied'
-                                : `Can ${policy.tier}`}
-                            {policy.decidedAt
-                              ? ` - decided ${new Date(policy.decidedAt).toLocaleString()}`
-                              : ''}
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => void removeEnrollmentPolicy(policy.enrollmentId)}
-                          disabled={mobileBusy}
-                          className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-error/10 hover:text-error disabled:opacity-50"
-                          title="Forget this device"
-                          aria-label={`Forget ${policy.displayName ?? policy.enrollmentId}`}
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {(['observe', 'approve', 'steer'] as const).map((tier) => (
-                          <button
-                            key={tier}
-                            onClick={() => void updateEnrollmentPolicy(policy.enrollmentId, tier)}
-                            disabled={mobileBusy || policy.tier === tier}
-                            className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:opacity-50 ${
-                              policy.tier === tier
-                                ? 'bg-accent text-accent-foreground'
-                                : 'border border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                            }`}
-                          >
-                            {tier}
-                          </button>
-                        ))}
-                        <button
-                          onClick={() => void updateEnrollmentPolicy(policy.enrollmentId, 'denied')}
-                          disabled={mobileBusy || policy.tier === 'denied'}
-                          className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-                            policy.tier === 'denied'
-                              ? 'bg-error/80 text-white'
-                              : 'border border-border text-text-secondary hover:bg-error/10 hover:text-error'
-                          }`}
-                        >
-                          Deny
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
           </div>
         )}
+      </SettingsPanel>
+
+      <SettingsPanel
+        panelId="account-device-access"
+        title="Account device access"
+        description="Allow trusted devices on your account to connect through Sync & Mesh."
+      >
+        <div className="space-y-2">
+          <p className="text-sm text-text-secondary">
+            Choose what each signed-in device can do on this machine. View reads status and history.
+            Approve also answers approvals. Control also starts, messages and interrupts work.
+          </p>
+          {enrollmentPolicies.length === 0 ? (
+            <p className="text-sm text-text-tertiary">
+              Access requests appear here when another signed-in device connects.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {enrollmentPolicies.map((policy) => (
+                <div
+                  key={policy.enrollmentId}
+                  className="rounded-md border border-border bg-bg-primary px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-text-primary">
+                        {policy.displayName ?? policy.enrollmentId}
+                      </p>
+                      <p className="text-xs text-text-tertiary">
+                        {policy.tier === 'pending'
+                          ? `Requested access ${new Date(policy.firstSeenAt).toLocaleString()}`
+                          : policy.tier === 'denied'
+                            ? 'Denied'
+                            : `Can ${policy.tier}`}
+                        {policy.decidedAt
+                          ? ` - decided ${new Date(policy.decidedAt).toLocaleString()}`
+                          : ''}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => void removeEnrollmentPolicy(policy.enrollmentId)}
+                      disabled={mobileBusy}
+                      className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-error/10 hover:text-error disabled:opacity-50"
+                      title="Forget this device"
+                      aria-label={`Forget ${policy.displayName ?? policy.enrollmentId}`}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {(['observe', 'approve', 'steer'] as const).map((tier) => (
+                      <button
+                        key={tier}
+                        onClick={() => void updateEnrollmentPolicy(policy.enrollmentId, tier)}
+                        disabled={mobileBusy || policy.tier === tier}
+                        className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:opacity-50 ${
+                          policy.tier === tier
+                            ? 'bg-accent text-accent-foreground'
+                            : 'border border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+                        }`}
+                      >
+                        {tier === 'observe' ? 'View' : tier === 'approve' ? 'Approve' : 'Control'}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => void updateEnrollmentPolicy(policy.enrollmentId, 'denied')}
+                      disabled={mobileBusy || policy.tier === 'denied'}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                        policy.tier === 'denied'
+                          ? 'bg-error/80 text-white'
+                          : 'border border-border text-text-secondary hover:bg-error/10 hover:text-error'
+                      }`}
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </SettingsPanel>
     </>
   );
