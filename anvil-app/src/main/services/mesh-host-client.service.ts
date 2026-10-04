@@ -66,7 +66,9 @@ const SAFE_MACHINE_ERROR_CODES = new Set([
   'authorization-unavailable',
 ]);
 
-export function safeMachineErrorCode(error: unknown): MeshHostConnectionStatus['lastError'] | undefined {
+export function safeMachineErrorCode(
+  error: unknown,
+): MeshHostConnectionStatus['lastError'] | undefined {
   if (!(error instanceof Error)) return undefined;
   if (SAFE_MACHINE_ERROR_CODES.has(error.message)) {
     return error.message as MeshHostConnectionStatus['lastError'];
@@ -213,11 +215,7 @@ function isPrivateRouteHost(hostname: string): boolean {
   return false;
 }
 
-export function meshMachineRouteUrl(
-  route: MeshMachineRoute,
-  path: string,
-  socket = false,
-): string {
+export function meshMachineRouteUrl(route: MeshMachineRoute, path: string, socket = false): string {
   const base = safeMeshRouteBase(route);
   if (base === null || !path.startsWith('/')) throw new Error('unsafe-machine-route');
   if (socket) base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -242,13 +240,7 @@ export function openMeshSealedBytes(
     publicKey: publicKeyFromRaw(ephemeralPublicRaw),
   });
   const key = Buffer.from(
-    hkdfSync(
-      'sha256',
-      shared,
-      Buffer.concat([ephemeralPublicRaw, clientPublicRaw]),
-      WRAP_INFO,
-      32,
-    ),
+    hkdfSync('sha256', shared, Buffer.concat([ephemeralPublicRaw, clientPublicRaw]), WRAP_INFO, 32),
   );
   shared.fill(0);
   const decipher = createDecipheriv('aes-256-gcm', key, nonce);
@@ -371,7 +363,11 @@ export function newMeshMachineEphemeralIdentity(): {
 }
 
 export function parseMeshMachineHostList(value: unknown): MeshMachineHost[] {
-  if (!isRecord(value) || value.v !== MESH_MACHINE_PROTOCOL_VERSION || !Array.isArray(value.hosts)) {
+  if (
+    !isRecord(value) ||
+    value.v !== MESH_MACHINE_PROTOCOL_VERSION ||
+    !Array.isArray(value.hosts)
+  ) {
     throw new Error('malformed-host-list');
   }
   const hosts: MeshMachineHost[] = [];
@@ -648,7 +644,8 @@ export class MeshMachineSessionConnection {
       });
     });
     this.socket.on('error', (...args) => {
-      const error = args[0] instanceof Error ? (args[0] as Error) : new Error('machine-socket-error');
+      const error =
+        args[0] instanceof Error ? (args[0] as Error) : new Error('machine-socket-error');
       this.rejectReady(error);
       this.failPending(error);
       this.close();
@@ -668,9 +665,7 @@ export class MeshMachineSessionConnection {
     this.readyPromise.finally(() => clearTimeout(timer)).catch(() => undefined);
   }
 
-  private async handleSocketMessage(
-    data: unknown,
-  ): Promise<void> {
+  private async handleSocketMessage(data: unknown): Promise<void> {
     const raw = socketMessageText(data);
     if (raw === null || Buffer.byteLength(raw, 'utf8') > MESH_MACHINE_MAX_FRAME_BYTES) {
       throw new Error('machine-frame-too-large');
@@ -777,9 +772,11 @@ export class MeshMachineSessionConnection {
         }
         this.readyState = true;
         this.refreshTimer = setInterval(() => {
-          void this.sendControl({ kind: 'refresh', requestId: nextMeshMachineRequestId() }).catch(() => {
-            this.close();
-          });
+          void this.sendControl({ kind: 'refresh', requestId: nextMeshMachineRequestId() }).catch(
+            () => {
+              this.close();
+            },
+          );
         }, MESH_MACHINE_SESSION_REFRESH_INTERVAL_MS);
         if (typeof this.refreshTimer.unref === 'function') this.refreshTimer.unref();
         this.resolveReady();
@@ -871,7 +868,9 @@ export class MeshMachineSessionConnection {
     return this.sendRequest<T>({ kind: 'request', requestId, operation, payload });
   }
 
-  private async sendRequest<T>(payload: Extract<MeshMachineClientPayload, { kind: 'request' }>): Promise<T> {
+  private async sendRequest<T>(
+    payload: Extract<MeshMachineClientPayload, { kind: 'request' }>,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(payload.requestId);
@@ -956,13 +955,19 @@ function socketMessageText(data: unknown): string | null {
   if (typeof data === 'string') return data;
   if (Buffer.isBuffer(data)) return data.toString('utf8');
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
-  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf8');
+  if (ArrayBuffer.isView(data))
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf8');
   return null;
 }
 
 function deriveMachineTrafficKey(
   sessionToken: Buffer,
-  input: { sessionId: string; machineId: string; endpointGeneration: string; direction: 'client-to-host' | 'host-to-client' },
+  input: {
+    sessionId: string;
+    machineId: string;
+    endpointGeneration: string;
+    direction: 'client-to-host' | 'host-to-client';
+  },
 ): Buffer {
   const derivation = meshMachineTrafficKeyDerivation(input);
   return Buffer.from(
@@ -1037,7 +1042,8 @@ export async function connectMeshMachineHost(
     }
   }
   if (lastError instanceof Error && lastError.message === 'protocol-mismatch') throw lastError;
-  if (lastError instanceof Error && lastError.message === 'authorization-unavailable') throw lastError;
+  if (lastError instanceof Error && lastError.message === 'authorization-unavailable')
+    throw lastError;
   throw new Error('route-unavailable');
 }
 
@@ -1050,8 +1056,8 @@ async function bootstrapMachineRoute(
 ): Promise<MeshMachineSessionConnection> {
   const identity = newMeshMachineEphemeralIdentity();
   const bootstrapChallenge = randomBytes(32).toString('base64url');
-  const capabilities = (['machine.session/1', 'machine.stream/1'] as const).filter(
-    (capability) => host.capabilities.includes(capability),
+  const capabilities = (['machine.session/1', 'machine.stream/1'] as const).filter((capability) =>
+    host.capabilities.includes(capability),
   );
   const operations = CLIENT_MACHINE_OPERATIONS.filter((operation) =>
     host.operations.includes(operation),
@@ -1074,12 +1080,9 @@ async function bootstrapMachineRoute(
     requestId: nextMeshMachineRequestId(),
   };
   const apiUrl = safeAdmissionApiUrl(context.apiUrl);
-  const ticketResponse = await fetchMachineJson(
+  const ticketResponse = (await fetchMachineJson(
     fetchImpl,
-    new URL(
-      `mesh/hosts/${encodeURIComponent(host.machineId)}/admission-tickets`,
-      apiUrl,
-    ).href,
+    new URL(`mesh/hosts/${encodeURIComponent(host.machineId)}/admission-tickets`, apiUrl).href,
     {
       method: 'POST',
       headers: {
@@ -1088,7 +1091,7 @@ async function bootstrapMachineRoute(
       },
       body: JSON.stringify(issueRequest),
     },
-  ) as MeshMachineAdmissionIssueResponse;
+  )) as MeshMachineAdmissionIssueResponse;
   if (
     !isRecord(ticketResponse) ||
     ticketResponse.v !== 1 ||
@@ -1150,9 +1153,8 @@ async function bootstrapMachineRoute(
       challenge.endpointGeneration !== host.endpointGeneration ||
       challenge.clientPublicKey !== identity.clientPublicKey ||
       !isRecord(challenge.claims) ||
-      meshMachineAdmissionClaimsCanonicalJson(
-        challenge.claims as typeof claims,
-      ) !== meshMachineAdmissionClaimsCanonicalJson(claims)
+      meshMachineAdmissionClaimsCanonicalJson(challenge.claims as typeof claims) !==
+        meshMachineAdmissionClaimsCanonicalJson(claims)
     ) {
       throw new Error('protocol-mismatch');
     }

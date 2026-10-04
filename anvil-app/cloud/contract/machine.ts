@@ -1,9 +1,6 @@
 /** Host-local Mesh execution and direct-session wire contract. */
 
-import {
-  BROWSER_WORKSPACE_OPERATIONS,
-  type BrowserWorkspaceOperation,
-} from './browser-workspace';
+import { BROWSER_WORKSPACE_OPERATIONS, type BrowserWorkspaceOperation } from './browser-workspace';
 
 export const MESH_MACHINE_PROTOCOL_VERSION = 1 as const;
 export const MESH_MACHINE_ENDPOINT_FLAG = 'ANVIL_MESH_MACHINE_ENDPOINTS';
@@ -45,7 +42,9 @@ export const MESH_MACHINE_OPERATIONS = [
   'dashboard.command.wake',
   ...BROWSER_WORKSPACE_OPERATIONS,
 ] as const;
-export type MeshMachineOperation = (typeof MESH_MACHINE_OPERATIONS)[number] | BrowserWorkspaceOperation;
+export type MeshMachineOperation =
+  | (typeof MESH_MACHINE_OPERATIONS)[number]
+  | BrowserWorkspaceOperation;
 
 export const MESH_MACHINE_ROUTE_PATHS = {
   info: '/api/machine/v1/info',

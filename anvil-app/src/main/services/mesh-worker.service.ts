@@ -1147,7 +1147,10 @@ function enqueueActivityAppend(
   const ctx = workerContext();
   if (ctx === null) return;
   let queue = activityAppendQueues.get(attemptId);
-  if (queue !== undefined && (queue.incarnation !== incarnation || queue.generation !== generation)) {
+  if (
+    queue !== undefined &&
+    (queue.incarnation !== incarnation || queue.generation !== generation)
+  ) {
     return;
   }
   if (queue === undefined) {
