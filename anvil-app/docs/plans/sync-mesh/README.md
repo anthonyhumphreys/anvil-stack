@@ -6,8 +6,9 @@ Normative spec: [v2 spec](anvil-sync-mesh-spec-v2.md) · Companion spec: [cloud-
 Approved product boundary: [free Sync, free Mesh, and Anvil Cloud Agents](mesh-access-and-monetisation-plan.md).
 The [host-local implementation plan](host-local-sync-mesh-implementation-plan.md) records the
 integrated direction: host-served live operations, compact free Sync and durable hosted coordination.
-The code is integrated at source checkpoint `47dd506`. The current local project checks pass; the
-formal security review remains open. Physical WAN acceptance, real managed-tunnel allocation,
+The code and review fixes are integrated at source checkpoint `e50e2a9`. Local project checks pass.
+The security review is sealed; its metadata discrepancy and remaining mobile native-buffering limit
+are recorded in the implementation review. Physical WAN acceptance, real managed-tunnel allocation,
 provider capacity/pricing and production rollout flags have not been verified. See the
 [implementation review](host-local-implementation-review.md) for source areas and limits.
 
@@ -97,7 +98,7 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 
 | Task | Why |
 | --- | --- |
-| Formal security review | Automated local project checks passed. The security review of the immutable source checkpoint remains pending. See the [implementation review](host-local-implementation-review.md). |
+| Formal security review | All 247 changed files and 13 candidates reviewed; original findings and subsequent fixes recorded. Sealed coverage metadata retains superseded pending entries. Mobile native buffering and operational acceptance remain open. See the [implementation review](host-local-implementation-review.md). |
 | Physical host acceptance | Use the current desktop and daemon build on at least two physical machines over separate WANs; test private-route use, host sleep, loss/reconnect, revocation, browser and phone behavior. See the [four-surface rehearsal](../../runbooks/hosted-sync/four-device-test-plan.md). |
 | Managed reachability | Keep the feature off until an operator has verified a real tunnel allocation and cleanup, permitted traffic, hostname/DNS capacity, provider price and billing. See [host connections](../../runbooks/hosted-sync/host-connections.md). |
 | Staged rollout | Keep `ANVIL_MESH_MACHINE_ENDPOINTS` and `ANVIL_MESH_MANAGED_ENDPOINTS` off in defaults and production until local, physical and commercial gates have evidence and an owner. See the [launch checklist](../../runbooks/hosted-sync/launch-checklist.md). |

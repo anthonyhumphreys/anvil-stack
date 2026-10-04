@@ -1,8 +1,9 @@
 # Host-local Sync and Mesh implementation review
 
-Prepared 4 October 2026. Status: implementation integrated at source checkpoint `47dd506`. Automated
-local project checks passed. Formal security review remains pending. This is a source and verification
-record, not a release or production acceptance record.
+Prepared 4 October 2026. Implementation and review fixes are integrated at source checkpoint
+`e50e2a9`. Automated local project checks pass. The immutable security review is sealed; its
+coverage metadata retains superseded progress records, as explained below. Production acceptance
+remains open.
 
 ## Source map
 
@@ -55,8 +56,9 @@ AES-256-GCM keys. The broker does not relay live session frames.
   data gaps.
 - Sync and Mesh remain free for personal accounts; no organization or shared fleet is required.
   Only future Anvil Cloud Agents are planned as paid, and that feature stays disabled by default.
-- The full application suite passed with 2,015 tests passing and 12 intentionally skipped across
-  247 files; four files were skipped. Full application lint passed with no errors or warnings.
+- The post-review application suite passed with 2,025 tests passing and 12 intentionally skipped.
+  There were 247 passing files and four skipped files. Full application lint passed with no errors
+  or warnings.
 - Node and web TypeScript checks, desktop and daemon production builds, backend tests/typecheck,
   Cloud tests/typechecks/lint/build, provisioner checks, contract tests/conformance, mobile checks,
   Raycast build/typecheck/ESLint/cold-load, and website documentation/browser/environment/typecheck/
@@ -64,11 +66,44 @@ AES-256-GCM keys. The broker does not relay live session frames.
 - Raycast's remote schema lint could not reach its service because of DNS; direct ESLint and CJS
   cold-load passed. The default website Turbopack production build was blocked by `EPERM`; the
   Webpack production build passed.
-- Formal security review is pending on the immutable source checkpoint. Add its disposition here
-  after that review; automated tests are not the security sign-off.
+- The security review covered all 247 changed files in `afbe685..fef0049` and recorded dispositions
+  for all 13 candidates. Eight findings survived, two medium and six low. Subsequent commits address
+  seven; the mobile native WebSocket buffering limitation below remains. The sealed report keeps
+  the original findings and their validation limits rather than presenting the later code as the
+  audited revision.
+- The workbench reports partial coverage because it retained superseded pending review records
+  while merging the final draft. All nine final review groups and candidate dispositions are
+  recorded. Scan `a8cb3712-65ad-4b87-bdc3-1a3b96712a4a` is sealed; a separate report reconciliation
+  records this metadata discrepancy without rewriting it.
 - Physical hosts on separate WANs, sleep/disconnect recovery on real networks, actual managed tunnel
   allocation and cleanup, provider capacity/traffic terms, and an actual provider bill have not been
   verified. Production rollout flags remain off until those gates have owners and evidence.
+
+## Review changes and remaining mobile limit
+
+Deleted-workspace grants now fail closed. File mentions become private snapshots at selection time,
+so later repository edits cannot replace their attachment bytes. Host HTTP responses use bounded
+stream readers; desktop and Raycast WebSockets reject oversized messages in the transport before
+delivery. Current Sync domain payloads must be account-sealed, snapshot expansion has a 256 MiB
+ceiling, and expired snapshot staging has durable R2 cleanup with retry. Sync key-version bounds are
+consistent across metadata and snapshot validation.
+
+The original tunnel-quota race hypothesis was rejected by the actual Durable Object harness, which
+held both account and global limits under concurrent requests. Label hashing now precedes the
+synchronous quota checks and reservation anyway. Intentional developer execution and unavailable
+future paid-agent billing were not reported as authorization bypasses. PR91's existing bot comments
+were rechecked; no newer comments appeared, and the applicable fixes are included.
+
+React Native's current WebSocket API exposes no inbound native message cap. Mobile rejects an
+oversized message after native delivery, so its 512 KiB application limit does not bound native
+message assembly. Expo's streaming HTTP path also has a native pre-reader buffering window.
+Strict native receive limits need a bounded transport and physical-device resource-abuse acceptance
+before public rollout. These limits do not require an older-host compatibility path.
+
+The post-review backend suite passed with 436 tests. Mobile's three bounded-stream tests, typecheck,
+lint and iOS export passed. Raycast build, typecheck, ESLint and CJS cold-load passed. Desktop and
+daemon builds passed, as did the daemon device-authorization integration and a real loopback test
+rejecting a 512 KiB-plus-one WebSocket message before delivery.
 
 See the [operator host-connection guide](../../runbooks/hosted-sync/host-connections.md),
 [four-surface rehearsal](../../runbooks/hosted-sync/four-device-test-plan.md), and

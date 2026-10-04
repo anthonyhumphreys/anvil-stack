@@ -1,7 +1,8 @@
 # Host-local execution and low-cost Sync and Mesh
 
-Prepared 4 October 2026. Status: implementation integrated at source checkpoint `47dd506`; automated
-local project checks passed and formal security review remains open. See the
+Prepared 4 October 2026. Status: implementation and review fixes integrated at source checkpoint
+`e50e2a9`; automated local project checks pass. Security review is sealed, with a coverage metadata
+discrepancy and a remaining mobile native-buffering limit. See the
 [implementation review](host-local-implementation-review.md) for the current source map and
 verification limits.
 
@@ -55,8 +56,8 @@ The current working tree contains the host-session protocol, companion advertise
 host-served interactive operations, compact Sync snapshots, managed endpoint lifecycle, and desktop,
 browser, mobile and Raycast integration. `ANVIL_MESH_MACHINE_ENDPOINTS` still defaults off and must
 be set by an operator for a selected process. `ANVIL_MESH_MANAGED_ENDPOINTS` is a separate default-off
-gate for managed reachability. Automated local project checks passed; the formal security review
-remains open. Physical WAN acceptance and provider allocation, capacity and pricing have not been
+gate for managed reachability. Automated local project checks pass; the security review and remaining
+mobile limit are recorded below. Physical WAN acceptance and provider allocation, capacity and pricing have not been
 verified. See the [implementation review](host-local-implementation-review.md).
 
 | Area | Current implementation | Remaining acceptance |
@@ -306,7 +307,7 @@ default until their rollout checks pass.
 | 3. Small durable Mesh state | Durable ownership, approvals, cancellation, handoff, event archives and status-poll reductions are integrated. | Verify partition, crash, eviction and handoff recovery; measure the hosted workload. Lease cadence remains unchanged. |
 | 4. Compact Sync storage | Encrypted snapshot manifests, verified chunks, publication fencing and bounded journal recovery are integrated. | Verify long-offline/new-device recovery, conflicts, tombstones, key rotation and opt-out before enabling compaction deletion. |
 | 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated behind separate default-off host/backend flags. | Verify real tunnel allocation and cleanup, separate-WAN browser/mobile connections, permitted traffic, capacity, price and billing. |
-| 6. Protocol and rollout | Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`; machine routes advertise their session and stream capabilities separately. | Complete the formal security review, physical acceptance, measured costs and explicit staged-rollout decisions before changing defaults. |
+| 6. Protocol and rollout | Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`; security review and fixes are recorded. Machine routes advertise their session and stream capabilities separately. | Resolve native mobile receive limits, complete physical acceptance, measure costs and make explicit staged-rollout decisions before changing defaults. |
 
 Do not expand Cloud Agent provisioning as part of managed reachability. A tunnel to a user-owned
 machine is not an Anvil-supplied execution machine. If an implementation touches owned Effect
@@ -447,8 +448,9 @@ unreleased managed reachability, unlimited storage, zero infrastructure cost, in
 universal chat-history backup. Browser, desktop and companion documentation must agree about
 supported operations and offline behaviour.
 
-The implementation is integrated at source checkpoint `47dd506`; automated local project checks
-passed, and the formal security review remains open. Production rollout additionally requires physical multi-host
+The implementation and review fixes are integrated at source checkpoint `e50e2a9`; automated local
+project checks pass. The [implementation review](host-local-implementation-review.md) records the
+sealed audit, its metadata discrepancy and the remaining native mobile receive limit. Production rollout requires physical multi-host
 acceptance, measured representative workloads, provider capacity and pricing confirmation, and
 verified recovery before compaction deletion. Keep network retries and current coordinator recovery
 available, and label the new cost case as a projection until those operational checks are complete.
