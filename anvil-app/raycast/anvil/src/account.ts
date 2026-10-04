@@ -1,4 +1,5 @@
 import { getPreferenceValues, LocalStorage } from '@raycast/api';
+import WebSocket from 'ws';
 import {
   connectMeshMachineHost,
   fetchMeshMachineHosts,
@@ -182,14 +183,19 @@ async function refreshSession(): Promise<{ apiUrl: string; session: DeviceSessio
 }
 
 function createRaycastSocket(url: string, protocols: string[]) {
-  const socket = new WebSocket(url, protocols);
+  const socket = new WebSocket(url, protocols, {
+    maxPayload: 512 * 1024,
+    perMessageDeflate: false,
+  });
   return {
     on(event: string, listener: (...args: unknown[]) => void) {
-      socket.addEventListener(event as 'message' | 'error' | 'close', (value) => {
-        if (event === 'message') listener((value as MessageEvent).data);
-        else if (event === 'error') listener(new Error('machine-socket-error'));
-        else listener();
-      });
+      if (event === 'message') {
+        socket.on('message', (data, isBinary) => listener(isBinary ? null : data));
+      } else if (event === 'error') {
+        socket.on('error', (error) => listener(error));
+      } else if (event === 'close') {
+        socket.on('close', () => listener());
+      }
     },
     send(data: string) {
       socket.send(data);

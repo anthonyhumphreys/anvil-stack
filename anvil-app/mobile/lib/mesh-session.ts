@@ -2,6 +2,7 @@ import { x25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { fetch as expoFetch } from 'expo/fetch';
 import * as Crypto from 'expo-crypto';
 import {
   MESH_MACHINE_MAX_FRAME_BYTES,
@@ -27,6 +28,7 @@ import {
   type MeshMachineServerPayload,
 } from '../../cloud/contract/machine';
 import { getAccountConnection, listMeshMachineHosts } from './anvil-account';
+import { readBoundedResponseText } from './bounded-response';
 
 const encoder = new TextEncoder();
 const WRAP_INFO = encoder.encode('anvil/keyring-wrap/v1');
@@ -195,10 +197,29 @@ async function fetchJson(url: string, init: RequestInit = {}): Promise<unknown> 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ACCOUNT_REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { ...init, redirect: 'error', signal: controller.signal });
-    const raw = await response.text();
-    if (new TextEncoder().encode(raw).byteLength > MESH_MACHINE_MAX_FRAME_BYTES) {
+    const response = await expoFetch(url, {
+      ...init,
+      redirect: 'error',
+      signal: controller.signal,
+    });
+    const contentLength = response.headers.get('content-length');
+    if (
+      contentLength !== null &&
+      /^\d+$/.test(contentLength) &&
+      Number(contentLength) > MESH_MACHINE_MAX_FRAME_BYTES
+    ) {
+      controller.abort();
       throw new MeshMachineRequestError('machine-response-too-large');
+    }
+    let raw: string;
+    try {
+      raw = await readBoundedResponseText(response.body, MESH_MACHINE_MAX_FRAME_BYTES);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('machine-response-')) {
+        controller.abort();
+        throw new MeshMachineRequestError(error.message);
+      }
+      throw error;
     }
     let payload: unknown;
     try {
@@ -756,6 +777,12 @@ export class MeshMachineSessionConnection {
   }
 
   private async handleMessage(data: unknown): Promise<void> {
+    if (typeof data === 'string' && data.length > MESH_MACHINE_MAX_FRAME_BYTES) {
+      throw new MeshMachineRequestError('machine-frame-too-large');
+    }
+    if (data instanceof ArrayBuffer && data.byteLength > MESH_MACHINE_MAX_FRAME_BYTES) {
+      throw new MeshMachineRequestError('machine-frame-too-large');
+    }
     const raw =
       typeof data === 'string'
         ? data
