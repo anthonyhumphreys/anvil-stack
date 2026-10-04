@@ -37,6 +37,8 @@ export interface RemoteChatTurn {
   prompt: string;
   state: RemoteChatTurnState;
   response?: string;
+  /** The host bounded this response before durable result delivery. */
+  responseTruncated?: boolean;
   jobId?: string;
   error?: string;
   createdAt: string;

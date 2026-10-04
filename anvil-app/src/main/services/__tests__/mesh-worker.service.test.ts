@@ -110,6 +110,7 @@ import {
   meshWorkerHeartbeatForTests,
   meshWorkerOnSyncGone,
   meshWorkerOnSyncReady,
+  notifyMeshWorkerAttemptEvent,
   reconcileMeshAttemptsOnBoot,
   requestApprovalForTests,
   resetMeshWorkerForTests,
@@ -530,13 +531,14 @@ describe('attempt heartbeat', () => {
     ).run(new Date().toISOString(), new Date().toISOString());
   });
 
-  it('observes a cancel-requested job via job.get and marks the attempt stopping', async () => {
+  it('observes a cancel-requested job from the fenced renewal and avoids a job.get per attempt', async () => {
     rpcHandler = (op) => {
       if (op === 'attempt.renew') {
-        return { results: [{ attemptId: 'att-live', status: 'renewed' }] };
-      }
-      if (op === 'job.get') {
-        return { job: { ...makeJob('job-live'), state: 'cancel-requested' }, attempts: [] };
+        return {
+          results: [
+            { attemptId: 'att-live', status: 'renewed', cancelRequested: true },
+          ],
+        };
       }
       return {};
     };
@@ -546,13 +548,21 @@ describe('attempt heartbeat', () => {
       .get('att-live') as { state: string; cancel_requested: number };
     expect(row.state).toBe('stopping');
     expect(row.cancel_requested).toBe(1);
+    expect(rpcCalls.filter((call) => call.operation === 'job.get')).toHaveLength(0);
   });
 
   it('marks an attempt unknown-outcome when its lease renewal is rejected', async () => {
     rpcHandler = (op) => {
       if (op === 'attempt.renew') {
         return {
-          results: [{ attemptId: 'att-live', status: 'rejected', reason: 'stale-fence' }],
+          results: [
+            {
+              attemptId: 'att-live',
+              status: 'rejected',
+              reason: 'stale-fence',
+              cancelRequested: false,
+            },
+          ],
         };
       }
       if (op === 'job.get') {
@@ -712,6 +722,45 @@ describe('remote approval wait (SESSION-02)', () => {
       .get('att-approval') as { journal_json: string };
     expect(row.journal_json).toContain('approval-requested');
     expect(row.journal_json).toContain('approval-approved');
+  });
+
+  it('uses a scoped push event to wake the durable approval read before its fallback', async () => {
+    insertAttempt();
+    let state: 'pending' | 'approved' = 'pending';
+    let approvalReads = 0;
+    rpcHandler = (op) => {
+      if (op === 'approval.get') {
+        approvalReads += 1;
+        return {
+          approvals: [
+            {
+              id: 'ap-push',
+              jobId: 'job-approval',
+              attemptId: 'att-approval',
+              actionDigest: 'digest-1',
+              generation: 1,
+              approverRole: 'user',
+              state,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+      return { job: { state: 'awaiting-approval' } };
+    };
+    const decisionPromise = requestApprovalForTests(
+      makeJob('job-approval'),
+      { ...makeAttempt('job-approval'), id: 'att-approval' },
+      'digest-1',
+      1_000,
+      2_000,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    state = 'approved';
+    notifyMeshWorkerAttemptEvent('att-approval');
+    await expect(decisionPromise).resolves.toBe('approved');
+    expect(approvalReads).toBe(2);
   });
 
   it('denies on a denied/expired approval row', async () => {

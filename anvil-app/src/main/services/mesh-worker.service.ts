@@ -725,24 +725,22 @@ async function renewActiveAttempts(): Promise<void> {
       fence: a.fence,
     })),
   });
+  const activeById = new Map(active.map((attempt) => [attempt.id, attempt]));
   for (const item of result.results) {
     if (item.status === 'rejected') {
       appendJournal(item.attemptId, 'lease-renewal-rejected', { reason: item.reason });
       updateAttemptState(item.attemptId, 'unknown-outcome');
+      continue;
     }
-  }
-  // Cancellation has no socket frame in MESH-02 — the durable check is a
-  // job.get per active attempt, bounded by maxConcurrentJobs.
-  for (const attempt of activeAttempts()) {
-    if (attempt.cancel_requested === 1) continue;
-    try {
-      const { job } = await meshRpc<JobGetResult>('job.get', { jobId: attempt.job_id });
-      if (job.state === 'cancel-requested' || job.state === 'cancelled') {
-        appendJournal(attempt.id, 'cancel-requested');
-        updateAttemptState(attempt.id, 'stopping', { cancelRequested: true });
-      }
-    } catch {
-      // Reachability is handled by the heartbeat connect path.
+    // The renewal response is a durable catch-up of the owning job's cancel
+    // decision under the same attempt/incarnation/fence check. It replaces
+    // the former extra job.get for every active attempt without changing the
+    // 30-second lease cadence.
+    const cancelRequested = item.cancelRequested;
+    const attempt = activeById.get(item.attemptId);
+    if (cancelRequested === true && attempt !== undefined && attempt.cancel_requested !== 1) {
+      appendJournal(item.attemptId, 'cancel-requested');
+      updateAttemptState(item.attemptId, 'stopping', { cancelRequested: true });
     }
   }
 }
@@ -1260,12 +1258,37 @@ function sendControl(attempt: ExecutionAttempt, doc: Record<string, unknown>): v
   });
 }
 
-const APPROVAL_POLL_MS = 2_000;
+const APPROVAL_RECHECK_MIN_MS = 25_000;
+const APPROVAL_RECHECK_MAX_MS = 35_000;
 const APPROVAL_WAIT_CAP_MS = 10 * 60 * 1000; // backend default TTL
+const approvalWaiters = new Map<string, Set<() => void>>();
+
+/** Wake a durable approval catch-up when a scoped account/host event arrives. */
+export function notifyMeshWorkerAttemptEvent(attemptId: string): void {
+  for (const wake of approvalWaiters.get(attemptId) ?? []) wake();
+}
+
+function waitForApprovalWake(attemptId: string, fallbackMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const waiters = approvalWaiters.get(attemptId) ?? new Set<() => void>();
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (): void => {
+      clearTimeout(timer);
+      waiters.delete(finish);
+      if (waiters.size === 0) approvalWaiters.delete(attemptId);
+      resolve();
+    };
+    waiters.add(finish);
+    approvalWaiters.set(attemptId, waiters);
+    timer = setTimeout(finish, fallbackMs);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+}
 
 /**
- * Requests a durable approval on the reserved control stream, then polls
- * `approval.get` until the row resolves. Two fail-closed rules:
+ * Requests a durable approval on the reserved control stream, then checks
+ * `approval.get` on scoped push events with a bounded jittered safety read.
+ * Two fail-closed rules:
  *
  * 1. The approval ROW is the decision authority — the job is 'running' both
  *    before the request lands and after a grant, so job state alone can
@@ -1275,13 +1298,14 @@ const APPROVAL_WAIT_CAP_MS = 10 * 60 * 1000; // backend default TTL
  *    appears (the backend dedupes same-digest re-requests).
  *
  * Reaching the TTL cap, a dead socket, or an unreachable backend all
- * resolve 'denied'. A terminal job state ends the wait early.
+ * resolve 'denied'. A terminal job state ends the wait early. Push only wakes
+ * the waiter; the durable approval row remains the decision authority.
  */
 async function requestAndAwaitApproval(
   job: MeshJob,
   attempt: ExecutionAttempt,
   actionDigest: string,
-  pollMs = APPROVAL_POLL_MS,
+  pollMs?: number,
   capMs = APPROVAL_WAIT_CAP_MS,
   details?: string,
 ): Promise<'approved' | 'denied'> {
@@ -1355,7 +1379,11 @@ async function requestAndAwaitApproval(
       // Reachability blip — keep polling inside the TTL window.
       journalRetry('approval-poll-retry', error);
     }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    const fallbackMs =
+      pollMs ??
+      APPROVAL_RECHECK_MIN_MS +
+        Math.floor(Math.random() * (APPROVAL_RECHECK_MAX_MS - APPROVAL_RECHECK_MIN_MS + 1));
+    await waitForApprovalWake(attempt.id, Math.min(fallbackMs, Math.max(1, deadline - Date.now())));
   }
   appendJournal(attempt.id, 'approval-expired', { actionDigest });
   return 'denied';
@@ -2305,12 +2333,14 @@ async function executeStartSession(
     });
   }
 
+  const boundedOutput = boundedRemoteAssistantOutput(result.assistantOutput);
   return {
     ok: result.turnStatus === 'completed' && !result.cancelled,
     workspaceId,
     providerThreadId: result.providerThreadId,
     resumeHandle: result.resumeHandle,
-    assistantOutput: boundedRemoteAssistantOutput(result.assistantOutput),
+    assistantOutput: boundedOutput.text,
+    assistantOutputTruncated: boundedOutput.truncated,
     turnId: result.turnId,
     turnStatus: result.turnStatus,
     cliVersion: result.cliVersion,
@@ -2849,6 +2879,10 @@ export async function reconcileMeshAttemptsOnBoot(): Promise<void> {
 
 export function resetMeshWorkerForTests(): void {
   policyPublishPending = false;
+  for (const waiters of approvalWaiters.values()) {
+    for (const wake of waiters) wake();
+  }
+  approvalWaiters.clear();
   stopHeartbeat();
   connectInFlight = null;
   contextProvider = null;
