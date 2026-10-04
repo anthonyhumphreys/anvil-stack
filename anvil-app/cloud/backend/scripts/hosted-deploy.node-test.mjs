@@ -261,11 +261,27 @@ test('target vars retain optional settings but lock deployment and WorkOS identi
   assert.equal(vars.OIDC_CLIENT_ID, staging.workos.desktopClientId);
   assert.equal(vars.ANVIL_DEPLOYMENT_ID, staging.deploymentId);
   assert.equal(vars.HOSTED_BILLING_ENVIRONMENT, 'staging');
+  assert.equal(vars.ANVIL_MESH_MANAGED_ENDPOINTS, 'false');
   assert.equal(mergeTargetVars({}, staging).ANVIL_CLOUD_AGENTS_ENABLED, 'false');
+  assert.equal(
+    mergeTargetVars({ ANVIL_MESH_MANAGED_ENDPOINTS: 'true' }, staging)
+      .ANVIL_MESH_MANAGED_ENDPOINTS,
+    'true',
+  );
   assert.throws(
     () => mergeTargetVars({ ANVIL_DEV_SPIKE: 'true' }, staging),
     /invalid or secret Worker var/,
   );
+  for (const name of [
+    'CLOUDFLARE_TUNNEL_ACCOUNT_ID',
+    'CLOUDFLARE_TUNNEL_ZONE_ID',
+    'CLOUDFLARE_TUNNEL_API_TOKEN',
+  ]) {
+    assert.throws(
+      () => mergeTargetVars({ [name]: 'must-remain-protected' }, staging),
+      /invalid or secret Worker var/,
+    );
+  }
 });
 
 function hostedConfig(target, environment, extraVars = {}) {
@@ -277,6 +293,7 @@ function hostedConfig(target, environment, extraVars = {}) {
       HOSTED_BILLING_ENVIRONMENT: environment,
       HOSTED_CHECKOUT_ENABLED: 'false',
       ANVIL_CLOUD_AGENTS_ENABLED: 'false',
+      ANVIL_MESH_MANAGED_ENDPOINTS: 'false',
       ANVIL_DEPLOYMENT_ID: target.deploymentId,
       ANVIL_DEPLOYMENT_NAME: target.deploymentName,
       HOSTED_WORKOS_CLIENT_ID: target.workos.hostedClientId,
@@ -323,6 +340,15 @@ test('generated config pins its WorkOS clients and billing environment', () => {
     assert.throws(
       () => validateGeneratedConfig(configPath, staging, 'staging'),
       /OIDC_CLIENT_ID does not match the selected target/,
+    );
+
+    writeJson(configPath, {
+      ...valid,
+      vars: { ...valid.vars, ANVIL_MESH_MANAGED_ENDPOINTS: 'yes' },
+    });
+    assert.throws(
+      () => validateGeneratedConfig(configPath, staging, 'staging'),
+      /ANVIL_MESH_MANAGED_ENDPOINTS must be the literal string/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -561,6 +587,44 @@ test('backend secrets keep WorkOS and Stripe environment credentials correctly s
   );
 });
 
+test('managed tunnel credentials are protected and required only when the generated flag is on', () => {
+  const managed = {
+    CLOUDFLARE_TUNNEL_ACCOUNT_ID: 'shared-cloudflare-account',
+    CLOUDFLARE_TUNNEL_ZONE_ID: 'shared-cloudflare-zone',
+    CLOUDFLARE_TUNNEL_API_TOKEN: 'staging-cloudflare-token',
+  };
+  const base = {
+    HOSTED_SERVICE_KEYS: JSON.stringify({ website: 'w'.repeat(40) }),
+    WORKOS_API_KEY: 'sk_test_workos_staging',
+    WORKOS_WEBHOOK_SECRET: 'WorkOSDashboardSecret12345',
+    MANAGED_PROVISIONER_TOKEN: 'p'.repeat(40),
+  };
+
+  assert.doesNotThrow(() => validateBackendSecrets(base, staging, 'staging'));
+  assert.throws(
+    () =>
+      validateBackendSecrets(base, staging, 'staging', {
+        managedEndpointsEnabled: true,
+      }),
+    /requires CLOUDFLARE_TUNNEL_ACCOUNT_ID/,
+  );
+  assert.doesNotThrow(() =>
+    validateBackendSecrets({ ...base, ...managed }, staging, 'staging', {
+      managedEndpointsEnabled: true,
+    }),
+  );
+  assert.throws(
+    () =>
+      validateBackendSecrets(
+        { ...base, ...managed, CLOUDFLARE_TUNNEL_ZONE_ID: ' ' },
+        staging,
+        'staging',
+        { managedEndpointsEnabled: true },
+      ),
+    /requires CLOUDFLARE_TUNNEL_ZONE_ID/,
+  );
+});
+
 test('production requires staging secrets and rejects keys shared across HMAC audiences', () => {
   const directory = mkdtempSync(join(tmpdir(), 'hosted-secrets-test-'));
   const stagingSecretPath = join(directory, 'staging-secrets.json');
@@ -572,6 +636,9 @@ test('production requires staging secrets and rejects keys shared across HMAC au
     WORKOS_API_KEY: 'sk_workos_staging_unique',
     WORKOS_WEBHOOK_SECRET: 'whsec_staging_unique',
     MANAGED_PROVISIONER_TOKEN: 'p'.repeat(48),
+    CLOUDFLARE_TUNNEL_ACCOUNT_ID: 'shared-cloudflare-account',
+    CLOUDFLARE_TUNNEL_ZONE_ID: 'shared-cloudflare-zone',
+    CLOUDFLARE_TUNNEL_API_TOKEN: 'staging-cloudflare-token',
   };
   const productionSecrets = {
     HOSTED_SERVICE_KEYS: JSON.stringify({ website: 'x'.repeat(48) }),
@@ -579,6 +646,9 @@ test('production requires staging secrets and rejects keys shared across HMAC au
     WORKOS_API_KEY: 'sk_workos_production_unique',
     WORKOS_WEBHOOK_SECRET: 'whsec_production_unique',
     MANAGED_PROVISIONER_TOKEN: 'q'.repeat(48),
+    CLOUDFLARE_TUNNEL_ACCOUNT_ID: 'shared-cloudflare-account',
+    CLOUDFLARE_TUNNEL_ZONE_ID: 'shared-cloudflare-zone',
+    CLOUDFLARE_TUNNEL_API_TOKEN: 'production-cloudflare-token',
   };
   const targetManifest = {
     ...manifest,
@@ -597,6 +667,15 @@ test('production requires staging secrets and rejects keys shared across HMAC au
     );
     writeJson(stagingSecretPath, stageSecrets);
     assert.doesNotThrow(() => assertProductionSecretsAreFresh(targetManifest, productionSecrets));
+
+    assert.throws(
+      () =>
+        assertProductionSecretsAreFresh(targetManifest, {
+          ...productionSecrets,
+          CLOUDFLARE_TUNNEL_API_TOKEN: stageSecrets.CLOUDFLARE_TUNNEL_API_TOKEN,
+        }),
+      /Production secret CLOUDFLARE_TUNNEL_API_TOKEN reuses staging/,
+    );
 
     assert.throws(
       () =>
@@ -628,12 +707,18 @@ test('production isolation compares dotenv staging secrets and rejects an ambien
     WORKOS_API_KEY: 'sk_workos_staging_unique',
     WORKOS_WEBHOOK_SECRET: 'whsec_staging_unique',
     MANAGED_PROVISIONER_TOKEN: stageToken,
+    CLOUDFLARE_TUNNEL_ACCOUNT_ID: 'shared-cloudflare-account',
+    CLOUDFLARE_TUNNEL_ZONE_ID: 'shared-cloudflare-zone',
+    CLOUDFLARE_TUNNEL_API_TOKEN: 'staging-cloudflare-token',
   };
   const productionSecrets = {
     HOSTED_SERVICE_KEYS: JSON.stringify({ website: 'x'.repeat(48) }),
     WORKOS_API_KEY: 'sk_workos_production_unique',
     WORKOS_WEBHOOK_SECRET: 'whsec_production_unique',
     MANAGED_PROVISIONER_TOKEN: 'q'.repeat(48),
+    CLOUDFLARE_TUNNEL_ACCOUNT_ID: 'shared-cloudflare-account',
+    CLOUDFLARE_TUNNEL_ZONE_ID: 'shared-cloudflare-zone',
+    CLOUDFLARE_TUNNEL_API_TOKEN: 'production-cloudflare-token',
   };
   const targetManifest = {
     ...manifest,
@@ -727,6 +812,9 @@ test('run forwards dotenv secrets through temporary files and cleans them up on 
     WORKOS_API_KEY: 'sk_test_workos_run_staging',
     WORKOS_WEBHOOK_SECRET: 'whsec_run_staging_unique_value',
     MANAGED_PROVISIONER_TOKEN: managedToken,
+    CLOUDFLARE_TUNNEL_ACCOUNT_ID: 'shared-cloudflare-account',
+    CLOUDFLARE_TUNNEL_ZONE_ID: 'shared-cloudflare-zone',
+    CLOUDFLARE_TUNNEL_API_TOKEN: 'optional-cloudflare-token',
   };
   const envContents = `ANVIL_DEPLOYMENT_ENV=staging\n${Object.entries(backendSecrets)
     .map(([key, value]) => `${key}='${value}'`)
@@ -770,6 +858,21 @@ test('run forwards dotenv secrets through temporary files and cleans them up on 
     assert.equal(status, 17);
     assert.equal(existsSync(nonzeroTemporaryPath), false);
     assert.deepEqual(readFileSync(envPath), sourceBefore);
+
+    writeJson(
+      configPath,
+      hostedConfig(target, 'staging', { ANVIL_MESH_MANAGED_ENDPOINTS: 'true' }),
+    );
+    writeFileSync(
+      envPath,
+      envContents.replace(/^CLOUDFLARE_TUNNEL_API_TOKEN=.*\n/m, ''),
+    );
+    assert.throws(
+      () => run(args, () => assert.fail('missing tunnel credential reached the CLI')),
+      /requires CLOUDFLARE_TUNNEL_API_TOKEN when ANVIL_MESH_MANAGED_ENDPOINTS is enabled/,
+    );
+    writeJson(configPath, hostedConfig(target, 'staging'));
+    writeFileSync(envPath, envContents);
 
     let failedTemporaryPath;
     assert.throws(

@@ -6,7 +6,8 @@
  * for deployment:
  * the D1 account/lifecycle store is provisioned (no placeholder database_id),
  * service enforcement is on, Sync checkout and Anvil-hosted compute are
- * disabled by default, dev-only credentials are absent, and the sync
+ * disabled by default, managed tunnel provisioning is explicitly gated,
+ * dev-only credentials are absent, and the sync
  * surface (Durable Object bindings, DO migrations, R2 binding) still
  * matches wrangler.jsonc. The actual bucket name is target-specific and is
  * checked against the selected environment manifest by hosted-deploy.mjs.
@@ -20,8 +21,10 @@
  *
  * Exit code is 1 whenever issues exist, 0 otherwise. Warnings never
  * fail the run. Secrets (HOSTED_SERVICE_KEYS, WORKOS_API_KEY,
- * WORKOS_WEBHOOK_SECRET, HOSTED_OPERATOR_KEYS) cannot be verified from a config file — the
- * script warns unless the file at least documents them in comments.
+ * WORKOS_WEBHOOK_SECRET, HOSTED_OPERATOR_KEYS) cannot be verified from a
+ * config file — the script warns unless the file documents them in comments.
+ * Tunnel provider secrets are checked in that list only when managed
+ * endpoints are explicitly enabled.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -37,6 +40,11 @@ const REQUIRED_SECRETS = [
   'WORKOS_API_KEY',
   'WORKOS_WEBHOOK_SECRET',
   'HOSTED_OPERATOR_KEYS',
+];
+const MANAGED_ENDPOINT_SECRET_NAMES = [
+  'CLOUDFLARE_TUNNEL_ACCOUNT_ID',
+  'CLOUDFLARE_TUNNEL_ZONE_ID',
+  'CLOUDFLARE_TUNNEL_API_TOKEN',
 ];
 
 /**
@@ -178,6 +186,11 @@ function validateHostedConfig(hosted, base, rawHostedText = '') {
   if (!['true', 'false'].includes(vars.ANVIL_CLOUD_AGENTS_ENABLED)) {
     issues.push("vars.ANVIL_CLOUD_AGENTS_ENABLED must be the literal string 'true' or 'false'");
   }
+  if (!['true', 'false'].includes(vars.ANVIL_MESH_MANAGED_ENDPOINTS)) {
+    issues.push(
+      "vars.ANVIL_MESH_MANAGED_ENDPOINTS must be the literal string 'true' or 'false'",
+    );
+  }
   for (const key of FORBIDDEN_VARS) {
     if (Object.hasOwn(vars, key)) {
       issues.push(
@@ -242,7 +255,11 @@ function validateHostedConfig(hosted, base, rawHostedText = '') {
   }
 
   // --- required secrets checklist (documented in comments only) -----------
-  for (const name of REQUIRED_SECRETS) {
+  const requiredSecrets = [
+    ...REQUIRED_SECRETS,
+    ...(vars.ANVIL_MESH_MANAGED_ENDPOINTS === 'true' ? MANAGED_ENDPOINT_SECRET_NAMES : []),
+  ];
+  for (const name of requiredSecrets) {
     if (!rawHostedText.includes(name)) {
       warnings.push(
         `${name} is not mentioned anywhere in the config — secrets cannot be verified ` +
@@ -278,11 +295,13 @@ const FIXTURE_BASE = `{
     "bindings": [
       { "name": "ACCOUNT", "class_name": "AccountCoordinator" },
       { "name": "SESSIONS", "class_name": "SessionCoordinator" },
+      { "name": "MACHINE_ENDPOINTS", "class_name": "MachineEndpointCoordinator" },
     ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["AccountCoordinator"] },
     { "tag": "v2", "new_sqlite_classes": ["SessionCoordinator"] },
+    { "tag": "v3", "new_sqlite_classes": ["MachineEndpointCoordinator"] },
   ],
   "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "anvil-spike-artifacts" }],
 }`;
@@ -294,15 +313,22 @@ const FIXTURE_GOOD = `{
   //   WORKOS_API_KEY          WorkOS environment key for org + invite APIs
   //   WORKOS_WEBHOOK_SECRET   signature secret for /v1/hosted/workos-webhook
   //   HOSTED_OPERATOR_KEYS    separate operator-only HMAC map (optional)
+  // Managed endpoint provisioning stays off by default. If its generated flag
+  // is explicitly enabled after provider review, install all three as secrets:
+  //   CLOUDFLARE_TUNNEL_ACCOUNT_ID
+  //   CLOUDFLARE_TUNNEL_ZONE_ID
+  //   CLOUDFLARE_TUNNEL_API_TOKEN
   "durable_objects": {
     "bindings": [
       { "name": "ACCOUNT", "class_name": "AccountCoordinator" },
       { "name": "SESSIONS", "class_name": "SessionCoordinator" },
+      { "name": "MACHINE_ENDPOINTS", "class_name": "MachineEndpointCoordinator" },
     ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["AccountCoordinator"] },
     { "tag": "v2", "new_sqlite_classes": ["SessionCoordinator"] },
+    { "tag": "v3", "new_sqlite_classes": ["MachineEndpointCoordinator"] },
   ],
   "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "anvil-spike-artifacts" }],
   "d1_databases": [
@@ -318,6 +344,7 @@ const FIXTURE_GOOD = `{
     "HOSTED_BILLING_ENVIRONMENT": "staging",
     "HOSTED_CHECKOUT_ENABLED": "false",
     "ANVIL_CLOUD_AGENTS_ENABLED": "false",
+    "ANVIL_MESH_MANAGED_ENDPOINTS": "false",
   },
 }`;
 
@@ -341,6 +368,7 @@ const FIXTURE_BAD = `{
     "HOSTED_BILLING_ENFORCEMENT": "false",
     "HOSTED_CHECKOUT_ENABLED": "true",
     "ANVIL_CLOUD_AGENTS_ENABLED": "enabled",
+    "ANVIL_MESH_MANAGED_ENDPOINTS": "false",
     "ANVIL_DEV_SPIKE": "true",
   },
 }`;
@@ -356,6 +384,42 @@ function runSelfCheck() {
   }
   if (good.warnings.length > 0) {
     issues.push(`self-check: known-good fixture produced warnings: ${good.warnings.join('; ')}`);
+  }
+
+  const enabled = JSON.parse(jsoncToJson(FIXTURE_GOOD));
+  enabled.vars.ANVIL_MESH_MANAGED_ENDPOINTS = 'true';
+  const enabledResult = validateHostedConfig(enabled, base, FIXTURE_GOOD);
+  if (enabledResult.issues.length > 0 || enabledResult.warnings.length > 0) {
+    issues.push(
+      `self-check: enabled managed endpoints did not require a documented secret checklist: ${[
+        ...enabledResult.issues,
+        ...enabledResult.warnings,
+      ].join('; ')}`,
+    );
+  }
+
+  const undocumentedManagedSecrets = FIXTURE_GOOD.split('\n')
+    .filter((line) => !MANAGED_ENDPOINT_SECRET_NAMES.some((name) => line.includes(name)))
+    .join('\n');
+  const undocumentedResult = validateHostedConfig(
+    enabled,
+    base,
+    undocumentedManagedSecrets,
+  );
+  for (const name of MANAGED_ENDPOINT_SECRET_NAMES) {
+    if (!undocumentedResult.warnings.some((warning) => warning.includes(name))) {
+      issues.push(`self-check: enabled managed endpoints did not require documenting ${name}`);
+    }
+  }
+
+  const invalidManagedFlag = JSON.parse(jsoncToJson(FIXTURE_GOOD));
+  invalidManagedFlag.vars.ANVIL_MESH_MANAGED_ENDPOINTS = 'enabled';
+  if (
+    !validateHostedConfig(invalidManagedFlag, base, FIXTURE_GOOD).issues.some((issue) =>
+      issue.includes('ANVIL_MESH_MANAGED_ENDPOINTS'),
+    )
+  ) {
+    issues.push('self-check: invalid managed-endpoint flag was not rejected');
   }
 
   const isolated = JSON.parse(jsoncToJson(FIXTURE_GOOD));

@@ -10,6 +10,11 @@ import { parseEnv } from 'node:util';
 export const BACKEND_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 export const DEFAULT_MANIFEST = join(BACKEND_DIR, '.wrangler', 'hosted-targets.json');
 const WORKOS_ISSUER = 'https://api.workos.com/user_management';
+const MANAGED_ENDPOINT_SECRET_NAMES = [
+  'CLOUDFLARE_TUNNEL_ACCOUNT_ID',
+  'CLOUDFLARE_TUNNEL_ZONE_ID',
+  'CLOUDFLARE_TUNNEL_API_TOKEN',
+];
 const SECRET_NAMES = new Set([
   'HOSTED_SERVICE_KEYS',
   'HOSTED_OPERATOR_KEYS',
@@ -18,6 +23,7 @@ const SECRET_NAMES = new Set([
   'WORKOS_WEBHOOK_SECRET',
   'STRIPE_SECRET_KEY',
   'STRIPE_WEBHOOK_SECRET',
+  ...MANAGED_ENDPOINT_SECRET_NAMES,
 ]);
 
 export class HostedDeployError extends Error {}
@@ -218,6 +224,9 @@ export function mergeTargetVars(existing, target) {
     // subscription settings are deliberately retired in this service.
     HOSTED_CHECKOUT_ENABLED: 'false',
     ANVIL_CLOUD_AGENTS_ENABLED: existing.ANVIL_CLOUD_AGENTS_ENABLED ?? 'false',
+    // Hosted managed tunnel provisioning stays disabled unless the generated
+    // recipe vars explicitly opt in after provider pricing/capacity review.
+    ANVIL_MESH_MANAGED_ENDPOINTS: existing.ANVIL_MESH_MANAGED_ENDPOINTS ?? 'false',
     ANVIL_DEPLOYMENT_ID: target.deploymentId,
     ANVIL_DEPLOYMENT_NAME: target.deploymentName,
     HOSTED_BILLING_ENVIRONMENT: target.stage,
@@ -300,6 +309,10 @@ export function validateGeneratedConfig(
   if (!['true', 'false'].includes(config.vars?.ANVIL_CLOUD_AGENTS_ENABLED))
     throw new HostedDeployError(
       `${environment} ANVIL_CLOUD_AGENTS_ENABLED must be the literal string 'true' or 'false'.`,
+    );
+  if (!['true', 'false'].includes(config.vars?.ANVIL_MESH_MANAGED_ENDPOINTS))
+    throw new HostedDeployError(
+      `${environment} ANVIL_MESH_MANAGED_ENDPOINTS must be the literal string 'true' or 'false'.`,
     );
   const admissions = configuredWorkosAdmissions(config, environment);
   if (environment === 'production' && config.vars?.STRIPE_API_BASE)
@@ -435,7 +448,12 @@ function assertSeparateHmacAudiences(serviceKeys, operatorKeys, environment) {
     );
 }
 
-export function validateBackendSecrets(secrets, target, environment) {
+export function validateBackendSecrets(
+  secrets,
+  target,
+  environment,
+  { managedEndpointsEnabled = false } = {},
+) {
   if (
     !secrets ||
     typeof secrets !== 'object' ||
@@ -469,6 +487,14 @@ export function validateBackendSecrets(secrets, target, environment) {
   if (Boolean(secrets.STRIPE_SECRET_KEY) !== Boolean(secrets.STRIPE_WEBHOOK_SECRET))
     throw new HostedDeployError(`${environment} Stripe secrets must be configured together.`);
   if (secrets.STRIPE_SECRET_KEY) validateStripeSecretMode(secrets.STRIPE_SECRET_KEY, environment);
+  if (managedEndpointsEnabled) {
+    for (const name of MANAGED_ENDPOINT_SECRET_NAMES) {
+      if (typeof secrets[name] !== 'string' || !secrets[name].trim())
+        throw new HostedDeployError(
+          `${environment} requires ${name} when ANVIL_MESH_MANAGED_ENDPOINTS is enabled.`,
+        );
+    }
+  }
   if (
     target.managedProvisioner &&
     (typeof secrets.MANAGED_PROVISIONER_TOKEN !== 'string' ||
@@ -533,7 +559,7 @@ function selectBackendSecrets(values) {
   );
 }
 
-export function readBackendSecrets(target, environment) {
+export function readBackendSecrets(target, environment, options = {}) {
   const source = target.secrets;
   let secrets;
   if (source.backendFile) {
@@ -566,7 +592,7 @@ export function readBackendSecrets(target, environment) {
   } else {
     throw new HostedDeployError(`${environment} backend secret source is not configured.`);
   }
-  return validateBackendSecrets(secrets, target, environment);
+  return validateBackendSecrets(secrets, target, environment, options);
 }
 
 export function readProvisionerToken(target, environment) {
@@ -607,6 +633,13 @@ export function assertProductionSecretsAreFresh(manifest, secrets) {
     );
   const stagingSecrets = readBackendSecrets(staging, 'staging');
   for (const [name, value] of Object.entries(secrets)) {
+    // Cloudflare account and zone IDs identify the shared provider account
+    // and are intentionally exempt from cross-stage credential uniqueness.
+    if (
+      name === 'CLOUDFLARE_TUNNEL_ACCOUNT_ID' ||
+      name === 'CLOUDFLARE_TUNNEL_ZONE_ID'
+    )
+      continue;
     if (name !== 'HOSTED_SERVICE_KEYS' && value === stagingSecrets[name])
       throw new HostedDeployError(`Production secret ${name} reuses staging.`);
   }
@@ -837,12 +870,25 @@ export function run(argv, executeCommand = execute) {
   mkdirSync(paths.directory, { recursive: true });
   targetVars(target, paths.vars);
   const selectedFlags = checkedFlags(command, subcommand, flags, environment);
+  let generatedConfig;
+  if (['provision', 'migrate', 'apply', 'remove', 'secrets'].includes(command)) {
+    generatedConfig = validateGeneratedConfig(
+      paths.config,
+      { ...target, _stagingDatabaseId: manifest.environments.staging.databaseId },
+      environment,
+      command !== 'remove' && command !== 'provision',
+      pathsFor(manifest.environments.staging).config,
+    );
+  }
   let backendSecrets;
   const needsBackendSecrets =
     ['provision', 'migrate', 'apply', 'secrets'].includes(command) ||
     (command === 'provisioner' && ['apply', 'secrets'].includes(subcommand));
   if (needsBackendSecrets && command !== 'provisioner') {
-    backendSecrets = readBackendSecrets(target, environment);
+    backendSecrets = readBackendSecrets(target, environment, {
+      managedEndpointsEnabled:
+        generatedConfig?.vars?.ANVIL_MESH_MANAGED_ENDPOINTS === 'true',
+    });
     if (environment === 'production') assertProductionSecretsAreFresh(manifest, backendSecrets);
     if (
       target.managedProvisioner &&
@@ -860,22 +906,8 @@ export function run(argv, executeCommand = execute) {
       provisionerToken = backendSecrets.MANAGED_PROVISIONER_TOKEN;
     } else provisionerToken = readProvisionerToken(target, environment);
   }
-  if (
-    command === 'provision' ||
-    command === 'apply' ||
-    command === 'migrate' ||
-    command === 'remove' ||
-    command === 'secrets'
-  ) {
-    const generatedConfig = validateGeneratedConfig(
-      paths.config,
-      { ...target, _stagingDatabaseId: manifest.environments.staging.databaseId },
-      environment,
-      command !== 'remove' && command !== 'provision',
-      pathsFor(manifest.environments.staging).config,
-    );
-    if (command !== 'remove') validateCheckoutSecrets(generatedConfig, backendSecrets, environment);
-  }
+  if (generatedConfig && command !== 'remove')
+    validateCheckoutSecrets(generatedConfig, backendSecrets, environment);
   if (command === 'provisioner' && ['apply', 'remove', 'secrets'].includes(subcommand)) {
     let config;
     try {
