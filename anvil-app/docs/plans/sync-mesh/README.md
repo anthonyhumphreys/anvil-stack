@@ -3,6 +3,14 @@
 Branch: `feature/sync-mesh--foundations` · PR #91
 Normative spec: [v2 spec](anvil-sync-mesh-spec-v2.md) · Companion spec: [cloud-connected companion](cloud-connected-companion.md) · Ops: [hosted sync runbooks](../../runbooks/hosted-sync/deploy.md)
 
+Approved product boundary: [free Sync, free Mesh, and Anvil Cloud Agents](mesh-access-and-monetisation-plan.md).
+The [host-local implementation plan](host-local-sync-mesh-implementation-plan.md) defines the next
+architecture: host-served live operations, compact free Sync and minimal durable hosted coordination.
+It is planned, not implemented. The [detailed FinOps projection](finops-projection.md) and
+[editable workbook](outputs/finops-2026-10/anvil-finops-projection.xlsx) retain the earlier cost baselines
+and USD 10,000 startup credit expiring 18 September 2027; the new plan separates its broker subtotal
+from the cost of preserving the full service. The initial free-product implementation is locally verified.
+
 This document is the entry point. It explains what the branch builds, what has landed, and what remains — split into work an agent can execute versus decisions and verification that need a human.
 
 ## What the feature is
@@ -13,7 +21,7 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - A Cloudflare Workers + Durable Objects backend (`cloud/backend`) holds per-account coordinators: an append-only change journal, live socket sessions, durable jobs, and presence.
 - Devices sync **portable entities only**: workspace definitions, settings, workflow templates, editable agents, session ownership records. Chat transcripts and code are explicitly not synced entities.
 - Direct transport is preferred wherever a route exists — Tailscale → LAN → cloud-mediated fallback through the account object's hibernating sockets.
-- Hosted features are gated by a billing entitlement (Stripe + WorkOS identity); account-less and self-hosted (BYOB) modes keep working without it.
+- Sync and Mesh are free authenticated account features. Account lifecycle, device trust and fair-use rules remain enforced. Anvil Cloud Agents are a separate future paid execution service, disabled by default. Account-less and self-hosted modes remain available.
 
 ## What this branch contains
 
@@ -32,21 +40,21 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - Provider continuity is explicit per adapter (`native-resume` / `checkpoint-import` / `summary-continuation`); a provider thread ID is not portability proof.
 - Session ownership chip in the execution view; mesh session-view surface (jobs, approvals, activity, handoffs).
 
-### Account, identity, and billing — hosted tier (landed, launch-pending)
+### Account, identity, and legacy billing
 
-- BILL-01/02/03: WorkOS identity binding, enrollment-code + OIDC device enrollment, D1 persistence, Stripe checkout/webhooks/reconciliation, entitlement enforcement at authoritative handlers.
+- BILL-01/02/03: WorkOS identity binding, enrollment-code + OIDC device enrollment, D1 persistence, legacy Stripe records/webhooks/reconciliation, account authorisation at authoritative handlers. New Sync checkout is disabled under the free product plan.
 - BILL-04: `/account` website area — device table (list/rename/revoke), "Connect a device" code minting, billing surface.
-- BILL-05: desktop entitlement status + resumable pause.
+- BILL-05: desktop free access status; resumable pauses remain for account/security/operator failures.
 - IAC-01/02: deploy + rehearsal harness; live rehearsal passed on a clean account. The current staging/production deployment procedure is in the [deploy runbook](../../runbooks/hosted-sync/deploy.md).
 - `device.list`/`rename`/`revoke`, `data.export`/`import`, `account.delete`/`deletionStatus` ops; hosted device + account-deletion service routes.
 
-### Cloud agent environments (landed)
+### Cloud agent environments and default-off Anvil Cloud Agents
 
 - ENV-01 contract: provider-neutral environment lifecycle (`aws-lambda-microvm`, `cloudflare-sandbox`, `vercel-sandbox`, `anvil-managed`), `provision-environment` job kind, `{ kind:'environment' }` job targets that resolve on env enrollment, per-attempt sealed credential grants (`credential.deliver`/`credential.pull`).
 - Ephemeral enrollments: class-bound codes with `environment_id` binding, restricted op allowlist pinned on first sight, own session quota + bounded lifetime.
 - Provisioner plumbing: provider connections (encrypted at rest), `provision:<provider>` capability advertisement, `provision-environment` executor, `anvil-daemon enroll --pair` + `provider`/`env` commands, orphan/TTL reap sweep, per-attempt grant pull → env-var injection.
 - Providers: AWS Lambda MicroVM (direct SDK), Cloudflare Sandbox (customer-deployed provisioner Worker — reference impl at `cloud/provisioner/`), Vercel Sandbox (`@vercel/sandbox`, non-persistent, `ANVIL_BOOTSTRAP_JSON` channel).
-- ENV-09 `anvil-managed`: backend-internal claimer + consume-once `environment.bootstrap` pairing channel + `MANAGED_PROVISIONER` service binding + hosted entitlement caps (free 30m/1, paid 8h/4) enforced at `job.create`.
+- ENV-09 `anvil-managed`: backend-internal claimer + consume-once `environment.bootstrap` pairing channel + `MANAGED_PROVISIONER` service binding + a separate default-off `ANVIL_CLOUD_AGENTS_ENABLED` flag. Existing user-funded providers remain available. No paid Cloud Agent offer is enabled by this PR.
 - `anvil-worker` image: `cloud/images/anvil-worker/` — generic OCI Dockerfile + Cloudflare Sandbox variant + `boot.mjs` (env-scrubbing bootstrap → enroll → `anvil-daemon run --worker`).
 - Settings provides provider connections and environment request, observation and teardown. Orchestration can select an environment as a job target. Spec: `cloud-environments.md`.
 - Runbooks: deploy, rollback, reconciliation, webhook failures, entitlement incidents, account deletion, metrics, launch checklist.

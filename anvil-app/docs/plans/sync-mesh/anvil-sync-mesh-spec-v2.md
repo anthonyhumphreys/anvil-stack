@@ -1,5 +1,10 @@
 # Anvil Sync & Mesh
 
+> Product policy updated 3 October 2026. Sync and Mesh are free; only future Anvil Cloud Agents will
+> be charged for, and they remain disabled by default for PR91. The approved
+> [implementation plan](mesh-access-and-monetisation-plan.md) supersedes older billing/preview
+> assumptions in historical packets. Security, ownership, durability and fair-use requirements remain.
+
 Product, architecture, and implementation specification, revision 2
 
 Status: revised proposal, Cloudflare selected; network contract and IaC are explicit launch work.  
@@ -682,7 +687,7 @@ Use real temporary SQLite for transactions and migrations, backend integration t
 | Unknown schema or oversized payload | Preserved locally/quarantined; unrelated entities proceed |
 | Sign-out or account switch during request | Old callbacks cannot modify the new namespace |
 | Deleted account or restored backup | Stale uploads and leases rejected; recovery is explicit |
-| Spoofed owner/device or revoked subscription | No access without current account and enrollment authorization |
+| Spoofed owner/device or revoked device session | No access without current account and enrollment authorization |
 | Synced path traversal/credential URL/recipe change | Rejected or awaiting new local approval before effects |
 | Crash after clone or during bootstrap | Reconcile owned files; non-idempotent uncertainty requires inspection |
 | Removal of linked/shared/dirty checkout | Detach or refuse deletion; preserve user work |
@@ -698,7 +703,7 @@ Use real temporary SQLite for transactions and migrations, backend integration t
 | Interrupted IaC apply or upgrade | Preserve resource identity/data; reconcile receipts without duplicate resources |
 | Custom backend through frozen contract | Same binary, no provider plugin, explicit advertised capability limits |
 
-Failure injection should cover every durable boundary surrounding external effects, not literally every `await`. Include process death, SQLite commit boundaries, dropped acknowledgements, subscription loss, server clock/epoch changes, and app sleep/wake.
+Failure injection should cover every durable boundary surrounding external effects, not literally every `await`. Include process death, SQLite commit boundaries, dropped acknowledgements, billing outages that must not revoke free access, server clock/epoch changes, and app sleep/wake.
 
 Every packet reports changed behaviour, acceptance evidence, relevant existing test results, failure cases, and unresolved limitations. Run focused tests, lint, types/build as appropriate to touched areas. Critical/high reliability or trust failures block the public launch. Avoid tests that only mirror implementation or unrelated refactors.
 

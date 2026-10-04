@@ -1,3 +1,10 @@
+> Historical runbook. The personal/team Sync subscription offer and preview cutoff below were
+> retired by the 3 October 2026 decision to make Sync and Mesh free. Do not execute its paid-launch,
+> price setup, checkout, or preview-expiry instructions. Retain it only as context for existing
+> billing records and their cleanup. Current rollout guidance is in [launch-checklist.md](launch-checklist.md)
+> and [entitlement-incidents.md](entitlement-incidents.md). No production billing changes are authorised
+> by this archived procedure.
+
 # Hosted waitlist, team billing, and paid launch
 
 This runbook configures invite-only hosted access and shared-billing organisations in

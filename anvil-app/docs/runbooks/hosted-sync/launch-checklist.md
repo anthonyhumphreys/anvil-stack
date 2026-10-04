@@ -1,123 +1,73 @@
-# Hosted sync launch checklist — pre-launch gate
+# Free Sync and Mesh launch checklist
 
-Historical packet reference: **BILL-06**. Every item must be checked and initialled before paid
-checkout is published. Drawn from the launch plan's operations/rollout gates;
-the plan file is authoritative where wording differs. For current branch
-deployment commands, use [deploy.md](deploy.md).
+Updated 4 October 2026. The approved offer is free Sync and Mesh, with only future Anvil Cloud Agents
+charged for. This checklist replaces the former paid Sync launch gate. It is not a production launch
+record; items need real environment evidence before an operator deploys.
 
-## Identity (WorkOS)
+## Identity and targets
 
-- [ ] Separate production WorkOS environment created. Its desktop and hosted
-      client IDs differ from both staging client IDs; the issuer may remain
-      `https://api.workos.com/user_management` because client IDs select the
-      environment. Website and desktop clients in this environment map to the
-      same production user/account.
-- [ ] AuthKit configured on the website: sign-in/sign-up/callback routes,
-      session cookie, correct callback origins.
-- [ ] Desktop OIDC/Connect pairing proven against the real WorkOS
-      environment — website identity and desktop issuer/subject resolve to
-      exactly one billing account.
-- [ ] One intended user environment across website and hosted sync; issuer/
-      domain changes documented as an identity migration, not a re-hash.
+- [ ] Staging and production use separate WorkOS environments, client IDs, Worker/D1/R2 resources,
+      descriptors, and service/operator keys. Website and desktop within one target resolve the same
+      account identity.
+- [ ] AuthKit sign-in, callback origins, desktop enrollment, device revocation, and re-pairing work
+      against the selected target. Development enrollment credentials are absent from production.
+- [ ] Selected-target config passes its preflight without requiring a new Sync subscription price or
+      Stripe availability. Existing billing records and migrations remain intact.
+- [ ] Account lifecycle, local device trust, device limits, and operator fair-use policies remain
+      enforced independently of subscriptions.
 
-## Stripe
+Use [deploy.md](deploy.md) for generated config and staging/production selection. No production
+resource operation is implied by completing local tests.
 
-- [ ] Live-mode secret key + webhook signing secret issued and stored as
-      `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` via `wrangler secret put`.
-- [ ] Real prices approved by Anth: amount, currency, tax presentation,
-      merchant/legal details. Provisional fixture prices (GBP 6/mo, 60/yr)
-      are **not** approved live prices.
-- [ ] Live Price IDs set as `STRIPE_PRICE_SYNC_MONTHLY` /
-      `STRIPE_PRICE_SYNC_ANNUAL`; checkout return URLs fixed same-origin.
-- [ ] Webhook endpoint registered, live mode, URL
-      `https://<worker>.workers.dev/v1/hosted/stripe-webhook`, events:
-      `checkout.session.completed`, `checkout.session.expired`,
-      `customer.subscription.created`, `customer.subscription.updated`,
-      `customer.subscription.deleted`, `invoice.paid`,
-      `invoice.payment_failed`.
-- [ ] Customer Portal configured: allowed plan changes, cancellation
-      behavior, prorations decided deliberately.
+## Free product acceptance
 
-## Production deployment split
+- [ ] An unsubscribed account syncs configuration, enrolls its machines, submits/completes Mesh jobs,
+      approves, cancels, and hands off work after the former preview deadline.
+- [ ] Missing/canceled/unpaid legacy subscriptions and billing lookup failures do not pause free access.
+- [ ] Workspace creation defaults to local and offers free Sync explicitly. Account sign-in and Sync
+      enablement do not silently adopt local workspaces. Existing opted-in replicas retain their data.
+- [ ] Opt-out stops future workspace replication without deleting local work; re-enable has verified
+      conflict/revision behavior. Task-scoped remote setup works without ongoing Sync.
+- [ ] Device revocation and key rotation fail closed where required. Account deletion and operator
+      restrictions still deny their respective operations.
+- [ ] Desktop, website, and backend accept the free entitlement response. Last released clients are
+      tested for compatibility; the update route is proven for clients that cannot accept it.
+- [ ] Scoped browser approval/reconnect and two-device execution are verified on real machines.
+- [ ] Restore/export/import and rollback are rehearsed on a disposable staging account/database.
+      Native runtime and generated headless-worker builds match the candidate source.
 
-- [ ] Production values are complete in the ignored
-      `.wrangler/hosted-targets.json` file copied from
-      `hosted-targets.example.json`; no production secrets or resource ids are
-      committed.
-- [ ] Production generated config under
-      `.wrangler/mesh/<production-worker>/wrangler.jsonc` points to its own
-      provisioned D1 id, Worker and R2 bucket. Do not edit
-      `wrangler.hosted.jsonc` to select a deployment target.
-- [ ] `HOSTED_BILLING_ENFORCEMENT: 'true'` present; no `ANVIL_DEV_SPIKE` or
-      `ENROLLMENT_ADMIN_TOKEN` in `vars`.
-- [ ] Production `HOSTED_SERVICE_KEYS` is fresh and installed as a secret;
-      production website service credentials match it; key id/secret rotation
-      owner named.
-- [ ] D1 migrations applied (`migrations/hosted-billing/` 0001–0003).
-- [ ] Production Worker, R2 bucket, D1 database, provisioner and descriptor
-      id are distinct from staging. Production managed-provisioner token and
-      Stripe credentials are fresh.
-- [ ] `anvil-staging` and `anvil-production` GitHub environments select the
-      matching hosted backend URL. Production is limited to `main` and
-      `app-v*` tags and has a required reviewer whose owner is recorded.
-- [ ] Production website has its own WorkOS API key, hosted client ID,
-      callback URIs, backend origin and `ANVIL_DEPLOYMENT_ENV=production`.
+## Anvil Cloud Agents
 
-## Evidence
+- [ ] `ANVIL_CLOUD_AGENTS_ENABLED` is absent or explicitly false in desktop/backend/provisioner candidate
+      configuration. Creation and resume fail before allocating provider resources.
+- [ ] Users' own fleet and BYO cloud providers retain their supported execution paths.
+- [ ] Existing Anvil Cloud Agent status, suspension, cancellation, and deletion remain available.
+- [ ] Website/app describe Anvil Cloud Agents as unavailable in this release, with no invented price,
+      paid upgrade CTA, or unlimited-compute promise. The Anvil Cloud framework keeps its own name.
 
-- [ ] Signed-in staging acceptance completed against the recorded release
-      candidate, including a website WorkOS sign-in, the same user on two
-      physical desktop devices, device revoke/re-pair, scoped browser approval
-      and reconnection, managed job run/verified teardown, and disposable
-      hosted account deletion. See [staging-acceptance.md](staging-acceptance.md).
-      Missing Stripe/WorkOS/Cloudflare credentials or a second physical device
-      is **BLOCKED**, not a pass.
-- [ ] Stripe test-mode purchase, 3DS-required checkout, failed initial
-      payment, cancel-at-period-end, immediate cancellation, annual interval,
-      duplicate delivery, abandoned checkout, and reconciliation complete;
-      record test event IDs and results in the acceptance record.
-- [ ] Renewal failure → grace → recovery, unpaid/paused, and accelerated
-      renewal cases completed through a test-only customer bound to a Stripe
-      Test Clock. The current website checkout does not attach a Test Clock to
-      its customer; this gate remains **BLOCKED** until the clock-bound test
-      path exists. Unmapped `stripe trigger` fixtures do not satisfy it.
-- [ ] Fault injection evidence: duplicated/reordered/lost events, crash
-      after inbox insert, crash after Stripe success before local commit,
-      D1 failure, Stripe outage beyond grace, delayed webhook after
-      deletion.
-- [ ] Rollback rehearsal per [rollback.md](rollback.md) completed on a
-      disposable staging D1: export/import verified, Time Travel restore
-      verified, and prior Worker code checked against every applied D1
-      migration before a code rollback. Record version IDs, bookmark, export
-      checksum, and schema check.
+## Website and legacy billing
 
-## Clients and docs
+- [ ] Pricing, homepage/product copy, account pages, metadata, and docs state Sync and Mesh are free.
+      Remove paid personal/team Sync offers and the Halloween cutoff promise.
+- [ ] Download/sign-in/setup CTAs replace Sync checkout. Stale API calls cannot create a new session
+      or change paid seats.
+- [ ] Existing billing history and needed portal/cancellation paths remain truthful and usable.
+      Production subscription cancellation/refunds are separately planned operator actions.
+- [ ] Inventory existing Stripe subscriptions and open checkout sessions. Complete the approved
+      billing cutover, including expiring open sessions and stopping legacy renewals, before claiming
+      that no further Sync charges can occur. Retain signed webhook processing for late events;
+      rejecting a completion webhook does not reverse a payment.
+- [ ] No preview-end reminders or subscription-required support messages are scheduled for free access.
 
-- [ ] Desktop release containing BILL-05 (entitlement status, resumable
-      pause, manage-account link) shipped and verified against the deployed
-      backend.
-- [ ] Website copy/nav updated: preview cutoff date correct, CTA states
-      ("Start free preview" → post-cutoff paid copy) tested across the
-      boundary; no "free" claims after 2026-11-01T00:00:00Z.
-- [ ] Runbooks in this directory reviewed by the on-call owner.
-- [ ] `docs/` index or docs-site nav updated to list the runbooks (owned by
-      the website workspace — file or hand off before launch).
+## Cost, reliability, and monitoring
 
-## Observability and comms
-
-- [ ] Worker observability collection verified for the selected Worker;
-      saved application-metric queries show the expected JSON messages.
-- [ ] Cloudflare Worker error alert and external descriptor uptime check
-      notify the chosen destination; test notification received and policy
-      IDs recorded.
-- [ ] Application metrics routed to a threshold-capable alert service with
-      the starting thresholds in [metrics.md](metrics.md); D1 rows-read/
-      rows-written and account spend-budget notifications configured; named
-      responder and escalation route recorded. Saved dashboards alone do
-      not satisfy alerting.
-- [ ] Preview-end transactional reminders (7d / 1d) approved and scheduled
-      where consent/configuration permits.
-- [ ] Launch comms copy approved: pricing page, preview-end notice, support
-      macros for `subscription-required` / `preview-ended` refusals.
-- [ ] Named approver sign-off recorded: prices, limits, grace policy,
-      retention policy, launch date.
+- [ ] Record aggregate request/CPU/DO awake-time/row/storage/artifact/reconnect metrics without secrets
+      or payloads. Reconcile a representative workload with the provider bill.
+- [ ] Allocate an operating budget for free users while Anvil Cloud Agents are disabled. Configure
+      account spend, retention, request/error-rate, and quota alerts with a named responder.
+- [ ] Verify idle, streaming, reconnect, approval, cancellation, and handoff behavior after polling
+      changes. Savings must not come from delaying security updates or accepted-job recovery.
+- [ ] Machine-endpoint experiments remain behind their separate rollout flag until authentication,
+      application encryption, idempotency, revocation, and fallback are proven.
+- [ ] Obtain the managed-tunnel price/capacity/traffic terms before allocating hosted endpoints at
+      scale. Do not count an unverified zero-dollar tunnel rate as launch funding.

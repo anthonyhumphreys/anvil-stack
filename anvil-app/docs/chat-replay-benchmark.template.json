@@ -21,13 +21,6 @@
       "trials": []
     },
     {
-      "name": "t3code",
-      "status": "unmeasured",
-      "version": null,
-      "model": null,
-      "trials": []
-    },
-    {
       "name": "Anvil",
       "status": "unmeasured",
       "version": null,

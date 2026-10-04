@@ -1,5 +1,11 @@
 # Hosted sync deployment: staging and production
 
+Current policy: Sync and Mesh are free. New Sync checkout and paid seat increases are disabled.
+Stripe configuration is optional legacy billing support, not an access requirement. Keep
+`ANVIL_CLOUD_AGENTS_ENABLED` false in the backend and provisioner for this release. Complete the
+[free-service launch checklist](launch-checklist.md) before deploying these changes; the commands
+below do not constitute approval to modify shared infrastructure or existing subscriptions.
+
 Use the target manifest and wrapper below for every hosted deployment. The
 manifest locks the Worker, D1, R2, provisioner, WorkOS clients and generated
 config paths to one selected environment. Direct `anvil-cloud mesh` calls are
@@ -130,8 +136,8 @@ backend secret source and an independently loadable, completed Staging source
 for cross-environment isolation checks. If Staging uses only
 `secrets.backendEnv: "process"`, the wrapper cannot compare the two sources and
 must fail closed. The wrapper rejects reused WorkOS, Stripe, HMAC, operator,
-and provisioner secrets. Production Stripe Price IDs must also differ from all
-configured Staging Price IDs; generate and review Staging config first. If the
+and provisioner secrets. Stripe Price IDs are optional legacy billing metadata;
+they are not required to launch free Sync and Mesh. If the
 managed provisioner is enabled, its token must match the backend secret and
 differ from Staging. Source options and the optional internal 1Password mount
 are documented in [hosted backend secret inputs](secret-inputs.md).
@@ -183,15 +189,18 @@ known. Add a required production reviewer once its owner is chosen. Release
 builds with no production backend URL intentionally leave hosted sync
 unavailable; BYO/self-hosted backends remain available.
 
-Before publishing paid checkout, complete the [launch checklist](launch-checklist.md).
+Before launching the free hosted service, complete the [launch checklist](launch-checklist.md).
 
-## Enable Stripe checkout
+## Legacy Stripe support
 
-Use the detailed [organization and billing launch runbook](organization-billing-launch.md)
-for current staging and Production Stripe setup. It defines separate test/live
-resources, four Personal/Team prices, webhook event selection and API version,
-the free-preview cutoff, and environment-specific secrets. Do not use old
-personal-only price setup instructions or copy staging values into Production.
+Keep `HOSTED_CHECKOUT_ENABLED` false. The backend rejects new Sync checkout and seat changes even
+when a stale client requests them. Existing subscriptions can retain portal, cancellation,
+webhook and reconciliation support with environment-specific credentials. The
+[organization and billing launch runbook](organization-billing-launch.md) is archived history;
+its price setup and preview cutoff are not launch instructions. Existing customer subscription
+cancellation or refunds need a separate operational cutover. Inventory and expire existing open
+checkout sessions as part of that cutover. Deploying free access does not stop Stripe renewals or
+prevent completion of a previously issued checkout session. Continue processing signed late events.
 
 ## Verify the deployed branch
 
@@ -214,7 +223,7 @@ For signed-in staging acceptance, follow the executable sequence in
 require operator credentials or a second physical device and requires
 unavailable gates to be recorded as blocked.
 
-Webhook liveness after installing its secret:
+If legacy Stripe support is configured, verify webhook liveness after installing its secret:
 
 ```sh
 curl -sS -X POST "$MESH_ORIGIN/v1/hosted/stripe-webhook" -d '{}'
