@@ -11,8 +11,8 @@ This is the implementation direction for reducing the running cost of free Sync 
 supersedes the future transport recommendation in the
 [product and monetisation plan](mesh-access-and-monetisation-plan.md). That document remains the
 record of the approved free offering and the initial PR91 changes. The
-[existing FinOps projection](finops-projection.md) and workbook remain comparative baselines;
-their four architecture cases do not yet model this full redesign.
+[FinOps projection](finops-projection.md) and workbook compare the original architecture with the
+full host-local design. Keep projected usage separate from measured deployment costs.
 
 ## Outcome and boundaries
 
@@ -152,7 +152,7 @@ but the host must hold the accepted job's current attempt fence before executing
 Record acceptance before acknowledging success to the submitter. Retries reuse a request ID and
 return the existing receipt; switching transports must not dispatch another attempt.
 
-Keep these existing lease constants during the initial migration:
+Keep these existing lease constants for the new protocol:
 
 - Attempt ownership lasts 120 seconds and renews every 30 seconds.
 - Worker incarnation lasts 90 seconds.
@@ -181,7 +181,7 @@ The default job queue deadline is ten minutes; preserve its expiry behaviour.
 Terminal jobs and attempts are not currently removed by the sweep. Define a compact terminal
 record before bounding this growing stock. Retain account/source-device ID, request ID, payload
 hash, job ID, last attempt/fence, terminal outcome and time, plus result/archive references. Keep
-the deduplication tombstone for the account lifetime during this migration, preserving the current
+the deduplication tombstone for the account lifetime, preserving the current
 unbounded retry horizon while reducing record size. Include that growing stock in the model.
 A finite horizon would need an explicit protocol epoch/expiry rule that rejects old requests even
 after their tombstones are gone; it is not part of the initial compaction. Preserve result lookup
@@ -211,12 +211,12 @@ Publish snapshots through this sequence:
    uploads must not become a recovery source merely because the uploader is enrolled.
 4. Download and verify recovery through the normal reader into an isolated local staging database,
    then advance a compaction watermark. This also works for accounts with one device. Cross-device
-   and mixed-version recovery tests are a rollout gate, not a requirement for two online devices on
+   recovery tests are a rollout gate, not a requirement for two online devices on
    every publication. Retain the previous verified snapshot and required journal tail throughout
-   the rollback window. New clients fetch the snapshot and tail; old cursors get an explicit recovery
+   the repair window. Clients fetch the snapshot and tail; old cursors get an explicit recovery
    instruction.
 5. Garbage-collect unreferenced chunks after a grace period. Delete only data covered by a verified
-   recoverable snapshot and allowed by client-version compatibility. Account deletion and key
+   recoverable snapshot. Account deletion and key
    rotation must cover all retained snapshot generations, temporary uploads and archives.
 
 Require the current protocol when enabling snapshots. Unsupported clients receive an explicit
@@ -251,7 +251,7 @@ recovery while that peer is offline. Keep checksums, encrypted manifests, expiry
 The current backend limits Mesh artifacts to 64 MiB each, with seven-day default and 30-day maximum
 retention. The 512 MiB aggregate account cap applies to self-hosted deployments; hosted accounts use
 operator-mediated fair use without that hard aggregate cap. Preserve these semantics during
-migration and explicitly propose any new hosted storage ceiling, including its UX and treatment of
+implementation and explicitly propose any new hosted storage ceiling, including its UX and treatment of
 existing data. Inventory share objects and other recovery data separately; they may have different
 policies. R2 fallback and durable history archives need separate budgets from workspace Sync.
 
@@ -259,7 +259,7 @@ Current intermediate activity has a 1 MiB per-job budget with explicit gap event
 events bypass that budget. Add an explicit retained-event floor and archive coverage to `event.pull`
 before deleting old rows. Otherwise TTL deletion can make an incomplete history look complete.
 Retain job event cursors and distinguish replay from archive, expired history and genuinely empty
-history. Preserve the current 90-day event retention during the initial migration.
+history. Preserve the current 90-day event retention.
 
 Managed endpoints need a durable allocation state machine:
 
@@ -298,7 +298,7 @@ checks pass. Extend typed contracts end to end through main services, IPC, prelo
 | 3. Small durable Mesh state | Classify events, preserve ownership/queues/approvals/results, archive promised history, batch control traffic and remove redundant hosted status polls. Extend account coordinator, worker, observe and handoff services. | Partition, crash, eviction and handoff tests preserve fences and offline recovery. Lease cadence unchanged. Depends on 0 and 2. |
 | 4. Compact Sync storage | Add snapshot manifests, encrypted chunks, conditional publication, recovery, compaction watermark and delayed cleanup. Extend engine, persistence, recovery, backend and schema migrations. | Long-offline/new-device recovery, conflicts, tombstones, rotation and opt-out pass before deletion is enabled. Can proceed alongside 2/3 after 0. |
 | 5. Managed reachability | Add the public ingress adapter and allocation/reconciliation service with generation fencing, revocation and bounded cleanup. | Tunnel commercial/capacity review complete; browser/mobile connection and sleep/reconnect verified. Depends on private host sessions and direct traffic. |
-| 6. Compatibility and staged rollout | Add per-account protocol gates, migration metrics, support diagnostics and rollback controls. Exercise old/new clients and self-hosted deployments. Update documentation and copy as capabilities ship. | Stable cost and recovery measurements at each cohort; no historic data deletion until compatibility/rollback gates pass. |
+| 6. Protocol cutover and staged rollout | Require current capability profiles, add feature metrics and support diagnostics, and exercise current clients and self-hosted deployments. Update documentation and copy as capabilities ship. | Unsupported profiles fail clearly; stable cost and recovery measurements at each cohort; no new-data deletion before verified snapshot/archive recovery. |
 
 Do not expand Cloud Agent provisioning as part of managed reachability. A tunnel to a user-owned
 machine is not an Anvil-supplied execution machine. If an implementation touches owned Effect
@@ -338,7 +338,7 @@ client as successfully migrated.
 | Private route fails, tunnel fails, socket repeatedly reconnects | Bounded jittered fallback; request deduplication; cursors replay without silent gaps |
 | Account/device revoked during a direct session | Push closes promptly; disconnected authorisation expires within the agreed bound; blocked work cannot resume with an old grant |
 | Handoff interrupted at every durable transition | One authoritative generation, recoverable checkpoint and explicit target activation state |
-| Concurrent edits/deletes, old client returns, key/dataset epoch changes | Snapshot publication and recovery preserve conflict/deletion semantics and pending local work |
+| Concurrent edits/deletes, long-offline device returns, key/dataset epoch changes | Snapshot publication and recovery preserve conflict/deletion semantics and pending local work; obsolete profiles require an upgrade |
 | All prior devices offline when a new device joins | Enrolment/key recovery follows the existing trust contract; recoverable Sync needs no source machine |
 | Required artifact upload fails or expires | No false recoverable-completion claim; retry and expiry states are visible; quotas remain enforced |
 | Organisation member/account switch | No accidental cross-account devices, data or privileges; no implied shared fleet |
@@ -438,10 +438,11 @@ unreleased managed reachability, unlimited storage, zero infrastructure cost, in
 universal chat-history backup. Browser, desktop and companion documentation must agree about
 supported operations and offline behaviour.
 
-The redesign is complete when the feature-preservation matrix passes, mixed-client migration and
-rollback have been exercised, the representative workloads establish a defensible full-service
-invoice, and every enabled route is reflected accurately in product copy. Until then, retain the
-existing compatible path and label the new cost case as a target.
+The local implementation is complete when the automated feature-preservation checks pass and
+every enabled route is reflected accurately in product copy. Production rollout additionally
+requires physical multi-host acceptance, measured representative workloads, provider capacity and
+pricing confirmation, and verified recovery before compaction deletion. Keep network fallback
+available and label the new cost case as a projection until those operational checks are complete.
 
 Provider references for implementation and costing: [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
 [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/),

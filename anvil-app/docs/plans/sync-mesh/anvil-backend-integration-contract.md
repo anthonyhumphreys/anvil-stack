@@ -1,6 +1,6 @@
 # Anvil backend integration contract
 
-Draft v1 specification, 11 September 2026.
+Updated protocol direction, 4 October 2026. RPC envelope `anvil-backend/1`; capability profiles `sync/2` and `mesh/2`.
 
 This defines the backend extension boundary for the planned Anvil Sync & Mesh launch. It is not a claim that the current released app or a runnable conformance package already implements it. The launch must ship the machine-readable contract and the generic client described here. After that, a compatible backend connects to the existing signed app without rebuilding it.
 
@@ -33,7 +33,7 @@ Proposed example, to be frozen into JSON Schema before the client ships:
   "deploymentId": "b98d55a2-8615-46e4-b2bd-182826ee83f1",
   "displayName": "Anth's Anvil",
   "protocols": ["anvil-backend/1"],
-  "profiles": ["sync/1", "mesh/1"],
+  "profiles": ["sync/2", "mesh/2"],
   "apiPath": "v1",
   "socketPath": "v1/connect",
   "authModes": ["oidc-pkce", "enrollment-code"],
@@ -76,7 +76,7 @@ Provide `Copy integration prompt` and `Download contract bundle`. Both are pinne
 
 Support one active backend association per local profile at launch. Switching pauses the old connection and preserves its outbox, conflicts, credentials, and provenance separately. Never point an existing cursor at a new backend. Export/import is an explicit migration, not a URL edit. Other devices must connect to the same backend/account for Mesh; independent backends do not federate automatically.
 
-If the backend advertises only `sync/1`, show Sync functionality and mark Mesh unavailable. The full official backend implements both profiles and all launch capabilities. If a custom backend drops a required capability during execution, stop new related dispatch and preserve unresolved attempts instead of pretending they finished.
+If the backend advertises only `sync/2`, show Sync functionality and mark Mesh unavailable. The full official backend implements both profiles and all launch capabilities. If a custom backend drops a required capability during execution, stop new related dispatch and preserve unresolved attempts instead of pretending they finished.
 
 ## 4. Fixed authentication methods
 
@@ -124,17 +124,18 @@ The HTTP status and error code must agree. Use 401 for expired/invalid session, 
 
 Request IDs correlate calls. Each mutating operation additionally defines its durable idempotency scope and payload digest; transport retry does not mint a new business operation. Unknown outcomes are queryable. An implementation must not infer exactly-once external effects from HTTP idempotency.
 
-Freeze a major version and additive minor policy. Unknown optional response fields are ignored, unknown operations fail explicitly, and unsupported required capabilities fail before execution. Entity schemas have their own versions. Publish a minimum supported protocol window for server upgrades. A backend may support old and new versions concurrently; it cannot demand that a released binary reinterpret existing fields.
+Unknown optional response fields are ignored, unknown operations fail explicitly, and unsupported required capabilities fail before execution. Entity schemas have their own versions. This greenfield launch requires the current profiles; unsupported profiles receive an upgrade response. Keep network fallback for current clients, without adding historical-client migration readers.
 
 ## 6. Capability profiles and operation inventory
 
-`sync/1` requires discovery, either supported authentication method, secure enrollment, account/backend namespace isolation, sync, export/import, and version handling. `mesh/1` requires `sync/1` plus all execution, observation, handoff, and artifact operations below. Providers can advertise optional implementation details for diagnostics, but desktop behaviour uses protocol capabilities, not provider names.
+`sync/2` requires discovery, either supported authentication method, secure enrollment, account/backend namespace isolation, sync, export/import, and version handling. `mesh/2` requires `sync/2` plus all execution, observation, handoff, and artifact operations below. Providers can advertise optional implementation details for diagnostics, but desktop behaviour uses protocol capabilities, not provider names.
 
 | Family | Operations to freeze | Required semantics |
 | --- | --- | --- |
 | Session/account | `session.describe`, `account.delete`, `account.deletionStatus` | Authenticated identity/epoch; retryable purge; stale enrollment rejection |
 | Devices | `device.list`, `device.rename`, `device.revoke`, `device.policy.publish` | Bound enrollment, generation, source trust; local permissions cannot be enabled remotely |
 | Sync | `sync.push`, `sync.pull`, `sync.scan.begin`, `sync.scan.page`, `sync.scan.finish` | Conditional revisions, ordered change log, receipts, retained base, reset protocol |
+| Compact snapshots | `sync.snapshot.get`, `sync.snapshot.begin`, `sync.snapshot.chunk.put`, `sync.snapshot.chunk.get`, `sync.snapshot.verify`, `sync.snapshot.commit` | Complete encrypted entity/tombstone coverage, immutable bounded chunks, publisher read-back, epoch/key and generation fences, current/previous recovery manifests |
 | Data portability | `data.export.begin`, `data.export.page`, `data.import.preview`, `data.import.commit`, `data.operationStatus` | Versioned portable entities and mappings; preserve conflicts; no live lease migration |
 | Worker | `worker.connect`, `worker.describe`, `worker.capabilities.publish`, `worker.replica.publish` | Incarnation ownership, bounded metadata, observed freshness |
 | Jobs | `job.create`, `job.get`, `job.list`, `job.claim`, `attempt.renew`, `attempt.report`, `job.cancel` | Target resolution, source-scoped idempotency lookup via optional `job.list.requestId`, capacity, fence, immutable input manifest, uncertain effects |
@@ -156,6 +157,29 @@ Authentication expires even while connected. Notify the client before expiry, re
 
 The socket only accelerates delivery. Durable job reads and event cursors recover missed notifications. Activity frames carry attempt ID, execution generation, stream ID, and sequence. A gap is explicit. A provider may coalesce ephemeral frames but cannot discard accepted durable events or approvals to fake compatibility.
 
+### Host-local machine sessions
+
+The account socket remains the durable control notification channel. The separate `anvil.machine.v1`
+protocol serves supported live reads, commands and event streams directly from an enrolled host.
+Private and managed routes are scoped to a stable machine identity and listener generation.
+Managed reachability is independently gated and requires operator configuration and capacity review.
+
+A source requests a short-lived, single-use admission ticket over its backend HTTPS connection.
+The ticket binds the account, source enrollment, target machine/generation, client proof key,
+challenge, allowed operations and scope. The destination consumes it using its own backend session.
+Reusable source account credentials never reach the host. Browser sessions additionally bind the
+exact approved grant and Origin; server-side hosted identity selects the account.
+
+The client proves possession during bootstrap and WebSocket authentication. All post-authentication
+frames are encrypted and bind the session, machine, generation, stream epoch, direction, sequence
+and request ID. Host policy and source trust cap operations independently of the ticket. Trust
+refresh must fail closed within the 60-second freshness bound. A reconnect resumes an acknowledged
+cursor or returns an explicit resnapshot requirement.
+
+Accepted jobs, leases, approvals, cancellation, handoff and recoverable terminal receipts still use
+the durable coordinator. Route changes do not create new command identities or retry an ambiguous
+mutation. A supported host route accelerates interaction; it does not replace ownership fencing.
+
 ## 8. The contract bundle shipped with Anvil
 
 Release a version-pinned, redistributable bundle accessible from the app and the backend release artifact:
@@ -176,9 +200,9 @@ The prompt helps an agent implement an integration; the bundle and conformance s
 
 The standalone suite runs against disposable test accounts in an explicit test deployment. It creates and removes fixtures; it must never run destructive tests against a user's production data by default. The in-app connection test is limited to safe negotiation/auth/readiness checks unless the user explicitly starts a disposable test.
 
-Required suites cover tenant/device spoofing, revocation and refresh, cross-backend credential isolation, concurrent edits, edit-in-flight acknowledgement, duplicate requests, expired receipts, retention reset, mixed versions, process restart, stale attempts, cancellation races, quiescent handoff, artifact authorization, and bounded stream reconnect.
+Required suites cover tenant/device spoofing, revocation and refresh, cross-backend credential isolation, concurrent edits, edit-in-flight acknowledgement, duplicate requests, expired receipts, retention reset, unsupported profiles, process restart, stale attempts, cancellation races, quiescent handoff, artifact authorization, and bounded stream reconnect.
 
-Provider implementations supply deterministic fault-injection hooks in test mode only or equivalent controlled infrastructure restart tests. Verify durable effects across restarts using an external observer. A backend claiming `mesh/1` must prove the complete Mesh state machine, not just `job.create`.
+Provider implementations supply deterministic fault-injection hooks in test mode only or equivalent controlled infrastructure restart tests. Verify durable effects across restarts using an external observer. A backend claiming `mesh/2` must prove the complete Mesh state machine, not just `job.create`.
 
 Test the actual signed/release-candidate desktop artifact against:
 
