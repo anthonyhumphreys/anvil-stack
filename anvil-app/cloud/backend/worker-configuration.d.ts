@@ -10,6 +10,8 @@ declare namespace Cloudflare {
     ANVIL_DEPLOYMENT_NAME?: string;
     /** Dev-only: accept `spike:` bearers. Must be unset in real deploys. */
     ANVIL_DEV_SPIKE?: string;
+    /** Opt-in for Anvil-operated Cloud Agents compute; absent means disabled. */
+    ANVIL_CLOUD_AGENTS_ENABLED?: string;
     /** OIDC authority for the `oidc-pkce` and optional `workos-device` proofs. */
     OIDC_ISSUER?: string;
     OIDC_CLIENT_ID?: string;
@@ -34,10 +36,8 @@ declare namespace Cloudflare {
     HOSTED_DB?: D1Database;
     /** JSON `{"keyId":"secret"}` map for /internal/hosted/* HMAC auth. */
     HOSTED_SERVICE_KEYS?: string;
-    /**
-     * BILL-02 hosted billing provider config. All optional; absence fails
-     * closed — checkout/portal/reconcile answer unavailable and the
-     * webhook route answers not-found, never a guessed billing state.
+    /** Optional Stripe integration retained for existing billing cleanup and
+     * history. Sync checkout and Sync/Mesh entitlement do not depend on it.
      */
     STRIPE_SECRET_KEY?: string;
     /** Endpoint secret for `Stripe-Signature` on /v1/hosted/stripe-webhook. */
@@ -48,11 +48,11 @@ declare namespace Cloudflare {
     STRIPE_PRICE_SYNC_ANNUAL?: string;
     STRIPE_PRICE_TEAM_MONTHLY?: string;
     STRIPE_PRICE_TEAM_ANNUAL?: string;
-    /** Required Stripe account mode for hosted billing: staging uses test mode. */
+    /** Required Stripe account mode when optional legacy billing is configured. */
     HOSTED_BILLING_ENVIRONMENT?: 'staging' | 'production';
-    /** Staging-only switch for rehearsing paid flows before the preview cutoff. */
+    /** Legacy staging checkout rehearsal switch; Sync checkout is retired. */
     HOSTED_ALLOW_EARLY_CHECKOUT?: string;
-    /** 'true' publishes checkout creation; anything else refuses with 403. */
+    /** Legacy Sync checkout switch; requests are rejected regardless of value. */
     HOSTED_CHECKOUT_ENABLED?: string;
     HOSTED_CHECKOUT_SUCCESS_URL?: string;
     HOSTED_CHECKOUT_CANCEL_URL?: string;
@@ -61,12 +61,7 @@ declare namespace Cloudflare {
     HOSTED_SYNC_LIMITS?: string;
     /** Optional operator-only HMAC key map for billing administration endpoints. */
     HOSTED_OPERATOR_KEYS?: string;
-    /**
-     * BILL-03 enforcement switch. 'true' denies mutating operations for
-     * restricted/unknown hosted entitlements inside AccountCoordinator;
-     * anything else leaves every operation allowed while HOSTED_DB still
-     * surfaces entitlement state on session.describe.
-     */
+    /** Legacy hosted device-limit enforcement switch. Does not gate Sync/Mesh billing. */
     HOSTED_BILLING_ENFORCEMENT?: string;
     /**
      * ENV-09: service binding to the `anvil-mesh-provisioner` worker that

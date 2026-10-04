@@ -711,6 +711,9 @@ export async function createMeshDeploymentPlan(
     }
     vars[name] = value;
   }
+  if (vars.ANVIL_CLOUD_AGENTS_ENABLED === undefined) {
+    vars.ANVIL_CLOUD_AGENTS_ENABLED = "false";
+  }
 
   // Descriptor identity belongs to the deployment target, so every generated
   // Worker config carries it explicitly. Include the account when available so

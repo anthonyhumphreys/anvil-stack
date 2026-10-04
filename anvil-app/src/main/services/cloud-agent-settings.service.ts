@@ -11,6 +11,7 @@ import type {
   CloudAgentSettingsSnapshot,
 } from '../../shared/cloud-agent.js';
 import { decryptSecret, encryptSecret, getSecretStorageStatus } from './auth.service.js';
+import { isAnvilCloudAgentsEnabled } from './anvil-cloud-agents-availability.service.js';
 import { getSettings } from './settings.service.js';
 import { LLM_GATEWAY_KEY_ENV } from '../../shared/llm-gateway.js';
 import { parse as parseToml } from 'smol-toml';
@@ -345,7 +346,10 @@ function providerStatus(provider: AgentProvider, settings: AppSettings): CloudAg
 
 export function getCloudAgentSettings(): CloudAgentSettingsSnapshot {
   const settings = getSettings();
-  return { providers: PROVIDERS.map((provider) => providerStatus(provider, settings)) };
+  return {
+    anvilCloudAgentsEnabled: isAnvilCloudAgentsEnabled(),
+    providers: PROVIDERS.map((provider) => providerStatus(provider, settings)),
+  };
 }
 
 export function isCloudAgentProviderEnabled(provider: AgentProvider): boolean {

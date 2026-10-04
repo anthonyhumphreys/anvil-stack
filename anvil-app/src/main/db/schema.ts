@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 104;
+export const SCHEMA_VERSION = 105;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -675,6 +675,7 @@ CREATE INDEX IF NOT EXISTS idx_run_commands_repo ON run_commands(repo_id);
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  sync_selected INTEGER NOT NULL DEFAULT 0,
   definition_state TEXT NOT NULL DEFAULT 'ready',
   bootstrap_json TEXT,
   created_at TEXT NOT NULL,
@@ -1302,6 +1303,17 @@ CREATE TABLE IF NOT EXISTS sync_bindings (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_bindings_scope_entity
   ON sync_bindings(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS sync_paused_changes (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  change_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
 CREATE TABLE IF NOT EXISTS sync_outbox (
   change_id TEXT PRIMARY KEY,
   backend_id TEXT NOT NULL,
@@ -3709,6 +3721,26 @@ CREATE TABLE IF NOT EXISTS mesh_dashboard_browser_trusts (
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_dashboard_grants_trust
   ON mesh_dashboard_grants (backend_id, account_id, trust_id, state);
+`,
+  105: `
+-- Per-device workspace Sync selection. Preserve existing Sync associations while
+-- leaving unbound workspaces local by default.
+ALTER TABLE workspaces ADD COLUMN sync_selected INTEGER NOT NULL DEFAULT 0;
+UPDATE workspaces SET sync_selected = 1
+  WHERE id IN (
+    SELECT entity_id FROM sync_bindings WHERE entity_type = 'workspace-definition'
+  );
+CREATE TABLE IF NOT EXISTS sync_paused_changes (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  change_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
 `,
 };
 

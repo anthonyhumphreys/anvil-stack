@@ -67,6 +67,8 @@ vi.mock('../cloud-agent-settings.service.js', () => ({
 import {
   approveDashboardRequest,
   configureDashboardGrantContext,
+  dispatchDashboardGrantCommandQueue,
+  getDashboardGrantMachineEndpointOrigin,
   pumpBrowserWorkspaceCommands,
   resetDashboardGrantForTests,
   type DashboardCommandResult,
@@ -313,6 +315,96 @@ afterEach(() => {
 });
 
 describe('browser workspace grant pump and real executor acceptance', () => {
+  it('wakes one approved grant through coordinator claims and returns only the sealed result', async () => {
+    const grant = db
+      .prepare(
+        `SELECT request_json FROM mesh_dashboard_grants
+         WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+      )
+      .get(scope.backendId, scope.accountId, 'grant-acceptance') as { request_json: string };
+    db.prepare(
+      `UPDATE mesh_dashboard_grants SET request_json = ?
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    ).run(
+      JSON.stringify({ ...JSON.parse(grant.request_json), origin: 'https://anvil.dev' }),
+      scope.backendId,
+      scope.accountId,
+      'grant-acceptance',
+    );
+    expect(getDashboardGrantMachineEndpointOrigin(scope, 'grant-acceptance')).toBe(
+      'https://anvil.dev',
+    );
+
+    const firstEnvelope = await browserCommand('machine-wake-read-1', 'file.read', {
+      relativePath: 'README.md',
+    });
+    const secondEnvelope = await browserCommand('machine-wake-read-2', 'file.read', {
+      relativePath: 'README.md',
+    });
+    const claims = [firstEnvelope, secondEnvelope];
+    rpc.mockClear();
+    rpc.mockImplementation(async (_config: unknown, operation: string) => {
+      if (operation !== 'dashboard.command.claim') return { result: {} };
+      const envelope = claims.shift();
+      if (envelope === undefined)
+        return { result: { requestId: 'grant-acceptance', commands: [] } };
+      return {
+        result: {
+          requestId: 'grant-acceptance',
+          commands: [
+            {
+              requestId: 'grant-acceptance',
+              commandId: envelope.commandId,
+              envelope,
+              claimFence: envelope.commandId.endsWith('-1') ? 4 : 5,
+              claimExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+            },
+          ],
+        },
+      };
+    });
+
+    const first = await dispatchDashboardGrantCommandQueue(scope, 'grant-acceptance');
+    expect(first.state).toBe('dispatched');
+    expect(first.commands).toHaveLength(1);
+    expect(first.commands[0]).toMatchObject({
+      commandId: 'machine-wake-read-1',
+      state: 'completed',
+    });
+    expect(first.commands[0]?.result).toBeDefined();
+    const responseJson = JSON.stringify(first);
+    expect(responseJson).not.toContain('before\\n');
+    const clearResult = await cryptoImpl.openBrowserWorkspaceResult(
+      dsk,
+      first.commands[0]!.result!,
+      metadata('machine-wake-read-1', 'file.read', commandExpiry),
+    );
+    expect(clearResult).toMatchObject({
+      ok: true,
+      data: { content: 'before\n' },
+    });
+    expect(executeCount).toBe(1);
+
+    const second = await dispatchDashboardGrantCommandQueue(scope, 'grant-acceptance');
+    expect(second.commands).toMatchObject([
+      { commandId: 'machine-wake-read-2', state: 'completed' },
+    ]);
+    expect(executeCount).toBe(2);
+    expect(claims).toEqual([]);
+
+    const idle = await dispatchDashboardGrantCommandQueue(scope, 'grant-acceptance');
+    expect(idle.state).toBe('not-ready');
+    expect(idle.commands).toEqual([]);
+    expect(executeCount).toBe(2);
+    expect(rpc).toHaveBeenCalledWith(
+      { apiUrl: 'https://backend.acceptance.test/v1' },
+      'dashboard.command.claim',
+      { requestId: 'grant-acceptance', limit: 8 },
+      'acceptance-token',
+    );
+    expect(rpc).toHaveBeenCalledTimes(3);
+  });
+
   it('runs browser read/write/diff through the real Desktop executor and decrypts retained results', async () => {
     const read = await browserCommand('command-read', 'file.read', { relativePath: 'README.md' });
     queued = [read];

@@ -18,7 +18,6 @@ import { syncBackendModeLabel, type SyncBackendConnectionMode } from '../../../s
 import type {
   SyncConflictResolutionChoice,
   SyncDataImportFilePreview,
-  SyncHostedStatus,
   SyncIssuedEnrollmentCode,
 } from '../../../shared/sync-runtime';
 import { copyTextToClipboard } from '../../utils/clipboard';
@@ -81,52 +80,6 @@ function modeDescription(mode: SyncBackendConnectionMode): string {
 }
 
 const MODE_ORDER: SyncBackendConnectionMode[] = ['local', 'hosted', 'cloudflare', 'compatible'];
-
-/** BILL-05 chip labels: `restricted` flattens to the pause the user sees. */
-function hostedStateLabel(hosted: SyncHostedStatus): string {
-  if (hosted.restricted || hosted.state === 'restricted') return 'Paused';
-  switch (hosted.state) {
-    case 'preview':
-      return 'Preview';
-    case 'active':
-      return 'Active paid';
-    case 'grace':
-      return 'Grace';
-    default:
-      return 'Unavailable';
-  }
-}
-
-function hostedStateChipClass(hosted: SyncHostedStatus): string {
-  if (hosted.restricted || hosted.state === 'restricted') return 'bg-error/15 text-error';
-  switch (hosted.state) {
-    case 'preview':
-      return 'bg-accent/15 text-accent';
-    case 'active':
-      return 'bg-success/15 text-success';
-    case 'grace':
-      return 'bg-warning/15 text-warning';
-    default:
-      return 'bg-bg-tertiary text-text-tertiary';
-  }
-}
-
-function hostedFundingLabel(hosted: SyncHostedStatus): string {
-  switch (hosted.fundedBy) {
-    case 'preview':
-      return 'Free preview';
-    case 'personal':
-      return 'Personal plan';
-    case 'team':
-      return 'Paid by your team';
-    case 'none':
-      return 'No active funding';
-    default: {
-      const exhaustive: never = hosted.fundedBy;
-      return exhaustive;
-    }
-  }
-}
 
 /** Short localized date for entitlement timestamps; null when unparseable. */
 function formatHostedDate(iso: string | null): string | null {
@@ -313,15 +266,6 @@ export function SyncMeshSettingsPanel(): ReactNode {
     }
   };
 
-  const handleOpenHostedAccount = async (): Promise<void> => {
-    setError(null);
-    try {
-      await window.anvil.syncRuntime.openHostedAccount();
-    } catch (err) {
-      setError(toErrorMessage(err));
-    }
-  };
-
   const handleResolve = async (
     conflictId: string,
     resolution: SyncConflictResolutionChoice,
@@ -485,11 +429,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const showEndpointFlow = mode === 'hosted' || mode === 'compatible' || mode === 'cloudflare';
   const hosted = runtime?.hosted ?? null;
   const fairUse = hosted?.fairUse ?? null;
-  const activeHostedDevices = devices.filter(
-    (device) => !device.revoked && (device.enrollmentClass ?? 'device') === 'device',
+  const activeDeviceCount = devices.filter(
+    (device) => !device.revoked && device.enrollmentClass !== 'ephemeral',
   ).length;
-  const hostedDeviceLimitReached = hosted !== null && activeHostedDevices >= hosted.deviceLimit;
-  const hostedDevicesOverLimit = hosted !== null && activeHostedDevices > hosted.deviceLimit;
   const displayError = error ?? setup.error;
   const backendReady =
     status?.backendId !== null &&
@@ -548,7 +490,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
     <div className="space-y-3">
       <Panel
         title="Sync & Mesh at a glance"
-        description="See what this device is connected to, what is moving, and whether it can run Mesh jobs."
+        description="Sync and Mesh are free. See what this device is connected to and whether it can run Mesh jobs."
       >
         <div className="grid gap-2 sm:grid-cols-3" aria-live="polite">
           <OverviewItem
@@ -1030,114 +972,79 @@ export function SyncMeshSettingsPanel(): ReactNode {
             </span>
           </summary>
           <div className="space-y-3 border-t border-border p-3">
-            {hosted !== null && (
-              <Panel
-                title="Hosted plan access"
-                description="Your personal or team plan funds hosted access. Team billing does not give other members access to your private Anvil data. Manage billing on the Anvil website."
-              >
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`rounded px-1.5 py-0.5 text-xs font-medium ${hostedStateChipClass(hosted)}`}
-                  >
-                    {hostedStateLabel(hosted)}
-                  </span>
-                  <span className="text-xs text-text-tertiary">{hostedFundingLabel(hosted)}</span>
-                </div>
-                {hosted.state === 'preview' && (
-                  <p className="text-xs text-text-tertiary">
-                    {formatHostedDate(hosted.previewEndsAt) !== null
-                      ? `Hosted preview ends ${formatHostedDate(hosted.previewEndsAt)}.`
-                      : 'Hosted preview is active.'}
-                  </p>
-                )}
-                {formatHostedDate(hosted.accessUntil) !== null && (
-                  <p className="text-xs text-text-tertiary">
-                    Paid access until {formatHostedDate(hosted.accessUntil)}.
-                  </p>
-                )}
-                {formatHostedDate(hosted.graceUntil) !== null && (
-                  <p className="text-xs text-text-tertiary">
-                    Grace period ends {formatHostedDate(hosted.graceUntil)}.
-                  </p>
-                )}
-                {fairUse !== null && fairUse.status !== 'clear' && fairUse.notice !== undefined && (
-                  <div
-                    className={`rounded-md border p-2 ${
-                      fairUse.status === 'restricted'
-                        ? 'border-error/30 bg-error/5'
-                        : 'border-warning/30 bg-warning/5'
-                    }`}
-                    role="status"
-                    aria-live="polite"
-                  >
-                    <p className="text-xs font-medium text-text-primary">
-                      {fairUse.status === 'restricted'
-                        ? 'Hosted writes are restricted under fair use'
-                        : 'Anvil hosted usage notice'}
-                    </p>
-                    <p className="mt-1 text-xs text-text-secondary">{fairUse.notice.message}</p>
-                    <p className="mt-1 text-xs text-text-tertiary">
-                      {fairUse.status === 'restricted'
-                        ? 'This restriction is active. You can still pull and export account data, manage devices, and delete the account.'
-                        : fairUse.notice.emergency
-                          ? 'This notice takes effect immediately. You can still pull and export account data, manage devices, and delete the account.'
-                          : `Hosted writes pause on ${formatHostedDate(fairUse.notice.restrictAt) ?? fairUse.notice.restrictAt} if this is not resolved. You can still pull and export account data, manage devices, and delete the account.`}
-                    </p>
-                    <p className="mt-1 text-xs text-text-tertiary">
-                      Notice code: <span className="font-mono">{fairUse.notice.code}</span>
-                    </p>
-                  </div>
-                )}
-                <div className="rounded-md border border-border bg-bg-primary p-2">
-                  <p className="text-xs font-medium text-text-primary">
-                    {activeHostedDevices} of {hosted.deviceLimit} devices in use
-                  </p>
-                  <p className="mt-1 text-xs text-text-tertiary">
-                    The five-device allowance is per person and does not increase when a team pays.
-                  </p>
-                </div>
-                {hostedDevicesOverLimit && (
-                  <div className="rounded-md border border-warning/30 bg-warning/5 p-2">
-                    <p className="text-xs text-text-secondary">
-                      {hosted.state === 'preview'
-                        ? `You have ${activeHostedDevices} active devices; the allowance is five per person. Your existing devices remain available during the free preview. Reduce the list to five before ${formatHostedDate(hosted.previewEndsAt) ?? 'the preview ends'} to keep hosted writes enabled. Anvil will not revoke devices automatically.`
-                        : 'You have more enrolled devices than this plan allows. Anvil will keep your existing devices available and will not revoke them automatically. Revoke a device you no longer use before enrolling another.'}
-                    </p>
-                  </div>
-                )}
-                {hosted.state === 'preview' &&
-                  hostedDeviceLimitReached &&
-                  !hostedDevicesOverLimit && (
-                    <p className="text-xs text-text-tertiary">
-                      You are using all available device slots. Revoke an old device before adding a
-                      replacement.
-                    </p>
+            {hosted !== null &&
+              (hosted.restricted ||
+                (fairUse !== null &&
+                  fairUse.status !== 'clear' &&
+                  fairUse.notice !== undefined)) && (
+                <Panel
+                  title="Sync service status"
+                  description="Sync and Mesh are free. Service protections may temporarily pause hosted writes while leaving your local data available."
+                >
+                  {hosted.restricted && (
+                    <div className="rounded-md border border-error/30 bg-error/5 p-2" role="status">
+                      <p className="flex items-start gap-2 text-xs text-text-secondary">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0 text-error" />
+                        {hosted.reason === 'device-limit-exceeded'
+                          ? 'Sync writes are paused because this account is over its configured device allowance. Revoke a device you no longer use or ask your service operator to review the limit, then retry.'
+                          : 'Sync writes are paused by account or service policy. Your local changes remain on this device; you can still pull and export data, manage devices, and delete the account.'}
+                      </p>
+                    </div>
                   )}
-                {hosted.restricted && (
-                  <div className="rounded-md border border-error/30 bg-error/5 p-2">
-                    <p className="flex items-start gap-2 text-xs text-text-secondary">
-                      <AlertTriangle size={13} className="mt-0.5 shrink-0 text-error" />
-                      {hosted.reason === 'device-limit-exceeded'
-                        ? 'Hosted writes are paused because this account has more active devices than the five-device allowance. Revoke devices until five remain; existing sessions and data will not be removed automatically. You can still export account data and manage devices.'
-                        : 'Hosted writes are paused. Your local changes remain on this device, and you can still export account data or manage enrolled devices while you restore personal billing or ask your team owner to assign a seat.'}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenHostedAccount()}
-                      className="mt-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                    >
-                      Manage account
-                    </button>
-                  </div>
-                )}
-              </Panel>
-            )}
+                  {fairUse !== null &&
+                    fairUse.status !== 'clear' &&
+                    fairUse.notice !== undefined && (
+                      <div
+                        className={`rounded-md border p-2 ${
+                          fairUse.status === 'restricted'
+                            ? 'border-error/30 bg-error/5'
+                            : 'border-warning/30 bg-warning/5'
+                        }`}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <p className="text-xs font-medium text-text-primary">
+                          {fairUse.status === 'restricted'
+                            ? 'Hosted writes are restricted under fair use'
+                            : 'Anvil hosted usage notice'}
+                        </p>
+                        <p className="mt-1 text-xs text-text-secondary">{fairUse.notice.message}</p>
+                        <p className="mt-1 text-xs text-text-tertiary">
+                          {fairUse.status === 'restricted'
+                            ? 'This restriction is active. You can still pull and export account data, manage devices, and delete the account.'
+                            : fairUse.notice.emergency
+                              ? 'This notice takes effect immediately. You can still pull and export account data, manage devices, and delete the account.'
+                              : `Hosted writes pause on ${formatHostedDate(fairUse.notice.restrictAt) ?? fairUse.notice.restrictAt} if this is not resolved. You can still pull and export account data, manage devices, and delete the account.`}
+                        </p>
+                        <p className="mt-1 text-xs text-text-tertiary">
+                          Notice code: <span className="font-mono">{fairUse.notice.code}</span>
+                        </p>
+                      </div>
+                    )}
+                </Panel>
+              )}
 
             {runtime?.auth.state === 'signed-in' && (
               <Panel
                 title="Enrolled devices"
                 description="Review every device on this account. Revoke lost or retired hardware to end its session immediately."
               >
+                {hosted !== null && (
+                  <div className="mb-3 rounded-md border border-border bg-bg-primary p-2">
+                    <p className="text-xs text-text-secondary">
+                      {activeDeviceCount} of {hosted.deviceLimit} configured device slots in use.
+                    </p>
+                    {activeDeviceCount >= hosted.deviceLimit && (
+                      <p className="mt-1 text-xs text-warning" role="status">
+                        {activeDeviceCount > hosted.deviceLimit
+                          ? 'This account is over its configured device allowance.'
+                          : 'This account has reached its configured device allowance.'}{' '}
+                        Revoke a device you no longer use, or ask your service operator to review
+                        the limit.
+                      </p>
+                    )}
+                  </div>
+                )}
                 {devices.length === 0 ? (
                   <p className="text-sm text-text-tertiary">No devices enrolled yet.</p>
                 ) : (
@@ -1643,7 +1550,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
 
       <Panel
         title="Cloud agents"
-        description="Choose providers available to managed cloud agents and connect supported accounts."
+        description="Choose providers available to Anvil Cloud Agents and your own cloud machines."
       >
         <CloudAgentSettingsPanel />
       </Panel>

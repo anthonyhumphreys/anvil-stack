@@ -41,6 +41,7 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
   const { createWorkspace, refreshWorkspaces } = useWorkspace();
   const [name, setName] = useState('');
   const [nameDirty, setNameDirty] = useState(false);
+  const [syncSelected, setSyncSelected] = useState(false);
   const [mode, setMode] = useState<SecondaryMode>('repos');
   const [activeTab, setActiveTab] = useState<CreatorTab>('local');
   const [exportVSCode, setExportVSCode] = useState(false);
@@ -129,6 +130,7 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
       workspace = await createWorkspace({
         name: name.trim(),
         workItemConnectionId: workItemConnectionId || undefined,
+        syncSelected,
       });
       setCreatedWorkspace({ id: workspace.id, name: workspace.name });
     } catch (err) {
@@ -320,6 +322,22 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
                 autoFocus
                 className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
               />
+            </div>
+
+            <div className="mt-4 space-y-2">
+              <SegmentedControl<'local' | 'sync'>
+                label="Workspace Sync"
+                value={syncSelected ? 'sync' : 'local'}
+                onChange={(value) => setSyncSelected(value === 'sync')}
+                options={[
+                  { value: 'local', label: 'Local only' },
+                  { value: 'sync', label: 'Sync across devices' },
+                ]}
+              />
+              <p className="text-xs text-text-tertiary">
+                Local only keeps this workspace on this device. Sync shares its workspace definition
+                and portable settings with your other signed-in devices. You can change this later.
+              </p>
             </div>
 
             {workItemConnections.length > 1 && (

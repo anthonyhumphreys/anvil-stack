@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
 
 const db = new Database(':memory:');
@@ -111,6 +111,7 @@ const context = {
 };
 
 beforeEach(() => {
+  vi.stubEnv('ANVIL_CLOUD_AGENTS_ENABLED', 'true');
   db.exec('DELETE FROM remote_chats; DELETE FROM mesh_remote_provider_sessions;');
   calls.length = 0;
   rpcCalls.length = 0;
@@ -172,6 +173,8 @@ beforeEach(() => {
     },
   }));
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 const input = {
   workspaceId: 'workspace-a',
@@ -256,6 +259,60 @@ describe('remote chat controller', () => {
       first.environmentId,
       first.environmentId,
     ]);
+  });
+
+  it('blocks Anvil-hosted chat launches while disabled but preserves BYO runs and cleanup', async () => {
+    db.prepare(
+      `INSERT OR IGNORE INTO workspaces (id, name, created_at, updated_at) VALUES ('workspace-a', 'A', datetime('now'), datetime('now'))`,
+    ).run();
+    db.prepare(
+      `INSERT OR IGNORE INTO chat_threads (id, workspace_id, persona_id, title) VALUES ('thread-a', 'workspace-a', 'codex', 'Thread A')`,
+    ).run();
+    const hosted = await createRemoteChat({
+      workspaceId: 'workspace-a',
+      target: 'anvil-hosted-cloud',
+      sourceThreadId: 'thread-a',
+      provider: 'codex',
+      model: 'gpt-test',
+      permissionMode: 'on-request',
+      prompt: 'Start hosted run',
+      requestId: 'hosted-create-before-disable',
+    });
+
+    vi.stubEnv('ANVIL_CLOUD_AGENTS_ENABLED', 'false');
+    await expect(
+      createRemoteChat({
+        workspaceId: 'workspace-a',
+        target: 'anvil-hosted-cloud',
+        sourceThreadId: 'thread-a',
+        provider: 'codex',
+        model: 'gpt-test',
+        permissionMode: 'on-request',
+        prompt: 'Start another hosted run',
+      }),
+    ).rejects.toThrow('Anvil Cloud Agents are unavailable.');
+    await expect(
+      sendRemoteChat({ sessionId: hosted.id, requestId: 'hosted-follow-up', prompt: 'Continue' }),
+    ).rejects.toThrow('Anvil Cloud Agents are unavailable.');
+    await remoteChatTick();
+    expect(environmentRequests).toHaveLength(1);
+
+    const ended = await endRemoteChat(hosted.id);
+    expect(ended.state).toBe('ended');
+    expect(hostedEnvironments).toEqual([]);
+
+    resolveDevice = () => ({
+      devices: [{ enrollmentId: 'enr-byovm', revoked: false, enrollmentClass: 'ephemeral' }],
+    });
+    const customerOwnedRun = await createRemoteChat({
+      ...input,
+      target: 'device',
+      targetEnrollmentId: 'enr-byovm',
+      provider: 'codex',
+      requestId: 'byo-run-while-hosted-disabled',
+    });
+    expect(customerOwnedRun.targetEnrollmentId).toBe('enr-byovm');
+    expect(calls).toHaveLength(1);
   });
 
   it('rejects a hosted run whose source thread belongs to another workspace', async () => {

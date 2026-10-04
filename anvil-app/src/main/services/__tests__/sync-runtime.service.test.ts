@@ -10,6 +10,7 @@ import { SPIKE_DATASET_EPOCH, type SyncFairUseStatus } from '../../../shared/syn
 import {
   SYNC_ENTITY_SETTINGS,
   SYNC_ENTITY_WORKFLOW_TEMPLATE,
+  SYNC_ENTITY_WORKSPACE_DEFINITION,
   SYNC_SETTINGS_ENTITY_ID,
   type SyncScope,
 } from '../../../shared/sync-mesh';
@@ -72,6 +73,7 @@ import {
   spikeEnroll,
   listDevices,
   listCloudEnvironments,
+  resumeCloudEnvironment,
 } from '../sync-runtime.service';
 import {
   deriveSas,
@@ -94,6 +96,7 @@ import { activateBackend, pinBackend } from '../sync-backend.service';
 import { resetSyncEngineForTests } from '../sync-engine.service';
 import type { BackendWebSocketLike } from '../sync-backend-client.service';
 import { saveWorkflowTemplate } from '../workflow.service';
+import { createWorkspace } from '../workspace.service';
 import { DESCRIPTOR_VERSION, PROTOCOL } from '../../../../cloud/contract/version';
 import { WORKOS_DEVICE_AUTHORIZATION_URL } from '../workos-device-auth.service';
 import { encodePairingPayload } from '../../../../cloud/contract/sealed';
@@ -152,6 +155,9 @@ beforeEach(() => {
     `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
      DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
      DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
+     DELETE FROM workspace_repos; DELETE FROM workspace_repo_definitions;
+     DELETE FROM workspace_preferences; DELETE FROM workspaces; DELETE FROM editable_agents;
+     DELETE FROM repos;
      DELETE FROM sync_backends; DELETE FROM sync_entitlement;
      DELETE FROM sync_keyring; DELETE FROM sync_device_keys; DELETE FROM sync_pairing;
      DELETE FROM sync_keyring_deliveries; DELETE FROM sync_recovery_secrets;
@@ -222,6 +228,32 @@ describe('bindLocalEntities', () => {
     expect(rows[0].entityType).toBe(SYNC_ENTITY_SETTINGS);
     expect(getBinding(OTHER_SCOPE, ET, saved.id)).not.toBeNull();
     expect(getBinding(SCOPE, ET, saved.id)).toBeNull();
+  });
+
+  it('adopts only workspaces explicitly selected for Sync', () => {
+    upsertEnrollment({
+      displayName: 'Test device',
+      id: 'enrollment-1',
+      installationId: 'installation-1',
+      scope: SCOPE,
+      state: 'active',
+    });
+    const local = createWorkspace({ name: 'Local workspace' });
+    const selected = createWorkspace({ name: 'Selected workspace', syncSelected: true });
+
+    expect(
+      previewAdoption()
+        .filter((item) => item.entityType === SYNC_ENTITY_WORKSPACE_DEFINITION)
+        .map((item) => item.entityId),
+    ).toEqual([selected.id]);
+    expect(bindLocalEntities(SCOPE)).toBe(2); // settings and selected workspace
+    expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, selected.id)).not.toBeNull();
+    expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, local.id)).toBeNull();
+    expect(
+      listOutboxRows(SCOPE).some(
+        (row) => row.entityType === SYNC_ENTITY_WORKSPACE_DEFINITION && row.entityId === local.id,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -389,6 +421,7 @@ describe('device security runtime integration', () => {
     expect(hasAccountKey(SCOPE)).toBe(false);
     expect(hasAccountKey(OTHER_SCOPE)).toBe(true);
     expect(getRuntimeStatus().auth.state).toBe('signed-out');
+    expect(getRuntimeStatus().datasetEpoch).toBeNull();
   });
 
   it('restores polling/live sync after a definitive reset rejection', async () => {
@@ -417,6 +450,7 @@ describe('device security runtime integration', () => {
     });
     expect(factory.sockets.length).toBeGreaterThan(before);
     expect(getRuntimeStatus().auth.state).toBe('signed-in');
+    expect(getRuntimeStatus().datasetEpoch).toBe(SCOPE.datasetEpoch);
   });
 });
 
@@ -1432,6 +1466,19 @@ describe('live channel', () => {
 });
 
 describe('hosted entitlement (BILL-05)', () => {
+  it('rejects a direct Anvil Cloud Agent resume while the flag is off', async () => {
+    const previous = process.env['ANVIL_CLOUD_AGENTS_ENABLED'];
+    delete process.env['ANVIL_CLOUD_AGENTS_ENABLED'];
+    try {
+      await expect(resumeCloudEnvironment('existing-environment')).rejects.toThrow(
+        'Anvil Cloud Agents are unavailable',
+      );
+    } finally {
+      if (previous === undefined) delete process.env['ANVIL_CLOUD_AGENTS_ENABLED'];
+      else process.env['ANVIL_CLOUD_AGENTS_ENABLED'] = previous;
+    }
+  });
+
   const RESTRICTED_ENTITLEMENT = {
     state: 'restricted',
     source: 'none',
@@ -1445,7 +1492,7 @@ describe('hosted entitlement (BILL-05)', () => {
     graceUntil: null,
     checkedAt: '2026-09-11T10:00:00Z',
     revision: 7,
-    reason: 'subscription-required',
+    reason: 'account-deleted',
   };
   const PREVIEW_ENTITLEMENT = {
     state: 'preview',
@@ -1505,6 +1552,58 @@ describe('hosted entitlement (BILL-05)', () => {
     expect(row?.revision).toBe(2);
     expect(row?.reason).toBe('preview');
   });
+
+  it('accepts the free entitlement without a plan, funding source or expiry', async () => {
+    const backend = fakeBackend({
+      entitlement: {
+        ...PREVIEW_ENTITLEMENT,
+        state: 'active',
+        source: 'none',
+        planKey: null,
+        fundedBy: 'none',
+        accessUntil: null,
+        reason: 'free',
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      fetchFn: backend.fetchFn,
+      createSocket: fakeSocketFactory().createSocket,
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+    enableSync();
+    const hosted = await refreshHostedEntitlement();
+    expect(hosted).toMatchObject({
+      state: 'active',
+      source: 'none',
+      planKey: null,
+      fundedBy: 'none',
+      accessUntil: null,
+      reason: 'free',
+      restricted: false,
+    });
+  });
+
+  it.each(['subscription-required', 'preview-ended', 'billing-unavailable'])(
+    'does not pause free writes for a cached legacy %s refusal',
+    async (reason) => {
+      const backend = fakeBackend({ entitlement: { ...RESTRICTED_ENTITLEMENT, reason } });
+      const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+      initSyncRuntime(dir, {
+        fetchFn: backend.fetchFn,
+        createSocket: fakeSocketFactory().createSocket,
+      });
+      pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+      await enrollOn(backend);
+      enableSync();
+      await refreshHostedEntitlement();
+      expect(getRuntimeStatus().hosted?.restricted).toBe(false);
+      backend.calls.length = 0;
+      await requestSync();
+      expect(rpcOps(backend)).toContain('sync.push');
+    },
+  );
 
   it('shows the account-specific fair-use notice with its effective date in hosted status', async () => {
     const fairUseNotice: SyncFairUseStatus = {
@@ -1622,7 +1721,7 @@ describe('hosted entitlement (BILL-05)', () => {
     expect(getRuntimeStatus().hosted).toBeNull();
   });
 
-  it('a restricted entitlement pauses sync writes while pulls keep running', async () => {
+  it('an account lifecycle restriction pauses writes while pulls keep running', async () => {
     const backend = fakeBackend({ entitlement: RESTRICTED_ENTITLEMENT });
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
     initSyncRuntime(dir, {
@@ -1669,12 +1768,12 @@ describe('hosted entitlement (BILL-05)', () => {
     expect(rpcOps(backend)).toContain('sync.push');
   });
 
-  it('a mid-flight hosted 403 still pulls, keeps outbox rows, and stays quiet', async () => {
+  it('a legacy billing refusal keeps outbox rows without pinning a local payment pause', async () => {
     const backend = fakeBackend({
       // Authoritative describe flips to restricted the moment a push was denied.
       entitlement: () =>
         backend.calls.some((c) => c.operation === 'sync.push')
-          ? RESTRICTED_ENTITLEMENT
+          ? { ...RESTRICTED_ENTITLEMENT, reason: 'subscription-required' }
           : PREVIEW_ENTITLEMENT,
       denyPush: 'subscription-required',
     });
@@ -1687,21 +1786,21 @@ describe('hosted entitlement (BILL-05)', () => {
     await enrollOn(backend);
     enableSync(); // the kick itself runs the denied cycle
 
-    // The 403 → record → refresh sequence converges on a restricted row.
+    // A legacy backend response must not pin free Sync behind a local paywall.
     await vi.waitFor(() => {
       const row = getSyncEntitlement('backend-1', 'account-1');
-      expect(row?.restricted).toBe(true);
+      expect(row?.restricted).toBe(false);
       expect(row?.reason).toBe('subscription-required');
     });
     // The pull still ran before the refusal propagated.
     expect(rpcOps(backend)).toContain('sync.pull');
-    expect(getRuntimeStatus().lastError).toBeNull();
+    expect(getRuntimeStatus().lastError).toContain('Update the backend');
     // The denied push must not consume or drop local outbox rows.
     expect(listOutboxRows(SCOPE).length).toBeGreaterThan(0);
 
-    // An explicit cycle resolves quietly too — the pause is not a failure.
+    // A retry still reports the incompatible backend without a payment pause.
     await requestSync();
-    expect(getRuntimeStatus().lastError).toBeNull();
+    expect(getRuntimeStatus().lastError).toContain('Update the backend');
   });
 
   it('onAppFocus re-reads hosted access once the throttle window passes', async () => {

@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isCloudAgentProviderEnabled } from './cloud-agent-settings.service.js';
+import {
+  assertAnvilCloudAgentsEnabled,
+  isAnvilCloudAgentsEnabled,
+} from './anvil-cloud-agents-availability.service.js';
 
 import type { AgentProvider } from '../../shared/types.js';
 import type {
@@ -443,15 +447,22 @@ async function jobRpc<T>(
 
 async function submitExactRequest(
   json: string,
-  expected: Pick<StoredChat, 'backendId' | 'accountId' | 'scopeEpoch'>,
+  expected: Pick<StoredChat, 'backendId' | 'accountId' | 'scopeEpoch'> &
+    Partial<Pick<StoredChat, 'target' | 'cancelRequested'>>,
 ): Promise<JobSummary> {
   assertScope(expected);
+  if (expected.target === 'anvil-hosted-cloud' && expected.cancelRequested !== true) {
+    assertAnvilCloudAgentsEnabled();
+  }
   return submitPreparedJob(JSON.parse(json) as JobCreateParams);
 }
 
 export async function createRemoteChat(input: CreateRemoteChatInput): Promise<RemoteChatRecord> {
   const ctx = context();
-  if (input.target === 'anvil-hosted-cloud') return createHostedRemoteChat(input, ctx);
+  if (input.target === 'anvil-hosted-cloud') {
+    assertAnvilCloudAgentsEnabled();
+    return createHostedRemoteChat(input, ctx);
+  }
   if (input.target !== undefined && input.target !== 'device')
     throw new Error('Unsupported remote chat target.');
   const targetEnrollmentId = input.targetEnrollmentId;
@@ -703,6 +714,7 @@ function assertSourceThreadWorkspace(sourceThreadId: string, workspaceId: string
 }
 
 async function requestProvisioning(chat: StoredChat): Promise<void> {
+  if (chat.target === 'anvil-hosted-cloud') assertAnvilCloudAgentsEnabled();
   if (chat.environmentId === undefined)
     throw new Error('Hosted remote chat lost its environment id.');
   const callback = context().requestHostedEnvironment;
@@ -724,6 +736,7 @@ export async function sendRemoteChat(input: SendRemoteChatInput): Promise<Remote
   context();
   const chat = readStored(input.sessionId);
   if (chat === null) throw new Error(`remote chat not found: ${input.sessionId}`);
+  if (chat.target === 'anvil-hosted-cloud') assertAnvilCloudAgentsEnabled();
   const duplicate = chat.turns.find((turn) => turn.requestId === input.requestId);
   if (duplicate !== undefined) {
     if (
@@ -1205,6 +1218,7 @@ async function tickChat(id: string): Promise<void> {
     const { environments } = await listEnvironments();
     const environment = environments.find((entry) => entry.environmentId === chat.environmentId);
     if (environment === undefined) {
+      if (!isAnvilCloudAgentsEnabled()) return;
       await requestProvisioning(chat);
       return;
     }
@@ -1219,6 +1233,7 @@ async function tickChat(id: string): Promise<void> {
       return;
     }
     if (environment.state === 'suspended' && chat.hostedResumePending === true) {
+      if (!isAnvilCloudAgentsEnabled()) return;
       const resume = context().resumeHostedEnvironment;
       if (resume === undefined) throw new Error('Hosted environment resume is unavailable.');
       await resume(chat.environmentId);

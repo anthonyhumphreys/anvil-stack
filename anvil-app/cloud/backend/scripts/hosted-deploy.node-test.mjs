@@ -249,16 +249,19 @@ test('target vars retain optional settings but lock deployment and WorkOS identi
   const vars = mergeTargetVars(
     {
       HOSTED_CHECKOUT_ENABLED: 'true',
+      ANVIL_CLOUD_AGENTS_ENABLED: 'true',
       HOSTED_SYNC_LIMITS: '{"jobs":10}',
       OIDC_CLIENT_ID: 'client_stale',
     },
     staging,
   );
-  assert.equal(vars.HOSTED_CHECKOUT_ENABLED, 'true');
+  assert.equal(vars.HOSTED_CHECKOUT_ENABLED, 'false');
+  assert.equal(vars.ANVIL_CLOUD_AGENTS_ENABLED, 'true');
   assert.equal(vars.HOSTED_SYNC_LIMITS, '{"jobs":10}');
   assert.equal(vars.OIDC_CLIENT_ID, staging.workos.desktopClientId);
   assert.equal(vars.ANVIL_DEPLOYMENT_ID, staging.deploymentId);
   assert.equal(vars.HOSTED_BILLING_ENVIRONMENT, 'staging');
+  assert.equal(mergeTargetVars({}, staging).ANVIL_CLOUD_AGENTS_ENABLED, 'false');
   assert.throws(
     () => mergeTargetVars({ ANVIL_DEV_SPIKE: 'true' }, staging),
     /invalid or secret Worker var/,
@@ -272,6 +275,8 @@ function hostedConfig(target, environment, extraVars = {}) {
     vars: {
       HOSTED_BILLING_ENFORCEMENT: 'true',
       HOSTED_BILLING_ENVIRONMENT: environment,
+      HOSTED_CHECKOUT_ENABLED: 'false',
+      ANVIL_CLOUD_AGENTS_ENABLED: 'false',
       ANVIL_DEPLOYMENT_ID: target.deploymentId,
       ANVIL_DEPLOYMENT_NAME: target.deploymentName,
       HOSTED_WORKOS_CLIENT_ID: target.workos.hostedClientId,
@@ -398,7 +403,7 @@ test('generated production config rejects the staging-only early checkout flag',
   }
 });
 
-test('production checkout requires four distinct prices and rejects staging Price reuse', () => {
+test('free service deploys without Stripe prices and retired checkout cannot be re-enabled', () => {
   const directory = mkdtempSync(join(tmpdir(), 'hosted-config-test-'));
   const production = {
     ...staging,
@@ -417,46 +422,28 @@ test('production checkout requires four distinct prices and rejects staging Pric
       hostedClientId: 'client_prod_site',
     },
   };
-  const stagePath = join(directory, 'staging.json');
   const productionPath = join(directory, 'production.json');
-  const stagePrices = {
-    STRIPE_PRICE_SYNC_MONTHLY: 'price_stagepersonalmonth',
-    STRIPE_PRICE_SYNC_ANNUAL: 'price_stagepersonalyear',
-    STRIPE_PRICE_TEAM_MONTHLY: 'price_stageteammonth',
-    STRIPE_PRICE_TEAM_ANNUAL: 'price_stageteamyear',
-  };
-  const prodPrices = {
-    STRIPE_PRICE_SYNC_MONTHLY: 'price_prodpersonalmonth',
-    STRIPE_PRICE_SYNC_ANNUAL: 'price_prodpersonalyear',
-    STRIPE_PRICE_TEAM_MONTHLY: 'price_prodteammonth',
-    STRIPE_PRICE_TEAM_ANNUAL: 'price_prodteamyear',
-  };
   try {
-    writeJson(
-      stagePath,
-      hostedConfig(staging, 'staging', { HOSTED_CHECKOUT_ENABLED: 'true', ...stagePrices }),
-    );
-    writeJson(
-      productionPath,
-      hostedConfig(production, 'production', { HOSTED_CHECKOUT_ENABLED: 'true', ...prodPrices }),
-    );
+    writeJson(productionPath, hostedConfig(production, 'production'));
     assert.equal(
-      validateGeneratedConfig(productionPath, production, 'production', false, stagePath).name,
+      validateGeneratedConfig(productionPath, production, 'production').name,
       production.workerName,
     );
 
     writeJson(
       productionPath,
-      hostedConfig(production, 'production', {
-        HOSTED_CHECKOUT_ENABLED: 'true',
-        ...prodPrices,
-        STRIPE_PRICE_TEAM_ANNUAL: stagePrices.STRIPE_PRICE_SYNC_MONTHLY,
-      }),
+      hostedConfig(production, 'production', { HOSTED_CHECKOUT_ENABLED: 'true' }),
     );
     assert.throws(
-      () => validateGeneratedConfig(productionPath, production, 'production', false, stagePath),
-      /reuses a staging Stripe Price id/,
+      () => validateGeneratedConfig(productionPath, production, 'production'),
+      /Sync checkout is retired/,
     );
+
+    writeJson(
+      productionPath,
+      hostedConfig(production, 'production', { ANVIL_CLOUD_AGENTS_ENABLED: 'true' }),
+    );
+    assert.equal(validateGeneratedConfig(productionPath, production, 'production').name, production.workerName);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -544,16 +531,12 @@ test('backend secrets keep WorkOS and Stripe environment credentials correctly s
       ),
     /must not reuse a HOSTED_SERVICE_KEYS secret/,
   );
-  validateCheckoutSecrets(
-    { vars: { HOSTED_CHECKOUT_ENABLED: 'true' } },
-    { STRIPE_SECRET_KEY: 'sk_test_staging', STRIPE_WEBHOOK_SECRET: 'whsec_staging' },
-    'staging',
-  );
   assert.throws(
     () => validateCheckoutSecrets({ vars: { HOSTED_CHECKOUT_ENABLED: 'true' } }, shared, 'staging'),
-    /Stripe API and webhook secrets are missing/,
+    /Sync checkout is retired/,
   );
   validateCheckoutSecrets({ vars: { HOSTED_CHECKOUT_ENABLED: 'false' } }, shared, 'staging');
+  validateCheckoutSecrets({ vars: { HOSTED_CHECKOUT_ENABLED: 'false' } }, {}, 'production');
   validateStripeSecretMode('sk_test_staging', 'staging');
   validateStripeSecretMode('sk_live_production', 'production');
   assert.throws(() => validateStripeSecretMode('sk_live_wrong', 'staging'), /test Stripe mode/);

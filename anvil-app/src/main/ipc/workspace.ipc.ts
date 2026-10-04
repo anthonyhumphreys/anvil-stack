@@ -1,5 +1,9 @@
 import { BrowserWindow, ipcMain } from 'electron';
-import type { WorkspaceCloneRequest, WorkspaceCreateOptions } from '../../shared/types.js';
+import type {
+  WorkspaceCloneRequest,
+  WorkspaceCreateOptions,
+  WorkspaceUpdateOptions,
+} from '../../shared/types.js';
 import {
   listWorkspaces,
   getWorkspace,
@@ -44,6 +48,7 @@ import { scanForReposAsync, cancelScan } from '../services/repo-scan.service.js'
 import { ensureGateTemplates } from '../services/lifecycle.service.js';
 import { getWorkspaceActivityFeed } from '../services/workspace-activity.service.js';
 import { enqueueIndexJobs } from '../services/repo-index-queue.service.js';
+import { onWorkspaceSyncSelectionChanged } from '../services/sync-runtime.service.js';
 
 /** Kick off tiered indexing (mapped → enriched) for repos joining a workspace. */
 function enqueueIndexJobsForRepos(repoIds: string[] | undefined): void {
@@ -91,6 +96,9 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
   ipcMain.handle('workspace:create', (_event, opts: WorkspaceCreateOptions) => {
     try {
       const workspace = createWorkspace(opts);
+      if (opts.syncSelected === true) {
+        onWorkspaceSyncSelectionChanged(workspace.id, true);
+      }
       ensureGateTemplates(workspace.id);
       // Repos are usable once the fast structural tier lands; enrichment
       // continues in the background (fixes J1 — no manual Index click needed).
@@ -143,9 +151,13 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
     },
   );
 
-  ipcMain.handle('workspace:update', (_event, id: string, opts: { name: string }) => {
+  ipcMain.handle('workspace:update', (_event, id: string, opts: WorkspaceUpdateOptions) => {
     try {
-      return updateWorkspace(id, opts);
+      const workspace = updateWorkspace(id, opts);
+      if (opts.syncSelected !== undefined) {
+        onWorkspaceSyncSelectionChanged(workspace.id, opts.syncSelected);
+      }
+      return workspace;
     } catch (err) {
       console.error('[Workspace IPC] Error updating workspace:', err);
       throw err;

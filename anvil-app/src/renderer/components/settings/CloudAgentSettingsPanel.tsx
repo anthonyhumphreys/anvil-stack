@@ -17,7 +17,8 @@ const PROVIDERS: Array<{ id: AgentProvider; label: string; description: string }
   {
     id: 'cursor',
     label: 'Cursor',
-    description: 'Connect Cursor once to use it from managed cloud agents.',
+    description:
+      'Connect Cursor once to use it from Anvil Cloud Agents or your own cloud machines.',
   },
   {
     id: 'devin',
@@ -115,8 +116,8 @@ export function CloudAgentSettingsPanel(): ReactNode {
           Cloud agents
         </h3>
         <p className="mt-1 text-sm text-text-secondary">
-          Choose which configured providers managed cloud agents may use. Saved sign-in details use
-          your protected credential storage.
+          Choose which providers Anvil Cloud Agents or your own cloud machines may use. Saved
+          sign-in details use your protected credential storage.
         </p>
       </div>
       {PROVIDERS.map(({ id, label, description }) => {

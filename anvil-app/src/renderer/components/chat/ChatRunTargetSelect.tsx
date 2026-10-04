@@ -26,7 +26,11 @@ export function ChatRunTargetSelect({
         }
       >
         <option value="local">This device</option>
-        <option value={HOSTED_CHAT_TARGET}>Anvil hosted cloud</option>
+        {(run.hostedAgentsEnabled || run.record?.environmentId !== undefined) && (
+          <option value={HOSTED_CHAT_TARGET} disabled={!run.hostedAgentsEnabled}>
+            {run.hostedAgentsEnabled ? 'Anvil Cloud Agents' : 'Anvil Cloud Agents (unavailable)'}
+          </option>
+        )}
         {run.devices.map((device) => (
           <option key={device.enrollmentId} value={device.enrollmentId}>
             {device.displayName ?? 'Remote device'}

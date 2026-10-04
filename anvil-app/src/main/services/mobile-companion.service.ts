@@ -76,9 +76,18 @@ import {
 } from './lifecycle.service.js';
 import {
   attestDeviceAccessToken,
+  activeSyncScope,
   getRuntimeStatus,
   publishCompanionAdvertisement,
 } from './sync-runtime.service.js';
+import {
+  dispatchDashboardGrantCommandQueue,
+  getDashboardGrantMachineEndpointOrigin,
+} from './dashboard-grant.service.js';
+import {
+  handleMeshMachineEndpointRequest,
+  isMeshMachineEndpointEnabled,
+} from './mesh-machine-endpoint.service.js';
 import type { CompanionEndpoint } from '../../../cloud/contract/companion.js';
 
 interface MobileCompanionSettingsRow {
@@ -631,6 +640,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   } else {
     touchDevice(authn.auth.device.id);
   }
+
+  const machineEndpointHandled = await handleMeshMachineEndpointRequest(req, res, {
+    enabled: isMeshMachineEndpointEnabled(),
+    machineId: ensureMobileCompanionSettings().instance_id,
+    originForGrant: (requestId) => {
+      const scope = activeSyncScope();
+      return scope === null ? null : getDashboardGrantMachineEndpointOrigin(scope, requestId);
+    },
+    dispatchGrantCommands: (requestId) => {
+      const scope = activeSyncScope();
+      return scope === null
+        ? Promise.resolve({ state: 'not-ready', commands: [] })
+        : dispatchDashboardGrantCommandQueue(scope, requestId);
+    },
+  });
+  if (machineEndpointHandled) return;
 
   if (req.method === 'POST' && url.pathname === '/api/events/ticket') {
     const issued = issueEventStreamTicket(authn.auth);

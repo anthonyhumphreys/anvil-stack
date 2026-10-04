@@ -18,10 +18,9 @@ export function describeMeshDispatchError(error: unknown): string {
     case 'worker-revoked':
       return 'The target worker has been revoked. Enroll a new device before sending jobs to it.';
     case 'billing-unavailable':
-      return 'Hosted access could not be verified. Check Hosted access in Sync & Mesh, then retry.';
     case 'preview-ended':
     case 'subscription-required':
-      return 'Hosted access does not currently allow Mesh jobs. Check the account billing page.';
+      return 'This backend still restricts Mesh by subscription. Update the backend to use free Sync and Mesh.';
     case 'account-deleted':
       return 'This account is no longer active on the backend.';
     default:

@@ -150,6 +150,7 @@ describe("Mesh backend recipe planning", () => {
     expect(plan.vars).toMatchObject({
       ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production-acct-1",
       ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production-acct-1)",
+      ANVIL_CLOUD_AGENTS_ENABLED: "false",
     });
   });
 
@@ -183,11 +184,13 @@ describe("Mesh backend recipe planning", () => {
       vars: {
         ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-staging-v2",
         ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-staging-v2)",
+        ANVIL_CLOUD_AGENTS_ENABLED: "true",
       },
     });
     expect(migrated.vars).toMatchObject({
       ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-staging-v2",
       ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-staging-v2)",
+      ANVIL_CLOUD_AGENTS_ENABLED: "true",
     });
   });
 
@@ -225,6 +228,7 @@ describe("Mesh backend recipe planning", () => {
     expect(config.services).toEqual([
       { binding: "MANAGED_PROVISIONER", service: "anvil-mesh-provisioner" },
     ]);
+    expect(config.vars.ANVIL_CLOUD_AGENTS_ENABLED).toBe("false");
     expect(config.d1_databases[0]).toMatchObject({
       binding: "HOSTED_DB",
       database_name: "anvil-hosted-billing",
@@ -333,6 +337,7 @@ describe("Mesh backend recipe planning", () => {
     expect(plan.vars).toEqual({
       ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production",
       ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production)",
+      ANVIL_CLOUD_AGENTS_ENABLED: "false",
       OIDC_ISSUER: "https://issuer.example.com",
     });
     expect(JSON.stringify(plan)).not.toContain("ANVIL_DEV_SPIKE");
@@ -379,6 +384,7 @@ describe("Mesh backend recipe planning", () => {
     expect(plan.vars).toEqual({
       ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production",
       ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production)",
+      ANVIL_CLOUD_AGENTS_ENABLED: "false",
       ANVIL_DEV_SPIKE: "true",
     });
     expect(plan.secrets).toEqual([

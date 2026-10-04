@@ -545,6 +545,76 @@ export function listOutboxRows(scope: SyncScope): SyncOutboxRow[] {
   return rows.map(mapOutboxRow);
 }
 
+export interface PausedInboundChange {
+  entityType: string;
+  entityId: string;
+  revision: number;
+  changeJson: string;
+}
+
+/** Keep the newest sealed wire change while a workspace is opted out locally. */
+export function storePausedInboundChange(
+  scope: SyncScope,
+  change: PausedInboundChange,
+  options?: { replace?: boolean },
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO sync_paused_changes
+         (backend_id, account_id, dataset_epoch, entity_type, entity_id, revision, change_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(backend_id, account_id, dataset_epoch, entity_type, entity_id) DO UPDATE SET
+         revision = excluded.revision,
+         change_json = excluded.change_json,
+         updated_at = excluded.updated_at
+       WHERE excluded.revision > sync_paused_changes.revision OR ? = 1`,
+    )
+    .run(
+      scope.backendId,
+      scope.accountId,
+      scope.datasetEpoch,
+      change.entityType,
+      change.entityId,
+      change.revision,
+      change.changeJson,
+      nowIso(),
+      options?.replace === true ? 1 : 0,
+    );
+}
+
+export function listPausedInboundChanges(scope: SyncScope): PausedInboundChange[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT entity_type, entity_id, revision, change_json
+       FROM sync_paused_changes WHERE ${SCOPE_WHERE} ORDER BY updated_at ASC`,
+    )
+    .all(...scopeParams(scope)) as Array<{
+    entity_type: string;
+    entity_id: string;
+    revision: number;
+    change_json: string;
+  }>;
+  return rows.map((row) => ({
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    revision: row.revision,
+    changeJson: row.change_json,
+  }));
+}
+
+export function deletePausedInboundChange(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+): void {
+  getDb()
+    .prepare(
+      `DELETE FROM sync_paused_changes
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?`,
+    )
+    .run(...scopeParams(scope), entityType, entityId);
+}
+
 function toPendingChange(row: OutboxRow): PendingChange {
   if (row.enrollment_sequence === null)
     throw new Error(`Change ${row.change_id} was not sequenced.`);
@@ -675,7 +745,11 @@ export function nextBatch(
           `SELECT * FROM sync_outbox WHERE ${SCOPE_WHERE} AND state = 'pending' ORDER BY created_at ASC, rowid ASC`,
         )
         .all(...params) as OutboxRow[]
-    ).filter((row) => !conflictedEntities.has(`${row.entity_type}\0${row.entity_id}`));
+    ).filter(
+      (row) =>
+        !conflictedEntities.has(`${row.entity_type}\0${row.entity_id}`) &&
+        (options?.shouldDispatch?.(row.entity_type, row.entity_id) ?? true),
+    );
 
     const enrollment = db
       .prepare('SELECT next_sequence FROM device_enrollments WHERE id = ?')

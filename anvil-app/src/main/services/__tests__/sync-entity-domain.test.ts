@@ -356,7 +356,7 @@ describe('workspace definitions', () => {
 
   it('emits synced intent when a bound workspace is renamed', () => {
     enroll();
-    const ws = createWorkspace({ name: 'W', repoIds: [] });
+    const ws = createWorkspace({ name: 'W', repoIds: [], syncSelected: true });
     upsertBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, ws.id);
     updateWorkspace(ws.id, { name: 'Renamed' });
     const rows = listOutboxRows(SCOPE).filter(
@@ -557,7 +557,7 @@ describe('canonical payloads', () => {
 describe('listLocalEntityIds', () => {
   it('lists ids per type with the settings singleton', () => {
     saveEditableAgent({ name: 'A', promptBody: 'p' });
-    createWorkspace({ name: 'W', repoIds: [] });
+    createWorkspace({ name: 'W', repoIds: [], syncSelected: true });
     expect(listLocalEntityIds(SYNC_ENTITY_EDITABLE_AGENT)).toHaveLength(1);
     expect(listLocalEntityIds(SYNC_ENTITY_WORKSPACE_DEFINITION)).toHaveLength(1);
     expect(listLocalEntityIds(SYNC_ENTITY_SETTINGS)).toEqual([SYNC_SETTINGS_ENTITY_ID]);

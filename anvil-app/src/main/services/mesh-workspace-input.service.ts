@@ -3,7 +3,7 @@ import type { ExecutionManifest } from '../../../cloud/contract/jobs.js';
 import { SYNC_ENTITY_WORKSPACE_DEFINITION } from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
 import {
-  applyRemoteEntityPayload,
+  applyTaskWorkspaceDefinition,
   buildEntityPayload,
   entityPayloadIssue,
   workspaceDefinitionRevision,
@@ -18,11 +18,8 @@ export function remoteWorkspaceDefinition(workspaceId: string): unknown {
 }
 
 /** Fresh cloud workers receive this definition through the task content key. */
-export function installTaskWorkspaceDefinition(
-  manifest: ExecutionManifest,
-  isCloudWorker: boolean,
-): void {
-  if (!isCloudWorker || manifest.inputs['workspaceDefinition'] === undefined) return;
+export function installTaskWorkspaceDefinition(manifest: ExecutionManifest): void {
+  if (manifest.inputs['workspaceDefinition'] === undefined) return;
   const payload = manifest.inputs['workspaceDefinition'];
   const workspaceId = manifest.inputs['workspaceId'];
   if (
@@ -38,8 +35,11 @@ export function installTaskWorkspaceDefinition(
   if (digest !== manifest.workspaceDefinitionRevision)
     throw new Error('task-workspace-definition-pin-mismatch');
   if (workspaceDefinitionRevision(workspaceId) === digest) return;
+  if (workspaceDefinitionRevision(workspaceId) !== null) {
+    throw new Error('task-workspace-definition-conflicts-with-local-workspace');
+  }
   getDb().transaction(() => {
-    applyRemoteEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId, payload);
+    applyTaskWorkspaceDefinition(workspaceId, payload);
     if (workspaceDefinitionRevision(workspaceId) !== digest)
       throw new Error('task-workspace-definition-did-not-converge');
   })();

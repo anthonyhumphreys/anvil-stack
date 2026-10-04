@@ -138,6 +138,7 @@ import type {
   RemoteRepo,
   RepoAdrs,
   Workspace,
+  WorkspaceUpdateOptions,
   WorkspacePreferences,
   WorkspaceWithRepos,
   WorkspaceSummary,
@@ -1004,7 +1005,7 @@ export interface AnvilAPI {
     get: (id: string) => Promise<WorkspaceWithRepos>;
     getPreferences: (id: string) => Promise<WorkspacePreferences | null>;
     create: (opts: WorkspaceCreateOptions) => Promise<Workspace>;
-    update: (id: string, opts: { name: string }) => Promise<Workspace>;
+    update: (id: string, opts: WorkspaceUpdateOptions) => Promise<Workspace>;
     delete: (id: string) => Promise<void>;
     addRepos: (workspaceId: string, repoIds: string[]) => Promise<void>;
     removeRepos: (workspaceId: string, repoIds: string[]) => Promise<void>;

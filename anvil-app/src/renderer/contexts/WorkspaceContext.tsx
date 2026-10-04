@@ -12,6 +12,7 @@ import type {
   RepoInfo,
   Workspace,
   WorkspaceCreateOptions,
+  WorkspaceUpdateOptions,
   WorkspaceFeatureAvailability,
   WorkspacePreferences,
   WorkspaceScaffoldSession,
@@ -32,7 +33,7 @@ interface WorkspaceContextValue {
   loading: boolean;
   switchWorkspace: (id: string) => Promise<void>;
   createWorkspace: (opts: WorkspaceCreateOptions) => Promise<Workspace>;
-  updateWorkspace: (id: string, opts: { name: string }) => Promise<void>;
+  updateWorkspace: (id: string, opts: WorkspaceUpdateOptions) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
   addRepos: (repoIds: string[]) => Promise<void>;
   removeRepos: (repoIds: string[]) => Promise<void>;
@@ -472,7 +473,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   );
 
   const updateWorkspace = useCallback(
-    async (id: string, opts: { name: string }) => {
+    async (id: string, opts: WorkspaceUpdateOptions) => {
       await window.anvil.workspace.update(id, opts);
       await loadWorkspaces();
       // Refresh active workspace if it was the one updated

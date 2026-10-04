@@ -1,5 +1,5 @@
 import { env, runInDurableObject, SELF } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { isRpcError } from '../../contract/envelope';
 import type {
@@ -9,6 +9,7 @@ import type {
   ShareRevokeResult,
 } from '../../contract/shares';
 import { sha256Hex } from '../src/hash';
+import { PREVIEW_END_MS } from '../src/hosted/policy';
 import { signHostedServiceRequest } from '../src/hosted/service-auth';
 import type { SessionCoordinator } from '../src/session-coordinator';
 import type { DeviceSession, EnrollmentCodeIssueResult } from '../../contract/auth';
@@ -115,6 +116,18 @@ async function publishShare(auth: string, text: string): Promise<ShareFinalizeRe
 }
 
 describe('shared artifacts', () => {
+  it('allows share creation after preview expiry without a subscription', async () => {
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(PREVIEW_END_MS + 1);
+    try {
+      const f = await fixture('share-free-after-preview');
+      const reserved = await createShare(f.auth);
+      expect(reserved.shareId).toMatch(/^shr_[0-9a-f-]{36}$/i);
+      expect(reserved.uploadPath).toMatch(/^\/v1\/shared\//);
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
   it('round-trips create → upload → finalize → hosted read → list', async () => {
     const f = await fixture('share-happy');
     const text = 'shared artifact body ✓';

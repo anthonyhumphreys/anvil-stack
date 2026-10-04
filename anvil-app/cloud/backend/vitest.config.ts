@@ -183,6 +183,8 @@ export default defineConfig({
           // pre-existing test account is unlinked and therefore
           // preview-entitled, proving enforcement doesn't disturb them.
           HOSTED_BILLING_ENFORCEMENT: 'true',
+          // Managed compute is enabled only for its focused lifecycle fixtures.
+          ANVIL_CLOUD_AGENTS_ENABLED: 'true',
           HOSTED_SERVICE_KEYS: JSON.stringify({ test: 'a'.repeat(32) }),
           HOSTED_BILLING_ENVIRONMENT: 'staging',
           STRIPE_SECRET_KEY: 'sk_test_fake',

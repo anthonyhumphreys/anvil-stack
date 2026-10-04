@@ -80,6 +80,7 @@ vi.mock('../chat-persistence.service.js', () => ({
 
 vi.mock('../sync-runtime.service.js', () => ({
   getRuntimeStatus: () => ({ auth: mocks.auth }),
+  activeSyncScope: vi.fn(() => null),
   attestDeviceAccessToken: mocks.attestDeviceAccessToken,
   publishCompanionAdvertisement: mocks.publishCompanionAdvertisement,
   getDevicePresence: vi.fn(async () => ({ devices: [] })),
@@ -94,6 +95,7 @@ import {
   startMobileCompanionServer,
   stopMobileCompanionServer,
 } from '../mobile-companion.service.js';
+import { MESH_MACHINE_ENDPOINT_FLAG } from '../mesh-machine-endpoint.service.js';
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -286,6 +288,33 @@ describe('mobile companion network exposure', () => {
       headers: { Origin: 'http://127.0.0.1:9999' },
     });
     expect(wrongPort.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('requires existing companion authentication before exposing the machine route', async () => {
+    const previous = process.env[MESH_MACHINE_ENDPOINT_FLAG];
+    try {
+      process.env[MESH_MACHINE_ENDPOINT_FLAG] = 'true';
+      const unauthenticated = await api('/api/machine/v1/grants/grant-1/info');
+      const authenticated = await api('/api/machine/v1/grants/grant-1/info', {
+        token: PAIRED_TOKEN,
+      });
+
+      expect(unauthenticated.status).toBe(401);
+      expect(authenticated.status).toBe(403);
+      expect(authenticated.body.error).toContain('grant is not available');
+
+      await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
+      setCompanionEnrollmentPolicy('enr-phone', 'observe');
+      const observeDispatch = await api(
+        '/api/machine/v1/machines/test-instance/grants/grant-1/commands/dispatch',
+        { method: 'POST', token: ENROLLMENT_TOKEN },
+      );
+      expect(observeDispatch.status).toBe(403);
+      expect(observeDispatch.body.required).toBe('steer');
+    } finally {
+      if (previous === undefined) delete process.env[MESH_MACHINE_ENDPOINT_FLAG];
+      else process.env[MESH_MACHINE_ENDPOINT_FLAG] = previous;
+    }
   });
 });
 

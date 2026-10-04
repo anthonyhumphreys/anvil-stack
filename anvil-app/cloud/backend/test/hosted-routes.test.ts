@@ -296,7 +296,8 @@ describe('hosted pair-device', () => {
     const entitlementBefore = await signedHostedPost('/internal/hosted/entitlement', identity);
     expect(entitlementBefore.status).toBe(200);
     expect(entitlementBefore.body['state']).toBe('active');
-    expect(entitlementBefore.body['source']).toBe('subscription');
+    expect(entitlementBefore.body['source']).toBe('none');
+    expect(entitlementBefore.body['reason']).toBe('free');
 
     const reset = await postRpc(
       'security.reset',

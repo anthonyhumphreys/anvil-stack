@@ -54,6 +54,7 @@ import {
 const workspace = {
   id: 'ws-1',
   name: 'Launch Control',
+  syncSelected: false,
   createdAt: '2026-05-26T10:00:00.000Z',
   updatedAt: '2026-05-26T10:00:00.000Z',
   repos: [

@@ -27,8 +27,8 @@ const PROVIDERS: Array<{
 }> = [
   {
     id: 'anvil-managed',
-    label: 'Anvil managed',
-    detail: 'Anvil runs the worker for you when hosted environments are available on your account.',
+    label: 'Anvil Cloud Agents',
+    detail: 'Anvil provisions and operates this worker.',
     requiresConnection: false,
   },
   {
@@ -266,6 +266,7 @@ export function CloudEnvironmentsPanel({
   onError?: (message: string | null) => void;
 }) {
   const [runtime, setRuntime] = useState<SyncRuntimeStatus | null>(null);
+  const [anvilCloudAgentsEnabled, setAnvilCloudAgentsEnabled] = useState(false);
   const [connections, setConnections] = useState<CloudEnvironmentProviderConnection[]>([]);
   const [environments, setEnvironments] = useState<CloudEnvironmentRecord[]>([]);
   const [localEnvironments, setLocalEnvironments] = useState<LocalCloudEnvironment[]>([]);
@@ -276,7 +277,8 @@ export function CloudEnvironmentsPanel({
   const [savingConnection, setSavingConnection] = useState(false);
   const [requesting, setRequesting] = useState(false);
   const [reapingId, setReapingId] = useState<string | null>(null);
-  const [requestProvider, setRequestProvider] = useState<EnvironmentProviderId>('anvil-managed');
+  const [requestProvider, setRequestProvider] =
+    useState<EnvironmentProviderId>('aws-lambda-microvm');
   const [requestTtl, setRequestTtl] = useState('1800');
   const [requestConnectionId, setRequestConnectionId] = useState('');
   const [pendingRequest, setPendingRequest] = useState<PendingEnvironmentRequest | null>(null);
@@ -301,7 +303,23 @@ export function CloudEnvironmentsPanel({
       if (initial) setLoading(true);
       else setRefreshing(true);
       try {
-        const nextRuntime = await window.anvil.syncRuntime.status();
+        const [runtimeResult, cloudAgentSettingsResult] = await Promise.allSettled([
+          window.anvil.syncRuntime.status(),
+          window.anvil.cloudAgentSettings.get(),
+        ]);
+        if (cloudAgentSettingsResult.status === 'fulfilled') {
+          const enabled = cloudAgentSettingsResult.value.anvilCloudAgentsEnabled;
+          setAnvilCloudAgentsEnabled(enabled);
+          if (!enabled) {
+            setRequestProvider((current) =>
+              current === 'anvil-managed' ? 'aws-lambda-microvm' : current,
+            );
+          }
+        } else {
+          setAnvilCloudAgentsEnabled(false);
+        }
+        if (runtimeResult.status === 'rejected') throw runtimeResult.reason;
+        const nextRuntime = runtimeResult.value;
         setRuntime(nextRuntime);
         if (nextRuntime.auth.state !== 'signed-in') {
           setConnections([]);
@@ -511,6 +529,10 @@ export function CloudEnvironmentsPanel({
   };
 
   const requestEnvironment = async (): Promise<void> => {
+    if (requestProvider === 'anvil-managed' && !anvilCloudAgentsEnabled) {
+      reportError('Anvil Cloud Agents are unavailable.');
+      return;
+    }
     const ttlSeconds = Number(requestTtl);
     if (!Number.isFinite(ttlSeconds) || ttlSeconds < 60) {
       reportError('Choose an environment lifetime of at least 1 minute.');
@@ -640,6 +662,9 @@ export function CloudEnvironmentsPanel({
   const remoteEnvironments = environments.filter(
     (environment) => environment.state !== 'terminated',
   );
+  const availableProviders = PROVIDERS.filter(
+    (provider) => provider.id !== 'anvil-managed' || anvilCloudAgentsEnabled,
+  );
   const localOnlyCount = localEnvironments.filter(
     (local) =>
       !remoteEnvironments.some((environment) => environment.environmentId === local.environmentId),
@@ -651,10 +676,11 @@ export function CloudEnvironmentsPanel({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h4 className="text-base font-semibold text-text-primary">Cloud workers</h4>
+          <h4 className="text-base font-semibold text-text-primary">Cloud environments</h4>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-text-secondary">
-            Choose Run on → Anvil hosted cloud in a chat. Anvil starts its worker automatically.
-            Manage workers here, or create a separate environment for workflow jobs.
+            {anvilCloudAgentsEnabled
+              ? 'Choose Run on → Anvil Cloud Agents in a chat, or create an environment here for workflow jobs.'
+              : 'Anvil Cloud Agents are unavailable. You can still create environments in your own AWS, Cloudflare, or Vercel account.'}
           </p>
         </div>
         <button
@@ -715,7 +741,7 @@ export function CloudEnvironmentsPanel({
                         setRequestConnectionId('');
                       }}
                     >
-                      {PROVIDERS.map((provider) => (
+                      {availableProviders.map((provider) => (
                         <option key={provider.id} value={provider.id}>
                           {provider.label}
                         </option>
@@ -1130,7 +1156,9 @@ export function CloudEnvironmentsPanel({
               <div className="py-5 text-center">
                 <p className="text-sm text-text-secondary">No active environments yet.</p>
                 <p className="mt-1 text-xs text-text-tertiary">
-                  Start a chat on Anvil hosted cloud to create its worker automatically.
+                  {anvilCloudAgentsEnabled
+                    ? 'Start a chat with Anvil Cloud Agents to create its worker automatically.'
+                    : 'Choose a customer-owned provider above to create a cloud worker.'}
                 </p>
               </div>
             )}

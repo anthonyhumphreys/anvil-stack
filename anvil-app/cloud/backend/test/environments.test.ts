@@ -602,6 +602,51 @@ describe('managed environments (ENV-09)', () => {
     );
   }
 
+  async function stageManagedJobForSweep(fx: ReturnType<typeof fixture>): Promise<string> {
+    const now = Date.now();
+    const jobId = crypto.randomUUID();
+    const requestId = crypto.randomUUID();
+    await runInDurableObject(
+      accountStub(fx.accountId),
+      (_instance: AccountCoordinator, state) => {
+        state.storage.sql.exec(
+          `INSERT INTO environment_bootstrap
+             (environment_id, account_id, payload, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          fx.environmentId,
+          fx.accountId,
+          MANAGED_ENROLLMENT_CODE,
+          now + 3_600_000,
+          now,
+        );
+        state.storage.sql.exec(
+          `INSERT INTO jobs (
+             job_id, account_id, source_enrollment_id, request_id, payload_hash, kind,
+             requested_target, target_enrollment_id, placement_explanation, input_manifest,
+             sealed_inputs, result_recipients, state, state_reason, queue_deadline,
+             retry_policy, retried, next_fence, active_attempt_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, 'provision-environment', ?, NULL, ?, ?, NULL, NULL,
+             'queued', NULL, ?, 'never', 0, 1, NULL, ?, ?)`,
+          jobId,
+          fx.accountId,
+          fx.provisionerEnrollmentId,
+          requestId,
+          'd'.repeat(64),
+          JSON.stringify({
+            kind: 'auto',
+            requirements: { capabilities: ['provision:anvil-managed'] },
+          }),
+          'managed provision awaiting internal claim',
+          JSON.stringify(managedManifest(fx.environmentId, 1800)),
+          now + 60_000,
+          now,
+          now,
+        );
+      },
+    );
+    return jobId;
+  }
+
   async function sweepAccount(accountId: string) {
     const response = await accountStub(accountId).fetch(
       new Request('https://internal.anvil/internal/sweep', { method: 'POST' }),
@@ -796,30 +841,92 @@ describe('managed environments (ENV-09)', () => {
     ).toBe('managed-concurrency-cap');
   });
 
-  it('skips managed caps for BYO providers', async () => {
+  it('keeps provider-native creates available when Anvil-owned Cloud Agents are disabled', async () => {
     const fx = fixture('byo');
-    const response = await postRpc(
-      'job.create',
-      {
-        requestId: crypto.randomUUID(),
-        payloadHash: 'f'.repeat(64),
-        kind: 'provision-environment',
-        requestedTarget: {
-          kind: 'auto',
-          requirements: { capabilities: ['provision:aws-lambda-microvm'] },
-        },
-        inputManifest: {
-          ...manifest(),
-          inputs: {
-            environmentId: 'env_byo',
-            provider: 'aws-lambda-microvm',
-            ttlSeconds: 86_400,
+    const bindings = env as unknown as Record<string, unknown>;
+    const previousFlag = bindings['ANVIL_CLOUD_AGENTS_ENABLED'];
+    bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = 'false';
+    try {
+      const managed = await createManagedJob(fx.provisionerAuth, 'env_anvil_disabled');
+      expect(isRpcError(managed.body)).toBe(true);
+      expect(managed.body).toMatchObject({
+        error: { code: 'forbidden', details: { reason: 'cloud-agents-disabled' } },
+      });
+
+      const response = await postRpc(
+        'job.create',
+        {
+          requestId: crypto.randomUUID(),
+          payloadHash: 'f'.repeat(64),
+          kind: 'provision-environment',
+          requestedTarget: {
+            kind: 'auto',
+            requirements: { capabilities: ['provision:aws-lambda-microvm'] },
           },
-        },
-      } satisfies JobCreateParams,
-      fx.provisionerAuth,
+          inputManifest: {
+            ...manifest(),
+            inputs: {
+              environmentId: 'env_byo',
+              provider: 'aws-lambda-microvm',
+              ttlSeconds: 86_400,
+            },
+          },
+        } satisfies JobCreateParams,
+        fx.provisionerAuth,
+      );
+      expect(isRpcError(response.body)).toBe(false);
+    } finally {
+      bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = previousFlag;
+    }
+  });
+
+  it('does not provision a queued managed job after Anvil Cloud Agents are disabled', async () => {
+    const fx = fixture('managed-disabled-before-claim');
+    await provisionerReset();
+    const jobId = await stageManagedJobForSweep(fx);
+
+    const bindings = env as unknown as Record<string, unknown>;
+    const previousFlag = bindings['ANVIL_CLOUD_AGENTS_ENABLED'];
+    bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = 'false';
+    try {
+      await sweepAccount(fx.accountId);
+      const terminal = await waitJobTerminal(fx.provisionerAuth, jobId);
+      expect(terminal.job.state).toBe('failed');
+      expect(terminal.job.stateReason).toBe('cloud-agents-disabled');
+      expect(await provisionerLast()).toBeNull();
+    } finally {
+      bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = previousFlag;
+    }
+  });
+
+  it('fails a queued managed job after the fair-use restriction becomes effective', async () => {
+    const fx = fixture('managed-fair-use-before-claim');
+    await provisionerReset();
+    const jobId = await stageManagedJobForSweep(fx);
+
+    const now = Date.now();
+    await runInDurableObject(
+      accountStub(fx.accountId),
+      (_instance: AccountCoordinator, state) => {
+        state.storage.sql.exec(
+          `INSERT INTO sync_meta (key, value) VALUES ('fair_use_restriction', ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          JSON.stringify({
+            code: 'storage-usage',
+            message: 'Reduce retained data or contact support.',
+            noticeAt: new Date(now - 86_400_000).toISOString(),
+            restrictAt: new Date(now - 1_000).toISOString(),
+            emergency: false,
+          }),
+        );
+      },
     );
-    expect(isRpcError(response.body)).toBe(false);
+
+    await sweepAccount(fx.accountId);
+    const terminal = await waitJobTerminal(fx.provisionerAuth, jobId);
+    expect(terminal.job.state).toBe('failed');
+    expect(terminal.job.stateReason).toBe('fair-use-restricted');
+    expect(await provisionerLast()).toBeNull();
   });
 
   it('claims, consumes the bootstrap payload, calls the provisioner, records the env', async () => {
@@ -941,12 +1048,23 @@ describe('managed environments (ENV-09)', () => {
     await waitJobTerminal(fx.provisionerAuth, created.job.id);
 
     await provisionerReset();
-    const reaped = expectSuccess<EnvironmentReapResult>(
-      await postRpc('environment.reap', { environmentId: fx.environmentId }, fx.provisionerAuth),
-    );
-    expect(reaped.environment.state).toBe('reap-requested');
+    const bindings = env as unknown as Record<string, unknown>;
+    const previousFlag = bindings['ANVIL_CLOUD_AGENTS_ENABLED'];
+    bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = 'false';
+    try {
+      const reaped = expectSuccess<EnvironmentReapResult>(
+        await postRpc(
+          'environment.reap',
+          { environmentId: fx.environmentId },
+          fx.provisionerAuth,
+        ),
+      );
+      expect(reaped.environment.state).toBe('reap-requested');
 
-    await sweepAccount(fx.accountId);
+      await sweepAccount(fx.accountId);
+    } finally {
+      bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = previousFlag;
+    }
     const last = await provisionerLast();
     expect(last?.method).toBe('DELETE');
     expect(last?.path).toBe(`/v1/environments/sb-${fx.environmentId}`);

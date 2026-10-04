@@ -49,6 +49,10 @@
     },
   ],
   "vars": {
+    // Anvil-operated execution for `anvil-managed` is unavailable until the
+    // paid Agents feature is explicitly enabled. BYO `cloudflare-sandbox`
+    // bootstraps remain available regardless of this setting.
+    "ANVIL_CLOUD_AGENTS_ENABLED": "false",
     // BYO deployments (reachable over the internet): set PROVISIONER_TOKEN as
     // a secret (`wrangler secret put PROVISIONER_TOKEN`) and store the same
     // token in the app's provider connection.

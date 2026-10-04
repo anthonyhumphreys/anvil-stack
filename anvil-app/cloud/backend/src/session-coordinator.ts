@@ -39,13 +39,11 @@ import {
 } from './auth';
 import { sha256Hex } from './hash';
 import {
-  checkHostedAccess,
   hostedEnforcementEnabled,
   resolveAccountEntitlement,
-  ENTITLEMENT_CACHE_DDL,
 } from './hosted/enforcement';
 import { resolveHostedLimits } from './hosted/billing';
-import { PREVIEW_END_MS } from './hosted/policy';
+import { freeHostedEntitlement, PREVIEW_END_MS } from './hosted/policy';
 import type {
   ShareCreateResult,
   ShareFinalizeResult,
@@ -327,9 +325,6 @@ export class SessionCoordinator extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ctx.storage.sql.exec(SESSION_SCHEMA);
-    // checkHostedAccess reuses the same DO-local cache table as the
-    // account object; create it so write denial checks work here too.
-    this.ctx.storage.sql.exec(ENTITLEMENT_CACHE_DDL);
     // E2E: additive columns for objects created before sealed shares existed.
     this.ensureColumn(
       'shared_artifacts',
@@ -1817,13 +1812,15 @@ export class SessionCoordinator extends DurableObject<Env> {
       return authError('unauthenticated');
     }
     const meta = await this.accountMeta(row.account_id);
-    // BILL-03: hosted deployments surface the account's entitlement so
-    // clients can render access state. Resolution failure omits the field
-    // rather than failing describe; self-host (no HOSTED_DB) omits it too.
+    // Hosted deployments surface the free capability snapshot. If D1 is
+    // unavailable, the account's local deletion tombstone remains the
+    // lifecycle authority, so billing failure falls back to active/free.
     const resolvedEntitlement =
       this.env.HOSTED_DB === undefined
         ? null
-        : await resolveAccountEntitlement(this.env, row.account_id, Date.now()).catch(() => null);
+        : await resolveAccountEntitlement(this.env, row.account_id, Date.now()).catch(() =>
+            freeHostedEntitlement(Date.now(), resolveHostedLimits(this.env)),
+          );
     const entitlement =
       resolvedEntitlement !== null &&
       resolvedEntitlement.state !== 'restricted' &&
@@ -2978,15 +2975,6 @@ export class SessionCoordinator extends DurableObject<Env> {
         { status: 403 },
       );
     }
-    // BILL-03: share.create is mutating — a restricted account must not
-    // land new billable bytes.
-    const access = await checkHostedAccess(this.ctx.storage, this.env, caller.accountId, now);
-    if (!access.allowed) {
-      return Response.json(
-        { error: { code: 'forbidden', retryable: false, details: { reason: access.reason } } },
-        { status: 403 },
-      );
-    }
     const deviceLimitDenial = this.hostedDeviceMutationDenial(caller.accountId);
     if (deviceLimitDenial !== null) return deviceLimitDenial;
     const used = this.ctx.storage.sql
@@ -3051,13 +3039,6 @@ export class SessionCoordinator extends DurableObject<Env> {
     const caller = this.verifiedCaller(request);
     if (caller === null) return authError('unauthenticated');
     const now = Date.now();
-    const access = await checkHostedAccess(this.ctx.storage, this.env, caller.accountId, now);
-    if (!access.allowed) {
-      return Response.json(
-        { error: { code: 'forbidden', retryable: false, details: { reason: access.reason } } },
-        { status: 403 },
-      );
-    }
     const deviceLimitDenial = this.hostedDeviceMutationDenial(caller.accountId);
     if (deviceLimitDenial !== null) return deviceLimitDenial;
     const row = this.readShare(shareId);
@@ -3132,10 +3113,6 @@ export class SessionCoordinator extends DurableObject<Env> {
       return rpcErrorResponse(undefined, 'conflict', { reason: 'manifest-mismatch' });
     }
     const now = Date.now();
-    const access = await checkHostedAccess(this.ctx.storage, this.env, caller.accountId, now);
-    if (!access.allowed) {
-      return rpcErrorResponse(undefined, 'forbidden', { reason: access.reason });
-    }
     const deviceLimitDenial = this.hostedDeviceMutationDenial(caller.accountId);
     if (deviceLimitDenial !== null) return deviceLimitDenial;
     // E2E: a declared seal flag must agree with the reservation — the bytes

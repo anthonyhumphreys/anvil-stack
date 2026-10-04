@@ -1,6 +1,5 @@
-// BILL-02 billing store — the D1 layer over the Stripe mirror tables from
-// migrations/hosted-billing/0002_billing.sql, plus the read model that
-// feeds evaluateHostedEntitlement.
+// D1 billing store — Stripe rows remain as history and cleanup state. The
+// entitlement read model provides free hosted capabilities independent of it.
 //
 // stripe_subscriptions is a verbatim provider mirror: webhook upserts
 // overwrite the Stripe-owned fields (status, period end, cancel flag)
@@ -15,8 +14,6 @@ import { isRecord } from '../rpc';
 import {
   DEFAULT_HOSTED_LIMITS,
   evaluateHostedEntitlement,
-  PREVIEW_END_MS,
-  type HostedSponsorshipState,
   type HostedSubscriptionState,
 } from './policy';
 import type { StripeSubscription } from './stripe';
@@ -24,6 +21,7 @@ import type { BillingAccountRow } from './store';
 
 export const RENEWAL_GRACE_DAYS = 7;
 export const OUTAGE_GRACE_HOURS = 24;
+export const FREE_TEAM_SEAT_CAPACITY = 5;
 
 export type BillingInterval = 'month' | 'year';
 
@@ -98,92 +96,42 @@ export interface OrganizationBillingSummary {
 }
 
 /**
- * Returns the D1 statements which keep the organization's persisted seat
- * capacity in sync with the latest subscription and scheduled reduction.
- * Include these statements in the same D1 batch as a subscription, invoice,
- * or schedule mutation so seat reservation reads one atomic value.
+ * Returns D1 statements which materialize the fixed fair-use team capacity.
+ * Legacy subscription webhooks may still update billing history, but they do
+ * not grant extra seats or remove free team access.
  */
 export function organizationCapacityRefreshStatements(
   db: D1Database,
   organizationId: string,
   now: number,
 ): D1PreparedStatement[] {
-  const latestSubscriptionId = `(
-    SELECT stripe_subscription_id FROM stripe_subscriptions
-    WHERE organization_id = ? AND plan_key = 'sync_team'
-    ORDER BY verified_at DESC, updated_at DESC LIMIT 1
-  )`;
-  const hasCurrentPaidTeamSubscription = `EXISTS (
-    SELECT 1 FROM stripe_subscriptions ss
-    WHERE ss.stripe_subscription_id = ${latestSubscriptionId}
-      AND ss.organization_id = ? AND ss.plan_key = 'sync_team'
-      AND ss.has_paid_invoice = 1 AND ss.status = 'active'
-      AND ss.paid_through > ? AND ss.paid_seat_quantity BETWEEN 5 AND 50
-  )`;
-  const latestSeatQuantity = `(
-    SELECT paid_seat_quantity FROM stripe_subscriptions
-    WHERE organization_id = ? AND plan_key = 'sync_team'
-    ORDER BY verified_at DESC, updated_at DESC LIMIT 1
-  )`;
-  const latestSubscriptionIsTerminal = `EXISTS (
-    SELECT 1 FROM stripe_subscriptions ss
-    WHERE ss.stripe_subscription_id = ${latestSubscriptionId}
-      AND ss.status IN ('canceled', 'incomplete_expired')
-  )`;
-
   const ensureState = db
     .prepare(
       `INSERT OR IGNORE INTO organization_billing_state
          (organization_id, preview_seat_capacity, effective_seat_capacity,
           scheduled_seat_capacity, scheduled_effective_at,
           seat_update_lease_token, seat_update_lease_until, created_at, updated_at)
-       VALUES (?, 5, 5, NULL, NULL, NULL, NULL, ?, ?)`,
+       VALUES (?, ${FREE_TEAM_SEAT_CAPACITY}, ${FREE_TEAM_SEAT_CAPACITY}, NULL, NULL, NULL, NULL, ?, ?)`,
     )
     .bind(organizationId, now, now);
 
   const clearAppliedSchedule = db
     .prepare(
       `UPDATE organization_billing_state
-       SET scheduled_seat_capacity = CASE
-             WHEN ${latestSubscriptionIsTerminal} THEN NULL
-             WHEN scheduled_seat_capacity IS NOT NULL
-               AND scheduled_effective_at <= ?
-               AND scheduled_seat_capacity = ${latestSeatQuantity} THEN NULL
-             ELSE scheduled_seat_capacity END,
-           scheduled_effective_at = CASE
-             WHEN ${latestSubscriptionIsTerminal} THEN NULL
-             WHEN scheduled_seat_capacity IS NOT NULL
-               AND scheduled_effective_at <= ?
-               AND scheduled_seat_capacity = ${latestSeatQuantity} THEN NULL
-             ELSE scheduled_effective_at END,
-           updated_at = ?
+       SET scheduled_seat_capacity = NULL, scheduled_effective_at = NULL, updated_at = ?
        WHERE organization_id = ?`,
     )
-    .bind(
-      organizationId,
-      now,
-      organizationId,
-      organizationId,
-      now,
-      organizationId,
-      now,
-      organizationId,
-    );
+    .bind(now, organizationId);
 
   const updateCapacity = db
     .prepare(
       `UPDATE organization_billing_state
-       SET effective_seat_capacity = CASE
-             WHEN ${hasCurrentPaidTeamSubscription} THEN MIN(
-               COALESCE(${latestSeatQuantity}, 0),
-               COALESCE(scheduled_seat_capacity, 50)
-             )
-             WHEN ? < ${PREVIEW_END_MS} THEN preview_seat_capacity
-             ELSE 0 END,
+       SET preview_seat_capacity = ${FREE_TEAM_SEAT_CAPACITY},
+           effective_seat_capacity = ${FREE_TEAM_SEAT_CAPACITY},
            updated_at = ?
        WHERE organization_id = ?`,
     )
-    .bind(organizationId, organizationId, now, organizationId, now, now, organizationId);
+    .bind(now, organizationId);
 
   return [ensureState, clearAppliedSchedule, updateCapacity];
 }
@@ -203,15 +151,10 @@ export async function refreshOrganizationTeamCapacity(
   return row?.effective_seat_capacity ?? 0;
 }
 
-export function hostedCheckoutAvailable(env: Env, now: number): boolean {
-  if (env.HOSTED_CHECKOUT_ENABLED !== 'true') return false;
-  const stagingEarlyAccess =
-    env.HOSTED_BILLING_ENVIRONMENT === 'staging' && env.HOSTED_ALLOW_EARLY_CHECKOUT === 'true';
-  if (now < PREVIEW_END_MS && !stagingEarlyAccess) return false;
-  return (
-    env.HOSTED_BILLING_ENVIRONMENT === 'staging' ||
-    (env.HOSTED_BILLING_ENVIRONMENT === 'production' && now >= PREVIEW_END_MS)
-  );
+export function hostedCheckoutAvailable(_env: Env, _now: number): boolean {
+  // Sync subscriptions are retired. Keep the response field and route guard
+  // for stale clients, but never advertise or open another checkout session.
+  return false;
 }
 
 export async function getStripeCustomerForAccount(
@@ -828,7 +771,7 @@ export async function findActiveTeamBillingForUser(
   };
 }
 
-/** Capacity available for new seats. A scheduled reduction constrains new assignments immediately. */
+/** Current free team capacity, refreshed independently of legacy subscriptions. */
 export async function getOrganizationTeamCapacity(
   db: D1Database,
   organizationId: string,
@@ -872,7 +815,7 @@ export async function getOrganizationBillingSummary(
     };
   }
   return {
-    source: now < PREVIEW_END_MS ? 'preview' : 'none',
+    source: 'none',
     seatCapacity,
     planKey: null,
     interval: null,
@@ -892,38 +835,11 @@ export async function lastWebhookProcessedAt(db: D1Database): Promise<number | n
   return row?.processed_at ?? null;
 }
 
-/** Store rows -> policy input. Only the allowlisted plan is modeled. */
-export async function loadSubscriptions(
-  db: D1Database,
-  billingAccountId: string,
-): Promise<HostedSubscriptionState[]> {
-  const { results } = await db
-    .prepare(
-      'SELECT * FROM stripe_subscriptions WHERE billing_account_id = ? AND organization_id IS NULL',
-    )
-    .bind(billingAccountId)
-    .all<StripeSubscriptionRow>();
-  return (results ?? [])
-    .filter((row) => row.plan_key === 'sync_personal')
-    .map((row) => ({
-      planKey: 'sync_personal',
-      status: row.status as HostedSubscriptionState['status'],
-      hasPaidInvoice: row.has_paid_invoice === 1,
-      paidThrough: row.paid_through ?? 0,
-      failedRenewalAt: row.first_failed_renewal_at,
-      cancelAtPeriodEnd: row.cancel_at_period_end === 1,
-      verifiedAt: row.verified_at,
-    }));
-}
-
 /**
- * Entitlement evaluation plus the pieces the BILL-03 enforcement cache
- * needs alongside it: `paidThrough` is the max stored subscription period
- * end, which bounds the outage-grace path when billing is unreachable.
- * Never calls Stripe — billingUnavailable is the caller's statement that
- * provider truth cannot currently be refreshed, which unlocks the bounded
- * outage-grace path. `preview_eligible` (migration 0003) is the
- * per-account preview lever, independent of lifecycle.
+ * Current capability entitlement. Subscription rows remain in the billing
+ * tables and in billing overviews, but never alter free Sync/Mesh access.
+ * `paidThrough` remains in this internal return shape for source compatibility
+ * with the previous enforcement path and is always null.
  */
 export async function getEntitlementSnapshot(
   db: D1Database,
@@ -932,29 +848,18 @@ export async function getEntitlementSnapshot(
   limits: HostedLimits,
   billingUnavailable: boolean,
 ): Promise<{ entitlement: HostedEntitlement; paidThrough: number | null }> {
-  const subscriptions = await loadSubscriptions(db, billingAccount.id);
-  const sponsorship = await findActiveTeamBillingForUser(db, billingAccount.id);
-  const teamSponsorship: HostedSponsorshipState | null =
-    sponsorship === null
-      ? null
-      : { organizationId: sponsorship.organizationId, subscriptions: sponsorship.subscriptions };
   const entitlement = evaluateHostedEntitlement({
     now,
     lifecycle: billingAccount.lifecycle,
-    previewEligible: billingAccount.preview_eligible === 1,
-    revision: Math.max(0, ...subscriptions.map((s) => s.verifiedAt)),
+    previewEligible: false,
+    revision: Math.max(0, billingAccount.updated_at),
     limits,
-    subscriptions,
-    sponsorship: teamSponsorship,
-    billingUnavailable,
-    renewalGraceDays: RENEWAL_GRACE_DAYS,
-    outageGraceHours: OUTAGE_GRACE_HOURS,
+    subscriptions: [],
+    billingUnavailable: false,
+    renewalGraceDays: 0,
+    outageGraceHours: 0,
   });
-  const paidThrough =
-    entitlement.fundedBy === 'personal'
-      ? Math.max(0, ...subscriptions.map((s) => s.paidThrough))
-      : 0;
-  return { entitlement, paidThrough: paidThrough > 0 ? paidThrough : null };
+  return { entitlement, paidThrough: null };
 }
 
 /**

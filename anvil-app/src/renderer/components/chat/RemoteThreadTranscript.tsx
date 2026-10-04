@@ -111,7 +111,7 @@ export function RemoteThreadTranscript({
           )}
           <span>
             {STATE_LABELS[record.state] ?? record.state} ·{' '}
-            {run.hosted ? 'Anvil hosted cloud' : 'Remote device'}
+            {run.hosted ? 'Anvil Cloud Agents' : 'Remote device'}
           </span>
         </div>
         {run.hosted && !run.busy && record.state !== 'ended' && (

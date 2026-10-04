@@ -46,7 +46,7 @@ describe('task-scoped cloud workspace definitions', () => {
     const manifest = taskManifest();
     db.prepare("DELETE FROM workspaces WHERE id = 'workspace-task'").run();
     expect(workspaceDefinitionRevision('workspace-task')).toBeNull();
-    installTaskWorkspaceDefinition(manifest, true);
+    installTaskWorkspaceDefinition(manifest);
     expect(workspaceDefinitionRevision('workspace-task')).toBe(
       manifest.workspaceDefinitionRevision,
     );
@@ -60,12 +60,29 @@ describe('task-scoped cloud workspace definitions', () => {
       remote_url: 'https://github.com/example/repository.git',
       mapped_repo_id: null,
     });
+    expect(
+      db.prepare("SELECT sync_selected FROM workspaces WHERE id = 'workspace-task'").get(),
+    ).toEqual({ sync_selected: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_bindings').get()).toEqual({ count: 0 });
+  });
+
+  it('keeps an identical local definition local without creating a Sync association', () => {
+    const manifest = taskManifest();
+    installTaskWorkspaceDefinition(manifest);
+
+    expect(workspaceDefinitionRevision('workspace-task')).toBe(
+      manifest.workspaceDefinitionRevision,
+    );
+    expect(
+      db.prepare("SELECT sync_selected FROM workspaces WHERE id = 'workspace-task'").get(),
+    ).toEqual({ sync_selected: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_bindings').get()).toEqual({ count: 0 });
   });
 
   it('rejects altered task definitions before changing local state', () => {
     const manifest = taskManifest();
     (manifest.inputs.workspaceDefinition as Record<string, unknown>).name = 'Changed';
-    expect(() => installTaskWorkspaceDefinition(manifest, true)).toThrow(
+    expect(() => installTaskWorkspaceDefinition(manifest)).toThrow(
       'task-workspace-definition-pin-mismatch',
     );
     expect(workspaceDefinitionRevision('workspace-task')).toBe(
@@ -73,18 +90,20 @@ describe('task-scoped cloud workspace definitions', () => {
     );
   });
 
-  it('does not replace an enrolled desktop definition using cloud task inputs', () => {
+  it('does not overwrite a different local definition from task inputs', () => {
     const manifest = taskManifest();
     db.prepare("UPDATE workspaces SET name = 'Local change' WHERE id = 'workspace-task'").run();
     const localRevision = workspaceDefinitionRevision('workspace-task');
-    installTaskWorkspaceDefinition(manifest, false);
+    expect(() => installTaskWorkspaceDefinition(manifest)).toThrow(
+      'task-workspace-definition-conflicts-with-local-workspace',
+    );
     expect(workspaceDefinitionRevision('workspace-task')).toBe(localRevision);
   });
 
   it('rejects a definition for a different workspace', () => {
     const manifest = taskManifest();
     manifest.inputs.workspaceId = 'other-workspace';
-    expect(() => installTaskWorkspaceDefinition(manifest, true)).toThrow(
+    expect(() => installTaskWorkspaceDefinition(manifest)).toThrow(
       'task-workspace-definition-invalid',
     );
   });

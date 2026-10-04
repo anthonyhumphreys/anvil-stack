@@ -35,6 +35,30 @@ it('migrates existing worker nodes to approval mode without enabling them', () =
   db.close();
 });
 
+it('defaults workspaces to Local and preserves existing workspace Sync bindings', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+      CREATE TABLE sync_bindings (entity_type TEXT NOT NULL, entity_id TEXT NOT NULL);
+      INSERT INTO workspaces (id, name) VALUES ('bound', 'Bound'), ('local', 'Local');
+      INSERT INTO sync_bindings (entity_type, entity_id)
+        VALUES ('workspace-definition', 'bound');
+    `);
+    applyMigration(db, MIGRATIONS[105]!);
+
+    expect(db.prepare('SELECT id, sync_selected FROM workspaces ORDER BY id').all()).toEqual([
+      { id: 'bound', sync_selected: 1 },
+      { id: 'local', sync_selected: 0 },
+    ]);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_paused_changes').get()).toEqual({
+      count: 0,
+    });
+  } finally {
+    db.close();
+  }
+});
+
 describe('fresh database schema', () => {
   it('migrates existing dashboard grants to add remembered browser trust storage', () => {
     const db = new Database(':memory:');
@@ -295,7 +319,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(104);
+      expect(SCHEMA_VERSION).toBe(105);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',

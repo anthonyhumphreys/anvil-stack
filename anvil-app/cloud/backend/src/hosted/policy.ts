@@ -1,8 +1,8 @@
 import type { HostedEntitlement, HostedLimits } from '../../../contract/entitlements';
 
+/** Retained for wire compatibility with clients that display the old preview deadline. */
 export const PREVIEW_ENDS_AT = '2026-11-01T00:00:00.000Z';
 export const PREVIEW_END_MS = Date.parse(PREVIEW_ENDS_AT);
-const DAY = 86_400_000;
 const MAX_DATE_MS = 8_640_000_000_000_000;
 
 /** Hosted limits: up to five devices; storage and history follow fair-use policy. */
@@ -83,158 +83,33 @@ export function evaluateHostedEntitlement(input: HostedPolicyInput): HostedEntit
     graceUntil: null,
     checkedAt: new Date(now).toISOString(),
     revision: input.revision,
-    reason: now >= PREVIEW_END_MS ? 'preview-ended' : 'subscription-required',
+    reason: 'account-deleted',
   };
-  if (input.lifecycle !== 'active') return { ...base, reason: 'account-deleted' };
-  const grant = (
-    state: HostedEntitlement['state'],
-    source: HostedEntitlement['source'],
-    reason: HostedEntitlement['reason'],
-    end: number,
-    planKey: HostedEntitlement['planKey'],
-    fundedBy: HostedEntitlement['fundedBy'],
-    organizationId: string | null = null,
-  ): HostedEntitlement => {
-    const capped = Math.min(end, MAX_DATE_MS);
-    return {
-      ...base,
-      state,
-      source,
-      reason,
-      planKey,
-      fundedBy,
-      organizationId,
-      capabilities: { syncWrite: true, meshSubmit: true },
-      accessUntil: new Date(capped).toISOString(),
-      graceUntil: state === 'grace' ? new Date(capped).toISOString() : null,
-    };
+  if (input.lifecycle !== 'active') return base;
+
+  return {
+    ...base,
+    state: 'active',
+    capabilities: { syncWrite: true, meshSubmit: true },
+    reason: 'free',
   };
-  const validPaid = (
-    subscriptions: readonly HostedSubscriptionState[],
-    planKey: 'sync_personal' | 'sync_team',
-  ) =>
-    subscriptions.filter(
-      (s) =>
-        s.planKey === planKey &&
-        s.hasPaidInvoice &&
-        Number.isSafeInteger(s.verifiedAt) &&
-        s.verifiedAt >= 0 &&
-        s.verifiedAt <= now &&
-        Number.isSafeInteger(s.paidThrough) &&
-        s.paidThrough > 0 &&
-        s.paidThrough <= MAX_DATE_MS,
-    );
-  const personalPaid = validPaid(input.subscriptions, 'sync_personal');
-  const teamPaid =
-    input.sponsorship !== undefined &&
-    input.sponsorship !== null &&
-    typeof input.sponsorship.organizationId === 'string' &&
-    input.sponsorship.organizationId.length > 0
-      ? validPaid(input.sponsorship.subscriptions, 'sync_team')
-      : [];
-  const paidUntil = Math.max(
-    0,
-    ...personalPaid.filter((s) => s.status === 'active').map((s) => s.paidThrough),
-  );
-  const teamPaidUntil = Math.max(
-    0,
-    ...teamPaid.filter((s) => s.status === 'active').map((s) => s.paidThrough),
-  );
-  if (teamPaidUntil > now) {
-    return grant(
-      'active',
-      'subscription',
-      'paid',
-      teamPaidUntil,
-      'sync_team',
-      'team',
-      input.sponsorship?.organizationId ?? null,
-    );
-  }
-  if (paidUntil > now)
-    return grant('active', 'subscription', 'paid', paidUntil, 'sync_personal', 'personal');
-  if (input.previewEligible && now < PREVIEW_END_MS)
-    return grant('preview', 'preview', 'preview', PREVIEW_END_MS, null, 'preview');
-  const teamRenewalUntil = Math.max(
-    0,
-    ...teamPaid
-      .filter(
-        (s) =>
-          s.status === 'past_due' &&
-          s.failedRenewalAt !== null &&
-          Number.isSafeInteger(s.failedRenewalAt) &&
-          s.failedRenewalAt > 0 &&
-          s.failedRenewalAt <= now &&
-          s.failedRenewalAt <= s.verifiedAt &&
-          s.failedRenewalAt <= s.paidThrough &&
-          !s.cancelAtPeriodEnd,
-      )
-      .map((s) =>
-        Math.min(
-          s.failedRenewalAt! + input.renewalGraceDays * DAY,
-          s.paidThrough + input.renewalGraceDays * DAY,
-        ),
-      ),
-  );
-  if (teamRenewalUntil > now) {
-    return grant(
-      'grace',
-      'renewal-grace',
-      'renewal-failed',
-      teamRenewalUntil,
-      'sync_team',
-      'team',
-      input.sponsorship?.organizationId ?? null,
-    );
-  }
-  const renewalUntil = Math.max(
-    0,
-    ...personalPaid
-      .filter(
-        (s) =>
-          s.status === 'past_due' &&
-          s.failedRenewalAt !== null &&
-          Number.isSafeInteger(s.failedRenewalAt) &&
-          s.failedRenewalAt > 0 &&
-          s.failedRenewalAt <= now &&
-          s.failedRenewalAt <= s.verifiedAt &&
-          s.failedRenewalAt <= s.paidThrough &&
-          !s.cancelAtPeriodEnd,
-      )
-      .map((s) =>
-        Math.min(
-          s.failedRenewalAt! + input.renewalGraceDays * DAY,
-          s.paidThrough + input.renewalGraceDays * DAY,
-        ),
-      ),
-  );
-  if (renewalUntil > now)
-    return grant(
-      'grace',
-      'renewal-grace',
-      'renewal-failed',
-      renewalUntil,
-      'sync_personal',
-      'personal',
-    );
-  const outageUntil = input.billingUnavailable
-    ? Math.max(
-        0,
-        ...personalPaid
-          .filter((s) => s.status === 'active' && !s.cancelAtPeriodEnd)
-          .map((s) => s.paidThrough + input.outageGraceHours * 3_600_000),
-      )
-    : 0;
-  if (outageUntil > now)
-    return grant(
-      'grace',
-      'outage-grace',
-      'billing-outage',
-      outageUntil,
-      'sync_personal',
-      'personal',
-    );
-  return input.billingUnavailable
-    ? { ...base, state: 'unknown', reason: 'billing-unavailable' }
-    : base;
+}
+
+export function freeHostedEntitlement(
+  now: number,
+  limits: HostedLimits,
+  lifecycle: HostedPolicyInput['lifecycle'] = 'active',
+  revision = 0,
+): HostedEntitlement {
+  return evaluateHostedEntitlement({
+    now,
+    lifecycle,
+    previewEligible: false,
+    revision,
+    limits,
+    subscriptions: [],
+    billingUnavailable: false,
+    renewalGraceDays: 0,
+    outageGraceHours: 0,
+  });
 }

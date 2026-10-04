@@ -2051,6 +2051,8 @@ export type WorkspaceScaffoldStatus =
 export interface Workspace {
   id: string;
   name: string;
+  /** This device's explicit choice to replicate the workspace definition with Sync. */
+  syncSelected: boolean;
   /** Synced-definition readiness: needs-setup until portable repos map to local checkouts. */
   definitionState?: 'ready' | 'needs-setup';
   createdAt: string;
@@ -2230,6 +2232,13 @@ export interface WorkspaceCreateOptions {
   name: string;
   repoIds?: string[];
   workItemConnectionId?: string;
+  /** Defaults to local-only. Sync selection never depends on account entitlement. */
+  syncSelected?: boolean;
+}
+
+export interface WorkspaceUpdateOptions {
+  name?: string;
+  syncSelected?: boolean;
 }
 
 export interface WorkspaceWorkItemsPreferences {

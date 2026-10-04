@@ -1,7 +1,8 @@
-// BILL-07: shared-billing organizations. An organization sponsors hosted
-// access through seats; it never owns or exposes members' personal sync data.
+// Hosted teams share free hosted membership capacity; an organization never
+// owns or exposes members' personal sync data.
 
 import {
+  FREE_TEAM_SEAT_CAPACITY,
   getOrganizationBillingSummary,
   getOrganizationTeamCapacity,
   latestSubscriptionForOrganization,
@@ -19,25 +20,7 @@ import { WorkOSRequestError, workosRequest } from './workos';
 
 const ORGANIZATION_CREATE_LEASE_MS = 30_000;
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const PREVIEW_END_MS = 1_793_491_200_000;
-const EFFECTIVE_SEAT_CAPACITY_SQL = `CASE
-  WHEN EXISTS (
-    SELECT 1 FROM stripe_subscriptions ss
-    WHERE ss.organization_id = ? AND ss.plan_key = 'sync_team'
-      AND ss.has_paid_invoice = 1 AND ss.status = 'active'
-      AND ss.paid_through > ? AND ss.paid_seat_quantity BETWEEN 5 AND 50
-      AND ss.stripe_subscription_id = (
-        SELECT latest.stripe_subscription_id FROM stripe_subscriptions latest
-        WHERE latest.organization_id = ? AND latest.plan_key = 'sync_team'
-        ORDER BY latest.verified_at DESC, latest.updated_at DESC LIMIT 1
-      )
-  ) THEN COALESCE((SELECT effective_seat_capacity FROM organization_billing_state WHERE organization_id = ?), 0)
-  WHEN ? < ${PREVIEW_END_MS} THEN MIN(
-    COALESCE((SELECT effective_seat_capacity FROM organization_billing_state WHERE organization_id = ?), 5),
-    COALESCE((SELECT preview_seat_capacity FROM organization_billing_state WHERE organization_id = ?), 5)
-  )
-  ELSE 0
-END`;
+const EFFECTIVE_SEAT_CAPACITY_SQL = String(FREE_TEAM_SEAT_CAPACITY);
 
 type OrganizationStatus = 'creating' | 'active' | 'failed' | 'closed';
 type MembershipRole = 'owner' | 'member';
@@ -396,13 +379,6 @@ async function createSeat(
         args.now,
         args.organizationId, // organization seat count
         args.now, // unexpired reservations
-        args.organizationId, // paid subscription exists
-        args.now, // paid-through check
-        args.organizationId, // latest subscription mirror row
-        args.organizationId, // persisted effective capacity
-        args.now, // preview cutoff
-        args.organizationId, // persisted effective capacity during preview
-        args.organizationId, // preview capacity
         args.billingAccountId,
         args.now,
         args.organizationId,
@@ -622,13 +598,6 @@ export async function completeHostedInvitationAcceptance(
           organizationId,
           organizationId,
           now,
-          organizationId,
-          now,
-          organizationId,
-          organizationId,
-          now,
-          organizationId,
-          organizationId,
         ),
       db
         .prepare(
@@ -666,13 +635,6 @@ export async function completeHostedInvitationAcceptance(
           organizationId,
           organizationId,
           now,
-          organizationId,
-          now,
-          organizationId,
-          organizationId,
-          now,
-          organizationId,
-          organizationId,
         ),
       db
         .prepare(
@@ -1161,13 +1123,6 @@ async function inviteMember(
           invitationId,
           organizationId,
           now,
-          organizationId,
-          now,
-          organizationId,
-          organizationId,
-          now,
-          organizationId,
-          organizationId,
           targetAccount.id,
           now,
         ),

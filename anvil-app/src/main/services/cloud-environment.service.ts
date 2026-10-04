@@ -42,6 +42,7 @@ import {
   type RequestedTarget,
 } from '../../../cloud/contract/jobs.js';
 import { canonicalJson } from './sync-persistence.service.js';
+import { assertAnvilCloudAgentsEnabled } from './anvil-cloud-agents-availability.service.js';
 
 // ---- persisted shapes --------------------------------------------------------
 
@@ -1124,6 +1125,7 @@ export async function requestEnvironment(
   } = {},
 ): Promise<RequestEnvironmentResult> {
   validateEnvironmentRequest(input);
+  if (input.provider === 'anvil-managed') assertAnvilCloudAgentsEnabled();
   const environmentId = input.environmentId ?? `env_${randomUUID()}`;
   const normalizedInput = { ...input, environmentId };
   if (input.provider !== 'anvil-managed') {

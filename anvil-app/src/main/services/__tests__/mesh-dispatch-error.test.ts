@@ -14,14 +14,18 @@ describe('remote dispatch refusals', () => {
     expect(message).not.toContain('sensitive');
   });
 
-  it('identifies a hosted access refusal', () => {
-    const error = new BackendRpcError({
-      code: 'forbidden',
-      retryable: false,
-      details: { reason: 'billing-unavailable' },
-    });
-    expect(describeMeshDispatchError(error)).toContain('Hosted access');
-  });
+  it.each(['billing-unavailable', 'preview-ended', 'subscription-required'])(
+    'identifies a legacy billing refusal (%s) without recommending payment',
+    (reason) => {
+      const error = new BackendRpcError({
+        code: 'forbidden',
+        retryable: false,
+        details: { reason },
+      });
+      expect(describeMeshDispatchError(error)).toContain('Update the backend');
+      expect(describeMeshDispatchError(error)).not.toContain('billing page');
+    },
+  );
 
   it('does not display unrecognized backend reasons', () => {
     const error = new BackendRpcError({

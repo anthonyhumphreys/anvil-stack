@@ -48,6 +48,7 @@ vi.mock('electron', () => ({
 }));
 
 import {
+  applyPausedWorkspaceChanges,
   getSyncEngineSnapshot,
   resetSyncEngineForTests,
   resolveSyncConflict,
@@ -62,11 +63,14 @@ import {
   insertUnresolvedConflict,
   listConflicts,
   listOutboxRows,
+  listPausedInboundChanges,
   nextBatch,
+  recordLocalChange,
   updateSyncState,
   upsertBinding,
   upsertEnrollment,
 } from '../sync-persistence.service';
+import { buildEntityPayload } from '../sync-entity-domain';
 import {
   deleteWorkflowTemplate,
   getWorkflowTemplate,
@@ -75,6 +79,7 @@ import {
 import { setAccountKeyBootstrapEligibility } from '../sync-keyring.service';
 import { getEditableAgent, saveEditableAgent } from '../editable-agent.service';
 import { getSettings } from '../settings.service';
+import { createWorkspace, deleteWorkspace, updateWorkspace } from '../workspace.service';
 
 const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
 const ET = SYNC_ENTITY_WORKFLOW_TEMPLATE;
@@ -205,6 +210,7 @@ beforeEach(() => {
   resetSyncEngineForTests();
   db.exec(
     `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
+     DELETE FROM sync_paused_changes;
      DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
      DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
      DELETE FROM editable_agents; DELETE FROM workspaces; DELETE FROM workspace_repos;
@@ -400,9 +406,177 @@ describe('runSyncCycle push', () => {
     expect(secondResolved).toBe(true);
     expect(pushCalls).toBe(1);
   });
+
+  it('keeps pending workspace changes local while workspace Sync is paused', async () => {
+    activateEnrollment();
+    const workspace = createWorkspace({ name: 'Before pause', syncSelected: true });
+    const basePayload = buildEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id);
+    expect(basePayload).not.toBeNull();
+    upsertBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id, {
+      basePayloadJson: canonicalJson(basePayload),
+      baseRevision: 1,
+    });
+    updateWorkspace(workspace.id, { name: 'Changed while selected' });
+    updateWorkspace(workspace.id, { syncSelected: false });
+
+    let pushCalls = 0;
+    await cycle(
+      fakeRpc({
+        push: (params) => {
+          pushCalls += 1;
+          return acceptPush(params, 2);
+        },
+      }),
+    );
+
+    expect(pushCalls).toBe(0);
+    expect(listOutboxRows(SCOPE)).toHaveLength(1);
+    expect(listOutboxRows(SCOPE)[0].state).toBe('pending');
+    expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id)?.baseRevision).toBe(1);
+  });
+
+  it('lets an already-dispatched workspace update settle after Sync is paused', async () => {
+    activateEnrollment();
+    const workspace = createWorkspace({ name: 'Before pause', syncSelected: true });
+    const basePayload = buildEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id);
+    expect(basePayload).not.toBeNull();
+    upsertBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id, {
+      basePayloadJson: canonicalJson(basePayload),
+      baseRevision: 1,
+    });
+    updateWorkspace(workspace.id, { name: 'Already dispatched' });
+
+    let pushedWorkspaceChanges = 0;
+    await cycle(
+      fakeRpc({
+        onPush: () => {
+          db.prepare('UPDATE workspaces SET sync_selected = 0 WHERE id = ?').run(workspace.id);
+        },
+        push: (params) => {
+          const { changes } = params as SyncPushParams;
+          pushedWorkspaceChanges = changes.filter(
+            (change) =>
+              change.entityType === SYNC_ENTITY_WORKSPACE_DEFINITION &&
+              change.entityId === workspace.id,
+          ).length;
+          return acceptPush(params, 2);
+        },
+      }),
+    );
+
+    expect(pushedWorkspaceChanges).toBe(1);
+    expect(listOutboxRows(SCOPE)).toHaveLength(1);
+    expect(listOutboxRows(SCOPE)[0].state).toBe('acknowledged');
+    expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id)?.baseRevision).toBe(2);
+    expect(
+      db.prepare('SELECT sync_selected FROM workspaces WHERE id = ?').get(workspace.id),
+    ).toEqual({ sync_selected: 0 });
+  });
 });
 
 describe('runSyncCycle pull', () => {
+  it('continues suppressing remote changes if a paused workspace is locally deleted', async () => {
+    activateEnrollment();
+    const workspace = createWorkspace({ name: 'Shared', syncSelected: true });
+    const basePayload = buildEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id);
+    expect(basePayload).not.toBeNull();
+    upsertBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id, {
+      basePayloadJson: canonicalJson(basePayload),
+      baseRevision: 1,
+    });
+    updateWorkspace(workspace.id, { syncSelected: false });
+    deleteWorkspace(workspace.id);
+
+    const remote = { ...(basePayload as Record<string, unknown>), name: 'Remote update' };
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [
+            {
+              entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+              entityId: workspace.id,
+              operation: 'update',
+              payload: remote,
+              revision: 2,
+              schemaVersion: 1,
+              sequence: 2,
+            },
+          ],
+          hasMore: false,
+          nextCursor: 'deleted-paused-workspace' as SyncCursor,
+        }),
+      }),
+    );
+
+    expect(db.prepare('SELECT id FROM workspaces WHERE id = ?').get(workspace.id)).toBeUndefined();
+    expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id)?.baseRevision).toBe(1);
+    expect(listPausedInboundChanges(SCOPE)).toHaveLength(1);
+  });
+
+  it('defers remote workspace edits while paused and opens a conflict on re-enable', async () => {
+    activateEnrollment();
+    const workspace = createWorkspace({ name: 'Shared', syncSelected: true });
+    const basePayload = buildEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id);
+    expect(basePayload).not.toBeNull();
+    upsertBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id, {
+      basePayloadJson: canonicalJson(basePayload),
+      baseRevision: 1,
+    });
+    updateWorkspace(workspace.id, { name: 'Local while paused', syncSelected: false });
+    const remote = { ...(basePayload as Record<string, unknown>), name: 'Remote while paused' };
+
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [
+            {
+              entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+              entityId: workspace.id,
+              operation: 'update',
+              payload: remote,
+              revision: 2,
+              schemaVersion: 1,
+              sequence: 2,
+            },
+          ],
+          hasMore: false,
+          nextCursor: 'workspace-paused' as SyncCursor,
+        }),
+      }),
+    );
+
+    expect(db.prepare('SELECT name FROM workspaces WHERE id = ?').get(workspace.id)).toEqual({
+      name: 'Local while paused',
+    });
+    expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id)?.baseRevision).toBe(1);
+    expect(listPausedInboundChanges(SCOPE)).toHaveLength(1);
+
+    updateWorkspace(workspace.id, { syncSelected: true });
+    const localPayload = buildEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, workspace.id);
+    expect(localPayload).not.toBeNull();
+    recordLocalChange(SCOPE, {
+      entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+      entityId: workspace.id,
+      operation: 'update',
+      payload: localPayload,
+      schemaVersion: 1,
+    });
+    expect(applyPausedWorkspaceChanges(SCOPE, ENROLLMENT)).toBe(1);
+
+    expect(listConflicts(SCOPE)).toHaveLength(1);
+    expect(listConflicts(SCOPE)[0]).toMatchObject({
+      entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+      entityId: workspace.id,
+      kind: 'edit-edit',
+      baseRevision: 1,
+      remoteRevision: 2,
+    });
+    expect(listPausedInboundChanges(SCOPE)).toEqual([]);
+    expect(db.prepare('SELECT name FROM workspaces WHERE id = ?').get(workspace.id)).toEqual({
+      name: 'Local while paused',
+    });
+  });
+
   it('applies a remote create into workflow_templates and creates a binding', async () => {
     activateEnrollment();
     const remote = templatePayload('remote-tpl', 'From remote');

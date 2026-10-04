@@ -322,7 +322,8 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
       {
         id: 'cloud-agents',
         title: 'Cloud agents',
-        description: 'Provider access and connections for managed cloud agents.',
+        description:
+          'Provider access and connections for Anvil Cloud Agents and your own machines.',
         keywords: ['cloud', 'agents', 'cursor', 'devin', 'provider', 'connection'],
       },
     ],

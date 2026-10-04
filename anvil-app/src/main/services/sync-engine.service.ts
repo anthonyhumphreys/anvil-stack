@@ -12,6 +12,7 @@ import type {
 } from '../../../cloud/contract/sync.js';
 import {
   SYNC_ENTITY_SCHEMA_VERSIONS,
+  SYNC_ENTITY_WORKSPACE_DEFINITION,
   type PushResult,
   type SyncConflict,
   type SyncConflictKind,
@@ -24,6 +25,7 @@ import {
   applyRemoteEntityPayload,
   deleteLocalEntity,
   entityPayloadIssue,
+  isWorkspaceSyncPaused,
   isSupportedEntityType,
   persistConflictCopy,
   readEntityPayloadJson,
@@ -37,12 +39,14 @@ import {
   deleteBinding,
   deleteMutableOutboxRows,
   deletePendingOutboxRows,
+  deletePausedInboundChange,
   getBinding,
   getUnresolvedConflict,
   getSyncState,
   insertUnresolvedConflict,
   listBindings,
   listMutableOutboxRows,
+  listPausedInboundChanges,
   listScanStaging,
   listSyncScopesForEntity,
   nextBatch,
@@ -54,6 +58,7 @@ import {
   setBindingQuarantine,
   stageScanChange,
   stageScanEntities,
+  storePausedInboundChange,
   updateSyncState,
   upsertBinding,
 } from './sync-persistence.service.js';
@@ -463,6 +468,8 @@ async function pushCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
     maxBytes: limits.pageBytes,
     maxChanges: limits.batchChanges,
     seal: (sealInput) => sealWirePayload(input.scope, sealInput),
+    shouldDispatch: (entityType, entityId) =>
+      entityType !== SYNC_ENTITY_WORKSPACE_DEFINITION || !isWorkspaceSyncPaused(entityId),
   });
   if (batch.length === 0) return;
   const { result } = await rpcFn<SyncPushResult>(
@@ -905,6 +912,45 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
     for (const entity of staged) {
       const key = `${entity.entityType}\0${entity.entityId}`;
       const binding = bindings.get(key);
+      if (
+        entity.entityType === SYNC_ENTITY_WORKSPACE_DEFINITION &&
+        isWorkspaceSyncPaused(entity.entityId)
+      ) {
+        let payload: unknown;
+        if (entity.payloadJson !== null) {
+          payload = JSON.parse(entity.payloadJson) as unknown;
+          if (isRecord(payload) && isRecord(payload['envelope'])) {
+            payload = payload['envelope'];
+          }
+        }
+        const revision = entity.revision;
+        const localPayloadJson = readLocalPayloadJson(entity.entityType, entity.entityId);
+        const change: SyncedChange = {
+          entityType: entity.entityType,
+          entityId: entity.entityId,
+          revision,
+          operation:
+            entity.payloadJson === null
+              ? 'delete'
+              : localPayloadJson === null
+                ? 'create'
+                : 'update',
+          schemaVersion: entity.schemaVersion,
+          ...(entity.payloadJson === null ? {} : { payload }),
+          sequence: revision,
+        };
+        storePausedInboundChange(
+          scope,
+          {
+            entityType: entity.entityType,
+            entityId: entity.entityId,
+            revision,
+            changeJson: canonicalJson(change),
+          },
+          { replace: true },
+        );
+        continue;
+      }
       const openConflict = getUnresolvedConflict(scope, entity.entityType, entity.entityId);
       const quarantineReason = entityQuarantineReason(
         entity.entityType,
@@ -1047,6 +1093,31 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
     for (const binding of bindings.values()) {
       const key = `${binding.entityType}\0${binding.entityId}`;
       if (stagedKeys.has(key)) continue;
+      if (
+        binding.entityType === SYNC_ENTITY_WORKSPACE_DEFINITION &&
+        isWorkspaceSyncPaused(binding.entityId)
+      ) {
+        const revision = (binding.baseRevision ?? 0) + 1;
+        const change: SyncedChange = {
+          entityType: binding.entityType,
+          entityId: binding.entityId,
+          revision,
+          operation: 'delete',
+          schemaVersion: SYNC_ENTITY_SCHEMA_VERSIONS[SYNC_ENTITY_WORKSPACE_DEFINITION],
+          sequence: revision,
+        };
+        storePausedInboundChange(
+          scope,
+          {
+            entityType: binding.entityType,
+            entityId: binding.entityId,
+            revision,
+            changeJson: canonicalJson(change),
+          },
+          { replace: true },
+        );
+        continue;
+      }
       const openConflict = getUnresolvedConflict(scope, binding.entityType, binding.entityId);
       const domainJson = readLocalPayloadJson(binding.entityType, binding.entityId);
       const dirty =
@@ -1355,6 +1426,25 @@ function applySyncedChange(scope: SyncScope, enrollmentId: string, change: Synce
     }
     return;
   }
+  if (
+    change.entityType === SYNC_ENTITY_WORKSPACE_DEFINITION &&
+    isWorkspaceSyncPaused(change.entityId)
+  ) {
+    const binding = getBinding(scope, change.entityType, change.entityId);
+    if (binding?.baseRevision !== null && binding?.baseRevision !== undefined) {
+      if (change.revision <= binding.baseRevision) return;
+    }
+    // The pull cursor is account-wide, so preserve this sealed change locally
+    // and replay it on opt-in. Keeping the old base lets normal conflict logic
+    // compare remote edits with workspace changes made while Sync was paused.
+    storePausedInboundChange(scope, {
+      entityType: change.entityType,
+      entityId: change.entityId,
+      revision: change.revision,
+      changeJson: canonicalJson(change),
+    });
+    return;
+  }
   const binding = getBinding(scope, change.entityType, change.entityId);
   const wire = wirePayloadToDomain(scope, change.entityType, change.entityId, change.payload);
   if (wire.kind === 'quarantined') {
@@ -1483,6 +1573,43 @@ function applySyncedChange(scope: SyncScope, enrollmentId: string, change: Synce
       remoteRevision: change.revision,
     });
   }
+}
+
+/** Reconcile deferred workspace changes after the local Sync choice is enabled. */
+export function applyPausedWorkspaceChanges(scope: SyncScope, enrollmentId: string): number {
+  const run = getDb().transaction(() => {
+    let applied = 0;
+    for (const paused of listPausedInboundChanges(scope)) {
+      if (paused.entityType !== SYNC_ENTITY_WORKSPACE_DEFINITION) continue;
+      if (isWorkspaceSyncPaused(paused.entityId)) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(paused.changeJson) as unknown;
+      } catch {
+        throw new SyncEngineError('stored paused workspace change is malformed', {
+          retryable: false,
+          code: 'malformed',
+        });
+      }
+      const change = toSyncedChange(parsed);
+      if (
+        change === null ||
+        change.entityType !== paused.entityType ||
+        change.entityId !== paused.entityId ||
+        change.revision !== paused.revision
+      ) {
+        throw new SyncEngineError('stored paused workspace change is malformed', {
+          retryable: false,
+          code: 'malformed',
+        });
+      }
+      applySyncedChange(scope, enrollmentId, change);
+      deletePausedInboundChange(scope, paused.entityType, paused.entityId);
+      applied += 1;
+    }
+    return applied;
+  });
+  return run();
 }
 
 function writeBindingBase(

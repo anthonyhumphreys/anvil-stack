@@ -163,6 +163,8 @@ export interface NextBatchOptions {
   maxBytes?: number;
   /** Per-entity payload byte limit; oversized pending rows are rejected locally. */
   entityBytes?: number;
+  /** Runtime gate for entity-level choices such as a locally paused workspace. */
+  shouldDispatch?: (entityType: string, entityId: string) => boolean;
   /**
    * E2E seal hook: converts a domain payload into its wire form at
    * dispatch. Returning `undefined` defers the change (e.g. no account

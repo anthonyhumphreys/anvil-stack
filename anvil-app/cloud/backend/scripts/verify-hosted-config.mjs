@@ -4,13 +4,14 @@
  *
  * Checks that wrangler.hosted.jsonc has the shared hosted bindings needed
  * for deployment:
- * the D1 billing store is provisioned (no placeholder database_id),
- * enforcement is on, dev-only credentials are absent, and the sync
+ * the D1 account/lifecycle store is provisioned (no placeholder database_id),
+ * service enforcement is on, Sync checkout and Anvil-hosted compute are
+ * disabled by default, dev-only credentials are absent, and the sync
  * surface (Durable Object bindings, DO migrations, R2 binding) still
  * matches wrangler.jsonc. The actual bucket name is target-specific and is
  * checked against the selected environment manifest by hosted-deploy.mjs.
- * Missing billing configuration must fail
- * hosted deployment validation — this script is that gate.
+ * Billing credentials and Stripe price IDs are optional. Sync and Mesh are
+ * free services; Stripe remains only for existing billing cleanup.
  *
  * Usage:
  *   node scripts/verify-hosted-config.mjs [config-path]
@@ -19,7 +20,7 @@
  *
  * Exit code is 1 whenever issues exist, 0 otherwise. Warnings never
  * fail the run. Secrets (HOSTED_SERVICE_KEYS, WORKOS_API_KEY,
- * WORKOS_WEBHOOK_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET) cannot be verified from a config file — the
+ * WORKOS_WEBHOOK_SECRET, HOSTED_OPERATOR_KEYS) cannot be verified from a config file — the
  * script warns unless the file at least documents them in comments.
  */
 import { readFileSync } from 'node:fs';
@@ -35,8 +36,6 @@ const REQUIRED_SECRETS = [
   'HOSTED_SERVICE_KEYS',
   'WORKOS_API_KEY',
   'WORKOS_WEBHOOK_SECRET',
-  'STRIPE_SECRET_KEY',
-  'STRIPE_WEBHOOK_SECRET',
   'HOSTED_OPERATOR_KEYS',
 ];
 
@@ -170,8 +169,14 @@ function validateHostedConfig(hosted, base, rawHostedText = '') {
   if (vars.HOSTED_BILLING_ENFORCEMENT !== 'true') {
     issues.push(
       "vars.HOSTED_BILLING_ENFORCEMENT must be the literal string 'true' on a hosted " +
-        'production deployment — anything else leaves mutating operations ungated',
+        'production deployment — hosted account and device/fair-use restrictions must stay enabled',
     );
+  }
+  if (vars.HOSTED_CHECKOUT_ENABLED === 'true') {
+    issues.push('vars.HOSTED_CHECKOUT_ENABLED must not enable retired Sync subscriptions');
+  }
+  if (!['true', 'false'].includes(vars.ANVIL_CLOUD_AGENTS_ENABLED)) {
+    issues.push("vars.ANVIL_CLOUD_AGENTS_ENABLED must be the literal string 'true' or 'false'");
   }
   for (const key of FORBIDDEN_VARS) {
     if (Object.hasOwn(vars, key)) {
@@ -286,8 +291,6 @@ const FIXTURE_GOOD = `{
   "name": "anvil-backend-hosted",
   // Secrets via wrangler secret put, never vars:
   //   HOSTED_SERVICE_KEYS     website -> backend HMAC map
-  //   STRIPE_SECRET_KEY       Stripe secret key
-  //   STRIPE_WEBHOOK_SECRET   endpoint secret for /v1/hosted/stripe-webhook
   //   WORKOS_API_KEY          WorkOS environment key for org + invite APIs
   //   WORKOS_WEBHOOK_SECRET   signature secret for /v1/hosted/workos-webhook
   //   HOSTED_OPERATOR_KEYS    separate operator-only HMAC map (optional)
@@ -313,12 +316,8 @@ const FIXTURE_GOOD = `{
   "vars": {
     "HOSTED_BILLING_ENFORCEMENT": "true",
     "HOSTED_BILLING_ENVIRONMENT": "staging",
-    "HOSTED_CHECKOUT_ENABLED": "true",
-    "HOSTED_CHECKOUT_SUCCESS_URL": "https://anvil.example/account/billing?checkout=success",
-    "STRIPE_PRICE_SYNC_MONTHLY": "price_1ExampleMonthly",
-    "STRIPE_PRICE_SYNC_ANNUAL": "price_1ExampleAnnual",
-    "STRIPE_PRICE_TEAM_MONTHLY": "price_1ExampleTeamMonthly",
-    "STRIPE_PRICE_TEAM_ANNUAL": "price_1ExampleTeamAnnual",
+    "HOSTED_CHECKOUT_ENABLED": "false",
+    "ANVIL_CLOUD_AGENTS_ENABLED": "false",
   },
 }`;
 
@@ -340,6 +339,8 @@ const FIXTURE_BAD = `{
   ],
   "vars": {
     "HOSTED_BILLING_ENFORCEMENT": "false",
+    "HOSTED_CHECKOUT_ENABLED": "true",
+    "ANVIL_CLOUD_AGENTS_ENABLED": "enabled",
     "ANVIL_DEV_SPIKE": "true",
   },
 }`;
@@ -382,6 +383,8 @@ function runSelfCheck() {
   for (const expected of [
     'placeholder',
     'HOSTED_BILLING_ENFORCEMENT',
+    'HOSTED_CHECKOUT_ENABLED',
+    'ANVIL_CLOUD_AGENTS_ENABLED',
     'ANVIL_DEV_SPIKE',
     'migrations',
     'SESSIONS',

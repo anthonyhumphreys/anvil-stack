@@ -101,6 +101,9 @@ describe("Mesh provisioner deployment lifecycle", () => {
       { tag: "v1", new_sqlite_classes: ["Sandbox"] },
       { tag: "v2", new_sqlite_classes: ["ThreadSandbox"] },
     ]);
+    expect(
+      (config.vars as Record<string, string>).ANVIL_CLOUD_AGENTS_ENABLED,
+    ).toBe("false");
     expect(plan.requiredSecrets).toEqual(["PROVISIONER_TOKEN"]);
     expect(plan.containerImages).toEqual([
       path.join(root, "images/Dockerfile.cloudflare"),
@@ -110,6 +113,30 @@ describe("Mesh provisioner deployment lifecycle", () => {
     expect(await readFile(path.join(root, "wrangler.jsonc"), "utf8")).toContain(
       "anvil-mesh-provisioner",
     );
+  });
+
+  it("preserves an explicit Anvil Cloud Agents setting", async () => {
+    const root = await fixture();
+    const sourcePath = path.join(root, "wrangler.jsonc");
+    const source = await readFile(sourcePath, "utf8");
+    await writeFile(
+      sourcePath,
+      source.replace(
+        '"ALLOW_UNAUTHENTICATED": "false"',
+        '"ALLOW_UNAUTHENTICATED": "false", "ANVIL_CLOUD_AGENTS_ENABLED": "true"',
+      ),
+      "utf8",
+    );
+
+    const plan = await createMeshProvisionerDeploymentPlan({
+      provisionerDir: root,
+      mode: "managed",
+    });
+
+    expect(plan.vars.ANVIL_CLOUD_AGENTS_ENABLED).toBe("true");
+    expect(
+      JSON.parse(plan.config.contents).vars.ANVIL_CLOUD_AGENTS_ENABLED,
+    ).toBe("true");
   });
 
   it("rewrites durable-object named image paths for the generated config and retains builds", async () => {

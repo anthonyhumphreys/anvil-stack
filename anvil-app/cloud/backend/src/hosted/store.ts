@@ -143,6 +143,17 @@ export async function findActiveBillingBySyncAccount(
     .first<BillingAccountRow>();
 }
 
+/** Any lifecycle row claiming a sync account, including deleting/deleted. */
+export async function findBillingBySyncAccount(
+  db: D1Database,
+  syncAccountId: string,
+): Promise<BillingAccountRow | null> {
+  return db
+    .prepare('SELECT * FROM billing_accounts WHERE sync_account_id = ?')
+    .bind(syncAccountId)
+    .first<BillingAccountRow>();
+}
+
 /**
  * First-time (or idempotent same-account) link write. The guard refuses to
  * move an existing link to a different account — that path is

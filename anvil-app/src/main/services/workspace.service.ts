@@ -12,6 +12,7 @@ import type {
   WorkspaceRepoDefinition,
   WorkspaceWithRepos,
   WorkspaceSummary,
+  WorkspaceUpdateOptions,
   RepoInfo,
 } from '../../shared/types.js';
 import {
@@ -30,6 +31,7 @@ import { cancelIndexJobs, enqueueIndexJobs } from './repo-index-queue.service.js
 
 /** Emit sync intent for a bound workspace definition after a local write. */
 function emitWorkspaceSyncIntent(workspaceId: string): void {
+  if (!isWorkspaceSyncSelected(workspaceId)) return;
   withSyncedEntityWrite(
     SYNC_ENTITY_WORKSPACE_DEFINITION,
     workspaceId,
@@ -40,6 +42,14 @@ function emitWorkspaceSyncIntent(workspaceId: string): void {
   );
 }
 
+/** Whether this local workspace is selected for ongoing Sync replication. */
+export function isWorkspaceSyncSelected(workspaceId: string): boolean {
+  const row = getDb()
+    .prepare('SELECT sync_selected FROM workspaces WHERE id = ?')
+    .get(workspaceId) as { sync_selected: number } | undefined;
+  return row?.sync_selected === 1;
+}
+
 // ---------------------------------------------------------------------------
 // Internal row types (snake_case columns from SQLite)
 // ---------------------------------------------------------------------------
@@ -47,6 +57,7 @@ function emitWorkspaceSyncIntent(workspaceId: string): void {
 interface WorkspaceRow {
   id: string;
   name: string;
+  sync_selected: number;
   definition_state: 'ready' | 'needs-setup';
   created_at: string;
   updated_at: string;
@@ -102,6 +113,7 @@ function mapWorkspace(row: WorkspaceRow): Workspace {
   return {
     id: row.id,
     name: row.name,
+    syncSelected: row.sync_selected === 1,
     definitionState: row.definition_state,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -253,6 +265,9 @@ export function getWorkspace(id: string): WorkspaceWithRepos {
  */
 export function createWorkspace(opts: WorkspaceCreateOptions): Workspace {
   const db = getDb();
+  if (opts.syncSelected !== undefined && typeof opts.syncSelected !== 'boolean') {
+    throw new Error('syncSelected must be a boolean');
+  }
   const id = randomUUID();
   const repoIds = opts.repoIds ?? [];
   const settings = getSettings();
@@ -269,9 +284,9 @@ export function createWorkspace(opts: WorkspaceCreateOptions): Workspace {
 
   const txn = db.transaction(() => {
     db.prepare(
-      `INSERT INTO workspaces (id, name, created_at, updated_at)
-       VALUES (?, ?, datetime('now'), datetime('now'))`,
-    ).run(id, opts.name);
+      `INSERT INTO workspaces (id, name, sync_selected, created_at, updated_at)
+       VALUES (?, ?, ?, datetime('now'), datetime('now'))`,
+    ).run(id, opts.name, opts.syncSelected === true ? 1 : 0);
 
     db.prepare(
       `INSERT INTO workspace_preferences (workspace_id, workitems_json, docs_json, launch_json, updated_at)
@@ -387,17 +402,34 @@ export function clearWorkspacePreferences(
 /**
  * Update a workspace's name. Throws if the workspace does not exist.
  */
-export function updateWorkspace(id: string, opts: { name: string }): Workspace {
+export function updateWorkspace(id: string, opts: WorkspaceUpdateOptions): Workspace {
   const db = getDb();
+  if (opts.syncSelected !== undefined && typeof opts.syncSelected !== 'boolean') {
+    throw new Error('syncSelected must be a boolean');
+  }
+  const assignments: string[] = [];
+  const values: Array<string | number> = [];
+  if (opts.name !== undefined) {
+    assignments.push('name = ?');
+    values.push(opts.name);
+  }
+  if (opts.syncSelected !== undefined) {
+    assignments.push('sync_selected = ?');
+    values.push(opts.syncSelected ? 1 : 0);
+  }
+  if (assignments.length === 0) throw new Error('At least one workspace update is required');
+  assignments.push("updated_at = datetime('now')");
   const result = db
-    .prepare(`UPDATE workspaces SET name = ?, updated_at = datetime('now') WHERE id = ?`)
-    .run(opts.name, id);
+    .prepare(`UPDATE workspaces SET ${assignments.join(', ')} WHERE id = ?`)
+    .run(...values, id);
 
   if (result.changes === 0) {
     throw new Error(`Workspace not found: ${id}`);
   }
 
-  emitWorkspaceSyncIntent(id);
+  // Sync selection transitions are coordinated with the runtime by IPC:
+  // enabling can establish a new binding; disabling must keep existing data.
+  if (opts.syncSelected === undefined) emitWorkspaceSyncIntent(id);
 
   const row = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as WorkspaceRow;
   return mapWorkspace(row);
@@ -409,6 +441,10 @@ export function updateWorkspace(id: string, opts: { name: string }): Workspace {
  */
 export function deleteWorkspace(id: string): void {
   const db = getDb();
+  if (!isWorkspaceSyncSelected(id)) {
+    deleteWorkspaceRows(id);
+    return;
+  }
   const deleteWorkspaceTxn = db.transaction(() => {
     withSyncedEntityWrite(
       SYNC_ENTITY_WORKSPACE_DEFINITION,

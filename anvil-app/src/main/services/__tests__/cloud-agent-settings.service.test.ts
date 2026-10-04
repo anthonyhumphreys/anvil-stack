@@ -54,6 +54,7 @@ import {
 beforeEach(() => {
   vi.stubEnv('CODEX_HOME', '/tmp/anvil-cloud-auth-test-no-user-home/codex');
   vi.stubEnv('XDG_DATA_HOME', '/tmp/anvil-cloud-auth-test-no-user-home/data');
+  vi.stubEnv('ANVIL_CLOUD_AGENTS_ENABLED', 'false');
   db.exec('DELETE FROM cloud_agent_provider_settings');
   settings.openaiApiKey = undefined;
   settings.foundryApiKey = undefined;
@@ -76,12 +77,21 @@ describe('cloud agent provider settings', () => {
 
   it('defaults only Codex to enabled and never returns credentials in status', () => {
     const snapshot = getCloudAgentSettings();
+    expect(snapshot.anvilCloudAgentsEnabled).toBe(false);
     expect(
       snapshot.providers.filter(({ enabled }) => enabled).map(({ provider }) => provider),
     ).toEqual(['codex']);
     expect(
       snapshot.providers.every((status) => !('secret' in status) && !('apiKey' in status)),
     ).toBe(true);
+  });
+
+  it('enables Anvil Cloud Agents only when the explicit flag is true', () => {
+    vi.stubEnv('ANVIL_CLOUD_AGENTS_ENABLED', '1');
+    expect(getCloudAgentSettings().anvilCloudAgentsEnabled).toBe(false);
+
+    vi.stubEnv('ANVIL_CLOUD_AGENTS_ENABLED', 'true');
+    expect(getCloudAgentSettings().anvilCloudAgentsEnabled).toBe(true);
   });
 
   it('persists enablement, validates readiness, and maps saved API credentials to worker env', () => {

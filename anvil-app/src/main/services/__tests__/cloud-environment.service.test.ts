@@ -103,6 +103,7 @@ const fetchMock = vi.hoisted(() => vi.fn());
 vi.stubGlobal('fetch', fetchMock);
 
 beforeEach(() => {
+  vi.stubEnv('ANVIL_CLOUD_AGENTS_ENABLED', 'true');
   db.exec('DELETE FROM cloud_provider_connections');
   db.exec('DELETE FROM cloud_environments');
   backendRpc.mockReset();
@@ -341,6 +342,32 @@ describe('requestEnvironment', () => {
     provider: 'anvil-managed' as const,
     ttlSeconds: 1800,
   };
+
+  it('rejects Anvil-managed provisioning while Cloud Agents are disabled', async () => {
+    vi.stubEnv('ANVIL_CLOUD_AGENTS_ENABLED', 'false');
+    const mint = vi.fn();
+
+    await expect(
+      requestEnvironment(SCOPE, managedInput, { mintEnvironmentCode: mint }),
+    ).rejects.toThrow('Anvil Cloud Agents are unavailable.');
+    expect(mint).not.toHaveBeenCalled();
+    expect(backendRpc).not.toHaveBeenCalled();
+  });
+
+  it('keeps customer-owned environment requests available while Cloud Agents are disabled', async () => {
+    vi.stubEnv('ANVIL_CLOUD_AGENTS_ENABLED', 'false');
+    backendRpc.mockResolvedValue({ result: { job: { id: 'byo-job' } }, serverTime: '' });
+
+    await expect(
+      requestEnvironment(SCOPE, {
+        environmentId: 'env_byo',
+        provider: 'aws-lambda-microvm',
+        ttlSeconds: 1800,
+        connectionId: 'customer-aws',
+      }),
+    ).resolves.toMatchObject({ environmentId: 'env_byo', job: { id: 'byo-job' } });
+    expect(backendRpc.mock.calls.map((call) => call[1])).toEqual(['job.create']);
+  });
 
   it('recovers an existing managed job before minting another bootstrap code', async () => {
     const mint = vi.fn().mockResolvedValue('anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD');

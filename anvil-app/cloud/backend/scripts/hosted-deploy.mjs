@@ -214,6 +214,10 @@ export function mergeTargetVars(existing, target) {
   }
   return {
     ...existing,
+    // Managed Anvil compute is a separate product and stays opt-in. Sync
+    // subscription settings are deliberately retired in this service.
+    HOSTED_CHECKOUT_ENABLED: 'false',
+    ANVIL_CLOUD_AGENTS_ENABLED: existing.ANVIL_CLOUD_AGENTS_ENABLED ?? 'false',
     ANVIL_DEPLOYMENT_ID: target.deploymentId,
     ANVIL_DEPLOYMENT_NAME: target.deploymentName,
     HOSTED_BILLING_ENVIRONMENT: target.stage,
@@ -238,13 +242,6 @@ function targetVars(target, path) {
   writeFileSync(path, `${JSON.stringify(vars, null, 2)}\n`, { mode: 0o600 });
   return vars;
 }
-
-const STRIPE_PRICE_VARS = [
-  'STRIPE_PRICE_SYNC_MONTHLY',
-  'STRIPE_PRICE_SYNC_ANNUAL',
-  'STRIPE_PRICE_TEAM_MONTHLY',
-  'STRIPE_PRICE_TEAM_ANNUAL',
-];
 
 function configuredWorkosAdmissions(config, environment) {
   const value = config.vars?.HOSTED_ADMITTED_WORKOS_USER_IDS;
@@ -273,31 +270,6 @@ function configuredWorkosAdmissions(config, environment) {
   return new Set(userIds);
 }
 
-function configuredStripePrices(config, environment) {
-  const prices = new Map();
-  for (const key of STRIPE_PRICE_VARS) {
-    const value = config.vars?.[key];
-    if (value === undefined || value === '') continue;
-    if (typeof value !== 'string' || !/^price_[A-Za-z0-9]+$/.test(value))
-      throw new HostedDeployError(
-        `${environment} generated vars.${key} must be a Stripe Price id.`,
-      );
-    prices.set(key, value);
-  }
-  if (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true') {
-    const missing = STRIPE_PRICE_VARS.filter((key) => !prices.has(key));
-    if (missing.length > 0)
-      throw new HostedDeployError(
-        `${environment} checkout is enabled but these prices are missing: ${missing.join(', ')}.`,
-      );
-  }
-  if (new Set(prices.values()).size !== prices.size)
-    throw new HostedDeployError(
-      `${environment} personal and team prices must use distinct Stripe Price ids.`,
-    );
-  return prices;
-}
-
 export function validateGeneratedConfig(
   path,
   target,
@@ -323,7 +295,12 @@ export function validateGeneratedConfig(
     throw new HostedDeployError(
       `${environment} generated config has the wrong HOSTED_BILLING_ENVIRONMENT.`,
     );
-  const prices = configuredStripePrices(config, environment);
+  if (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true')
+    throw new HostedDeployError(`${environment} Sync checkout is retired and must remain disabled.`);
+  if (!['true', 'false'].includes(config.vars?.ANVIL_CLOUD_AGENTS_ENABLED))
+    throw new HostedDeployError(
+      `${environment} ANVIL_CLOUD_AGENTS_ENABLED must be the literal string 'true' or 'false'.`,
+    );
   const admissions = configuredWorkosAdmissions(config, environment);
   if (environment === 'production' && config.vars?.STRIPE_API_BASE)
     throw new HostedDeployError('Production generated config must not set STRIPE_API_BASE.');
@@ -377,7 +354,7 @@ export function validateGeneratedConfig(
     );
   if (
     environment === 'production' &&
-    (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true' || prices.size > 0 || admissions.size > 0)
+    admissions.size > 0
   ) {
     let stagingConfig;
     try {
@@ -387,24 +364,11 @@ export function validateGeneratedConfig(
         'Production isolation checks require the generated Staging config first.',
       );
     }
-    const stagingPrices = configuredStripePrices(stagingConfig, 'staging');
     const stagingAdmissions = configuredWorkosAdmissions(stagingConfig, 'staging');
-    const absentFromStaging =
-      config.vars?.HOSTED_CHECKOUT_ENABLED === 'true'
-        ? STRIPE_PRICE_VARS.filter((key) => !stagingPrices.has(key))
-        : [];
-    if (absentFromStaging.length > 0)
-      throw new HostedDeployError(
-        `Production checkout requires staging prices for comparison: ${absentFromStaging.join(', ')}.`,
-      );
     if ([...admissions].some((id) => stagingAdmissions.has(id)))
       throw new HostedDeployError(
         'Production HOSTED_ADMITTED_WORKOS_USER_IDS must not reuse Staging WorkOS user IDs.',
       );
-    for (const [key, value] of prices) {
-      if ([...stagingPrices.values()].includes(value))
-        throw new HostedDeployError(`Production ${key} reuses a staging Stripe Price id.`);
-    }
   }
   if (
     target.managedProvisioner &&
@@ -517,12 +481,11 @@ export function validateBackendSecrets(secrets, target, environment) {
 }
 
 export function validateCheckoutSecrets(config, secrets, environment) {
-  if (config.vars?.HOSTED_CHECKOUT_ENABLED !== 'true') return;
-  if (!secrets?.STRIPE_SECRET_KEY || !secrets?.STRIPE_WEBHOOK_SECRET)
-    throw new HostedDeployError(
-      `${environment} checkout is enabled but Stripe API and webhook secrets are missing.`,
-    );
-  validateStripeSecretMode(secrets.STRIPE_SECRET_KEY, environment);
+  if (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true')
+    throw new HostedDeployError(`${environment} Sync checkout is retired and must remain disabled.`);
+  // Stripe credentials are optional: they support cleanup of existing
+  // subscriptions through the portal and webhook mirror, never new sales.
+  if (secrets?.STRIPE_SECRET_KEY) validateStripeSecretMode(secrets.STRIPE_SECRET_KEY, environment);
 }
 
 function validateDotenvSyntax(contents, environment) {

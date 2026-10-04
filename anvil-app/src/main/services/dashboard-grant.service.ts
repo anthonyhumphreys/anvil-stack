@@ -37,6 +37,7 @@ import {
   BROWSER_WORKSPACE_OPERATION_SCOPE,
   browserWorkspaceCommandAssociatedData,
   browserWorkspaceResultAssociatedData,
+  type DashboardCommandClaimResult,
   type BrowserWorkspaceCommandEnvelope,
   type BrowserWorkspaceBinding,
   type BrowserWorkspaceOperation,
@@ -44,6 +45,10 @@ import {
 } from '../../../cloud/contract/browser-workspace.js';
 import type { JobListResult } from '../../../cloud/contract/jobs.js';
 import type { SyncScope } from '../../shared/sync-mesh.js';
+import type {
+  MachineCommandDispatchEntry,
+  MachineCommandDispatchResult,
+} from './mesh-machine-endpoint.service.js';
 import {
   sealJsonEnvelope,
   sealToRecipientPub,
@@ -575,6 +580,46 @@ export function listDashboardGrants(scope: SyncScope): DashboardGrantRow[] {
     )
     .all(scope.backendId, scope.accountId) as GrantRow[];
   return rows.map(rowToGrant);
+}
+
+/**
+ * Returns the approved browser origin only for a live grant owned by this
+ * Desktop enrollment. The machine endpoint uses this as descriptive context;
+ * it never treats the origin as caller authentication.
+ */
+export function getDashboardGrantMachineEndpointOrigin(
+  scope: SyncScope,
+  requestId: string,
+): string | null {
+  const context = contextProvider?.() ?? null;
+  if (context === null) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT state, enrollment_id, workspace_id, expires_at, request_json
+       FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, requestId) as
+    | Pick<GrantRow, 'state' | 'enrollment_id' | 'workspace_id' | 'expires_at' | 'request_json'>
+    | undefined;
+  if (
+    row === undefined ||
+    row.state !== 'approved' ||
+    row.enrollment_id !== context.enrollmentId ||
+    row.workspace_id === null ||
+    Date.parse(row.expires_at) <= Date.now() ||
+    row.request_json === null
+  ) {
+    return null;
+  }
+  try {
+    const request = JSON.parse(row.request_json) as DashboardRequest;
+    return request.origin !== undefined && isCanonicalBrowserOrigin(request.origin)
+      ? request.origin
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface DashboardGrantWorkspaceOption {
@@ -1342,6 +1387,177 @@ export async function pumpBrowserWorkspaceCommands(
   } finally {
     commandPumpInFlight.delete(key);
   }
+}
+
+/**
+ * Wakes one locally approved browser grant through the durable coordinator.
+ * The caller supplies only a grant id; commands, claim fences, scopes, and
+ * encrypted payloads all come from the coordinator and the local grant row.
+ */
+export async function dispatchDashboardGrantCommandQueue(
+  scope: SyncScope,
+  requestId: string,
+  guard: () => boolean = () => true,
+): Promise<MachineCommandDispatchResult> {
+  const context = contextProvider?.() ?? null;
+  if (
+    context === null ||
+    context.revalidateBrowserWorkspaceGrant === undefined ||
+    context.publishBrowserWorkspaceCommandResult === undefined ||
+    context.executeBrowserWorkspaceCommand === undefined
+  ) {
+    return { state: 'not-ready', commands: [] };
+  }
+
+  const grant = getDb()
+    .prepare(
+      `SELECT state, enrollment_id, workspace_id, expires_at
+       FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, requestId) as
+    | Pick<GrantRow, 'state' | 'enrollment_id' | 'workspace_id' | 'expires_at'>
+    | undefined;
+  if (
+    grant === undefined ||
+    grant.state !== 'approved' ||
+    grant.enrollment_id !== context.enrollmentId ||
+    grant.workspace_id === null ||
+    Date.parse(grant.expires_at) <= Date.now() ||
+    getDashboardGrantMachineEndpointOrigin(scope, requestId) === null
+  ) {
+    return { state: 'not-ready', commands: [] };
+  }
+
+  const dispatch = async (): Promise<MachineCommandDispatchResult> => {
+    const contextIsCurrent = (): boolean => {
+      const current = contextProvider?.() ?? null;
+      return (
+        current !== null &&
+        current.apiUrl === context.apiUrl &&
+        current.accessToken === context.accessToken &&
+        current.enrollmentId === context.enrollmentId
+      );
+    };
+    const stillAllowed = (): boolean => guard() && contextIsCurrent();
+    const results: MachineCommandDispatchEntry[] = [];
+    const existingReceipts = getDb()
+      .prepare(
+        `SELECT grant_id, command_id, kind, workspace_id, repo_id, expires_at,
+              payload_hash, command_envelope_json, claim_fence, state,
+              result_wrapped, result_envelope_json, result_published, error_message
+       FROM mesh_browser_command_receipts
+       WHERE backend_id = ? AND account_id = ? AND grant_id = ?
+         AND (state = 'executing' OR (state IN ('completed', 'failed') AND result_published = 0))
+       ORDER BY updated_at ASC LIMIT ?`,
+      )
+      .all(
+        scope.backendId,
+        scope.accountId,
+        requestId,
+        MAX_COMMANDS_PER_PUMP,
+      ) as CommandReceiptRow[];
+
+    for (const receipt of existingReceipts) {
+      if (!stillAllowed()) break;
+      const command = commandFromReceipt(receipt);
+      if (command === null) continue;
+      await dispatchBrowserWorkspaceCommand(scope, command, stillAllowed, context).catch(
+        () => undefined,
+      );
+      const updated = commandReceipt(scope, command);
+      if (updated !== undefined) results.push(machineCommandOutcome(updated));
+    }
+
+    const remaining = MAX_COMMANDS_PER_PUMP - results.length;
+    if (!stillAllowed() || remaining <= 0) {
+      return {
+        state: results.some((result) => result.state === 'processing')
+          ? 'processing'
+          : results.length > 0
+            ? 'dispatched'
+            : 'not-ready',
+        commands: results,
+      };
+    }
+
+    let claimed: DashboardCommandClaimResult;
+    try {
+      const response = await backendRpc<DashboardCommandClaimResult>(
+        { apiUrl: context.apiUrl },
+        'dashboard.command.claim',
+        { requestId, limit: remaining },
+        context.accessToken,
+      );
+      claimed = response.result;
+    } catch {
+      return {
+        state: results.some((result) => result.state === 'processing')
+          ? 'processing'
+          : results.length > 0
+            ? 'dispatched'
+            : 'not-ready',
+        commands: results,
+      };
+    }
+
+    if (claimed.requestId !== requestId || !Array.isArray(claimed.commands)) {
+      return { state: results.length > 0 ? 'dispatched' : 'not-ready', commands: results };
+    }
+
+    for (const claimedCommand of claimed.commands) {
+      if (!stillAllowed()) break;
+      const { envelope, claimFence } = claimedCommand;
+      if (
+        claimedCommand.requestId !== requestId ||
+        envelope.requestId !== requestId ||
+        claimedCommand.commandId !== envelope.commandId ||
+        !Number.isSafeInteger(claimFence) ||
+        claimFence < 1
+      ) {
+        continue;
+      }
+      const command: DashboardWorkspaceCommand = { ...envelope, claimFence };
+      await dispatchBrowserWorkspaceCommand(scope, command, stillAllowed, context).catch(
+        () => undefined,
+      );
+      const receipt = commandReceipt(scope, command);
+      if (receipt !== undefined) results.push(machineCommandOutcome(receipt));
+    }
+
+    return {
+      state: results.some((result) => result.state === 'processing')
+        ? 'processing'
+        : results.length > 0
+          ? 'dispatched'
+          : 'not-ready',
+      commands: results,
+    };
+  };
+
+  const pumpKey = `${scope.backendId}:${scope.accountId}`;
+  if (commandPumpInFlight.has(pumpKey)) return { state: 'processing', commands: [] };
+  commandPumpInFlight.add(pumpKey);
+  return dispatch().finally(() => commandPumpInFlight.delete(pumpKey));
+}
+
+function machineCommandOutcome(receipt: CommandReceiptRow): MachineCommandDispatchEntry {
+  let result: DashboardWorkspaceResultEnvelope | undefined;
+  if (receipt.result_envelope_json !== null) {
+    try {
+      result = JSON.parse(receipt.result_envelope_json) as DashboardWorkspaceResultEnvelope;
+    } catch {
+      result = undefined;
+    }
+  }
+  return {
+    commandId: receipt.command_id,
+    state:
+      receipt.state === 'completed' || receipt.state === 'failed' || receipt.state === 'uncertain'
+        ? receipt.state
+        : 'processing',
+    ...(result === undefined ? {} : { result }),
+  };
 }
 
 async function publishSnapshot(scope: SyncScope, row: GrantRow): Promise<void> {

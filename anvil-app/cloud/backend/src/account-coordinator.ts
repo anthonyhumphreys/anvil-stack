@@ -58,9 +58,7 @@ import {
   type DevicePresenceResult,
 } from '../../contract/companion';
 import {
-  checkHostedAccess,
   hostedEnforcementEnabled,
-  ENTITLEMENT_CACHE_DDL,
 } from './hosted/enforcement';
 import {
   fairUseStatus,
@@ -199,7 +197,6 @@ import {
   type KeyringReportParams,
   type KeyringReportResult,
 } from '../../contract/dashboard';
-import type { HostedEntitlement } from '../../contract/entitlements';
 import {
   BROWSER_WORKSPACE_OPERATION_SCOPE,
   BROWSER_WORKSPACE_RPC_CLASS,
@@ -756,7 +753,7 @@ const GRANT_MAX_TTL_MS = 60 * 60 * 1000;
  * backend's own provisioner rather than a user device. Bootstrap payloads
  * are consume-once with a one-hour ceiling; the provision call gets a
  * bounded budget so a wedged provider cannot pin the internal attempt
- * forever; entitlement caps bound TTL + live concurrency per tier.
+ * forever; fixed fair-use caps bound TTL + live concurrency.
  */
 const MANAGED_PROVISIONER_ENROLLMENT = 'anvil-managed';
 const MANAGED_PROVISIONER_INCARNATION = 'managed';
@@ -768,7 +765,10 @@ const MANAGED_REAP_BATCH = 8;
 const MANAGED_SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const HOSTED_REMOTE_CHAT_IDLE_GRACE_MS = 5 * 60 * 1000;
 const MANAGED_FREE_CAPS = { maxTtlSeconds: 30 * 60, maxConcurrent: 1 } as const;
-const MANAGED_PAID_CAPS = { maxTtlSeconds: 8 * 60 * 60, maxConcurrent: 4 } as const;
+
+function anvilCloudAgentsEnabled(env: Env): boolean {
+  return env.ANVIL_CLOUD_AGENTS_ENABLED === 'true';
+}
 /**
  * ENV-09: managed bootstrap carries the short-lived enrollment code only.
  * Keep the generated code alphabet and four five-character groups here so a
@@ -935,35 +935,6 @@ export class AccountCoordinator extends DurableObject<Env> {
       'history_bytes',
       '0',
     );
-    // BILL-03: the entitlement cache is deliberately separate from the
-    // frozen ACCOUNT_SCHEMA — a per-object row bounding how long a hosted
-    // access decision may be reused.
-    this.ctx.storage.sql.exec(ENTITLEMENT_CACHE_DDL);
-    // BILL-08: retain the funding source so stale team membership cannot
-    // use the personal subscription outage grace.
-    const addedFundingSource = this.ensureColumn(
-      'hosted_entitlement_cache',
-      'funded_by',
-      "ALTER TABLE hosted_entitlement_cache ADD COLUMN funded_by TEXT NOT NULL DEFAULT 'none'",
-    );
-    this.ensureColumn(
-      'hosted_entitlement_cache',
-      'organization_id',
-      'ALTER TABLE hosted_entitlement_cache ADD COLUMN organization_id TEXT',
-    );
-    if (addedFundingSource) {
-      // Rows written before funding source was tracked could only be personal
-      // or preview decisions. Preserve their outage behavior during rollout.
-      this.ctx.storage.sql.exec(`
-        UPDATE hosted_entitlement_cache
-        SET funded_by = CASE
-          WHEN source = 'preview' THEN 'preview'
-          WHEN source IN ('subscription', 'renewal-grace', 'outage-grace') THEN 'personal'
-          ELSE 'none'
-        END
-        WHERE funded_by = 'none'
-      `);
-    }
     // E2E: additive columns on objects created before sealing existed —
     // CREATE TABLE IF NOT EXISTS never alters an existing table.
     this.ensureColumn(
@@ -1902,65 +1873,55 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
   }
 
-  /**
-   * BILL-03: denies mutating work for restricted/unknown hosted
-   * entitlements. Self-host deployments and flag-off hosted deployments
-   * never reach a denial — `checkHostedAccess` is inert there. Denials
-   * are `forbidden` with the entitlement reason; 401 stays auth-only and
-   * 413 stays quota.
-   */
+  /** Hosted device quota preflight; Sync/Mesh authorization is billing-free. */
   private async hostedWriteDenial(
     auth: SpikeAuth,
     requestId: string | undefined,
   ): Promise<Response | null> {
-    const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, Date.now());
-    if (access.allowed) {
-      if (!hostedEnforcementEnabled(this.env)) return null;
-      let response: Response;
-      try {
-        response = await this.env.SESSIONS.get(this.env.SESSIONS.idFromName('sessions')).fetch(
-          'https://internal.anvil/internal/hosted/device-limit-status',
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ accountId: auth.accountId }),
-          },
-        );
-      } catch {
-        return rpcErrorResponse(requestId, 'unavailable', { reason: 'device-limit-check' });
-      }
-      const status = (await response.json().catch(() => null)) as {
-        overLimit?: unknown;
-        limit?: unknown;
-        activeCount?: unknown;
-      } | null;
-      if (
-        !response.ok ||
-        status === null ||
-        typeof status.overLimit !== 'boolean' ||
-        typeof status.limit !== 'number' ||
-        !Number.isSafeInteger(status.limit) ||
-        status.limit <= 0 ||
-        typeof status.activeCount !== 'number' ||
-        !Number.isSafeInteger(status.activeCount) ||
-        status.activeCount < 0
-      ) {
-        return rpcErrorResponse(requestId, 'unavailable', { reason: 'device-limit-check' });
-      }
-      if (status.overLimit) {
-        emitMetric('hosted.device_limit_denial', {
-          limit: status.limit,
-          activeCount: status.activeCount,
-        });
-        return rpcErrorResponse(requestId, 'forbidden', {
-          reason: 'device-limit-exceeded',
-          limit: status.limit,
-          activeCount: status.activeCount,
-        });
-      }
-      return null;
+    if (!hostedEnforcementEnabled(this.env)) return null;
+    let response: Response;
+    try {
+      response = await this.env.SESSIONS.get(this.env.SESSIONS.idFromName('sessions')).fetch(
+        'https://internal.anvil/internal/hosted/device-limit-status',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ accountId: auth.accountId }),
+        },
+      );
+    } catch {
+      return rpcErrorResponse(requestId, 'unavailable', { reason: 'device-limit-check' });
     }
-    return rpcErrorResponse(requestId, 'forbidden', { reason: access.reason });
+    const status = (await response.json().catch(() => null)) as {
+      overLimit?: unknown;
+      limit?: unknown;
+      activeCount?: unknown;
+    } | null;
+    if (
+      !response.ok ||
+      status === null ||
+      typeof status.overLimit !== 'boolean' ||
+      typeof status.limit !== 'number' ||
+      !Number.isSafeInteger(status.limit) ||
+      status.limit <= 0 ||
+      typeof status.activeCount !== 'number' ||
+      !Number.isSafeInteger(status.activeCount) ||
+      status.activeCount < 0
+    ) {
+      return rpcErrorResponse(requestId, 'unavailable', { reason: 'device-limit-check' });
+    }
+    if (status.overLimit) {
+      emitMetric('hosted.device_limit_denial', {
+        limit: status.limit,
+        activeCount: status.activeCount,
+      });
+      return rpcErrorResponse(requestId, 'forbidden', {
+        reason: 'device-limit-exceeded',
+        limit: status.limit,
+        activeCount: status.activeCount,
+      });
+    }
+    return null;
   }
 
   private fairUseWriteDenial(requestId: string | undefined): Response | null {
@@ -6492,12 +6453,13 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (auth.enrollmentClass === 'ephemeral') {
       throw new RpcFailure('forbidden', { reason: 'worker-role-not-permitted' });
     }
+    if (!anvilCloudAgentsEnabled(this.env)) {
+      throw new RpcFailure('forbidden', { reason: 'cloud-agents-disabled' });
+    }
     if (this.env.MANAGED_PROVISIONER === undefined) {
       throw new RpcFailure('forbidden', { reason: 'provider-unavailable' });
     }
-    const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, Date.now());
-    if (!access.allowed) throw new RpcFailure('forbidden', { reason: access.reason });
-    const caps = this.managedCaps(access.entitlement);
+    const caps = this.managedCaps();
     return rpcSuccessResponse(requestId, {
       maxTtlSeconds: caps.maxTtlSeconds,
       maxConcurrent: caps.maxConcurrent,
@@ -6677,10 +6639,11 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (auth.enrollmentClass === 'ephemeral') {
       throw new RpcFailure('forbidden', { reason: 'worker-role-not-permitted' });
     }
+    if (!anvilCloudAgentsEnabled(this.env)) {
+      throw new RpcFailure('forbidden', { reason: 'cloud-agents-disabled' });
+    }
     const now = Date.now();
-    const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, now);
-    if (!access.allowed) throw new RpcFailure('forbidden', { reason: access.reason });
-    const caps = this.managedCaps(access.entitlement);
+    const caps = this.managedCaps();
     if (input.ttlSeconds < 60 || input.ttlSeconds > caps.maxTtlSeconds) {
       throw new RpcFailure('forbidden', {
         reason: 'managed-ttl-exceeds-cap',
@@ -6827,6 +6790,9 @@ export class AccountCoordinator extends DurableObject<Env> {
     this.commit((): void => {
       this.assertNotRevoked(auth);
       this.provisionEnrollment(auth);
+      if (!anvilCloudAgentsEnabled(this.env)) {
+        throw new RpcFailure('forbidden', { reason: 'cloud-agents-disabled' });
+      }
       const now = Date.now();
       this.ctx.storage.sql.exec(
         `INSERT INTO environment_bootstrap
@@ -6855,43 +6821,35 @@ export class AccountCoordinator extends DurableObject<Env> {
   // MANAGED_PROVISIONER service, and records the environment + outcome
   // through the same rows/events an external provisioner would write.
 
-  /**
-   * The entitlement tier's managed-environment caps. `null` means this
-   * deployment does not provision managed environments at all (no
-   * provisioner binding) — the request is rejected before a job is born.
-   */
-  private managedCaps(entitlement: HostedEntitlement | null): {
+  /** Fixed fair-use caps for Anvil-operated compute while that product is enabled. */
+  private managedCaps(): {
     maxTtlSeconds: number;
     maxConcurrent: number;
   } {
-    if (entitlement === null || entitlement.state === 'active' || entitlement.state === 'grace') {
-      return { ...MANAGED_PAID_CAPS };
-    }
     return { ...MANAGED_FREE_CAPS };
   }
 
   /**
-   * `job.create` gate for `provision-environment` + `anvil-managed`:
-   * hosted entitlements bound the environment's TTL and the account's
-   * live managed concurrency at the authoritative handler. BYO providers
-   * skip this path entirely — their limits are the user's own cloud's.
+   * `job.create` gate for `provision-environment` + `anvil-managed`.
+   * BYO providers skip this path entirely — their limits are the user's own
+   * cloud's. The Anvil-owned path is explicitly opt-in and uses fixed caps
+   * independent of legacy Sync subscription records.
    */
   private async assertManagedProvisionAllowed(
     auth: SpikeAuth,
     manifest: ExecutionManifest,
     now: number,
   ): Promise<{ maxTtlSeconds: number; maxConcurrent: number }> {
+    if (!anvilCloudAgentsEnabled(this.env)) {
+      throw new RpcFailure('forbidden', { reason: 'cloud-agents-disabled' });
+    }
     if (this.env.MANAGED_PROVISIONER === undefined) {
       throw new RpcFailure('forbidden', {
         reason: 'provider-unavailable',
         provider: 'anvil-managed',
       });
     }
-    const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, now);
-    if (!access.allowed) {
-      throw new RpcFailure('forbidden', { reason: access.reason });
-    }
-    const caps = this.managedCaps(access.entitlement);
+    const caps = this.managedCaps();
     const ttlSeconds = manifest.inputs['ttlSeconds'];
     if (typeof ttlSeconds !== 'number' || !Number.isFinite(ttlSeconds) || ttlSeconds < 60) {
       throw new RpcFailure('malformed-request', { reason: 'manifest.inputs.ttlSeconds' });
@@ -6905,8 +6863,8 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
     // Concurrency counts live managed environments AND managed provision
     // jobs still in flight. The same check is repeated inside the create
-    // transaction below: this preflight runs across an async entitlement
-    // lookup, so two requests can otherwise both observe the same slot.
+    // transaction below: the preflight can overlap another create, so two
+    // requests can otherwise both observe the same slot.
     this.assertManagedProvisionConcurrency(auth.accountId, caps);
     return caps;
   }
@@ -6972,6 +6930,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         hostedRemoteChat: boolean;
         payload: string | null;
       }[] => {
+        const cloudAgentsEnabled = anvilCloudAgentsEnabled(this.env);
         const jobs = this.ctx.storage.sql
           .exec<JobRow>(
             `SELECT * FROM jobs
@@ -6996,6 +6955,26 @@ export class AccountCoordinator extends DurableObject<Env> {
           const manifest = JSON.parse(job.input_manifest) as ExecutionManifest;
           const environmentId = manifest.inputs['environmentId'];
           const ttlSeconds = manifest.inputs['ttlSeconds'];
+          if (this.activeFairUseRestriction(now) !== null) {
+            if (typeof environmentId === 'string') {
+              this.ctx.storage.sql.exec(
+                'DELETE FROM environment_bootstrap WHERE environment_id = ?',
+                environmentId,
+              );
+            }
+            this.setJobState(job, 'failed', now, { stateReason: 'fair-use-restricted' });
+            continue;
+          }
+          if (!cloudAgentsEnabled) {
+            if (typeof environmentId === 'string') {
+              this.ctx.storage.sql.exec(
+                'DELETE FROM environment_bootstrap WHERE environment_id = ?',
+                environmentId,
+              );
+            }
+            this.setJobState(job, 'failed', now, { stateReason: 'cloud-agents-disabled' });
+            continue;
+          }
           if (
             typeof environmentId !== 'string' ||
             typeof ttlSeconds !== 'number' ||
@@ -7087,7 +7066,12 @@ export class AccountCoordinator extends DurableObject<Env> {
           const freshJob = this.readJobRequired(item.jobId);
           this.setAttemptState(freshAttempt, ok ? 'completed' : 'failed', Date.now());
           this.setJobState(freshJob, ok ? 'completed' : 'failed', Date.now(), {
-            stateReason: ok ? null : 'provision-failed',
+            stateReason:
+              ok || error === null
+                ? null
+                : error === 'fair-use-restricted' || error === 'cloud-agents-disabled'
+                  ? error
+                  : 'provision-failed',
             activeAttemptId: null,
           });
         });
@@ -7101,6 +7085,14 @@ export class AccountCoordinator extends DurableObject<Env> {
       // route so a pre-migration row can never reach the provisioner.
       if (!isEphemeralEnrollmentCode(item.payload)) {
         finish(false, null, 'bootstrap-payload-invalid');
+        continue;
+      }
+      if (!anvilCloudAgentsEnabled(this.env)) {
+        finish(false, null, 'cloud-agents-disabled');
+        continue;
+      }
+      if (this.activeFairUseRestriction(Date.now()) !== null) {
+        finish(false, null, 'fair-use-restricted');
         continue;
       }
       try {

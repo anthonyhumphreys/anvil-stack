@@ -341,6 +341,8 @@ export interface MeshWorkerStatus {
 
 export interface SyncRuntimeStatus {
   auth: SyncAuthPublicSnapshot;
+  /** Active account dataset epoch; null when this device has no signed-in scope. */
+  datasetEpoch: string | null;
   syncEnabled: boolean;
   /** Spike enrollment is a dev fixture; true only in unpackaged builds. */
   devSpikeAvailable: boolean;

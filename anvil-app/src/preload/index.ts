@@ -53,6 +53,7 @@ import type {
   EditableAgentInput,
   WorkspaceCloneRequest,
   WorkspaceCreateOptions,
+  WorkspaceUpdateOptions,
 } from '../shared/types.js';
 import type { RepoIndexJob } from '../shared/index-jobs.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
@@ -1008,7 +1009,7 @@ const api: AnvilAPI = {
     get: (id: string) => ipcRenderer.invoke('workspace:get', id),
     getPreferences: (id: string) => ipcRenderer.invoke('workspace:get-preferences', id),
     create: (opts: WorkspaceCreateOptions) => ipcRenderer.invoke('workspace:create', opts),
-    update: (id: string, opts: { name: string }) =>
+    update: (id: string, opts: WorkspaceUpdateOptions) =>
       ipcRenderer.invoke('workspace:update', id, opts),
     delete: (id: string) => ipcRenderer.invoke('workspace:delete', id),
     addRepos: (workspaceId: string, repoIds: string[]) =>

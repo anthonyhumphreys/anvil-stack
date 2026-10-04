@@ -377,42 +377,19 @@ describe('stripe webhook signature gate', () => {
 });
 
 describe('checkout.session.completed', () => {
-  it('stores the customer, completes the checkout row, and audits', async () => {
+  it('processes historical checkout completion without restoring paid access', async () => {
     const identity = makeIdentity(`co-${crypto.randomUUID()}`);
-    env.HOSTED_ALLOW_EARLY_CHECKOUT = 'true';
+    const account = await getOrCreateBillingAccount(hostedDb(), identity);
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const sessionId = `cs_test_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
-    await stubApprovedWaitlist(identity);
-    await stubStripe('GET', '/v1/prices/price_test_monthly', stripePrice());
-    await stubStripe('POST', '/v1/customers', { id: customerId });
-    await stubStripe('POST', '/v1/checkout/sessions', {
-      id: sessionId,
-      url: `https://checkout.stripe.test/pay/${sessionId}`,
-      status: 'open',
-      customer: customerId,
-      subscription: null,
-    });
-    const checkout = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-    expect(checkout.status).toBe(200);
-    expect(checkout.body['checkoutUrl']).toBe(`https://checkout.stripe.test/pay/${sessionId}`);
-    expect(checkout.body['sessionId']).toBe(sessionId);
-    const account = await getBillingAccountByIdentity(hostedDb(), identity);
-    expect(account).not.toBeNull();
-    if (account === null) throw new Error('checkout did not create an admitted billing account');
-    const open = await hostedDb()
-      .prepare('SELECT status FROM checkout_sessions WHERE stripe_session_id = ?')
-      .bind(sessionId)
-      .first<{ status: string }>();
-    expect(open?.status).toBe('open');
-
-    const concurrent = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-    expect(concurrent.status).toBe(409);
+    await hostedDb()
+      .prepare(
+        `INSERT INTO checkout_sessions
+          (stripe_session_id, billing_account_id, plan_key, interval, status, created_at, completed_at)
+         VALUES (?, ?, 'sync_personal', 'month', 'open', ?, NULL)`,
+      )
+      .bind(sessionId, account.id, Date.now())
+      .run();
 
     const eventId = `evt_${crypto.randomUUID()}`;
     const completed = await postWebhook(
@@ -440,34 +417,16 @@ describe('checkout.session.completed', () => {
       .bind(account.id)
       .first<Record<string, unknown>>();
     expect(customer?.['stripe_customer_id']).toBe(customerId);
-
-    // Completing the first session unlocks checkout again. A second customer
-    // creation is unnecessary because the first customer remains linked.
-    const sessionId2 = `cs_test_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
-    await stubStripe('GET', '/v1/prices/price_test_monthly', stripePrice());
-    await stubStripe('POST', '/v1/checkout/sessions', {
-      id: sessionId2,
-      url: `https://checkout.stripe.test/pay/${sessionId2}`,
-      status: 'open',
-      customer: customerId,
-      subscription: null,
-      client_reference_id: account.id,
-    });
-    const again = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-    expect(again.status).toBe(200);
-    expect(again.body['sessionId']).toBe(sessionId2);
-    const customers = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM stripe_customers WHERE billing_account_id = ?')
-      .bind(account.id)
-      .first<{ n: number }>();
-    expect(customers?.n).toBe(1);
-
     const kinds = await auditKinds(account.id);
-    expect(kinds).toContain('checkout.created');
     expect(kinds).toContain('checkout.completed');
+    const entitlement = await getEntitlement(
+      hostedDb(),
+      account,
+      POST_PREVIEW,
+      DEFAULT_HOSTED_LIMITS,
+      false,
+    );
+    expect(entitlement).toMatchObject({ state: 'active', source: 'none', reason: 'free' });
   });
 
   it('expires an open checkout session on checkout.session.expired', async () => {
@@ -805,13 +764,14 @@ describe('entitlement over stored provider truth', () => {
       false,
     );
     expect(entitlement.state).toBe('active');
-    expect(entitlement.source).toBe('subscription');
-    expect(entitlement.reason).toBe('paid');
-    expect(entitlement.accessUntil).toBe(new Date(paidThroughSec * 1000).toISOString());
+    expect(entitlement.source).toBe('none');
+    expect(entitlement.planKey).toBeNull();
+    expect(entitlement.reason).toBe('free');
+    expect(entitlement.accessUntil).toBeNull();
     expect(entitlement.capabilities).toEqual({ syncWrite: true, meshSubmit: true });
   });
 
-  it('grants seven-day renewal grace for a recently failed paid renewal', async () => {
+  it('keeps free capabilities during a recently failed legacy renewal and billing outage', async () => {
     const identity = makeIdentity(`grace-${crypto.randomUUID()}`);
     const account = await getOrCreateBillingAccount(hostedDb(), identity);
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -845,15 +805,15 @@ describe('entitlement over stored provider truth', () => {
       account,
       periodEnd + 3 * DAY,
       DEFAULT_HOSTED_LIMITS,
-      false,
+      true,
     );
-    expect(entitlement.state).toBe('grace');
-    expect(entitlement.source).toBe('renewal-grace');
-    expect(entitlement.reason).toBe('renewal-failed');
-    expect(entitlement.graceUntil).toBe(new Date(periodEnd + 7 * DAY).toISOString());
+    expect(entitlement.state).toBe('active');
+    expect(entitlement.source).toBe('none');
+    expect(entitlement.reason).toBe('free');
+    expect(entitlement.graceUntil).toBeNull();
   });
 
-  it('restricts an incomplete-only subscription after the preview cutoff', async () => {
+  it('keeps access before and after preview for an incomplete legacy subscription', async () => {
     const identity = makeIdentity(`inc-${crypto.randomUUID()}`);
     const account = await getOrCreateBillingAccount(hostedDb(), identity);
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -877,9 +837,9 @@ describe('entitlement over stored provider truth', () => {
       DEFAULT_HOSTED_LIMITS,
       false,
     );
-    expect(postCutoff.state).toBe('restricted');
-    expect(postCutoff.reason).toBe('preview-ended');
-    // The same row still grants preview before the boundary.
+    expect(postCutoff.state).toBe('active');
+    expect(postCutoff.reason).toBe('free');
+    // The same row has the same free access before the boundary.
     const preCutoff = await getEntitlement(
       hostedDb(),
       account,
@@ -887,122 +847,43 @@ describe('entitlement over stored provider truth', () => {
       DEFAULT_HOSTED_LIMITS,
       false,
     );
-    expect(preCutoff.state).toBe('preview');
+    expect(preCutoff.state).toBe('active');
+    expect(preCutoff.reason).toBe('free');
   });
 });
 
 describe('internal billing routes', () => {
-  it('checkout refuses when disabled, when the price is absent, and without Stripe', async () => {
-    const identity = makeIdentity(`gate-${crypto.randomUUID()}`);
-    env.HOSTED_CHECKOUT_ENABLED = 'false';
-    const disabled = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-    expect(disabled.status).toBe(403);
-    expect((disabled.body['error'] as { details: { reason: string } }).details.reason).toBe(
-      'checkout-disabled',
-    );
-
-    env.HOSTED_CHECKOUT_ENABLED = 'true';
-    env.HOSTED_ALLOW_EARLY_CHECKOUT = 'true';
-    env.STRIPE_PRICE_SYNC_MONTHLY = '';
-    const noPrice = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-    expect(noPrice.status).toBe(503);
-
-    env.STRIPE_PRICE_SYNC_MONTHLY = 'price_test_monthly';
-    env.STRIPE_SECRET_KEY = '';
-    const noKey = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-    expect(noKey.status).toBe(503);
-
-    // None of the refusals touched the provider or left a checkout row
-    // (the gates all run before the billing account is even resolved).
-    const account = await getBillingAccountByIdentity(hostedDb(), identity);
-    expect(account).toBeNull();
-  });
-
-  it('keeps staging checkout closed before the preview deadline unless opted in', async () => {
-    vi.spyOn(Date, 'now').mockReturnValue(PREVIEW_END_MS - DAY);
-    const identity = makeIdentity(`early-${crypto.randomUUID()}`);
-    env.HOSTED_ALLOW_EARLY_CHECKOUT = '';
-
-    const result = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-
-    expect(result.status).toBe(403);
-    expect((result.body['error'] as { details: { reason: string } }).details.reason).toBe(
-      'checkout-disabled',
-    );
+  it('rejects stale personal and team checkout requests before Stripe or account mutation', async () => {
+    const identity = makeIdentity(`retired-checkout-${crypto.randomUUID()}`);
+    const countsBefore = await hostedDb()
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM stripe_customers) AS customers,
+                (SELECT COUNT(*) FROM checkout_sessions) AS checkouts`,
+      )
+      .first<{ customers: number; checkouts: number }>();
+    for (const checkoutEnabled of ['', 'false', 'true']) {
+      env.HOSTED_CHECKOUT_ENABLED = checkoutEnabled;
+      env.STRIPE_SECRET_KEY = '';
+      for (const planKey of ['sync_personal', 'sync_team']) {
+        const result = await signedHostedPost('/internal/hosted/checkout', {
+          ...identity,
+          interval: 'month',
+          planKey,
+        });
+        expect(result.status).toBe(403);
+        expect((result.body['error'] as { details: { reason: string } }).details.reason).toBe(
+          'sync-checkout-disabled',
+        );
+      }
+    }
     expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
-  });
-
-  it('requires waitlist admission for a direct checkout request', async () => {
-    env.HOSTED_ALLOW_EARLY_CHECKOUT = 'true';
-    const identity = makeIdentity(`not-admitted-${crypto.randomUUID()}`);
-    await stubWaitlist(identity, 'pending');
-    const providerRowsBefore = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM stripe_customers')
-      .first<{ n: number }>();
-    const checkoutRowsBefore = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM checkout_sessions')
-      .first<{ n: number }>();
-
-    const result = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-
-    expect(result.status).toBe(403);
-    expect((result.body['error'] as { details: { reason: string } }).details.reason).toBe(
-      'waitlist-approval-required',
-    );
-    expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
-    const providerRows = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM stripe_customers')
-      .first<{ n: number }>();
-    const checkoutRows = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM checkout_sessions')
-      .first<{ n: number }>();
-    expect(providerRows?.n).toBe(providerRowsBefore?.n);
-    expect(checkoutRows?.n).toBe(checkoutRowsBefore?.n);
-  });
-
-  it('requires the configured staging Stripe price to be test mode and match the catalog', async () => {
-    env.HOSTED_ALLOW_EARLY_CHECKOUT = 'true';
-    const identity = makeIdentity(`price-mode-${crypto.randomUUID()}`);
-    await stubApprovedWaitlist(identity);
-    const customerRowsBefore = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM stripe_customers')
-      .first<{ n: number }>();
-    const checkoutRowsBefore = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM checkout_sessions')
-      .first<{ n: number }>();
-    await stubStripe('GET', '/v1/prices/price_test_monthly', stripePrice({ livemode: true }));
-
-    const result = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-
-    expect(result.status).toBe(503);
-    const account = await getBillingAccountByIdentity(hostedDb(), identity);
-    expect(account).not.toBeNull();
-    const customerRows = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM stripe_customers')
-      .first<{ n: number }>();
-    const checkoutRows = await hostedDb()
-      .prepare('SELECT COUNT(*) AS n FROM checkout_sessions')
-      .first<{ n: number }>();
-    expect(customerRows?.n).toBe(customerRowsBefore?.n);
-    expect(checkoutRows?.n).toBe(checkoutRowsBefore?.n);
+    const rows = await hostedDb()
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM stripe_customers) AS customers,
+                (SELECT COUNT(*) FROM checkout_sessions) AS checkouts`,
+      )
+      .first<{ customers: number; checkouts: number }>();
+    expect(rows).toEqual(countsBefore);
   });
 
   it('portal 404s without a customer and returns a portal URL with one', async () => {
@@ -1033,7 +914,8 @@ describe('internal billing routes', () => {
     await getOrCreateBillingAccount(hostedDb(), identity);
     const entitlement = await signedHostedPost('/internal/hosted/entitlement', identity);
     expect(entitlement.status).toBe(200);
-    expect(entitlement.body['state']).toBe('preview');
+    expect(entitlement.body['state']).toBe('active');
+    expect(entitlement.body['reason']).toBe('free');
 
     const overview = await signedHostedPost('/internal/hosted/billing', identity);
     expect(overview.status).toBe(200);
@@ -1041,7 +923,12 @@ describe('internal billing routes', () => {
     expect(overview.body['subscription']).toBeNull();
     expect(overview.body['pendingCheckout']).toBeNull();
     expect(overview.body['lastReconcileAt']).toBeNull();
-    expect((overview.body['entitlement'] as HostedEntitlement).state).toBe('preview');
+    expect((overview.body['entitlement'] as HostedEntitlement)).toMatchObject({
+      state: 'active',
+      source: 'none',
+      reason: 'free',
+      capabilities: { syncWrite: true, meshSubmit: true },
+    });
   });
 });
 

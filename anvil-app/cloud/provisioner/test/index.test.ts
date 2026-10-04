@@ -17,16 +17,20 @@ const getSandbox = sandboxModule.getSandbox as unknown as ReturnType<typeof vi.f
 const threadGet = vi.fn();
 const THREAD_ID = 'remote-00000000-0000-4000-8000-000000000001';
 
-function env() {
+function env(cloudAgentsEnabled?: string) {
   return {
     Sandbox: {},
     ThreadSandbox: { idFromName: (id: string) => id, get: threadGet },
+    ANVIL_CLOUD_AGENTS_ENABLED: cloudAgentsEnabled,
     ALLOW_UNAUTHENTICATED: 'true',
   } as never;
 }
 
-async function call(path: string, init?: RequestInit) {
-  return handler.fetch(new Request(`https://provisioner.test${path}`, init), env());
+async function call(path: string, init?: RequestInit, cloudAgentsEnabled?: string) {
+  return handler.fetch(
+    new Request(`https://provisioner.test${path}`, init),
+    env(cloudAgentsEnabled),
+  );
 }
 
 describe('mesh provisioner HTTP contract', () => {
@@ -148,5 +152,58 @@ describe('mesh provisioner HTTP contract', () => {
     expect((await call(`/v1/environments/${THREAD_ID}`, { method: 'DELETE' })).status).toBe(200);
     expect(sandbox.discardSnapshot).toHaveBeenCalledOnce();
     expect(threadGet).toHaveBeenCalled();
+  });
+
+  it('fails closed for Anvil-managed create and resume while preserving cleanup', async () => {
+    const bootstrap = { ...BOOTSTRAP, environmentId: THREAD_ID, provider: 'anvil-managed' };
+    const sandbox = {
+      boot: vi.fn().mockResolvedValue({ processId: '42', reused: false }),
+      hasSnapshot: vi.fn().mockResolvedValue(true),
+      suspendAndSnapshot: vi.fn().mockResolvedValue({ snapshotId: 'snapshot-1', size: 42 }),
+      discardSnapshot: vi.fn().mockResolvedValue(undefined),
+    };
+    threadGet.mockReturnValue(sandbox);
+
+    const create = {
+      method: 'POST',
+      body: JSON.stringify({ environmentId: THREAD_ID, ttlSeconds: 900, bootstrap }),
+    };
+    const deniedCreate = await call('/v1/environments', create);
+    expect(deniedCreate.status).toBe(503);
+    expect(await deniedCreate.json()).toEqual({ error: 'anvil_cloud_agents_disabled' });
+    expect(threadGet).not.toHaveBeenCalled();
+
+    const deniedResume = await call(
+      `/v1/environments/${THREAD_ID}/boot`,
+      { method: 'POST', body: JSON.stringify({ bootstrap }) },
+      'false',
+    );
+    expect(deniedResume.status).toBe(503);
+    expect(sandbox.hasSnapshot).not.toHaveBeenCalled();
+
+    expect((await call(`/v1/environments/${THREAD_ID}/suspend`, { method: 'POST' })).status).toBe(
+      200,
+    );
+    expect((await call(`/v1/environments/${THREAD_ID}`, { method: 'DELETE' })).status).toBe(200);
+    expect(sandbox.suspendAndSnapshot).toHaveBeenCalledOnce();
+    expect(sandbox.discardSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('allows Anvil-managed creation only when explicitly enabled', async () => {
+    const bootstrap = { ...BOOTSTRAP, environmentId: THREAD_ID, provider: 'anvil-managed' };
+    const sandbox = { boot: vi.fn().mockResolvedValue({ processId: '42', reused: false }) };
+    threadGet.mockReturnValue(sandbox);
+
+    const response = await call(
+      '/v1/environments',
+      {
+        method: 'POST',
+        body: JSON.stringify({ environmentId: THREAD_ID, ttlSeconds: 900, bootstrap }),
+      },
+      'true',
+    );
+
+    expect(response.status).toBe(201);
+    expect(sandbox.boot).toHaveBeenCalledWith(bootstrap);
   });
 });

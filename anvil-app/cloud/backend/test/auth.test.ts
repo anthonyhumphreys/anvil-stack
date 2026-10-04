@@ -297,7 +297,7 @@ describe('enrollment-code authentication', () => {
       const resumed = expectSuccess<SessionDescribeResult>(
         await postRpc('session.describe', {}, bearer(sessions[0])),
       );
-      expect(resumed.entitlement).toMatchObject({ state: 'active', reason: 'paid' });
+      expect(resumed.entitlement).toMatchObject({ state: 'active', reason: 'free' });
       const admittedWrite = await postRpc(
         'sync.push',
         {

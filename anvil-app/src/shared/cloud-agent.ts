@@ -17,6 +17,8 @@ export interface CloudAgentProviderStatus {
 }
 
 export interface CloudAgentSettingsSnapshot {
+  /** Whether Anvil-operated Cloud Agents are currently available on this install. */
+  anvilCloudAgentsEnabled: boolean;
   providers: CloudAgentProviderStatus[];
 }
 

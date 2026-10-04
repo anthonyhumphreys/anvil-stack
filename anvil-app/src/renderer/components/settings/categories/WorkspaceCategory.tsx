@@ -49,6 +49,8 @@ export function WorkspaceCategory() {
 
   const [name, setName] = useState(activeWorkspace?.name ?? '');
   const [nameState, setNameState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [syncSelected, setSyncSelected] = useState(activeWorkspace?.syncSelected ?? false);
+  const [syncSaving, setSyncSaving] = useState(false);
   const [showAddRepos, setShowAddRepos] = useState(false);
   const [repoToRemove, setRepoToRemove] = useState<RepoInfo | null>(null);
   const [reindexingRepoId, setReindexingRepoId] = useState<string | null>(null);
@@ -58,6 +60,11 @@ export function WorkspaceCategory() {
     setName(activeWorkspace?.name ?? '');
     setNameState('idle');
   }, [activeWorkspace?.id, activeWorkspace?.name]);
+
+  useEffect(() => {
+    setSyncSelected(activeWorkspace?.syncSelected ?? false);
+    setSyncSaving(false);
+  }, [activeWorkspace?.id, activeWorkspace?.syncSelected]);
 
   const saveName = async () => {
     const trimmed = name.trim();
@@ -70,6 +77,20 @@ export function WorkspaceCategory() {
     } catch (err) {
       setNameState('error');
       reportError(err instanceof Error ? err.message : 'Failed to rename the workspace');
+    }
+  };
+
+  const saveSyncSelection = async (selected: boolean) => {
+    if (!activeWorkspace || syncSaving || selected === activeWorkspace.syncSelected) return;
+    setSyncSelected(selected);
+    setSyncSaving(true);
+    try {
+      await updateWorkspace(activeWorkspace.id, { syncSelected: selected });
+    } catch (err) {
+      setSyncSelected(activeWorkspace.syncSelected);
+      reportError(err instanceof Error ? err.message : 'Failed to update workspace Sync choice');
+    } finally {
+      setSyncSaving(false);
     }
   };
 
@@ -155,6 +176,27 @@ export function WorkspaceCategory() {
             className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
           />
         </div>
+      </SettingsPanel>
+
+      <SettingsPanel
+        panelId="workspace-sync"
+        title="Workspace Sync"
+        description="Choose whether this workspace replicates to your other signed-in devices."
+      >
+        <SegmentedControl<'local' | 'sync'>
+          label="Workspace Sync"
+          value={syncSelected ? 'sync' : 'local'}
+          onChange={(value) => void saveSyncSelection(value === 'sync')}
+          options={[
+            { value: 'local', label: 'Local only', disabled: syncSaving },
+            { value: 'sync', label: 'Sync across devices', disabled: syncSaving },
+          ]}
+        />
+        <p className="text-sm text-text-secondary">
+          {syncSelected
+            ? 'Sync is selected for this workspace. Turning it off pauses future replication on this device and keeps the local workspace and its saved Sync association.'
+            : 'This workspace stays on this device. Turning Sync on later will reconcile remote changes before continuing replication.'}
+        </p>
       </SettingsPanel>
 
       <SettingsPanel

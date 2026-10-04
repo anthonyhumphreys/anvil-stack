@@ -237,81 +237,29 @@ afterEach(async () => {
 });
 
 describe('hosted team seat billing', () => {
-  it('requires a current quote and paid invoice before increasing seat capacity', async () => {
+  it('rejects stale seat quote, confirm, and change requests without contacting Stripe', async () => {
     const fixture = await createTeamFixture();
-    const provider = providerSubscription(
-      fixture.subscriptionId,
-      fixture.customerId,
-      SEAT_QUANTITY,
-    );
-    const parsed = parseStripeSubscription(provider);
-    expect(parsed).not.toBeNull();
-
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1400,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    const quoted = await invoke(handleOrganizationSeatQuote, {
+    const common = {
       ...fixture.identity,
       organizationId: fixture.organizationId,
-      seats: 7,
-    });
-    expect(quoted.status).toBe(200);
-    const quote = quoted.body as unknown as {
-      quoteId: string;
-      amountDue: number;
-      currency: string;
-      taxAmount: number;
-      prorationDate: number;
-      expiresAt: number;
     };
-    expect(quote.amountDue).toBe(1400);
-    expect(quote.currency).toBe('gbp');
-    expect(quote.taxAmount).toBe(200);
-    expect(quote.prorationDate).toBeLessThan(1_000_000_000_000);
-    expect(quote.expiresAt).toBeGreaterThan(Date.now());
+    const quote = await invoke(handleOrganizationSeatQuote, { ...common, seats: 7 });
+    const confirm = await invoke(handleOrganizationSeatConfirm, {
+      ...common,
+      quoteId: crypto.randomUUID(),
+    });
+    const increase = await invoke(handleOrganizationSeatChange, { ...common, seats: 7 });
+    const decrease = await invoke(handleOrganizationSeatChange, { ...common, seats: 5 });
+
+    for (const result of [quote, confirm, increase, decrease]) {
+      expect(result.status).toBe(403);
+      expect((result.body['error'] as Record<string, unknown>)['details']).toEqual({
+        reason: 'sync-checkout-disabled',
+      });
+    }
     expect(await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, Date.now())).toBe(
       5,
     );
-
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1400,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    await queueStripe(
-      'POST',
-      `/v1/subscriptions/${fixture.subscriptionId}`,
-      providerSubscription(fixture.subscriptionId, fixture.customerId, 7, {
-        latest_invoice: { id: 'in_paid_upgrade', status: 'paid' },
-      }),
-    );
-    const confirmed = await invoke(handleOrganizationSeatConfirm, {
-      ...fixture.identity,
-      organizationId: fixture.organizationId,
-      quoteId: quote.quoteId,
-    });
-    expect(confirmed.status).toBe(200);
-    expect(confirmed.body).toEqual({
-      seatCapacity: 7,
-      scheduledSeatCapacity: null,
-      effectiveAt: null,
-    });
-    const subscription = await hostedDb()
-      .prepare(
-        `SELECT seat_quantity, paid_seat_quantity, paid_through
-         FROM stripe_subscriptions WHERE stripe_subscription_id = ?`,
-      )
-      .bind(fixture.subscriptionId)
-      .first<{ seat_quantity: number; paid_seat_quantity: number; paid_through: number }>();
-    expect(subscription).toEqual({
-      seat_quantity: 7,
-      paid_seat_quantity: 7,
-      paid_through: expect.any(Number),
-    });
   });
 
   it('does not grant capacity from a subscription update before invoice.paid', async () => {
@@ -341,7 +289,7 @@ describe('hosted team seat billing', () => {
 
     await recordInvoicePaid(hostedDb(), fixture.subscriptionId, Date.now());
     expect(await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, Date.now())).toBe(
-      8,
+      5,
     );
   });
 
@@ -417,257 +365,45 @@ describe('hosted team seat billing', () => {
     expect(await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, now)).toBe(5);
   });
 
-  it('requires renewed confirmation when Stripe preview changes before confirmation', async () => {
-    const fixture = await createTeamFixture();
-    const provider = providerSubscription(
-      fixture.subscriptionId,
-      fixture.customerId,
-      SEAT_QUANTITY,
-    );
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1400,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    const quoted = await invoke(handleOrganizationSeatQuote, {
-      ...fixture.identity,
-      organizationId: fixture.organizationId,
-      seats: 7,
-    });
-    const originalQuoteId = quoted.body['quoteId'] as string;
-
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1500,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1500,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    const result = await invoke(handleOrganizationSeatConfirm, {
-      ...fixture.identity,
-      organizationId: fixture.organizationId,
-      quoteId: originalQuoteId,
-    });
-    expect(result.status).toBe(409);
-    const error = result.body['error'] as Record<string, unknown>;
-    const details = error['details'] as Record<string, unknown>;
-    expect(details['reason']).toBe('seat-quote-changed');
-    expect((details['quote'] as Record<string, unknown>)['quoteId']).not.toBe(originalQuoteId);
-    const subscription = await hostedDb()
-      .prepare(
-        'SELECT paid_seat_quantity FROM stripe_subscriptions WHERE stripe_subscription_id = ?',
-      )
-      .bind(fixture.subscriptionId)
-      .first<{ paid_seat_quantity: number }>();
-    expect(subscription?.paid_seat_quantity).toBe(5);
-  });
-
-  it('does not grant a seat increase when Stripe rejects the immediate invoice', async () => {
-    const fixture = await createTeamFixture();
-    const provider = providerSubscription(
-      fixture.subscriptionId,
-      fixture.customerId,
-      SEAT_QUANTITY,
-    );
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1400,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    const quoted = await invoke(handleOrganizationSeatQuote, {
-      ...fixture.identity,
-      organizationId: fixture.organizationId,
-      seats: 7,
-    });
-
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1400,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    await queueStripe(
-      'POST',
-      `/v1/subscriptions/${fixture.subscriptionId}`,
-      { error: { message: 'payment method declined' } },
-      402,
-    );
-    const result = await invoke(handleOrganizationSeatConfirm, {
-      ...fixture.identity,
-      organizationId: fixture.organizationId,
-      quoteId: quoted.body['quoteId'],
-    });
-    expect(result.status).toBe(409);
-    expect((result.body['error'] as Record<string, unknown>)['details']).toEqual({
-      reason: 'payment-not-confirmed',
-    });
-    expect(await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, Date.now())).toBe(
-      5,
-    );
-  });
-
-  it('allows only one concurrent confirmation of the same quote', async () => {
-    const fixture = await createTeamFixture();
-    const provider = providerSubscription(
-      fixture.subscriptionId,
-      fixture.customerId,
-      SEAT_QUANTITY,
-    );
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1400,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    const quoted = await invoke(handleOrganizationSeatQuote, {
-      ...fixture.identity,
-      organizationId: fixture.organizationId,
-      seats: 7,
-    });
-    const quoteId = quoted.body['quoteId'] as string;
-
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1400,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
-    });
-    await queueStripe(
-      'POST',
-      `/v1/subscriptions/${fixture.subscriptionId}`,
-      providerSubscription(fixture.subscriptionId, fixture.customerId, 7, {
-        latest_invoice: { id: 'in_paid_concurrent', status: 'paid' },
-      }),
-    );
-    const body = { ...fixture.identity, organizationId: fixture.organizationId, quoteId };
-    const results = await Promise.all([
-      invoke(handleOrganizationSeatConfirm, body),
-      invoke(handleOrganizationSeatConfirm, body),
-    ]);
-    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
-    expect(await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, Date.now())).toBe(
-      7,
-    );
-  });
-
-  it('preserves a scheduled capacity clamp until Stripe confirms its reduced quantity', async () => {
+  it('keeps the fixed free team seat quota after a legacy subscription expires', async () => {
     const fixture = await createTeamFixture();
     const now = Date.now();
-    const periodEnd = now + 20 * 86_400_000;
     await hostedDb().batch([
       hostedDb()
         .prepare(
           `UPDATE stripe_subscriptions
            SET seat_quantity = 10, paid_seat_quantity = 10, current_period_end = ?,
-               paid_through = ?, status = 'past_due'
+               paid_through = ?, status = 'canceled'
            WHERE stripe_subscription_id = ?`,
         )
-        .bind(periodEnd, now - 1, fixture.subscriptionId),
+        .bind(now - 1, now - 1, fixture.subscriptionId),
       hostedDb()
         .prepare(
           `UPDATE organization_billing_state
-           SET scheduled_seat_capacity = 5, scheduled_effective_at = ?
+           SET preview_seat_capacity = 0, effective_seat_capacity = 0,
+               scheduled_seat_capacity = 9, scheduled_effective_at = ?
            WHERE organization_id = ?`,
         )
-        .bind(now - 1, fixture.organizationId),
+        .bind(now + 30 * 86_400_000, fixture.organizationId),
     ]);
 
-    // A later provider period or old-quantity invoice must not remove the
-    // conservative scheduled limit after the old paid period has lapsed.
-    await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, now);
-    await hostedDb()
-      .prepare("UPDATE stripe_subscriptions SET status = 'active' WHERE stripe_subscription_id = ?")
-      .bind(fixture.subscriptionId)
-      .run();
-    await recordInvoicePaid(hostedDb(), fixture.subscriptionId, now);
-    let state = await hostedDb()
+    expect(await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, now)).toBe(5);
+    const state = await hostedDb()
       .prepare(
-        `SELECT scheduled_seat_capacity, effective_seat_capacity
+        `SELECT preview_seat_capacity, effective_seat_capacity, scheduled_seat_capacity
          FROM organization_billing_state WHERE organization_id = ?`,
       )
       .bind(fixture.organizationId)
-      .first<{ scheduled_seat_capacity: number | null; effective_seat_capacity: number }>();
-    expect(state).toEqual({ scheduled_seat_capacity: 5, effective_seat_capacity: 5 });
-
-    // Only the provider-confirmed paid renewal at the scheduled quantity
-    // clears the clamp.
-    await hostedDb()
-      .prepare(
-        `UPDATE stripe_subscriptions SET seat_quantity = 5, current_period_end = ?,
-           paid_through = ? WHERE stripe_subscription_id = ?`,
-      )
-      .bind(periodEnd + 30 * 86_400_000, now - 1, fixture.subscriptionId)
-      .run();
-    await recordInvoicePaid(hostedDb(), fixture.subscriptionId, now + 1);
-    state = await hostedDb()
-      .prepare(
-        `SELECT scheduled_seat_capacity, effective_seat_capacity
-         FROM organization_billing_state WHERE organization_id = ?`,
-      )
-      .bind(fixture.organizationId)
-      .first<{ scheduled_seat_capacity: number | null; effective_seat_capacity: number }>();
-    expect(state).toEqual({ scheduled_seat_capacity: null, effective_seat_capacity: 5 });
-  });
-
-  it('serializes concurrent quote requests for one organization', async () => {
-    const fixture = await createTeamFixture();
-    const provider = providerSubscription(
-      fixture.subscriptionId,
-      fixture.customerId,
-      SEAT_QUANTITY,
-    );
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    await queueStripe('POST', '/v1/invoices/create_preview', {
-      amount_due: 1400,
-      currency: 'gbp',
-      total_taxes: [{ amount: 200 }],
+      .first<{
+        preview_seat_capacity: number;
+        effective_seat_capacity: number;
+        scheduled_seat_capacity: number | null;
+      }>();
+    expect(state).toEqual({
+      preview_seat_capacity: 5,
+      effective_seat_capacity: 5,
+      scheduled_seat_capacity: null,
     });
-    const requestBody = {
-      ...fixture.identity,
-      organizationId: fixture.organizationId,
-      seats: 7,
-    };
-    const results = await Promise.all([
-      invoke(handleOrganizationSeatQuote, requestBody),
-      invoke(handleOrganizationSeatQuote, requestBody),
-    ]);
-    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
-    const pendingQuotes = await hostedDb()
-      .prepare(
-        `SELECT COUNT(*) AS count FROM team_seat_change_quotes
-         WHERE organization_id = ? AND status = 'pending'`,
-      )
-      .bind(fixture.organizationId)
-      .first<{ count: number }>();
-    expect(pendingQuotes?.count).toBe(1);
-  });
-
-  it('rejects a direct increase without charging and requires explicit quote confirmation', async () => {
-    const fixture = await createTeamFixture();
-    const provider = providerSubscription(
-      fixture.subscriptionId,
-      fixture.customerId,
-      SEAT_QUANTITY,
-    );
-    await queueStripe('GET', `/v1/subscriptions/${fixture.subscriptionId}`, provider);
-    const result = await invoke(handleOrganizationSeatChange, {
-      ...fixture.identity,
-      organizationId: fixture.organizationId,
-      seats: 7,
-    });
-    expect(result.status).toBe(409);
-    expect((result.body['error'] as Record<string, unknown>)['details']).toEqual({
-      reason: 'seat-quote-required',
-    });
-    expect(await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, Date.now())).toBe(
-      5,
-    );
   });
 
   it('lets a retained owner open billing portal for a closed organization', async () => {

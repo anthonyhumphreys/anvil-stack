@@ -371,6 +371,9 @@ export async function createMeshProvisionerDeploymentPlan(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  if (vars.ANVIL_CLOUD_AGENTS_ENABLED === undefined) {
+    vars.ANVIL_CLOUD_AGENTS_ENABLED = "false";
+  }
   config.vars = vars;
   if (vars.ALLOW_UNAUTHENTICATED !== "false") {
     diagnostics.push({

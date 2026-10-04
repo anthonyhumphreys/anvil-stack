@@ -1414,7 +1414,7 @@ async function executePrepareWorkspace(
   // a stale replica prepares the wrong thing silently otherwise.
   // `workspaces.updated_at` is a local clock (remote applies re-stamp it);
   // the manifest pins the canonical payload digest instead.
-  installTaskWorkspaceDefinition(manifest, environmentBinding() !== null);
+  installTaskWorkspaceDefinition(manifest);
   const localRevision = workspaceDefinitionRevision(workspaceId);
   if (localRevision === null) {
     throw new Error(`workspace not replicated on this device: ${workspaceId}`);

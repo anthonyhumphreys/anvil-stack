@@ -28,6 +28,7 @@ export { ThreadSandbox } from './checkpointing-sandbox';
 interface Env extends SandboxEnv<Sandbox> {
   ThreadSandbox: DurableObjectNamespace<ThreadSandbox>;
   PROVISIONER_TOKEN?: string;
+  ANVIL_CLOUD_AGENTS_ENABLED?: string;
   ALLOW_UNAUTHENTICATED?: string;
 }
 
@@ -37,6 +38,10 @@ function json(body: unknown, status = 200): Response {
 
 function unauthorized(): Response {
   return json({ error: 'unauthorized' }, 401);
+}
+
+function cloudAgentsDisabled(env: Env, bootstrap: MeshEnvironmentBootstrap): boolean {
+  return bootstrap.provider === 'anvil-managed' && env.ANVIL_CLOUD_AGENTS_ENABLED !== 'true';
 }
 
 function authorized(request: Request, env: Env): boolean {
@@ -97,6 +102,9 @@ export default {
       }
       if (!validTtlSeconds(body.ttlSeconds) || body.ttlSeconds !== body.bootstrap.ttlSeconds) {
         return json({ error: 'ttlSeconds must match bootstrap' }, 400);
+      }
+      if (cloudAgentsDisabled(env, body.bootstrap)) {
+        return json({ error: 'anvil_cloud_agents_disabled' }, 503);
       }
       try {
         const { processId, reused } = usesThreadSandbox(id)
@@ -162,6 +170,9 @@ export default {
         if (!validBootstrap(body.bootstrap)) return json({ error: 'invalid bootstrap' }, 400);
         if (body.bootstrap.environmentId !== id) {
           return json({ error: 'bootstrap environmentId mismatch' }, 400);
+        }
+        if (cloudAgentsDisabled(env, body.bootstrap)) {
+          return json({ error: 'anvil_cloud_agents_disabled' }, 503);
         }
         const sandbox = threadSandbox(env, id);
         if (!(await sandbox.hasSnapshot())) {

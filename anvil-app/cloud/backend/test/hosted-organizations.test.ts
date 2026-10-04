@@ -1,15 +1,21 @@
 import { env, SELF } from 'cloudflare:test';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   DeviceListResult,
   DeviceSession,
   EnrollmentCodeIssueResult,
 } from '../../contract/auth';
-import { recordCheckoutSession } from '../src/hosted/billing';
+import {
+  FREE_TEAM_SEAT_CAPACITY,
+  getOrganizationTeamCapacity,
+  recordCheckoutSession,
+} from '../src/hosted/billing';
+import { PREVIEW_END_MS } from '../src/hosted/policy';
 import { handleHostedDevices } from '../src/hosted/device-routes';
 import type { HostedIdentity } from '../src/hosted/identity';
 import {
+  assignOrganizationSeat,
   completeHostedInvitationAcceptance,
   ensureOwnerSeatForPaidOrganization,
   handleHostedOrganizationRequest,
@@ -19,6 +25,7 @@ import {
 const WORKOS_API = 'https://api.workos.com';
 const WORKOS_API_KEY = 'sk_test_workos_fake';
 const HOSTED_CLIENT_ID = 'client_hosted_test';
+const POST_PREVIEW = PREVIEW_END_MS + 30 * 24 * 60 * 60 * 1000;
 
 function hostedDb(): D1Database {
   const db = env.HOSTED_DB;
@@ -391,6 +398,102 @@ describe('hosted organization operations', () => {
     });
     expect(replay.status).toBe(200);
     expect(replay.body.accepted).toBe(true);
+  });
+
+  it('creates, reserves, and accepts a free team seat after the preview deadline', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(POST_PREVIEW);
+    try {
+      const ownerUserId = id('user');
+      const ownerAccountId = await createBillingAccount(ownerUserId, `${ownerUserId}@example.test`);
+      const providerOrganizationId = id('org_provider');
+      const organizationId = await createActiveOrganization({
+        ownerUserId,
+        ownerAccountId,
+        workosOrganizationId: providerOrganizationId,
+      });
+      expect(
+        await assignOrganizationSeat(hostedDb(), organizationId, ownerAccountId, POST_PREVIEW),
+      ).toBe(true);
+
+      const targetUserId = id('user');
+      const targetEmail = `${targetUserId}@example.test`;
+      const targetAccountId = await createBillingAccount(targetUserId, targetEmail);
+      const providerInvitationId = id('invite_provider');
+      await queueWorkOS('GET', usersByEmailPath(targetEmail), {
+        data: [{ id: targetUserId, email: targetEmail, email_verified: true }],
+      });
+      await queueWorkOS('POST', '/user_management/invitations', {
+        id: providerInvitationId,
+        organization_id: providerOrganizationId,
+        accept_invitation_url: 'https://authkit.example/free-team-invite',
+        expires_at: new Date(POST_PREVIEW + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+
+      const invited = await invoke('/internal/hosted/organization-invite', {
+        identity: identity(ownerUserId),
+        organizationId,
+        email: targetEmail,
+      });
+      expect(invited.status).toBe(200);
+      expect(invited.body.seats).toEqual({ assigned: 1, reserved: 1, available: 3 });
+
+      const invitation = await hostedDb()
+        .prepare(
+          `SELECT id, expires_at FROM hosted_organization_invitations
+           WHERE organization_id = ? AND target_workos_user_id = ? AND state = 'pending'`,
+        )
+        .bind(organizationId, targetUserId)
+        .first<{ id: string; expires_at: number }>();
+      expect(invitation).not.toBeNull();
+      if (invitation === null) throw new Error('free team invitation missing');
+      const token = id('token');
+      const providerMembershipId = id('mem_provider');
+      await queueWorkOS('GET', `/user_management/invitations/by_token/${token}`, {
+        id: providerInvitationId,
+        email: targetEmail,
+        state: 'accepted',
+        organization_id: providerOrganizationId,
+        accepted_user_id: targetUserId,
+        expires_at: new Date(invitation.expires_at).toISOString(),
+      });
+      await queueWorkOS(
+        'GET',
+        `/user_management/organization_memberships?organization_id=${providerOrganizationId}&user_id=${targetUserId}`,
+        {
+          data: [
+            {
+              id: providerMembershipId,
+              organization_id: providerOrganizationId,
+              user_id: targetUserId,
+              status: 'active',
+            },
+          ],
+        },
+      );
+      const accepted = await invoke('/internal/hosted/organization-invitation-accept', {
+        identity: identity(targetUserId),
+        invitationToken: token,
+      });
+      expect(accepted.status).toBe(200);
+      expect(accepted.body.accepted).toBe(true);
+
+      const seat = await hostedDb()
+        .prepare('SELECT state FROM hosted_team_seat_assignments WHERE invitation_id = ?')
+        .bind(invitation.id)
+        .first<{ state: string }>();
+      expect(seat?.state).toBe('assigned');
+      expect(await getOrganizationTeamCapacity(hostedDb(), organizationId, POST_PREVIEW)).toBe(
+        FREE_TEAM_SEAT_CAPACITY,
+      );
+      const subscription = await hostedDb()
+        .prepare('SELECT COUNT(*) AS count FROM stripe_subscriptions WHERE organization_id = ?')
+        .bind(organizationId)
+        .first<{ count: number }>();
+      expect(subscription?.count).toBe(0);
+      expect(targetAccountId).toBeTruthy();
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('does not convert an expired seat reservation during invitation acceptance', async () => {

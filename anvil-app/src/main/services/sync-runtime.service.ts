@@ -1,4 +1,5 @@
 import type { RemoteCodexAccountAuthChoice } from '../../shared/remote-chat.js';
+import { assertAnvilCloudAgentsEnabled } from './anvil-cloud-agents-availability.service.js';
 import {
   configureRemoteChatContext,
   remoteChatOnReady,
@@ -108,6 +109,7 @@ import {
 } from '../../shared/sync-mesh.js';
 import {
   buildEntityPayload,
+  isWorkspaceSyncPaused,
   listLocalEntityIds,
   materializeRepoDefinitions,
 } from './sync-entity-domain.js';
@@ -140,6 +142,7 @@ import {
   type WebSocketFactory,
 } from './sync-backend-client.service.js';
 import {
+  applyPausedWorkspaceChanges,
   getSyncEngineSnapshot,
   resolveSyncConflict,
   runSyncCycle,
@@ -250,6 +253,9 @@ import {
 } from './mesh-integration.service.js';
 import {
   clearSyncEntitlement,
+  canonicalJson,
+  getActiveEnrollment,
+  getBinding,
   getOrCreateInstallationId,
   getSyncEntitlement,
   getSyncState,
@@ -328,6 +334,16 @@ const HOSTED_DENIAL_REASONS: ReadonlySet<string> = new Set([
   'preview-ended',
   'billing-unavailable',
 ]);
+/** Historical billing pauses must not pin free Sync after a client upgrade. */
+const LEGACY_BILLING_REASONS: ReadonlySet<string> = new Set([
+  ...HOSTED_DENIAL_REASONS,
+  'billing-outage',
+  'renewal-failed',
+]);
+
+function isHostedWritePaused(row: { restricted: boolean; reason: string } | null): boolean {
+  return row?.restricted === true && !LEGACY_BILLING_REASONS.has(row.reason);
+}
 /** Entitlement states the renderer chip understands; anything else → 'unknown'. */
 const HOSTED_STATES: ReadonlySet<string> = new Set([
   'preview',
@@ -959,7 +975,8 @@ export function bindLocalEntities(scope: SyncScope): number {
       const entityIds = listLocalEntityIds(entityType);
       for (const entityId of entityIds) {
         if (entityType === SYNC_ENTITY_WORKSPACE_DEFINITION) {
-          materializeRepoDefinitions(entityId);
+          if (bindWorkspaceDefinitionInScope(scope, entityId)) bound += 1;
+          continue;
         }
         if (listSyncScopesForEntity(entityType, entityId).length > 0) {
           continue;
@@ -979,7 +996,56 @@ export function bindLocalEntities(scope: SyncScope): number {
     }
     return bound;
   });
-  return run();
+  const bound = run();
+  const enrollment = getActiveEnrollment(scope);
+  if (enrollment !== null) applyPausedWorkspaceChanges(scope, enrollment.id);
+  return bound;
+}
+
+function sameSyncScope(left: SyncScope, right: SyncScope): boolean {
+  return (
+    left.backendId === right.backendId &&
+    left.accountId === right.accountId &&
+    left.datasetEpoch === right.datasetEpoch
+  );
+}
+
+function bindWorkspaceDefinitionInScope(scope: SyncScope, workspaceId: string): boolean {
+  if (isWorkspaceSyncPaused(workspaceId)) return false;
+  materializeRepoDefinitions(workspaceId);
+  const otherScopes = listSyncScopesForEntity(SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId).filter(
+    (boundScope) => !sameSyncScope(boundScope, scope),
+  );
+  if (otherScopes.length > 0) return false;
+
+  const wasBound = getBinding(scope, SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId) !== null;
+  if (!wasBound) upsertBinding(scope, SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId);
+  const payload = buildEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId);
+  if (payload === null) return false;
+  const binding = getBinding(scope, SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId);
+  if (binding === null) return false;
+  if (canonicalJson(payload) !== (binding.basePayloadJson ?? null)) {
+    recordLocalChange(scope, {
+      entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+      entityId: workspaceId,
+      schemaVersion: SYNC_ENTITY_SCHEMA_VERSIONS[SYNC_ENTITY_WORKSPACE_DEFINITION],
+      operation: 'update',
+      payload,
+    });
+  }
+  return !wasBound;
+}
+
+/** Apply an explicit Local → Sync choice immediately when account Sync is active. */
+export function onWorkspaceSyncSelectionChanged(workspaceId: string, selected: boolean): void {
+  if (!selected || !isSyncEnabled()) return;
+  const scope = currentScope();
+  if (scope === null) return;
+  const enrollment = getActiveEnrollment(scope);
+  if (enrollment === null) return;
+  getDb().transaction(() => bindWorkspaceDefinitionInScope(scope, workspaceId))();
+  applyPausedWorkspaceChanges(scope, enrollment.id);
+  void requestSync().catch(() => undefined);
 }
 
 /** Dev/test fixture only — never reachable when `devSpikeEnabled` is false. */
@@ -1589,6 +1655,7 @@ export async function suspendCloudEnvironment(environmentId: string): Promise<Cl
 
 /** Restart the same hosted environment from its private filesystem snapshot. */
 export async function resumeCloudEnvironment(environmentId: string): Promise<CloudEnvironment> {
+  assertAnvilCloudAgentsEnabled();
   const { maxTtlSeconds: ttlSeconds } = await getManagedEnvironmentLimits();
   const issued = await issueEnrollmentCode({
     enrollmentClass: 'ephemeral',
@@ -2775,6 +2842,7 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
       enrollmentId: null,
       expiresAt: null,
     },
+    datasetEpoch: scope?.datasetEpoch ?? null,
     syncEnabled: isSyncEnabled(),
     devSpikeAvailable: devSpikeEnabled,
     connectionState: liveState,
@@ -2861,7 +2929,7 @@ function hostedStatusFor(backendId: string, accountId: string): SyncHostedStatus
     graceUntil: row.graceUntil,
     checkedAt: row.checkedAt,
     reason: row.reason,
-    restricted: row.restricted,
+    restricted: isHostedWritePaused(row),
     fairUse: fairUseStatusFor(backendId, accountId),
   };
 }
@@ -2982,7 +3050,7 @@ function recordEntitlement(
       checkedAt: new Date().toISOString(),
       revision: 0,
       reason: restrictedReason,
-      restricted: true,
+      restricted: !LEGACY_BILLING_REASONS.has(restrictedReason),
     });
     return;
   }
@@ -3001,9 +3069,11 @@ function recordEntitlement(
     checkedAt: entitlement.checkedAt,
     revision: entitlement.revision,
     reason: entitlement.reason,
-    // 'unknown' is not free access: while billing is unverifiable the backend
-    // refuses mutating ops anyway, so the local write gate mirrors that pause.
-    restricted: entitlement.state === 'restricted' || entitlement.state === 'unknown',
+    // Account/security restrictions remain authoritative. A historical billing
+    // refusal cannot create a local subscription requirement for free Sync.
+    restricted:
+      (entitlement.state === 'restricted' || entitlement.state === 'unknown') &&
+      !LEGACY_BILLING_REASONS.has(entitlement.reason),
   });
 }
 
@@ -3060,9 +3130,8 @@ function maybeRefreshHostedEntitlement(): void {
 
 /**
  * Window-focus hook (index.ts wires every BrowserWindow 'focus' here):
- * returning from the hosted account page is how users come back after fixing
- * billing, so re-check `session.describe`. Throttled — and no payment state
- * is ever accepted from a URL; the backend remains the only source of truth.
+ * returning from account settings re-checks `session.describe`. No access
+ * state is accepted from a URL; the backend remains the source of truth.
  */
 export function onAppFocus(): void {
   maybeRefreshHostedEntitlement();
@@ -3242,12 +3311,11 @@ export async function requestSync(): Promise<void> {
       enrollmentId: fields.enrollmentId,
       connection: { apiUrl: paths.apiUrl, limits: backend.descriptor.limits },
       accessToken: token,
-      // BILL-05 write gate: a restricted hosted row pauses push/scan while
-      // pull and control ops keep running. No row (self-host) means writes
-      // are unrestricted.
+      // Pause account/security restrictions while reads and control stay
+      // available. Historical billing restrictions cannot gate free Sync.
       writeGate: () => ({
         allowed:
-          getSyncEntitlement(scope.backendId, scope.accountId)?.restricted !== true &&
+          !isHostedWritePaused(getSyncEntitlement(scope.backendId, scope.accountId)) &&
           keyRotationBlockedScopeKey !== runtimeScopeKey(scope),
       }),
       rpc: cycleRpc,
@@ -3272,17 +3340,16 @@ export async function requestSync(): Promise<void> {
         ? error.details?.['reason']
         : undefined;
     if (typeof hostedReason === 'string' && HOSTED_DENIAL_REASONS.has(hostedReason)) {
-      // Hosted-access refusal on a mutating op: persist the pause and refresh
-      // the authoritative record best-effort. The cycle is paused, not failed
-      // — the engine already ran the pull and left outbox rows, cursors, and
-      // conflicts untouched, so this resolves quietly rather than surfacing
-      // as a sync failure.
+      // An older backend can still report a retired billing refusal. Retain
+      // the outbox and refresh its status, but do not create a local paywall.
+      // The engine has already pulled before propagating the write refusal.
       recordEntitlement(
         { backendId: scope.backendId, accountId: scope.accountId },
         null,
         hostedReason,
       );
-      lastError = null;
+      lastError =
+        'This backend still restricts Sync by subscription. Update the backend to use free Sync and Mesh.';
       void refreshHostedEntitlement().catch(() => undefined);
       return;
     }

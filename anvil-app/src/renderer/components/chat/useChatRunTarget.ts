@@ -9,9 +9,72 @@ import type {
 import type { RemoteChatRecord, RemoteCredentialChoice } from '../../../shared/remote-chat';
 import type { CloudAgentProviderStatus } from '../../../shared/cloud-agent';
 import type { ApprovalRecord, SyncAttemptActivity, SyncDevice } from '../../../shared/sync-runtime';
+import { sharedPollingCache } from '../../utils/shared-polling-cache';
 
 export const HOSTED_CHAT_TARGET = 'anvil-hosted-cloud';
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'paused', 'ended']);
+const TERMINAL_MESH_JOBS = new Set(['completed', 'failed', 'cancelled', 'unknown-outcome']);
+const CHAT_RECORDS_POLL_MS = 5_000;
+const CHAT_RECORDS_MAX_STALE_MS = 20_000;
+const DEVICE_ROSTER_POLL_MS = 15_000;
+const DEVICE_ROSTER_MAX_STALE_MS = 30_000;
+const AGENT_SETTINGS_POLL_MS = 15_000;
+const AGENT_SETTINGS_MAX_STALE_MS = 30_000;
+const MESH_JOB_POLL_MS = 5_000;
+const MESH_JOB_MAX_STALE_MS = 15_000;
+const MESH_STATUS_PUSH_MIN_INTERVAL_MS = 2_000;
+const SYNC_SCOPE_POLL_MS = 5_000;
+const SYNC_SCOPE_MAX_STALE_MS = 10_000;
+
+interface ChatTargetSyncScope {
+  backendId: string | null;
+  accountId: string | null;
+  datasetEpoch: string | null;
+  enrollmentId: string | null;
+  authState: string;
+  needsIdentityReview: boolean;
+  recovering: boolean;
+}
+
+interface MeshJobView {
+  attemptId: string | null;
+  approvals: ApprovalRecord[];
+  terminal: boolean;
+}
+
+let activeSyncScopeFingerprint: string | null = null;
+let activeSyncScopeRevision = 0;
+
+function cacheKeyForSyncScope(scope: ChatTargetSyncScope | undefined): string | null {
+  if (scope === undefined) {
+    if (activeSyncScopeFingerprint !== null) {
+      activeSyncScopeFingerprint = null;
+      activeSyncScopeRevision += 1;
+    }
+    return null;
+  }
+
+  const fingerprint = JSON.stringify([
+    scope.backendId,
+    scope.accountId,
+    scope.datasetEpoch,
+    scope.enrollmentId,
+    scope.authState,
+    scope.needsIdentityReview,
+    scope.recovering,
+  ]);
+  if (activeSyncScopeFingerprint !== fingerprint) {
+    activeSyncScopeFingerprint = fingerprint;
+    activeSyncScopeRevision += 1;
+  }
+  const authenticated =
+    scope.backendId !== null &&
+    scope.accountId !== null &&
+    scope.datasetEpoch !== null &&
+    scope.authState === 'signed-in' &&
+    !scope.needsIdentityReview;
+  return authenticated ? `${fingerprint}:${activeSyncScopeRevision}` : null;
+}
 
 export function useChatRunTarget(input: {
   workspaceId?: string;
@@ -27,18 +90,24 @@ export function useChatRunTarget(input: {
   const [devices, setDevices] = useState<SyncDevice[]>([]);
   const [providers, setProviders] = useState<CloudAgentProviderStatus[]>([]);
   const [records, setRecords] = useState<RemoteChatRecord[]>([]);
+  const [meshJobView, setMeshJobView] = useState<{ jobId: string; value: MeshJobView } | null>(
+    null,
+  );
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [credentialChoice, setCredentialChoice] =
     useState<RemoteCredentialChoice>('codex-host-auth');
-  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
   const [activity, setActivity] = useState<SyncAttemptActivity[]>([]);
-  const [attemptId, setAttemptId] = useState<string | null>(null);
   const [legacyId, setLegacyId] = useState<string | null>(null);
   const [sessionLimitSeconds, setSessionLimitSeconds] = useState<number | null>(null);
+  const [hostedAgentsEnabled, setHostedAgentsEnabled] = useState(false);
+  const [dismissedApprovalIds, setDismissedApprovalIds] = useState<string[]>([]);
+  const [cacheScopeKey, setCacheScopeKey] = useState<string | null>(null);
   const pending = useRef<{ key: string; id: string } | null>(null);
-  const scope = useRef(input.workspaceId);
-  scope.current = input.workspaceId;
+  const workspaceScope = useRef(input.workspaceId);
+  workspaceScope.current = input.workspaceId;
+  const activeCacheScopeKey = useRef(cacheScopeKey);
+  activeCacheScopeKey.current = cacheScopeKey;
   const record = records.find(
     (row) =>
       (input.threadId && row.sourceThreadId === input.threadId) ||
@@ -52,17 +121,83 @@ export function useChatRunTarget(input: {
   const providerReady =
     provider?.enabled === true && (input.provider === 'codex' || provider.connected);
   const setTarget = (next: string) => {
+    if (next === HOSTED_CHAT_TARGET && !hostedAgentsEnabled) return;
     updateTarget(next);
     setCredentialChoice(next === HOSTED_CHAT_TARGET ? 'codex-host-auth' : 'target-local');
   };
 
+  useEffect(
+    () =>
+      sharedPollingCache.subscribe(
+        'chat-run-target:sync-scope',
+        async (): Promise<ChatTargetSyncScope> => {
+          const [runtime, backend] = await Promise.all([
+            window.anvil.syncRuntime.status(),
+            window.anvil.syncBackend.status(),
+          ]);
+          return {
+            backendId: backend.backendId,
+            accountId: runtime.auth.accountId,
+            datasetEpoch: runtime.datasetEpoch,
+            enrollmentId: runtime.auth.enrollmentId,
+            authState: runtime.auth.state,
+            needsIdentityReview: runtime.backendIdentityReviewRequired,
+            recovering: runtime.recovering,
+          };
+        },
+        (snapshot) => {
+          const current = snapshot.value;
+          if (current === undefined) {
+            const nextKey = cacheKeyForSyncScope(undefined);
+            if (activeCacheScopeKey.current !== null) {
+              setRecords([]);
+              setDevices([]);
+              setProviders([]);
+              setHostedAgentsEnabled(false);
+              setMeshJobView(null);
+              setDismissedApprovalIds([]);
+              setActivity([]);
+              updateTarget('local');
+              pending.current = null;
+              setError(null);
+            }
+            activeCacheScopeKey.current = nextKey;
+            setCacheScopeKey(nextKey);
+            return;
+          }
+          const nextKey = cacheKeyForSyncScope(current);
+          if (activeCacheScopeKey.current !== nextKey) {
+            setRecords([]);
+            setDevices([]);
+            setProviders([]);
+            setHostedAgentsEnabled(false);
+            setMeshJobView(null);
+            setDismissedApprovalIds([]);
+            setActivity([]);
+            updateTarget('local');
+            pending.current = null;
+            setError(null);
+          }
+          activeCacheScopeKey.current = nextKey;
+          setCacheScopeKey(nextKey);
+        },
+        {
+          pollIntervalMs: SYNC_SCOPE_POLL_MS,
+          maxAgeMs: SYNC_SCOPE_POLL_MS,
+          maxStaleMs: SYNC_SCOPE_MAX_STALE_MS,
+        },
+      ),
+    [],
+  );
+
   useEffect(() => {
     let disposed = false;
     setSessionLimitSeconds(null);
-    if (!hosted) return;
+    if (!hosted || !cacheScopeKey) return;
     void window.anvil.syncRuntime.getManagedEnvironmentLimits().then(
       (limits) => {
-        if (!disposed) setSessionLimitSeconds(limits.maxTtlSeconds);
+        if (!disposed && activeCacheScopeKey.current === cacheScopeKey)
+          setSessionLimitSeconds(limits.maxTtlSeconds);
       },
       () => {
         // Launch reports sign-in and entitlement failures through its normal error path.
@@ -71,53 +206,87 @@ export function useChatRunTarget(input: {
     return () => {
       disposed = true;
     };
-  }, [hosted, input.workspaceId]);
+  }, [hosted, input.workspaceId, cacheScopeKey]);
 
   useEffect(() => {
-    let disposed = false;
-    let fetching = false;
     setRecords([]);
     setDevices([]);
+    setProviders([]);
+    setHostedAgentsEnabled(false);
     updateTarget('local');
     setError(null);
     pending.current = null;
     setLegacyId(null);
-    if (!input.workspaceId) return;
-    const refresh = async () => {
-      if (fetching) return;
-      fetching = true;
-      try {
-        const [chats, roster, settings] = await Promise.allSettled([
-          window.anvil.syncRuntime.listRemoteChats(input.workspaceId),
-          window.anvil.syncRuntime.listDevices(),
-          window.anvil.cloudAgentSettings.get(),
-        ]);
-        if (disposed) return;
-        if (chats.status === 'fulfilled') setRecords(chats.value);
-        if (roster.status === 'fulfilled')
-          setDevices(
-            roster.value.filter(
-              (device) =>
-                !device.self &&
-                !device.revoked &&
-                device.trustState === 'trusted' &&
-                device.enrollmentClass !== 'ephemeral',
-            ),
-          );
-        if (settings.status === 'fulfilled') setProviders(settings.value.providers);
-      } catch {
-        // Local chat remains usable before the user signs into Sync & Mesh.
-      } finally {
-        fetching = false;
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 3000);
+    if (!input.workspaceId || !cacheScopeKey) return;
+    let disposed = false;
+    const workspaceId = input.workspaceId;
+    const cacheKeyPrefix = `chat-run-target:${cacheScopeKey}`;
+    const stopRecords = sharedPollingCache.subscribe(
+      `${cacheKeyPrefix}:records:${workspaceId}`,
+      () => window.anvil.syncRuntime.listRemoteChats(workspaceId),
+      (snapshot) => {
+        if (disposed || activeCacheScopeKey.current !== cacheScopeKey) return;
+        setRecords(snapshot.value ?? []);
+      },
+      {
+        pollIntervalMs: CHAT_RECORDS_POLL_MS,
+        maxAgeMs: CHAT_RECORDS_POLL_MS,
+        maxStaleMs: CHAT_RECORDS_MAX_STALE_MS,
+      },
+    );
+    const stopDevices = sharedPollingCache.subscribe(
+      `${cacheKeyPrefix}:trusted-devices`,
+      () => window.anvil.syncRuntime.listDevices(),
+      (snapshot) => {
+        if (disposed || activeCacheScopeKey.current !== cacheScopeKey) return;
+        if (snapshot.value === undefined) {
+          setDevices([]);
+          return;
+        }
+        setDevices(
+          snapshot.value.filter(
+            (device) =>
+              !device.self &&
+              !device.revoked &&
+              device.trustState === 'trusted' &&
+              device.enrollmentClass !== 'ephemeral',
+          ),
+        );
+      },
+      {
+        pollIntervalMs: DEVICE_ROSTER_POLL_MS,
+        maxAgeMs: DEVICE_ROSTER_POLL_MS,
+        maxStaleMs: DEVICE_ROSTER_MAX_STALE_MS,
+      },
+    );
+    const stopAgentSettings = sharedPollingCache.subscribe(
+      `${cacheKeyPrefix}:agent-settings`,
+      () => window.anvil.cloudAgentSettings.get(),
+      (snapshot) => {
+        if (disposed || activeCacheScopeKey.current !== cacheScopeKey) return;
+        if (snapshot.value === undefined) {
+          setProviders([]);
+          setHostedAgentsEnabled(false);
+          return;
+        }
+        setProviders(snapshot.value.providers);
+        // Hosted chat access is separately default-off. Provider settings do
+        // not grant or turn on this target.
+        setHostedAgentsEnabled(snapshot.value.anvilCloudAgentsEnabled === true);
+      },
+      {
+        pollIntervalMs: AGENT_SETTINGS_POLL_MS,
+        maxAgeMs: AGENT_SETTINGS_POLL_MS,
+        maxStaleMs: AGENT_SETTINGS_MAX_STALE_MS,
+      },
+    );
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      stopRecords();
+      stopDevices();
+      stopAgentSettings();
     };
-  }, [input.workspaceId]);
+  }, [input.workspaceId, cacheScopeKey]);
 
   useEffect(() => setLegacyId(null), [input.threadId]);
 
@@ -129,51 +298,86 @@ export function useChatRunTarget(input: {
     );
   }, [input.threadId, record?.id, record?.environmentId, record?.targetEnrollmentId, sending]);
 
+  useEffect(() => {
+    if (!record && !hostedAgentsEnabled && target === HOSTED_CHAT_TARGET) updateTarget('local');
+  }, [hostedAgentsEnabled, record?.id, target]);
+
   const jobId = record?.jobId ?? record?.prepareJobId;
   useEffect(() => {
-    let disposed = false;
-    let fetching = false;
-    setApprovals([]);
-    setAttemptId(null);
+    setMeshJobView(null);
+    setDismissedApprovalIds([]);
     if (!jobId) return;
-    const refresh = async () => {
-      if (fetching) return;
-      fetching = true;
-      try {
+    if (!cacheScopeKey) return;
+    const key = `chat-run-target:${cacheScopeKey}:mesh-job:${jobId}`;
+    let disposed = false;
+    const stop = sharedPollingCache.subscribe(
+      key,
+      async (): Promise<MeshJobView> => {
         const [job, requests] = await Promise.all([
           window.anvil.syncRuntime.getMeshJob(jobId),
           window.anvil.syncRuntime.getMeshApprovals(jobId),
         ]);
-        if (!disposed) {
-          setAttemptId(job.attempts.at(-1)?.id ?? null);
-          setApprovals(requests.filter((item) => item.state === 'pending'));
+        return {
+          attemptId: job.attempts.at(-1)?.id ?? null,
+          approvals: requests.filter((item) => item.state === 'pending'),
+          terminal: TERMINAL_MESH_JOBS.has(job.job.state),
+        };
+      },
+      (snapshot) => {
+        if (disposed || activeCacheScopeKey.current !== cacheScopeKey) return;
+        if (snapshot.error !== undefined) setError(String(snapshot.error));
+        if (snapshot.value === undefined) {
+          setMeshJobView((current) => (current?.jobId === jobId ? null : current));
+          return;
         }
-      } catch (cause) {
-        if (!disposed) setError(String(cause));
-      } finally {
-        fetching = false;
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 2000);
+        setMeshJobView({ jobId, value: snapshot.value });
+      },
+      {
+        pollIntervalMs: (snapshot) => (snapshot.value?.terminal ? null : MESH_JOB_POLL_MS),
+        maxAgeMs: MESH_JOB_POLL_MS,
+        maxStaleMs: MESH_JOB_MAX_STALE_MS,
+      },
+    );
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      stop();
     };
-  }, [jobId]);
+  }, [jobId, cacheScopeKey]);
+
+  const meshJobViewForJob =
+    meshJobView !== null && meshJobView.jobId === jobId ? meshJobView.value : null;
+  const attemptId = meshJobViewForJob?.attemptId ?? null;
+  const approvals = (meshJobViewForJob?.approvals ?? []).filter(
+    (approval) => !dismissedApprovalIds.includes(approval.id),
+  );
 
   useEffect(() => {
     setActivity([]);
     if (!attemptId) return;
-    return window.anvil.syncRuntime.observeAttemptActivity(attemptId, (item) =>
-      setActivity((items) => [...items, item].slice(-80)),
-    );
-  }, [attemptId]);
+    return window.anvil.syncRuntime.observeAttemptActivity(attemptId, (item) => {
+      if (activeCacheScopeKey.current !== cacheScopeKey) return;
+      setActivity((items) => [...items, item].slice(-80));
+      if (item.kind === 'status' && jobId && cacheScopeKey)
+        void sharedPollingCache.refresh(
+          `chat-run-target:${cacheScopeKey}:mesh-job:${jobId}`,
+          MESH_STATUS_PUSH_MIN_INTERVAL_MS,
+        );
+    });
+  }, [attemptId, jobId, cacheScopeKey]);
 
   const send = useCallback(
     async (prompt: string, attachments: ChatAttachment[] = []) => {
       const workspaceId = input.workspaceId;
-      if (!workspaceId || busy || !prompt.trim()) return false;
+      if (!workspaceId || !cacheScopeKey || busy || !prompt.trim()) return false;
+      if (
+        !hostedAgentsEnabled &&
+        (target === HOSTED_CHAT_TARGET || record?.environmentId !== undefined)
+      ) {
+        setError(
+          'Anvil Cloud Agents are unavailable. You can still stop or end this existing chat.',
+        );
+        return false;
+      }
       if (attachments.length) {
         setError('Remote chats cannot send attachments yet. Your draft has been kept.');
         return false;
@@ -184,7 +388,8 @@ export function useChatRunTarget(input: {
         const threadId = record
           ? (input.threadId ?? record.sourceThreadId ?? record.id)
           : await input.ensureThread(prompt);
-        if (scope.current !== workspaceId) return false;
+        if (workspaceScope.current !== workspaceId || activeCacheScopeKey.current !== cacheScopeKey)
+          return false;
         const key = JSON.stringify([
           threadId,
           record?.id,
@@ -225,48 +430,72 @@ export function useChatRunTarget(input: {
               prompt,
               requestId,
             });
-        if (scope.current === workspaceId)
+        if (workspaceScope.current === workspaceId && activeCacheScopeKey.current === cacheScopeKey)
           setRecords((rows) => [next, ...rows.filter((row) => row.id !== next.id)]);
+        if (cacheScopeKey)
+          void sharedPollingCache.refresh(
+            `chat-run-target:${cacheScopeKey}:records:${workspaceId}`,
+          );
         pending.current = null;
         return true;
       } catch (cause) {
-        if (scope.current === workspaceId) setError(String(cause));
+        if (workspaceScope.current === workspaceId && activeCacheScopeKey.current === cacheScopeKey)
+          setError(String(cause));
         return false;
       } finally {
         setSending(false);
       }
     },
-    [input, busy, record, target, hosted, credentialChoice],
+    [input, busy, record, target, hosted, hostedAgentsEnabled, credentialChoice, cacheScopeKey],
   );
 
   const stop = async () => {
-    if (!record) return;
+    if (!record || !cacheScopeKey) return;
+    const workspaceId = input.workspaceId;
     try {
       const next = await window.anvil.syncRuntime.cancelRemoteChat(record.id);
-      setRecords((rows) => rows.map((row) => (row.id === next.id ? next : row)));
+      if (workspaceScope.current === workspaceId && activeCacheScopeKey.current === cacheScopeKey)
+        setRecords((rows) => rows.map((row) => (row.id === next.id ? next : row)));
+      if (
+        workspaceId &&
+        workspaceScope.current === workspaceId &&
+        activeCacheScopeKey.current === cacheScopeKey
+      )
+        void sharedPollingCache.refresh(`chat-run-target:${cacheScopeKey}:records:${workspaceId}`);
     } catch (cause) {
-      setError(String(cause));
+      if (activeCacheScopeKey.current === cacheScopeKey) setError(String(cause));
     }
   };
   const endSession = async () => {
-    if (!record?.environmentId || busy) return;
+    if (!record?.environmentId || busy || !cacheScopeKey) return;
+    const workspaceId = input.workspaceId;
     setSending(true);
     try {
       const next = await window.anvil.syncRuntime.endRemoteChat(record.id);
-      if (scope.current === input.workspaceId)
+      if (workspaceScope.current === workspaceId && activeCacheScopeKey.current === cacheScopeKey)
         setRecords((rows) => rows.map((row) => (row.id === next.id ? next : row)));
+      if (
+        workspaceId &&
+        workspaceScope.current === workspaceId &&
+        activeCacheScopeKey.current === cacheScopeKey
+      )
+        void sharedPollingCache.refresh(`chat-run-target:${cacheScopeKey}:records:${workspaceId}`);
     } catch (cause) {
-      setError(String(cause));
+      if (activeCacheScopeKey.current === cacheScopeKey) setError(String(cause));
     } finally {
       setSending(false);
     }
   };
   const decide = async (id: string, decision: 'approved' | 'denied') => {
+    if (!cacheScopeKey) return;
     try {
       await window.anvil.syncRuntime.decideMeshApproval(id, decision);
-      setApprovals((rows) => rows.filter((row) => row.id !== id));
+      if (activeCacheScopeKey.current !== cacheScopeKey) return;
+      setDismissedApprovalIds((ids) => [...ids, id]);
+      if (jobId && cacheScopeKey)
+        void sharedPollingCache.refresh(`chat-run-target:${cacheScopeKey}:mesh-job:${jobId}`);
     } catch (cause) {
-      setError(String(cause));
+      if (activeCacheScopeKey.current === cacheScopeKey) setError(String(cause));
     }
   };
   const threadStatuses: Record<string, CodexSession['status']> = {};
@@ -280,6 +509,7 @@ export function useChatRunTarget(input: {
     setTarget,
     devices,
     providerReady,
+    hostedAgentsEnabled,
     sessionLimitSeconds,
     record,
     legacyRecords: records.filter((chat) => !chat.sourceThreadId && !chat.sourceSessionId),

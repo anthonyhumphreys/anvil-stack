@@ -410,10 +410,12 @@ function applyWorkspacePayload(entityId: string, payload: unknown): void {
   const txn = db.transaction(() => {
     const bootstrapJson = p.bootstrap !== undefined ? JSON.stringify(p.bootstrap) : null;
     db.prepare(
-      `INSERT INTO workspaces (id, name, definition_state, bootstrap_json, created_at, updated_at)
-       VALUES (?, ?, 'ready', ?, ?, ?)
+      `INSERT INTO workspaces
+         (id, name, sync_selected, definition_state, bootstrap_json, created_at, updated_at)
+       VALUES (?, ?, 1, 'ready', ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET name = excluded.name,
-         bootstrap_json = excluded.bootstrap_json, updated_at = excluded.updated_at`,
+         sync_selected = 1, bootstrap_json = excluded.bootstrap_json,
+         updated_at = excluded.updated_at`,
     ).run(entityId, typeof p.name === 'string' ? p.name : '', bootstrapJson, now, now);
 
     // Reconcile portable repo definitions; preserve existing local mappings.
@@ -496,6 +498,40 @@ function applyWorkspacePayload(entityId: string, payload: unknown): void {
     recomputeWorkspaceDefinitionState(entityId);
   });
   txn();
+}
+
+/** A task manifest can materialize a local definition without enrolling it in Sync. */
+export function applyTaskWorkspaceDefinition(entityId: string, payload: unknown): void {
+  applyWorkspacePayload(entityId, payload);
+  getDb().prepare('UPDATE workspaces SET sync_selected = 0 WHERE id = ?').run(entityId);
+}
+
+/**
+ * True for an explicitly local workspace. Keep a retained binding paused after
+ * its local row is deleted too, unless the deletion itself is queued for Sync;
+ * otherwise a later pull could recreate the workspace against the user's
+ * local-only choice.
+ */
+export function isWorkspaceSyncPaused(entityId: string): boolean {
+  const row = getDb().prepare('SELECT sync_selected FROM workspaces WHERE id = ?').get(entityId) as
+    | { sync_selected: number }
+    | undefined;
+  if (row !== undefined) return row.sync_selected === 0;
+  const retainedBinding = getDb()
+    .prepare(
+      `SELECT 1 AS present FROM sync_bindings b
+       WHERE b.entity_type = ? AND b.entity_id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM sync_outbox o
+           WHERE o.backend_id = b.backend_id AND o.account_id = b.account_id
+             AND o.dataset_epoch = b.dataset_epoch
+             AND o.entity_type = b.entity_type AND o.entity_id = b.entity_id
+             AND o.operation = 'delete' AND o.state != 'acknowledged'
+         )
+       LIMIT 1`,
+    )
+    .get(SYNC_ENTITY_WORKSPACE_DEFINITION, entityId) as { present: 1 } | undefined;
+  return retainedBinding !== undefined;
 }
 
 function deleteWorkspaceLocally(entityId: string): void {
@@ -783,9 +819,11 @@ export function listLocalEntityIds(entityType: string): string[] {
         (r) => r.id,
       );
     case SYNC_ENTITY_WORKSPACE_DEFINITION:
-      return (db.prepare('SELECT id FROM workspaces').all() as Array<{ id: string }>).map(
-        (r) => r.id,
-      );
+      return (
+        db.prepare('SELECT id FROM workspaces WHERE sync_selected = 1').all() as Array<{
+          id: string;
+        }>
+      ).map((r) => r.id);
     case SYNC_ENTITY_SETTINGS:
       return [SYNC_SETTINGS_ENTITY_ID];
     default:
