@@ -271,18 +271,12 @@ import {
   type MeshHostOperationInput,
 } from './mesh-host-session.service.js';
 import type { MeshHostAdmissionAuthorization } from './mesh-host-session.service.js';
-import {
-  fetchMeshMachineBrokerJson,
-} from './mesh-host-client.service.js';
+import { fetchMeshMachineBrokerJson } from './mesh-host-client.service.js';
 import { MeshHostRuntimePool, type MeshHostRuntimeContext } from './mesh-host-runtime.service.js';
-import {
-  configureMeshManagedEndpointLifecycle,
-} from './mesh-managed-connector.service.js';
+import { configureMeshManagedEndpointLifecycle } from './mesh-managed-connector.service.js';
 import { isMeshMachineEndpointEnabled } from './mesh-machine-endpoint.service.js';
 import { getMeshMachineHostStatus } from './mesh-host-status.service.js';
-import type {
-  MeshMachineAdmissionConsumeResponse,
-} from '../../../cloud/contract/machine.js';
+import type { MeshMachineAdmissionConsumeResponse } from '../../../cloud/contract/machine.js';
 import { MESH_MACHINE_OPERATIONS } from '../../../cloud/contract/machine.js';
 import {
   disposeBrowserWorkspaceExecutor,
@@ -449,7 +443,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isMeshMachineOperation(value: string): value is import('../../../cloud/contract/machine.js').MeshMachineOperation {
+function isMeshMachineOperation(
+  value: string,
+): value is import('../../../cloud/contract/machine.js').MeshMachineOperation {
   return MESH_MACHINE_OPERATIONS.includes(value as (typeof MESH_MACHINE_OPERATIONS)[number]);
 }
 
@@ -488,9 +484,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   configureMeshManagedEndpointLifecycle({
     context: () => {
       const context = currentHostSessionRpcContext();
-      return context === null
-        ? null
-        : { apiUrl: context.apiUrl, accessToken: context.accessToken };
+      return context === null ? null : { apiUrl: context.apiUrl, accessToken: context.accessToken };
     },
     enabled: isMeshMachineEndpointEnabled,
     ...(fetchOverride === undefined ? {} : { fetch: fetchOverride }),
@@ -625,11 +619,9 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       enrollmentId: fields.enrollmentId,
       scope,
       readHostJob: async (targetEnrollmentId, jobId) => {
-        const result = await meshHostPool?.request<JobGetResult>(
-          targetEnrollmentId,
-          'read.job',
-          { jobId },
-        );
+        const result = await meshHostPool?.request<JobGetResult>(targetEnrollmentId, 'read.job', {
+          jobId,
+        });
         return result?.job?.id === jobId ? result : null;
       },
       hasHealthyHostPush: (targetEnrollmentId) =>
@@ -924,7 +916,8 @@ function configureMeshHostSessionRuntimeBindings(): void {
         return { state: 'unavailable' };
       }
       try {
-        const { ensureMeshCompanionEnrollmentPolicy } = await import('./mobile-companion.service.js');
+        const { ensureMeshCompanionEnrollmentPolicy } =
+          await import('./mobile-companion.service.js');
         const policy = ensureMeshCompanionEnrollmentPolicy(
           claims.principal.sourceEnrollmentId,
           context.accountId,
@@ -1031,13 +1024,18 @@ function dispatchMeshHostOperationIdempotently(
   if (!isNativeMeshMutation(input)) {
     return dispatchMeshHostOperationOnce(input, scope);
   }
-  const principalId = input.principal.kind === 'enrollment'
-    ? input.principal.sourceEnrollmentId
-    : input.principal.grantId;
-  const digest = createHash('sha256').update(canonicalJson({
-    operation: input.operation,
-    payload: input.payload,
-  })).digest('hex');
+  const principalId =
+    input.principal.kind === 'enrollment'
+      ? input.principal.sourceEnrollmentId
+      : input.principal.grantId;
+  const digest = createHash('sha256')
+    .update(
+      canonicalJson({
+        operation: input.operation,
+        payload: input.payload,
+      }),
+    )
+    .digest('hex');
   return executeWithMeshHostCommandReceipt({
     scope,
     principalId,
@@ -1057,7 +1055,8 @@ function isNativeMeshMutation(input: MeshHostOperationInput): boolean {
     return false;
   }
   if (input.operation === 'command.submit') {
-    return isRecord(payload) &&
+    return (
+      isRecord(payload) &&
       !('requestedTarget' in payload) &&
       [
         'actionId',
@@ -1070,7 +1069,8 @@ function isNativeMeshMutation(input: MeshHostOperationInput): boolean {
         'attachmentIds',
         'attachments',
         'fileMentions',
-      ].some((field) => field in payload);
+      ].some((field) => field in payload)
+    );
   }
   if (input.operation === 'command.approve') {
     return isRecord(payload) && typeof payload['sessionId'] === 'string';
@@ -1102,14 +1102,12 @@ async function dispatchMeshHostOperationOnce(
   }
   const payload = input.payload;
   if (input.operation === 'read.snapshot') {
-    const workspaceId = isRecord(payload) && typeof payload['workspaceId'] === 'string'
-      ? payload['workspaceId']
-      : undefined;
+    const workspaceId =
+      isRecord(payload) && typeof payload['workspaceId'] === 'string'
+        ? payload['workspaceId']
+        : undefined;
     if (input.principal.kind === 'dashboard') {
-      if (
-        workspaceId === undefined ||
-        !input.scope.workspaceIds.includes(workspaceId)
-      ) {
+      if (workspaceId === undefined || !input.scope.workspaceIds.includes(workspaceId)) {
         throw new Error('Dashboard snapshots require one explicitly granted workspace.');
       }
     }
@@ -1118,6 +1116,9 @@ async function dispatchMeshHostOperationOnce(
     if (input.principal.kind !== 'dashboard') return overview;
     const scopedWorkspaceId = workspaceId;
     if (scopedWorkspaceId === undefined) throw new Error('Dashboard workspace is required.');
+    if (overview.activeWorkspace?.id !== scopedWorkspaceId) {
+      throw new Error('The granted dashboard workspace is no longer available.');
+    }
     const allowed = new Set(input.scope.workspaceIds);
     return {
       generatedAt: overview.generatedAt,
@@ -1126,10 +1127,12 @@ async function dispatchMeshHostOperationOnce(
       activeSessions: overview.activeSessions.filter(
         (session) => session.workspaceId === scopedWorkspaceId,
       ),
-      pendingApprovals: overview.pendingApprovals.filter((approval) =>
-        approval.workspaceId !== undefined && allowed.has(approval.workspaceId)),
-      threads: overview.threads.filter((thread) =>
-        thread.workspaceId !== undefined && allowed.has(thread.workspaceId)),
+      pendingApprovals: overview.pendingApprovals.filter(
+        (approval) => approval.workspaceId !== undefined && allowed.has(approval.workspaceId),
+      ),
+      threads: overview.threads.filter(
+        (thread) => thread.workspaceId !== undefined && allowed.has(thread.workspaceId),
+      ),
       recentRuns: overview.recentRuns.filter((run) => run.workspaceId === scopedWorkspaceId),
       workspaceHealth: overview.workspaceHealth,
       workItems: overview.workItems,
@@ -1165,13 +1168,17 @@ async function dispatchMeshHostOperationOnce(
     requireMeshEnrollmentPrincipal(input);
     const companion = await import('./mobile-companion.service.js');
     if (input.operation === 'read.chat-threads') {
-      if (isRecord(payload) && payload['workspaceId'] !== undefined &&
-          typeof payload['workspaceId'] !== 'string') {
+      if (
+        isRecord(payload) &&
+        payload['workspaceId'] !== undefined &&
+        typeof payload['workspaceId'] !== 'string'
+      ) {
         throw new Error('read.chat-threads workspace id is invalid.');
       }
-      const workspaceId = isRecord(payload) && typeof payload['workspaceId'] === 'string'
-        ? payload['workspaceId']
-        : undefined;
+      const workspaceId =
+        isRecord(payload) && typeof payload['workspaceId'] === 'string'
+          ? payload['workspaceId']
+          : undefined;
       assertMeshWorkspaceAccess(input, workspaceId);
       const threads = companion.listMeshCompanionChatThreads(workspaceId);
       return input.scope.workspaceIds.length === 0 || workspaceId !== undefined
@@ -1185,8 +1192,10 @@ async function dispatchMeshHostOperationOnce(
       const access = companion.getMeshCompanionThreadAccess(payload['threadId']);
       if (access === null) throw new Error('Chat thread is no longer available.');
       assertMeshWorkspaceAccess(input, access.workspaceId);
-      if (input.scope.repositoryIds.length > 0 &&
-          access.repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))) {
+      if (
+        input.scope.repositoryIds.length > 0 &&
+        access.repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))
+      ) {
         throw new Error('Thread history is outside the Mesh repository scope.');
       }
       return companion.readMeshCompanionThreadHistory(payload['threadId']);
@@ -1200,27 +1209,32 @@ async function dispatchMeshHostOperationOnce(
       const allowedWorkspaceIds = input.scope.workspaceIds;
       if (allowedWorkspaceIds.length > 0) {
         const visible = allowedWorkspaceIds.some((workspaceId) =>
-          companion.getMobileOverview(workspaceId).workspaceHealth.signals.some(
-            (signal) => signal.id === payload['signalId'],
-          ));
+          companion
+            .getMobileOverview(workspaceId)
+            .workspaceHealth.signals.some((signal) => signal.id === payload['signalId']),
+        );
         if (!visible) throw new Error('Workspace signal is outside the Mesh workspace scope.');
       }
       return detail;
     }
     if (input.operation === 'read.chat-skills') {
-      const query = isRecord(payload) && typeof payload['query'] === 'string'
-        ? payload['query']
-        : '';
+      const query =
+        isRecord(payload) && typeof payload['query'] === 'string' ? payload['query'] : '';
       return companion.getMeshCompanionChatSkills(query);
     }
     if (input.operation === 'read.file-mentions') {
-      if (!isRecord(payload) || !Array.isArray(payload['repoIds']) ||
-          payload['repoIds'].some((repoId) => typeof repoId !== 'string')) {
+      if (
+        !isRecord(payload) ||
+        !Array.isArray(payload['repoIds']) ||
+        payload['repoIds'].some((repoId) => typeof repoId !== 'string')
+      ) {
         throw new Error('read.file-mentions requires repository ids.');
       }
       const repoIds = payload['repoIds'] as string[];
-      if (input.scope.repositoryIds.length > 0 &&
-          repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))) {
+      if (
+        input.scope.repositoryIds.length > 0 &&
+        repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))
+      ) {
         throw new Error('File mention search is outside the Mesh repository scope.');
       }
       return companion.searchMeshCompanionFileMentions({
@@ -1230,17 +1244,23 @@ async function dispatchMeshHostOperationOnce(
       });
     }
     if (input.operation === 'read.attachment') {
-      if (!isRecord(payload) || typeof payload['attachmentId'] !== 'string' ||
-          typeof payload['offset'] !== 'number' || typeof payload['byteLength'] !== 'number') {
+      if (
+        !isRecord(payload) ||
+        typeof payload['attachmentId'] !== 'string' ||
+        typeof payload['offset'] !== 'number' ||
+        typeof payload['byteLength'] !== 'number'
+      ) {
         throw new Error('read.attachment requires an attachment id and bounded byte range.');
       }
       if (input.scope.workspaceIds.length > 0) {
         const accesses = companion.getMeshCompanionAttachmentThreadAccess(payload['attachmentId']);
-        const visible = accesses.some((access) =>
-          access.workspaceId !== undefined &&
-          input.scope.workspaceIds.includes(access.workspaceId) &&
-          (input.scope.repositoryIds.length === 0 ||
-            access.repoIds.every((repoId) => input.scope.repositoryIds.includes(repoId))));
+        const visible = accesses.some(
+          (access) =>
+            access.workspaceId !== undefined &&
+            input.scope.workspaceIds.includes(access.workspaceId) &&
+            (input.scope.repositoryIds.length === 0 ||
+              access.repoIds.every((repoId) => input.scope.repositoryIds.includes(repoId))),
+        );
         if (!visible) throw new Error('Attachment is outside the Mesh workspace scope.');
       }
       return companion.readMeshCompanionAttachmentChunk({
@@ -1270,8 +1290,11 @@ async function dispatchMeshHostOperationOnce(
     return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
   }
   if (input.operation === 'dashboard.command.wake') {
-    if (input.principal.kind !== 'dashboard' || !isRecord(payload) ||
-        payload['requestId'] !== input.principal.grantId) {
+    if (
+      input.principal.kind !== 'dashboard' ||
+      !isRecord(payload) ||
+      payload['requestId'] !== input.principal.grantId
+    ) {
       throw new Error('Dashboard command wake requires its exact grant id.');
     }
     return dispatchDashboardGrantCommandQueue(scope, input.principal.grantId);
@@ -1281,8 +1304,8 @@ async function dispatchMeshHostOperationOnce(
       assertDashboardCommandScope(input.scope, payload, 'submit-task');
       return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
     }
-      if (isRecord(payload) && !('requestedTarget' in payload)) {
-        requireMeshEnrollmentPrincipal(input, 'steer');
+    if (isRecord(payload) && !('requestedTarget' in payload)) {
+      requireMeshEnrollmentPrincipal(input, 'steer');
       const mobileInput = omitMeshAttachmentClaim(payload) as MobileStartChatInput;
       assertMobileWorkflowScope(input, mobileInput);
       if (mobileInput.attachments?.some((attachment) => attachment.path !== undefined)) {
@@ -1290,17 +1313,25 @@ async function dispatchMeshHostOperationOnce(
       }
       const { claimedAttachments, batchId } = await claimMeshCompanionAttachments(input, payload);
       const companion = await import('./mobile-companion.service.js');
-      const fileAttachments = await resolveMeshFileMentions(input, payload, mobileInput.workspaceId);
-      const result = await companion.startMeshCompanionWorkflow(
-        mobileInput,
-        [...claimedAttachments, ...fileAttachments],
+      const fileAttachments = await resolveMeshFileMentions(
+        input,
+        payload,
+        mobileInput.workspaceId,
       );
+      const result = await companion.startMeshCompanionWorkflow(mobileInput, [
+        ...claimedAttachments,
+        ...fileAttachments,
+      ]);
       return { ...result, ...(batchId === undefined ? {} : { batchId }) };
     }
-    if (!isRecord(payload) || payload['requestId'] !== input.requestId ||
-        typeof payload['payloadHash'] !== 'string' || !isRecord(payload['requestedTarget']) ||
-        payload['requestedTarget']['kind'] !== 'device' ||
-        payload['requestedTarget']['enrollmentId'] !== currentHostSessionRpcContext()?.enrollmentId) {
+    if (
+      !isRecord(payload) ||
+      payload['requestId'] !== input.requestId ||
+      typeof payload['payloadHash'] !== 'string' ||
+      !isRecord(payload['requestedTarget']) ||
+      payload['requestedTarget']['kind'] !== 'device' ||
+      payload['requestedTarget']['enrollmentId'] !== currentHostSessionRpcContext()?.enrollmentId
+    ) {
       throw new Error('command.submit must target this host with its durable request id.');
     }
     requireMeshEnrollmentPrincipal(input, 'steer');
@@ -1315,10 +1346,15 @@ async function dispatchMeshHostOperationOnce(
       assertDashboardCommandScope(input.scope, payload, 'approve-action');
       return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
     }
-    if (isRecord(payload) && typeof payload['sessionId'] === 'string' &&
-        typeof payload['requestKey'] === 'string' &&
-        (payload['decision'] === 'accept' || payload['decision'] === 'acceptForSession' ||
-         payload['decision'] === 'decline' || payload['decision'] === 'cancel')) {
+    if (
+      isRecord(payload) &&
+      typeof payload['sessionId'] === 'string' &&
+      typeof payload['requestKey'] === 'string' &&
+      (payload['decision'] === 'accept' ||
+        payload['decision'] === 'acceptForSession' ||
+        payload['decision'] === 'decline' ||
+        payload['decision'] === 'cancel')
+    ) {
       requireMeshEnrollmentPrincipal(input, 'approve');
       const { resolveMeshCompanionApproval } = await import('./mobile-companion.service.js');
       return resolveMeshCompanionApproval(
@@ -1328,16 +1364,20 @@ async function dispatchMeshHostOperationOnce(
         typeof payload['optionId'] === 'string' ? payload['optionId'] : undefined,
       );
     }
-    if (!isRecord(payload) || typeof payload['approvalId'] !== 'string' ||
-        (payload['decision'] !== 'approved' && payload['decision'] !== 'denied')) {
+    if (
+      !isRecord(payload) ||
+      typeof payload['approvalId'] !== 'string' ||
+      (payload['decision'] !== 'approved' && payload['decision'] !== 'denied')
+    ) {
       throw new Error('command.approve requires a decision for one approval.');
     }
     requireMeshEnrollmentPrincipal(input, 'approve');
     const approval = await accountRpc<ApprovalGetResult>('approval.get', {
       approvalId: payload['approvalId'],
     });
-    const targetApproval = approval.approvals.find((candidate) =>
-      candidate.id === payload['approvalId']);
+    const targetApproval = approval.approvals.find(
+      (candidate) => candidate.id === payload['approvalId'],
+    );
     if (targetApproval === undefined) throw new Error('Approval is no longer available.');
     await assertMeshJobTargetsThisHost(targetApproval.jobId);
     return accountRpc<ApprovalDecideResult>('approval.decide', {
@@ -1368,9 +1408,13 @@ async function dispatchMeshHostOperationOnce(
       assertDashboardCommandScope(input.scope, payload, 'workspace-write');
       return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
     }
-    if (!isRecord(payload) || typeof payload['sessionId'] !== 'string' ||
-        typeof payload['message'] !== 'string' || payload['message'].length === 0 ||
-        payload['message'].length > 32_000) {
+    if (
+      !isRecord(payload) ||
+      typeof payload['sessionId'] !== 'string' ||
+      typeof payload['message'] !== 'string' ||
+      payload['message'].length === 0 ||
+      payload['message'].length > 32_000
+    ) {
       throw new Error('command.steer requires a bounded message and local session id.');
     }
     requireMeshEnrollmentPrincipal(input, 'steer');
@@ -1379,28 +1423,32 @@ async function dispatchMeshHostOperationOnce(
       throw new Error('Mesh message attachments must use encrypted upload references.');
     }
     const companion = await import('./mobile-companion.service.js');
-    const thread = companion.listMeshCompanionChatThreads().find(
-      (candidate) => candidate.activeSessionId === payload['sessionId'],
-    );
+    const thread = companion
+      .listMeshCompanionChatThreads()
+      .find((candidate) => candidate.activeSessionId === payload['sessionId']);
     if (thread === undefined) throw new Error('This session has no active companion thread.');
     assertMeshWorkspaceAccess(input, thread.workspaceId);
-    if (input.scope.repositoryIds.length > 0 &&
-        thread.repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))) {
+    if (
+      input.scope.repositoryIds.length > 0 &&
+      thread.repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))
+    ) {
       throw new Error('This session is outside the Mesh repository scope.');
     }
     const { claimedAttachments, batchId } = await claimMeshCompanionAttachments(input, payload);
     const fileAttachments = await resolveMeshFileMentions(input, payload, thread.workspaceId);
-    const result = await companion.sendMeshCompanionMessage(
-      payload['sessionId'],
-      mobileInput,
-      [...claimedAttachments, ...fileAttachments],
-    );
+    const result = await companion.sendMeshCompanionMessage(payload['sessionId'], mobileInput, [
+      ...claimedAttachments,
+      ...fileAttachments,
+    ]);
     return { ...result, ...(batchId === undefined ? {} : { batchId }) };
   }
   if (input.operation === 'command.prepare-attachments') {
     requireMeshEnrollmentPrincipal(input, 'steer');
-    if (!isRecord(payload) || typeof payload['batchId'] !== 'string' ||
-        !Array.isArray(payload['attachments'])) {
+    if (
+      !isRecord(payload) ||
+      typeof payload['batchId'] !== 'string' ||
+      !Array.isArray(payload['attachments'])
+    ) {
       throw new Error('command.prepare-attachments requires a batch id and attachments.');
     }
     const companion = await import('./mobile-companion.service.js');
@@ -1414,9 +1462,11 @@ async function dispatchMeshHostOperationOnce(
       attachments,
     };
   }
-  if (input.operation === 'command.attachment.begin' ||
-      input.operation === 'command.attachment.chunk' ||
-      input.operation === 'command.attachment.finish') {
+  if (
+    input.operation === 'command.attachment.begin' ||
+    input.operation === 'command.attachment.chunk' ||
+    input.operation === 'command.attachment.finish'
+  ) {
     requireMeshEnrollmentPrincipal(input, 'steer');
     if (!isRecord(payload)) throw new Error(`${input.operation} requires an object payload.`);
     const companion = await import('./mobile-companion.service.js');
@@ -1473,9 +1523,13 @@ async function dispatchMeshHostOperationOnce(
   }
   if (input.operation === 'command.carplay-approval') {
     requireMeshEnrollmentPrincipal(input, 'approve');
-    if (!isRecord(payload) || typeof payload['approvalId'] !== 'string' ||
-        (payload['decision'] !== 'approve' && payload['decision'] !== 'decline' &&
-         payload['decision'] !== 'later')) {
+    if (
+      !isRecord(payload) ||
+      typeof payload['approvalId'] !== 'string' ||
+      (payload['decision'] !== 'approve' &&
+        payload['decision'] !== 'decline' &&
+        payload['decision'] !== 'later')
+    ) {
       throw new Error('command.carplay-approval requires a supported decision.');
     }
     const { resolveMeshCarPlayApproval } = await import('./mobile-companion.service.js');
@@ -1486,8 +1540,11 @@ async function dispatchMeshHostOperationOnce(
   }
   if (input.operation === 'command.carplay-note') {
     requireMeshEnrollmentPrincipal(input, 'steer');
-    if (!isRecord(payload) || typeof payload['body'] !== 'string' ||
-        (payload['source'] !== 'carplay' && payload['source'] !== 'siri')) {
+    if (
+      !isRecord(payload) ||
+      typeof payload['body'] !== 'string' ||
+      (payload['source'] !== 'carplay' && payload['source'] !== 'siri')
+    ) {
       throw new Error('command.carplay-note requires a valid note.');
     }
     payload['workspaceId'] = requireMeshWorkspaceForMutation(
@@ -1499,8 +1556,10 @@ async function dispatchMeshHostOperationOnce(
   }
   if (input.operation === 'command.carplay-handover') {
     requireMeshEnrollmentPrincipal(input, 'steer');
-    if (!isRecord(payload) || (payload['workspaceId'] !== undefined &&
-        typeof payload['workspaceId'] !== 'string')) {
+    if (
+      !isRecord(payload) ||
+      (payload['workspaceId'] !== undefined && typeof payload['workspaceId'] !== 'string')
+    ) {
       throw new Error('command.carplay-handover requires an optional workspace id.');
     }
     const workspaceId = requireMeshWorkspaceForMutation(
@@ -1602,10 +1661,16 @@ async function resolveMeshFileMentions(
 ): Promise<ChatAttachmentInput[]> {
   const fileMentions = payload['fileMentions'];
   if (fileMentions === undefined) return [];
-  if (!Array.isArray(fileMentions) || fileMentions.length > 10 ||
-      fileMentions.some((item) =>
-        !isRecord(item) || typeof item['repoId'] !== 'string' ||
-        typeof item['relativePath'] !== 'string')) {
+  if (
+    !Array.isArray(fileMentions) ||
+    fileMentions.length > 10 ||
+    fileMentions.some(
+      (item) =>
+        !isRecord(item) ||
+        typeof item['repoId'] !== 'string' ||
+        typeof item['relativePath'] !== 'string',
+    )
+  ) {
     throw new Error('File mention attachment list is invalid.');
   }
   const workspaceId = requireMeshWorkspaceForMutation(input, sessionWorkspaceId);
@@ -1613,8 +1678,10 @@ async function resolveMeshFileMentions(
     throw new Error('File mention attachments require an explicitly selected workspace.');
   }
   const references = fileMentions as Array<{ repoId: string; relativePath: string }>;
-  if (input.scope.repositoryIds.length > 0 &&
-      references.some((reference) => !input.scope.repositoryIds.includes(reference.repoId))) {
+  if (
+    input.scope.repositoryIds.length > 0 &&
+    references.some((reference) => !input.scope.repositoryIds.includes(reference.repoId))
+  ) {
     throw new Error('File mention attachments are outside the Mesh repository scope.');
   }
   const companion = await import('./mobile-companion.service.js');
@@ -1632,8 +1699,11 @@ async function claimMeshCompanionAttachments(
   const hasBatch = typeof payload['batchId'] === 'string';
   const hasAttachments = Array.isArray(payload['attachmentIds']);
   if (!hasBatch && !hasAttachments) return { claimedAttachments: [] };
-  if (!hasBatch || !hasAttachments ||
-      (payload['attachmentIds'] as unknown[]).some((id) => typeof id !== 'string')) {
+  if (
+    !hasBatch ||
+    !hasAttachments ||
+    (payload['attachmentIds'] as unknown[]).some((id) => typeof id !== 'string')
+  ) {
     throw new Error('Attachment references require a batch id and attachment id list.');
   }
   const attachmentIds = payload['attachmentIds'] as string[];
@@ -1703,8 +1773,11 @@ function assertDashboardCommandScope(
   }
 }
 
-function isBrowserWorkspaceCommandEnvelope(value: unknown): value is BrowserWorkspaceCommandEnvelope {
-  return isRecord(value) &&
+function isBrowserWorkspaceCommandEnvelope(
+  value: unknown,
+): value is BrowserWorkspaceCommandEnvelope {
+  return (
+    isRecord(value) &&
     value['v'] === 1 &&
     value['enc'] === 'aes-256-gcm' &&
     typeof value['requestId'] === 'string' &&
@@ -1714,7 +1787,8 @@ function isBrowserWorkspaceCommandEnvelope(value: unknown): value is BrowserWork
     typeof value['expiresAt'] === 'string' &&
     typeof value['nonce'] === 'string' &&
     typeof value['ct'] === 'string' &&
-    (value['repositoryId'] === undefined || typeof value['repositoryId'] === 'string');
+    (value['repositoryId'] === undefined || typeof value['repositoryId'] === 'string')
+  );
 }
 
 function isMeshActivityFrame(
@@ -1731,23 +1805,31 @@ function isMeshActivityFrame(
 function meshActivityFrameFromHostEvent(payload: unknown): ActivityFrame | null {
   if (
     !isRecord(payload) ||
-    typeof payload['attemptId'] !== 'string' || payload['attemptId'].length === 0 ||
-    typeof payload['generation'] !== 'number' || !Number.isSafeInteger(payload['generation']) ||
-    typeof payload['streamId'] !== 'string' || payload['streamId'].length === 0 ||
+    typeof payload['attemptId'] !== 'string' ||
+    payload['attemptId'].length === 0 ||
+    typeof payload['generation'] !== 'number' ||
+    !Number.isSafeInteger(payload['generation']) ||
+    typeof payload['streamId'] !== 'string' ||
+    payload['streamId'].length === 0 ||
     payload['streamId'] === 'control' ||
-    typeof payload['sequence'] !== 'number' || !Number.isSafeInteger(payload['sequence']) ||
+    typeof payload['sequence'] !== 'number' ||
+    !Number.isSafeInteger(payload['sequence']) ||
     !isRecord(payload['payload'])
-  ) return null;
+  )
+    return null;
   const activity = payload['payload'];
   if (
-    (activity['kind'] !== 'stdout' && activity['kind'] !== 'stderr' &&
+    (activity['kind'] !== 'stdout' &&
+      activity['kind'] !== 'stderr' &&
       activity['kind'] !== 'status') ||
     typeof activity['text'] !== 'string' ||
     Buffer.byteLength(activity['text'], 'utf8') > 256 * 1024 ||
-    typeof activity['byteLength'] !== 'number' || !Number.isSafeInteger(activity['byteLength']) ||
+    typeof activity['byteLength'] !== 'number' ||
+    !Number.isSafeInteger(activity['byteLength']) ||
     activity['byteLength'] < 0 ||
     typeof activity['truncated'] !== 'boolean'
-  ) return null;
+  )
+    return null;
   return {
     type: 'activity',
     version: 1,

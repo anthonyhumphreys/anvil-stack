@@ -639,6 +639,7 @@ export function getDashboardGrantMachineEndpointOrigin(
     row.state !== 'approved' ||
     row.enrollment_id !== context.enrollmentId ||
     row.workspace_id === null ||
+    getDb().prepare('SELECT 1 FROM workspaces WHERE id = ?').get(row.workspace_id) === undefined ||
     Date.parse(row.expires_at) <= Date.now() ||
     row.request_json === null
   ) {

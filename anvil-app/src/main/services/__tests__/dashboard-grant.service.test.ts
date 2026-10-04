@@ -33,6 +33,7 @@ import {
   approveDashboardRequest,
   configureDashboardGrantContext,
   dashboardCommandAssociatedData,
+  getDashboardGrantMachineSessionContext,
   listDashboardGrantWorkspaces,
   pumpBrowserWorkspaceCommands,
   revokeDashboardGrant,
@@ -468,6 +469,32 @@ describe('remembered browser trust', () => {
     expect(
       db.prepare('SELECT state FROM mesh_dashboard_grants WHERE trust_id = ?').get(trusted.trustId),
     ).toEqual({ state: 'revoked' });
+  });
+});
+
+describe('dashboard machine session workspace liveness', () => {
+  it('rejects an approved grant after its selected workspace is deleted', () => {
+    insertApprovedGrant(randomBytes(32), 'grant-deleted-workspace');
+    const request = JSON.parse(
+      (db.prepare('SELECT request_json FROM mesh_dashboard_grants WHERE request_id = ?')
+        .get('grant-deleted-workspace') as { request_json: string }).request_json,
+    ) as Record<string, unknown>;
+    request.origin = 'https://anvil.dev';
+    db.prepare('UPDATE mesh_dashboard_grants SET request_json = ? WHERE request_id = ?').run(
+      JSON.stringify(request),
+      'grant-deleted-workspace',
+    );
+    configureDashboardGrantContext(() => ({
+      apiUrl: 'https://backend.test/v1',
+      accessToken: 'token',
+      enrollmentId: 'enrollment-1',
+    }));
+
+    expect(getDashboardGrantMachineSessionContext(scope, 'grant-deleted-workspace')).not.toBeNull();
+
+    db.prepare('DELETE FROM workspaces WHERE id = ?').run('workspace-1');
+
+    expect(getDashboardGrantMachineSessionContext(scope, 'grant-deleted-workspace')).toBeNull();
   });
 });
 

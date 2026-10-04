@@ -1,10 +1,26 @@
 import { cachedWorkItemRows } from './workitem-context.service.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  constants as fsConstants,
+  createReadStream,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
-import { BrowserWindow } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import QRCode from 'qrcode';
 import type {
   CarPlayApprovalRequest,
@@ -95,9 +111,7 @@ import {
   refreshDashboardGrantMachineSession,
   verifyDashboardMachineBootstrapProof,
 } from './dashboard-grant.service.js';
-import {
-  isMeshMachineEndpointEnabled,
-} from './mesh-machine-endpoint.service.js';
+import { isMeshMachineEndpointEnabled } from './mesh-machine-endpoint.service.js';
 import {
   startManagedEndpointForHost,
   stopManagedEndpointForHost,
@@ -187,6 +201,10 @@ const EVENT_STREAM_TICKET_MAX = 256;
 const MESH_ATTACHMENT_READ_CHUNK_MAX_BYTES = 256 * 1024;
 const MESH_ATTACHMENT_PREPARE_MAX_DATA_URL_CHARS = 350 * 1024;
 const MESH_ATTACHMENT_MAX_COUNT = 10;
+const MESH_FILE_MENTION_MAX_BYTES = 25 * 1024 * 1024;
+const MESH_FILE_MENTION_MAX_TOTAL_BYTES = 75 * 1024 * 1024;
+const MESH_FILE_MENTION_COPY_CHUNK_BYTES = 256 * 1024;
+const MESH_FILE_MENTION_DIRECTORY = '.mesh-file-mentions';
 const EXPO_WEB_PORT = '8081';
 const attestCache = new Map<
   string,
@@ -363,13 +381,19 @@ let serverRunning = false;
 let serverError: string | null = null;
 let meshHostEndpointGeneration: string | null = null;
 let meshHostIdentityKey: string | null = null;
-let meshHostIdentity: { hostEnrollmentId: string; machineId: string; endpointGeneration: string } | null = null;
+let meshHostIdentity: {
+  hostEnrollmentId: string;
+  machineId: string;
+  endpointGeneration: string;
+} | null = null;
 let meshHostSessionService: MeshHostSessionService | null = null;
 let unregisterMeshHostSessionService: (() => void) | null = null;
 let meshHostPrivateServer: MeshHostSessionServer | null = null;
 let meshHostManagedServer: MeshHostSessionServer | null = null;
 let meshManagedIngressServer: Server | null = null;
-let meshManagedUpgradeHandler: ((req: IncomingMessage, socket: import('node:net').Socket, head: Buffer) => void) | null = null;
+let meshManagedUpgradeHandler:
+  | ((req: IncomingMessage, socket: import('node:net').Socket, head: Buffer) => void)
+  | null = null;
 let meshManagedOrigin: string | null = null;
 let meshHostBindFailed = false;
 let meshHostLifecycleTimer: ReturnType<typeof setInterval> | null = null;
@@ -394,7 +418,8 @@ function currentMeshHostOwner(): MeshHostOwner | null {
     auth.accountId === null ||
     auth.enrollmentId === null ||
     auth.accountId !== scope.accountId
-  ) return null;
+  )
+    return null;
   const machineId = ensureMobileCompanionSettings().instance_id;
   return {
     scope,
@@ -415,7 +440,10 @@ function activeMeshHostScope(identityKey: string): SyncScope | null {
   return owner?.identityKey === identityKey ? owner.scope : null;
 }
 
-function dashboardSessionContext(scope: SyncScope, grantId: string): MeshHostDashboardContext | null {
+function dashboardSessionContext(
+  scope: SyncScope,
+  grantId: string,
+): MeshHostDashboardContext | null {
   const grant = getDashboardGrantMachineSessionContext(scope, grantId);
   if (grant === null) return null;
   return {
@@ -540,7 +568,8 @@ async function reconcileMeshHostEndpointRuntime(): Promise<void> {
   const previousManagedOrigin = meshManagedOrigin;
   if (meshManagedIngressServer === null) await startManagedMeshIngress();
   refreshMeshHostStatus();
-  if (identityChanged || previousManagedOrigin !== meshManagedOrigin) void advertiseCompanionPresence();
+  if (identityChanged || previousManagedOrigin !== meshManagedOrigin)
+    void advertiseCompanionPresence();
 }
 
 async function startManagedMeshIngress(): Promise<void> {
@@ -554,7 +583,8 @@ async function startManagedMeshIngress(): Promise<void> {
       return;
     }
     void handler.handleRequest(req, res).then((handled) => {
-      if (!handled && !res.headersSent) sendJson(res, 404, { error: 'Machine endpoint not found.' });
+      if (!handled && !res.headersSent)
+        sendJson(res, 404, { error: 'Machine endpoint not found.' });
     });
   });
   try {
@@ -633,7 +663,8 @@ async function listenLoopback(listener: Server): Promise<number> {
     });
   });
   const address = listener.address();
-  if (address === null || typeof address === 'string') throw new Error('Loopback listener did not bind.');
+  if (address === null || typeof address === 'string')
+    throw new Error('Loopback listener did not bind.');
   return address.port;
 }
 
@@ -694,7 +725,10 @@ export async function setMobileCompanionEnabled(enabled: boolean): Promise<Mobil
 
 export async function syncMobileCompanionServer(): Promise<void> {
   const settings = ensureMobileCompanionSettings();
-  if (settings.enabled !== 0 || (isMeshMachineEndpointEnabled() && currentMeshHostOwner() !== null)) {
+  if (
+    settings.enabled !== 0 ||
+    (isMeshMachineEndpointEnabled() && currentMeshHostOwner() !== null)
+  ) {
     await startMobileCompanionServer();
   } else {
     await stopMobileCompanionServer();
@@ -707,7 +741,10 @@ export async function startMobileCompanionServer(): Promise<void> {
     meshAttachmentUploadCleanupComplete = true;
   }
   const settings = ensureMobileCompanionSettings();
-  if (settings.enabled === 0 && (!isMeshMachineEndpointEnabled() || currentMeshHostOwner() === null)) {
+  if (
+    settings.enabled === 0 &&
+    (!isMeshMachineEndpointEnabled() || currentMeshHostOwner() === null)
+  ) {
     if (server !== null) await stopMobileCompanionServer();
     else {
       await stopMeshHostLifecycleLoop();
@@ -1592,7 +1629,8 @@ export function ensureMeshCompanionEnrollmentPolicy(
     owner === null ||
     owner.scope.accountId !== accountId ||
     owner.hostEnrollmentId === enrollmentId
-  ) return { state: 'unavailable' };
+  )
+    return { state: 'unavailable' };
   const policy = ensurePolicyRow(enrollmentId, accountId);
   if (policy.account_id !== accountId) return { state: 'unavailable' };
   touchPolicy(enrollmentId);
@@ -1783,7 +1821,13 @@ export function getMobileOverview(requestedWorkspaceId?: string): MobileOverview
 
 /** Mesh's encrypted snapshot omits this host's filesystem paths. */
 export function getMeshCompanionOverview(requestedWorkspaceId?: string) {
+  if (requestedWorkspaceId !== undefined && safeGetWorkspace(requestedWorkspaceId) === undefined) {
+    throw new Error('The requested Mesh workspace is unavailable.');
+  }
   const overview = getMobileOverview(requestedWorkspaceId);
+  if (requestedWorkspaceId !== undefined && overview.activeWorkspace?.id !== requestedWorkspaceId) {
+    throw new Error('The requested Mesh workspace is unavailable.');
+  }
   const activeWorkspace = overview.activeWorkspace;
   return {
     ...overview,
@@ -1944,7 +1988,8 @@ export function getMeshCarPlaySnapshot(): CarPlayDriveSnapshot {
 }
 
 export function getMeshCarPlayApproval(approvalId: string): CarPlayApprovalRequest | null {
-  if (!approvalId.trim() || approvalId.length > 512) throw new Error('A valid approval id is required.');
+  if (!approvalId.trim() || approvalId.length > 512)
+    throw new Error('A valid approval id is required.');
   const approval = findCarPlayApproval(approvalId);
   return approval === undefined ? null : stripMeshApprovalPaths(approval);
 }
@@ -1978,9 +2023,15 @@ export function resolveMeshCarPlayApproval(input: {
 }
 
 export function pauseMeshCarPlaySession(sessionId: string): { ok: true } {
-  if (!sessionId.trim() || sessionId.length > 256) throw new Error('A valid session id is required.');
+  if (!sessionId.trim() || sessionId.length > 256)
+    throw new Error('A valid session id is required.');
   interruptTurn(sessionId);
-  pushCompanionNotification('sessions', 'Paused', 'The session was paused from Anvil Drive.', 'carplay');
+  pushCompanionNotification(
+    'sessions',
+    'Paused',
+    'The session was paused from Anvil Drive.',
+    'carplay',
+  );
   emitCompanionEvent('sessions');
   return { ok: true };
 }
@@ -2003,7 +2054,8 @@ export function createMeshCarPlayNote(input: CarPlayNoteRequest) {
     input.body.trim().length === 0 ||
     input.body.length > 8_000 ||
     (input.source !== 'carplay' && input.source !== 'siri')
-  ) throw new Error('CarPlay note request is invalid.');
+  )
+    throw new Error('CarPlay note request is invalid.');
   const note = createWorkspaceNote({
     workspaceId: input.workspaceId ?? getSettings().activeWorkspaceId ?? undefined,
     repo: input.repo,
@@ -2019,7 +2071,9 @@ export function createMeshCarPlayNote(input: CarPlayNoteRequest) {
   return note;
 }
 
-export async function startMeshCarPlayHandover(input: { workspaceId?: string }): Promise<MobileStartChatResult> {
+export async function startMeshCarPlayHandover(input: {
+  workspaceId?: string;
+}): Promise<MobileStartChatResult> {
   if (input.workspaceId !== undefined && input.workspaceId.length > 128) {
     throw new Error('Workspace id is invalid.');
   }
@@ -2198,22 +2252,32 @@ export function listMeshCompanionChatThreads(workspaceId?: string): MobileChatTh
     : threads.filter((thread) => thread.workspaceId === workspaceId);
 }
 
-export type MeshCompanionChatMessage = Omit<ChatMessage, 'attachments' | 'event' | 'repoContext'> & {
+export type MeshCompanionChatMessage = Omit<
+  ChatMessage,
+  'attachments' | 'event' | 'repoContext'
+> & {
   attachments?: Array<Omit<ChatAttachment, 'path'>>;
   citations?: Citation[];
 };
 
 export function readMeshCompanionThreadHistory(threadId: string): MeshCompanionChatMessage[] {
   if (!threadId.trim() || threadId.length > 256) throw new Error('A valid thread id is required.');
-  return loadChatHistory(threadId).map(({ attachments, event: _event, repoContext: _repoContext, citations, ...message }) => ({
-    ...message,
-    ...(citations === undefined
-      ? {}
-      : { citations: citations.map((citation) => ({ ...citation, filePath: safeMeshCitationLabel(citation.filePath) })) }),
-    ...(attachments === undefined
-      ? {}
-      : { attachments: attachments.map(({ path: _hostPath, ...attachment }) => attachment) }),
-  }));
+  return loadChatHistory(threadId).map(
+    ({ attachments, event: _event, repoContext: _repoContext, citations, ...message }) => ({
+      ...message,
+      ...(citations === undefined
+        ? {}
+        : {
+            citations: citations.map((citation) => ({
+              ...citation,
+              filePath: safeMeshCitationLabel(citation.filePath),
+            })),
+          }),
+      ...(attachments === undefined
+        ? {}
+        : { attachments: attachments.map(({ path: _hostPath, ...attachment }) => attachment) }),
+    }),
+  );
 }
 
 /** Companion history may show a citation label, but never the host's directory structure. */
@@ -2235,17 +2299,22 @@ export function readMeshCompanionWorkspaceSignal(
   const detail = getMobileWorkspaceSignalDetail(signalId);
   return detail === null
     ? null
-    : { ...detail, files: detail.files.map((file) => ({ ...file, path: safeMeshCitationLabel(file.path) })) };
+    : {
+        ...detail,
+        files: detail.files.map((file) => ({ ...file, path: safeMeshCitationLabel(file.path) })),
+      };
 }
 
 export async function getMeshCompanionChatSkills(query = '') {
   if (query.length > 256) throw new Error('The skill search query is too long.');
   const skills = await listMobileChatSkills(query);
-  return skills.map(({ path: _path, directory: _directory, ...skill }): CodexRegisteredSkill => ({
-    ...skill,
-    path: '',
-    directory: '',
-  }));
+  return skills.map(
+    ({ path: _path, directory: _directory, ...skill }): CodexRegisteredSkill => ({
+      ...skill,
+      path: '',
+      directory: '',
+    }),
+  );
 }
 
 export async function searchMeshCompanionFileMentions(input: {
@@ -2296,17 +2365,18 @@ function validateMeshInlineAttachments(inputs: ChatAttachmentInput[]): void {
     throw new Error('Mesh attachment request is invalid or contains too many files.');
   }
   if (
-    inputs.some((input) =>
-      typeof input !== 'object' ||
-      input === null ||
-      input.path !== undefined ||
-      typeof input.dataUrl !== 'string' ||
-      input.dataUrl.length === 0 ||
-      input.dataUrl.length > MESH_ATTACHMENT_PREPARE_MAX_DATA_URL_CHARS ||
-      typeof input.name !== 'string' ||
-      input.name.length > 256 ||
-      (input.mimeType !== undefined &&
-        (typeof input.mimeType !== 'string' || input.mimeType.length > 128)),
+    inputs.some(
+      (input) =>
+        typeof input !== 'object' ||
+        input === null ||
+        input.path !== undefined ||
+        typeof input.dataUrl !== 'string' ||
+        input.dataUrl.length === 0 ||
+        input.dataUrl.length > MESH_ATTACHMENT_PREPARE_MAX_DATA_URL_CHARS ||
+        typeof input.name !== 'string' ||
+        input.name.length > 256 ||
+        (input.mimeType !== undefined &&
+          (typeof input.mimeType !== 'string' || input.mimeType.length > 128)),
     )
   ) {
     throw new Error('Mesh attachments must contain bounded uploaded data, not host file paths.');
@@ -2347,9 +2417,10 @@ export function getMeshCompanionAttachmentContext(
   }
   return {
     sessionId,
-    principalId: principal.kind === 'enrollment'
-      ? `enrollment:${principal.sourceEnrollmentId}`
-      : `dashboard:${principal.grantId}`,
+    principalId:
+      principal.kind === 'enrollment'
+        ? `enrollment:${principal.sourceEnrollmentId}`
+        : `dashboard:${principal.grantId}`,
     accountId: owner.scope.accountId,
     backendId: owner.scope.backendId,
     datasetEpoch: owner.scope.datasetEpoch,
@@ -2365,7 +2436,8 @@ export function beginMeshCompanionAttachmentUploadForSession(
   input: { batchId: string; uploadId: string; name: string; mimeType: string; totalBytes: number },
 ): { batchId: string; uploadId: string; nextOffset: number; chunkBytes: number } {
   expireMeshCompanionAttachmentUploads();
-  if (!isSafeMeshAttachmentBatchId(input.batchId)) throw new Error('Attachment batch id is invalid.');
+  if (!isSafeMeshAttachmentBatchId(input.batchId))
+    throw new Error('Attachment batch id is invalid.');
   return beginMeshCompanionAttachmentUpload(
     getMeshCompanionAttachmentContext(sessionId, principal),
     input,
@@ -2402,7 +2474,8 @@ export function claimMeshCompanionAttachmentsForSession(
   input: { batchId: string; attachmentIds: string[] },
 ): ChatAttachmentInput[] {
   expireMeshCompanionAttachmentUploads();
-  if (!isSafeMeshAttachmentBatchId(input.batchId)) throw new Error('Attachment batch id is invalid.');
+  if (!isSafeMeshAttachmentBatchId(input.batchId))
+    throw new Error('Attachment batch id is invalid.');
   return claimMeshCompanionAttachmentReferences(
     getMeshCompanionAttachmentContext(sessionId, principal),
     input,
@@ -2445,7 +2518,7 @@ export interface MeshCompanionFileMentionInput {
   relativePath: string;
 }
 
-/** Resolve mobile @file mentions to local paths only after checking repo membership and containment. */
+/** Snapshot mobile @file mentions into app-owned storage after checking repo membership and containment. */
 export function resolveMeshCompanionFileMentions(
   requestedWorkspaceId: string | undefined,
   allowedRepoIds: string[],
@@ -2453,9 +2526,13 @@ export function resolveMeshCompanionFileMentions(
 ): ChatAttachmentInput[] {
   const workspaceId = requestedWorkspaceId ?? getSettings().activeWorkspaceId;
   if (
-    typeof workspaceId !== 'string' || workspaceId.length < 1 || workspaceId.length > 128 ||
-    !Array.isArray(allowedRepoIds) || allowedRepoIds.length > 64 ||
-    !Array.isArray(fileMentions) || fileMentions.length > MESH_ATTACHMENT_MAX_COUNT
+    typeof workspaceId !== 'string' ||
+    workspaceId.length < 1 ||
+    workspaceId.length > 128 ||
+    !Array.isArray(allowedRepoIds) ||
+    allowedRepoIds.length > 64 ||
+    !Array.isArray(fileMentions) ||
+    fileMentions.length > MESH_ATTACHMENT_MAX_COUNT
   ) {
     throw new Error('Mesh file mention request is invalid.');
   }
@@ -2465,57 +2542,238 @@ export function resolveMeshCompanionFileMentions(
   const restrictRepos = allowed.size > 0;
   let totalBytes = 0;
   const attachments: ChatAttachmentInput[] = [];
-  for (const mention of fileMentions) {
-    if (
-      typeof mention !== 'object' || mention === null ||
-      typeof mention.repoId !== 'string' || mention.repoId.length > 128 ||
-      typeof mention.relativePath !== 'string' || mention.relativePath.length < 1 ||
-      mention.relativePath.length > 2_048 ||
-      hasControlCharacters(mention.relativePath) ||
-      mention.relativePath.includes(':') ||
-      path.isAbsolute(mention.relativePath) || path.win32.isAbsolute(mention.relativePath) ||
-      /^[A-Za-z]:/.test(mention.relativePath) ||
-      mention.relativePath.split(/[\\/]/).some((part) => part === '..') ||
-      (restrictRepos && !allowed.has(mention.repoId))
-    ) {
-      throw new Error('Mesh file mention is outside the selected repository scope.');
-    }
-    const repo = workspace.repos.find((candidate) => candidate.id === mention.repoId);
-    if (repo === undefined) throw new Error('Mesh file mention repository is unavailable.');
-    let root: string;
-    let resolved: string;
-    try {
-      root = realpathSync(repo.path);
-      const lexicalPath = path.resolve(root, mention.relativePath);
-      const lexicalRelative = path.relative(root, lexicalPath);
-      if (lexicalRelative === '..' || lexicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(lexicalRelative)) {
-        throw new Error('outside repo');
+  try {
+    if (fileMentions.length > 0) ensureMeshFileMentionStorageDirectory();
+    for (const mention of fileMentions) {
+      if (
+        typeof mention !== 'object' ||
+        mention === null ||
+        typeof mention.repoId !== 'string' ||
+        mention.repoId.length > 128 ||
+        typeof mention.relativePath !== 'string' ||
+        mention.relativePath.length < 1 ||
+        mention.relativePath.length > 2_048 ||
+        hasControlCharacters(mention.relativePath) ||
+        mention.relativePath.includes(':') ||
+        path.isAbsolute(mention.relativePath) ||
+        path.win32.isAbsolute(mention.relativePath) ||
+        /^[A-Za-z]:/.test(mention.relativePath) ||
+        mention.relativePath.split(/[\\/]/).some((part) => part === '..') ||
+        (restrictRepos && !allowed.has(mention.repoId))
+      ) {
+        throw new Error('Mesh file mention is outside the selected repository scope.');
       }
-      resolved = realpathSync(lexicalPath);
-    } catch {
-      throw new Error('Mesh file mention is unavailable.');
+      const repo = workspace.repos.find((candidate) => candidate.id === mention.repoId);
+      if (repo === undefined) throw new Error('Mesh file mention repository is unavailable.');
+      const snapshot = snapshotMeshFileMention(repo.path, mention.relativePath, totalBytes);
+      totalBytes += snapshot.size;
+      attachments.push({ name: snapshot.name, path: snapshot.path, size: snapshot.size });
     }
-    const canonicalRelative = path.relative(root, resolved);
-    if (
-      canonicalRelative === '..' || canonicalRelative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(canonicalRelative)
-    ) throw new Error('Mesh file mention resolves outside its repository.');
-    let info;
-    try {
-      info = statSync(resolved);
-    } catch {
-      throw new Error('Mesh file mention is unavailable.');
+    return attachments;
+  } catch (error) {
+    for (const attachment of attachments) {
+      if (attachment.path !== undefined) {
+        try {
+          unlinkSync(attachment.path);
+        } catch {
+          // Keep the original validation or snapshot error.
+        }
+      }
     }
-    if (!info.isFile() || info.size > 25 * 1024 * 1024) {
+    throw error;
+  }
+}
+
+function snapshotMeshFileMention(
+  repositoryPath: string,
+  relativePath: string,
+  totalBytes: number,
+): { name: string; path: string; size: number } {
+  let repositoryRoot: string;
+  let sourcePath: string;
+  try {
+    repositoryRoot = realpathSync(repositoryPath);
+    const rootInfo = statSync(repositoryRoot);
+    if (!rootInfo.isDirectory()) throw new Error('not a directory');
+    const lexicalPath = path.resolve(repositoryRoot, relativePath);
+    assertPathWithinRoot(repositoryRoot, lexicalPath);
+    sourcePath = realpathSync(lexicalPath);
+  } catch {
+    throw new Error('Mesh file mention is unavailable.');
+  }
+  if (!isPathWithinRoot(repositoryRoot, sourcePath)) {
+    throw new Error('Mesh file mention resolves outside its repository.');
+  }
+
+  let sourceFd: number | undefined;
+  let destinationFd: number | undefined;
+  let destinationPath: string | undefined;
+  try {
+    sourceFd = openSync(sourcePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const initialInfo = fstatSync(sourceFd, { bigint: true });
+    if (!initialInfo.isFile() || initialInfo.size > BigInt(MESH_FILE_MENTION_MAX_BYTES)) {
       throw new Error('Mesh file mention must be a regular file no larger than 25 MiB.');
     }
-    totalBytes += info.size;
-    if (totalBytes > 75 * 1024 * 1024) {
+    const size = Number(initialInfo.size);
+    if (totalBytes + size > MESH_FILE_MENTION_MAX_TOTAL_BYTES) {
       throw new Error('Mesh file mentions exceed the 75 MiB batch limit.');
     }
-    attachments.push({ name: path.basename(resolved), path: resolved, size: info.size });
+    assertMeshMentionSourceIdentity(repositoryRoot, sourcePath, initialInfo);
+
+    const safeName = sanitizeMeshMentionFileName(path.basename(sourcePath));
+    destinationPath = path.join(
+      getMeshFileMentionStorageDirectory(),
+      `${randomUUID()}-${safeName}`,
+    );
+    destinationFd = openSync(
+      destinationPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    copyDescriptorBytes(sourceFd, destinationFd, size);
+    fsyncSync(destinationFd);
+
+    const finalInfo = fstatSync(sourceFd, { bigint: true });
+    if (!sameMeshMentionSnapshot(initialInfo, finalInfo)) {
+      throw new Error('Mesh file mention changed while it was being attached.');
+    }
+    assertMeshMentionSourceIdentity(repositoryRoot, sourcePath, finalInfo);
+    return { name: safeName, path: destinationPath, size };
+  } catch (error) {
+    if (destinationPath !== undefined) {
+      try {
+        unlinkSync(destinationPath);
+      } catch {
+        // Ignore cleanup errors and preserve the snapshot error.
+      }
+    }
+    if (isMeshFileMentionSizeError(error)) throw error;
+    if (error instanceof Error && error.message.includes('Mesh file mention')) throw error;
+    throw new Error('Mesh file mention is unavailable.');
+  } finally {
+    if (destinationFd !== undefined) closeSync(destinationFd);
+    if (sourceFd !== undefined) closeSync(sourceFd);
   }
-  return attachments;
+}
+
+function assertPathWithinRoot(root: string, candidate: string): void {
+  if (!isPathWithinRoot(root, candidate)) {
+    throw new Error('outside repository');
+  }
+}
+
+function isPathWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function assertMeshMentionSourceIdentity(
+  repositoryRoot: string,
+  sourcePath: string,
+  descriptorInfo: BigIntStats,
+): void {
+  if (!isPathWithinRoot(repositoryRoot, realpathSync(sourcePath))) {
+    throw new Error('Mesh file mention resolves outside its repository.');
+  }
+  const pathInfo = lstatSync(sourcePath, { bigint: true });
+  if (
+    pathInfo.isSymbolicLink() ||
+    !pathInfo.isFile() ||
+    pathInfo.dev !== descriptorInfo.dev ||
+    pathInfo.ino !== descriptorInfo.ino
+  ) {
+    throw new Error('Mesh file mention changed while it was being attached.');
+  }
+}
+
+function sameMeshMentionSnapshot(initialInfo: BigIntStats, finalInfo: BigIntStats): boolean {
+  return (
+    initialInfo.dev === finalInfo.dev &&
+    initialInfo.ino === finalInfo.ino &&
+    initialInfo.size === finalInfo.size &&
+    initialInfo.mtimeNs === finalInfo.mtimeNs &&
+    initialInfo.ctimeNs === finalInfo.ctimeNs
+  );
+}
+
+function copyDescriptorBytes(sourceFd: number, destinationFd: number, size: number): void {
+  const buffer = Buffer.allocUnsafe(MESH_FILE_MENTION_COPY_CHUNK_BYTES);
+  let copied = 0;
+  while (copied < size) {
+    const bytesToRead = Math.min(buffer.length, size - copied);
+    const bytesRead = readSync(sourceFd, buffer, 0, bytesToRead, null);
+    if (bytesRead === 0) throw new Error('Mesh file mention changed while it was being attached.');
+    let written = 0;
+    while (written < bytesRead) {
+      const bytesWritten = writeSync(destinationFd, buffer, written, bytesRead - written);
+      if (bytesWritten === 0) throw new Error('Mesh file mention snapshot could not be written.');
+      written += bytesWritten;
+    }
+    copied += bytesRead;
+  }
+}
+
+function ensureMeshFileMentionStorageDirectory(): void {
+  const userDataPath = path.resolve(app.getPath('userData'));
+  const userDataInfo = lstatSync(userDataPath);
+  if (!userDataInfo.isDirectory() || userDataInfo.isSymbolicLink()) {
+    throw new Error('Mesh file mention storage is unavailable.');
+  }
+  const attachmentRoot = path.join(userDataPath, 'chat-attachments');
+  try {
+    mkdirSync(attachmentRoot, { mode: 0o700 });
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+  }
+  const attachmentRootInfo = lstatSync(attachmentRoot);
+  if (!attachmentRootInfo.isDirectory() || attachmentRootInfo.isSymbolicLink()) {
+    throw new Error('Mesh file mention storage is unavailable.');
+  }
+  const mentionDirectory = path.join(attachmentRoot, MESH_FILE_MENTION_DIRECTORY);
+  try {
+    mkdirSync(mentionDirectory, { mode: 0o700 });
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+  }
+  const mentionDirectoryInfo = lstatSync(mentionDirectory);
+  if (!mentionDirectoryInfo.isDirectory() || mentionDirectoryInfo.isSymbolicLink()) {
+    throw new Error('Mesh file mention storage is unavailable.');
+  }
+  return;
+}
+
+function getMeshFileMentionStorageDirectory(): string {
+  const userDataPath = path.resolve(app.getPath('userData'));
+  return path.join(userDataPath, 'chat-attachments', MESH_FILE_MENTION_DIRECTORY);
+}
+
+function sanitizeMeshMentionFileName(name: string): string {
+  const sanitized = Array.from(name, (character) => {
+    const codePoint = character.codePointAt(0);
+    return character === '/' ||
+      character === '\\' ||
+      character === ':' ||
+      codePoint === undefined ||
+      codePoint < 0x20 ||
+      codePoint === 0x7f
+      ? '-'
+      : character;
+  })
+    .join('')
+    .trim()
+    .slice(0, 160);
+  return sanitized || 'attachment';
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST';
+}
+
+function isMeshFileMentionSizeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes('25 MiB') || error.message.includes('75 MiB batch limit'))
+  );
 }
 
 function hasControlCharacters(value: string): boolean {
@@ -2542,7 +2800,8 @@ export async function readMeshCompanionAttachmentChunk(input: {
     throw new Error('Attachment read request is invalid.');
   }
   const attachment = findChatAttachment(input.attachmentId);
-  if (attachment === null || !existsSync(attachment.path)) throw new Error('Chat attachment not found.');
+  if (attachment === null || !existsSync(attachment.path))
+    throw new Error('Chat attachment not found.');
   const fileStat = statSync(attachment.path);
   if (!fileStat.isFile() || fileStat.size > 25 * 1024 * 1024 || input.offset > fileStat.size) {
     throw new Error('Chat attachment is unavailable.');
@@ -2554,7 +2813,8 @@ export async function readMeshCompanionAttachmentChunk(input: {
       start: input.offset,
       end: input.offset + byteLength - 1,
     });
-    for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    for await (const chunk of stream)
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   const bytes = Buffer.concat(chunks);
   return {
@@ -2594,7 +2854,9 @@ export async function sendMeshCompanionMessage(
     throw new Error('Mesh message attachments must use encrypted upload references.');
   }
   validateMeshInlineAttachments(input.attachments ?? []);
-  const thread = listMobileChatThreads().find((candidate) => candidate.activeSessionId === sessionId);
+  const thread = listMobileChatThreads().find(
+    (candidate) => candidate.activeSessionId === sessionId,
+  );
   if (thread === undefined) throw new Error('This session has no active companion thread.');
   await sendMobileMessage(thread.id, {
     ...input,
@@ -2610,7 +2872,11 @@ export function resolveMeshCompanionApproval(
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
   optionId?: string,
 ): { ok: true } {
-  if (sessionId.length > 256 || requestKey.length > 256 || (optionId !== undefined && optionId.length > 256)) {
+  if (
+    sessionId.length > 256 ||
+    requestKey.length > 256 ||
+    (optionId !== undefined && optionId.length > 256)
+  ) {
     throw new Error('Approval request is invalid.');
   }
   resolveMobileApproval(sessionId, requestKey, decision, optionId);
@@ -2618,7 +2884,8 @@ export function resolveMeshCompanionApproval(
 }
 
 export function interruptMeshCompanionSession(sessionId: string): { ok: true } {
-  if (!sessionId.trim() || sessionId.length > 256) throw new Error('A valid session id is required.');
+  if (!sessionId.trim() || sessionId.length > 256)
+    throw new Error('A valid session id is required.');
   interruptTurn(sessionId);
   return { ok: true };
 }
