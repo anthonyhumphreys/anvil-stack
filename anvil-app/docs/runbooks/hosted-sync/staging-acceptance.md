@@ -1,7 +1,8 @@
 # Hosted Sync staging acceptance
 
-Run this against the deployed staging backend and the exact desktop/website
-release candidate under review. It covers shared identity, two physical
+Run this against the deployed staging backend and the current desktop/daemon,
+website and companion builds under review. All clients in a test must use the
+current protocol profiles. It covers shared identity, two physical
 desktops, device lifecycle, browser approval/reconnection, managed capacity,
 Stripe test mode, and deletion. For the deeper manual trust, recovery, and
 iPhone companion scenarios, continue with the [four-device test plan](four-device-test-plan.md).
@@ -80,7 +81,9 @@ jq -e '
 
 Stop the WorkOS-device test if the check fails. `enrollment-code` by itself
 does not prove the WorkOS identity path required here. Record only the
-descriptor fields, not enrollment or session secrets.
+descriptor fields, not enrollment or session secrets. The descriptor must also
+advertise the current `sync/2` and `mesh/2` profiles shown in the check; do not
+use an older client or profile as an acceptance fallback.
 
 For a local staging website and desktop, load the staging-only settings from
 the protected local environment file, then run:

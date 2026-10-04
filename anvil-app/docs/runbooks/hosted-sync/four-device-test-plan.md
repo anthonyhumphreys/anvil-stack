@@ -1,9 +1,11 @@
 # Four-surface hosted Sync & Mesh test plan
 
-This rehearsal covers the existing Mac (Device A), a second desktop running
-the headless daemon (Device B), the web account/dashboard, and the iPhone
-companion. Device A already has the user's data and is the trusted device.
-Use harmless, clearly named test changes and keep that data intact.
+This rehearsal covers the existing Mac (Device A), a second physical desktop
+running the headless daemon (Device B), the web account/dashboard, and the
+iPhone companion. Build all clients from the current source candidate and use
+the same current backend profiles. Device A already has the user's data and is
+the trusted device. Use harmless, clearly named test changes and keep that data
+intact.
 
 The staging target is:
 
@@ -18,13 +20,11 @@ codes in test output or this document.
 
 ## Gates before touching the devices
 
-This feature is in the uncommitted working tree on
-`feature/sync-mesh--foundations`; the remote branch and the already running
-Worker do not contain it automatically. The current staging descriptor was
-checked before this plan was written and advertises `enrollment-code` and
-`oidc-pkce`, but not `workos-device`. Do not call a daemon `sign-in` failure
-against that old descriptor a feature result. Use the updated desktop, daemon,
-and backend together.
+The staged backend and every client under test must use the current source
+candidate. Before sign-in, verify that the selected staging descriptor
+advertises `anvil-backend/1`, `sync/2`, `mesh/2`, and WorkOS Device
+Authorization. A missing profile or auth mode blocks the live rehearsal; it is
+not a result about the clients.
 
 Check the descriptor without printing any secret configuration:
 
@@ -34,10 +34,10 @@ export ANVIL_TEST_BACKEND_URL='https://anvil-sync-hosted-staging.still-glitter-7
 curl -fsS "$ANVIL_TEST_BACKEND_URL/.well-known/anvil-backend"
 ```
 
-The updated JSON must contain `sync/2`, `mesh/2`, `workos-device`, issuer
-`https://api.workos.com/user_management`, and the public client above. If
-`workos-device` is absent, stop the live Device Authorization acceptance and
-record it as blocked.
+The JSON must contain protocol `anvil-backend/1`, profiles `sync/2` and
+`mesh/2`, auth mode `workos-device`, issuer
+`https://api.workos.com/user_management`, and the public client above. If any
+required field is absent, stop live acceptance and record it as blocked.
 
 The local deployment records identify the intended target. Do not copy or dump
 their values:

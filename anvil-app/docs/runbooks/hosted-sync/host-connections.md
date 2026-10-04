@@ -1,11 +1,10 @@
 # Host connections for Sync and Mesh
 
-Status: implementation in progress. Code paths and local tests are still under
-review, and no final local verification is recorded here. Physical WAN
-reachability, hosted managed-tunnel provisioning and commercial terms have not
-been accepted. No real managed-tunnel allocation or provider bill has been
-verified. This guide describes the current operator-controlled rollout, not a
-production availability claim.
+Status: implementation is integrated at source checkpoint `47dd506`; automated
+local project checks passed. Formal security review remains open. Physical WAN
+reachability, real managed-tunnel allocation and cleanup, and commercial terms
+have not been accepted. No provider bill has been verified. This guide describes
+the operator-controlled rollout, not production availability.
 
 ## User flow
 
@@ -14,11 +13,13 @@ organization, shared fleet or paid Sync plan is not required. Sync and Mesh are
 free. Anvil Cloud Agents are a separate future paid feature and remain
 default-off.
 
-When a host has an active Sync scope and its Anvil process has
-`ANVIL_MESH_MACHINE_ENDPOINTS=true`, the Sync runtime discovers trusted hosts
-on that account and maintains direct host sessions when a valid route is
-available. The flag is off unless an operator sets it. Users should not expect
-host sessions in a release where its operator has not enabled the flag.
+When a host has an active Sync scope and its Anvil process receives the exact
+environment value `ANVIL_MESH_MACHINE_ENDPOINTS=true`, the Sync runtime
+discovers trusted hosts on that account and maintains direct host sessions when
+a valid route is available. The flag is off unless an operator sets it on a
+selected process. The app does not enable it automatically or ask users to set
+it; users should not expect host sessions unless the release operator has
+enabled the path.
 
 For a user, the normal setup is to sign in to the same account on each device,
 enable Sync in **Settings → Sync & Mesh** on the devices that should share
@@ -28,10 +29,10 @@ current trust and policy before admitting it. The `observe`, `approve` and
 not opt a device into Mesh job execution. A daemon that should execute jobs
 also needs its separate worker opt-in, such as `anvil-daemon worker on`.
 
-The endpoint service runs alongside the existing companion listener, but the
-new machine-session lifecycle does not use the companion preference as its
-enable switch. Staging acceptance must verify that private route discovery
-continues to work when the legacy companion preference is off.
+The endpoint service runs alongside the companion listener, but the machine
+session lifecycle does not use the companion preference or Mesh worker opt-in
+as its enable switch. Staging acceptance must verify that private route
+discovery continues to work when the companion preference is off.
 
 ## Connection and authorization path
 
@@ -50,12 +51,15 @@ endpoint generation, requested operations, client key and bootstrap challenge.
 The host checks its local device policy before admitting the session. Revoked
 or denied devices fail closed.
 
-The broker seals the proof key to the client's ephemeral X25519 public key.
-The client proves possession of that secret, and checks the host's matching
-proof over the complete bootstrap reply before accepting a session token.
-Dashboard sessions use the locally approved DSK for these proofs. Both sides
-then encrypt socket frames with directional AES-256-GCM keys. The broker
-handles discovery and ticket issuance; it does not proxy those session frames.
+The broker seals the admission proof key to the client's ephemeral X25519 public
+key. The client sends an HMAC over the ticket claims and host challenge. After
+consuming the one-use ticket, the host checks that HMAC and returns an HMAC over
+the complete bootstrap response under the same proof key. The client verifies
+that host proof before accepting the session token, which is also sealed to the
+ephemeral client key. Dashboard sessions use the locally approved DSK for these
+proofs. Both sides then encrypt socket frames with directional AES-256-GCM
+keys. The broker handles discovery and ticket issuance; it does not proxy those
+session frames.
 
 Machine identity is separate from route identity. The host creates a new
 endpoint generation when its session endpoint starts. Routes and admission
@@ -129,8 +133,8 @@ resolver checks `ANVIL_CLOUDFLARED_PATH`, then the packaged resource, then
 passes `--no-autoupdate`, and does not download or install the binary. The
 resolver does not check file ownership or parent-directory permissions.
 Operators must point it at a binary installed through their trusted software
-process, in a path writable only by the intended administrator. Do not rely on
-the runtime to enforce that ownership requirement.
+process, in a path writable only by the intended administrator. The runtime
+does not enforce that ownership requirement.
 
 Set `ANVIL_MESH_MANAGED_ENDPOINTS=true` and `MACHINE_ENDPOINT_DOMAIN` in the
 selected staging target's generated Worker vars. Put the three Cloudflare

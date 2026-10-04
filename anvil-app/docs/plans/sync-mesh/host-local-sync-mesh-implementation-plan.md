@@ -1,11 +1,13 @@
 # Host-local execution and low-cost Sync and Mesh
 
-Prepared 4 October 2026. Status: implementation authorised and in progress.
+Prepared 4 October 2026. Status: implementation integrated at source checkpoint `47dd506`; automated
+local project checks passed and formal security review remains open. See the
+[implementation review](host-local-implementation-review.md) for the current source map and
+verification limits.
 
-The user confirmed that hosted Sync/Mesh is completely greenfield. Require current clients for the
-new protocol. Destructive resets of test hosted state are allowed; do not build legacy-client
-migration or historical rollback readers. Repository files, local credentials and unrelated local
-work remain outside those resets. Preserve the security and recovery guarantees for new data.
+This is a greenfield protocol for current clients. Test hosted state may be reset when needed;
+repository files, local credentials and unrelated local work remain outside those resets. Preserve
+the security and recovery guarantees for new data.
 
 This is the implementation direction for reducing the running cost of free Sync and Mesh. It
 supersedes the future transport recommendation in the
@@ -49,21 +51,24 @@ Keep retention explicit for newly accepted data; a test-state reset is not a ret
 
 ## Starting point
 
-The working branch already contains the initial free-access changes, per-workspace Sync choice,
-Cloud Agent flags, website copy and shared renderer polling. These are distinct from this redesign.
-The default-off `ANVIL_MESH_MACHINE_ENDPOINTS` prototype exposes machine information and wakes
-approved coordinator-owned commands. It is not a complete direct execution or streaming protocol.
+The current working tree contains the host-session protocol, companion advertisement and admission,
+host-served interactive operations, compact Sync snapshots, managed endpoint lifecycle, and desktop,
+browser, mobile and Raycast integration. `ANVIL_MESH_MACHINE_ENDPOINTS` still defaults off and must
+be set by an operator for a selected process. `ANVIL_MESH_MANAGED_ENDPOINTS` is a separate default-off
+gate for managed reachability. Automated local project checks passed; the formal security review
+remains open. Physical WAN acceptance and provider allocation, capacity and pricing have not been
+verified. See the [implementation review](host-local-implementation-review.md).
 
-| Area | Current implementation to extend | Required change |
+| Area | Current implementation | Remaining acceptance |
 | --- | --- | --- |
-| Hosted account state | `cloud/backend/src/account-coordinator.ts` | Separate durable decisions from detailed progress and compact Sync history |
-| Authentication and session state | `cloud/backend/src/session-coordinator.ts`, `cloud/backend/src/hosted/` | Retain trust checks while removing repeated database work from individual host operations |
-| Host entry point | `src/main/services/mobile-companion.service.ts`, `mesh-machine-endpoint.service.ts`, `dashboard-grant.service.ts` | Add authenticated, versioned live operations without weakening existing local listener restrictions |
-| Execution and fencing | `mesh-worker.service.ts`, `mesh-dispatch.service.ts`, `mesh-ownership.service.ts`, `mesh-handoff.service.ts` | Preserve coordinator ownership while moving progress transport and history to the host |
-| Remote reads and writes | `remote-chat.service.ts`, `mesh-observe.service.ts`, `mesh-command.service.ts` | Host streams with cursor recovery, explicit acknowledgements and compatible fallback |
-| Portable data | `sync-engine.service.ts`, `sync-persistence.service.ts`, `sync-runtime.service.ts`, `sync-recovery.service.ts` | Encrypted snapshots plus a bounded change journal with safe recovery |
-| Artifact delivery | `mesh-artifact.service.ts` and backend artifact handlers | Private transfer where suitable; retain bounded off-host recovery for required results |
-| Client state | Shared contracts, IPC/preload, renderer, `mobile/`, `raycast/` | One connection/cache per scope, explicit capabilities and reconnect states |
+| Hosted account state | `cloud/backend/src/account-coordinator.ts`, `cloud/backend/src/hosted/` | Exercise durable acceptance, recovery and ownership through disconnect and eviction scenarios |
+| Authentication and session state | `cloud/backend/src/hosted/machine-endpoints.ts`, `cloud/contract/machine.ts` | Verify current trust, ticket replay rejection, expiry and revocation on physical hosts |
+| Host entry point | `src/main/services/mobile-companion.service.ts`, `mesh-host-session.service.ts`, `mesh-machine-endpoint.service.ts` | Verify operator-gated startup follows the active Sync scope independently of worker opt-in and the companion preference |
+| Execution and fencing | `mesh-worker.service.ts`, `mesh-dispatch.service.ts`, `mesh-ownership.service.ts`, `mesh-handoff.service.ts` | Verify single ownership, acknowledgements, cancellation and recovery across disconnects |
+| Remote reads and writes | `mesh-host-client.service.ts`, `remote-chat.service.ts`, `mesh-observe.service.ts`, `mesh-command.service.ts` | Exercise host streams, cursor recovery, explicit acknowledgements and current coordinator-backed recovery where supported |
+| Portable data | `sync-engine.service.ts`, `sync-persistence.service.ts`, `sync-runtime.service.ts`, backend snapshot handlers | Verify encrypted snapshots, bounded journal recovery, tombstones, conflicts and safe compaction |
+| Artifact delivery | `mesh-artifact.service.ts` and backend artifact handlers | Verify private transfer and bounded off-host recovery for required results |
+| Client state | Shared contracts, IPC/preload, renderer, browser workspace, `mobile/`, `raycast/` | Complete current-build browser, mobile and Raycast checks plus physical-device acceptance |
 
 Service filenames without a directory in this table are under `src/main/services/`. Paths are
 relative to `anvil-app/`. Read each project's instructions before its implementation work.
@@ -116,8 +121,10 @@ Price those archive objects separately from compact workspace Sync.
 2. A client discovers authorised hosts, then requests a short-lived bootstrap for one host and scope.
    Bind it to the account, source device, destination host, endpoint generation, proof key, allowed
    operations and expiry. Consume the bootstrap once and reject replay or target substitution.
-3. Dial a supported private route first. Use a managed HTTPS endpoint when available, then the
-   compatible hosted fallback. Respect browser secure-context, certificate and local-network
+3. Dial a supported private route first. Use a managed HTTPS endpoint only when the operator has
+   enabled it and its allocation is ready. If neither route is available, use current
+   coordinator-backed operations and durable recovery only for operations they support; they do not
+   provide arbitrary host-only reads. Respect browser secure-context, certificate and local-network
    restrictions; a route working in Electron is not proof that it works in a browser.
 4. The host verifies the proof and issues a narrowly scoped session. Validate sequence numbers and
    request IDs locally. Do not put reusable account tokens in URLs, browser storage or logs. Retain
@@ -275,7 +282,8 @@ generation check; laptop sleep should not create allocation churn on every recon
 Allocate for exposed execution hosts, not viewers. Support user-supplied private/HTTPS routes.
 Bound concurrent provisioning and retry with jitter. Keep provider credentials in the hosted
 allocation service, with host-specific connector credentials on each host. On capacity failure,
-show a useful connection state and retain compatible fallback.
+show a useful connection state and retain current coordinator-backed recovery for operations that
+support it.
 
 Confirm commercial pricing, allowed traffic, DNS/certificate capacity and allocation limits before
 managed rollout. Published defaults include 1,000 tunnels and 1,000 combined private routes per
@@ -286,19 +294,19 @@ price for this deployment. Do not base scaling on creating extra accounts to eva
 
 ## Delivery sequence
 
-Each row is a reviewable increment. Proposed gates below are capability/rollout concepts, not
-existing configuration keys unless explicitly named. Keep new paths off until their acceptance
-checks pass. Extend typed contracts end to end through main services, IPC, preload and clients.
+The sequence below records the implementation slices and their remaining gates. All code is in the
+current working tree; this is not a deployment or user-acceptance record. New routes remain off by
+default until their rollout checks pass.
 
-| Increment | Deliverable and main code area | Acceptance and dependency |
+| Increment | Current status | Remaining acceptance |
 | --- | --- | --- |
-| 0. Baseline and capability contract | Meter backend operations, duration, storage and fallback by feature. Inventory every durable record and its recovery contract. Define host protocol, stream epochs and capabilities in `cloud/contract/` and shared types. | Reproduce current same-workload costs; agree the feature-preservation matrix below. No traffic migration. |
-| 1. Private host sessions | Extend machine endpoint, companion listener, grant service and device trust with scoped bootstrap, proof verification, revocation and session expiry. | Two devices connect privately; replay, cross-account access, revoked devices and forged authority fail. Uses the existing default-off endpoint gate. |
-| 2. Direct interactive traffic | Route remote reads, live output and commands through host sessions. Add local cursor replay, bounded buffers and one shared client subscription/cache. Retain centrally accepted jobs. | No duplicate commands on reconnect or route change; live output bypasses application relay. Desktop, browser and companion capability differences tested. Depends on 1. |
-| 3. Small durable Mesh state | Classify events, preserve ownership/queues/approvals/results, archive promised history, batch control traffic and remove redundant hosted status polls. Extend account coordinator, worker, observe and handoff services. | Partition, crash, eviction and handoff tests preserve fences and offline recovery. Lease cadence unchanged. Depends on 0 and 2. |
-| 4. Compact Sync storage | Add snapshot manifests, encrypted chunks, conditional publication, recovery, compaction watermark and delayed cleanup. Extend engine, persistence, recovery, backend and schema migrations. | Long-offline/new-device recovery, conflicts, tombstones, rotation and opt-out pass before deletion is enabled. Can proceed alongside 2/3 after 0. |
-| 5. Managed reachability | Add the public ingress adapter and allocation/reconciliation service with generation fencing, revocation and bounded cleanup. | Tunnel commercial/capacity review complete; browser/mobile connection and sleep/reconnect verified. Depends on private host sessions and direct traffic. |
-| 6. Protocol cutover and staged rollout | Require current capability profiles, add feature metrics and support diagnostics, and exercise current clients and self-hosted deployments. Update documentation and copy as capabilities ship. | Unsupported profiles fail clearly; stable cost and recovery measurements at each cohort; no new-data deletion before verified snapshot/archive recovery. |
+| 0. Baseline and capability contract | Current profiles, host protocol, stream epochs and typed capabilities are in the working tree. Cost inputs remain projections. | Measure representative hosted requests, duration, rows, storage and network recovery; reconcile with a real provider bill. |
+| 1. Private host sessions | Scoped bootstrap, proof verification, trust checks, revocation and session expiry are integrated behind the default-off host flag. | Verify physical two-host behavior, including replay, cross-account and revoked-device rejection. |
+| 2. Direct interactive traffic | Host reads, commands, cursor replay and client connections are integrated across current desktop, browser, mobile and Raycast surfaces; local project checks pass. | Verify network loss, reconnect, acknowledgements and coordinator recovery on physical devices. |
+| 3. Small durable Mesh state | Durable ownership, approvals, cancellation, handoff, event archives and status-poll reductions are integrated. | Verify partition, crash, eviction and handoff recovery; measure the hosted workload. Lease cadence remains unchanged. |
+| 4. Compact Sync storage | Encrypted snapshot manifests, verified chunks, publication fencing and bounded journal recovery are integrated. | Verify long-offline/new-device recovery, conflicts, tombstones, key rotation and opt-out before enabling compaction deletion. |
+| 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated behind separate default-off host/backend flags. | Verify real tunnel allocation and cleanup, separate-WAN browser/mobile connections, permitted traffic, capacity, price and billing. |
+| 6. Protocol and rollout | Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`; machine routes advertise their session and stream capabilities separately. | Complete the formal security review, physical acceptance, measured costs and explicit staged-rollout decisions before changing defaults. |
 
 Do not expand Cloud Agent provisioning as part of managed reachability. A tunnel to a user-owned
 machine is not an Anvil-supplied execution machine. If an implementation touches owned Effect
@@ -306,11 +314,12 @@ orchestration internals in `anvil-cloud`, review and update the relevant root `P
 
 ### Protocol cutover and rollout
 
-The generic RPC envelope remains `anvil-backend/1`; capability profiles are `sync/2` and `mesh/2`.
-Require the supported profiles and negotiate capabilities per connection. Bind a job's execution
-protocol to its attempt generation. Keep hosted fallback for network failure and unsupported direct
-operations. It is not a route for obsolete clients. Never shadow-execute mutations; deduplicate
-requests across transports.
+The generic RPC envelope is `anvil-backend/1`; current clients require the `sync/2` and `mesh/2`
+profiles. Host routes advertise `machine.session/1` and `machine.stream/1` capabilities separately.
+Negotiate supported operations per connection and bind a job's execution protocol to its attempt
+generation. Keep the coordinator path for durable decisions, accepted-job recovery and other current
+operations it supports. Direct host-only reads still require a reachable host. Never shadow-execute
+mutations; deduplicate requests across transports.
 
 Roll out internally, then to proposed 1%, 10%, 50% and full eligible cohorts. Advance only after a
 representative workload and disconnect/recovery cycle at each stage. Independent gates should cover
@@ -323,19 +332,19 @@ compaction deletes journal rows, prove new-device recovery from the published sn
 Retain the previous verified snapshot for repair. Disabling a transport flag does not reconstruct
 missing data.
 
-Track fallback share and cost. Frequent fallback is a supported degraded mode, but it invalidates
-the lean cost assumption. Diagnose it before expanding rollout instead of treating every connected
-client as using a direct host session.
+Track network retry, reconnect and current coordinator-recovery rates. Frequent recovery traffic can
+invalidate the lean cost assumption. Diagnose it before expanding rollout instead of treating every
+connected client as if it were using a direct host session.
 
 ## Verification and operational acceptance
 
 | Scenario | Required evidence |
 | --- | --- |
-| Three devices, eight hours of active use | Equal jobs/output under old and new routes; per-feature requests, rows, duration and bytes; idle-view polling absent while push is healthy |
+| Three devices, eight hours of active use | Equivalent jobs/output across host sessions and current coordinator recovery; per-feature requests, rows, duration and bytes; idle-view polling absent while push is healthy |
 | Idle account, suspended laptop and all devices offline | No empty queue scans or always-awake session objects; necessary expiry/cleanup still runs; data remains recoverable |
 | Origin closes after job acceptance | Job continues on destination; terminal receipt and required artifacts remain accessible |
 | Host/coordinator crash during claim, renewal or completion | No unfenced second execution; uncertain side effects remain visible; durable acknowledgements survive eviction |
-| Private route fails, tunnel fails, socket repeatedly reconnects | Bounded jittered fallback; request deduplication; cursors replay without silent gaps |
+| Private route fails, tunnel fails, socket repeatedly reconnects | Bounded network retries and current coordinator recovery where supported; request deduplication; cursors replay without silent gaps |
 | Account/device revoked during a direct session | Push closes promptly; disconnected authorisation expires within the agreed bound; blocked work cannot resume with an old grant |
 | Handoff interrupted at every durable transition | One authoritative generation, recoverable checkpoint and explicit target activation state |
 | Concurrent edits/deletes, long-offline device returns, key/dataset epoch changes | Snapshot publication and recovery preserve conflict/deletion semantics and pending local work under the current profiles |
@@ -344,10 +353,10 @@ client as using a direct host session.
 | Organisation member/account switch | No accidental cross-account devices, data or privileges; no implied shared fleet |
 | Allocation cancelled while provider creation completes | Orphan is reconciled, stale endpoint never published, cleanup safe to retry |
 
-Run focused contract, service, backend and migration tests for each increment. At cross-client
+Run focused contract, service, backend and persistence tests for each increment. At cross-client
 milestones run the affected desktop/backend suites, typechecks, lint and builds, plus companion and
 daemon checks. Physical two-host plus phone/browser acceptance is required before rollout; local
-unit tests do not establish WAN connectivity, provider allocation behaviour or billed hibernation.
+checks do not establish WAN connectivity, provider allocation behaviour or billed hibernation.
 
 Measure D1 and Durable Object rows including indexes, deletes and alarms. Track active/allocated
 hosts, session refreshes, renewal batches, event sizes, retained accounts, snapshot/history/artifact
@@ -377,12 +386,15 @@ USD 10,000 remaining startup credit, with the confirmed expiry of 18 September 2
 remaining balance and invoice treatment still require account verification. September is prorated
 through 17 September for credit; subsequent usage is cash-funded.
 
-The mixed cohort assumes 4.84 connected device-hours and 0.25 active-attempt hours per DAU-day,
+The mixed cohort assumes 4.84 connected device-hours, 0.25 active-attempt hours and 4.84 active-viewer hours per DAU-day,
 20 retained accounts per DAU, 10% staging overhead and no released-client migration overlap.
-Its direct-session factor assumes one active session per connected device-hour and remains an
+Its direct-session factor assumes one active session per viewer-hour and remains an
 editable, unmeasured input. Idle discovery creates no direct sessions; clients dial only hosts they
 use and share a connection among consumers. An eight-hour, three-device workload needs the report's
-separate heavy-use cases, including the number of active viewers.
+separate heavy-use cases, including the number of active viewers. At flat 1,000 DAU, all three
+devices connected for eight hours, with one executing host and one active viewer for eight hours,
+projects $222.87/month. Three active hosts with all-pairs viewing project $847.85/month. These are
+whole-cohort workload sensitivities, not the bill for one user or a proposed charge.
 
 The earlier broker-and-compact-Sync subtotal of about $5 at 1,000 DAU and $38 at 10,000 DAU excluded
 most preserved Mesh functionality. It is not a full-service estimate. The former $250/month
@@ -422,8 +434,8 @@ safety or delete recoverable data to meet a budget.
 
 ## Documentation, copy and completion
 
-As each capability ships, update the Sync/Mesh spec, transport/runbooks, daemon/companion guidance
-and website setup/status pages. Keep the public pricing boundary unchanged:
+Keep the Sync/Mesh spec, transport/runbooks, daemon/companion guidance and website setup/status pages
+aligned with the integrated routes. Keep the public pricing boundary unchanged:
 
 - "Anvil Sync and Mesh are free. Sync workspace configuration and run agents on your own machines."
 - "Choose which workspaces to sync. Your repository access and provider credentials stay on your machines."
@@ -435,11 +447,11 @@ unreleased managed reachability, unlimited storage, zero infrastructure cost, in
 universal chat-history backup. Browser, desktop and companion documentation must agree about
 supported operations and offline behaviour.
 
-The local implementation is complete when the automated feature-preservation checks pass and
-every enabled route is reflected accurately in product copy. Production rollout additionally
-requires physical multi-host acceptance, measured representative workloads, provider capacity and
-pricing confirmation, and verified recovery before compaction deletion. Keep network fallback
-available and label the new cost case as a projection until those operational checks are complete.
+The implementation is integrated at source checkpoint `47dd506`; automated local project checks
+passed, and the formal security review remains open. Production rollout additionally requires physical multi-host
+acceptance, measured representative workloads, provider capacity and pricing confirmation, and
+verified recovery before compaction deletion. Keep network retries and current coordinator recovery
+available, and label the new cost case as a projection until those operational checks are complete.
 
 Provider references for implementation and costing: [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
 [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/),

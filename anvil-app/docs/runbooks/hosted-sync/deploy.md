@@ -121,6 +121,21 @@ of at least 32 characters. When the managed provisioner is enabled, its token
 must match `MANAGED_PROVISIONER_TOKEN`. Stripe values are optional and must be
 supplied together. The wrapper does not print secret values.
 
+Managed host reachability is separate from the Cloud Agents provisioner.
+`ANVIL_MESH_MANAGED_ENDPOINTS` defaults to `false` in the backend. Keep it off
+until the managed-route acceptance and commercial checks pass. For an approved
+staging pilot, set it explicitly to `true` in the selected target's generated
+Worker vars and set `MACHINE_ENDPOINT_DOMAIN` to an operator-controlled domain.
+The selected backend secret source must then provide
+`CLOUDFLARE_TUNNEL_ACCOUNT_ID`, `CLOUDFLARE_TUNNEL_ZONE_ID` and
+`CLOUDFLARE_TUNNEL_API_TOKEN`. The wrapper requires all three only while the
+managed flag is true and rejects them from public Worker vars. Account and zone
+IDs may be shared across stages; production must use a separate API token. The
+host's `ANVIL_MESH_MACHINE_ENDPOINTS` flag is process-local and must be set by
+the operator on each selected app/daemon process; it is not enabled by this
+Worker setting. See [host connections](host-connections.md) for the connector
+trust and acceptance limits.
+
 `--test-deployment` is allowed only for non-production targets. Normal apply
 and remove remain behind the CLI's provider-evidence gate. D1/R2 provisioning
 and D1 migration still mutate the selected account, so run them only after
@@ -210,9 +225,10 @@ Start with the descriptor:
 curl -fsS "$MESH_ORIGIN/.well-known/anvil-backend"
 ```
 
-It must advertise `anvil-backend/1`, `sync/2`, `mesh/2` and `enrollment-code`.
-Staging acceptance also requires WorkOS `workos-device` and the exact
-staging client ID; see [staging acceptance](staging-acceptance.md).
+It must advertise `anvil-backend/1`, `sync/2`, `mesh/2` and the supported
+authentication mode for the current flow. Hosted signed-in staging acceptance
+requires WorkOS `workos-device` and the exact staging client ID; see
+[staging acceptance](staging-acceptance.md).
 There is no `/health` route on the backend Worker; use the descriptor request
 above as the deployment healthcheck. A failure against the bare
 `<subdomain>.workers.dev` hostname indicates an incorrectly constructed

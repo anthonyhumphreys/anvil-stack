@@ -4,14 +4,17 @@ Branch: `feature/sync-mesh--foundations` · PR #91
 Normative spec: [v2 spec](anvil-sync-mesh-spec-v2.md) · Companion spec: [cloud-connected companion](cloud-connected-companion.md) · Ops: [hosted sync runbooks](../../runbooks/hosted-sync/deploy.md)
 
 Approved product boundary: [free Sync, free Mesh, and Anvil Cloud Agents](mesh-access-and-monetisation-plan.md).
-The [host-local implementation plan](host-local-sync-mesh-implementation-plan.md) defines the next
-architecture: host-served live operations, compact free Sync and minimal durable hosted coordination.
-Implementation is authorised and in progress. The [detailed FinOps projection](finops-projection.md)
-and [editable workbook](outputs/finops-2026-10/anvil-finops-projection.xlsx) compare the earlier cost
-baselines with the full host-local design, including ownership, trust refresh and retained recovery
-data. The assumed USD 10,000 startup-credit balance expires on 18 September 2027. The initial free-product implementation is locally verified.
+The [host-local implementation plan](host-local-sync-mesh-implementation-plan.md) records the
+integrated direction: host-served live operations, compact free Sync and durable hosted coordination.
+The code is integrated at source checkpoint `47dd506`. The current local project checks pass; the
+formal security review remains open. Physical WAN acceptance, real managed-tunnel allocation,
+provider capacity/pricing and production rollout flags have not been verified. See the
+[implementation review](host-local-implementation-review.md) for source areas and limits.
 
-This document explains the branch implementation and its remaining launch checks.
+The [detailed FinOps projection](finops-projection.md) and [editable workbook](outputs/finops-2026-10/anvil-finops-projection.xlsx)
+compare earlier cost baselines with the full host-local design, including ownership, trust refresh
+and retained recovery data. The assumed USD 10,000 startup-credit balance expires on
+18 September 2027. These are projections, not measured deployment costs.
 
 ## What the feature is
 
@@ -25,7 +28,7 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 
 ## What this branch contains
 
-### Mesh execution and workspace replication (landed)
+### Mesh execution and workspace replication (integrated in the working tree)
 
 - Workspace adoption/materialisation: portable definitions sync; each device keeps a local replica and execution checkouts with journalled clone/link/removal and bootstrap approvals (WS-02/WS-03).
 - Durable jobs and attempts with generation fencing, cancellation intents, and per-attempt isolated worktrees (MESH-*).
@@ -33,17 +36,17 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - Workflow placement and fan-out: code-task jobs carrying per-repo commit pins, ordered result integration with visible conflicts.
 - Durable events, approvals, artifact manifests, and socket observation (MESH-03); live/durable channel split — ephemeral frames never persisted.
 
-### Host-local protocol and compact storage
+### Host-local protocol and compact storage (integrated in the working tree)
 
 - The RPC envelope remains `anvil-backend/1`, with required `sync/2` and `mesh/2` profiles. Hosted state is greenfield and uses the current client build.
-- `anvil.machine.v1` adds encrypted host reads, commands and cursor subscriptions behind default-off `ANVIL_MESH_MACHINE_ENDPOINTS`. Source account tokens stay on the HTTPS broker. One-use admission tickets, host-local companion tiers and browser DSK grants authorize sessions.
+- `anvil.machine.v1` adds encrypted host reads, commands and cursor subscriptions behind default-off `ANVIL_MESH_MACHINE_ENDPOINTS`. The operator must set the exact value `true` on a selected app or daemon process; the app does not turn it on automatically or prompt users to configure it. A host also needs an active signed-in Sync scope. Source account tokens stay on HTTPS broker endpoints. One-use admission tickets, host-local device policy and browser DSK grants authorize sessions.
 - The host listener follows the signed-in Sync scope independently of the local-pairing companion toggle. Mesh execution still requires its separate worker opt-in. Account/device changes dispose the old host pool and listener sessions.
 - One host connection per client scope serves shared reads and push invalidations. Remote-chat fallback is jittered 25–35 seconds. Approval waits use scoped push with bounded durable catch-up. Lease renewal remains 30 seconds and includes cancellation state.
 - Complete scans include tombstones and catch-up watermarks. Snapshot publication verifies encrypted chunks through the normal reader before a generation-fenced commit. Previous verified recovery images and required journal tails remain available.
 - Terminal inputs/results and bounded activity history use verified R2 archives. Detail expiry is explicit; minimal request/outcome records retain execution deduplication. These records are separate from workspace Sync.
-- Managed allocations use a separate durable coordinator, generation fencing, loopback ingress, cleanup and operator-held provider credentials. `ANVIL_MESH_MANAGED_ENDPOINTS` remains off until provider capacity, pricing and physical connection checks are complete.
+- Managed allocations use a separate durable coordinator, generation fencing, loopback ingress, cleanup and operator-held provider credentials. `ANVIL_MESH_MANAGED_ENDPOINTS` remains off in the host and backend until provider capacity, pricing and physical connection checks are complete. The current connector does not install or update `cloudflared`, and does not verify its owner or parent-directory permissions.
 
-### Session ownership and portability (landed)
+### Session ownership and portability (integrated in the working tree)
 
 - Cross-device handoff: `requested → target-prepared → source-quiescing → checkpointed → ownership-transferred → activating → completed`, with a durable ownership mirror in the account object.
 - Desktop remote-chat controls and handoff activation are described in [remote chats](remote-chats.md).
@@ -77,40 +80,27 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - Mobile: enrollment-code sign-in, SecureStore session, account discovery and encrypted host dialing. Account-mode hosts require the current machine protocol. A denied or unavailable host needs clear approval/retry guidance.
 - Raycast: account-connected discovery and encrypted sessions; manual local token configuration remains available.
 
-### Headless daemon — DAEMON-01 (landed)
+### Headless daemon — DAEMON-01 (integrated in the working tree)
 
 - `src/daemon/`: plain-Node entrypoint bundling the host services with an `electron` stub (`app.getPath` → data dir, `safeStorage` → AES-256-GCM file store, UI surfaces inert).
 - `anvil-daemon enroll --api-url --code` / `run` / `status` / `policy …` / `worker` / `companion` / `sign-out`.
 - `defaultPolicyTier` config for zero-touch hosts; desktop still defaults first contact to `pending`.
 - Service templates: `daemon/com.anvil.daemon.plist`, `daemon/anvil-daemon.service`; runbook: `docs/runbooks/hosted-sync/headless-daemon.md`.
 
-## Verified state (2 October 2026, before remote-chat follow-up)
+## Earlier baseline validation (2 October 2026, before host-local follow-up)
 
-- The desktop suite passed 1,797 tests with 12 skipped. All GitHub checks passed for `bf48b4c`, including desktop, backend/provisioner, cloud, website, Linux and Windows. Desktop lint, typechecks, and build passed. The [PR review](pr-91-review.md) records the exact checks and limits.
+- The desktop suite passed 1,797 tests with 12 skipped. All GitHub checks passed for `bf48b4c`, including desktop, backend/provisioner, cloud, website, Linux and Windows. Desktop lint, typechecks, and build passed. The [PR review](pr-91-review.md) records the exact checks and limits. This baseline predates the current host-local changes and is not evidence for this implementation.
 - The current Cloudflare Worker and WorkOS clients are **staging**. The [launch checklist](../../runbooks/hosted-sync/launch-checklist.md) tracks production identity, billing, and operational gates.
 - Real physical-device flows and signed-in hosted acceptance remain unverified; passing local suites is not a launch sign-off.
 
-## Next steps — agent-executable
-
-| Task | Scope |
-| --- | --- |
-| Legacy companion-token roster (Phase 4a) | Hosts publish `mobile_companion_devices` roster as presence metadata; contract field + backend op + website table marking `local-pair`. |
-| Forwarded revocation (Phase 4b) | Dashboard revoke of a `local-pair` row → durable op to owning host → token deleted on receipt. |
-| Raycast multi-host picker | Per-command host argument; `resolveAccountTarget` currently takes first reachable. |
-| Mobile pending-approval retry UX | Re-dial when a pending host approves; "check again" affordance. |
-| Contract packaging | Extract `@anvil/cloud-contract`; mobile/Raycast currently import by relative path. |
-| Tailscale endpoint detection hardening | Order/heuristics for tsnet/utun interfaces in the desktop advertiser. |
-
-## Next steps — human-required
+## Remaining verification and rollout gates
 
 | Task | Why |
 | --- | --- |
-| Real-device dogfood | Two desktops + phone on one account: LAN kill → Tailscale path; both kill → durable ops land on reconnect; web revoke → all paths die within ~60s (attest TTL). |
-| Free hosted launch gates | Production deploy config, identity, persistent secrets, monitoring and capacity. Stripe keys are for legacy billing or future paid Cloud Agents, not free Sync/Mesh access. See the [launch checklist](../../runbooks/hosted-sync/launch-checklist.md). |
-| WorkOS/OIDC client config | Register `anvil://` mobile redirect in the IdP console; contract freeze follows config. |
-| Local pairing's future | Keep ticket/token pairing first-class for zero-account users, or deprecate? Determines whether Phase 4 is worth doing. |
-| Transcript portability decision | Finished-chat transcripts live only on the origin host. Options in the spec's open questions: accept the gap (recommended), opt-in R2 artifacts, or synced entity (avoid). |
-| Production backend URL | Shipped default vs BYO-backend for mobile/Raycast — launch call. |
+| Formal security review | Automated local project checks passed. The security review of the immutable source checkpoint remains pending. See the [implementation review](host-local-implementation-review.md). |
+| Physical host acceptance | Use the current desktop and daemon build on at least two physical machines over separate WANs; test private-route use, host sleep, loss/reconnect, revocation, browser and phone behavior. See the [four-surface rehearsal](../../runbooks/hosted-sync/four-device-test-plan.md). |
+| Managed reachability | Keep the feature off until an operator has verified a real tunnel allocation and cleanup, permitted traffic, hostname/DNS capacity, provider price and billing. See [host connections](../../runbooks/hosted-sync/host-connections.md). |
+| Staged rollout | Keep `ANVIL_MESH_MACHINE_ENDPOINTS` and `ANVIL_MESH_MANAGED_ENDPOINTS` off in defaults and production until local, physical and commercial gates have evidence and an owner. See the [launch checklist](../../runbooks/hosted-sync/launch-checklist.md). |
 
 ## Known sharp edges
 
@@ -118,6 +108,6 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
   checks and the chosen running mode capped by each destination's local maximum. The [security decision](verification-security-remediation.md)
   records the accepted capability and CodeQL alert #29 disposition.
 - Backend revocation reaches direct connections within ~60s (attestation cache TTL); push invalidation is a Phase 5 candidate.
-- Live host reads need the host awake, signed in with Sync enabled and the machine endpoint feature enabled by the release/operator. Local pairing uses the separate companion preference. The coordinator supplies discovery and durable fallback.
+- Live host reads need the host awake, signed in with an active Sync scope and the machine endpoint flag explicitly set by the operator. That lifecycle is independent of the Mesh worker opt-in and the companion preference. The coordinator supplies discovery and current durable recovery/control operations where supported; it does not replace host-only reads.
 - A new companion needs its host-local tier approved, then reconnects. Account mode uses the current machine protocol; account tokens are never probed against plain HTTP host addresses.
 - Mobile OIDC and universal links are spec'd, unimplemented; enrollment codes are the v1 path.
