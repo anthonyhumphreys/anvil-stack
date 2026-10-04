@@ -70,8 +70,8 @@ curl -fsS "$MESH_ORIGIN/.well-known/anvil-backend" > "$DESCRIPTOR_FILE"
 jq -e '
   .descriptorVersion == 1 and
   (.protocols | index("anvil-backend/1")) and
-  (.profiles | index("sync/1")) and
-  (.profiles | index("mesh/1")) and
+  (.profiles | index("sync/2")) and
+  (.profiles | index("mesh/2")) and
   (.authModes | index("workos-device")) and
   .auth.issuer == "https://api.workos.com/user_management" and
   .auth.publicClientId == "client_01M2XPX4PF98H2P7HCNRBZATTE"

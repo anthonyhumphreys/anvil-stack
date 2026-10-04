@@ -219,9 +219,9 @@ Publish snapshots through this sequence:
    recoverable snapshot. Account deletion and key
    rotation must cover all retained snapshot generations, temporary uploads and archives.
 
-Require the current protocol when enabling snapshots. Unsupported clients receive an explicit
-upgrade response. Keep existing scan machinery where it provides the new protocol's stable staging
-and recovery, rather than to support historical clients. A long-offline device rebases its pending
+Require the current protocol when enabling snapshots. Do not build older-host adapters or
+released-client upgrade paths for this greenfield feature. Keep existing scan machinery where it
+provides stable staging and recovery. A long-offline device rebases its pending
 changes through the conflict rules instead of replaying stale state over deletions.
 
 The existing journal, tombstones and push receipts have a 90-day retention contract. Keep that
@@ -338,7 +338,7 @@ client as successfully migrated.
 | Private route fails, tunnel fails, socket repeatedly reconnects | Bounded jittered fallback; request deduplication; cursors replay without silent gaps |
 | Account/device revoked during a direct session | Push closes promptly; disconnected authorisation expires within the agreed bound; blocked work cannot resume with an old grant |
 | Handoff interrupted at every durable transition | One authoritative generation, recoverable checkpoint and explicit target activation state |
-| Concurrent edits/deletes, long-offline device returns, key/dataset epoch changes | Snapshot publication and recovery preserve conflict/deletion semantics and pending local work; obsolete profiles require an upgrade |
+| Concurrent edits/deletes, long-offline device returns, key/dataset epoch changes | Snapshot publication and recovery preserve conflict/deletion semantics and pending local work under the current profiles |
 | All prior devices offline when a new device joins | Enrolment/key recovery follows the existing trust contract; recoverable Sync needs no source machine |
 | Required artifact upload fails or expires | No false recoverable-completion claim; retry and expiry states are visible; quotas remain enforced |
 | Organisation member/account switch | No accidental cross-account devices, data or privileges; no implied shared fleet |

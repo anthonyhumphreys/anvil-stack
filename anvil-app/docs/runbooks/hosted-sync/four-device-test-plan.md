@@ -34,10 +34,10 @@ export ANVIL_TEST_BACKEND_URL='https://anvil-sync-hosted-staging.still-glitter-7
 curl -fsS "$ANVIL_TEST_BACKEND_URL/.well-known/anvil-backend"
 ```
 
-The updated JSON must contain `sync/1`, `mesh/1`, `workos-device`, issuer
+The updated JSON must contain `sync/2`, `mesh/2`, `workos-device`, issuer
 `https://api.workos.com/user_management`, and the public client above. If
-`workos-device` is absent, stop the live Device Authorization portion and use
-the enrollment-code compatibility path only.
+`workos-device` is absent, stop the live Device Authorization acceptance and
+record it as blocked.
 
 The local deployment records identify the intended target. Do not copy or dump
 their values:
@@ -292,18 +292,6 @@ Keep Device A stopped, run Device B, and confirm existing account state
 still pulls and appears through the iPhone companion. Restart Device A
 after this check. A wrong or old code must fail without changing the session.
 
-If the old Worker is still in place, exercise only this compatibility path:
-
-```sh
-export ANVIL_DATA_DIR="$HOME/.anvil-daemon-sync-qa-code"
-node dist-daemon/anvil-daemon.mjs enroll \
-  --api-url 'https://anvil-sync-hosted-staging.still-glitter-7d20.workers.dev' \
-  --code '<single-use-code>'
-```
-
-This proves discovery and code enrollment, not WorkOS Device Authorization or
-automatic trust. A website bare code carries no key material.
-
 ## Separate Mesh worker opt-in
 
 With a disposable signed-in daemon, keep worker off and run the host. Confirm
@@ -391,8 +379,8 @@ plus local recovery unlock with Device A offline; worker off before `worker on`
 and connected afterward; browser scope approval/revocation; local LAN pairing;
 Tailscale account-mode access; and each companion tier's expected result.
 
-- **No `workos-device`:** staging is old; use `enroll --code` only until the
-  matching backend is deployed.
+- **No `workos-device`:** mark the WorkOS acceptance blocked and repair the
+  selected staging descriptor before continuing.
 - **Native load failure:** on the affected machine run
   `pnpm install --frozen-lockfile` and `pnpm run rebuild:native:node`; do not
   copy `node_modules` across machines. Device A's Electron rebuild is handled

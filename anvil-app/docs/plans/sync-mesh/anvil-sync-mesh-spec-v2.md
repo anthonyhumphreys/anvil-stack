@@ -289,7 +289,7 @@ Key hierarchy and distribution live in §6.
 
 Keep full delete tombstones and push receipts for 90 days. Incremental journal rows can be
 compacted only through a verified, recoverable snapshot; the published recovery floor explicitly
-requires older clients to rebuild. Never discard recovery data merely to meet a storage estimate.
+requires old cursors to rebuild. Never discard recovery data merely to meet a storage estimate.
 Self-hosted deployments retain their configured history quota; hosted deployments use operator
 fair use. Local editing remains available when hosted writes are refused. Compact in bounded batches.
 
@@ -338,7 +338,9 @@ ephemeral X25519 key. The destination consumes the ticket using its own backend 
 Dashboard clients additionally prove their host-approved DSK grant and exact website Origin;
 server identity alone grants no host operations.
 
-The host seals the session token to the client key. Directional AES-256-GCM traffic keys protect
+The client verifies the host's confirmation MAC over the complete bootstrap response and challenge
+before accepting the sealed session token. That confirmation uses the admission proof key or local
+dashboard DSK; sealing to a public key alone does not authenticate a host. Directional AES-256-GCM traffic keys protect
 all authenticated WebSocket requests, replies and events. Associated data binds the session,
 machine, endpoint generation, stream epoch, direction, transport sequence and request identity.
 Reconnect preserves transport counters under the same session. Stream replay uses a separate

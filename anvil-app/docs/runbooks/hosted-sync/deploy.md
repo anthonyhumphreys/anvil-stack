@@ -210,8 +210,8 @@ Start with the descriptor:
 curl -fsS "$MESH_ORIGIN/.well-known/anvil-backend"
 ```
 
-It must advertise `anvil-backend/1`, `sync/1` and `enrollment-code`. Staging
-acceptance also requires `mesh/1`, WorkOS `workos-device`, and the exact
+It must advertise `anvil-backend/1`, `sync/2`, `mesh/2` and `enrollment-code`.
+Staging acceptance also requires WorkOS `workos-device` and the exact
 staging client ID; see [staging acceptance](staging-acceptance.md).
 There is no `/health` route on the backend Worker; use the descriptor request
 above as the deployment healthcheck. A failure against the bare
