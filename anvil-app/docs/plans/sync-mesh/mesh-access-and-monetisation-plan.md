@@ -238,7 +238,7 @@ reject redirects in broker health/credential requests, and check the destination
 browser needs an HTTPS endpoint; do not assume a plain HTTP LAN server works from the hosted web app.
 
 Start with a verified LAN/private route between two desktops. Exercise disconnect during an accepted
-command, replay, revoked credentials, and mixed versions before adding managed tunnels. Keep durable
+command, replay and revoked credentials before adding managed tunnels. Keep durable
 job submission at the coordinator. Transport retry must reuse command IDs and cannot rerun accepted
 side effects simply because the response was lost.
 
@@ -274,7 +274,7 @@ Exercise these acceptance cases before expanding beyond a small opt-in cohort:
 | Network partition during handoff | Existing fences and ownership generations prevent simultaneous authorised owners |
 | Revoked device with cached credentials | Online checks and bounded credential expiry enforce revocation; no claim of instant offline revocation |
 | Subscription expires | Free Sync and Mesh continue without deleting local work |
-| Endpoint unavailable or old client | Compatible fallback retains permissions and durable job identity |
+| Endpoint unavailable on a current client | Hosted fallback retains permissions and durable job identity |
 | All user machines offline | Hosted control records remain available; live machine operations wait for a machine |
 
 Measure p50/p95 latency, fallback rate, billed duration, total requests, security failures, and tunnel

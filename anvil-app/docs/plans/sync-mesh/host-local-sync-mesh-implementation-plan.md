@@ -2,7 +2,7 @@
 
 Prepared 4 October 2026. Status: implementation authorised and in progress.
 
-The user confirmed that hosted Sync/Mesh is completely greenfield. Require updated clients for the
+The user confirmed that hosted Sync/Mesh is completely greenfield. Require current clients for the
 new protocol. Destructive resets of test hosted state are allowed; do not build legacy-client
 migration or historical rollback readers. Repository files, local credentials and unrelated local
 work remain outside those resets. Preserve the security and recovery guarantees for new data.
@@ -36,7 +36,7 @@ Keep these product rules:
 - No master desktop. Any trusted execution host can own a job; the hosted coordinator arbitrates
   ownership across hosts.
 - Workspace Sync is optional, with Local as the default for newly created workspaces. Existing
-  bindings survive upgrades. Remote task preparation does not silently enable ongoing Sync.
+  bindings survive pausing and resuming Sync. Remote task preparation does not silently enable ongoing Sync.
 - Sync covers portable definitions, selected settings, templates and custom agents. Repository
   files, provider credentials, machine paths and chat transcripts are outside workspace Sync.
 - Personal Sync and Mesh do not require an organisation. Current organisations manage membership,
@@ -325,7 +325,7 @@ missing data.
 
 Track fallback share and cost. Frequent fallback is a supported degraded mode, but it invalidates
 the lean cost assumption. Diagnose it before expanding rollout instead of treating every connected
-client as successfully migrated.
+client as using a direct host session.
 
 ## Verification and operational acceptance
 
@@ -354,74 +354,71 @@ hosts, session refreshes, renewal batches, event sizes, retained accounts, snaps
 bytes, retries and fallback minutes. Avoid logging credentials or payloads. Share allowances once
 across the deployment; don't grant every account its own platform free tier.
 
-## Cost targets and update to the FinOps model
+## Cost projection and measurement
 
-These figures are USD/month before startup credit, for 30-day months and 10% non-production usage.
-The first three columns reuse the existing model, including its retained-account assumptions.
-They are projections, not observed invoices. The final column is an isolated broker and compact
-Sync budget, not a forecast for the complete preserved product.
+The [FinOps projection](finops-projection.md), editable workbook and reproducible model now include
+five architecture cases. The full host-local case includes durable leases, worker presence, trust
+checks, active host-session refreshes, compact Sync, retained Mesh records, history and recovery
+objects, retries and network fallback. Shared platform allowances apply once across production and
+staging. Managed tunnel supplier fees remain unknown and excluded from these dollar totals.
 
-| DAU | Current polling increment | Event-driven baseline | Earlier transport-only hybrid, before tunnels | Broker + compact Sync subtotal only |
+| DAU | Earlier polling-profile CF/month | Full host-local CF/month in forecast month 12 | Host-local credit consumed by expiry | Unused startup credit expires |
 | ---: | ---: | ---: | ---: | ---: |
-| 100 | $49 | $31 | $31 | about $5 |
-| 1,000 | $449 | $253 | $214 | about $5 |
-| 5,000 | $2,435 | $1,406 | $1,225 | about $16 |
-| 10,000 | $4,926 | $2,859 | $2,522 | about $38 |
+| 100 | $49 | $6.20 | $71.41 | $9,928.59 |
+| 1,000 | $449 | $27.61 | $321.99 | $9,678.01 |
+| 5,000 | $2,435 | $187.56 | $2,254.08 | $7,745.92 |
+| 10,000 | $4,926 | $434.82 | $5,270.77 | $4,729.23 |
 
-The isolated subtotal assumes, across all devices, 50 hosted HTTP requests, 13 billable DO request
-units and three billable DO seconds per DAU/day; 5 ms Worker CPU/request; 1,000 D1 rows read and 100
-indexed rows written per DAU/day; ten R2 writes and 30 reads per DAU/day. It retains 20 accounts per
-DAU, with 100 KB D1 metadata and 1 MB encrypted Sync data per retained account. Successful request
-logs are sampled at 10%, with two 1 KB events and seven-day retention. Apply the existing model's
-platform allowances and rates once, including the $5 Workers minimum.
+These are USD projections before credit, not measured invoices. The earlier polling coefficients
+predate the current push and renewal changes and need remeasurement. Host-local monthly totals use
+September 2027 from a twelve-period flat-DAU run; lifetime minimal terminal receipts have accumulated
+through that period. They do not describe an indefinitely fixed storage footprint. The model assumes
+USD 10,000 remaining startup credit, with the confirmed expiry of 18 September 2027. Eligibility,
+remaining balance and invoice treatment still require account verification. September is prorated
+through 17 September for credit; subsequent usage is cash-funded.
 
-It deliberately excludes durable Mesh records/history, lease renewals, session/trust refresh beyond
-those request allowances, recovery artifacts and managed tunnel charges. Those must be added, not
-assumed to fit. The metadata occupancy and three-second duration targets require measurement.
-There must be no always-awake shared SessionCoordinator in that subtotal. The proposed core service
-budget is **under $50/month at 1,000 DAU and under $250/month at 10,000 DAU for Workers, Durable
-Objects, D1, R2 and observability**. Add any separately quoted managed tunnel supplier fee to Anvil's
-gross operating cost before presenting a full-service total. This is not a charge to free Sync/Mesh
-users. These are engineering targets subject to measured feature-preserving workloads, not achieved
-estimates.
+The mixed cohort assumes 4.84 connected device-hours and 0.25 active-attempt hours per DAU-day,
+20 retained accounts per DAU, 10% staging overhead and no released-client migration overlap.
+Its direct-session factor assumes one active session per connected device-hour and remains an
+editable, unmeasured input. Idle discovery creates no direct sessions; clients dial only hosts they
+use and share a connection among consumers. An eight-hour, three-device workload needs the report's
+separate heavy-use cases, including the number of active viewers.
 
-For scale, the existing usage mix averages 1.94 connected hours per DAU/day. If every connected
-hour includes one active attempt renewing every 30 seconds, 10,000 DAU plus 10% staging produces
-76.824 million attempt renewals/month. With one attempt per worker/batch, the current handler writes
-an attempt row, a worker row and a counter row: 230.472 million base row writes, or about $180 beyond
-the 50-million-row allowance, before indexes, additional worker presence, reads, requests, duration
-and other mutations. Shared worker/counter writes can be amortised over multiple attempts in one
-batch. WebSockets do not remove this write bill. Measure whether the diagnostic counter can move
-to aggregated telemetry without affecting authoritative state. Idle worker presence and trust
-refreshes also need their own connected-device model. The $250 core target is consequently tight
-and must be demonstrated rather than assumed.
+The earlier broker-and-compact-Sync subtotal of about $5 at 1,000 DAU and $38 at 10,000 DAU excluded
+most preserved Mesh functionality. It is not a full-service estimate. The former $250/month
+engineering target at 10,000 DAU is not established by the fuller $434.82 projection. Reduce actual
+amplification and measure usage before setting a replacement budget.
+
+Key cost controls in the implementation:
+
+- Host-local encrypted live traffic avoids application relay processing. A managed tunnel remains
+  a provider-proxied connection and needs its own commercial and capacity verification.
+- Active host sessions revalidate every 30 seconds. Each enrollment refresh has one Worker HTTP
+  request and four DO invocations. The model budgets 20 SQLite reads per refresh with three hosts;
+  this is an estimate that must be measured. Idle hosts need no such session refresh.
+- Ordinary account WebSockets retain bounded trust checks and offline catch-up. Dashboard grant
+  revalidation has a separate session factor, defaulting to zero in the base case.
+- Attempt renewals keep their 30-second safety cadence. A single-attempt batch writes its attempt
+  and worker rows; the diagnostic counter write has been removed. Batching amortises the shared
+  worker update but does not erase authoritative writes.
+- Durable activity uses bounded `event.append` batches of at most 50 frames and 256 KiB, flushed
+  within one second. The cost model conservatively assumes one frame per batch until measured.
+  Detailed provider output stays with the execution host and sealed results.
+- Verified encrypted snapshots compact the covered change journal. Terminal inputs and activity
+  archives retain their stated 90-day contract; minimal dedupe records survive detail expiry.
+- Sampled feature telemetry adds no durable per-operation counters or recurring timers.
+
+Measure Worker CPU, actual billable DO duration, rows including indexes/deletes/alarms, active
+session-hours, batch occupancy, retained stock, R2 calls and bytes, retries and fallback minutes.
+Do not substitute elapsed HTTP latency for billed CPU or object duration. Keep website, identity,
+other tools, support and engineering costs in the overall projection. Tunnel costs belong to
+Anvil's operating bill; they do not change the free Sync/Mesh offering.
+
+Set spend and forecast-variance alerts before rollout. If measured costs exceed the projection,
+inspect unnecessary polls, active session count, renewal amplification, fallback and retention.
+Any further lease or retention change needs an explicit availability assessment. Do not relax
+safety or delete recoverable data to meet a budget.
 [Durable Object pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).
-
-During increment 0, add a fifth scenario to the model and workbook using separate measured inputs:
-
-- Broker calls and active host/session refreshes; incoming WebSocket frames, upgrades and handler
-  duration, rather than treating HTTP and WebSocket billing units as interchangeable.
-- Worker presence and active attempt renewals, indexed writes and authoritative record occupancy.
-- Snapshot bytes/operations, journal tail and old-snapshot overlap during migration.
-- Durable activity archives, handoff checkpoints, result/share artifacts and recovery downloads.
-- Managed allocations, allocation churn and any commercial base/per-host charges.
-- Migration overlap and measured fallback share, including degraded-network stress cases.
-
-Recompute the combined invoice after aggregating these meters; do not add subtotals that each
-claim the same included allowance. Keep website, identity options, other tools, support and
-engineering costs in the overall projection. Lower Cloudflare usage does not erase those costs.
-The original engineering estimates for polling or a transport-only hybrid do not estimate this
-larger redesign; estimate each increment after its code inventory.
-
-Model the confirmed startup-credit expiry of **18 September 2027**, assuming the current USD 10,000
-balance until the grant balance is checked. Show gross usage, credit consumed, cash after credit and
-unused credit at expiry for 100, 1,000, 5,000 and 10,000 DAU plus growth cases. Do not extrapolate
-years of runway past expiry from the $38 subtotal. Keep paid Cloud Agent consumption separate.
-
-Set alerts for spend and forecast variance before rollout. If the full-service target fails, first
-inspect unnecessary polls, session duration, renewal amplification, fallback and retention. Propose
-any further lease or retention redesign explicitly, with its availability consequences. Do not
-relax safety or delete recoverable data to make a dashboard green.
 
 ## Documentation, copy and completion
 
