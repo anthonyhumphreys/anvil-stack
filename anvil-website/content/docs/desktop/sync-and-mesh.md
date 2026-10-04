@@ -17,28 +17,46 @@ where you connect, enroll, and supervise all of it. This page describes the
 panel; the contract, encryption, and backend mechanics live in the
 [Sync & Mesh docs](/docs/sync/overview).
 
-Everything here is optional — Anvil works local-only by default. It is also
+Everything here is optional — new workspaces default to Local. It is also
 alpha: the lifecycle is implemented and tested and has been rehearsed against
 real Cloudflare deployments, but a physical multi-device demo is still
 pending.
 
-## Connection modes
+## Account backend modes
 
-The panel offers four modes:
+The panel offers four account backend modes:
 
 | Mode | Behavior |
 | --- | --- |
-| Local only | Nothing leaves the device. Any remembered backend is paused, not forgotten. |
+| Local only | No account backend is connected. A remembered backend is paused, not forgotten. |
 | Anvil-hosted | Free Sync & Mesh on the operated backend when available. Production provisioning is still in progress. |
 | Your Cloudflare | A backend you deploy to your own Cloudflare account with `anvil-cloud mesh`. |
-| Compatible backend | Any URL implementing the Sync v1 contract. |
+| Compatible backend | Any URL implementing the Sync v2 and Mesh v2 profiles. |
 
 Pinning a backend stores the association only — no data uploads until you
-sign in and enable sync. See [Self-deploy](/docs/sync/self-deploy) for the
-deploy path, [Conformance](/docs/sync/conformance) for proving a third-party
-backend, and [Hosted](/docs/sync/hosted) for the state of the operated
-service. Sync & Mesh do not require a subscription. Authentication, account
-lifecycle, security rules, and fair-use limits still apply.
+sign in and choose Sync for a workspace. See [Self-deploy](/docs/sync/self-deploy)
+for the deploy path, [Conformance](/docs/sync/conformance) for proving a
+third-party backend, and [Hosted](/docs/sync/hosted) for the state of the
+operated service. Sync & Mesh do not require a subscription. Authentication,
+account lifecycle, security rules, and fair-use limits still apply.
+
+### Workspace scope
+
+Choose Local or Sync for each workspace; Sync never turns on just because a
+backend is configured or a remote job is prepared. Sync carries workspace
+definitions, workflow templates, custom agents, and selected settings.
+Repository files, provider credentials, machine paths, and chat transcripts
+stay on their machines.
+
+### Live host routes
+
+The app selects a route automatically. Supported upgraded clients send live
+commands and receive live output through an authenticated, encrypted session
+with the enrolled host when a route is enabled and reachable. Managed HTTPS
+endpoints use a provider proxy, are off by default, and require operator
+provisioning. They are not peer-to-peer. If a host route is unavailable, the
+supported account path continues to coordinate durable job decisions; it does
+not make a sleeping host available.
 
 ## Signing in and enrollment
 

@@ -28,13 +28,20 @@ the docs point at when they say "alpha." If a claim anywhere else in
   happened yet**. Cross-device timing and UX are the least proven surfaces.
   Treat them accordingly.
 
-## Hosted mode status
+## Hosted and host-route status
 
 - **Hosted staging/QA is an explicit path in the desktop and runbook.** Set
   `ANVIL_HOSTED_BACKEND_URL` to the tested HTTPS origin and configure the
   website service channel and WorkOS clients. The development spike requires
   an unpackaged build plus `ANVIL_ENABLE_SYNC_SPIKE=1`; the source tree alone
   does not make hosted connectivity live.
+- **Live host routes are conditional.** Direct live traffic requires a
+  compatible upgraded client and an enabled, reachable host endpoint. Managed
+  HTTPS endpoint provisioning is off by default and requires operator setup;
+  it is not enabled by choosing Sync. A managed route uses a provider proxy,
+  not a peer-to-peer connection. Without a usable route, the account service
+  still handles durable coordination; host-local live output requires the
+  host to be reachable.
 - **Production provisioning is pending**: the production WorkOS app, D1
   database id, secrets bundle, and live-account verification are not recorded
   here. Stripe is not required for Sync & Mesh access.
@@ -72,6 +79,9 @@ Hard numbers and boundaries that are real behavior, not planned work:
 - **Worker opt-in is per-device and never syncs.** There is no account-level
   "run jobs everywhere" switch — enable the worker on each machine you want
   claiming jobs.
+- **Sync is selected per workspace.** Local is the default for new workspaces;
+  repository files, provider credentials, machine paths, and chat transcripts
+  stay on their machines.
 - **Conflicts never auto-resolve.** Divergent entities surface as explicit
   conflicts and wait for you; there is no last-writer-wins pass. Details:
   [How sync works](/docs/sync/sync-engine).
@@ -110,8 +120,8 @@ Work that is known, named, and not yet done:
 - Active key-substitution and pairing-receipt audit, plus rollout of the
   upgraded wrap bindings and mutual SAS confirmation.
 - Physical multi-device acceptance demo — the market-readiness gate.
-- Production provisioning for hosted mode (WorkOS, Stripe live keys, D1,
-  secrets).
+- Production provisioning for hosted mode (WorkOS, production D1, secrets,
+  and live-account verification).
 
 ## Where each topic lives
 

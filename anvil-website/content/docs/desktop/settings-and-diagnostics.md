@@ -56,7 +56,9 @@ Cloud features are off by default. Enabling them reveals the Cloud Workbench; it
 
 ## Sync & Mesh
 
-The Sync & Mesh settings section chooses the backend mode — local only, Anvil-hosted (disabled in this build), your own Cloudflare deployment, or a compatible third-party backend — and handles sign-in and device enrollment. Sync & Mesh are free. Signed-in accounts get device management (rename, revoke), remote execution supervision (jobs, attempts, approvals, live activity, handoffs), a mesh worker opt-in that stays device-local, and data portability (export to file, staged import with conflict preview, account deletion). Authentication, account lifecycle, backend security rules, and fair-use limits still apply.
+The Sync & Mesh settings section chooses the account backend — local only, Anvil-hosted (disabled in this build), your own Cloudflare deployment, or a compatible third-party backend — and handles sign-in and device enrollment. Workspace Sync is a separate choice: new workspaces default to Local, and only selected portable configuration syncs. Repository files, provider credentials, machine paths, and chat transcripts stay local. Sync & Mesh are free. Signed-in accounts get device management, remote execution supervision, a device-local mesh worker setting, and data portability. Authentication, account lifecycle, backend security rules, and fair-use limits still apply.
+
+For supported upgraded clients, the app selects an encrypted live route to an enrolled host when that host is enabled and reachable. Managed HTTPS routes use an operator-configured provider proxy; they are off by default and are not peer-to-peer. Configuring a Sync backend alone does not provide a host route.
 
 The panel itself is covered in [Sync and Mesh](/docs/desktop/sync-and-mesh); the encryption, sync, job, handoff, and self-deploy mechanics behind it are in the [Sync & Mesh docs](/docs/sync/overview).
 

@@ -1,7 +1,7 @@
 ---
 title: Backend conformance
 navTitle: Backend conformance
-description: The frozen Sync v1 wire contract, the shipped conformance suite that proves a backend speaks it, and what a passing backend can be a drop-in target for.
+description: The frozen Sync v2 wire profile, the conformance suite that tests it, and the limits of what a passing backend proves.
 product: Anvil Sync & Mesh
 section: Guides
 journey: build
@@ -11,24 +11,26 @@ order: 100
 # Backend conformance
 
 The desktop does not talk to "the Anvil backend" — it talks to a frozen wire
-contract. Any implementation that speaks it correctly is a valid target for
-Compatible backend mode, whether that is the official Cloudflare worker or
-something you wrote yourself. The conformance suite is how a claim of
-compatibility gets checked rather than believed.
+contract. A compatible backend must implement the profiles needed by the
+surfaces you use. The conformance suite checks Sync compatibility against the
+official Cloudflare worker or an implementation you wrote yourself; Mesh
+compatibility is not yet covered here.
 
 ## The frozen contract
 
-The contract is the `sync/1` profile of `anvil-backend/1`: discovery,
-enrollment, sessions, push/pull, devices, data portability, mesh jobs, and
-handoff — the exact surface the desktop's network stack exercises. "Frozen"
-means the wire shape does not move under you: a backend that conforms keeps
-conforming as the desktop updates.
+The conformance suite exercises the `sync/2` profile inside the
+`anvil-backend/1` RPC envelope: discovery, enrollment, sessions, push/pull,
+devices, account lifecycle, data portability, and compact snapshots. The envelope remains
+version 1; Sync and Mesh capabilities are negotiated as version 2 profiles.
+This suite checks Sync. It does not yet validate Mesh job, handoff, or direct
+host-session operations.
 
 The contract is provider-neutral by construction — nothing in it requires
 Durable Objects, R2, or Workers. The suite ships a plain `node:http`
-in-memory fixture that passes it, which exists precisely to prove the
-contract is implementable without Cloudflare primitives. It is a conformance
-fixture, not a production backend.
+in-memory fixture that passes all 12 checks, including compact snapshot
+publication and verification. This proves the contract is implementable
+without Cloudflare primitives. It is a conformance fixture, not a production
+backend.
 
 ## Run the suite
 
@@ -65,33 +67,32 @@ required.
 - **Push/pull** — `sync.push`, `sync.pull`, `sync.scan.*`; canonical-JSON and
   SHA-256 payload hashing are re-implemented inside the suite so
   canonicalization agreement is verified over the wire, not assumed.
+- **Compact snapshots** — encrypted chunks, manifest verification, and
+  competing-publication fencing.
 - **Device lifecycle** — roster reads, rename, revoke.
 - **Data portability** — `data.export.*`, `data.import.*`,
   `data.operationStatus`.
 - **Account lifecycle** — `account.delete`, `account.deletionStatus`.
-- **Mesh jobs** — job creation, claim, attempt, journal.
-- **Handoff** — the handoff state machine surface.
-
-These are the same checks the unmodified desktop client's real network stack
-is exercised against — the suite runs against the fixture with the desktop's
-own client code in `byob-conformance` tests, so "passes the suite" and "works
-with the app" are the same claim.
+The desktop's Sync network stack is exercised against the fixture with the
+client code in `byob-conformance` tests. The pass does not establish Mesh job,
+handoff, or direct host-route compatibility.
 
 ## What a pass buys you
 
-A backend that passes every check is a **drop-in target for Compatible
-backend mode**: point the desktop at its URL, sign in with whatever identity
-it declares, and enroll, sync, and manage devices against it — no desktop
-build changes.
+A backend that passes every check is a **conformant Sync target**: point a
+compatible desktop at its URL, sign in with its declared identity, and use
+the Sync surfaces covered by the suite. A pass alone does not establish Mesh
+job or host-route compatibility.
 
 A pass is evidence about the wire contract, not about your deployment's
-quality. The suite proves the backend speaks `sync/1` correctly enough for
-the desktop to work; it does not prove your durability story, your backup
-story, or your operational security. Those are still on you.
+quality. The suite proves the backend speaks the exercised `sync/2` surfaces;
+it does not prove your durability story, your backup story, or your
+operational security. Those are still on you.
 
 ## Building a compatible backend
 
-1. Stand up an HTTP service implementing the `sync/1` profile.
+1. Stand up an HTTP service implementing the `sync/2` profile in the
+   `anvil-backend/1` envelope.
 2. Run the suite against it: `pnpm conformance -- --url <you> --admin-token
    <token>`.
 3. Fix what fails; the suite names the check.

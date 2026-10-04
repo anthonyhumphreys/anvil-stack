@@ -110,10 +110,17 @@ pnpm conformance -- --url <backend> --admin-token <token>
 2. `mesh connection` → discovery file.
 3. Desktop: Settings → Sync & Mesh → **Your Cloudflare** (or **Compatible
    backend**) → paste the base URL or load the discovery file → sign in and
-   enable.
+   choose Sync for each workspace whose portable configuration you want to
+   share.
 
-Nothing uploads until you sign in and enable — pinning stores the association
-only. See [Connection modes](/docs/sync/overview) for the full model.
+Pinning stores the backend association only. Sync stays off until you sign in
+and choose Sync for a workspace. See [Connection modes](/docs/sync/overview)
+for the full model.
+
+This deploys the account backend; it does not provision host routes. Supported
+upgraded clients use an encrypted live host session only when a route is
+enabled and reachable. Managed HTTPS routes use a provider proxy, are off by
+default, and require separate operator setup.
 
 ## Self-host account page
 

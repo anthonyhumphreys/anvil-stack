@@ -51,7 +51,7 @@ export const syncLayer = {
   title: "Sync & Mesh",
   tagline: "The account layer that keeps your machines in step.",
   description:
-    "Start local, then add encrypted sync when a second machine needs the same workspace definitions, templates, agents, or approved settings. Enrolled machines can also claim jobs and hand off sessions. The backend relays envelopes and coordinates work. It does not run your repo.",
+    "Local is the default for each workspace. Choose Sync to share workspace definitions, templates, custom agents, and selected settings. Mesh runs jobs on your machines; the account service handles identity, discovery, and durable decisions without running your repo.",
   docsHref: "/docs/sync/overview",
   detailHref: "/sync"
 };
@@ -63,13 +63,13 @@ export const syncMoves = [
     proof: "sealed · aes-256-gcm"
   },
   {
-    title: "Relayed, never read",
-    body: "The backend journals ciphertext and coordinates delivery. It sees IDs, types, revisions, sizes, and timing. It does not see the content.",
+    title: "Encrypted workspace sync",
+    body: "Sync sends sealed workspace configuration through the backend. It sees IDs, types, revisions, sizes, and timing, not the content.",
     proof: "shape, not content"
   },
   {
-    title: "Resumed anywhere",
-    body: "Paired machines claim mesh jobs and accept session handoffs. A run that starts on your laptop can resume on your workstation from a sealed checkpoint.",
+    title: "Work stays on your machines",
+    body: "Enrolled machines claim jobs and accept checkpointed handoffs. A target must be ready, and resume fidelity depends on the provider; no live process migrates.",
     proof: "checkpoint · handoff"
   }
 ];
@@ -92,14 +92,14 @@ export const syncModes = [
   },
   {
     mode: "Compatible backend",
-    body: "Point at any URL that passes the Sync v1 conformance suite. You operate that service.",
+    body: "Point at a backend implementing the required Sync and Mesh profiles. The current conformance suite validates Sync; Mesh compatibility is deployment-specific.",
     cost: "You operate it"
   }
 ];
 
 export const hostedSyncInfo = {
   title: "Anvil-hosted, if you would rather not run it",
-  body: "The same Sync v1 backend with WorkOS sign-in, device management, and artifact storage handled for you. Sync & Mesh are free. Anvil-hosted access is being prepared and is not yet available. Self-hosting remains an option.",
+  body: "The same Sync v2 and Mesh v2 backend with WorkOS sign-in, device management, and artifact storage handled for you. Sync & Mesh are free. Anvil-hosted access is being prepared and is not yet available. Self-hosting remains an option.",
   cta: "See Sync & Mesh",
   href: "/sync"
 };
@@ -139,20 +139,21 @@ export const syncDocsProduct = {
   repoName: "anvil-app/ + anvil-cloud/",
   eyebrow: "Account layer",
   description:
-    "The account layer that keeps the Anvil tools you already run in step across every machine you own. Entities replicate as sealed envelopes, enrolled devices claim mesh jobs, and running sessions hand off between machines through a backend you choose.",
+    "Choose Sync per workspace for encrypted portable settings. Mesh jobs run on enrolled machines. Supported upgraded clients use an encrypted host session for live traffic when a route is enabled and reachable; managed HTTPS routes use an operator-configured provider proxy.",
   boundary:
     "Owns account identity, device enrollment, sealed entity replication, mesh job coordination, artifact shares, and session handoff.",
   status:
-    "Alpha: implemented end to end and rehearsed on real deployments; hosted staging and QA are available when configured, while Anvil-hosted production is being prepared and is not yet available.",
+    "Alpha: Sync and Mesh are rehearsed on real deployments. Direct host routes require an upgraded client and an enabled, reachable host; managed endpoint provisioning is off by default and requires operator setup. Anvil-hosted production is not yet available.",
   icon: Network,
   href: "/docs/sync/overview",
   repoHref: githubRepositoryUrl,
   command: "anvil-cloud mesh apply",
   points: [
+    "Local is the default; enable Sync separately for each workspace",
     "End-to-end encrypted sync of workspaces, templates, agents, and approved settings",
-    "X25519 device identities enrolled through single-use pair codes",
-    "Mesh jobs claimed by your own machines. Compute and credentials never leave them",
-    "Session handoff moves a run between devices through sealed checkpoints",
+    "Repository files, provider credentials, machine paths, and chat transcripts stay local",
+    "Mesh jobs run on your machines; live traffic needs a supported, enabled host route",
+    "Session handoff moves ownership through a sealed checkpoint; the process itself does not move",
     "Artifact share links decrypt in the browser; the key lives in the URL fragment",
     "Four backends: local-only, Anvil-hosted, your Cloudflare, or any conformant server. Sync & Mesh are free."
   ],
@@ -526,7 +527,7 @@ export const docsHighlights = [
     label: "Self-deploy the backend",
     href: "/docs/sync/self-deploy",
     icon: Route,
-    description: "Run the Sync v1 backend on your own Cloudflare account with anvil-cloud mesh plan and apply."
+    description: "Run the Sync v2 and Mesh v2 backend on your own Cloudflare account with anvil-cloud mesh plan and apply."
   },
   {
     label: "Open source posture",

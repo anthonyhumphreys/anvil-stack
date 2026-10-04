@@ -20,7 +20,7 @@ import { agentExecutionModes, syncModes } from "@/lib/site";
 export const metadata: Metadata = {
   title: "Sync & Mesh | Anvil",
   description:
-    "Anvil Sync & Mesh keeps portable state encrypted across devices, routes jobs to your machines, and coordinates session handoff through a backend you choose."
+    "Choose which workspaces to sync and run Mesh jobs on your own machines. Sync and Mesh are free."
 };
 
 const loopSteps = [
@@ -44,7 +44,7 @@ const handoffStates = [
 const meshPoints = [
   "Jobs for workspace prep, provider sessions, and diagnostics are created against your account and claimed by your enrolled devices.",
   "Workers verify the pinned Git state before spawning. Attempts run in isolated worktrees at the pinned commit.",
-  "Compute, credentials, and providers stay on your machines. The backend coordinates; it never executes.",
+  "Compute, credentials, and providers stay on your machines. The account service records durable decisions; it never executes.",
   "States stay explicit: `Stopping…` while cancellation propagates, `Lost contact` when the outcome is unknown."
 ];
 
@@ -62,7 +62,7 @@ const sharePoints = [
   {
     icon: MonitorSmartphone,
     title: "Everywhere Anvil runs",
-    body: "Desktop, the Expo mobile companion, the Raycast extension, and the headless daemon all speak the same Sync v1 contract against the same account."
+    body: "Desktop, the mobile companion, Raycast, and the headless daemon connect to the same account. Live host sessions require client support and a reachable, enabled host route."
   }
 ];
 
@@ -78,10 +78,16 @@ export default function SyncPage() {
                 Sync your state. Run jobs on your machines.
               </h1>
               <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-                Sync &amp; Mesh copies portable Anvil state between paired devices as
+                Sync shares portable Anvil settings between paired devices as
                 end-to-end-encrypted envelopes. Mesh jobs run on machines you enrolled,
                 and session handoff moves ownership through a sealed checkpoint. The
-                backend coordinates delivery. It does not hold your keys or run your repo.
+                account service handles identity, discovery, and durable job decisions;
+                it does not hold your keys or run your repo.
+              </p>
+              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                Local is the default for each workspace. Sync shares workspace definitions,
+                templates, custom agents, and selected settings; repository files, provider
+                credentials, machine paths, and chat transcripts stay on their machines.
               </p>
               <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                 <Button asChild size="lg">
@@ -141,8 +147,10 @@ export default function SyncPage() {
               </h2>
               <p className="mt-4 text-base leading-7 text-muted-foreground">
                 Enrolled devices advertise what they can run. When you dispatch a job, a
-                capable machine claims it, verifies the pinned workspace, and streams its
-                attempt journal back as sealed entities you can watch live.
+                capable machine claims it and verifies the pinned workspace. Supported
+                upgraded clients use an authenticated, encrypted host session for live
+                commands and output when a route is enabled and reachable; durable job
+                decisions and required recovery remain account-scoped.
               </p>
               <ul className="mt-7 grid gap-3">
                 {meshPoints.map((point) => (
@@ -154,6 +162,16 @@ export default function SyncPage() {
               </ul>
             </div>
             <div className="grid content-start gap-6">
+              <div className="rounded-lg border bg-muted/30 p-5">
+                <h3 className="text-sm font-semibold">Host connection</h3>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  The app selects a supported host route automatically. Managed HTTPS
+                  endpoints are off by default and require operator provisioning; they are
+                  not available just by choosing Sync. These endpoints use a provider proxy,
+                  not a peer-to-peer connection. When no host route is available,
+                  supported account-coordinator behavior remains in use.
+                </p>
+              </div>
               <div className="rounded-lg border bg-card p-5">
                 <h3 className="text-sm font-semibold">Session handoff</h3>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
@@ -278,7 +296,7 @@ export default function SyncPage() {
                 Anvil-hosted, if you would rather not run it
               </h2>
               <p className="mt-4 text-base leading-7 text-muted-foreground">
-                The same Sync v1 backend with WorkOS sign-in, device management, and artifact
+                The same Sync v2 and Mesh v2 backend with WorkOS sign-in, device management, and artifact
                 storage handled for you. Sync &amp; Mesh are free. Production
                 provisioning is still in progress, so hosted availability remains gated.
               </p>

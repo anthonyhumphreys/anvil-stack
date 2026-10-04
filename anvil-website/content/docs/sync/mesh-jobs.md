@@ -11,9 +11,9 @@ order: 60
 # Mesh jobs and remote execution
 
 A mesh job runs on a machine you enrolled, under your account, at commits the
-job manifest pins. The backend dispatches and journals; your hardware
-executes. Compute and provider credentials never leave your machines — the
-backend never runs the job and never sees the provider keys.
+job manifest pins. The account service records durable job decisions; your
+hardware executes. Compute and provider credentials stay on your machines —
+the service never runs the job and never sees provider keys.
 
 This is provider-neutral infrastructure: codex/claude/cursor-style providers
 plug in behind the same job contract.
@@ -42,10 +42,11 @@ plug in behind the same job contract.
 4. **Execute in an isolated worktree.** Each attempt runs in its own
    per-attempt worktree at the pinned commit — attempts never share a working
    tree and never touch your checkout.
-5. **Journal.** The attempt streams its journal as ordinary sealed entity
-   changes: progress, output references, state transitions. Artifacts the job
-   produces upload sealed — see
-   [Artifacts and share links](/docs/sync/artifacts-and-shares).
+5. **Record and watch.** Durable job state and required recovery records remain
+   account-scoped. Supported upgraded clients can carry live commands and
+   output over an authenticated, encrypted direct session with the host when a
+   route is enabled and reachable. Artifacts the job produces upload sealed —
+   see [Artifacts and share links](/docs/sync/artifacts-and-shares).
 6. **Integrate.** Results transfer back and integrate in dependency order;
    conflicts surface visibly rather than merging silently.
 
@@ -59,7 +60,15 @@ nothing is declared finished on a heartbeat failure.
 
 ## Watching live
 
-**Watch** on a live attempt streams activity with an honesty contract:
+**Watch** on a live attempt shows durable activity and, when the client and
+host have a supported enabled route, live output from an encrypted host
+session. The account service remains responsible for durable job decisions
+and required recovery; it is not the live data path for those host sessions.
+Routes are selected automatically. Managed HTTPS endpoints use an operator-
+configured provider proxy, not a peer-to-peer connection. They are off by
+default and not available to every host or deployment.
+
+The activity view keeps an honesty contract:
 
 - durable replay fills the history up to the point you joined;
 - live frames append as they journal;
@@ -95,6 +104,11 @@ stops new claims. There is no account-level "run jobs everywhere" switch:
 every machine decides for itself, which is what keeps a laptop you forgot was
 enrolled from picking up work.
 
+Live host access is separate from worker opt-in. An upgraded client still
+needs a reachable host endpoint. Managed HTTPS endpoints require operator
+configuration and are disabled by default; when a direct route is unavailable,
+the supported account path continues to provide durable coordination.
+
 ## Job history
 
 The Remote executions list shows source and target devices, the placement
@@ -113,3 +127,6 @@ already entities.
   you want claiming work.
 - Placement requires the manifest's workspace readiness — a job targeting a
   workspace the worker can't materialize will not run there.
+- Direct live host traffic requires a compatible upgraded client and an enabled,
+  reachable host route. Managed HTTPS endpoint provisioning is off by default
+  and requires operator setup.

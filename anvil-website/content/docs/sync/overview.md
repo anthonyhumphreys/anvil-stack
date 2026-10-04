@@ -13,12 +13,16 @@ order: 10
 Sync & Mesh is the account layer for Anvil Desktop. Two halves:
 
 - **Sync** replicates account-owned entities — workspace definitions, workflow
-  templates, editable agents, and approved settings — across your enrolled
-  devices. Entity payloads are sealed on-device before dispatch; the backend
-  stores and forwards ciphertext.
+  templates, custom agents, and selected settings — only for workspaces where
+  you choose Sync. Entity payloads are sealed on-device before dispatch; the
+  backend stores and forwards ciphertext.
 - **Mesh** runs jobs — workspace preparation, diagnostics, provider sessions —
-  on machines you enrolled. Compute and credentials never leave your hardware;
-  the backend coordinates, it does not execute.
+  on machines you enrolled. Compute and credentials stay on those machines.
+  Supported upgraded clients use an authenticated, encrypted host session for
+  live traffic when a route is enabled and reachable. Managed HTTPS routes use
+  an operator-configured provider proxy; they are not peer-to-peer. The account
+  service handles identity, discovery, and durable job decisions; it does not
+  execute.
 
 Both are optional. Anvil works local-only by default, and the backend is yours
 to choose: the wire contract is frozen and provider-neutral, so the same
@@ -35,20 +39,21 @@ implemented and tested, and the system has been rehearsed on real Cloudflare
 deployments — but a physical multi-device demo has not happened yet. See
 [Status and limits](/docs/sync/status-and-limits) for the unvarnished list.
 
-## Connection modes
+## Account backend modes
 
-Settings → Sync & Mesh offers four modes:
+Settings → Sync & Mesh offers four account backend modes:
 
 | Mode | Behavior |
 | --- | --- |
-| Local only | Nothing leaves the device. A remembered backend is paused, not forgotten. The default. |
+| Local only | No account backend is connected. A remembered backend is paused, not forgotten. New workspaces default to Local. |
 | Anvil-hosted | The operated backend path, enabled by `ANVIL_HOSTED_BACKEND_URL` for a tested HTTPS origin. Production availability is still pending; Sync & Mesh remain free. See [Anvil-hosted sync](/docs/sync/hosted). |
 | Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare deployment* in the picker). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
-| Compatible backend | Any URL implementing the frozen Sync v1 contract — see [Backend conformance](/docs/sync/conformance). |
+| Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles — see [Backend conformance](/docs/sync/conformance). |
 
-Pinning a backend stores the association and stops there. No data uploads until
-you sign in and enable sync. If a pinned backend's identity changes — endpoint
-or issuer — the app requires re-review before credentials are sent to it again.
+Pinning a backend stores the association and stops there. No data uploads just
+because you chose a backend: Sync must be enabled for a workspace. If a pinned
+backend's identity changes — endpoint or issuer — the app requires re-review
+before credentials are sent to it again.
 
 ## What syncs, what doesn't
 
@@ -57,14 +62,24 @@ or issuer — the app requires re-review before credentials are sent to it again
 | Workspace definitions | Repo contents, uncommitted state |
 | Workflow templates | Provider credentials and session secrets |
 | Editable agents | Mesh worker opt-in flag (per-device, never syncs) |
-| Approved settings | Device identity keys, sync tokens |
+| Approved settings | Device identity keys, sync tokens, machine paths, and chat transcripts |
 
-Sync carries account-owned configuration entities, not your code. Git state
-moves through Git; mesh jobs verify commits, they do not replicate trees.
+Sync is an explicit choice for each workspace; Local is the default. It shares
+portable configuration only: workspace definitions, templates, custom agents,
+and selected settings. It does not enable itself because you prepare or run a
+remote job. Git state moves through Git; mesh jobs verify commits, they do not
+replicate repository trees.
 
 ## The mental model
 
-Devices hold the keys; the backend relays ciphertext.
+For Sync, devices hold the keys and the backend relays encrypted configuration.
+For Mesh, supported upgraded clients send live commands and receive live output
+over an encrypted session with the enrolled host when a supported route is
+enabled and reachable. The app chooses the route automatically. Managed HTTPS
+endpoints pass through an operator-configured provider proxy; they avoid the
+Anvil application relay, but are not peer-to-peer. They are off by default and
+are not enabled by choosing Sync. The account service remains responsible for
+identity, discovery, durable job decisions, and required recovery.
 
 - Each device generates an X25519 identity at enrollment and publishes the
   public half as a crypto-boundary entity.

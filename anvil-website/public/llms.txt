@@ -25,7 +25,7 @@ The public documentation is organized by product and by task: Learn, Build, and 
 - [Devices and pairing](/docs/sync/devices): X25519 device identities enrolled through single-use pair codes.
 - [Mesh jobs](/docs/sync/mesh-jobs): Dispatch work to enrolled machines; compute and credentials stay on the user's hardware.
 - [Session handoff](/docs/sync/session-handoff): Move a running session between devices through sealed checkpoints.
-- [Self-deploy the backend](/docs/sync/self-deploy): Run the same Sync v1 worker on your own Cloudflare account.
+- [Self-deploy the backend](/docs/sync/self-deploy): Run the same Sync v2 and Mesh v2 worker on your own Cloudflare account.
 - [Hosted sync](/docs/sync/hosted): The Anvil-operated Sync & Mesh backend is free; production availability is still being provisioned.
 - [Status and limits](/docs/sync/status-and-limits): What is proven, what is still pending.
 
