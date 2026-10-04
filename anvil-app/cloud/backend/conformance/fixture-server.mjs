@@ -275,13 +275,14 @@ function snapshotHashInput(p) {
 function handleSnapshotRpc(session, requestId, operation, p, acct) {
   const fail = (reason, code = 'malformed-request', status = 400) => rpcError(requestId, code, status, { reason });
   if (operation === 'sync.snapshot.get') {
-    return rpcOk(requestId, { manifest: acct.snapshot, datasetEpoch: EPOCH, keyVersion: 1,
-      currentCursor: acct.nextSequence - 1, recoveryFloor: 0 });
+    return rpcOk(requestId, { manifest: acct.snapshot, previousManifest: acct.previousSnapshot, datasetEpoch: EPOCH, keyVersion: 1,
+      currentCursor: String(acct.nextSequence - 1), recoveryFloor: 0 });
   }
   if (operation === 'sync.snapshot.begin') {
     if (!p || typeof p.publicationId !== 'string' || !/^[a-f0-9-]{36}$/i.test(p.publicationId) ||
         p.datasetEpoch !== EPOCH || p.keyVersion !== 1 || p.schemaVersion !== 1 ||
-        !Number.isInteger(p.committedCursor) || p.committedCursor < 0 || p.committedCursor >= acct.nextSequence ||
+        typeof p.committedCursor !== 'string' || !/^(0|[1-9][0-9]*)$/.test(p.committedCursor) ||
+        !Number.isSafeInteger(Number(p.committedCursor)) || Number(p.committedCursor) >= acct.nextSequence ||
         !Number.isInteger(p.entityCount) || p.entityCount < 0 ||
         !Number.isInteger(p.tombstoneCount) || p.tombstoneCount < 0 ||
         !Array.isArray(p.chunks) || p.chunks.length === 0 || p.chunks.length > 128 ||
