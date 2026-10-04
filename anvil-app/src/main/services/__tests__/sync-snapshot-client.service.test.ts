@@ -103,6 +103,7 @@ interface SnapshotFixture {
 interface SnapshotRpcOptions {
   scanEntities?: ScannedEntity[];
   scanWatermark?: number;
+  scanWatermarkStart?: number;
   catchupByCursor?: Map<string, SyncPullResult>;
   snapshotGets?: SyncSnapshotGetResult[];
   recoveryChunks?: Map<string, StoredChunk>;
@@ -273,6 +274,11 @@ function createRpcHarness(options: SnapshotRpcOptions = {}): SnapshotRpcHarness 
   const calls: SnapshotRpcHarness['calls'] = [];
   const uploadedChunks = new Map<string, Buffer>();
   const snapshotGets = [...(options.snapshotGets ?? [snapshotGet()])];
+  const initialSnapshot = options.snapshotGets?.[0];
+  let remoteManifest = initialSnapshot?.manifest ?? null;
+  let remotePreviousManifest = initialSnapshot?.previousManifest ?? null;
+  let remoteCurrentCursor = initialSnapshot?.currentCursor ?? ('2' as SyncCursor);
+  let pendingPublication: Record<string, unknown> | null = null;
   const harness: SnapshotRpcHarness = {
     calls,
     uploadedChunks,
@@ -290,13 +296,27 @@ function createRpcHarness(options: SnapshotRpcOptions = {}): SnapshotRpcHarness 
           result = { results: [] };
           break;
         case 'sync.snapshot.get':
-          result = snapshotGets.shift() ?? snapshotGet();
+          {
+            const queued = snapshotGets.shift();
+            if (queued !== undefined) {
+              remoteManifest = queued.manifest;
+              remotePreviousManifest = queued.previousManifest;
+              remoteCurrentCursor = queued.currentCursor;
+              result = queued;
+            } else {
+              result = snapshotGet({
+                currentCursor: remoteCurrentCursor,
+                manifest: remoteManifest,
+                previousManifest: remotePreviousManifest,
+              });
+            }
+          }
           break;
         case 'sync.scan.begin':
           result = {
             scanId: 'scan-full-1',
-            watermarkStart: 0,
-            resumeCursor: '0' as SyncCursor,
+            watermarkStart: options.scanWatermarkStart ?? 0,
+            resumeCursor: String(options.scanWatermarkStart ?? 0) as SyncCursor,
             epoch: SCOPE.datasetEpoch,
           };
           break;
@@ -320,11 +340,12 @@ function createRpcHarness(options: SnapshotRpcOptions = {}): SnapshotRpcHarness 
         }
         case 'sync.pull': {
           const cursor = typeof input['cursor'] === 'string' ? input['cursor'] : '0';
+          const scanStart = String(options.scanWatermarkStart ?? 0);
           result = options.catchupByCursor?.get(cursor) ?? {
             changes: [],
             hasMore: false,
             nextCursor:
-              cursor === '0'
+              cursor === scanStart
                 ? (String(options.scanWatermark ?? 2) as SyncCursor)
                 : (cursor as SyncCursor),
             recoveryFloor: 0,
@@ -335,6 +356,7 @@ function createRpcHarness(options: SnapshotRpcOptions = {}): SnapshotRpcHarness 
           if (options.failPublicationBegin) {
             throw new BackendRpcError({ code: 'stale-generation', retryable: false });
           }
+          pendingPublication = input;
           result = {
             publicationId: input['publicationId'],
             uploadExpiresAt: '2026-10-05T00:00:00Z',
@@ -379,9 +401,28 @@ function createRpcHarness(options: SnapshotRpcOptions = {}): SnapshotRpcHarness 
         case 'sync.snapshot.verify':
           result = { publicationId: input['publicationId'], verified: true };
           break;
-        case 'sync.snapshot.commit':
+        case 'sync.snapshot.commit': {
+          if (pendingPublication === null) throw new Error('No snapshot publication is pending');
+          remotePreviousManifest = remoteManifest;
+          remoteManifest = {
+            formatVersion: 2,
+            snapshotId: String(pendingPublication['publicationId']),
+            generation: Number(pendingPublication['expectedGeneration']) + 1,
+            datasetEpoch: String(pendingPublication['datasetEpoch']),
+            keyVersion: Number(pendingPublication['keyVersion']),
+            schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
+            committedCursor: String(pendingPublication['committedCursor']) as SyncCursor,
+            entityCount: Number(pendingPublication['entityCount']),
+            tombstoneCount: Number(pendingPublication['tombstoneCount']),
+            manifestSha256: String(pendingPublication['manifestSha256']),
+            chunks: pendingPublication['chunks'] as SyncSnapshotChunkDescriptor[],
+            createdAt: '2026-10-01T00:00:00.000Z',
+          } satisfies SyncSnapshotManifest;
+          remoteCurrentCursor = String(pendingPublication['committedCursor']) as SyncCursor;
+          pendingPublication = null;
           result = { manifest: null, previousGeneration: null };
           break;
+        }
         default:
           throw new Error(`Unexpected RPC operation ${operation}`);
       }
@@ -591,6 +632,7 @@ describe('Sync snapshot publication from an authoritative scan', () => {
       'sync.snapshot.chunk.get',
       'sync.snapshot.verify',
       'sync.snapshot.commit',
+      'sync.snapshot.get',
     ]);
     const begin = beginCall?.params as {
       publicationId: string;
@@ -815,5 +857,83 @@ describe('Sync snapshot recovery', () => {
     expect(listPausedInboundChanges(SCOPE)).toHaveLength(1);
     expect(harness.calls.some((call) => call.operation === 'sync.push')).toBe(false);
     expect(harness.calls.some((call) => call.operation === 'sync.scan.begin')).toBe(false);
+  });
+});
+
+describe('opportunistic snapshot cadence', () => {
+  it('publishes the first image, suppresses hourly probes, then republishes at 10,000 changes', async () => {
+    const now = Date.parse('2026-10-01T00:00:00.000Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const active = manifestAt('1', 1);
+      const currentInfo = (cursor: string) =>
+        snapshotGet({ currentCursor: cursor as SyncCursor, manifest: active });
+      const options: SnapshotRpcOptions = {
+        snapshotGets: [
+          snapshotGet({ currentCursor: '2' as SyncCursor }),
+          snapshotGet({ currentCursor: '2' as SyncCursor }),
+          currentInfo('10001'),
+          currentInfo('10001'),
+        ],
+        scanWatermark: 2,
+        scanWatermarkStart: 0,
+        catchupByCursor: new Map([
+          [
+            '0',
+            {
+              changes: [],
+              hasMore: false,
+              nextCursor: '2' as SyncCursor,
+              recoveryFloor: 0,
+            },
+          ],
+          [
+            '10000',
+            {
+              changes: [],
+              hasMore: false,
+              nextCursor: '10001' as SyncCursor,
+              recoveryFloor: 1,
+            },
+          ],
+        ]),
+      };
+      const harness = createRpcHarness(options);
+
+      await cycle(harness.rpc);
+      expect(harness.calls.filter((call) => call.operation === 'sync.snapshot.begin')).toHaveLength(
+        1,
+      );
+      expect(harness.calls.filter((call) => call.operation === 'sync.scan.begin')).toHaveLength(1);
+
+      nowSpy.mockImplementation(() => now + 30 * 60 * 1000);
+      await cycle(harness.rpc);
+      expect(harness.calls.filter((call) => call.operation === 'sync.snapshot.get')).toHaveLength(
+        2,
+      );
+      expect(harness.calls.filter((call) => call.operation === 'sync.scan.begin')).toHaveLength(1);
+
+      // At exactly 10,000 changes beyond the current image, the next hourly
+      // probe schedules a complete scan and a new verified publication.
+      options.scanWatermarkStart = 10_000;
+      options.scanWatermark = 10_001;
+      nowSpy.mockImplementation(() => now + 61 * 60 * 1000);
+      await cycle(harness.rpc);
+
+      expect(harness.calls.filter((call) => call.operation === 'sync.snapshot.get')).toHaveLength(
+        4,
+      );
+      expect(harness.calls.filter((call) => call.operation === 'sync.scan.begin')).toHaveLength(2);
+      expect(harness.calls.filter((call) => call.operation === 'sync.snapshot.begin')).toHaveLength(
+        2,
+      );
+      expect(
+        harness.calls
+          .filter((call) => call.operation === 'sync.snapshot.begin')
+          .map((call) => (call.params as { committedCursor: string }).committedCursor),
+      ).toEqual(['2', '10001']);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });
