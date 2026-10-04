@@ -7,6 +7,7 @@ import type {
   DevicePresenceResult,
   SessionAttestResult,
 } from '../../contract/companion';
+import { MESH_MACHINE_OPERATIONS, MESH_MACHINE_PROTOCOL_VERSION } from '../../contract/machine';
 import { isRpcError } from '../../contract/envelope';
 import type { AccountCoordinator } from '../src/account-coordinator';
 import { expectSuccess, postRpc, spikeBearer, uniqueIds } from './helpers';
@@ -50,6 +51,24 @@ const HOST_AD = {
   capabilities: ['observe', 'approve', 'steer'],
 };
 
+function machineAd(
+  machineId: string,
+  hostEnrollmentId: string,
+  endpointGeneration = 'generation-1',
+) {
+  return {
+    ...HOST_AD,
+    machine: {
+      machineId,
+      endpointGeneration,
+      protocolVersion: MESH_MACHINE_PROTOCOL_VERSION,
+      capabilities: ['machine.session/1'],
+      operations: [...MESH_MACHINE_OPERATIONS],
+      hostEnrollmentId,
+    },
+  };
+}
+
 describe('device.advertise + device.presence', () => {
   it('publishes self-scoped endpoints and lists them in presence', async () => {
     const accountId = `acct-${crypto.randomUUID()}`;
@@ -77,7 +96,7 @@ describe('device.advertise + device.presence', () => {
   });
 
   it('rejects malformed advertisements', async () => {
-    const auth = spikeBearer(...Object.values(uniqueIds('ad-bad')) as [string, string]);
+    const auth = spikeBearer(...(Object.values(uniqueIds('ad-bad')) as [string, string]));
     for (const bad of [
       { endpoints: [{ kind: 'lan', host: 'http://evil.test/', port: 1 }], capabilities: [] },
       { endpoints: [{ kind: 'lan', host: 'h', port: 0 }], capabilities: [] },
@@ -88,6 +107,73 @@ describe('device.advertise + device.presence', () => {
       expect(res.status).not.toBe(200);
       expect(isRpcError(res.body) && res.body.error.code).toBe('malformed-request');
     }
+  });
+
+  it('persists caller-owned machine identity and rejects duplicate owners', async () => {
+    const accountId = `acct-${crypto.randomUUID()}`;
+    const host = await enroll((await issueCode(accountId)).code, 'install-machine-host');
+    const other = await enroll((await issueCode(accountId)).code, 'install-machine-other');
+    const machine = machineAd(`machine-${crypto.randomUUID()}`, host.enrollmentId);
+    expectSuccess<DeviceAdvertiseResult>(
+      await postRpc('device.advertise', machine, `Bearer ${host.accessToken}`),
+    );
+
+    const presence = expectSuccess<DevicePresenceResult>(
+      await postRpc('device.presence', {}, `Bearer ${other.accessToken}`),
+    );
+    expect(
+      presence.devices.find((entry) => entry.enrollmentId === host.enrollmentId)?.machine,
+    ).toEqual(machine.machine);
+
+    const forged = await postRpc(
+      'device.advertise',
+      machineAd(`machine-${crypto.randomUUID()}`, host.enrollmentId),
+      `Bearer ${other.accessToken}`,
+    );
+    expect(forged.status).toBe(400);
+    expect(isRpcError(forged.body) && forged.body.error.details?.['reason']).toBe(
+      'machine-host-enrollment-mismatch',
+    );
+
+    const duplicate = await postRpc(
+      'device.advertise',
+      machineAd(machine.machine.machineId, other.enrollmentId),
+      `Bearer ${other.accessToken}`,
+    );
+    expect(duplicate.status).toBe(409);
+    expect(isRpcError(duplicate.body) && duplicate.body.error.details?.['reason']).toBe(
+      'machine-id-already-advertised',
+    );
+  });
+
+  it('fails closed on duplicate machine identities already in storage', async () => {
+    const accountId = `acct-${crypto.randomUUID()}`;
+    const first = await enroll((await issueCode(accountId)).code, 'install-machine-first');
+    const second = await enroll((await issueCode(accountId)).code, 'install-machine-second');
+    const firstAd = machineAd(`machine-${crypto.randomUUID()}`, first.enrollmentId);
+    const secondAd = machineAd(`machine-${crypto.randomUUID()}`, second.enrollmentId);
+    expectSuccess<DeviceAdvertiseResult>(
+      await postRpc('device.advertise', firstAd, `Bearer ${first.accessToken}`),
+    );
+    expectSuccess<DeviceAdvertiseResult>(
+      await postRpc('device.advertise', secondAd, `Bearer ${second.accessToken}`),
+    );
+    await runInDurableObject(accountStub(accountId), (_instance: AccountCoordinator, state) => {
+      state.storage.sql.exec(
+        'UPDATE presence_advertisements SET machine = ? WHERE enrollment_id = ?',
+        JSON.stringify(firstAd.machine),
+        second.enrollmentId,
+      );
+    });
+
+    const presence = expectSuccess<DevicePresenceResult>(
+      await postRpc('device.presence', {}, `Bearer ${first.accessToken}`),
+    );
+    expect(
+      presence.devices
+        .filter((entry) => [first.enrollmentId, second.enrollmentId].includes(entry.enrollmentId))
+        .map((entry) => entry.machine),
+    ).toEqual([undefined, undefined]);
   });
 
   it('marks a socket-connected enrollment online and hides stale offline endpoints', async () => {

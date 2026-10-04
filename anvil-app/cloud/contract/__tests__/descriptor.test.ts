@@ -10,7 +10,7 @@ describe('validateDescriptor', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.descriptor.apiPath).toBe('v1');
-      expect(result.descriptor.profiles).toEqual(['sync/1', 'mesh/1']);
+      expect(result.descriptor.profiles).toEqual(['sync/2', 'mesh/2']);
     }
   });
 
@@ -57,8 +57,11 @@ describe('validateDescriptor', () => {
   });
 
   it('rejects unknown profiles, auth modes, and bad limits', () => {
-    const profiles = validateDescriptor({ ...validDescriptor, profiles: ['sync/1', 'quantum/9'] });
+    const profiles = validateDescriptor({ ...validDescriptor, profiles: ['sync/2', 'quantum/9'] });
     expect(profiles.ok).toBe(false);
+
+    const legacyProfile = validateDescriptor({ ...validDescriptor, profiles: ['sync/1'] });
+    expect(legacyProfile.ok).toBe(false);
 
     const authModes = validateDescriptor({ ...validDescriptor, authModes: ['api-key'] });
     expect(authModes.ok).toBe(false);
@@ -84,9 +87,9 @@ describe('resolveBackendPaths', () => {
   });
 
   it('rejects plain http for non-loopback hosts', () => {
-    expect(() =>
-      resolveBackendPaths('http://backend.example.com/anvil/', validDescriptor),
-    ).toThrow(/https/);
+    expect(() => resolveBackendPaths('http://backend.example.com/anvil/', validDescriptor)).toThrow(
+      /https/,
+    );
   });
 
   it('rejects plain http for loopback without the explicit opt-in', () => {

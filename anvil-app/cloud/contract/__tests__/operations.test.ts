@@ -9,7 +9,7 @@ import {
 const CLASSES: readonly HostedOperationClass[] = ['mutating', 'control'];
 
 describe('HOSTED_OPERATION_CLASS', () => {
-  it('covers every frozen v1 operation exactly once', () => {
+  it('covers every negotiated v2 operation exactly once', () => {
     expect(Object.keys(HOSTED_OPERATION_CLASS).sort()).toEqual([...OPERATIONS].sort());
     for (const operation of OPERATIONS) {
       expect(CLASSES).toContain(HOSTED_OPERATION_CLASS[operation]);

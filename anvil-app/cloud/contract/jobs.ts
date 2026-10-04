@@ -95,6 +95,10 @@ export interface MeshJob {
    * target worker unseals after `taskkey.pull`.
    */
   sealedInputs?: SealedTaskPayload;
+  /** Envelope moved to the coordinator's immutable recovery archive. */
+  sealedInputsArchived?: boolean;
+  /** True after the input envelope's existing 90-day retention expires. */
+  sealedInputsExpired?: boolean;
   /** Enrollments (beyond the target) authorised to receive the TCK. */
   resultRecipients?: string[];
   state: JobState;
@@ -121,6 +125,8 @@ export interface ExecutionAttempt {
    * only bounded, coordinator-safe metadata.
    */
   sealedResult?: SealedTaskPayload;
+  /** True after the bounded result-recovery window has expired. */
+  sealedResultExpired?: boolean;
 }
 
 /**
@@ -316,6 +322,12 @@ export interface AttemptRenewalResult {
   leaseExpiresAt?: string;
   /** Machine-readable rejection reason (e.g. `stale-fence`). */
   reason?: string;
+  /**
+   * Authoritative durable cancellation state sampled under the same lease
+   * fence. Workers act on this only when status is `renewed`; rejected items
+   * always carry false and never authorize a cancellation action.
+   */
+  cancelRequested: boolean;
 }
 
 export interface AttemptRenewResult {
@@ -480,6 +492,30 @@ export interface EventPullParams {
   limit?: number;
 }
 
+/** Bounds for durable-only worker activity batches. */
+export const EVENT_APPEND_MAX_EVENTS = 50;
+export const EVENT_APPEND_MAX_BYTES = 256 * 1024;
+
+/** Durable-only worker activity append; delivery uses the direct host channel. */
+export interface EventAppendParams {
+  attemptId: string;
+  incarnation: string;
+  generation: number;
+  events: Array<{
+    streamId: string;
+    sequence: number;
+    payload: import('./socket.js').ActivityPayload;
+  }>;
+}
+
+export interface EventAppendResult {
+  results: Array<{
+    streamId: string;
+    sequence: number;
+    status: 'journaled' | 'dropped' | 'duplicate';
+  }>;
+}
+
 export interface EventPullResult {
   scopeKind: 'job' | 'attempt';
   scopeId: string;
@@ -489,6 +525,12 @@ export interface EventPullResult {
   /** Resume point: feed back as `afterSequence`. */
   nextCursor: number;
   hasMore: boolean;
+  /** Greatest durable cursor whose earlier rows have been removed by TTL. */
+  retainedFloor: number;
+  /** Greatest cursor fully covered by a verified external history archive. */
+  archiveThrough: number;
+  /** `expired` means the caller's cursor predates retained and archived rows. */
+  historyStatus: 'complete' | 'archive-available' | 'expired';
   /**
    * True when the returned window spans dropped intermediate events —
    * either `gap` rows inside it or a gap range covering part of it.

@@ -3,7 +3,7 @@
   "deploymentId": "deadbeef-0000-4000-8000-000000000000",
   "displayName": "Broken backend",
   "protocols": ["anvil-backend/0"],
-  "profiles": ["sync/1"],
+  "profiles": ["sync/2"],
   "apiPath": "/v1",
   "socketPath": "v1/connect",
   "authModes": ["oidc-pkce"],

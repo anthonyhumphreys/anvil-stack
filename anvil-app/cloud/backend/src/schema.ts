@@ -56,8 +56,66 @@ CREATE TABLE IF NOT EXISTS scans (
   epoch TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   done INTEGER NOT NULL DEFAULT 0,
-  entity_cursor TEXT
+  entity_cursor TEXT,
+  watermark_end INTEGER,
+  page_request_cursor TEXT,
+  page_result TEXT
 );
+-- SYNC-02 compact encrypted snapshots. Publication metadata is CAS fenced;
+-- chunk bytes live at immutable R2 keys and remain opaque to the account DO.
+CREATE TABLE IF NOT EXISTS sync_snapshot_publications (
+  publication_id TEXT PRIMARY KEY,
+  publisher_enrollment_id TEXT NOT NULL,
+  scan_id TEXT NOT NULL,
+  expected_generation INTEGER NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL,
+  committed_cursor INTEGER NOT NULL,
+  entity_count INTEGER NOT NULL,
+  tombstone_count INTEGER NOT NULL,
+  manifest_sha256 TEXT NOT NULL,
+  chunks_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  upload_expires_at INTEGER NOT NULL,
+  verified_at INTEGER,
+  committed_at INTEGER,
+  previous_generation INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_sync_snapshot_publications_expiry
+  ON sync_snapshot_publications (state, upload_expires_at);
+CREATE TABLE IF NOT EXISTS sync_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL UNIQUE,
+  dataset_epoch TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL,
+  committed_cursor INTEGER NOT NULL,
+  entity_count INTEGER NOT NULL,
+  tombstone_count INTEGER NOT NULL,
+  manifest_sha256 TEXT NOT NULL,
+  chunks_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  retain_until INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_snapshots_active
+  ON sync_snapshots (state) WHERE state = 'active';
+CREATE INDEX IF NOT EXISTS idx_sync_snapshots_retention
+  ON sync_snapshots (state, retain_until);
+CREATE TABLE IF NOT EXISTS sync_snapshot_chunks (
+  publication_id TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  r2_key TEXT NOT NULL UNIQUE,
+  sha256 TEXT NOT NULL,
+  byte_length INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'uploaded',
+  uploaded_at INTEGER NOT NULL,
+  PRIMARY KEY (publication_id, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_sync_snapshot_chunks_publication
+  ON sync_snapshot_chunks (publication_id, chunk_index);
 CREATE TABLE IF NOT EXISTS counters (
   key TEXT PRIMARY KEY,
   value INTEGER NOT NULL
@@ -109,6 +167,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   -- E2EE: sensitive inputs sealed under the job's TCK (opaque envelope),
   -- and the declared result-recipient enrollment ids.
   sealed_inputs TEXT,
+  sealed_inputs_r2_key TEXT,
+  sealed_inputs_sha256 TEXT,
+  sealed_inputs_retention_until INTEGER,
+  sealed_inputs_compacted_at INTEGER,
   result_recipients TEXT,
   state TEXT NOT NULL,
   state_reason TEXT,
@@ -117,6 +179,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   retried INTEGER NOT NULL DEFAULT 0,
   next_fence INTEGER NOT NULL DEFAULT 1,
   active_attempt_id TEXT,
+  terminal_at INTEGER,
+  terminal_compacted_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -142,6 +206,9 @@ CREATE TABLE IF NOT EXISTS attempts (
   result TEXT,
   -- E2EE: rich result detail sealed under the job's TCK (opaque envelope).
   sealed_result TEXT,
+  sealed_result_r2_key TEXT,
+  sealed_result_sha256 TEXT,
+  sealed_result_retention_until INTEGER,
   error TEXT,
   late_result TEXT,
   created_at INTEGER NOT NULL,
@@ -192,7 +259,57 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_stream_seq
 CREATE TABLE IF NOT EXISTS job_event_meta (
   job_id TEXT PRIMARY KEY,
   next_event_seq INTEGER NOT NULL,
-  activity_bytes INTEGER NOT NULL DEFAULT 0
+  activity_bytes INTEGER NOT NULL DEFAULT 0,
+  retained_floor INTEGER NOT NULL DEFAULT 0,
+  archive_through INTEGER NOT NULL DEFAULT 0
+);
+-- Compact terminal event detail is AES-GCM sealed before it leaves the DO;
+-- the R2 object expires at the original 90-day event retention boundary.
+CREATE TABLE IF NOT EXISTS event_archives (
+  archive_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  first_event_seq INTEGER NOT NULL,
+  last_event_seq INTEGER NOT NULL,
+  event_sequences TEXT NOT NULL,
+  stream_floors_json TEXT NOT NULL,
+  event_count INTEGER NOT NULL,
+  plaintext_sha256 TEXT NOT NULL,
+  ciphertext_sha256 TEXT NOT NULL,
+  nonce_base64 TEXT NOT NULL,
+  r2_key TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  UNIQUE (job_id, attempt_id, first_event_seq, last_event_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_event_archives_job_range
+  ON event_archives (job_id, attempt_id, state, first_event_seq);
+CREATE INDEX IF NOT EXISTS idx_event_archives_expiry
+  ON event_archives (state, expires_at);
+CREATE TABLE IF NOT EXISTS event_archive_dedupe (
+  archive_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  stream_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  PRIMARY KEY (job_id, attempt_id, stream_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_event_archive_dedupe_segment
+  ON event_archive_dedupe (archive_id);
+CREATE TABLE IF NOT EXISTS event_stream_floors (
+  job_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  stream_id TEXT NOT NULL,
+  sequence_floor INTEGER NOT NULL,
+  PRIMARY KEY (job_id, attempt_id, stream_id)
+);
+CREATE TABLE IF NOT EXISTS event_stream_cursors (
+  job_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  stream_id TEXT NOT NULL,
+  last_sequence INTEGER NOT NULL,
+  PRIMARY KEY (job_id, attempt_id, stream_id)
 );
 -- MESH-03 durable approvals (spec §10): expiring requests bound to an
 -- attempt, an action digest, the attempt fence (generation), and a
@@ -285,7 +402,7 @@ CREATE TABLE IF NOT EXISTS handoffs (
 CREATE INDEX IF NOT EXISTS idx_handoffs_session ON handoffs (session_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_handoffs_active_session
   ON handoffs (session_id) WHERE state NOT IN ('completed', 'cancelled', 'failed');
--- Data portability (sync/1): durable export/import operations. Export rows
+-- Data portability (sync/2): durable export/import operations. Export rows
 -- carry the snapshot watermark + paging cursor; import rows stage the
 -- validated plan JSON until commit (idempotent via the result column).
 CREATE TABLE IF NOT EXISTS data_operations (
@@ -308,6 +425,7 @@ CREATE TABLE IF NOT EXISTS presence_advertisements (
   endpoints TEXT NOT NULL,
   capabilities TEXT NOT NULL,
   protocol INTEGER NOT NULL,
+  machine TEXT,
   updated_at INTEGER NOT NULL
 );
 -- ENV-01 cloud environment records (contract environment.ts). Descriptive

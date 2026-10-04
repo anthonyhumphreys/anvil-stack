@@ -1,21 +1,21 @@
-# Anvil Sync & Mesh v1 contract (`cloud/contract`)
+# Anvil Sync & Mesh v2 contract (`cloud/contract`)
 
-Provider-neutral, frozen v1 network contract for Sync (`sync/1`) and Mesh (`mesh/1`).
+Provider-neutral Sync/2 and Mesh/2 network contract. Sync/2 requires encrypted
+snapshot recovery and compact pull history; Mesh/2 adds encrypted terminal
+history retention and batched cancellation recovery.
 Pure TypeScript + JSON only: no Electron, Node-only, or Cloudflare runtime
 dependency. Validators are hand-rolled (no zod/ajv); the only crypto touchpoint
 (`hashChange`) takes an injected `sha256Hex` function.
 
 - Protocol: `anvil-backend/1` (`version.ts`)
-- Profiles: `sync/1`, `mesh/1`; socket subprotocol `anvil.mesh.v1`
+- Profiles: `sync/2`, `mesh/2`; socket subprotocol `anvil.mesh.v1`
 - Descriptor version: `1`
 
 ## Freeze policy
 
-- **Wire-major freeze.** Anything on the wire is frozen under
-  `anvil-backend/1`: envelope shape, error codes and their HTTP statuses,
-  discovery fields and validation rules, operation names, per-operation
-  profile/role, sync payload shapes, job/attempt/handoff/artifact states and
-  transition tables, socket frame types, canonical hash serialization.
+- **Envelope freeze.** The JSON envelope remains `anvil-backend/1`. The
+  negotiated profile determines the required Sync and Mesh payload shapes,
+  including snapshot publication/recovery and terminal compaction markers.
 - **Additive minor only.** New optional response fields (ignored by old
   clients), new profiles, and new entity schema versions are allowed without
   a new wire major. Renaming, retyping, or reinterpreting an existing field,

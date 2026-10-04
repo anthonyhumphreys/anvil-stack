@@ -1,7 +1,8 @@
-// Provider-neutral Anvil Sync & Mesh v1 contract constants.
+// Provider-neutral Anvil RPC envelope and Sync/Mesh capability constants.
 //
-// Frozen v1 values. Changing any of these requires a new wire-major protocol
-// version; additive capability growth belongs in new profiles, not edits here.
+// The JSON RPC envelope is unchanged. sync/2 and mesh/2 are required,
+// explicitly negotiated capability profiles with incompatible Sync recovery
+// semantics; old profile names are no longer advertised.
 
 /** Wire-major protocol identifier sent in every RPC envelope. */
 export const PROTOCOL = 'anvil-backend/1' as const;
@@ -9,7 +10,7 @@ export const PROTOCOL = 'anvil-backend/1' as const;
 export type ProtocolName = typeof PROTOCOL;
 
 /** Capability profiles a backend may advertise in discovery. */
-export const PROFILES = ['sync/1', 'mesh/1'] as const;
+export const PROFILES = ['sync/2', 'mesh/2'] as const;
 
 export type ProfileName = (typeof PROFILES)[number];
 

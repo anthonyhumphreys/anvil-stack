@@ -1,4 +1,4 @@
-// Data portability (sync/1): `data.export.*`, `data.import.*`,
+// Data portability (sync/2): `data.export.*`, `data.import.*`,
 // `data.operationStatus`. Per the integration contract these ops move
 // versioned portable entities between accounts — conflicts are preserved
 // (never silently overwritten), and no live leases migrate with data.

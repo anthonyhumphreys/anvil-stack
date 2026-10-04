@@ -16,8 +16,8 @@ type DescriptorEnvironment = {
 
 /**
  * Public discovery descriptor. Must satisfy `validateDescriptor` in
- * `../contract/discovery.ts`. `sync/1` covers the sync + auth surface;
- * `mesh/1` is advertised now that MESH-01 worker lifecycle ops are live.
+ * `../contract/discovery.ts`. sync/2 requires encrypted snapshot recovery;
+ * mesh/2 adds the compact history and batched cancellation contract.
  *
  * authModes advertise only what the deployment actually supports:
  * `enrollment-code` always works (admin- or device-issued), and `oidc-pkce`
@@ -42,7 +42,7 @@ export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor 
     deploymentId: env?.ANVIL_DEPLOYMENT_ID?.trim() || SPIKE_DEPLOYMENT_ID,
     displayName: env?.ANVIL_DEPLOYMENT_NAME?.trim() || SPIKE_DEPLOYMENT_NAME,
     protocols: [PROTOCOL],
-    profiles: ['sync/1', 'mesh/1'],
+    profiles: ['sync/2', 'mesh/2'],
     features: ['browser-workspace/1'],
     apiPath: 'v1',
     socketPath: 'v1/connect',

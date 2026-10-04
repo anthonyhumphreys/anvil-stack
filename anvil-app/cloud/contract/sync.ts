@@ -5,6 +5,7 @@
 // authenticated by the device session outside the domain payload.
 
 export type SyncOperation = 'create' | 'update' | 'delete';
+export const SYNC_SNAPSHOT_SCHEMA_VERSION = 2 as const;
 
 export interface PendingChange {
   changeId: string;
@@ -103,6 +104,154 @@ export interface SyncPullResult {
   changes: SyncedChange[];
   nextCursor: SyncCursor;
   hasMore: boolean;
+  /** Oldest pull cursor still backed by a complete retained journal. */
+  recoveryFloor: number;
+}
+
+/** Immutable, client-encrypted R2 chunk included in a compact snapshot. */
+export interface SyncSnapshotChunkDescriptor {
+  index: number;
+  byteLength: number;
+  /** Lowercase SHA-256 hex of the stored encrypted bytes. */
+  sha256: string;
+}
+
+/** Published, verified recovery image for one account dataset/key epoch. */
+export interface SyncSnapshotManifest {
+  formatVersion: 2;
+  snapshotId: string;
+  generation: number;
+  datasetEpoch: string;
+  keyVersion: number;
+  schemaVersion: typeof SYNC_SNAPSHOT_SCHEMA_VERSION;
+  /** Every mutation through this sequence is represented by the snapshot. */
+  committedCursor: SyncCursor;
+  /** Client-verified coverage counts; the server never decrypts the chunks. */
+  entityCount: number;
+  tombstoneCount: number;
+  /** SHA-256 of the canonical begin fields and all chunk descriptors. */
+  manifestSha256: string;
+  chunks: SyncSnapshotChunkDescriptor[];
+  createdAt: string;
+}
+
+/** Reserves an immutable upload, fenced to the current manifest generation. */
+export interface SyncSnapshotBeginParams {
+  /** Client-generated UUID makes begin retries idempotent. */
+  publicationId: string;
+  /** Completed server scan proving full-state coverage at committedCursor. */
+  scanId: string;
+  expectedGeneration: number;
+  datasetEpoch: string;
+  keyVersion: number;
+  schemaVersion: typeof SYNC_SNAPSHOT_SCHEMA_VERSION;
+  committedCursor: SyncCursor;
+  entityCount: number;
+  tombstoneCount: number;
+  manifestSha256: string;
+  chunks: SyncSnapshotChunkDescriptor[];
+}
+
+export interface SyncSnapshotBeginResult {
+  publicationId: string;
+  uploadExpiresAt: string;
+}
+
+export interface SyncSnapshotChunkPutParams {
+  publicationId: string;
+  index: number;
+  /** Standard base64 encoded encrypted chunk bytes (at most 256 KiB). */
+  bytesBase64: string;
+}
+
+export interface SyncSnapshotChunkPutResult {
+  publicationId: string;
+  index: number;
+  sha256: string;
+  byteLength: number;
+  alreadyUploaded: boolean;
+}
+
+/** Attests that the publisher downloaded and staged the complete snapshot. */
+export interface SyncSnapshotVerifyParams {
+  publicationId: string;
+  manifestSha256: string;
+}
+
+export interface SyncSnapshotVerifyResult {
+  publicationId: string;
+  verified: true;
+}
+
+export interface SyncSnapshotCommitParams {
+  publicationId: string;
+}
+
+export interface SyncSnapshotCommitResult {
+  manifest: SyncSnapshotManifest;
+  previousGeneration: number | null;
+}
+
+export interface SyncSnapshotGetResult {
+  manifest: SyncSnapshotManifest | null;
+  /** Prior verified generation kept for rollback during the retention window. */
+  previousManifest: SyncSnapshotManifest | null;
+  datasetEpoch: string;
+  keyVersion: number;
+  currentCursor: SyncCursor;
+  /** A cursor below this floor requires snapshot recovery before replay. */
+  recoveryFloor: number;
+}
+
+/** Logical snapshot plaintext, sealed as one account-key blob before chunking. */
+export interface SyncSnapshotDocument {
+  formatVersion: 2;
+  datasetEpoch: string;
+  keyVersion: number;
+  schemaVersion: typeof SYNC_SNAPSHOT_SCHEMA_VERSION;
+  committedCursor: SyncCursor;
+  /** Complete remote entity state at committedCursor, including tombstones. */
+  entities: Array<{
+    entityType: string;
+    entityId: string;
+    revision: number;
+    operation: SyncOperation;
+    schemaVersion: number;
+    payload?: unknown;
+  }>;
+}
+
+export interface SyncSnapshotChunkGetParams {
+  snapshotId: string;
+  index: number;
+}
+
+export interface SyncSnapshotChunkGetResult {
+  index: number;
+  sha256: string;
+  byteLength: number;
+  bytesBase64: string;
+}
+
+/**
+ * Canonical content hashed by SyncSnapshotBeginParams.manifestSha256.
+ * Publication IDs are retry identities and are intentionally not part of
+ * the immutable snapshot content digest.
+ */
+export function canonicalSyncSnapshotManifestHashInput(
+  params: Omit<SyncSnapshotBeginParams, 'publicationId' | 'manifestSha256'>,
+): string {
+  return canonicalizeJson({
+    chunks: params.chunks,
+    committedCursor: params.committedCursor,
+    datasetEpoch: params.datasetEpoch,
+    entityCount: params.entityCount,
+    expectedGeneration: params.expectedGeneration,
+    keyVersion: params.keyVersion,
+    scanId: params.scanId,
+    schemaVersion: params.schemaVersion,
+    tombstoneCount: params.tombstoneCount,
+  });
 }
 
 export interface SyncScanBeginParams {
@@ -125,8 +274,10 @@ export interface ScannedEntity {
   entityType: string;
   entityId: string;
   revision: number;
+  operation: SyncOperation;
   schemaVersion: number;
-  payload: unknown;
+  /** Omitted for tombstones. */
+  payload?: unknown;
 }
 
 export interface SyncScanPageParams {
@@ -231,9 +382,6 @@ export function canonicalChangeHashInput(change: HashInputChange): string {
  * stays free of Node-only crypto. The hasher must accept the canonical
  * UTF-8 string and return lowercase hex.
  */
-export function hashChange(
-  change: HashInputChange,
-  sha256Hex: (input: string) => string,
-): string {
+export function hashChange(change: HashInputChange, sha256Hex: (input: string) => string): string {
   return sha256Hex(canonicalChangeHashInput(change));
 }

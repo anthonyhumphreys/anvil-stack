@@ -2,10 +2,7 @@ import { env, runInDurableObject, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 import { isRpcError } from '../../contract/envelope';
-import {
-  LEASE_DURATION_MS,
-  USER_JOB_DEADLINE_MS,
-} from '../../contract/version';
+import { LEASE_DURATION_MS, USER_JOB_DEADLINE_MS } from '../../contract/version';
 import type {
   AttemptRenewResult,
   AttemptReportResult,
@@ -75,14 +72,17 @@ async function connectWorker(auth: string) {
   return expectSuccess<WorkerConnectResult>(await postRpc('worker.connect', {}, auth));
 }
 
-async function publishCapabilities(
-  auth: string,
-  overrides?: Partial<WorkerCapabilities>,
-) {
+async function publishCapabilities(auth: string, overrides?: Partial<WorkerCapabilities>) {
   return expectSuccess(
     await postRpc(
       'worker.capabilities.publish',
-      { os: 'macos', arch: 'arm64', memoryMb: 32768, capabilities: ['git', 'node22'], ...overrides },
+      {
+        os: 'macos',
+        arch: 'arm64',
+        memoryMb: 32768,
+        capabilities: ['git', 'node22'],
+        ...overrides,
+      },
       auth,
     ),
   );
@@ -207,6 +207,7 @@ describe('job lifecycle', () => {
     );
     expect(renewed.results).toHaveLength(1);
     expect(renewed.results[0]?.status).toBe('renewed');
+    expect(renewed.results[0]?.cancelRequested).toBe(false);
     expect(Date.parse(renewed.results[0]?.leaseExpiresAt as string)).toBeGreaterThan(
       Date.now() + LEASE_DURATION_MS - 30_000,
     );
@@ -220,6 +221,7 @@ describe('job lifecycle', () => {
           fence: claimed.fence,
           outcome: 'completed',
           result: { summary: 'all good' },
+          sealedResult: SEALED_INPUTS,
         },
         f.workerAuth,
       ),
@@ -232,6 +234,55 @@ describe('job lifecycle', () => {
     expect(fetched.job.state).toBe('completed');
     expect(fetched.attempts).toHaveLength(1);
     expect(fetched.attempts[0]?.state).toBe('completed');
+    expect(fetched.job.sealedInputs).toEqual(SEALED_INPUTS);
+    expect(fetched.attempts[0]?.sealedResult).toEqual(SEALED_INPUTS);
+
+    await runInDurableObject(accountStub(f.accountId), async (instance: AccountCoordinator) => {
+      await instance.alarm();
+    });
+    const archived = await getJob(f.sourceAuth, job.id);
+    expect(archived.job.sealedInputsArchived).toBe(true);
+    expect(archived.job.sealedInputs).toEqual(SEALED_INPUTS);
+    expect(archived.attempts[0]?.sealedResult).toEqual(SEALED_INPUTS);
+    await runInDurableObject(accountStub(f.accountId), (_instance: AccountCoordinator, state) => {
+      expect(
+        state.storage.sql
+          .exec<{
+            sealed_inputs: string | null;
+            sealed_inputs_r2_key: string | null;
+          }>('SELECT sealed_inputs, sealed_inputs_r2_key FROM jobs WHERE job_id = ?', job.id)
+          .one(),
+      ).toMatchObject({ sealed_inputs: null });
+      expect(
+        state.storage.sql
+          .exec<{
+            sealed_result: string | null;
+            sealed_result_r2_key: string | null;
+          }>('SELECT sealed_result, sealed_result_r2_key FROM attempts WHERE attempt_id = ?', claimed.attempt.id)
+          .one(),
+      ).toMatchObject({ sealed_result: null });
+    });
+
+    await runInDurableObject(accountStub(f.accountId), (_instance: AccountCoordinator, state) => {
+      state.storage.sql.exec(
+        'UPDATE jobs SET sealed_inputs_retention_until = ? WHERE job_id = ?',
+        Date.now() - 1,
+        job.id,
+      );
+      state.storage.sql.exec(
+        'UPDATE attempts SET sealed_result_retention_until = ? WHERE attempt_id = ?',
+        Date.now() - 1,
+        claimed.attempt.id,
+      );
+    });
+    await runInDurableObject(accountStub(f.accountId), async (instance: AccountCoordinator) => {
+      await instance.alarm();
+    });
+    const expired = await getJob(f.sourceAuth, job.id);
+    expect(expired.job.sealedInputs).toBeUndefined();
+    expect(expired.job.sealedInputsExpired).toBe(true);
+    expect(expired.attempts[0]?.sealedResult).toBeUndefined();
+    expect(expired.attempts[0]?.sealedResultExpired).toBe(true);
   });
 
   it('returns the stored job on same requestId+hash and conflicts on a different hash', async () => {
@@ -242,9 +293,7 @@ describe('job lifecycle', () => {
       requestedTarget: deviceTarget(f.workerEnrollmentId),
     });
 
-    const first = expectSuccess<JobCreateResult>(
-      await postRpc('job.create', params, f.sourceAuth),
-    );
+    const first = expectSuccess<JobCreateResult>(await postRpc('job.create', params, f.sourceAuth));
     const replay = expectSuccess<JobCreateResult>(
       await postRpc('job.create', params, f.sourceAuth),
     );
@@ -267,12 +316,50 @@ describe('job lifecycle', () => {
     const f = fixture('malformed');
     const auth = f.sourceAuth;
     for (const params of [
-      { requestId: 'r', payloadHash: 'zz', kind: 'diagnostic', requestedTarget: { kind: 'auto' }, inputManifest: manifest() },
-      { requestId: 'r', payloadHash: 'a'.repeat(64), kind: 'bogus', requestedTarget: { kind: 'auto' }, inputManifest: manifest() },
-      { requestId: 'r', payloadHash: 'a'.repeat(64), kind: 'diagnostic', requestedTarget: { kind: 'sideways' }, inputManifest: manifest() },
-      { requestId: 'r', payloadHash: 'a'.repeat(64), kind: 'diagnostic', requestedTarget: { kind: 'auto' }, inputManifest: { provider: 'x' } },
-      { requestId: 'r', payloadHash: 'a'.repeat(64), kind: 'diagnostic', requestedTarget: { kind: 'auto' }, inputManifest: manifest(), queueDeadline: 'not-a-date' },
-      { requestId: 'r', payloadHash: 'a'.repeat(64), kind: 'diagnostic', requestedTarget: { kind: 'auto' }, inputManifest: manifest(), retryPolicy: 'sometimes' },
+      {
+        requestId: 'r',
+        payloadHash: 'zz',
+        kind: 'diagnostic',
+        requestedTarget: { kind: 'auto' },
+        inputManifest: manifest(),
+      },
+      {
+        requestId: 'r',
+        payloadHash: 'a'.repeat(64),
+        kind: 'bogus',
+        requestedTarget: { kind: 'auto' },
+        inputManifest: manifest(),
+      },
+      {
+        requestId: 'r',
+        payloadHash: 'a'.repeat(64),
+        kind: 'diagnostic',
+        requestedTarget: { kind: 'sideways' },
+        inputManifest: manifest(),
+      },
+      {
+        requestId: 'r',
+        payloadHash: 'a'.repeat(64),
+        kind: 'diagnostic',
+        requestedTarget: { kind: 'auto' },
+        inputManifest: { provider: 'x' },
+      },
+      {
+        requestId: 'r',
+        payloadHash: 'a'.repeat(64),
+        kind: 'diagnostic',
+        requestedTarget: { kind: 'auto' },
+        inputManifest: manifest(),
+        queueDeadline: 'not-a-date',
+      },
+      {
+        requestId: 'r',
+        payloadHash: 'a'.repeat(64),
+        kind: 'diagnostic',
+        requestedTarget: { kind: 'auto' },
+        inputManifest: manifest(),
+        retryPolicy: 'sometimes',
+      },
     ]) {
       const denied = await postRpc('job.create', params, auth);
       expect(denied.status).toBe(400);
@@ -477,6 +564,7 @@ describe('fence semantics', () => {
       ['rejected', 'not-found'],
       ['renewed', null],
     ]);
+    expect(renewed.results.every((result) => result.cancelRequested === false)).toBe(true);
 
     // A report with a stale fence is rejected but its recoverable result is
     // retained on the attempt row; job and attempt states do not move.
@@ -558,6 +646,23 @@ describe('cancellation', () => {
       await postRpc('job.cancel', { jobId: created.job.id }, f.sourceAuth),
     );
     expect(cancelling.job.state).toBe('cancel-requested');
+
+    const renewal = expectSuccess<AttemptRenewResult>(
+      await postRpc(
+        'attempt.renew',
+        {
+          renewals: [
+            {
+              attemptId: claimed.attempt.id,
+              incarnation: connected.workerIncarnation,
+              fence: claimed.fence,
+            },
+          ],
+        },
+        f.workerAuth,
+      ),
+    );
+    expect(renewal.results[0]).toMatchObject({ status: 'renewed', cancelRequested: true });
 
     const mid = await getJob(f.sourceAuth, created.job.id);
     expect(mid.job.state).toBe('cancel-requested');
@@ -803,9 +908,7 @@ describe('retry policy and listing', () => {
     });
     const b = await createJob(f.sourceAuth, { requestedTarget: { kind: 'auto' } });
 
-    const all = expectSuccess<JobListResult>(
-      await postRpc('job.list', {}, f.sourceAuth),
-    );
+    const all = expectSuccess<JobListResult>(await postRpc('job.list', {}, f.sourceAuth));
     expect(all.jobs.map((job) => job.id).sort()).toEqual([a.job.id, b.job.id].sort());
 
     const queued = expectSuccess<JobListResult>(
@@ -827,11 +930,7 @@ describe('retry policy and listing', () => {
     expect(found.jobs).toHaveLength(1);
     expect(found.jobs[0]?.id).toBe(a.job.id);
     const stateMismatch = expectSuccess<JobListResult>(
-      await postRpc(
-        'job.list',
-        { requestId: a.job.requestId, state: 'completed' },
-        f.sourceAuth,
-      ),
+      await postRpc('job.list', { requestId: a.job.requestId, state: 'completed' }, f.sourceAuth),
     );
     expect(stateMismatch.jobs).toHaveLength(0);
     const missing = expectSuccess<JobListResult>(

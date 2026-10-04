@@ -12,10 +12,7 @@ import type {
 } from '../../contract/sync';
 import { expectSuccess, hashedChange, postRpc, spikeBearer, uniqueIds } from './helpers';
 
-async function pushNamedEntities(
-  auth: string,
-  names: readonly string[],
-): Promise<void> {
+async function pushNamedEntities(auth: string, names: readonly string[]): Promise<void> {
   const changes: PendingChange[] = [];
   for (let index = 0; index < names.length; index += 1) {
     const name = names[index];
@@ -36,9 +33,7 @@ describe('sync.scan', () => {
     const auth = spikeBearer(ids.accountId, ids.enrollmentId);
     await pushNamedEntities(auth, ['ws-a', 'ws-b', 'ws-c']);
 
-    const begin = expectSuccess<SyncScanBeginResult>(
-      await postRpc('sync.scan.begin', {}, auth),
-    );
+    const begin = expectSuccess<SyncScanBeginResult>(await postRpc('sync.scan.begin', {}, auth));
     expect(begin.scanId.length).toBeGreaterThan(0);
     expect(begin.watermarkStart).toBe(3);
     expect(begin.epoch).toBe(SPIKE_INITIAL_EPOCH);
@@ -57,6 +52,7 @@ describe('sync.scan', () => {
         entityType: 'workspace',
         entityId: 'ws-a',
         revision: 1,
+        operation: 'create',
         schemaVersion: 1,
         payload: { name: 'ws-a' },
       },
@@ -64,6 +60,7 @@ describe('sync.scan', () => {
         entityType: 'workspace',
         entityId: 'ws-b',
         revision: 1,
+        operation: 'create',
         schemaVersion: 1,
         payload: { name: 'ws-b' },
       },
@@ -71,6 +68,7 @@ describe('sync.scan', () => {
         entityType: 'workspace',
         entityId: 'ws-c',
         revision: 1,
+        operation: 'create',
         schemaVersion: 1,
         payload: { name: 'ws-c' },
       },
@@ -93,9 +91,7 @@ describe('sync.scan', () => {
     const auth = spikeBearer(ids.accountId, ids.enrollmentId);
     await pushNamedEntities(auth, ['ws-a', 'ws-b', 'ws-c']);
 
-    const begin = expectSuccess<SyncScanBeginResult>(
-      await postRpc('sync.scan.begin', {}, auth),
-    );
+    const begin = expectSuccess<SyncScanBeginResult>(await postRpc('sync.scan.begin', {}, auth));
 
     const collected: string[] = [];
     let cursor: string | null = null;
@@ -127,9 +123,7 @@ describe('sync.scan', () => {
     const auth = spikeBearer(ids.accountId, ids.enrollmentId);
     await pushNamedEntities(auth, ['ws-a', 'ws-b']);
 
-    const begin = expectSuccess<SyncScanBeginResult>(
-      await postRpc('sync.scan.begin', {}, auth),
-    );
+    const begin = expectSuccess<SyncScanBeginResult>(await postRpc('sync.scan.begin', {}, auth));
     expectSuccess<SyncScanPageResult>(
       await postRpc(
         'sync.scan.page',
@@ -155,5 +149,84 @@ describe('sync.scan', () => {
     expect(pulled.changes).toEqual([]);
     expect(pulled.hasMore).toBe(false);
     expect(pulled.nextCursor).toBe(finish.nextCursor);
+  });
+
+  it('returns tombstones and fences a moving scan with a replay watermark', async () => {
+    const ids = uniqueIds('scan-tombstone-proof');
+    const auth = spikeBearer(ids.accountId, ids.enrollmentId);
+    const initialA = await hashedChange({
+      enrollmentSequence: 1,
+      entityId: 'ws-a',
+      payload: { name: 'A1' },
+    });
+    const initialB = await hashedChange({
+      enrollmentSequence: 2,
+      entityId: 'ws-b',
+      payload: { name: 'B1' },
+    });
+    expectSuccess<SyncPushResult>(
+      await postRpc('sync.push', { changes: [initialA, initialB] }, auth),
+    );
+    const deletedB = await hashedChange({
+      enrollmentSequence: 3,
+      entityId: 'ws-b',
+      operation: 'delete',
+      baseRevision: 1,
+    });
+    expectSuccess<SyncPushResult>(await postRpc('sync.push', { changes: [deletedB] }, auth));
+
+    const begin = expectSuccess<SyncScanBeginResult>(await postRpc('sync.scan.begin', {}, auth));
+    const updatedA = await hashedChange({
+      enrollmentSequence: 4,
+      entityId: 'ws-a',
+      operation: 'update',
+      baseRevision: 1,
+      payload: { name: 'A2' },
+    });
+    const createdC = await hashedChange({
+      enrollmentSequence: 5,
+      entityId: 'ws-c',
+      payload: { name: 'C1' },
+    });
+    expectSuccess<SyncPushResult>(
+      await postRpc('sync.push', { changes: [updatedA, createdC] }, auth),
+    );
+
+    const page = expectSuccess<SyncScanPageResult>(
+      await postRpc(
+        'sync.scan.page',
+        { scanId: begin.scanId, cursor: null, maxBytes: DEFAULT_LIMITS.pageBytes },
+        auth,
+      ),
+    );
+    expect(page.entities).toContainEqual({
+      entityType: 'workspace',
+      entityId: 'ws-b',
+      revision: 2,
+      operation: 'delete',
+      schemaVersion: 1,
+    });
+    expect(page.entities.map((entity) => entity.entityId)).toEqual(['ws-a', 'ws-b', 'ws-c']);
+    expect(page.entities.find((entity) => entity.entityId === 'ws-a')).toMatchObject({
+      revision: 2,
+      payload: { name: 'A2' },
+    });
+
+    const finish = expectSuccess<SyncScanFinishResult>(
+      await postRpc('sync.scan.finish', { scanId: begin.scanId }, auth),
+    );
+    expect(finish.watermarkEnd).toBe(5);
+    const catchup = expectSuccess<SyncPullResult>(
+      await postRpc(
+        'sync.pull',
+        { cursor: begin.resumeCursor, maxBytes: DEFAULT_LIMITS.pageBytes },
+        auth,
+      ),
+    );
+    expect(catchup.changes.map((change) => [change.entityId, change.operation])).toEqual([
+      ['ws-a', 'update'],
+      ['ws-c', 'create'],
+    ]);
+    expect(catchup.nextCursor).toBe(finish.nextCursor);
   });
 });

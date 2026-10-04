@@ -12,6 +12,7 @@ import type {
 import type {
   ApprovalDecideResult,
   ApprovalGetResult,
+  EventAppendResult,
   EventPullResult,
   ExecutionManifest,
   JobClaimResult,
@@ -415,6 +416,119 @@ describe('durable event journal', () => {
     workerSocket.close(1000, 'done');
   });
 
+  it('appends direct-host activity to durable history without account socket fanout', async () => {
+    const f = fixture('event-append');
+    const job = await runningJob(f);
+    const observer = await openSocket(f.sourceAuth);
+    const observerFrames = collectFrames(observer);
+    const workerSocket = await openSocket(f.workerAuth);
+    const before = await pullEvents(f.sourceAuth, job.jobId);
+    send(observer, {
+      type: 'subscribe',
+      version: 1,
+      id: crypto.randomUUID(),
+      scope: job.jobId,
+      afterSequence: before.nextCursor,
+    });
+
+    // Confirm the subscription is active before checking that event.append
+    // leaves the account socket silent.
+    send(workerSocket, activityFrame(job.attemptId, job.fence, 1, 'account-socket-live'));
+    await waitForFrame(observerFrames, (frame) =>
+      frame['type'] === 'activity' &&
+      (frame['payload'] as { text?: string } | undefined)?.text === 'account-socket-live'
+        ? frame
+        : null,
+    );
+    const liveCount = observerFrames.length;
+
+    const event = {
+      streamId: 'stdout',
+      sequence: 2,
+      payload: {
+        kind: 'stdout' as const,
+        text: 'host-direct-only',
+        byteLength: utf8ByteLength('host-direct-only'),
+        truncated: false,
+      },
+    };
+    const input = {
+      attemptId: job.attemptId,
+      incarnation: job.workerIncarnation,
+      generation: job.fence,
+      events: [event],
+    };
+    const appended = expectSuccess<EventAppendResult>(
+      await postRpc('event.append', input, f.workerAuth),
+    );
+    expect(appended).toEqual({
+      results: [{ streamId: 'stdout', sequence: 2, status: 'journaled' }],
+    });
+    const duplicate = expectSuccess<EventAppendResult>(
+      await postRpc('event.append', input, f.workerAuth),
+    );
+    expect(duplicate).toEqual({
+      results: [{ streamId: 'stdout', sequence: 2, status: 'duplicate' }],
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      observerFrames
+        .slice(liveCount)
+        .some(
+          (frame) =>
+            (frame['payload'] as { text?: string } | undefined)?.text === 'host-direct-only',
+        ),
+    ).toBe(false);
+    const history = await pullEvents(f.sourceAuth, job.jobId);
+    expect(
+      history.events.some(
+        (event) => (event.payload as { kind?: string; text?: string }).text === 'host-direct-only',
+      ),
+    ).toBe(true);
+
+    const staleFence = await postRpc(
+      'event.append',
+      { ...input, events: [{ ...event, sequence: 3 }], generation: job.fence + 1 },
+      f.workerAuth,
+    );
+    expect(staleFence.status).toBe(409);
+    if (isRpcError(staleFence.body)) {
+      expect(staleFence.body.error.code).toBe('stale-generation');
+    }
+
+    await runInDurableObject(accountStub(f.accountId), (_instance: AccountCoordinator, state) => {
+      state.storage.sql.exec(
+        'UPDATE job_event_meta SET activity_bytes = ? WHERE job_id = ?',
+        JOB_EVENT_BUDGET_BYTES,
+        job.jobId,
+      );
+    });
+    const dropped = expectSuccess<EventAppendResult>(
+      await postRpc(
+        'event.append',
+        {
+          ...input,
+          events: [
+            {
+              ...event,
+              sequence: 3,
+              payload: { ...event.payload, text: 'budget-gap', byteLength: 10 },
+            },
+          ],
+        },
+        f.workerAuth,
+      ),
+    );
+    expect(dropped).toEqual({
+      results: [{ streamId: 'stdout', sequence: 3, status: 'dropped' }],
+    });
+    const afterDrop = await pullEvents(f.sourceAuth, job.jobId);
+    expect(afterDrop.events.some((event) => event.kind === 'gap')).toBe(true);
+    observer.close(1000, 'done');
+    workerSocket.close(1000, 'done');
+  });
+
   it('materializes over-budget activity as gap rows, reports hasGap, resumes when budget frees', async () => {
     const f = fixture('ev-gap');
     const job = await runningJob(f);
@@ -489,6 +603,57 @@ describe('durable event journal', () => {
     expect(texts).toContain('resumed\n');
     workerSocket.close(1000, 'done');
   });
+
+  it('archives terminal history only after verification and reads it through event.pull', async () => {
+    const f = fixture('ev-archive');
+    const job = await runningJob(f);
+    const workerSocket = await openSocket(f.workerAuth);
+    send(workerSocket, activityFrame(job.attemptId, job.fence, 1, 'archived-line-1\n'));
+    send(workerSocket, activityFrame(job.attemptId, job.fence, 2, 'archived-line-2\n'));
+    await pollUntil(
+      () => pullEvents(f.sourceAuth, job.jobId),
+      (page) => page.events.filter((event) => event.kind === 'activity').length === 2,
+    );
+    expectSuccess(
+      await postRpc(
+        'attempt.report',
+        {
+          attemptId: job.attemptId,
+          incarnation: job.workerIncarnation,
+          fence: job.fence,
+          outcome: 'completed',
+          result: { ok: true },
+        },
+        f.workerAuth,
+      ),
+    );
+
+    await runInDurableObject(accountStub(f.accountId), async (instance: AccountCoordinator) => {
+      await instance.alarm();
+    });
+    const page = await pullEvents(f.sourceAuth, job.jobId);
+    expect(page.historyStatus).toBe('archive-available');
+    expect(page.archiveThrough).toBe(page.nextCursor);
+    expect(
+      page.events
+        .filter((event) => event.kind === 'activity')
+        .map((event) => (event.payload as { text: string }).text),
+    ).toEqual(['archived-line-1\n', 'archived-line-2\n']);
+    await runInDurableObject(accountStub(f.accountId), (_instance: AccountCoordinator, state) => {
+      expect(
+        state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM events').one()
+          .count,
+      ).toBe(0);
+      expect(
+        state.storage.sql
+          .exec<{
+            count: number;
+          }>("SELECT COUNT(*) AS count FROM event_archives WHERE state = 'active'")
+          .one().count,
+      ).toBe(1);
+    });
+    workerSocket.close(1000, 'done');
+  });
 });
 
 describe('approvals', () => {
@@ -498,7 +663,11 @@ describe('approvals', () => {
     const workerSocket = await openSocket(f.workerAuth);
     const workerFrames = collectFrames(workerSocket);
 
-    const sealedDetails = { enc: 'aes-256-gcm', nonce: btoa('123456789012'), ct: btoa('1234567890123456') };
+    const sealedDetails = {
+      enc: 'aes-256-gcm',
+      nonce: btoa('123456789012'),
+      ct: btoa('1234567890123456'),
+    };
     const approvalId = await requestApproval(workerSocket, workerFrames, job, {
       actionDigest: 'sha256:danger-op',
       sealedDetails,

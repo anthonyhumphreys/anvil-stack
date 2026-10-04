@@ -768,7 +768,8 @@ async function handleRpcInternal(
     case 'attempt.report':
     case 'job.cancel':
     // MESH-03 durable events, approvals, and artifact manifests.
-    case 'event.pull':
+      case 'event.pull':
+      case 'event.append':
     case 'approval.get':
     case 'approval.decide':
     case 'artifact.reserve':

@@ -17,10 +17,10 @@ export type BrowserWorkspaceAgentProvider =
   | 'llmgateway';
 
 export const BROWSER_WORKSPACE_PROFILE = 'browser-workspace/1' as const;
-/** Optional discovery feature name; sync/1 and mesh/1 remain unchanged. */
+/** Optional discovery feature name, negotiated independently of sync/2 and mesh/2. */
 export const BROWSER_WORKSPACE_FEATURE = BROWSER_WORKSPACE_PROFILE;
 
-/** Additive Desktop relay methods; these are not part of frozen mesh/1. */
+/** Desktop relay methods negotiated through the browser-workspace/1 feature. */
 export const BROWSER_WORKSPACE_RPC_CLASS = {
   // Claim is control-plane reservation. The claim handler gates only queued
   // operations that actually start/write work; reads and cancellation remain

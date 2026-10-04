@@ -3,7 +3,22 @@ import { DurableObject } from 'cloudflare:workers';
 
 import type { SpikeAuth } from './auth';
 import { parseSpikeAuth, parseVerifiedAuth } from './auth';
+import type { MeshMachineAdvertisedEndpoint } from '../../contract/machine';
 import { sha256Hex, utf8ByteLength } from './hash';
+import { openEventArchive, sealEventArchive } from './event-archive';
+import {
+  decodeCanonicalBase64,
+  encodeBase64,
+  parseSnapshotCursor,
+  parseSyncSnapshotBeginParams,
+  parseSyncSnapshotChunkGetParams,
+  parseSyncSnapshotChunkPutParams,
+  parseSyncSnapshotCommitParams,
+  parseSyncSnapshotVerifyParams,
+  syncSnapshotObjectKey,
+  SYNC_SNAPSHOT_MAX_OPEN_UPLOADS,
+  SYNC_SNAPSHOT_UPLOAD_TTL_MS,
+} from './compact-sync';
 import { SPIKE_DEPLOYMENT_ID } from './descriptor';
 import { ACCOUNT_SCHEMA, SPIKE_INITIAL_EPOCH } from './schema';
 import {
@@ -20,6 +35,7 @@ import type { ErrorCode } from '../../contract/envelope';
 import { sealedEnvelopeIssue } from '../../contract/sealed';
 import {
   canonicalChangeHashInput,
+  canonicalSyncSnapshotManifestHashInput,
   type PendingChange,
   type PushItemAccepted,
   type ScannedEntity,
@@ -28,10 +44,19 @@ import {
   type SyncPullResult,
   type SyncPushItemResult,
   type SyncPushResult,
+  type SyncSnapshotBeginParams,
   type SyncScanBeginResult,
   type SyncScanFinishResult,
   type SyncScanPageResult,
   type SyncedChange,
+  type SyncSnapshotBeginResult,
+  type SyncSnapshotChunkGetResult,
+  type SyncSnapshotChunkPutResult,
+  type SyncSnapshotCommitResult,
+  type SyncSnapshotGetResult,
+  type SyncSnapshotManifest,
+  type SyncSnapshotVerifyResult,
+  SYNC_SNAPSHOT_SCHEMA_VERSION,
 } from '../../contract/sync';
 import {
   SOCKET_FRAME_VERSION,
@@ -57,9 +82,7 @@ import {
   type DevicePresenceEntry,
   type DevicePresenceResult,
 } from '../../contract/companion';
-import {
-  hostedEnforcementEnabled,
-} from './hosted/enforcement';
+import { hostedEnforcementEnabled } from './hosted/enforcement';
 import {
   fairUseStatus,
   parseFairUseRestrictionCommand,
@@ -92,6 +115,10 @@ import {
   type CapabilityRequirements,
   type DurableEvent,
   type DurableEventKind,
+  type EventAppendParams,
+  type EventAppendResult,
+  EVENT_APPEND_MAX_BYTES,
+  EVENT_APPEND_MAX_EVENTS,
   type EventPullResult,
   type ExecutionAttempt,
   type ExecutionManifest,
@@ -268,6 +295,7 @@ interface EntityRow {
   operation: string;
   payload: string | null;
   schema_version: number;
+  sequence: number;
   [key: string]: string | number | null;
 }
 
@@ -300,6 +328,9 @@ interface ScanRow {
   created_at: number;
   done: number;
   entity_cursor: string | null;
+  watermark_end: number | null;
+  page_request_cursor: string | null;
+  page_result: string | null;
   [key: string]: string | number | null;
 }
 
@@ -307,8 +338,59 @@ interface ScanEntityRow {
   entity_type: string;
   entity_id: string;
   revision: number;
+  operation: string;
   schema_version: number;
   payload: string | null;
+  [key: string]: string | number | null;
+}
+
+interface SyncSnapshotPublicationRow {
+  publication_id: string;
+  publisher_enrollment_id: string;
+  scan_id: string;
+  expected_generation: number;
+  dataset_epoch: string;
+  key_version: number;
+  schema_version: number;
+  committed_cursor: number;
+  entity_count: number;
+  tombstone_count: number;
+  manifest_sha256: string;
+  chunks_json: string;
+  state: string;
+  created_at: number;
+  upload_expires_at: number;
+  verified_at: number | null;
+  committed_at: number | null;
+  previous_generation: number | null;
+  [key: string]: string | number | null;
+}
+
+interface SyncSnapshotRow {
+  snapshot_id: string;
+  generation: number;
+  dataset_epoch: string;
+  key_version: number;
+  schema_version: number;
+  committed_cursor: number;
+  entity_count: number;
+  tombstone_count: number;
+  manifest_sha256: string;
+  chunks_json: string;
+  state: string;
+  created_at: number;
+  retain_until: number | null;
+  [key: string]: string | number | null;
+}
+
+interface SyncSnapshotChunkRow {
+  publication_id: string;
+  chunk_index: number;
+  r2_key: string;
+  sha256: string;
+  byte_length: number;
+  state: string;
+  uploaded_at: number;
   [key: string]: string | number | null;
 }
 
@@ -346,6 +428,10 @@ interface JobRow {
   placement_explanation: string | null;
   input_manifest: string;
   sealed_inputs: string | null;
+  sealed_inputs_r2_key: string | null;
+  sealed_inputs_sha256: string | null;
+  sealed_inputs_retention_until: number | null;
+  sealed_inputs_compacted_at: number | null;
   result_recipients: string | null;
   state: string;
   state_reason: string | null;
@@ -354,6 +440,8 @@ interface JobRow {
   retried: number;
   next_fence: number;
   active_attempt_id: string | null;
+  terminal_at: number | null;
+  terminal_compacted_at: number | null;
   created_at: number;
   updated_at: number;
   [key: string]: string | number | null;
@@ -370,6 +458,9 @@ interface AttemptRow {
   outcome: string | null;
   result: string | null;
   sealed_result: string | null;
+  sealed_result_r2_key: string | null;
+  sealed_result_sha256: string | null;
+  sealed_result_retention_until: number | null;
   error: string | null;
   late_result: string | null;
   created_at: number;
@@ -397,10 +488,37 @@ interface EventRow {
   [key: string]: string | number | null;
 }
 
+interface EventArchiveRow {
+  archive_id: string;
+  job_id: string;
+  attempt_id: string;
+  first_event_seq: number;
+  last_event_seq: number;
+  event_sequences: string;
+  stream_floors_json: string;
+  event_count: number;
+  plaintext_sha256: string;
+  ciphertext_sha256: string;
+  nonce_base64: string;
+  r2_key: string;
+  state: string;
+  created_at: number;
+  expires_at: number;
+  [key: string]: string | number | null;
+}
+
+interface EventStreamFloor {
+  attemptId: string;
+  streamId: string;
+  sequence: number;
+}
+
 interface JobEventMetaRow {
   job_id: string;
   next_event_seq: number;
   activity_bytes: number;
+  retained_floor: number;
+  archive_through: number;
   [key: string]: string | number | null;
 }
 
@@ -646,6 +764,13 @@ const ACCOUNT_PURGE_TABLES = [
   'changes',
   'receipts',
   'scans',
+  'sync_snapshot_chunks',
+  'sync_snapshot_publications',
+  'sync_snapshots',
+  'event_archives',
+  'event_archive_dedupe',
+  'event_stream_floors',
+  'event_stream_cursors',
   'counters',
   'workers',
   'worker_replicas',
@@ -656,6 +781,7 @@ const ACCOUNT_PURGE_TABLES = [
   'approvals',
   'mesh_sessions',
   'handoffs',
+  'presence_advertisements',
   'data_operations',
   // ENV-01/ENV-06: environment lifecycle + credential grants are account
   // data — purged with everything else on account deletion.
@@ -840,6 +966,12 @@ const ARTIFACT_UPLOAD_TTL_MS = 10 * 60 * 1000;
 const ARTIFACT_DEFAULT_RETENTION_DAYS = 7;
 const ARTIFACT_MAX_RETENTION_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Recent terminal/live detail stays in SQLite for responsive reads. */
+const EVENT_HOT_WINDOW_MS = 7 * DAY_MS;
+/** A segment is deliberately small enough to verify and retry in one sweep slice. */
+const EVENT_ARCHIVE_MAX_BYTES = 1024 * 1024;
+const EVENT_ARCHIVE_BATCH_ROWS = 128;
+const EVENT_ARCHIVE_READ_MAX_SEGMENTS = 8;
 /** Terminal artifact rows are kept this long for audit before row purge. */
 const ARTIFACT_AUDIT_RETENTION_MS = 30 * DAY_MS;
 const MAX_ARTIFACT_LIST_LIMIT = 100;
@@ -861,6 +993,92 @@ function isSocketAttachment(value: unknown): value is SocketAttachment {
     return false;
   }
   return typeof value['accountId'] === 'string' && typeof value['enrollmentId'] === 'string';
+}
+
+function parseMachineAdvertisement(raw: string | null): MeshMachineAdvertisedEndpoint | null {
+  if (raw === null) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!validateDeviceAdvertiseParams({ endpoints: [], capabilities: [], machine: value })) {
+      return null;
+    }
+    return value as MeshMachineAdvertisedEndpoint;
+  } catch {
+    return null;
+  }
+}
+
+function eventStreamFloors(rows: readonly EventRow[]): EventStreamFloor[] {
+  const floors = new Map<string, EventStreamFloor>();
+  for (const row of rows) {
+    if (row.attempt_id === '' || row.stream_id === '') continue;
+    let sequence = row.sequence;
+    if (row.kind === 'gap') {
+      try {
+        const payload = JSON.parse(row.payload) as Record<string, unknown>;
+        if (
+          typeof payload['toSequence'] === 'number' &&
+          Number.isSafeInteger(payload['toSequence'])
+        ) {
+          sequence = payload['toSequence'];
+        }
+      } catch {
+        // The durable cursor remains covered even when a legacy gap is malformed.
+      }
+    }
+    const key = `${row.attempt_id}\u0000${row.stream_id}`;
+    const prior = floors.get(key);
+    if (prior === undefined || sequence > prior.sequence) {
+      floors.set(key, { attemptId: row.attempt_id, streamId: row.stream_id, sequence });
+    }
+  }
+  return [...floors.values()].sort((left, right) =>
+    left.attemptId === right.attemptId
+      ? left.streamId.localeCompare(right.streamId)
+      : left.attemptId.localeCompare(right.attemptId),
+  );
+}
+
+function parseEventStreamFloors(raw: string): EventStreamFloor[] {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) throw new Error('not-array');
+    return value.map((entry) => {
+      if (
+        !isRecord(entry) ||
+        typeof entry['attemptId'] !== 'string' ||
+        typeof entry['streamId'] !== 'string' ||
+        typeof entry['sequence'] !== 'number' ||
+        !Number.isSafeInteger(entry['sequence']) ||
+        entry['sequence'] < 0
+      ) {
+        throw new Error('invalid-floor');
+      }
+      return {
+        attemptId: entry['attemptId'],
+        streamId: entry['streamId'],
+        sequence: entry['sequence'],
+      };
+    });
+  } catch {
+    throw new RpcFailure('unavailable', { reason: 'event-archive-metadata-corrupt' });
+  }
+}
+
+function eventArchiveAad(archive: EventArchiveRow): string {
+  return JSON.stringify({
+    archiveId: archive.archive_id,
+    attemptId: archive.attempt_id,
+    eventCount: archive.event_count,
+    eventSequences: archive.event_sequences,
+    expiresAt: archive.expires_at,
+    firstEventSeq: archive.first_event_seq,
+    jobId: archive.job_id,
+    lastEventSeq: archive.last_event_seq,
+    plaintextSha256: archive.plaintext_sha256,
+    r2Key: archive.r2_key,
+    streamFloors: archive.stream_floors_json,
+  });
 }
 
 function isSyncOperation(value: unknown): value is SyncOperation {
@@ -932,9 +1150,17 @@ export class AccountCoordinator extends DurableObject<Env> {
     );
     this.ctx.storage.sql.exec(
       'INSERT OR IGNORE INTO sync_meta (key, value) VALUES (?, ?)',
+      'key_version',
+      '0',
+    );
+    this.ctx.storage.sql.exec(
+      'INSERT OR IGNORE INTO sync_meta (key, value) VALUES (?, ?)',
       'history_bytes',
       '0',
     );
+    if (this.readMetaOrNull('event_archive_key') === null) {
+      this.writeMeta('event_archive_key', encodeBase64(crypto.getRandomValues(new Uint8Array(32))));
+    }
     // E2E: additive columns on objects created before sealing existed —
     // CREATE TABLE IF NOT EXISTS never alters an existing table.
     this.ensureColumn(
@@ -971,6 +1197,34 @@ export class AccountCoordinator extends DurableObject<Env> {
     this.ensureColumn('jobs', 'sealed_inputs', 'ALTER TABLE jobs ADD COLUMN sealed_inputs TEXT');
     this.ensureColumn(
       'jobs',
+      'sealed_inputs_r2_key',
+      'ALTER TABLE jobs ADD COLUMN sealed_inputs_r2_key TEXT',
+    );
+    this.ensureColumn(
+      'jobs',
+      'sealed_inputs_sha256',
+      'ALTER TABLE jobs ADD COLUMN sealed_inputs_sha256 TEXT',
+    );
+    this.ensureColumn(
+      'jobs',
+      'sealed_inputs_retention_until',
+      'ALTER TABLE jobs ADD COLUMN sealed_inputs_retention_until INTEGER',
+    );
+    this.ensureColumn(
+      'jobs',
+      'sealed_inputs_compacted_at',
+      'ALTER TABLE jobs ADD COLUMN sealed_inputs_compacted_at INTEGER',
+    );
+    this.ensureColumn(
+      'presence_advertisements',
+      'machine',
+      'ALTER TABLE presence_advertisements ADD COLUMN machine TEXT',
+    );
+    this.ctx.storage.sql.exec(
+      'CREATE INDEX IF NOT EXISTS idx_presence_machine_id ON presence_advertisements (machine)',
+    );
+    this.ensureColumn(
+      'jobs',
       'result_recipients',
       'ALTER TABLE jobs ADD COLUMN result_recipients TEXT',
     );
@@ -978,6 +1232,58 @@ export class AccountCoordinator extends DurableObject<Env> {
       'attempts',
       'sealed_result',
       'ALTER TABLE attempts ADD COLUMN sealed_result TEXT',
+    );
+    this.ensureColumn(
+      'attempts',
+      'sealed_result_r2_key',
+      'ALTER TABLE attempts ADD COLUMN sealed_result_r2_key TEXT',
+    );
+    this.ensureColumn(
+      'attempts',
+      'sealed_result_sha256',
+      'ALTER TABLE attempts ADD COLUMN sealed_result_sha256 TEXT',
+    );
+    this.ensureColumn(
+      'attempts',
+      'sealed_result_retention_until',
+      'ALTER TABLE attempts ADD COLUMN sealed_result_retention_until INTEGER',
+    );
+    this.ensureColumn('jobs', 'terminal_at', 'ALTER TABLE jobs ADD COLUMN terminal_at INTEGER');
+    this.ensureColumn(
+      'jobs',
+      'terminal_compacted_at',
+      'ALTER TABLE jobs ADD COLUMN terminal_compacted_at INTEGER',
+    );
+    this.ensureColumn(
+      'scans',
+      'watermark_end',
+      'ALTER TABLE scans ADD COLUMN watermark_end INTEGER',
+    );
+    this.ensureColumn(
+      'scans',
+      'page_request_cursor',
+      'ALTER TABLE scans ADD COLUMN page_request_cursor TEXT',
+    );
+    this.ensureColumn('scans', 'page_result', 'ALTER TABLE scans ADD COLUMN page_result TEXT');
+    this.ensureColumn(
+      'sync_snapshot_publications',
+      'scan_id',
+      "ALTER TABLE sync_snapshot_publications ADD COLUMN scan_id TEXT NOT NULL DEFAULT ''",
+    );
+    this.ensureColumn(
+      'sync_snapshot_publications',
+      'previous_generation',
+      'ALTER TABLE sync_snapshot_publications ADD COLUMN previous_generation INTEGER',
+    );
+    this.ensureColumn(
+      'job_event_meta',
+      'retained_floor',
+      'ALTER TABLE job_event_meta ADD COLUMN retained_floor INTEGER NOT NULL DEFAULT 0',
+    );
+    this.ensureColumn(
+      'job_event_meta',
+      'archive_through',
+      'ALTER TABLE job_event_meta ADD COLUMN archive_through INTEGER NOT NULL DEFAULT 0',
     );
     this.ensureColumn(
       'approvals',
@@ -1083,6 +1389,10 @@ export class AccountCoordinator extends DurableObject<Env> {
           Date.now(),
           body.enrollmentId,
         ).rowsWritten > 0;
+      this.ctx.storage.sql.exec(
+        'DELETE FROM presence_advertisements WHERE enrollment_id = ?',
+        body.enrollmentId,
+      );
       return Response.json({ closed, workerRevoked });
     }
     if (url.pathname === '/internal/delete-account' && request.method === 'POST') {
@@ -1473,7 +1783,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (streamId === LIFECYCLE_STREAM_ID) {
         throw new RpcFailure('forbidden', { reason: 'reserved-stream' });
       }
-      this.journalActivityEvent({
+      const status = this.journalActivityEvent({
         jobId: job.job_id,
         attemptId,
         streamId,
@@ -1481,6 +1791,8 @@ export class AccountCoordinator extends DurableObject<Env> {
         generation,
         payload,
       });
+      if (status === 'journaled') this.bumpCounter('events_journaled', 1);
+      if (status === 'dropped') this.bumpCounter('events_dropped', 1);
       this.bumpCounter('socket_activity', 1);
       return null;
     });
@@ -1737,6 +2049,18 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleScanPage(rpc.requestId, rpc.params);
         case 'sync.scan.finish':
           return this.handleScanFinish(rpc.requestId, rpc.params);
+        case 'sync.snapshot.begin':
+          return await this.handleSyncSnapshotBegin(auth, rpc.requestId, rpc.params);
+        case 'sync.snapshot.chunk.put':
+          return await this.handleSyncSnapshotChunkPut(auth, rpc.requestId, rpc.params);
+        case 'sync.snapshot.verify':
+          return await this.handleSyncSnapshotVerify(auth, rpc.requestId, rpc.params);
+        case 'sync.snapshot.commit':
+          return this.handleSyncSnapshotCommit(auth, rpc.requestId, rpc.params);
+        case 'sync.snapshot.get':
+          return this.handleSyncSnapshotGet(rpc.requestId, rpc.params);
+        case 'sync.snapshot.chunk.get':
+          return await this.handleSyncSnapshotChunkGet(auth, rpc.requestId, rpc.params);
         case 'device.policy.publish':
           return this.handleDevicePolicyPublish(auth, rpc.requestId, rpc.params);
         // MOB-01 companion presence: self-scoped advertisement publish and
@@ -1759,7 +2083,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         case 'job.create':
           return await this.handleJobCreate(auth, rpc.requestId, rpc.params);
         case 'job.get':
-          return this.handleJobGet(rpc.requestId, rpc.params);
+          return await this.handleJobGet(rpc.requestId, rpc.params);
         case 'job.list':
           return this.handleJobList(auth, rpc.requestId, rpc.params);
         case 'job.claim':
@@ -1772,8 +2096,10 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleJobCancel(rpc.requestId, rpc.params);
         // MESH-03: durable events, expiring approvals, artifact manifests.
         // Artifact bytes move on the PUT/GET /v1/artifacts routes instead.
+        case 'event.append':
+          return this.handleEventAppend(auth, rpc.requestId, rpc.params);
         case 'event.pull':
-          return this.handleEventPull(auth, rpc.requestId, rpc.params);
+          return await this.handleEventPull(auth, rpc.requestId, rpc.params);
         case 'approval.get':
           return this.handleApprovalGet(auth, rpc.requestId, rpc.params);
         case 'approval.decide':
@@ -1833,7 +2159,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         case 'dashboard.revoke':
           return this.handleDashboardRevoke(auth, rpc.requestId, rpc.params);
         // browser-workspace/1 relay. These additive operations intentionally
-        // stay outside the frozen mesh/1 inventory; only the approving grant
+        // stay outside the mesh/2 operation inventory; only the approving grant
         // issuer may claim or complete its opaque command envelopes.
         case 'dashboard.command.claim':
           return this.handleDashboardCommandClaim(auth, rpc.requestId, rpc.params);
@@ -1850,7 +2176,7 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleHandoffAdvance(auth, rpc.requestId, rpc.params);
         case 'handoff.cancel':
           return this.handleHandoffCancel(auth, rpc.requestId, rpc.params);
-        // Data portability (sync/1): paged entity export, staged import
+        // Data portability (sync/2): paged entity export, staged import
         // preview/commit, durable operation status.
         case 'data.export.begin':
           return this.handleDataExportBegin(auth, rpc.requestId, rpc.params);
@@ -2220,6 +2546,13 @@ export class AccountCoordinator extends DurableObject<Env> {
     const sequence = Number(this.readMeta('next_sequence'));
     const now = Date.now();
     const revision = existing === null ? 1 : existing.revision + 1;
+    if (existing?.operation !== 'delete' && existing?.payload !== null && existing !== null) {
+      this.ctx.storage.sql.exec(
+        'UPDATE changes SET payload = ? WHERE sequence = ? AND payload IS NULL',
+        existing.payload,
+        existing.sequence,
+      );
+    }
     this.ctx.storage.sql.exec(
       `INSERT INTO entities (
          entity_type, entity_id, revision, operation, schema_version, payload, sequence, updated_at
@@ -2243,14 +2576,13 @@ export class AccountCoordinator extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       `INSERT INTO changes (
          sequence, entity_type, entity_id, revision, operation, schema_version, payload, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
       sequence,
       change.entityType,
       change.entityId,
       revision,
       change.operation,
       change.schemaVersion,
-      item.payloadJson,
       now,
     );
     const accepted: PushItemAccepted = {
@@ -2266,6 +2598,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     );
     this.advanceHighWater(auth.enrollmentId, change.enrollmentSequence);
     this.addHistoryBytes(item.entityBytes);
+    if (change.operation !== 'delete') this.observeSyncKeyVersion(change.payload);
     return { item: accepted, acceptedSequence: sequence };
   }
 
@@ -2278,10 +2611,14 @@ export class AccountCoordinator extends DurableObject<Env> {
     // reset and re-scan (spec §5 cursor-retention check).
     const floor = this.readRetentionFloor();
     if (after < floor) {
+      const snapshot = this.readActiveSyncSnapshot();
       throw new RpcFailure('reset-required', {
-        reason: 'retention-floor',
+        reason: 'snapshot-required',
         floor,
         cursor: after,
+        ...(snapshot === null
+          ? {}
+          : { snapshotId: snapshot.snapshot_id, committedCursor: snapshot.committed_cursor }),
       });
     }
     const maxChanges = pull.maxChanges ?? DEFAULT_LIMITS.batchChanges;
@@ -2305,6 +2642,21 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (!isSyncOperation(row.operation)) {
         throw new RpcFailure('unavailable', { reason: 'corrupt-change-operation' });
       }
+      let payload: unknown;
+      if (row.operation !== 'delete') {
+        if (row.payload !== null) {
+          payload = JSON.parse(row.payload) as unknown;
+        } else {
+          const head = this.readEntity(row.entity_type, row.entity_id);
+          if (head === null || head.sequence !== row.sequence || head.payload === null) {
+            throw new RpcFailure('unavailable', {
+              reason: 'compacted-change-payload-missing',
+              sequence: row.sequence,
+            });
+          }
+          payload = JSON.parse(head.payload) as unknown;
+        }
+      }
       const synced: SyncedChange = {
         entityType: row.entity_type,
         entityId: row.entity_id,
@@ -2312,7 +2664,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         operation: row.operation,
         schemaVersion: row.schema_version,
         sequence: row.sequence,
-        ...(row.payload === null ? {} : { payload: JSON.parse(row.payload) as unknown }),
+        ...(payload === undefined ? {} : { payload }),
       };
       const encoded = JSON.stringify(synced);
       const size = utf8ByteLength(encoded);
@@ -2333,8 +2685,743 @@ export class AccountCoordinator extends DurableObject<Env> {
       changes,
       nextCursor: String(lastSequence) as SyncCursor,
       hasMore: remaining,
+      recoveryFloor: floor,
     };
     return rpcSuccessResponse(requestId, result);
+  }
+
+  // ---- SYNC-02 encrypted compact snapshots ---------------------------------
+
+  private async handleSyncSnapshotBegin(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const begin = parseSyncSnapshotBeginParams(params);
+    this.requireSnapshotPublisher(auth);
+    const { publicationId: _publicationId, manifestSha256, ...manifestInput } = begin;
+    const digest = await sha256Hex(canonicalSyncSnapshotManifestHashInput(manifestInput));
+    if (digest !== manifestSha256) {
+      throw new RpcFailure('malformed-request', { reason: 'snapshot-manifest-hash' });
+    }
+    const committedSequence = parseSnapshotCursor(begin.committedCursor).sequence;
+    const chunksJson = JSON.stringify(begin.chunks);
+    const now = Date.now();
+    const result = this.commit((): SyncSnapshotBeginResult => {
+      this.provisionEnrollment(auth);
+      const existing = this.ctx.storage.sql
+        .exec<SyncSnapshotPublicationRow>(
+          'SELECT * FROM sync_snapshot_publications WHERE publication_id = ?',
+          begin.publicationId,
+        )
+        .toArray()[0];
+      if (existing !== undefined) {
+        const sameIntent =
+          existing.publisher_enrollment_id === auth.enrollmentId &&
+          existing.scan_id === begin.scanId &&
+          existing.expected_generation === begin.expectedGeneration &&
+          existing.dataset_epoch === begin.datasetEpoch &&
+          existing.key_version === begin.keyVersion &&
+          existing.schema_version === begin.schemaVersion &&
+          existing.committed_cursor === committedSequence &&
+          existing.entity_count === begin.entityCount &&
+          existing.tombstone_count === begin.tombstoneCount &&
+          existing.manifest_sha256 === begin.manifestSha256 &&
+          existing.chunks_json === chunksJson;
+        if (!sameIntent) {
+          throw new RpcFailure('conflict', { reason: 'snapshot-publication-id-reused' });
+        }
+        if (existing.state === 'expired' || existing.upload_expires_at <= now) {
+          throw new RpcFailure('conflict', { reason: 'snapshot-upload-expired' });
+        }
+        return {
+          publicationId: existing.publication_id,
+          uploadExpiresAt: new Date(existing.upload_expires_at).toISOString(),
+        };
+      }
+
+      const datasetEpoch = this.readMeta('epoch');
+      if (begin.datasetEpoch !== datasetEpoch) {
+        throw new RpcFailure('epoch-mismatch', {
+          expected: datasetEpoch,
+          actual: begin.datasetEpoch,
+        });
+      }
+      const currentCursor = this.currentWatermark();
+      const recoveryFloor = this.readRetentionFloor();
+      const scan = this.loadScan(begin.scanId);
+      this.assertScanEpochAndRetention(scan);
+      if (
+        scan.done !== 1 ||
+        scan.watermark_end === null ||
+        scan.watermark_end !== committedSequence ||
+        scan.epoch !== begin.datasetEpoch
+      ) {
+        throw new RpcFailure('conflict', {
+          reason: 'snapshot-scan-incomplete-or-mismatched',
+          scanId: begin.scanId,
+          committedCursor: committedSequence,
+          scanWatermark: scan.watermark_end,
+        });
+      }
+      if (committedSequence > currentCursor) {
+        throw new RpcFailure('conflict', {
+          reason: 'snapshot-cursor-ahead',
+          currentCursor,
+          committedCursor: committedSequence,
+        });
+      }
+      if (committedSequence < recoveryFloor) {
+        throw new RpcFailure('reset-required', {
+          reason: 'snapshot-cursor-before-floor',
+          recoveryFloor,
+          committedCursor: committedSequence,
+        });
+      }
+      const currentSnapshot = this.readActiveSyncSnapshot();
+      const generation = currentSnapshot?.generation ?? 0;
+      if (begin.expectedGeneration !== generation) {
+        throw new RpcFailure('conflict', {
+          reason: 'snapshot-generation-mismatch',
+          expected: generation,
+          actual: begin.expectedGeneration,
+        });
+      }
+      if (currentSnapshot !== null && committedSequence < currentSnapshot.committed_cursor) {
+        throw new RpcFailure('conflict', {
+          reason: 'snapshot-cursor-regression',
+          currentSnapshotCursor: currentSnapshot.committed_cursor,
+          committedCursor: committedSequence,
+        });
+      }
+      const currentKeyVersion = Number(this.readMeta('key_version'));
+      if (currentKeyVersion !== 0 && begin.keyVersion !== currentKeyVersion) {
+        throw new RpcFailure('conflict', {
+          reason: 'snapshot-key-version-mismatch',
+          expected: currentKeyVersion,
+          actual: begin.keyVersion,
+        });
+      }
+      if (currentKeyVersion === 0) this.writeMeta('key_version', String(begin.keyVersion));
+      const openUploads = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM sync_snapshot_publications
+           WHERE state IN ('uploading', 'verified') AND upload_expires_at > ?`,
+          now,
+        )
+        .one().n;
+      if (openUploads >= SYNC_SNAPSHOT_MAX_OPEN_UPLOADS) {
+        throw new RpcFailure('throttled', { reason: 'snapshot-upload-capacity' });
+      }
+      const uploadExpiresAt = now + SYNC_SNAPSHOT_UPLOAD_TTL_MS;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO sync_snapshot_publications (
+           publication_id, publisher_enrollment_id, scan_id, expected_generation, dataset_epoch,
+           key_version, schema_version, committed_cursor, entity_count, tombstone_count,
+           manifest_sha256, chunks_json, state, created_at, upload_expires_at,
+           verified_at, committed_at, previous_generation
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading', ?, ?, NULL, NULL, NULL)`,
+        begin.publicationId,
+        auth.enrollmentId,
+        begin.scanId,
+        begin.expectedGeneration,
+        begin.datasetEpoch,
+        begin.keyVersion,
+        begin.schemaVersion,
+        committedSequence,
+        begin.entityCount,
+        begin.tombstoneCount,
+        begin.manifestSha256,
+        chunksJson,
+        now,
+        uploadExpiresAt,
+      );
+      return {
+        publicationId: begin.publicationId,
+        uploadExpiresAt: new Date(uploadExpiresAt).toISOString(),
+      };
+    });
+    await this.ensureSweepScheduled();
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private async handleSyncSnapshotChunkPut(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const put = parseSyncSnapshotChunkPutParams(params);
+    this.requireSnapshotPublisher(auth);
+    const bytes = decodeCanonicalBase64(put.bytesBase64);
+    const digest = hexEncode(await crypto.subtle.digest('SHA-256', bytes));
+    const now = Date.now();
+    const reservation = this.commit(() => {
+      const publication = this.readSyncSnapshotPublication(put.publicationId);
+      if (
+        publication === null ||
+        publication.publisher_enrollment_id !== auth.enrollmentId ||
+        !['uploading', 'verified'].includes(publication.state) ||
+        publication.upload_expires_at <= now
+      ) {
+        throw new RpcFailure('not-found', { reason: 'snapshot-upload' });
+      }
+      const descriptors = this.snapshotChunkDescriptors(publication.chunks_json);
+      const descriptor = descriptors[put.index];
+      if (descriptor === undefined) throw new RpcFailure('not-found', { reason: 'snapshot-chunk' });
+      if (descriptor.byteLength !== bytes.byteLength || descriptor.sha256 !== digest) {
+        throw new RpcFailure('conflict', { reason: 'snapshot-chunk-digest', index: put.index });
+      }
+      const r2Key = syncSnapshotObjectKey(
+        auth.accountId,
+        put.publicationId,
+        put.index,
+        descriptor.sha256,
+      );
+      const existing = this.ctx.storage.sql
+        .exec<SyncSnapshotChunkRow>(
+          `SELECT * FROM sync_snapshot_chunks WHERE publication_id = ? AND chunk_index = ?`,
+          put.publicationId,
+          put.index,
+        )
+        .toArray()[0];
+      if (
+        existing !== undefined &&
+        (existing.r2_key !== r2Key ||
+          existing.sha256 !== descriptor.sha256 ||
+          existing.byte_length !== descriptor.byteLength)
+      ) {
+        throw new RpcFailure('conflict', { reason: 'snapshot-chunk-slot-reused' });
+      }
+      if (existing === undefined) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO sync_snapshot_chunks (
+             publication_id, chunk_index, r2_key, sha256, byte_length, state, uploaded_at
+           ) VALUES (?, ?, ?, ?, ?, 'uploading', ?)`,
+          put.publicationId,
+          put.index,
+          r2Key,
+          descriptor.sha256,
+          descriptor.byteLength,
+          now,
+        );
+      }
+      return { descriptor, r2Key, alreadyUploaded: existing?.state === 'uploaded' };
+    });
+
+    if (reservation.alreadyUploaded) {
+      const head = await this.env.ARTIFACTS.head(reservation.r2Key);
+      if (
+        head !== null &&
+        head.size === reservation.descriptor.byteLength &&
+        head.customMetadata?.['sha256'] === reservation.descriptor.sha256
+      ) {
+        const result: SyncSnapshotChunkPutResult = {
+          publicationId: put.publicationId,
+          index: put.index,
+          sha256: reservation.descriptor.sha256,
+          byteLength: reservation.descriptor.byteLength,
+          alreadyUploaded: true,
+        };
+        return rpcSuccessResponse(requestId, result);
+      }
+      throw new RpcFailure('unavailable', { reason: 'snapshot-chunk-integrity' });
+    }
+
+    const existingObject = await this.env.ARTIFACTS.head(reservation.r2Key);
+    if (existingObject !== null) {
+      if (
+        existingObject.size !== reservation.descriptor.byteLength ||
+        existingObject.customMetadata?.['sha256'] !== reservation.descriptor.sha256
+      ) {
+        throw new RpcFailure('unavailable', { reason: 'snapshot-object-immutable-conflict' });
+      }
+    } else {
+      await this.env.ARTIFACTS.put(reservation.r2Key, bytes, {
+        customMetadata: {
+          publicationId: put.publicationId,
+          chunkIndex: String(put.index),
+          sha256: reservation.descriptor.sha256,
+        },
+      });
+    }
+    const accepted = this.commit(() => {
+      const publication = this.readSyncSnapshotPublication(put.publicationId);
+      const row = this.ctx.storage.sql
+        .exec<SyncSnapshotChunkRow>(
+          `SELECT * FROM sync_snapshot_chunks WHERE publication_id = ? AND chunk_index = ?`,
+          put.publicationId,
+          put.index,
+        )
+        .toArray()[0];
+      if (
+        publication === null ||
+        publication.publisher_enrollment_id !== auth.enrollmentId ||
+        publication.upload_expires_at <= Date.now() ||
+        !['uploading', 'verified'].includes(publication.state) ||
+        row === undefined
+      ) {
+        this.pendingR2Deletes.push(reservation.r2Key);
+        return false;
+      }
+      this.ctx.storage.sql.exec(
+        `UPDATE sync_snapshot_chunks SET state = 'uploaded', uploaded_at = ?
+         WHERE publication_id = ? AND chunk_index = ?`,
+        Date.now(),
+        put.publicationId,
+        put.index,
+      );
+      return true;
+    });
+    if (!accepted) throw new RpcFailure('conflict', { reason: 'snapshot-upload-expired' });
+    await this.ensureSweepScheduled();
+    const result: SyncSnapshotChunkPutResult = {
+      publicationId: put.publicationId,
+      index: put.index,
+      sha256: reservation.descriptor.sha256,
+      byteLength: reservation.descriptor.byteLength,
+      alreadyUploaded: false,
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private async handleSyncSnapshotVerify(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const verify = parseSyncSnapshotVerifyParams(params);
+    this.requireSnapshotPublisher(auth);
+    const now = Date.now();
+    const upload = this.commit(() => {
+      const publication = this.readSyncSnapshotPublication(verify.publicationId);
+      if (
+        publication === null ||
+        publication.publisher_enrollment_id !== auth.enrollmentId ||
+        publication.upload_expires_at <= now
+      ) {
+        throw new RpcFailure('not-found', { reason: 'snapshot-upload' });
+      }
+      if (publication.manifest_sha256 !== verify.manifestSha256) {
+        throw new RpcFailure('conflict', { reason: 'snapshot-manifest-hash' });
+      }
+      if (publication.state === 'verified' || publication.state === 'committed') {
+        return { publication, chunks: [] as SyncSnapshotChunkRow[], alreadyVerified: true };
+      }
+      if (publication.state !== 'uploading') {
+        throw new RpcFailure('conflict', { reason: 'snapshot-upload-state' });
+      }
+      const chunks = this.ctx.storage.sql
+        .exec<SyncSnapshotChunkRow>(
+          `SELECT * FROM sync_snapshot_chunks WHERE publication_id = ?
+           ORDER BY chunk_index ASC`,
+          publication.publication_id,
+        )
+        .toArray();
+      const descriptors = this.snapshotChunkDescriptors(publication.chunks_json);
+      if (chunks.length !== descriptors.length) {
+        throw new RpcFailure('conflict', { reason: 'snapshot-chunks-incomplete' });
+      }
+      for (let index = 0; index < descriptors.length; index += 1) {
+        const descriptor = descriptors[index];
+        const chunk = chunks[index];
+        if (
+          descriptor === undefined ||
+          chunk === undefined ||
+          chunk.chunk_index !== index ||
+          chunk.state !== 'uploaded' ||
+          chunk.sha256 !== descriptor.sha256 ||
+          chunk.byte_length !== descriptor.byteLength
+        ) {
+          throw new RpcFailure('conflict', { reason: 'snapshot-chunks-incomplete' });
+        }
+      }
+      return { publication, chunks, alreadyVerified: false };
+    });
+    if (!upload.alreadyVerified) {
+      for (let start = 0; start < upload.chunks.length; start += 32) {
+        const page = upload.chunks.slice(start, start + 32);
+        const heads = await Promise.all(page.map((chunk) => this.env.ARTIFACTS.head(chunk.r2_key)));
+        for (let offset = 0; offset < heads.length; offset += 1) {
+          const head = heads[offset];
+          const chunk = page[offset];
+          if (
+            head === null ||
+            chunk === undefined ||
+            head.size !== chunk.byte_length ||
+            head.customMetadata?.['sha256'] !== chunk.sha256
+          ) {
+            throw new RpcFailure('unavailable', {
+              reason: 'snapshot-chunk-missing',
+              index: chunk?.chunk_index,
+            });
+          }
+        }
+      }
+      this.commit(() => {
+        const fresh = this.readSyncSnapshotPublication(verify.publicationId);
+        if (
+          fresh === null ||
+          fresh.publisher_enrollment_id !== auth.enrollmentId ||
+          fresh.upload_expires_at <= Date.now() ||
+          fresh.manifest_sha256 !== verify.manifestSha256
+        ) {
+          throw new RpcFailure('conflict', { reason: 'snapshot-upload-expired' });
+        }
+        if (fresh.state === 'uploading') {
+          this.ctx.storage.sql.exec(
+            `UPDATE sync_snapshot_publications SET state = 'verified', verified_at = ?
+             WHERE publication_id = ? AND state = 'uploading'`,
+            Date.now(),
+            verify.publicationId,
+          );
+        } else if (!['verified', 'committed'].includes(fresh.state)) {
+          throw new RpcFailure('conflict', { reason: 'snapshot-upload-state' });
+        }
+      });
+    }
+    const result: SyncSnapshotVerifyResult = {
+      publicationId: verify.publicationId,
+      verified: true,
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private handleSyncSnapshotCommit(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const commit = parseSyncSnapshotCommitParams(params);
+    this.requireSnapshotPublisher(auth);
+    const now = Date.now();
+    const result = this.commit((): SyncSnapshotCommitResult => {
+      const publication = this.readSyncSnapshotPublication(commit.publicationId);
+      if (publication === null || publication.publisher_enrollment_id !== auth.enrollmentId) {
+        throw new RpcFailure('not-found', { reason: 'snapshot-upload' });
+      }
+      if (publication.state === 'committed') {
+        const prior = this.ctx.storage.sql
+          .exec<SyncSnapshotRow>(
+            `SELECT * FROM sync_snapshots WHERE snapshot_id = ?`,
+            publication.publication_id,
+          )
+          .toArray()[0];
+        if (prior === undefined)
+          throw new RpcFailure('unavailable', { reason: 'snapshot-corrupt' });
+        return {
+          manifest: this.syncSnapshotManifest(prior),
+          previousGeneration: publication.previous_generation,
+        };
+      }
+      if (publication.state !== 'verified' || publication.upload_expires_at <= now) {
+        throw new RpcFailure('conflict', { reason: 'snapshot-not-verified' });
+      }
+      const epoch = this.readMeta('epoch');
+      if (publication.dataset_epoch !== epoch) {
+        throw new RpcFailure('epoch-mismatch', {
+          expected: epoch,
+          actual: publication.dataset_epoch,
+        });
+      }
+      const currentKeyVersion = Number(this.readMeta('key_version'));
+      if (publication.key_version !== currentKeyVersion) {
+        throw new RpcFailure('conflict', {
+          reason: 'snapshot-key-version-mismatch',
+          expected: currentKeyVersion,
+          actual: publication.key_version,
+        });
+      }
+      const currentCursor = this.currentWatermark();
+      const recoveryFloor = this.readRetentionFloor();
+      if (
+        publication.committed_cursor > currentCursor ||
+        publication.committed_cursor < recoveryFloor
+      ) {
+        throw new RpcFailure('reset-required', {
+          reason: 'snapshot-cursor-no-longer-recoverable',
+          currentCursor,
+          recoveryFloor,
+          committedCursor: publication.committed_cursor,
+        });
+      }
+      const active = this.readActiveSyncSnapshot();
+      const generation = active?.generation ?? 0;
+      if (generation !== publication.expected_generation) {
+        throw new RpcFailure('conflict', {
+          reason: 'snapshot-generation-mismatch',
+          expected: generation,
+          actual: publication.expected_generation,
+        });
+      }
+      if (active !== null && publication.committed_cursor < active.committed_cursor) {
+        throw new RpcFailure('conflict', {
+          reason: 'snapshot-cursor-regression',
+          currentSnapshotCursor: active.committed_cursor,
+          committedCursor: publication.committed_cursor,
+        });
+      }
+      const descriptors = this.snapshotChunkDescriptors(publication.chunks_json);
+      const uploaded = this.ctx.storage.sql
+        .exec<SyncSnapshotChunkRow>(
+          `SELECT * FROM sync_snapshot_chunks WHERE publication_id = ?
+           ORDER BY chunk_index ASC`,
+          publication.publication_id,
+        )
+        .toArray();
+      if (
+        uploaded.length !== descriptors.length ||
+        uploaded.some((chunk, index) => {
+          const descriptor = descriptors[index];
+          return (
+            descriptor === undefined ||
+            chunk.chunk_index !== index ||
+            chunk.state !== 'uploaded' ||
+            chunk.sha256 !== descriptor.sha256 ||
+            chunk.byte_length !== descriptor.byteLength
+          );
+        })
+      ) {
+        throw new RpcFailure('conflict', { reason: 'snapshot-chunks-incomplete' });
+      }
+      const previousGeneration = active?.generation ?? null;
+      if (active !== null) {
+        this.ctx.storage.sql.exec(
+          `UPDATE sync_snapshots SET state = 'retained', retain_until = ?
+           WHERE snapshot_id = ? AND state = 'active'`,
+          now + RETENTION_MS,
+          active.snapshot_id,
+        );
+      }
+      const generationNext = generation + 1;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO sync_snapshots (
+           snapshot_id, generation, dataset_epoch, key_version, schema_version,
+           committed_cursor, entity_count, tombstone_count, manifest_sha256,
+           chunks_json, state, created_at, retain_until
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)`,
+        publication.publication_id,
+        generationNext,
+        publication.dataset_epoch,
+        publication.key_version,
+        publication.schema_version,
+        publication.committed_cursor,
+        publication.entity_count,
+        publication.tombstone_count,
+        publication.manifest_sha256,
+        publication.chunks_json,
+        now,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE sync_snapshot_publications
+         SET state = 'committed', committed_at = ?, previous_generation = ?
+         WHERE publication_id = ?`,
+        now,
+        previousGeneration,
+        publication.publication_id,
+      );
+      const targetCursor = active?.committed_cursor ?? publication.committed_cursor;
+      const pendingTarget = Number(this.readMetaOrNull('snapshot_compaction_target') ?? '0');
+      if (targetCursor > pendingTarget) {
+        this.writeMeta('snapshot_compaction_target', String(targetCursor));
+      }
+      this.ctx.waitUntil(this.scheduleSweepCheckpoint(Date.now() + SWEEP_CONTINUE_MS));
+      // Keep only the active and prior generation. Older rollback copies are
+      // collected after the new manifest has committed in the same SQL CAS.
+      const older = this.ctx.storage.sql
+        .exec<SyncSnapshotRow>(
+          `SELECT * FROM sync_snapshots WHERE state = 'retained' AND snapshot_id != ?`,
+          active?.snapshot_id ?? '',
+        )
+        .toArray();
+      for (const snapshot of older) {
+        this.queueSyncSnapshotDeletion(snapshot.snapshot_id);
+      }
+      return {
+        manifest: this.syncSnapshotManifest(
+          this.readSyncSnapshotRequired(publication.publication_id),
+        ),
+        previousGeneration,
+      };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private handleSyncSnapshotGet(requestId: string, params: unknown): Response {
+    if (!isRecord(params) || Object.keys(params).length !== 0) {
+      throw new RpcFailure('malformed-request', { reason: 'snapshot-get' });
+    }
+    const active = this.readActiveSyncSnapshot();
+    const previous =
+      active === null
+        ? null
+        : (this.ctx.storage.sql
+            .exec<SyncSnapshotRow>(
+              `SELECT * FROM sync_snapshots WHERE state = 'retained'
+             ORDER BY generation DESC LIMIT 1`,
+            )
+            .toArray()[0] ?? null);
+    const result: SyncSnapshotGetResult = {
+      manifest: active === null ? null : this.syncSnapshotManifest(active),
+      previousManifest: previous === null ? null : this.syncSnapshotManifest(previous),
+      datasetEpoch: this.readMeta('epoch'),
+      keyVersion: Number(this.readMeta('key_version')),
+      currentCursor: String(this.currentWatermark()) as SyncCursor,
+      recoveryFloor: this.readRetentionFloor(),
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private async handleSyncSnapshotChunkGet(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const get = parseSyncSnapshotChunkGetParams(params);
+    const reference = this.commit(() => {
+      const snapshot = this.ctx.storage.sql
+        .exec<SyncSnapshotRow>(
+          `SELECT * FROM sync_snapshots WHERE snapshot_id = ?
+           AND state IN ('active', 'retained')`,
+          get.snapshotId,
+        )
+        .toArray()[0];
+      let chunksJson: string;
+      let publicationId: string;
+      if (snapshot !== undefined) {
+        chunksJson = snapshot.chunks_json;
+        publicationId = snapshot.snapshot_id;
+      } else {
+        const publication = this.readSyncSnapshotPublication(get.snapshotId);
+        if (
+          publication === null ||
+          publication.publisher_enrollment_id !== auth.enrollmentId ||
+          !['uploading', 'verified'].includes(publication.state) ||
+          publication.upload_expires_at <= Date.now()
+        ) {
+          throw new RpcFailure('not-found', { reason: 'snapshot' });
+        }
+        chunksJson = publication.chunks_json;
+        publicationId = publication.publication_id;
+      }
+      const descriptor = this.snapshotChunkDescriptors(chunksJson)[get.index];
+      if (descriptor === undefined) throw new RpcFailure('not-found', { reason: 'snapshot-chunk' });
+      const chunk = this.ctx.storage.sql
+        .exec<SyncSnapshotChunkRow>(
+          `SELECT * FROM sync_snapshot_chunks
+           WHERE publication_id = ? AND chunk_index = ? AND state = 'uploaded'`,
+          publicationId,
+          get.index,
+        )
+        .toArray()[0];
+      if (
+        chunk === undefined ||
+        chunk.sha256 !== descriptor.sha256 ||
+        chunk.byte_length !== descriptor.byteLength
+      ) {
+        throw new RpcFailure('not-found', { reason: 'snapshot-chunk' });
+      }
+      return { chunk, descriptor };
+    });
+    const object = await this.env.ARTIFACTS.get(reference.chunk.r2_key);
+    if (object === null) throw new RpcFailure('unavailable', { reason: 'snapshot-chunk-missing' });
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    const digest = hexEncode(await crypto.subtle.digest('SHA-256', bytes));
+    if (
+      bytes.byteLength !== reference.descriptor.byteLength ||
+      digest !== reference.descriptor.sha256 ||
+      object.customMetadata?.['sha256'] !== reference.descriptor.sha256
+    ) {
+      throw new RpcFailure('unavailable', { reason: 'snapshot-chunk-integrity' });
+    }
+    const result: SyncSnapshotChunkGetResult = {
+      index: get.index,
+      sha256: digest,
+      byteLength: bytes.byteLength,
+      bytesBase64: encodeBase64(bytes),
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private requireSnapshotPublisher(auth: SpikeAuth): void {
+    if (this.effectiveEnrollmentClass(auth) === 'ephemeral') {
+      throw new RpcFailure('forbidden', { reason: 'snapshot-publisher-device-required' });
+    }
+  }
+
+  private readSyncSnapshotPublication(publicationId: string): SyncSnapshotPublicationRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<SyncSnapshotPublicationRow>(
+          'SELECT * FROM sync_snapshot_publications WHERE publication_id = ?',
+          publicationId,
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  private readActiveSyncSnapshot(): SyncSnapshotRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<SyncSnapshotRow>(`SELECT * FROM sync_snapshots WHERE state = 'active'`)
+        .toArray()[0] ?? null
+    );
+  }
+
+  private readSyncSnapshotRequired(snapshotId: string): SyncSnapshotRow {
+    const row = this.ctx.storage.sql
+      .exec<SyncSnapshotRow>('SELECT * FROM sync_snapshots WHERE snapshot_id = ?', snapshotId)
+      .toArray()[0];
+    if (row === undefined) throw new RpcFailure('unavailable', { reason: 'snapshot-corrupt' });
+    return row;
+  }
+
+  private syncSnapshotManifest(row: SyncSnapshotRow): SyncSnapshotManifest {
+    if (row.state !== 'active' && row.state !== 'retained') {
+      throw new RpcFailure('unavailable', { reason: 'snapshot-state' });
+    }
+    if (row.schema_version !== SYNC_SNAPSHOT_SCHEMA_VERSION) {
+      throw new RpcFailure('unavailable', { reason: 'snapshot-schema-version' });
+    }
+    return {
+      formatVersion: 2,
+      snapshotId: row.snapshot_id,
+      generation: row.generation,
+      datasetEpoch: row.dataset_epoch,
+      keyVersion: row.key_version,
+      schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
+      committedCursor: String(row.committed_cursor) as SyncCursor,
+      entityCount: row.entity_count,
+      tombstoneCount: row.tombstone_count,
+      manifestSha256: row.manifest_sha256,
+      chunks: this.snapshotChunkDescriptors(row.chunks_json),
+      createdAt: new Date(row.created_at).toISOString(),
+    };
+  }
+
+  private snapshotChunkDescriptors(value: string): SyncSnapshotBeginParams['chunks'] {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (!Array.isArray(parsed)) throw new Error('invalid chunk list');
+      return parsed as SyncSnapshotBeginParams['chunks'];
+    } catch {
+      throw new RpcFailure('unavailable', { reason: 'snapshot-corrupt' });
+    }
+  }
+
+  private queueSyncSnapshotDeletion(snapshotId: string): void {
+    const chunks = this.ctx.storage.sql
+      .exec<SyncSnapshotChunkRow>(
+        'SELECT * FROM sync_snapshot_chunks WHERE publication_id = ?',
+        snapshotId,
+      )
+      .toArray();
+    for (const chunk of chunks) this.pendingR2Deletes.push(chunk.r2_key);
+    this.ctx.storage.sql.exec(
+      'DELETE FROM sync_snapshot_chunks WHERE publication_id = ?',
+      snapshotId,
+    );
+    this.ctx.storage.sql.exec('DELETE FROM sync_snapshots WHERE snapshot_id = ?', snapshotId);
+    this.ctx.storage.sql.exec(
+      `UPDATE sync_snapshot_publications SET state = 'expired'
+       WHERE publication_id = ?`,
+      snapshotId,
+    );
   }
 
   private handleScanBegin(requestId: string, params: unknown): Response {
@@ -2388,6 +3475,15 @@ export class AccountCoordinator extends DurableObject<Env> {
   ): SyncScanPageResult {
     const scan = this.loadScan(scanId);
     this.assertScanEpochAndRetention(scan);
+    if (scan.page_request_cursor === cursor && scan.page_result !== null) {
+      return JSON.parse(scan.page_result) as SyncScanPageResult;
+    }
+    if (cursor !== scan.entity_cursor) {
+      throw new RpcFailure('conflict', {
+        reason: 'scan-cursor-mismatch',
+        expectedCursor: scan.entity_cursor,
+      });
+    }
     if (scan.done === 1) {
       return { entities: [], nextCursor: null, done: true };
     }
@@ -2397,18 +3493,16 @@ export class AccountCoordinator extends DurableObject<Env> {
       after === null
         ? this.ctx.storage.sql
             .exec<ScanEntityRow>(
-              `SELECT entity_type, entity_id, revision, schema_version, payload
-               FROM entities
-               WHERE operation != 'delete'
-               ORDER BY entity_type ASC, entity_id ASC`,
+              `SELECT entity_type, entity_id, revision, operation, schema_version, payload
+           FROM entities
+           ORDER BY entity_type ASC, entity_id ASC`,
             )
             .toArray()
         : this.ctx.storage.sql
             .exec<ScanEntityRow>(
-              `SELECT entity_type, entity_id, revision, schema_version, payload
+              `SELECT entity_type, entity_id, revision, operation, schema_version, payload
                FROM entities
-               WHERE operation != 'delete'
-                 AND (entity_type > ? OR (entity_type = ? AND entity_id > ?))
+               WHERE (entity_type > ? OR (entity_type = ? AND entity_id > ?))
                ORDER BY entity_type ASC, entity_id ASC`,
               after.entityType,
               after.entityType,
@@ -2421,12 +3515,16 @@ export class AccountCoordinator extends DurableObject<Env> {
     let remaining = false;
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index];
+      if (!isSyncOperation(row.operation)) {
+        throw new RpcFailure('unavailable', { reason: 'corrupt-entity-operation' });
+      }
       const scanned: ScannedEntity = {
         entityType: row.entity_type,
         entityId: row.entity_id,
         revision: row.revision,
+        operation: row.operation,
         schemaVersion: row.schema_version,
-        payload: row.payload === null ? null : (JSON.parse(row.payload) as unknown),
+        ...(row.payload === null ? {} : { payload: JSON.parse(row.payload) as unknown }),
       };
       const size = utf8ByteLength(JSON.stringify(scanned));
       const wouldExceedBytes = entities.length > 0 && usedBytes + size > maxBytes;
@@ -2445,9 +3543,12 @@ export class AccountCoordinator extends DurableObject<Env> {
       last === undefined ? scan.entity_cursor : encodeEntityCursor(last.entityType, last.entityId);
     const done = remaining ? 0 : 1;
     this.ctx.storage.sql.exec(
-      'UPDATE scans SET entity_cursor = ?, done = ? WHERE scan_id = ?',
+      `UPDATE scans SET entity_cursor = ?, done = ?, page_request_cursor = ?, page_result = ?
+       WHERE scan_id = ?`,
       entityCursor,
       done,
+      cursor,
+      JSON.stringify({ entities, nextCursor: remaining ? entityCursor : null, done: done === 1 }),
       scan.scan_id,
     );
     return {
@@ -2464,13 +3565,25 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   private finishScan(scanId: string): SyncScanFinishResult {
-    const scan = this.loadScan(scanId);
+    let scan = this.loadScan(scanId);
     this.assertScanEpochAndRetention(scan);
     if (scan.done !== 1) {
       // The snapshot is only complete once paging has consumed every entity.
       throw new RpcFailure('malformed-request', { reason: 'scan-incomplete' });
     }
-    const watermarkEnd = this.currentWatermark();
+    if (scan.watermark_end === null) {
+      const watermarkEnd = this.currentWatermark();
+      this.ctx.storage.sql.exec(
+        'UPDATE scans SET watermark_end = ? WHERE scan_id = ? AND watermark_end IS NULL',
+        watermarkEnd,
+        scan.scan_id,
+      );
+      scan = this.loadScan(scanId);
+    }
+    const watermarkEnd = scan.watermark_end;
+    if (watermarkEnd === null) {
+      throw new RpcFailure('unavailable', { reason: 'scan-watermark-missing' });
+    }
     return {
       scanId: scan.scan_id,
       complete: true,
@@ -2483,7 +3596,8 @@ export class AccountCoordinator extends DurableObject<Env> {
   private loadScan(scanId: string): ScanRow {
     const rows = this.ctx.storage.sql
       .exec<ScanRow>(
-        `SELECT scan_id, watermark_start, epoch, created_at, done, entity_cursor
+        `SELECT scan_id, watermark_start, epoch, created_at, done, entity_cursor, watermark_end,
+                page_request_cursor, page_result
          FROM scans WHERE scan_id = ?`,
         scanId,
       )
@@ -2518,7 +3632,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     return nextSequence > 1 ? nextSequence - 1 : 0;
   }
 
-  // ---- data portability (sync/1) --------------------------------------
+  // ---- data portability (sync/2) --------------------------------------
   //
   // Export reuses the scan paging discipline (watermark snapshot, entity
   // cursor, byte-bounded pages) on a durable `data_operations` row so a
@@ -2739,8 +3853,20 @@ export class AccountCoordinator extends DurableObject<Env> {
           else skipped += 1;
           continue;
         }
+        const previousEntity = this.readEntity(entry.entityType, entry.entityId);
         const sequence = Number(this.readMeta('next_sequence'));
         const payloadJson = JSON.stringify(entry.payload);
+        if (
+          previousEntity !== null &&
+          previousEntity.operation !== 'delete' &&
+          previousEntity.payload !== null
+        ) {
+          this.ctx.storage.sql.exec(
+            'UPDATE changes SET payload = ? WHERE sequence = ? AND payload IS NULL',
+            previousEntity.payload,
+            previousEntity.sequence,
+          );
+        }
         this.ctx.storage.sql.exec(
           `INSERT INTO entities (
              entity_type, entity_id, revision, operation, schema_version, payload, sequence, updated_at
@@ -2755,12 +3881,11 @@ export class AccountCoordinator extends DurableObject<Env> {
         this.ctx.storage.sql.exec(
           `INSERT INTO changes (
              sequence, entity_type, entity_id, revision, operation, schema_version, payload, created_at
-           ) VALUES (?, ?, ?, 1, 'create', ?, ?, ?)`,
+           ) VALUES (?, ?, ?, 1, 'create', ?, NULL, ?)`,
           sequence,
           entry.entityType,
           entry.entityId,
           entry.schemaVersion,
-          payloadJson,
           now,
         );
         this.ctx.storage.sql.exec(
@@ -2768,6 +3893,7 @@ export class AccountCoordinator extends DurableObject<Env> {
           String(sequence + 1),
         );
         this.addHistoryBytes(utf8ByteLength(payloadJson));
+        this.observeSyncKeyVersion(entry.payload);
         acceptedWatermark = sequence;
         applied += 1;
       }
@@ -2916,7 +4042,7 @@ export class AccountCoordinator extends DurableObject<Env> {
   private readEntity(entityType: string, entityId: string): EntityRow | null {
     const rows = this.ctx.storage.sql
       .exec<EntityRow>(
-        `SELECT revision, operation, payload, schema_version
+        `SELECT revision, operation, payload, schema_version, sequence
          FROM entities WHERE entity_type = ? AND entity_id = ?`,
         entityType,
         entityId,
@@ -2973,6 +4099,15 @@ export class AccountCoordinator extends DurableObject<Env> {
       key,
       value,
     );
+  }
+
+  /** Tracks only the highest observed sealed-envelope version; no payload is opened. */
+  private observeSyncKeyVersion(payload: unknown): void {
+    if (!isRecord(payload)) return;
+    const version = payload['keyVersion'];
+    if (!Number.isSafeInteger(version) || typeof version !== 'number' || version < 1) return;
+    const current = Number(this.readMeta('key_version'));
+    if (version > current) this.writeMeta('key_version', String(version));
   }
 
   private broadcastInvalidate(watermark: number): void {
@@ -3067,22 +4202,54 @@ export class AccountCoordinator extends DurableObject<Env> {
       return rpcErrorResponse(requestId, 'malformed-request');
     }
     const now = Date.now();
-    this.ctx.storage.sql.exec(
-      `INSERT INTO presence_advertisements (enrollment_id, endpoints, capabilities, protocol, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(enrollment_id) DO UPDATE SET
-         endpoints = excluded.endpoints,
-         capabilities = excluded.capabilities,
-         protocol = excluded.protocol,
-         updated_at = excluded.updated_at`,
-      auth.enrollmentId,
-      JSON.stringify(params.endpoints),
-      JSON.stringify(params.capabilities),
-      params.protocol ?? COMPANION_PROTOCOL_VERSION,
-      now,
-    );
-    this.bumpCounter('presence_advertises', 1);
-    const result: DeviceAdvertiseResult = { advertised: true };
+    const result = this.commit((): DeviceAdvertiseResult => {
+      this.assertNotRevoked(auth);
+      if (params.machine !== undefined) {
+        if (params.machine.hostEnrollmentId !== auth.enrollmentId) {
+          throw new RpcFailure('malformed-request', {
+            reason: 'machine-host-enrollment-mismatch',
+          });
+        }
+        const others = this.ctx.storage.sql
+          .exec<{
+            enrollment_id: string;
+            machine: string | null;
+            revoked_at: number | null;
+          }>(
+            `SELECT a.enrollment_id, a.machine, w.revoked_at
+             FROM presence_advertisements a
+             LEFT JOIN workers w ON w.enrollment_id = a.enrollment_id
+             WHERE a.enrollment_id != ? AND a.machine IS NOT NULL`,
+            auth.enrollmentId,
+          )
+          .toArray();
+        for (const other of others) {
+          if (other.revoked_at !== null) continue;
+          if (parseMachineAdvertisement(other.machine)?.machineId === params.machine.machineId) {
+            throw new RpcFailure('conflict', { reason: 'machine-id-already-advertised' });
+          }
+        }
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO presence_advertisements (
+           enrollment_id, endpoints, capabilities, protocol, machine, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(enrollment_id) DO UPDATE SET
+           endpoints = excluded.endpoints,
+           capabilities = excluded.capabilities,
+           protocol = excluded.protocol,
+           machine = excluded.machine,
+           updated_at = excluded.updated_at`,
+        auth.enrollmentId,
+        JSON.stringify(params.endpoints),
+        JSON.stringify(params.capabilities),
+        params.protocol ?? COMPANION_PROTOCOL_VERSION,
+        params.machine === undefined ? null : JSON.stringify(params.machine),
+        now,
+      );
+      this.bumpCounter('presence_advertises', 1);
+      return { advertised: true };
+    });
     return rpcSuccessResponse(requestId, result);
   }
 
@@ -3122,6 +4289,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       endpoints: string;
       capabilities: string;
       protocol: number;
+      machine: string | null;
       updated_at: number;
     }
     const ads = new Map<string, AdRow>();
@@ -3130,6 +4298,25 @@ export class AccountCoordinator extends DurableObject<Env> {
       .toArray()) {
       ads.set(row.enrollment_id, row);
       note(row.enrollment_id, row.updated_at);
+    }
+    const revokedEnrollments = new Set(
+      this.ctx.storage.sql
+        .exec<{ enrollment_id: string }>(
+          'SELECT enrollment_id FROM workers WHERE revoked_at IS NOT NULL',
+        )
+        .toArray()
+        .map((row) => row.enrollment_id),
+    );
+    const machineOwners = new Map<string, number>();
+    for (const [enrollmentId, ad] of ads) {
+      if (revokedEnrollments.has(enrollmentId)) continue;
+      const machine = parseMachineAdvertisement(ad.machine);
+      // Count persisted duplicates even when a corrupted row claims another
+      // enrollment as owner. The owner check below prevents that row from
+      // being surfaced, while the duplicate count hides both records.
+      if (machine !== null) {
+        machineOwners.set(machine.machineId, (machineOwners.get(machine.machineId) ?? 0) + 1);
+      }
     }
     const online = new Set<string>();
     for (const socket of this.ctx.getWebSockets()) {
@@ -3144,8 +4331,10 @@ export class AccountCoordinator extends DurableObject<Env> {
       .map(([enrollmentId, seenAt]) => {
         const isOnline = online.has(enrollmentId);
         const ad = ads.get(enrollmentId);
+        const isRevoked = revokedEnrollments.has(enrollmentId);
         const freshAd = ad !== undefined && ad.updated_at > now - COMPANION_ADVERTISEMENT_TTL_MS;
-        const showAd = ad !== undefined && (isOnline || freshAd);
+        const showAd = ad !== undefined && !isRevoked && (isOnline || freshAd);
+        const machine = showAd ? parseMachineAdvertisement(ad.machine) : null;
         return {
           enrollmentId,
           online: isOnline,
@@ -3155,6 +4344,11 @@ export class AccountCoordinator extends DurableObject<Env> {
                 endpoints: JSON.parse(ad.endpoints) as CompanionEndpoint[],
                 capabilities: JSON.parse(ad.capabilities) as CompanionCapability[],
                 protocol: ad.protocol,
+                ...(machine !== null &&
+                machine.hostEnrollmentId === enrollmentId &&
+                machineOwners.get(machine.machineId) === 1
+                  ? { machine }
+                  : {}),
               }
             : {}),
           self: enrollmentId === auth.enrollmentId,
@@ -3655,7 +4849,7 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   /** `job.get`: job summary plus its attempts, fence-ordered. */
-  private handleJobGet(requestId: string, params: unknown): Response {
+  private async handleJobGet(requestId: string, params: unknown): Promise<Response> {
     const { jobId } = parseJobIdParams(params);
     const result = this.commit(() => {
       const now = Date.now();
@@ -3668,12 +4862,16 @@ export class AccountCoordinator extends DurableObject<Env> {
       this.expireJobApprovals(jobId, now);
       const attempts = this.ctx.storage.sql
         .exec<AttemptRow>('SELECT * FROM attempts WHERE job_id = ? ORDER BY fence ASC', jobId)
-        .toArray()
-        .map((row) => this.attemptView(row));
-      const out: JobGetResult = { job: this.jobSummary(job), attempts };
-      return out;
+        .toArray();
+      return { job, attempts };
     });
-    return rpcSuccessResponse(requestId, result);
+    const out: JobGetResult = {
+      job: await this.jobSummaryWithArchivedInputs(result.job),
+      attempts: await Promise.all(
+        result.attempts.map((row) => this.attemptViewWithArchivedResult(row)),
+      ),
+    };
+    return rpcSuccessResponse(requestId, out);
   }
 
   /** `job.list`: newest-first, optional state filter, bounded page. */
@@ -3894,6 +5092,7 @@ export class AccountCoordinator extends DurableObject<Env> {
           attemptId: item.attemptId,
           status: 'rejected',
           reason,
+          cancelRequested: false,
         });
         const attempt = this.readAttempt(item.attemptId);
         if (attempt === null) {
@@ -3928,6 +5127,7 @@ export class AccountCoordinator extends DurableObject<Env> {
           continue;
         }
         const leaseExpiresAt = now + LEASE_DURATION_MS;
+        const job = this.readJob(attempt.job_id);
         this.ctx.storage.sql.exec(
           'UPDATE attempts SET lease_expires_at = ?, updated_at = ? WHERE attempt_id = ?',
           leaseExpiresAt,
@@ -3938,6 +5138,7 @@ export class AccountCoordinator extends DurableObject<Env> {
           attemptId: item.attemptId,
           status: 'renewed',
           leaseExpiresAt: new Date(leaseExpiresAt).toISOString(),
+          cancelRequested: job?.state === 'cancel-requested',
         });
         renewed += 1;
       }
@@ -3948,7 +5149,6 @@ export class AccountCoordinator extends DurableObject<Env> {
           now + WORKER_LEASE_MS,
           auth.enrollmentId,
         );
-        this.bumpCounter('attempt_renews', renewed);
       }
     });
     const result: AttemptRenewResult = { results };
@@ -4009,13 +5209,15 @@ export class AccountCoordinator extends DurableObject<Env> {
         return { result: out, requeueTarget: null as string | null };
       }
       this.ctx.storage.sql.exec(
-        `UPDATE attempts SET outcome = ?, result = ?, sealed_result = ?, error = ?, updated_at = ?
+        `UPDATE attempts SET outcome = ?, result = ?, sealed_result = ?, error = ?, updated_at = ?,
+           sealed_result_retention_until = ?
          WHERE attempt_id = ?`,
         report.outcome,
         report.resultJson,
         report.sealedResultJson,
         report.error ?? null,
         now,
+        report.sealedResultJson === null ? null : now + RETENTION_MS,
         attempt.attempt_id,
       );
       let requeueTarget: string | null = null;
@@ -4304,6 +5506,16 @@ export class AccountCoordinator extends DurableObject<Env> {
     row.retried = retried;
     row.next_fence = nextFence;
     row.updated_at = now;
+    if (isTerminalJobState(target)) {
+      this.ctx.storage.sql.exec(
+        `UPDATE jobs SET terminal_at = COALESCE(terminal_at, ?)
+         WHERE job_id = ?`,
+        now,
+        row.job_id,
+      );
+      row.terminal_at ??= now;
+      this.ctx.waitUntil(this.scheduleSweepCheckpoint(now + SWEEP_CONTINUE_MS));
+    }
   }
 
   /**
@@ -4371,11 +5583,60 @@ export class AccountCoordinator extends DurableObject<Env> {
       ...(row.sealed_inputs === null
         ? {}
         : { sealedInputs: JSON.parse(row.sealed_inputs) as SealedTaskPayload }),
+      ...(row.sealed_inputs_r2_key !== null && (row.sealed_inputs_retention_until ?? 0) > Date.now()
+        ? { sealedInputsArchived: true }
+        : {}),
+      ...(row.sealed_inputs_sha256 !== null &&
+      (row.sealed_inputs_retention_until ?? Number.POSITIVE_INFINITY) <= Date.now()
+        ? { sealedInputsExpired: true }
+        : {}),
       ...(row.result_recipients === null
         ? {}
         : { resultRecipients: JSON.parse(row.result_recipients) as string[] }),
       keyDelivery: this.jobKeyDelivery(row),
     };
+  }
+
+  private async jobSummaryWithArchivedInputs(row: JobRow): Promise<JobSummary> {
+    const summary = this.jobSummary(row);
+    if (
+      row.sealed_inputs !== null ||
+      row.sealed_inputs_r2_key === null ||
+      row.sealed_inputs_sha256 === null ||
+      row.sealed_inputs_retention_until === null ||
+      row.sealed_inputs_retention_until <= Date.now()
+    ) {
+      return summary;
+    }
+    let object: R2ObjectBody | null;
+    try {
+      object = await this.env.ARTIFACTS.get(row.sealed_inputs_r2_key);
+    } catch {
+      throw new RpcFailure('unavailable', { reason: 'job-input-archive-unavailable' });
+    }
+    if (
+      object === null ||
+      object.size > MAX_SEALED_JOB_INPUTS_BYTES ||
+      object.customMetadata?.['jobId'] !== row.job_id ||
+      object.customMetadata?.['sha256'] !== row.sealed_inputs_sha256
+    ) {
+      throw new RpcFailure('unavailable', { reason: 'job-input-archive-missing' });
+    }
+    const serialized = new TextDecoder().decode(await object.arrayBuffer());
+    if ((await sha256Hex(serialized)) !== row.sealed_inputs_sha256) {
+      throw new RpcFailure('unavailable', { reason: 'job-input-archive-corrupt' });
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(serialized) as unknown;
+    } catch {
+      throw new RpcFailure('unavailable', { reason: 'job-input-archive-corrupt' });
+    }
+    const issue = sealedTaskEnvelopeIssue(parsed);
+    if (issue !== null) {
+      throw new RpcFailure('unavailable', { reason: 'job-input-archive-invalid', issue });
+    }
+    return { ...summary, sealedInputs: parsed as SealedTaskPayload, sealedInputsArchived: true };
   }
 
   /**
@@ -4423,7 +5684,48 @@ export class AccountCoordinator extends DurableObject<Env> {
       ...(row.sealed_result === null
         ? {}
         : { sealedResult: JSON.parse(row.sealed_result) as SealedTaskPayload }),
+      ...(row.sealed_result === null &&
+      row.sealed_result_sha256 !== null &&
+      row.sealed_result_retention_until !== null &&
+      row.sealed_result_retention_until <= Date.now()
+        ? { sealedResultExpired: true }
+        : {}),
     };
+  }
+
+  private async attemptViewWithArchivedResult(row: AttemptRow): Promise<ExecutionAttempt> {
+    const view = this.attemptView(row);
+    if (
+      row.sealed_result_r2_key === null ||
+      row.sealed_result_sha256 === null ||
+      row.sealed_result_retention_until === null ||
+      row.sealed_result_retention_until <= Date.now()
+    ) {
+      return view;
+    }
+    const object = await this.env.ARTIFACTS.get(row.sealed_result_r2_key);
+    if (object === null || object.customMetadata?.['sha256'] !== row.sealed_result_sha256) {
+      throw new RpcFailure('unavailable', { reason: 'attempt-result-archive-missing' });
+    }
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    const serialized = new TextDecoder().decode(bytes);
+    if ((await sha256Hex(serialized)) !== row.sealed_result_sha256) {
+      throw new RpcFailure('unavailable', { reason: 'attempt-result-archive-corrupt' });
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(serialized) as unknown;
+    } catch {
+      throw new RpcFailure('unavailable', { reason: 'attempt-result-archive-corrupt' });
+    }
+    const issue = sealedTaskEnvelopeIssue(parsed);
+    if (issue !== null) {
+      throw new RpcFailure('unavailable', {
+        reason: 'attempt-result-archive-invalid',
+        issue,
+      });
+    }
+    return { ...view, sealedResult: parsed as SealedTaskPayload };
   }
 
   // ---- MESH-03 durable event journal + live delivery -----------------------
@@ -4465,7 +5767,8 @@ export class AccountCoordinator extends DurableObject<Env> {
   private jobEventMeta(jobId: string): JobEventMetaRow {
     const rows = this.ctx.storage.sql
       .exec<JobEventMetaRow>(
-        'SELECT job_id, next_event_seq, activity_bytes FROM job_event_meta WHERE job_id = ?',
+        `SELECT job_id, next_event_seq, activity_bytes, retained_floor, archive_through
+         FROM job_event_meta WHERE job_id = ?`,
         jobId,
       )
       .toArray();
@@ -4474,10 +5777,18 @@ export class AccountCoordinator extends DurableObject<Env> {
       return existing;
     }
     this.ctx.storage.sql.exec(
-      'INSERT INTO job_event_meta (job_id, next_event_seq, activity_bytes) VALUES (?, 1, 0)',
+      `INSERT INTO job_event_meta
+         (job_id, next_event_seq, activity_bytes, retained_floor, archive_through)
+       VALUES (?, 1, 0, 0, 0)`,
       jobId,
     );
-    return { job_id: jobId, next_event_seq: 1, activity_bytes: 0 };
+    return {
+      job_id: jobId,
+      next_event_seq: 1,
+      activity_bytes: 0,
+      retained_floor: 0,
+      archive_through: 0,
+    };
   }
 
   /** Allocates the next durable cursor for a job (monotonic, gap-inclusive). */
@@ -4489,6 +5800,24 @@ export class AccountCoordinator extends DurableObject<Env> {
       jobId,
     );
     return meta.next_event_seq;
+  }
+
+  private bumpEventStreamCursor(
+    jobId: string,
+    attemptId: string,
+    streamId: string,
+    sequence: number,
+  ): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO event_stream_cursors (job_id, attempt_id, stream_id, last_sequence)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(job_id, attempt_id, stream_id) DO UPDATE SET
+         last_sequence = MAX(event_stream_cursors.last_sequence, excluded.last_sequence)`,
+      jobId,
+      attemptId,
+      streamId,
+      sequence,
+    );
   }
 
   /**
@@ -4505,15 +5834,27 @@ export class AccountCoordinator extends DurableObject<Env> {
   }): EventRow {
     const now = Date.now();
     const eventSeq = this.allocEventSeq(input.jobId);
-    const sequence = this.ctx.storage.sql
-      .exec<{ n: number }>(
-        `SELECT COALESCE(MAX(sequence), 0) + 1 AS n FROM events
+    const lastSequence = this.ctx.storage.sql
+      .exec<{ last_sequence: number }>(
+        `SELECT last_sequence FROM event_stream_cursors
          WHERE job_id = ? AND attempt_id = ? AND stream_id = ?`,
         input.jobId,
         input.attemptId,
         LIFECYCLE_STREAM_ID,
       )
-      .one().n;
+      .toArray()[0]?.last_sequence;
+    const sequence =
+      lastSequence === undefined
+        ? this.ctx.storage.sql
+            .exec<{ n: number }>(
+              `SELECT COALESCE(MAX(sequence), 0) + 1 AS n FROM events
+               WHERE job_id = ? AND attempt_id = ? AND stream_id = ?`,
+              input.jobId,
+              input.attemptId,
+              LIFECYCLE_STREAM_ID,
+            )
+            .one().n
+        : lastSequence + 1;
     const row: EventRow = {
       job_id: input.jobId,
       event_seq: eventSeq,
@@ -4543,6 +5884,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       row.covers_through,
       row.created_at,
     );
+    this.bumpEventStreamCursor(input.jobId, input.attemptId, LIFECYCLE_STREAM_ID, sequence);
     this.queueDeliverable(row);
     this.bumpCounter('events_journaled', 1);
     return row;
@@ -4554,15 +5896,41 @@ export class AccountCoordinator extends DurableObject<Env> {
    * materialize as a `gap` row — explicit loss, never a silent drop. A
    * replayed (attempt, stream, sequence) triple is a deduped no-op.
    */
-  private journalActivityEvent(input: {
-    jobId: string;
-    attemptId: string;
-    streamId: string;
-    sequence: number;
-    generation: number;
-    payload: ActivityPayload;
-  }): 'journaled' | 'dropped' | 'duplicate' {
+  private journalActivityEvent(
+    input: {
+      jobId: string;
+      attemptId: string;
+      streamId: string;
+      sequence: number;
+      generation: number;
+      payload: ActivityPayload;
+    },
+    deliverToSubscribers = true,
+  ): 'journaled' | 'dropped' | 'duplicate' {
     const now = Date.now();
+    const expiredFloor = this.ctx.storage.sql
+      .exec<{ sequence_floor: number }>(
+        `SELECT sequence_floor FROM event_stream_floors
+         WHERE job_id = ? AND attempt_id = ? AND stream_id = ?`,
+        input.jobId,
+        input.attemptId,
+        input.streamId,
+      )
+      .toArray()[0];
+    if (expiredFloor !== undefined && input.sequence <= expiredFloor.sequence_floor) {
+      return 'duplicate';
+    }
+    const archivedDuplicate = this.ctx.storage.sql
+      .exec<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM event_archive_dedupe
+         WHERE job_id = ? AND attempt_id = ? AND stream_id = ? AND sequence = ?`,
+        input.jobId,
+        input.attemptId,
+        input.streamId,
+        input.sequence,
+      )
+      .one().n;
+    if (archivedDuplicate > 0) return 'duplicate';
     const duplicate = this.ctx.storage.sql
       .exec<{ n: number }>(
         `SELECT COUNT(*) AS n FROM events
@@ -4581,7 +5949,8 @@ export class AccountCoordinator extends DurableObject<Env> {
     const payloadJson = JSON.stringify(input.payload);
     const meta = this.jobEventMeta(input.jobId);
     if (meta.activity_bytes + utf8ByteLength(payloadJson) > JOB_EVENT_BUDGET_BYTES) {
-      this.recordEventGap(input, eventSeq, now);
+      this.recordEventGap(input, eventSeq, now, deliverToSubscribers);
+      this.bumpEventStreamCursor(input.jobId, input.attemptId, input.streamId, input.sequence);
       this.bumpCounter('events_dropped', 1);
       return 'dropped';
     }
@@ -4606,19 +5975,22 @@ export class AccountCoordinator extends DurableObject<Env> {
       input.jobId,
     );
     this.bumpCounter('events_journaled', 1);
-    this.queueDeliverable({
-      job_id: input.jobId,
-      event_seq: eventSeq,
-      attempt_id: input.attemptId,
-      stream_id: input.streamId,
-      sequence: input.sequence,
-      kind: 'activity',
-      durable: 0,
-      generation: input.generation,
-      payload: payloadJson,
-      covers_through: eventSeq,
-      created_at: now,
-    });
+    this.bumpEventStreamCursor(input.jobId, input.attemptId, input.streamId, input.sequence);
+    if (deliverToSubscribers) {
+      this.queueDeliverable({
+        job_id: input.jobId,
+        event_seq: eventSeq,
+        attempt_id: input.attemptId,
+        stream_id: input.streamId,
+        sequence: input.sequence,
+        kind: 'activity',
+        durable: 0,
+        generation: input.generation,
+        payload: payloadJson,
+        covers_through: eventSeq,
+        created_at: now,
+      });
+    }
     return 'journaled';
   }
 
@@ -4637,6 +6009,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     },
     eventSeq: number,
     now: number,
+    deliverToSubscribers = true,
   ): void {
     const prior = this.ctx.storage.sql
       .exec<EventRow>(
@@ -4668,11 +6041,13 @@ export class AccountCoordinator extends DurableObject<Env> {
         input.jobId,
         prior.event_seq,
       );
-      this.queueDeliverable({
-        ...prior,
-        payload: JSON.stringify(payload),
-        covers_through: eventSeq,
-      });
+      if (deliverToSubscribers) {
+        this.queueDeliverable({
+          ...prior,
+          payload: JSON.stringify(payload),
+          covers_through: eventSeq,
+        });
+      }
       return;
     }
     const payload = {
@@ -4710,7 +6085,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       row.covers_through,
       row.created_at,
     );
-    this.queueDeliverable(row);
+    if (deliverToSubscribers) this.queueDeliverable(row);
   }
 
   /** Maps a journaled row to the socket frame subscribers receive. */
@@ -5164,15 +6539,93 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   /**
+   * `event.append`: retain activity for `event.pull` without account socket
+   * fanout. Host-local live output has its own direct session channel; this
+   * path preserves the bounded durable history for later recovery.
+   */
+  private handleEventAppend(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const append = parseEventAppendParams(params);
+    const { row: worker } = this.requireWorker(auth);
+    const now = Date.now();
+    const activityBytes = append.events.reduce(
+      (total, event) => total + event.payload.byteLength,
+      0,
+    );
+    this.assertSocketRate(activityBytes, true);
+    const results = this.commit((): EventAppendResult['results'] => {
+      const attempt = this.readAttempt(append.attemptId);
+      if (attempt === null) throw new RpcFailure('not-found', { reason: 'attempt' });
+      const job = this.readJobRequired(attempt.job_id);
+      if (job.account_id !== auth.accountId) {
+        throw new RpcFailure('forbidden', { reason: 'wrong-account' });
+      }
+      if (attempt.worker_enrollment_id !== auth.enrollmentId) {
+        throw new RpcFailure('forbidden', { reason: 'not-attempt-owner' });
+      }
+      if (
+        worker.revoked_at !== null ||
+        worker.incarnation === null ||
+        worker.incarnation !== append.incarnation ||
+        worker.incarnation !== attempt.worker_incarnation ||
+        !isLeaseLive(worker, now)
+      ) {
+        throw new RpcFailure('forbidden', { reason: 'stale-incarnation' });
+      }
+      if (attempt.fence !== append.generation) {
+        throw new RpcFailure('stale-generation', {
+          expected: attempt.fence,
+          actual: append.generation,
+        });
+      }
+      if (attempt.lease_expires_at <= now) {
+        throw new RpcFailure('conflict', { reason: 'lease-expired' });
+      }
+      if (!isActiveAttemptState(attempt.state)) {
+        throw new RpcFailure('conflict', { reason: 'attempt-terminal' });
+      }
+      const eventResults: EventAppendResult['results'] = [];
+      let journaled = 0;
+      let dropped = 0;
+      for (const event of append.events) {
+        if (event.streamId === CONTROL_STREAM_ID || event.streamId === LIFECYCLE_STREAM_ID) {
+          throw new RpcFailure('forbidden', { reason: 'reserved-stream' });
+        }
+        const status = this.journalActivityEvent(
+          {
+            jobId: job.job_id,
+            attemptId: attempt.attempt_id,
+            streamId: event.streamId,
+            sequence: event.sequence,
+            generation: append.generation,
+            payload: event.payload,
+          },
+          false,
+        );
+        if (status === 'journaled') journaled += 1;
+        if (status === 'dropped') dropped += 1;
+        eventResults.push({ streamId: event.streamId, sequence: event.sequence, status });
+      }
+      if (journaled > 0) this.bumpCounter('events_journaled', journaled);
+      if (dropped > 0) this.bumpCounter('events_dropped', dropped);
+      return eventResults;
+    });
+    return rpcSuccessResponse(requestId, { results } satisfies EventAppendResult);
+  }
+
+  /**
    * `event.pull`: ordered durable events after a cursor for a job or attempt
    * scope. `nextCursor` resumes; `hasGap` reports dropped intermediate
    * events covered by the window — either `gap` rows inside it or a gap row
    * whose coverage reaches past `afterSequence`.
    */
-  private handleEventPull(auth: SpikeAuth, requestId: string, params: unknown): Response {
+  private async handleEventPull(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
     const pull = parseEventPullParams(params);
     const now = Date.now();
-    const result = this.commit((): EventPullResult => {
+    const state = this.commit(() => {
       const resolved = this.resolveEventScope(pull.scope, auth.accountId);
       // Reads enforce pending-approval expiry lazily so pulled history
       // reflects it (same model as queue-deadline expiry on job reads).
@@ -5195,10 +6648,6 @@ export class AccountCoordinator extends DurableObject<Env> {
               pull.limit + 1,
             )
       ).toArray();
-      const hasMore = rows.length > pull.limit;
-      const window = hasMore ? rows.slice(0, pull.limit) : rows;
-      const nextCursor =
-        window.length > 0 ? (window[window.length - 1] as EventRow).event_seq : pull.after;
       const covered =
         resolved.attemptId === ''
           ? this.ctx.storage.sql
@@ -5220,19 +6669,161 @@ export class AccountCoordinator extends DurableObject<Env> {
                 pull.after,
               )
               .one().n;
-      const hasGap = covered > 0 || window.some((row) => row.kind === 'gap');
       this.bumpCounter('event_pulls', 1);
+      const eventMeta = this.jobEventMeta(resolved.jobId);
       return {
-        scopeKind: resolved.attemptId === '' ? 'job' : 'attempt',
-        scopeId: pull.scope,
-        jobId: resolved.jobId,
-        events: window.map((row) => this.eventView(row)),
-        nextCursor,
-        hasMore,
-        hasGap,
+        resolved,
+        rows,
+        covered,
+        eventMeta,
       };
     });
+
+    const archiveRefs = this.ctx.storage.sql
+      .exec<EventArchiveRow>(
+        `SELECT * FROM event_archives
+         WHERE job_id = ? AND state = 'active' AND expires_at > ? AND last_event_seq > ?
+         ORDER BY first_event_seq LIMIT ?`,
+        state.resolved.jobId,
+        now,
+        pull.after,
+        EVENT_ARCHIVE_READ_MAX_SEGMENTS + 1,
+      )
+      .toArray();
+    const archiveHasMore = archiveRefs.length > EVENT_ARCHIVE_READ_MAX_SEGMENTS;
+    const archivedRows = await Promise.all(
+      archiveRefs
+        .slice(0, EVENT_ARCHIVE_READ_MAX_SEGMENTS)
+        .map((archive) => this.readEventArchiveRows(archive)),
+    );
+    const merged = new Map<number, EventRow>();
+    for (const row of state.rows) merged.set(row.event_seq, row);
+    for (const rows of archivedRows) {
+      for (const row of rows) {
+        if (
+          row.job_id === state.resolved.jobId &&
+          (state.resolved.attemptId === '' || row.attempt_id === state.resolved.attemptId)
+        ) {
+          merged.set(row.event_seq, row);
+        }
+      }
+    }
+    const ordered = [...merged.values()]
+      .filter((row) => row.event_seq > pull.after)
+      .sort((left, right) => left.event_seq - right.event_seq);
+    const hasMore = ordered.length > pull.limit || archiveHasMore;
+    const window = hasMore && ordered.length > pull.limit ? ordered.slice(0, pull.limit) : ordered;
+    const nextCursor =
+      ordered.length > pull.limit
+        ? (window[window.length - 1] as EventRow).event_seq
+        : archiveHasMore && archiveRefs.length > 0
+          ? Math.max(
+              window.length > 0 ? (window[window.length - 1] as EventRow).event_seq : pull.after,
+              Math.max(
+                ...archiveRefs
+                  .slice(0, EVENT_ARCHIVE_READ_MAX_SEGMENTS)
+                  .map((row) => row.last_event_seq),
+              ),
+            )
+          : window.length > 0
+            ? (window[window.length - 1] as EventRow).event_seq
+            : pull.after;
+    const archiveAvailable = archiveRefs.length > 0;
+    const historyStatus: EventPullResult['historyStatus'] =
+      pull.after < state.eventMeta.retained_floor
+        ? 'expired'
+        : archiveAvailable
+          ? 'archive-available'
+          : 'complete';
+    const archiveGap = archivedRows
+      .flat()
+      .some(
+        (row) =>
+          row.kind === 'gap' && row.event_seq <= pull.after && row.covers_through > pull.after,
+      );
+    const hasGap =
+      state.covered > 0 ||
+      archiveGap ||
+      window.some((row) => row.kind === 'gap') ||
+      historyStatus === 'expired';
+    const result: EventPullResult = {
+      scopeKind: state.resolved.attemptId === '' ? 'job' : 'attempt',
+      scopeId: pull.scope,
+      jobId: state.resolved.jobId,
+      events: window.map((row) => this.eventView(row)),
+      nextCursor,
+      hasMore,
+      hasGap,
+      retainedFloor: state.eventMeta.retained_floor,
+      archiveThrough: state.eventMeta.archive_through,
+      historyStatus,
+    };
     return rpcSuccessResponse(requestId, result);
+  }
+
+  private async readEventArchiveRows(archive: EventArchiveRow): Promise<EventRow[]> {
+    let object: R2ObjectBody | null;
+    try {
+      object = await this.env.ARTIFACTS.get(archive.r2_key);
+    } catch {
+      throw new RpcFailure('unavailable', { reason: 'event-archive-unavailable' });
+    }
+    if (
+      object === null ||
+      object.size > EVENT_ARCHIVE_MAX_BYTES + 16 ||
+      object.customMetadata?.['archiveId'] !== archive.archive_id ||
+      object.customMetadata?.['sha256'] !== archive.ciphertext_sha256 ||
+      object.customMetadata?.['plaintextSha256'] !== archive.plaintext_sha256
+    ) {
+      throw new RpcFailure('unavailable', { reason: 'event-archive-invalid' });
+    }
+    try {
+      const plaintext = await openEventArchive(
+        this.readMeta('event_archive_key'),
+        new Uint8Array(await object.arrayBuffer()),
+        archive.nonce_base64,
+        eventArchiveAad(archive),
+        archive.ciphertext_sha256,
+        archive.plaintext_sha256,
+      );
+      const value: unknown = JSON.parse(plaintext);
+      if (!Array.isArray(value) || value.length !== archive.event_count) throw new Error('count');
+      const rows = value.map((entry): EventRow => {
+        if (
+          !isRecord(entry) ||
+          entry['job_id'] !== archive.job_id ||
+          typeof entry['event_seq'] !== 'number' ||
+          !Number.isSafeInteger(entry['event_seq']) ||
+          typeof entry['attempt_id'] !== 'string' ||
+          typeof entry['stream_id'] !== 'string' ||
+          typeof entry['sequence'] !== 'number' ||
+          typeof entry['kind'] !== 'string' ||
+          typeof entry['durable'] !== 'number' ||
+          typeof entry['generation'] !== 'number' ||
+          typeof entry['payload'] !== 'string' ||
+          typeof entry['covers_through'] !== 'number' ||
+          typeof entry['created_at'] !== 'number'
+        ) {
+          throw new Error('row');
+        }
+        return entry as unknown as EventRow;
+      });
+      const expectedSequences: unknown = JSON.parse(archive.event_sequences);
+      if (
+        !Array.isArray(expectedSequences) ||
+        JSON.stringify(rows.map((row) => row.event_seq)) !== JSON.stringify(expectedSequences) ||
+        rows.length === 0 ||
+        rows[0]?.event_seq !== archive.first_event_seq ||
+        Math.max(...rows.map((row) => Math.max(row.event_seq, row.covers_through))) !==
+          archive.last_event_seq ||
+        JSON.stringify(eventStreamFloors(rows)) !== archive.stream_floors_json
+      ) {
+        throw new Error('manifest');
+      }
+      return rows;
+    } catch {
+      throw new RpcFailure('unavailable', { reason: 'event-archive-corrupt' });
+    }
   }
 
   // ---- MESH-03 durable approvals ------------------------------------------
@@ -9162,6 +10753,11 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
   }
 
+  private async scheduleSweepCheckpoint(at: number): Promise<void> {
+    const alarm = await this.ctx.storage.getAlarm();
+    if (alarm === null || alarm > at) await this.ctx.storage.setAlarm(at);
+  }
+
   private isHostedRemoteChatEnvironment(row: EnvironmentRow): boolean {
     if (row.provider !== 'anvil-managed' || !/^remote-[0-9a-f-]{36}$/i.test(row.environment_id)) {
       return false;
@@ -9320,6 +10916,664 @@ export class AccountCoordinator extends DurableObject<Env> {
     return true;
   }
 
+  /** Moves E2E-sealed final task results out of SQLite while retaining a 90-day recovery ref. */
+  private async compactTerminalAttemptResults(now: number): Promise<number> {
+    const rows = this.ctx.storage.sql
+      .exec<AttemptRow>(
+        `SELECT * FROM attempts
+         WHERE sealed_result IS NOT NULL AND outcome IS NOT NULL
+         ORDER BY updated_at ASC LIMIT 16`,
+      )
+      .toArray();
+    let compacted = 0;
+    for (const row of rows) {
+      const serialized = row.sealed_result;
+      if (serialized === null) continue;
+      const digest = await sha256Hex(serialized);
+      const retentionUntil = row.sealed_result_retention_until ?? row.updated_at + RETENTION_MS;
+      if (retentionUntil <= now) {
+        this.commit(() => {
+          this.ctx.storage.sql.exec(
+            `UPDATE attempts SET sealed_result = NULL, sealed_result_sha256 = ?,
+               sealed_result_retention_until = ?
+             WHERE attempt_id = ? AND sealed_result = ?`,
+            digest,
+            retentionUntil,
+            row.attempt_id,
+            serialized,
+          );
+        });
+        compacted += 1;
+        continue;
+      }
+      const r2Key = `attempt-results/${row.job_id}/${row.attempt_id}/${digest}`;
+      const bytes = new TextEncoder().encode(serialized);
+      try {
+        const existing = await this.env.ARTIFACTS.head(r2Key);
+        if (existing === null) {
+          await this.env.ARTIFACTS.put(r2Key, bytes, {
+            customMetadata: { attemptId: row.attempt_id, sha256: digest },
+          });
+        } else if (
+          existing.size !== bytes.byteLength ||
+          existing.customMetadata?.['sha256'] !== digest
+        ) {
+          throw new Error('attempt result object conflicts with its immutable key');
+        }
+        const verified = await this.env.ARTIFACTS.head(r2Key);
+        if (
+          verified === null ||
+          verified.size !== bytes.byteLength ||
+          verified.customMetadata?.['sha256'] !== digest
+        ) {
+          throw new Error('attempt result object failed verification');
+        }
+      } catch {
+        // The authoritative SQLite copy remains until a later sweep verifies R2.
+        continue;
+      }
+      this.commit(() => {
+        const result = this.ctx.storage.sql.exec(
+          `UPDATE attempts SET sealed_result = NULL, sealed_result_r2_key = ?,
+             sealed_result_sha256 = ?, sealed_result_retention_until = ?
+           WHERE attempt_id = ? AND sealed_result = ?`,
+          r2Key,
+          digest,
+          retentionUntil,
+          row.attempt_id,
+          serialized,
+        );
+        if (result.rowsWritten > 0) compacted += 1;
+        else this.pendingR2Deletes.push(r2Key);
+      });
+    }
+    return compacted;
+  }
+
+  /** Purges result objects at their original retention deadline, keeping a small expired marker. */
+  private async expireAttemptResultArchives(now: number): Promise<number> {
+    const rows = this.ctx.storage.sql
+      .exec<AttemptRow>(
+        `SELECT * FROM attempts WHERE sealed_result_r2_key IS NOT NULL
+           AND sealed_result_retention_until <= ? LIMIT 32`,
+        now,
+      )
+      .toArray();
+    let expired = 0;
+    for (const row of rows) {
+      if (row.sealed_result_r2_key === null) continue;
+      try {
+        await this.env.ARTIFACTS.delete(row.sealed_result_r2_key);
+      } catch {
+        continue;
+      }
+      this.commit(() => {
+        const result = this.ctx.storage.sql.exec(
+          `UPDATE attempts SET sealed_result_r2_key = NULL
+           WHERE attempt_id = ? AND sealed_result_r2_key = ?
+             AND sealed_result_retention_until <= ?`,
+          row.attempt_id,
+          row.sealed_result_r2_key,
+          now,
+        );
+        if (result.rowsWritten > 0) expired += 1;
+      });
+    }
+    return expired;
+  }
+
+  /** Moves terminal job input envelopes as opaque E2EE bytes into immutable R2 objects. */
+  private async compactTerminalJobInputs(now: number): Promise<number> {
+    const rows = this.ctx.storage.sql
+      .exec<JobRow>(
+        `SELECT * FROM jobs WHERE state IN ('completed', 'failed', 'cancelled', 'unknown-outcome')
+           AND terminal_at IS NOT NULL AND sealed_inputs IS NOT NULL LIMIT 32`,
+      )
+      .toArray();
+    let compacted = 0;
+    for (const row of rows) {
+      const serialized = row.sealed_inputs;
+      if (serialized === null || row.terminal_at === null) continue;
+      const digest = await sha256Hex(serialized);
+      const retentionUntil = row.terminal_at + RETENTION_MS;
+      if (retentionUntil <= now) {
+        this.commit(() => {
+          const result = this.ctx.storage.sql.exec(
+            `UPDATE jobs SET sealed_inputs = NULL, sealed_inputs_sha256 = ?,
+               sealed_inputs_retention_until = ?, sealed_inputs_compacted_at = ?
+             WHERE job_id = ? AND sealed_inputs = ? AND sealed_inputs_r2_key IS NULL`,
+            digest,
+            retentionUntil,
+            now,
+            row.job_id,
+            serialized,
+          );
+          if (result.rowsWritten > 0) compacted += 1;
+        });
+        continue;
+      }
+      const r2Key = `job-inputs/${row.job_id}/${digest}`;
+      const bytes = new TextEncoder().encode(serialized);
+      try {
+        const existing = await this.env.ARTIFACTS.head(r2Key);
+        if (existing === null) {
+          await this.env.ARTIFACTS.put(r2Key, bytes, {
+            customMetadata: { jobId: row.job_id, sha256: digest },
+          });
+        } else if (
+          existing.size !== bytes.byteLength ||
+          existing.customMetadata?.['sha256'] !== digest ||
+          existing.customMetadata?.['jobId'] !== row.job_id
+        ) {
+          throw new Error('terminal job input object conflicts with immutable key');
+        }
+        const verified = await this.env.ARTIFACTS.head(r2Key);
+        if (
+          verified === null ||
+          verified.size !== bytes.byteLength ||
+          verified.customMetadata?.['sha256'] !== digest ||
+          verified.customMetadata?.['jobId'] !== row.job_id
+        ) {
+          throw new Error('terminal job input object failed verification');
+        }
+      } catch {
+        // Keep the authoritative SQLite envelope until a later verified pass.
+        continue;
+      }
+      this.commit(() => {
+        const result = this.ctx.storage.sql.exec(
+          `UPDATE jobs SET sealed_inputs = NULL, sealed_inputs_r2_key = ?,
+             sealed_inputs_sha256 = ?, sealed_inputs_retention_until = ?,
+             sealed_inputs_compacted_at = ?
+           WHERE job_id = ? AND state IN ('completed', 'failed', 'cancelled', 'unknown-outcome')
+             AND sealed_inputs = ? AND sealed_inputs_r2_key IS NULL`,
+          r2Key,
+          digest,
+          retentionUntil,
+          now,
+          row.job_id,
+          serialized,
+        );
+        if (result.rowsWritten > 0) compacted += 1;
+      });
+    }
+    return compacted;
+  }
+
+  /** Expires terminal input objects at the same 90-day boundary as their references. */
+  private async expireTerminalJobInputArchives(now: number): Promise<number> {
+    const rows = this.ctx.storage.sql
+      .exec<JobRow>(
+        `SELECT * FROM jobs WHERE sealed_inputs_r2_key IS NOT NULL
+           AND sealed_inputs_retention_until <= ? LIMIT 32`,
+        now,
+      )
+      .toArray();
+    let expired = 0;
+    for (const row of rows) {
+      if (row.sealed_inputs_r2_key === null) continue;
+      try {
+        await this.env.ARTIFACTS.delete(row.sealed_inputs_r2_key);
+      } catch {
+        continue;
+      }
+      this.commit(() => {
+        const result = this.ctx.storage.sql.exec(
+          `UPDATE jobs SET sealed_inputs_r2_key = NULL
+           WHERE job_id = ? AND sealed_inputs_r2_key = ?
+             AND sealed_inputs_retention_until <= ?`,
+          row.job_id,
+          row.sealed_inputs_r2_key,
+          now,
+        );
+        if (result.rowsWritten > 0) expired += 1;
+      });
+    }
+    return expired;
+  }
+
+  /**
+   * Archives terminal or week-old event pages before removing their SQLite
+   * payloads. Ciphertext is bound to immutable segment metadata and expires at
+   * the existing 90-day event-retention boundary.
+   */
+  private async compactEventHistory(
+    now: number,
+  ): Promise<{ deletedEvents: number; continued: boolean }> {
+    const cutoff = now - RETENTION_MS;
+    let deletedEvents = 0;
+    let processedArchives = 0;
+
+    let expiredArchives = 0;
+    let retryRequired = false;
+    // Recover interrupted deletes first. `deleting` rows already advanced the
+    // event and stream floors, so they are no longer served to readers.
+    const retryArchiveDeletes = this.ctx.storage.sql
+      .exec<EventArchiveRow>(
+        `SELECT * FROM event_archives WHERE state = 'deleting'
+         ORDER BY first_event_seq LIMIT 32`,
+      )
+      .toArray();
+    for (const archive of retryArchiveDeletes) {
+      try {
+        await this.env.ARTIFACTS.delete(archive.r2_key);
+      } catch {
+        retryRequired = true;
+        continue;
+      }
+      this.commit(() => {
+        this.ctx.storage.sql.exec(
+          `DELETE FROM event_archives WHERE archive_id = ? AND state = 'deleting'`,
+          archive.archive_id,
+        );
+      });
+      expiredArchives += 1;
+    }
+    // Only expire the oldest active segment for a job. This keeps floor
+    // advancement ordered even if a clock boundary makes a later segment's
+    // expiry appear first.
+    for (let count = 0; count < 32; count += 1) {
+      const archive = this.ctx.storage.sql
+        .exec<EventArchiveRow>(
+          `SELECT e.* FROM event_archives e WHERE e.state = 'active' AND e.expires_at <= ?
+           AND NOT EXISTS (
+             SELECT 1 FROM event_archives p WHERE p.job_id = e.job_id
+               AND p.state = 'active' AND p.first_event_seq < e.first_event_seq
+           )
+           ORDER BY e.expires_at, e.first_event_seq LIMIT 1`,
+          now,
+        )
+        .toArray()[0];
+      if (archive === undefined) break;
+      this.commit(() => {
+        const current = this.ctx.storage.sql
+          .exec<EventArchiveRow>(
+            `SELECT * FROM event_archives WHERE archive_id = ? AND state = 'active'`,
+            archive.archive_id,
+          )
+          .toArray()[0];
+        if (current === undefined || current.expires_at > now) return;
+        this.advanceEventFloor(current.job_id, current.last_event_seq);
+        for (const floor of parseEventStreamFloors(current.stream_floors_json)) {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO event_stream_floors
+               (job_id, attempt_id, stream_id, sequence_floor)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(job_id, attempt_id, stream_id) DO UPDATE SET
+               sequence_floor = MAX(event_stream_floors.sequence_floor, excluded.sequence_floor)`,
+            current.job_id,
+            floor.attemptId,
+            floor.streamId,
+            floor.sequence,
+          );
+        }
+        this.ctx.storage.sql.exec(
+          'DELETE FROM event_archive_dedupe WHERE archive_id = ?',
+          current.archive_id,
+        );
+        this.ctx.storage.sql.exec(
+          `UPDATE event_archives SET state = 'deleting' WHERE archive_id = ?`,
+          current.archive_id,
+        );
+        const archiveThrough = this.ctx.storage.sql
+          .exec<{ n: number }>(
+            `SELECT COALESCE(MAX(last_event_seq), 0) AS n FROM event_archives
+             WHERE job_id = ? AND state = 'active'`,
+            current.job_id,
+          )
+          .one().n;
+        this.ctx.storage.sql.exec(
+          `UPDATE job_event_meta SET archive_through = ? WHERE job_id = ?`,
+          archiveThrough,
+          current.job_id,
+        );
+      });
+      try {
+        await this.env.ARTIFACTS.delete(archive.r2_key);
+      } catch {
+        retryRequired = true;
+        continue;
+      }
+      this.commit(() => {
+        this.ctx.storage.sql.exec(
+          `DELETE FROM event_archives WHERE archive_id = ? AND state = 'deleting'`,
+          archive.archive_id,
+        );
+        deletedEvents += archive.event_count;
+      });
+      expiredArchives += 1;
+    }
+
+    // Rows that already reached their 90-day deadline need no archive.
+    const expiredRows = this.ctx.storage.sql
+      .exec<EventRow>(
+        `SELECT * FROM events WHERE created_at < ? ORDER BY created_at ASC LIMIT ?`,
+        cutoff,
+        SWEEP_BATCH_ROWS,
+      )
+      .toArray();
+    this.commit(() => {
+      for (const row of expiredRows) {
+        this.ctx.storage.sql.exec(
+          'DELETE FROM events WHERE job_id = ? AND event_seq = ?',
+          row.job_id,
+          row.event_seq,
+        );
+        this.advanceEventFloor(row.job_id, Math.max(row.event_seq, row.covers_through));
+        this.advanceExpiredStreamFloor(row);
+        deletedEvents += 1;
+      }
+    });
+
+    for (let page = 0; page < 4; page += 1) {
+      const candidate = this.ctx.storage.sql
+        .exec<{ job_id: string; age_day: number }>(
+          `SELECT e.job_id, CAST(e.created_at / ? AS INTEGER) AS age_day
+           FROM events e JOIN jobs j ON j.job_id = e.job_id
+           LEFT JOIN job_event_meta m ON m.job_id = e.job_id
+           WHERE e.event_seq > MAX(COALESCE(m.retained_floor, 0), COALESCE(m.archive_through, 0))
+             AND e.created_at >= ?
+             AND (j.state IN ('completed', 'failed', 'cancelled', 'unknown-outcome')
+                  OR e.created_at <= ?)
+           GROUP BY e.job_id, age_day
+           ORDER BY MIN(e.event_seq) ASC LIMIT 1`,
+          DAY_MS,
+          cutoff,
+          now - EVENT_HOT_WINDOW_MS,
+        )
+        .toArray()[0];
+      if (candidate === undefined) break;
+
+      const coverage = this.jobEventMeta(candidate.job_id);
+      const afterCursor = Math.max(coverage.retained_floor, coverage.archive_through);
+      const dayStart = candidate.age_day * DAY_MS;
+      const dayEnd = dayStart + DAY_MS;
+      const candidates = this.ctx.storage.sql
+        .exec<EventRow>(
+          `SELECT * FROM events WHERE job_id = ? AND event_seq > ?
+             AND created_at >= ? AND created_at < ?
+           ORDER BY event_seq ASC LIMIT ?`,
+          candidate.job_id,
+          afterCursor,
+          dayStart,
+          dayEnd,
+          EVENT_ARCHIVE_BATCH_ROWS,
+        )
+        .toArray();
+      const rows: EventRow[] = [];
+      let plaintext = '[]';
+      for (const row of candidates) {
+        const nextRows = [...rows, row];
+        const nextPlaintext = JSON.stringify(nextRows);
+        if (utf8ByteLength(nextPlaintext) > EVENT_ARCHIVE_MAX_BYTES) {
+          if (rows.length === 0) {
+            throw new RpcFailure('payload-too-large', { reason: 'event-archive-row-size' });
+          }
+          break;
+        }
+        rows.push(row);
+        plaintext = nextPlaintext;
+      }
+      if (rows.length === 0) break;
+
+      const eventSequences = rows.map((row) => row.event_seq);
+      const firstEventSeq = eventSequences[0] as number;
+      const lastEventSeq = Math.max(
+        ...rows.map((row) => Math.max(row.event_seq, row.covers_through)),
+      );
+      const streamFloors = eventStreamFloors(rows);
+      const eventSequencesJson = JSON.stringify(eventSequences);
+      const streamFloorsJson = JSON.stringify(streamFloors);
+      const plaintextSha256 = await sha256Hex(plaintext);
+      let archive = this.ctx.storage.sql
+        .exec<EventArchiveRow>(
+          `SELECT * FROM event_archives WHERE job_id = ? AND attempt_id = ''
+             AND first_event_seq = ? AND last_event_seq = ?`,
+          candidate.job_id,
+          firstEventSeq,
+          lastEventSeq,
+        )
+        .toArray()[0];
+      if (
+        archive !== undefined &&
+        (archive.state !== 'uploading' ||
+          archive.event_sequences !== eventSequencesJson ||
+          archive.plaintext_sha256 !== plaintextSha256)
+      ) {
+        if (archive.state === 'active' || archive.state === 'deleting') {
+          // Another sweep finished (or began expiring) this exact prefix
+          // while this invocation was awaiting the digest. Its rows were
+          // already reconciled atomically with the archive manifest.
+          processedArchives += 1;
+          continue;
+        }
+        this.commit(() => {
+          this.pendingR2Deletes.push(archive.r2_key);
+          this.ctx.storage.sql.exec(
+            "DELETE FROM event_archives WHERE archive_id = ? AND state = 'uploading'",
+            archive?.archive_id,
+          );
+        });
+        processedArchives += 1;
+        continue;
+      }
+      if (archive === undefined) {
+        const archiveId = crypto.randomUUID();
+        const nonceBase64 = encodeBase64(crypto.getRandomValues(new Uint8Array(12)));
+        const r2Key = `event-archives/${candidate.job_id}/${archiveId}`;
+        const expiresAt = dayEnd + RETENTION_MS;
+        const reservation: EventArchiveRow = {
+          archive_id: archiveId,
+          job_id: candidate.job_id,
+          attempt_id: '',
+          first_event_seq: firstEventSeq,
+          last_event_seq: lastEventSeq,
+          event_sequences: eventSequencesJson,
+          stream_floors_json: streamFloorsJson,
+          event_count: rows.length,
+          plaintext_sha256: plaintextSha256,
+          ciphertext_sha256: '',
+          nonce_base64: nonceBase64,
+          r2_key: r2Key,
+          state: 'uploading',
+          created_at: now,
+          expires_at: expiresAt,
+        };
+        archive = this.commit((): EventArchiveRow => {
+          this.ctx.storage.sql.exec(
+            `INSERT OR IGNORE INTO event_archives (
+               archive_id, job_id, attempt_id, first_event_seq, last_event_seq,
+               event_sequences, stream_floors_json, event_count, plaintext_sha256,
+               ciphertext_sha256, nonce_base64, r2_key, state, created_at, expires_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, 'uploading', ?, ?)`,
+            reservation.archive_id,
+            reservation.job_id,
+            '',
+            reservation.first_event_seq,
+            reservation.last_event_seq,
+            reservation.event_sequences,
+            reservation.stream_floors_json,
+            reservation.event_count,
+            reservation.plaintext_sha256,
+            reservation.nonce_base64,
+            reservation.r2_key,
+            reservation.created_at,
+            reservation.expires_at,
+          );
+          return this.ctx.storage.sql
+            .exec<EventArchiveRow>(
+              `SELECT * FROM event_archives WHERE job_id = ? AND attempt_id = ''
+                 AND first_event_seq = ? AND last_event_seq = ?`,
+              candidate.job_id,
+              firstEventSeq,
+              lastEventSeq,
+            )
+            .one();
+        });
+      }
+
+      const associatedData = eventArchiveAad(archive);
+      const sealed = await sealEventArchive(
+        this.readMeta('event_archive_key'),
+        plaintext,
+        associatedData,
+        archive.nonce_base64,
+      );
+      if (
+        archive.ciphertext_sha256 !== '' &&
+        archive.ciphertext_sha256 !== sealed.ciphertextSha256
+      ) {
+        this.commit(() => {
+          this.pendingR2Deletes.push(archive?.r2_key ?? '');
+          this.ctx.storage.sql.exec(
+            "DELETE FROM event_archives WHERE archive_id = ? AND state = 'uploading'",
+            archive?.archive_id,
+          );
+        });
+        processedArchives += 1;
+        continue;
+      }
+      // Persist the verified ciphertext digest before R2 I/O so an interrupted
+      // upload retries the identical AES-GCM object with the same nonce and AAD.
+      this.commit(() => {
+        this.ctx.storage.sql.exec(
+          `UPDATE event_archives SET ciphertext_sha256 = ?
+           WHERE archive_id = ? AND state = 'uploading' AND ciphertext_sha256 = ''`,
+          sealed.ciphertextSha256,
+          archive?.archive_id,
+        );
+      });
+      const expectedCipherDigest = archive.ciphertext_sha256 || sealed.ciphertextSha256;
+      try {
+        const existing = await this.env.ARTIFACTS.head(archive.r2_key);
+        if (existing === null) {
+          await this.env.ARTIFACTS.put(archive.r2_key, sealed.ciphertext, {
+            customMetadata: {
+              archiveId: archive.archive_id,
+              sha256: expectedCipherDigest,
+              plaintextSha256,
+            },
+          });
+        } else if (
+          existing.size !== sealed.ciphertext.byteLength ||
+          existing.customMetadata?.['sha256'] !== expectedCipherDigest
+        ) {
+          throw new Error('event archive immutable object conflict');
+        }
+        const verified = await this.env.ARTIFACTS.head(archive.r2_key);
+        if (
+          verified === null ||
+          verified.size !== sealed.ciphertext.byteLength ||
+          verified.customMetadata?.['sha256'] !== expectedCipherDigest
+        ) {
+          throw new Error('event archive R2 verification failed');
+        }
+      } catch {
+        retryRequired = true;
+        continue;
+      }
+
+      this.commit(() => {
+        const fresh = this.ctx.storage.sql
+          .exec<EventArchiveRow>(
+            `SELECT * FROM event_archives WHERE archive_id = ? AND state = 'uploading'`,
+            archive?.archive_id,
+          )
+          .toArray()[0];
+        if (fresh === undefined || fresh.ciphertext_sha256 !== expectedCipherDigest) return;
+        const placeholders = eventSequences.map(() => '?').join(',');
+        const currentRows = this.ctx.storage.sql
+          .exec<EventRow>(
+            `SELECT * FROM events WHERE job_id = ? AND event_seq IN (${placeholders})
+             ORDER BY event_seq ASC`,
+            candidate.job_id,
+            ...eventSequences,
+          )
+          .toArray();
+        if (JSON.stringify(currentRows) !== plaintext) {
+          this.pendingR2Deletes.push(fresh.r2_key);
+          this.ctx.storage.sql.exec(
+            'DELETE FROM event_archives WHERE archive_id = ?',
+            fresh.archive_id,
+          );
+          return;
+        }
+        this.ctx.storage.sql.exec(
+          `UPDATE event_archives SET state = 'active'
+           WHERE archive_id = ? AND state = 'uploading'`,
+          fresh.archive_id,
+        );
+        for (const row of rows) {
+          if (row.kind === 'activity') {
+            this.ctx.storage.sql.exec(
+              `INSERT OR IGNORE INTO event_archive_dedupe
+                 (archive_id, job_id, attempt_id, stream_id, sequence)
+               VALUES (?, ?, ?, ?, ?)`,
+              fresh.archive_id,
+              row.job_id,
+              row.attempt_id,
+              row.stream_id,
+              row.sequence,
+            );
+          }
+          this.ctx.storage.sql.exec(
+            'DELETE FROM events WHERE job_id = ? AND event_seq = ?',
+            row.job_id,
+            row.event_seq,
+          );
+        }
+        this.ctx.storage.sql.exec(
+          `UPDATE job_event_meta SET archive_through = MAX(archive_through, ?)
+           WHERE job_id = ?`,
+          fresh.last_event_seq,
+          fresh.job_id,
+        );
+        deletedEvents += rows.length;
+      });
+      processedArchives += 1;
+    }
+
+    return {
+      deletedEvents,
+      continued:
+        processedArchives >= 4 ||
+        expiredRows.length === SWEEP_BATCH_ROWS ||
+        expiredArchives >= 32 ||
+        retryRequired,
+    };
+  }
+
+  private advanceEventFloor(jobId: string, sequence: number): void {
+    this.jobEventMeta(jobId);
+    this.ctx.storage.sql.exec(
+      `UPDATE job_event_meta SET retained_floor = MAX(retained_floor, ?) WHERE job_id = ?`,
+      sequence,
+      jobId,
+    );
+  }
+
+  private advanceExpiredStreamFloor(row: EventRow): void {
+    let sequence = row.sequence;
+    if (row.kind === 'gap') {
+      try {
+        const payload = JSON.parse(row.payload) as Record<string, unknown>;
+        if (typeof payload['toSequence'] === 'number') sequence = payload['toSequence'];
+      } catch {
+        // A malformed old gap is still fenced through its last known sequence.
+      }
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO event_stream_floors
+         (job_id, attempt_id, stream_id, sequence_floor) VALUES (?, ?, ?, ?)
+       ON CONFLICT(job_id, attempt_id, stream_id) DO UPDATE SET
+         sequence_floor = MAX(event_stream_floors.sequence_floor, excluded.sequence_floor)`,
+      row.job_id,
+      row.attempt_id,
+      row.stream_id,
+      sequence,
+    );
+  }
+
   private async runSweep(now: number): Promise<{
     deletedChanges: number;
     deletedReceipts: number;
@@ -9370,6 +11624,34 @@ export class AccountCoordinator extends DurableObject<Env> {
           String(maxDeletedSequence),
           maxDeletedSequence,
         );
+      }
+      const snapshotTarget = Number(this.readMetaOrNull('snapshot_compaction_target') ?? '0');
+      const currentFloor = this.readRetentionFloor();
+      if (snapshotTarget > currentFloor) {
+        const compactable = this.ctx.storage.sql
+          .exec<{ sequence: number; nbytes: number | null }>(
+            `SELECT sequence, length(cast(payload AS blob)) AS nbytes
+             FROM changes WHERE sequence > ? AND sequence <= ? ORDER BY sequence LIMIT ?`,
+            currentFloor,
+            snapshotTarget,
+            SWEEP_BATCH_ROWS,
+          )
+          .toArray();
+        for (const row of compactable) {
+          this.ctx.storage.sql.exec('DELETE FROM changes WHERE sequence = ?', row.sequence);
+          freedBytes += row.nbytes ?? 0;
+          deletedChanges += 1;
+        }
+        const newFloor =
+          compactable.length === 0
+            ? snapshotTarget
+            : (compactable[compactable.length - 1] as { sequence: number }).sequence;
+        this.writeMeta('retention_floor', String(Math.max(currentFloor, newFloor)));
+        if (newFloor >= snapshotTarget) {
+          this.ctx.storage.sql.exec(
+            "DELETE FROM sync_meta WHERE key = 'snapshot_compaction_target'",
+          );
+        }
       }
       const staleReceipts = this.ctx.storage.sql
         .exec<{ enrollment_id: string; enrollment_sequence: number }>(
@@ -9545,26 +11827,6 @@ export class AccountCoordinator extends DurableObject<Env> {
       // ENV-09: staged enrollment codes the managed claimer never consumed
       // expire; the single-use code is already dead by TTL.
       this.ctx.storage.sql.exec('DELETE FROM environment_bootstrap WHERE expires_at <= ?', now);
-      // MESH-03: the durable journal keeps the same 90-day horizon as the
-      // change log; job_event_meta rows persist so cursors never rewind.
-      const staleEvents = this.ctx.storage.sql
-        .exec<{
-          job_id: string;
-          event_seq: number;
-        }>(
-          'SELECT job_id, event_seq FROM events WHERE created_at < ? LIMIT ?',
-          cutoff,
-          SWEEP_BATCH_ROWS,
-        )
-        .toArray();
-      for (const row of staleEvents) {
-        this.ctx.storage.sql.exec(
-          'DELETE FROM events WHERE job_id = ? AND event_seq = ?',
-          row.job_id,
-          row.event_seq,
-        );
-        deletedEvents += 1;
-      }
       // MESH-03: prune lapsed observer interest from socket attachments.
       for (const ws of this.ctx.getWebSockets()) {
         const attachment = ws.deserializeAttachment();
@@ -9590,7 +11852,6 @@ export class AccountCoordinator extends DurableObject<Env> {
       this.bumpCounter('sweep_workers_deleted', deletedWorkers);
       this.bumpCounter('sweep_attempts_unknown', staleAttempts);
       this.bumpCounter('sweep_artifacts_rows_deleted', staleArtifacts.length);
-      this.bumpCounter('sweep_events_deleted', deletedEvents);
     });
     // Post-commit: purge orphaned/interrupted artifact objects, then mark
     // their rows deleted (journaled). Idempotent — a retried `deleting` row
@@ -9618,6 +11879,15 @@ export class AccountCoordinator extends DurableObject<Env> {
     // commit outcomes). No-op without the provisioner binding.
     await this.runManagedWork().catch(() => undefined);
     await this.suspendIdleHostedRemoteChats(Date.now()).catch(() => undefined);
+    const expiredResultArchives = await this.expireAttemptResultArchives(now);
+    const compactedResults = await this.compactTerminalAttemptResults(now);
+    const expiredJobInputs = await this.expireTerminalJobInputArchives(now);
+    const compactedJobInputs = await this.compactTerminalJobInputs(now);
+    const eventCompaction = await this.compactEventHistory(now);
+    deletedEvents += eventCompaction.deletedEvents;
+    if (deletedEvents > 0) {
+      this.commit(() => this.bumpCounter('sweep_events_deleted', deletedEvents));
+    }
     const continued =
       deletedChanges === SWEEP_BATCH_ROWS ||
       deletedReceipts === SWEEP_BATCH_ROWS ||
@@ -9625,7 +11895,12 @@ export class AccountCoordinator extends DurableObject<Env> {
       expiredJobs === SWEEP_BATCH_ROWS ||
       staleAttempts === SWEEP_BATCH_ROWS ||
       expiredApprovals === SWEEP_BATCH_ROWS ||
-      deletedEvents === SWEEP_BATCH_ROWS;
+      deletedEvents === SWEEP_BATCH_ROWS ||
+      eventCompaction.continued ||
+      expiredResultArchives >= 32 ||
+      compactedResults >= 32 ||
+      expiredJobInputs >= 32 ||
+      compactedJobInputs >= 32;
     await this.ctx.storage.setAlarm(
       Date.now() + (continued ? SWEEP_CONTINUE_MS : SWEEP_INTERVAL_MS),
     );
@@ -9681,6 +11956,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         String(Number(this.readMeta('deletion_purged_rows')) + purged),
       );
       if (this.purgeRemaining() === 0) {
+        this.ctx.storage.sql.exec("DELETE FROM sync_meta WHERE key = 'event_archive_key'");
         this.writeMeta('deletion_state', 'deleted');
         this.writeMeta('deletion_deleted_at', String(now));
       }
@@ -9701,6 +11977,28 @@ export class AccountCoordinator extends DurableObject<Env> {
   /** One bounded pass over every hosted table. Returns rows purged. */
   private runPurgePass(): number {
     let purged = 0;
+    const syncSnapshotChunks = this.ctx.storage.sql
+      .exec<{ r2_key: string }>(`SELECT r2_key FROM sync_snapshot_chunks LIMIT ${SWEEP_BATCH_ROWS}`)
+      .toArray();
+    for (const row of syncSnapshotChunks) this.pendingR2Deletes.push(row.r2_key);
+    const eventArchives = this.ctx.storage.sql
+      .exec<{ r2_key: string }>(`SELECT r2_key FROM event_archives LIMIT ${SWEEP_BATCH_ROWS}`)
+      .toArray();
+    for (const row of eventArchives) this.pendingR2Deletes.push(row.r2_key);
+    const attemptResults = this.ctx.storage.sql
+      .exec<{ sealed_result_r2_key: string }>(
+        `SELECT sealed_result_r2_key FROM attempts
+         WHERE sealed_result_r2_key IS NOT NULL LIMIT ${SWEEP_BATCH_ROWS}`,
+      )
+      .toArray();
+    for (const row of attemptResults) this.pendingR2Deletes.push(row.sealed_result_r2_key);
+    const jobInputs = this.ctx.storage.sql
+      .exec<{ sealed_inputs_r2_key: string }>(
+        `SELECT sealed_inputs_r2_key FROM jobs
+         WHERE sealed_inputs_r2_key IS NOT NULL LIMIT ${SWEEP_BATCH_ROWS}`,
+      )
+      .toArray();
+    for (const row of jobInputs) this.pendingR2Deletes.push(row.sealed_inputs_r2_key);
     // Artifacts carry R2 objects — collect keys for post-commit deletion
     // (pendingR2Deletes runs under ctx.waitUntil inside commit()).
     const artifactRows = this.ctx.storage.sql
@@ -10582,6 +12880,15 @@ function isJobState(value: unknown): value is JobState {
   return typeof value === 'string' && JOB_STATES.includes(value);
 }
 
+function isTerminalJobState(value: JobState): boolean {
+  return (
+    value === 'completed' ||
+    value === 'failed' ||
+    value === 'cancelled' ||
+    value === 'unknown-outcome'
+  );
+}
+
 function isAttemptState(value: unknown): value is AttemptState {
   return typeof value === 'string' && ATTEMPT_STATES.includes(value);
 }
@@ -11216,6 +13523,59 @@ function parseActivityPayload(value: unknown): ActivityPayload {
     throw new RpcFailure('malformed-request', { reason: 'payload.truncated' });
   }
   return { kind, text, byteLength, truncated };
+}
+
+function parseEventAppendParams(value: unknown): EventAppendParams {
+  if (!isRecord(value)) throw new RpcFailure('malformed-request', { reason: 'event-append' });
+  const attemptId = value['attemptId'];
+  const incarnation = value['incarnation'];
+  const generation = value['generation'];
+  if (!isBoundedId(attemptId)) throw new RpcFailure('malformed-request', { reason: 'attemptId' });
+  if (!isBoundedId(incarnation)) {
+    throw new RpcFailure('malformed-request', { reason: 'incarnation' });
+  }
+  if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 1) {
+    throw new RpcFailure('malformed-request', { reason: 'generation' });
+  }
+  const eventsValue = value['events'];
+  if (
+    !Array.isArray(eventsValue) ||
+    eventsValue.length === 0 ||
+    eventsValue.length > EVENT_APPEND_MAX_EVENTS
+  ) {
+    throw new RpcFailure('payload-too-large', {
+      reason: 'event-append-count',
+      limit: EVENT_APPEND_MAX_EVENTS,
+    });
+  }
+  const events = eventsValue.map((value): EventAppendParams['events'][number] => {
+    if (!isRecord(value)) throw new RpcFailure('malformed-request', { reason: 'event' });
+    const streamId = value['streamId'];
+    const sequence = value['sequence'];
+    if (
+      typeof streamId !== 'string' ||
+      streamId.length === 0 ||
+      streamId.length > MAX_STREAM_ID_LENGTH
+    ) {
+      throw new RpcFailure('malformed-request', { reason: 'streamId' });
+    }
+    if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence < 1) {
+      throw new RpcFailure('malformed-request', { reason: 'sequence' });
+    }
+    return { streamId, sequence, payload: parseActivityPayload(value['payload']) };
+  });
+  if (utf8ByteLength(JSON.stringify(events)) > EVENT_APPEND_MAX_BYTES) {
+    throw new RpcFailure('payload-too-large', {
+      reason: 'event-append-size',
+      limitBytes: EVENT_APPEND_MAX_BYTES,
+    });
+  }
+  return {
+    attemptId,
+    incarnation,
+    generation,
+    events,
+  };
 }
 
 function parseEventPullParams(params: unknown): {
