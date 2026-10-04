@@ -39,7 +39,7 @@ import {
   type MeshMachineRoute,
   type MeshMachineAdmissionIssueRequest,
   type MeshMachineAdmissionIssueResponse
-} from "../../../anvil-app/cloud/contract/machine.js";
+} from "../../../anvil-app/cloud/contract/machine";
 
 const encoder = new TextEncoder();
 const REQUEST_TIMEOUT_MS = 10_000;

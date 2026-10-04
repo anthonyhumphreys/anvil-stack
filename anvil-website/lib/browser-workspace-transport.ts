@@ -25,11 +25,11 @@ import {
   type MeshMachineClientPayload,
   type MeshMachineServerFrame,
   type MeshMachineServerPayload,
-} from "../../anvil-app/cloud/contract/machine.js";
+} from "../../anvil-app/cloud/contract/machine";
 import {
   BROWSER_WORKSPACE_OPERATION_SCOPE,
   BROWSER_WORKSPACE_OPERATIONS,
-} from "../../anvil-app/cloud/contract/browser-workspace.js";
+} from "../../anvil-app/cloud/contract/browser-workspace";
 import {
   decodeBase64,
   encodeBase64,

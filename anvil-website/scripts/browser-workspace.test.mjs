@@ -9,10 +9,12 @@ registerHooks({
       return nextResolve(new URL("../lib/mesh-crypto.ts", import.meta.url).href, context);
     }
     if (
-      specifier.endsWith(".js") &&
-      context.parentURL?.endsWith("/anvil-website/lib/browser-workspace-transport.ts")
+      !specifier.endsWith(".js") &&
+      !specifier.endsWith(".ts") &&
+      (specifier.includes("cloud/contract/") ||
+        (specifier.startsWith("./") && context.parentURL?.includes("/anvil-website/lib/hosted/")))
     ) {
-      return nextResolve(specifier.slice(0, -3) + ".ts", context);
+      return nextResolve(`${specifier}.ts`, context);
     }
     return nextResolve(
       specifier === "./hosted/types" ? `${specifier}.ts` :
