@@ -33,6 +33,7 @@ import type {
 } from '../../../cloud/contract/dashboard.js';
 import { dashboardRenewalProofMessage } from '../../../cloud/contract/dashboard.js';
 import {
+  BROWSER_WORKSPACE_OPERATIONS,
   BROWSER_WORKSPACE_MAX_RESULT_PLAINTEXT_BYTES,
   BROWSER_WORKSPACE_OPERATION_SCOPE,
   browserWorkspaceCommandAssociatedData,
@@ -43,12 +44,15 @@ import {
   type BrowserWorkspaceOperation,
   type BrowserWorkspaceResultEnvelope,
 } from '../../../cloud/contract/browser-workspace.js';
+import {
+  meshMachineBootstrapHostProofMessage,
+  meshMachineBootstrapProofMessage,
+  type MeshMachineBootstrapClaims,
+  type MeshMachineBootstrapResponse,
+  type MeshMachineSessionScope,
+} from '../../../cloud/contract/machine.js';
 import type { JobListResult } from '../../../cloud/contract/jobs.js';
 import type { SyncScope } from '../../shared/sync-mesh.js';
-import type {
-  MachineCommandDispatchEntry,
-  MachineCommandDispatchResult,
-} from './mesh-machine-endpoint.service.js';
 import {
   sealJsonEnvelope,
   sealToRecipientPub,
@@ -62,6 +66,19 @@ import {
   revokeSharedBrowserWorkspaceTrust,
 } from './browser-workspace-tools.service.js';
 import { canonicalJson } from './sync-persistence.service.js';
+
+export type MachineCommandDispatchState = 'completed' | 'failed' | 'uncertain' | 'processing';
+
+export interface MachineCommandDispatchEntry {
+  commandId: string;
+  state: MachineCommandDispatchState;
+  result?: BrowserWorkspaceResultEnvelope;
+}
+
+export interface MachineCommandDispatchResult {
+  state: 'dispatched' | 'processing' | 'not-ready';
+  commands: MachineCommandDispatchEntry[];
+}
 
 export const DASHBOARD_WORKSPACE_SCOPES = [
   'read-dashboard',
@@ -118,6 +135,21 @@ export interface DashboardGrantRevalidation {
   workspace: DashboardGrantWorkspaceSelection;
   scopes: string[];
   trustId?: string;
+}
+
+export interface DashboardGrantMachineSessionContext {
+  backendId: string;
+  accountId: string;
+  enrollmentId: string;
+  grantId: string;
+  sourceBrowserId: string;
+  trustId?: string;
+  origin: string;
+  workspaceIds: string[];
+  repositoryIds: string[];
+  scopes: string[];
+  sessionScope: MeshMachineSessionScope;
+  expiresAt: string;
 }
 
 export interface DashboardGrantCommandExecutorInput {
@@ -595,12 +627,12 @@ export function getDashboardGrantMachineEndpointOrigin(
   if (context === null) return null;
   const row = getDb()
     .prepare(
-      `SELECT state, enrollment_id, workspace_id, expires_at, request_json
+      `SELECT state, enrollment_id, workspace_id, expires_at, request_json, trust_id
        FROM mesh_dashboard_grants
        WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
     )
     .get(scope.backendId, scope.accountId, requestId) as
-    | Pick<GrantRow, 'state' | 'enrollment_id' | 'workspace_id' | 'expires_at' | 'request_json'>
+    | Pick<GrantRow, 'state' | 'enrollment_id' | 'workspace_id' | 'expires_at' | 'request_json' | 'trust_id'>
     | undefined;
   if (
     row === undefined ||
@@ -612,6 +644,12 @@ export function getDashboardGrantMachineEndpointOrigin(
   ) {
     return null;
   }
+  if (row.trust_id !== null) {
+    const trust = trustedBrowser(scope, row.trust_id);
+    if (trust === undefined || trust.state !== 'active' || Date.parse(trust.expires_at) <= Date.now()) {
+      return null;
+    }
+  }
   try {
     const request = JSON.parse(row.request_json) as DashboardRequest;
     return request.origin !== undefined && isCanonicalBrowserOrigin(request.origin)
@@ -620,6 +658,265 @@ export function getDashboardGrantMachineEndpointOrigin(
   } catch {
     return null;
   }
+}
+
+/** Origin-only preflight gate: confirms at least one live, locally approved grant for this exact origin. */
+export function isDashboardGrantMachineOriginApproved(scope: SyncScope, origin: string): boolean {
+  if (!isCanonicalBrowserOrigin(origin)) return false;
+  const context = contextProvider?.() ?? null;
+  if (context === null) return false;
+  const rows = getDb()
+    .prepare(
+      `SELECT request_id FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?
+         AND state = 'approved' AND expires_at > ?`,
+    )
+    .all(scope.backendId, scope.accountId, context.enrollmentId, new Date().toISOString()) as Array<{
+    request_id: string;
+  }>;
+  return rows.some((row) => getDashboardGrantMachineSessionContext(scope, row.request_id)?.origin === origin);
+}
+
+/** Exact locally approved authority bound into a direct machine session. */
+export function getDashboardGrantMachineSessionContext(
+  scope: SyncScope,
+  requestId: string,
+): DashboardGrantMachineSessionContext | null {
+  const context = contextProvider?.() ?? null;
+  if (context === null) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, requestId) as GrantRow | undefined;
+  const origin = getDashboardGrantMachineEndpointOrigin(scope, requestId);
+  if (
+    row === undefined ||
+    row.state !== 'approved' ||
+    row.enrollment_id !== context.enrollmentId ||
+    row.workspace_id === null ||
+    origin === null ||
+    Date.parse(row.expires_at) <= Date.now() ||
+    dashboardDsk(scope, row) === null
+  ) {
+    return null;
+  }
+  const scopes = JSON.parse(row.scopes_json) as string[];
+  const repositoryIds = JSON.parse(row.repo_ids_json || '[]') as string[];
+  if (row.trust_id !== null) {
+    const trust = trustedBrowser(scope, row.trust_id);
+    if (trust === undefined || trust.state !== 'active' || Date.parse(trust.expires_at) <= Date.now()) {
+      return null;
+    }
+  }
+  const operations = BROWSER_WORKSPACE_OPERATIONS.filter((operation) =>
+    scopes.includes(BROWSER_WORKSPACE_OPERATION_SCOPE[operation]),
+  );
+  const coreOperations: MeshMachineSessionScope['operations'] = [];
+  if (scopes.some((value) => value === 'read-dashboard' || value === 'workspace-read')) {
+    coreOperations.push('read.snapshot', 'read.job', 'read.events');
+  }
+  if (scopes.includes('submit-task')) coreOperations.push('command.submit', 'command.cancel');
+  if (scopes.includes('approve-action')) coreOperations.push('command.approve');
+  if (scopes.some((value) => value === 'workspace-write' || value === 'terminal')) {
+    coreOperations.push('command.steer');
+  }
+  if (operations.length > 0 || coreOperations.length > 0) {
+    coreOperations.push('dashboard.command.wake');
+  }
+  return {
+    backendId: scope.backendId,
+    accountId: scope.accountId,
+    enrollmentId: context.enrollmentId,
+    grantId: requestId,
+    sourceBrowserId: row.trust_id ?? requestId,
+    ...(row.trust_id === null ? {} : { trustId: row.trust_id }),
+    origin,
+    workspaceIds: [row.workspace_id],
+    repositoryIds,
+    scopes,
+    sessionScope: {
+      workspaceIds: [row.workspace_id],
+      repositoryIds,
+      scopes,
+      operations: [...new Set([...coreOperations, ...operations])],
+    },
+    expiresAt: row.expires_at,
+  };
+}
+
+/** Build the proof a dashboard client sends with its host-local bootstrap. */
+export function createDashboardMachineBootstrapProof(
+  dsk: Uint8Array,
+  claims: MeshMachineBootstrapClaims,
+): string {
+  if (dsk.byteLength !== 32) throw new Error('Dashboard machine session key is invalid.');
+  return createHmac('sha256', Buffer.from(dsk))
+    .update(meshMachineBootstrapProofMessage(claims), 'utf8')
+    .digest('base64url');
+}
+
+/** Proves the exact host bootstrap transcript with the locally approved grant DSK. */
+export function createDashboardMachineBootstrapHostProof(
+  scope: SyncScope,
+  claims: MeshMachineBootstrapClaims,
+  challengeId: string,
+  nonce: string,
+  response: Omit<MeshMachineBootstrapResponse, 'hostProof'>,
+): string | null {
+  const grantId = claims.principal.kind === 'dashboard' ? claims.principal.grantId : null;
+  if (
+    grantId === null ||
+    claims.bootstrapId !== challengeId ||
+    claims.challenge !== nonce ||
+    claims.accountId !== scope.accountId ||
+    response.sessionClaims.accountId !== claims.accountId ||
+    response.sessionClaims.sessionId !== response.sessionId ||
+    response.sessionClaims.machineId !== claims.machineId ||
+    response.sessionClaims.endpointGeneration !== claims.endpointGeneration ||
+    JSON.stringify(response.sessionClaims.principal) !== JSON.stringify(claims.principal) ||
+    response.machineId !== claims.machineId ||
+    response.endpointGeneration !== claims.endpointGeneration
+  ) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, grantId) as GrantRow | undefined;
+  if (row === undefined) return null;
+  const dsk = dashboardDsk(scope, row);
+  if (dsk === null || dsk.byteLength !== 32) return null;
+  try {
+    const clientProof = createHmac('sha256', dsk)
+      .update(meshMachineBootstrapProofMessage(claims), 'utf8')
+      .digest('base64url');
+    if (!verifyDashboardMachineBootstrapProof(scope, claims, clientProof)) return null;
+    return createHmac('sha256', dsk)
+      .update(meshMachineBootstrapHostProofMessage({ challengeId, nonce, response }), 'utf8')
+      .digest('base64url');
+  } finally {
+    dsk.fill(0);
+  }
+}
+
+/** Verify the proof and every bound scope field against the host's local grant mirror. */
+export function verifyDashboardMachineBootstrapProof(
+  scope: SyncScope,
+  claims: MeshMachineBootstrapClaims,
+  proof: string,
+): boolean {
+  const dashboardPrincipal = claims.principal.kind === 'dashboard' ? claims.principal : null;
+  const grantId = dashboardPrincipal?.grantId ?? null;
+  if (
+    grantId === null ||
+    claims.accountId !== scope.accountId ||
+    claims.principal.accountId !== scope.accountId ||
+    claims.sourceEnrollmentId !== null
+  ) {
+    return false;
+  }
+  const grant = getDashboardGrantMachineSessionContext(scope, grantId);
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM mesh_dashboard_grants
+       WHERE backend_id = ? AND account_id = ? AND request_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, grantId) as GrantRow | undefined;
+  const expiresAt = Date.parse(claims.expiresAt);
+  if (
+    grant === null ||
+    row === undefined ||
+    dashboardPrincipal?.sourceBrowserId !== grant.sourceBrowserId ||
+    dashboardPrincipal?.trustId !== grant.trustId ||
+    claims.machineId.length === 0 ||
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= Date.now() ||
+    expiresAt > Date.now() + 30_000 ||
+    expiresAt > Date.parse(grant.expiresAt) ||
+    claims.scope.workspaceIds.slice().sort().join('\0') !== grant.workspaceIds.slice().sort().join('\0') ||
+    claims.scope.repositoryIds.slice().sort().join('\0') !== grant.repositoryIds.slice().sort().join('\0') ||
+    claims.scope.scopes.slice().sort().join('\0') !== grant.scopes.slice().sort().join('\0') ||
+    claims.scope.operations.slice().sort().join('\0') !== grant.sessionScope.operations.slice().sort().join('\0') ||
+    !claims.capabilities.includes('machine.session/1')
+  ) {
+    return false;
+  }
+  const dsk = dashboardDsk(scope, row);
+  if (dsk === null || dsk.byteLength !== 32) return false;
+  let expected: Buffer;
+  let actual: Buffer;
+  try {
+    expected = createHmac('sha256', dsk)
+      .update(meshMachineBootstrapProofMessage(claims), 'utf8')
+      .digest();
+    actual = Buffer.from(proof, 'base64url');
+  } catch {
+    return false;
+  }
+  return actual.byteLength === expected.byteLength && timingSafeEqual(expected, actual);
+}
+
+/** Refresh a direct dashboard session against the coordinator's current trust decision. */
+export async function refreshDashboardGrantMachineSession(
+  scope: SyncScope,
+  requestId: string,
+): Promise<boolean> {
+  const local = getDashboardGrantMachineSessionContext(scope, requestId);
+  const context = contextProvider?.() ?? null;
+  if (local === null || context?.revalidateBrowserWorkspaceGrant === undefined) return false;
+  try {
+    const remote = await context.revalidateBrowserWorkspaceGrant(scope, requestId);
+    if (remote.state === 'revoked' && remote.trustId !== undefined) {
+      markLocalBrowserTrustRevoked(scope, remote.trustId);
+      return false;
+    }
+    return (
+      remote.state === 'approved' &&
+      remote.enrollmentId === local.enrollmentId &&
+      remote.expiresAt === local.expiresAt &&
+      remote.workspace.workspaceId === local.workspaceIds[0] &&
+      remote.workspace.repoIds.slice().sort().join('\0') === local.repositoryIds.slice().sort().join('\0') &&
+      remote.scopes.slice().sort().join('\0') === local.scopes.slice().sort().join('\0') &&
+      (remote.trustId ?? undefined) === local.trustId
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Execute an already sealed direct command through the existing durable local receipt path. */
+export async function executeDashboardGrantMachineCommand(
+  scope: SyncScope,
+  requestId: string,
+  command: DashboardWorkspaceCommand,
+): Promise<MachineCommandDispatchEntry> {
+  const context = contextProvider?.() ?? null;
+  const grant = getDashboardGrantMachineSessionContext(scope, requestId);
+  if (
+    context === null ||
+    grant === null ||
+    command.requestId !== requestId ||
+    context.enrollmentId !== grant.enrollmentId ||
+    context.revalidateBrowserWorkspaceGrant === undefined ||
+    context.publishBrowserWorkspaceCommandResult === undefined ||
+    context.executeBrowserWorkspaceCommand === undefined
+  ) {
+    return { commandId: command.commandId, state: 'failed' };
+  }
+  const current = (): boolean => {
+    const latest = contextProvider?.() ?? null;
+    return (
+      latest !== null &&
+      latest.apiUrl === context.apiUrl &&
+      latest.accessToken === context.accessToken &&
+      latest.enrollmentId === context.enrollmentId
+    );
+  };
+  await dispatchBrowserWorkspaceCommand(scope, command, current, context);
+  const receipt = commandReceipt(scope, command);
+  return receipt === undefined ? { commandId: command.commandId, state: 'failed' } : machineCommandOutcome(receipt);
 }
 
 export interface DashboardGrantWorkspaceOption {
