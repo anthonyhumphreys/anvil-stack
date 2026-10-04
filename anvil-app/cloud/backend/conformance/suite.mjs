@@ -331,14 +331,26 @@ await check('compact snapshots verify encrypted chunks and fence competing publi
   const session = await freshSession(`conf-snapshot-${randomUUID()}`);
   const token = bearer(session);
   const state = unwrap(await rpc('sync.snapshot.get', {}, token));
+  const scan = unwrap(await rpc('sync.scan.begin', {}, token));
+  let cursor = null;
+  for (;;) {
+    const page = unwrap(await rpc('sync.scan.page', { scanId: scan.scanId, cursor, maxBytes: 65536 }, token));
+    if (page.done) break;
+    cursor = page.nextCursor;
+  }
+  const finish = unwrap(await rpc('sync.scan.finish', { scanId: scan.scanId }, token));
   const data = Buffer.from('opaque-encrypted-snapshot-fixture');
   const fields = {
     expectedGeneration: state.manifest?.generation ?? 0, datasetEpoch: state.datasetEpoch,
-    keyVersion: state.keyVersion, schemaVersion: 1, committedCursor: state.currentCursor,
+    keyVersion: state.keyVersion, scanId: scan.scanId, schemaVersion: 1, committedCursor: finish.nextCursor,
     entityCount: 0, tombstoneCount: 0,
     chunks: [{ index: 0, byteLength: data.length, sha256: sha256Hex(data) }],
   };
   const input = { ...fields, publicationId: randomUUID(), manifestSha256: sha256Hex(canonicalize(fields)) };
+  const missingScan = { ...fields, scanId: randomUUID() };
+  const invalid = await rpc('sync.snapshot.begin', { ...missingScan, publicationId: randomUUID(),
+    manifestSha256: sha256Hex(canonicalize(missingScan)) }, token);
+  assert(invalid.body?.error, 'snapshot must require a completed account scan proof');
   unwrap(await rpc('sync.snapshot.begin', input, token));
   const other = { ...input, publicationId: randomUUID() };
   unwrap(await rpc('sync.snapshot.begin', other, token));

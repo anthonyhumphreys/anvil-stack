@@ -268,7 +268,7 @@ function snapshotHashInput(p) {
   return canonicalize({
     chunks: p.chunks, committedCursor: p.committedCursor, datasetEpoch: p.datasetEpoch,
     entityCount: p.entityCount, expectedGeneration: p.expectedGeneration,
-    keyVersion: p.keyVersion, schemaVersion: p.schemaVersion, tombstoneCount: p.tombstoneCount,
+    keyVersion: p.keyVersion, scanId: p.scanId, schemaVersion: p.schemaVersion, tombstoneCount: p.tombstoneCount,
   });
 }
 
@@ -279,7 +279,7 @@ function handleSnapshotRpc(session, requestId, operation, p, acct) {
       currentCursor: String(acct.nextSequence - 1), recoveryFloor: 0 });
   }
   if (operation === 'sync.snapshot.begin') {
-    if (!p || typeof p.publicationId !== 'string' || !/^[a-f0-9-]{36}$/i.test(p.publicationId) ||
+    if (!p || typeof p.scanId !== 'string' || typeof p.publicationId !== 'string' || !/^[a-f0-9-]{36}$/i.test(p.publicationId) ||
         p.datasetEpoch !== EPOCH || p.keyVersion !== 1 || p.schemaVersion !== 1 ||
         typeof p.committedCursor !== 'string' || !/^(0|[1-9][0-9]*)$/.test(p.committedCursor) ||
         !Number.isSafeInteger(Number(p.committedCursor)) || Number(p.committedCursor) >= acct.nextSequence ||
@@ -289,6 +289,10 @@ function handleSnapshotRpc(session, requestId, operation, p, acct) {
         p.chunks.some((c, i) => c.index !== i || !Number.isInteger(c.byteLength) ||
           c.byteLength <= 0 || c.byteLength > 262144 || !/^[a-f0-9]{64}$/.test(c.sha256)) ||
         sha256Hex(snapshotHashInput(p)) !== p.manifestSha256) return fail('snapshot-invalid');
+    const scan = scans.get(p.scanId);
+    if (!scan || scan.accountId !== session.accountId || scan.done !== 1 ||
+        scan.watermarkEnd === undefined || p.committedCursor !== String(scan.watermarkEnd) ||
+        scan.epoch !== p.datasetEpoch) return fail('snapshot-scan-proof', 'conflict', 409);
     const existing = acct.snapshots.get(p.publicationId);
     if (existing) {
       if (existing.owner !== session.enrollmentId || canonicalize(existing.params) !== canonicalize(p))
@@ -335,7 +339,7 @@ function handleSnapshotRpc(session, requestId, operation, p, acct) {
   if (operation === 'sync.snapshot.commit') {
     if (!upload.verified || upload.params.expectedGeneration !== (acct.snapshot?.generation ?? 0))
       return fail('snapshot-unverified-or-stale', 'conflict', 409);
-    const { publicationId, expectedGeneration, ...fields } = upload.params;
+    const { publicationId, expectedGeneration, scanId: _scanId, ...fields } = upload.params;
     acct.previousSnapshot = acct.snapshot;
     acct.snapshot = { ...fields, snapshotId: publicationId, generation: expectedGeneration + 1,
       formatVersion: 2, createdAt: new Date().toISOString() };
@@ -417,6 +421,8 @@ function handleRpcOp(session, requestId, operation, params) {
         epoch: EPOCH,
         createdAt: Date.now(),
         done: 0,
+        entityCursor: null,
+        pageResults: new Map(),
       });
       return rpcOk(requestId, {
         scanId,
@@ -431,11 +437,13 @@ function handleRpcOp(session, requestId, operation, params) {
       if (scan === undefined || scan.accountId !== session.accountId) {
         return rpcError(requestId, 'not-found', 404, { reason: 'scan' });
       }
-      if (scan.done === 1) return rpcOk(requestId, { entities: [], nextCursor: null, done: true });
-      const after = params?.cursor ? JSON.parse(params.cursor) : null;
+      const requestedCursor = params?.cursor ?? null;
+      if (scan.pageResults.has(requestedCursor)) return rpcOk(requestId, scan.pageResults.get(requestedCursor));
+      if (scan.done === 1 || requestedCursor !== scan.entityCursor)
+        return rpcError(requestId, 'conflict', 409, { reason: 'scan-page-order' });
+      const after = requestedCursor ? JSON.parse(requestedCursor) : null;
       const maxBytes = Math.min(Number(params?.maxBytes) || PAGE_BYTES, PAGE_BYTES);
       const rows = [...acct.entities.values()]
-        .filter((r) => r.operation !== 'delete')
         .filter(
           (r) =>
             after === null ||
@@ -460,7 +468,8 @@ function handleRpcOp(session, requestId, operation, params) {
           entityId: row.entity_id,
           revision: row.revision,
           schemaVersion: row.schema_version,
-          payload: row.payload === null ? null : JSON.parse(row.payload),
+          operation: row.operation,
+          ...(row.operation === 'delete' ? {} : { payload: row.payload === null ? null : JSON.parse(row.payload) }),
         };
         const size = bytes(JSON.stringify(entity));
         if (entities.length > 0 && used + size > maxBytes) {
@@ -475,11 +484,9 @@ function handleRpcOp(session, requestId, operation, params) {
       const cursor = last === undefined ? null : JSON.stringify([last.entityType, last.entityId]);
       scan.done = remaining ? 0 : 1;
       scan.entityCursor = cursor;
-      return rpcOk(requestId, {
-        entities,
-        nextCursor: remaining ? cursor : null,
-        done: !remaining,
-      });
+      const result = { entities, nextCursor: remaining ? cursor : null, done: !remaining };
+      scan.pageResults.set(requestedCursor, result);
+      return rpcOk(requestId, result);
     }
 
     case 'sync.scan.finish': {
@@ -490,12 +497,13 @@ function handleRpcOp(session, requestId, operation, params) {
       if (scan.done !== 1) {
         return rpcError(requestId, 'malformed-request', 400, { reason: 'scan-incomplete' });
       }
+      scan.watermarkEnd ??= acct.nextSequence - 1;
       return rpcOk(requestId, {
         scanId: scan.scanId ?? params.scanId,
         complete: true,
-        watermarkEnd: acct.nextSequence - 1,
+        watermarkEnd: scan.watermarkEnd,
         epoch: EPOCH,
-        nextCursor: String(acct.nextSequence - 1),
+        nextCursor: String(scan.watermarkEnd),
       });
     }
 
