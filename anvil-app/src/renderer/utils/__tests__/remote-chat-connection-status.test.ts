@@ -33,6 +33,16 @@ describe('remote chat connection notice', () => {
     );
   });
 
+  it.each(['approval-required', 'device-denied'] as const)(
+    'gives host access guidance for %s instead of calling the machine offline',
+    (hostError) => {
+      const notice = remoteChatConnectionNotice({ ...base, hostState: 'offline', hostError });
+      expect(notice.detail).toContain('Settings → Devices → Account device access');
+      expect(notice.label).not.toContain('offline');
+      expect(notice.tone).toBe('warning');
+    },
+  );
+
   it('puts an approval request ahead of connection state', () => {
     expect(
       remoteChatConnectionNotice({

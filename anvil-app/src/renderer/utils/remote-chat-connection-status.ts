@@ -12,6 +12,7 @@ export function remoteChatConnectionNotice(input: {
   approvalRequired: boolean;
   approvalActionsAvailable: boolean;
   hostState: MeshHostState | undefined;
+  hostError?: SyncRuntimeStatus['meshHosts'][number]['lastError'];
   targetName: string;
   fallbackLabel: string;
 }): RemoteChatConnectionNotice {
@@ -21,6 +22,25 @@ export function remoteChatConnectionNotice(input: {
       detail: input.approvalActionsAvailable
         ? 'Approve or deny the request below to continue.'
         : 'This machine is waiting for an approval.',
+      tone: 'warning',
+    };
+  }
+
+  if (input.hostError === 'approval-required' || input.hostError === 'device-denied') {
+    return {
+      label:
+        input.hostError === 'approval-required' ? 'Host access required' : 'Host access denied',
+      detail:
+        'On the target machine, open Settings → Devices → Account device access to review this device. Live updates will connect when access is allowed.',
+      tone: 'warning',
+    };
+  }
+
+  if (input.hostError === 'authorization-unavailable') {
+    return {
+      label: 'Checking host access',
+      detail:
+        'Anvil cannot verify device access right now. Check sign-in and the network connection.',
       tone: 'warning',
     };
   }

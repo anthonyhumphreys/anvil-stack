@@ -53,14 +53,15 @@ export function RemoteThreadTranscript({
       : 'Anvil Cloud Agents unavailable'
     : (targetDevice?.displayName ?? `Device ${record.targetEnrollmentId.slice(0, 8)}`);
   const approvalRequired = record.state === 'awaiting-approval' || run.approvals.length > 0;
-  const hostState = run.meshHosts.find(
+  const hostConnection = run.meshHosts.find(
     (host) => host.enrollmentId === record.targetEnrollmentId,
-  )?.state;
-  const activeHostState = run.busy || approvalRequired ? hostState : undefined;
+  );
+  const activeHostConnection = run.busy || approvalRequired ? hostConnection : undefined;
   const connectionNotice = remoteChatConnectionNotice({
     approvalRequired,
     approvalActionsAvailable: run.approvals.length > 0,
-    hostState: activeHostState,
+    hostState: activeHostConnection?.state,
+    hostError: activeHostConnection?.lastError,
     targetName: targetLabel,
     fallbackLabel: STATE_LABELS[record.state] ?? 'Remote work in progress',
   });
