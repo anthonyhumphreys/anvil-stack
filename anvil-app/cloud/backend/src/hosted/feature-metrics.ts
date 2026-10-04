@@ -5,6 +5,7 @@ const BROKER_OPERATIONS = [
   'machine.discover',
   'machine.allocate',
   'machine.release',
+  'machine.endpoint',
   'machine.ticket.issue',
   'machine.ticket.consume',
   'machine.trust.refresh',

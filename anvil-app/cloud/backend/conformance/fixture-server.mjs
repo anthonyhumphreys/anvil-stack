@@ -280,7 +280,7 @@ function handleSnapshotRpc(session, requestId, operation, p, acct) {
   }
   if (operation === 'sync.snapshot.begin') {
     if (!p || typeof p.scanId !== 'string' || typeof p.publicationId !== 'string' || !/^[a-f0-9-]{36}$/i.test(p.publicationId) ||
-        p.datasetEpoch !== EPOCH || p.keyVersion !== 1 || p.schemaVersion !== 1 ||
+        p.datasetEpoch !== EPOCH || p.keyVersion !== 1 || p.schemaVersion !== 2 ||
         typeof p.committedCursor !== 'string' || !/^(0|[1-9][0-9]*)$/.test(p.committedCursor) ||
         !Number.isSafeInteger(Number(p.committedCursor)) || Number(p.committedCursor) >= acct.nextSequence ||
         !Number.isInteger(p.entityCount) || p.entityCount < 0 ||

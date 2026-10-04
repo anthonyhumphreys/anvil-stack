@@ -342,7 +342,7 @@ await check('compact snapshots verify encrypted chunks and fence competing publi
   const data = Buffer.from('opaque-encrypted-snapshot-fixture');
   const fields = {
     expectedGeneration: state.manifest?.generation ?? 0, datasetEpoch: state.datasetEpoch,
-    keyVersion: state.keyVersion, scanId: scan.scanId, schemaVersion: 1, committedCursor: finish.nextCursor,
+    keyVersion: state.keyVersion, scanId: scan.scanId, schemaVersion: 2, committedCursor: finish.nextCursor,
     entityCount: 0, tombstoneCount: 0,
     chunks: [{ index: 0, byteLength: data.length, sha256: sha256Hex(data) }],
   };

@@ -35,7 +35,7 @@ describe('sampled feature attribution', () => {
     const usage: FeatureUsage = { operation: 'sync.pull', status: 200, wallMs: 5 };
     emitFeatureUsage(usage, 0.01);
     emitFeatureUsage(usage, Number.NaN);
-    emitFeatureUsage({ ...usage, operation: 'secret-user-path' } as FeatureUsage, 0);
+    emitFeatureUsage({ ...usage, operation: 'secret-user-path' } as unknown as FeatureUsage, 0);
     expect(log).not.toHaveBeenCalled();
   });
 
