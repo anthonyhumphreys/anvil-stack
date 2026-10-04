@@ -1,5 +1,5 @@
 import { env, runInDurableObject, SELF } from 'cloudflare:test';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DeviceSession, EnrollmentCodeIssueResult } from '../../contract/auth';
 import type { MeshMachineHostsResponse } from '../../contract/machine';
@@ -361,5 +361,158 @@ describe('managed machine endpoint broker', () => {
       ).toArray();
       expect(rows).toEqual([{ provider_operation_id: operationId, allocation_generation: 1 }]);
     });
+  });
+
+  it('reserves account and provider capacity before a delayed hash or provider call can interleave', async () => {
+    env.ANVIL_MESH_MANAGED_ENDPOINTS = 'true';
+    env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = 'test-cloudflare-account';
+    env.CLOUDFLARE_TUNNEL_ZONE_ID = 'test-cloudflare-zone';
+    env.CLOUDFLARE_TUNNEL_API_TOKEN = 'test-cloudflare-token-value';
+    env.MACHINE_ENDPOINT_DOMAIN = 'mesh.example.test';
+
+    const makeDeferred = <T,>() => {
+      let resolve!: (value: T | PromiseLike<T>) => void;
+      const promise = new Promise<T>((done) => { resolve = done; });
+      return { promise, resolve };
+    };
+    let digestGate = makeDeferred<void>();
+    let digestReady = makeDeferred<void>();
+    let digestCalls = 0;
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    const digestSpy = vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => {
+      const gate = digestGate;
+      const ready = digestReady;
+      digestCalls += 1;
+      if (digestCalls === 2) ready.resolve();
+      await gate.promise;
+      return originalDigest(algorithm, data);
+    });
+
+    let providerGate = makeDeferred<void>();
+    let providerStarted = makeDeferred<void>();
+    let holdNextProviderCall = true;
+    const tunnelId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const dnsId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const providerFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = new URL(input.toString());
+      const method = init?.method ?? 'GET';
+      if (url.hostname !== 'api.cloudflare.com') {
+        throw new Error(`unexpected outbound request: ${url.hostname}`);
+      }
+      if (holdNextProviderCall && method === 'GET' && /\/cfd_tunnel\?/.test(url.pathname + url.search)) {
+        holdNextProviderCall = false;
+        providerStarted.resolve();
+        await providerGate.promise;
+      }
+      if (url.pathname.endsWith('/cfd_tunnel') && method === 'GET') return Response.json({ success: true, result: [] });
+      if (url.pathname.endsWith('/cfd_tunnel') && method === 'POST') return Response.json({ success: true, result: { id: tunnelId } });
+      if (url.pathname.endsWith(`/cfd_tunnel/${tunnelId}/configurations`) && method === 'PUT') return Response.json({ success: true, result: {} });
+      if (url.pathname.endsWith('/dns_records') && method === 'GET') return Response.json({ success: true, result: [] });
+      if (url.pathname.endsWith('/dns_records') && method === 'POST') return Response.json({ success: true, result: { id: dnsId } });
+      if (url.pathname.endsWith(`/cfd_tunnel/${tunnelId}/token`) && method === 'GET') {
+        return Response.json({ success: true, result: 'test-connector-token-value-that-is-long-enough' });
+      }
+      throw new Error(`unexpected Cloudflare API request: ${method} ${url.pathname}`);
+    };
+    vi.stubGlobal('fetch', providerFetch);
+
+    const seedAllocations = async (rows: Array<{ accountId: string; machineId: string; state: 'ready' | 'allocating' }>) => {
+      await runInDurableObject(machineStub(), (_instance: MachineEndpointCoordinator, state) => {
+        const now = Date.now();
+        for (const [index, row] of rows.entries()) {
+          const label = `host-${String(index).padStart(24, '0')}`;
+          state.storage.sql.exec(
+            `INSERT INTO machine_endpoint_allocations
+             (account_id, machine_id, host_enrollment_id, endpoint_generation, allocation_generation, state,
+              stable_host_label, stable_tunnel_name, hostname, local_service, provider_operation_id,
+              provider_tunnel_id, provider_dns_record_id, request_id, created_at, updated_at,
+              last_reachable_at, retry_at, attempts, lock_id, lock_until, error_code)
+             VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, 'http://127.0.0.1:43127', ?, NULL, NULL, ?, ?, ?, ?, ?, 0,
+                     NULL, ?, NULL)`,
+            row.accountId,
+            row.machineId,
+            randomId('enrollment'),
+            generation(),
+            row.state,
+            label,
+            `anvil-${label}-g1`,
+            `${label}.mesh.example.test`,
+            crypto.randomUUID(),
+            randomId('allocation-request'),
+            now,
+            now,
+            now,
+            now,
+            row.state === 'allocating' ? now + 90_000 : 0,
+          );
+        }
+      });
+    };
+
+    const runCappedPair = async (accountIds: [string, string]) => {
+      digestGate = makeDeferred<void>();
+      digestReady = makeDeferred<void>();
+      digestCalls = 0;
+      providerGate = makeDeferred<void>();
+      providerStarted = makeDeferred<void>();
+      holdNextProviderCall = true;
+      const bodies = accountIds.map((accountId) => ({
+        accountId,
+        machineId: machineId(),
+        hostEnrollmentId: randomId('enrollment'),
+        endpointGeneration: generation(),
+        requestId: randomId('allocation-request'),
+        localOrigin: 'http://127.0.0.1:43127',
+      }));
+      const responses = [
+        machineRequest('/internal/allocate', bodies[0]),
+        machineRequest('/internal/allocate', bodies[1]),
+      ];
+      await digestReady.promise;
+      digestGate.resolve();
+      await providerStarted.promise;
+
+      const firstResult = await Promise.race(
+        responses.map((response, index) => response.then((value) => ({ index, value }))),
+      );
+      expect(firstResult.value.status).toBe(429);
+
+      providerGate.resolve();
+      const accepted = await responses[1 - firstResult.index];
+      expect(accepted.status).toBe(201);
+    };
+
+    try {
+      await runInDurableObject(machineStub(), (_instance: MachineEndpointCoordinator, state) => {
+        state.storage.sql.exec('DELETE FROM machine_endpoint_allocations');
+        state.storage.sql.exec('DELETE FROM machine_endpoint_rate_limits');
+      });
+      const accountId = randomId('acct');
+      await seedAllocations(
+        Array.from({ length: 4 }, () => ({ accountId, machineId: machineId(), state: 'ready' as const })),
+      );
+      await runCappedPair([accountId, accountId]);
+
+      const otherAccountA = randomId('acct');
+      const otherAccountB = randomId('acct');
+      await seedAllocations([
+        { accountId: randomId('acct'), machineId: machineId(), state: 'allocating' },
+        { accountId: randomId('acct'), machineId: machineId(), state: 'allocating' },
+      ]);
+      await runInDurableObject(machineStub(), (_instance: MachineEndpointCoordinator, state) => {
+        const count = state.storage.sql.exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM machine_endpoint_allocations
+           WHERE state = 'allocating' AND lock_until > ?`,
+          Date.now(),
+        ).one().count;
+        expect(count).toBe(2);
+      });
+      await runCappedPair([otherAccountA, otherAccountB]);
+    } finally {
+      digestGate.resolve();
+      providerGate.resolve();
+      digestSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });

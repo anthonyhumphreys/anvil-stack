@@ -268,6 +268,10 @@ export class MachineEndpointCoordinator extends DurableObject<Env> {
     if (!managedProvisioningEnabled(this.env)) return jsonError(503, 'provider-unavailable');
     const provider = createProvider(this.env);
     if (provider === null) return jsonError(503, 'provider-unavailable');
+    // This async hash yields control to other requests. Complete it before
+    // reading quota counts so each request's count and durable reservation
+    // remain in one synchronous turn.
+    const stableHostLabel = await stableEndpointLabel(input.accountId, input.machineId);
     const now = Date.now();
     let existing = this.get(input.accountId, input.machineId);
     if (existing !== null) {
@@ -334,7 +338,6 @@ export class MachineEndpointCoordinator extends DurableObject<Env> {
     if (provisioningCount >= MAX_CONCURRENT_PROVISIONING) return jsonError(429, 'capacity-exceeded');
 
     const allocationGeneration = (existing?.allocation_generation ?? 0) + 1;
-    const stableHostLabel = await stableEndpointLabel(input.accountId, input.machineId);
     const stableTunnelName = `anvil-${stableHostLabel}-g${allocationGeneration}`;
     const hostname = provider.hostnameFor(stableHostLabel);
     const operationId = crypto.randomUUID();
