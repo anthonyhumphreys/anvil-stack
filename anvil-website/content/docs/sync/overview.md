@@ -50,10 +50,10 @@ Settings → Sync & Mesh offers four account backend modes:
 | Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare deployment* in the picker). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
 | Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles — see [Backend conformance](/docs/sync/conformance). |
 
-Pinning a backend stores the association and stops there. No data uploads just
-because you chose a backend: Sync must be enabled for a workspace. If a pinned
-backend's identity changes — endpoint or issuer — the app requires re-review
-before credentials are sent to it again.
+Pinning a backend stores the association. Sign in and enable Sync before
+uploading portable configuration. Choose Local or Sync separately for each
+workspace. If the backend's endpoint or issuer changes, the app requires
+re-review before sending credentials again.
 
 ## What syncs, what doesn't
 
