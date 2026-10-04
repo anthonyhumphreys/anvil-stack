@@ -21,6 +21,7 @@ import type {
   SyncIssuedEnrollmentCode,
 } from '../../../shared/sync-runtime';
 import { copyTextToClipboard } from '../../utils/clipboard';
+import { summarizeLocalMeshHostStatus } from '../../utils/mesh-host-status';
 import { useSyncMeshSetup } from '../../hooks/useSyncMeshSetup';
 import { DashboardAccessPanel } from './DashboardAccessPanel';
 import { DeviceSecurityPanel } from './DeviceSecurityPanel';
@@ -115,9 +116,7 @@ function OverviewItem({
       <p className={`mt-1 truncate text-sm font-medium ${tone}`} title={value}>
         {value}
       </p>
-      <p className="mt-1 truncate text-xs text-text-tertiary" title={detail}>
-        {detail}
-      </p>
+      <p className="mt-1 break-words text-xs leading-4 text-text-tertiary">{detail}</p>
     </div>
   );
 }
@@ -476,6 +475,13 @@ export function SyncMeshSettingsPanel(): ReactNode {
     : runtime?.meshWorker.enabled && runtime.meshWorker.connected
       ? 'text-success'
       : 'text-text-primary';
+  const localHostSummary = summarizeLocalMeshHostStatus({
+    host: runtime?.meshHost,
+    loading: statusLoading,
+    signedIn,
+    syncEnabled: runtime?.syncEnabled === true,
+    backendReady,
+  });
   const syncSummaryTone =
     runtime?.sessionExpired === true || runtime?.lastError || runtime?.quotaExceeded === true
       ? 'text-error'
@@ -494,7 +500,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
         title="Sync & Mesh at a glance"
         description="Sync and Mesh are free. Choose Sync per workspace to share its definitions, templates, custom agents, and selected settings. Repo files and provider credentials stay on your machines. Mesh jobs run there too."
       >
-        <div className="grid gap-2 sm:grid-cols-3" aria-live="polite">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4" aria-live="polite">
           <OverviewItem
             icon={Cloud}
             label="Sync"
@@ -520,6 +526,13 @@ export function SyncMeshSettingsPanel(): ReactNode {
                     : 'Connecting this device to Mesh.'
                 : 'This device is not allowed to run Mesh jobs.'
             }
+          />
+          <OverviewItem
+            icon={Laptop}
+            label="This device"
+            value={localHostSummary.value}
+            tone={localHostSummary.tone}
+            detail={localHostSummary.detail}
           />
           <OverviewItem
             icon={HardDrive}

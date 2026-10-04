@@ -3,6 +3,7 @@
  */
 
 import type { HandoffRecord } from '../../cloud/contract/handoff.js';
+import type { MeshMachineHostStatus } from '../../cloud/contract/machine.js';
 import type { CloudEnvironment, EnvironmentProviderId } from '../../cloud/contract/environment.js';
 import type { SyncDeviceTrustSource, SyncDeviceTrustState } from './sync-device-security.js';
 
@@ -373,6 +374,8 @@ export interface SyncRuntimeStatus {
   sessionExpired: boolean;
   /** Device-local mesh worker state (opt-in is never synced). */
   meshWorker: MeshWorkerStatus;
+  /** Readiness of this device's own Mesh host endpoint; excludes credentials. */
+  meshHost: MeshMachineHostStatus;
   /** Current authenticated connection state for enrolled mesh hosts. */
   meshHosts: MeshHostConnectionStatus[];
   /** Last-known hosted entitlement; null for self-host backends. */
