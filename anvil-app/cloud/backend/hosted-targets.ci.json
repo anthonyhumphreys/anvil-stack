@@ -11,8 +11,7 @@
       "databaseId": "9d396edc-2967-4d94-9ca0-51311c2c4f13",
       "deploymentId": "spike-0000-0000-0000-backend01demo",
       "deploymentName": "Anvil hosted staging",
-      "managedProvisioner": true,
-      "provisionerName": "anvil-sync-hosted-staging-provisioner",
+      "managedProvisioner": false,
       "workos": {
         "issuer": "https://api.workos.com/user_management",
         "desktopClientId": "client_01M2XPX4PF98H2P7HCNRBZATTE",
@@ -32,16 +31,14 @@
       "databaseId": null,
       "deploymentId": "",
       "deploymentName": "",
-      "managedProvisioner": true,
-      "provisionerName": "",
+      "managedProvisioner": false,
       "workos": {
         "issuer": "https://api.workos.com/user_management",
         "desktopClientId": "",
         "hostedClientId": ""
       },
       "secrets": {
-        "backendFile": ".wrangler/hosted-secrets/production/backend-secrets.json",
-        "provisionerTokenFile": ".wrangler/hosted-secrets/production/provisioner-token"
+        "backendFile": ".wrangler/hosted-secrets/production/backend-secrets.json"
       }
     }
   }

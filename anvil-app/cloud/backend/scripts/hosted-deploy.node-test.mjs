@@ -35,6 +35,15 @@ const manifest = JSON.parse(
   readFileSync(new URL('../hosted-targets.example.json', import.meta.url), 'utf8'),
 );
 const staging = manifest.environments.staging;
+const managedProvisionerStaging = {
+  ...staging,
+  managedProvisioner: true,
+  provisionerName: 'anvil-sync-hosted-staging-provisioner',
+  secrets: {
+    ...staging.secrets,
+    provisionerTokenFile: '.wrangler/mesh/anvil-sync-hosted-staging/managed-token',
+  },
+};
 const paths = {
   config: '/tmp/staging/wrangler.jsonc',
   vars: '/tmp/staging/vars.json',
@@ -46,11 +55,14 @@ test('the checked-in target example keeps current resources assigned to staging'
   const selected = validateManifest(manifest, 'staging');
   assert.equal(selected.workerName, 'anvil-sync-hosted-staging');
   assert.equal(selected.databaseId, '9d396edc-2967-4d94-9ca0-51311c2c4f13');
+  assert.equal(selected.managedProvisioner, false);
+  assert.equal(selected.provisionerName, undefined);
   assert.equal(selected.workos.hostedClientId, 'client_01M27GDYFBX70F16V6ZQ74KSDE');
 });
 
 test('production is blocked until its independent Cloudflare and WorkOS target is configured', () => {
   assert.throws(() => validateManifest(manifest, 'production'), /production\.accountId/);
+  assert.equal(manifest.environments.production.managedProvisioner, false);
 });
 
 test('secret source selection accepts one JSON, dotenv, or explicit process source', () => {
@@ -192,7 +204,7 @@ test('process environment source requires its explicit matching deployment marke
 
 test('production rejects staging resource and either staging WorkOS client reuse', () => {
   const production = {
-    ...staging,
+    ...managedProvisionerStaging,
     stage: 'production',
     workerName: 'anvil-sync-production',
     baseUrl: 'https://anvil-sync-production.example.workers.dev',
@@ -208,12 +220,19 @@ test('production rejects staging resource and either staging WorkOS client reuse
       hostedClientId: 'client_other_hosted',
     },
   };
-  const configured = { ...manifest, environments: { ...manifest.environments, production } };
+  const configured = {
+    ...manifest,
+    environments: {
+      ...manifest.environments,
+      staging: managedProvisionerStaging,
+      production,
+    },
+  };
   assert.equal(validateManifest(configured, 'production').workerName, production.workerName);
 
   for (const [field, stagingName] of [
-    ['workerName', staging.provisionerName],
-    ['provisionerName', staging.workerName],
+    ['workerName', managedProvisionerStaging.provisionerName],
+    ['provisionerName', managedProvisionerStaging.workerName],
   ]) {
     assert.throws(
       () =>
@@ -231,14 +250,16 @@ test('production rejects staging resource and either staging WorkOS client reuse
     );
   }
 
-  configured.environments.production.workos.desktopClientId = staging.workos.hostedClientId;
+  configured.environments.production.workos.desktopClientId =
+    managedProvisionerStaging.workos.hostedClientId;
   assert.throws(
     () => validateManifest(configured, 'production'),
     /desktopClientId must use the production WorkOS application/,
   );
 
   configured.environments.production.workos.desktopClientId = 'client_other_desktop';
-  configured.environments.production.artifactsBucket = staging.artifactsBucket;
+  configured.environments.production.artifactsBucket =
+    managedProvisionerStaging.artifactsBucket;
   assert.throws(
     () => validateManifest(configured, 'production'),
     /artifactsBucket must be separate/,
@@ -797,7 +818,7 @@ test('run forwards dotenv secrets through temporary files and cleans them up on 
   const suffix = randomUUID().replaceAll('-', '').slice(0, 8);
   const workerName = `anvil-sync-hosted-env-test-${suffix}`;
   const target = {
-    ...staging,
+    ...managedProvisionerStaging,
     workerName,
     provisionerName: `${workerName}-provisioner`,
   };
@@ -911,15 +932,70 @@ test('run forwards dotenv secrets through temporary files and cleans them up on 
 });
 
 test('target command construction pins all resource and generated-config inputs', () => {
-  const args = cliArgs('plan', undefined, staging, paths, ['--json', '--write']);
+  const args = cliArgs(
+    'plan',
+    undefined,
+    managedProvisionerStaging,
+    paths,
+    ['--json', '--write'],
+  );
   assert.deepEqual(args.slice(0, 4), ['mesh', 'plan', '--backend', BACKEND_DIR]);
   assert.ok(args.includes('--stage') && args.includes('staging'));
   assert.ok(args.includes('--name') && args.includes(staging.workerName));
   assert.ok(args.includes('--bucket') && args.includes(staging.artifactsBucket));
   assert.ok(args.includes('--database') && args.includes(staging.databaseName));
   assert.ok(args.includes('--config-out') && args.includes(paths.config));
-  assert.ok(args.includes('--managed-provisioner') && args.includes(staging.provisionerName));
+  assert.ok(
+    args.includes('--managed-provisioner') &&
+      args.includes(managedProvisionerStaging.provisionerName),
+  );
   assert.ok(!args.includes('--production'));
+});
+
+test('staging CI deploys the v2 backend without managed provisioner resources', () => {
+  const ciManifest = JSON.parse(
+    readFileSync(new URL('../hosted-targets.ci.json', import.meta.url), 'utf8'),
+  );
+  const target = validateManifest(ciManifest, 'staging');
+  assert.equal(target.managedProvisioner, false);
+  assert.equal(ciManifest.environments.production.managedProvisioner, false);
+
+  const args = cliArgs('plan', undefined, target, paths, ['--json', '--write']);
+  assert.ok(!args.includes('--managed-provisioner'));
+
+  const directory = mkdtempSync(join(tmpdir(), 'hosted-ci-config-'));
+  const configPath = join(directory, 'staging.json');
+  try {
+    writeJson(configPath, hostedConfig(target, 'staging'));
+    assert.deepEqual(validateGeneratedConfig(configPath, target, 'staging').services, []);
+
+    writeJson(configPath, {
+      ...hostedConfig(target, 'staging'),
+      services: [{ binding: 'MANAGED_PROVISIONER', service: 'stale-provisioner' }],
+    });
+    assert.throws(
+      () => validateGeneratedConfig(configPath, target, 'staging'),
+      /unexpectedly binds a managed provisioner/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('staging workflow keeps the managed endpoint pilot opt-in and targets current profiles', () => {
+  const workflow = readFileSync(
+    new URL('../../../../.github/workflows/sync-backend-staging.yml', import.meta.url),
+    'utf8',
+  );
+  assert.match(workflow, /managed_endpoint_pilot:[\s\S]*?type: boolean[\s\S]*?default: false/);
+  assert.match(workflow, /configured\.ANVIL_CLOUD_AGENTS_ENABLED = 'false'/);
+  assert.match(workflow, /configured\.ANVIL_MESH_MANAGED_ENDPOINTS = 'false'/);
+  assert.match(workflow, /\(\.profiles \| index\("sync\/2"\)\)/);
+  assert.match(workflow, /\(\.profiles \| index\("mesh\/2"\)\)/);
+  const descriptor = readFileSync(new URL('../src/descriptor.ts', import.meta.url), 'utf8');
+  assert.match(descriptor, /profiles: \['sync\/2', 'mesh\/2'\]/);
+  assert.doesNotMatch(workflow, /provisioner|anvil-worker|docker info/i);
+  assert.match(workflow, /apply --dry-run --json[\s\S]*?migrate --json/);
 });
 
 test('arbitrary resource overrides and production test-deployment are rejected', () => {
