@@ -1,6 +1,11 @@
 # Host-local execution and low-cost Sync and Mesh
 
-Prepared 4 October 2026. Status: implementation plan; the redesign below is not implemented.
+Prepared 4 October 2026. Status: implementation authorised and in progress.
+
+The user confirmed that hosted Sync/Mesh is completely greenfield. Require updated clients for the
+new protocol. Destructive resets of test hosted state are allowed; do not build legacy-client
+migration or historical rollback readers. Repository files, local credentials and unrelated local
+work remain outside those resets. Preserve the security and recovery guarantees for new data.
 
 This is the implementation direction for reducing the running cost of free Sync and Mesh. It
 supersedes the future transport recommendation in the
@@ -39,8 +44,8 @@ Keep these product rules:
 - Keep private routes, local pairing and self-hosted backends available. Preserve current free
   device/member allowances and resource limits until a separate capacity decision changes them.
 
-This plan does not authorise deployment, tunnel purchases, legacy subscription changes, shorter
-user-visible retention, or launching paid Cloud Agents.
+Deployment, tunnel purchases and launching paid Cloud Agents remain separate operational steps.
+Keep retention explicit for newly accepted data; a test-state reset is not a retention policy.
 
 ## Starting point
 
@@ -214,10 +219,10 @@ Publish snapshots through this sequence:
    recoverable snapshot and allowed by client-version compatibility. Account deletion and key
    rotation must cover all retained snapshot generations, temporary uploads and archives.
 
-Use current snapshot/scan recovery as the compatibility path until older clients can consume the
-new format. Either continue serving that path correctly or require an explicit client upgrade;
-never send a new manifest to a client that expects the old protocol. A long-offline device rebases
-its pending changes through existing conflict rules instead of replaying stale state over deletions.
+Require the current protocol when enabling snapshots. Unsupported clients receive an explicit
+upgrade response. Keep existing scan machinery where it provides the new protocol's stable staging
+and recovery, rather than to support historical clients. A long-offline device rebases its pending
+changes through the conflict rules instead of replaying stale state over deletions.
 
 The existing journal, tombstones and push receipts have a 90-day retention contract. Keep that
 contract during initial compaction. A push whose old receipt expired is an uncertain write, not a
@@ -299,22 +304,23 @@ Do not expand Cloud Agent provisioning as part of managed reachability. A tunnel
 machine is not an Anvil-supplied execution machine. If an implementation touches owned Effect
 orchestration internals in `anvil-cloud`, review and update the relevant root `PATCH.md` entry.
 
-### Migration and rollback
+### Protocol cutover and rollout
 
-Negotiate capabilities per connection and bind a job's execution protocol to its attempt generation.
-An old client or unsupported operation uses the existing path. Shadow-read snapshots and compare
-state, but never shadow-execute mutations. Deduplicate requests across both transports.
+Require the supported protocol and negotiate capabilities per connection. Bind a job's execution
+protocol to its attempt generation. Keep hosted fallback for network failure and unsupported direct
+operations. It is not a route for obsolete clients. Never shadow-execute mutations; deduplicate
+requests across transports.
 
 Roll out internally, then to proposed 1%, 10%, 50% and full eligible cohorts. Advance only after a
 representative workload and disconnect/recovery cycle at each stage. Independent gates should cover
 host sessions, direct operations, compact Sync reads, compaction deletion and managed endpoints.
 Keep a backend kill switch for new sessions and allocations without interrupting cleanup.
 
-Before destructive compaction, rollback means switching new traffic to the old path and retaining
-both readable representations. After a job has host-local data, fallback must read from that host or
-its verified archive; the old backend cannot recreate data it never received. Before journal
-deletion, prove that the rollback reader can restore from snapshots and archives. Keep migration
-manifests and a bounded repair tool; disabling a flag alone is not a data rollback strategy.
+Test state can be reset at protocol cutover. Once new jobs have host-local data, fallback reads from
+that host or its verified archive; the backend cannot recreate data it never received. Before
+compaction deletes journal rows, prove new-device recovery from the published snapshot and tail.
+Retain the previous verified snapshot for repair. Disabling a transport flag does not reconstruct
+missing data.
 
 Track fallback share and cost. Frequent fallback is a supported degraded mode, but it invalidates
 the lean cost assumption. Diagnose it before expanding rollout instead of treating every connected
