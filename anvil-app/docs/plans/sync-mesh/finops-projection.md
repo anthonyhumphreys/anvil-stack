@@ -4,25 +4,11 @@ Prepared 4 October 2026. Forecast: 4 October 2026 to 30 September 2027. Product 
 
 ## Decision
 
-Free Sync and Mesh look financially manageable at modest adoption. The current model forecasts **$449/month of Cloudflare usage at 1,000 DAU**, plus **£60/month outside Cloudflare**. The model assumes **USD 10,000 startup credit, expiring 18 September 2027**. At a flat 1,000 DAU, expiry arrives before the balance is consumed. At 10,000 DAU, the current design burns it in approximately two months.
+The primary projection is case 5, the full-scope host-local release target: **$27.61/month at 1,000 DAU and $434.82/month at 10,000 DAU** in month 12 of a flat one-year cohort, before credit. Tunnel supplier fees are excluded because no Anvil-side quote is available. You confirmed a startup grant and its **18 September 2027** expiry; the model assumes a USD denomination and **$10,000 opening balance**, neither of which has been reconciled against the account. At flat 1,000 DAU, this case uses $321.99 by expiry and leaves $9,678.01 unused. Cloud Agents remain off.
 
-For the base growth path from 100 to 1,000 DAU, forecast Cloudflare credit usage is **$2,827**, leaving **$7,173 to expire**. External cash spend over the forecast is **£706**, including the modelled post-expiry September charges. Before credit, external service costs are **£2,826**. Including allocated operations, support and initial measurement work brings the total to **£18,242**. Founder time is a real cost even when it creates no incremental cash invoice.
+For the host-local case's base growth path from 100 to 1,000 DAU, forecast Cloudflare usage totals **$195.44**: $183.48 of assumed credit and $11.95 of Cloudflare cash, leaving **$9,816.52 to expire**. External provider/tool cash over the forecast is **£569.07** after credit, versus **£706.68** before credit. Including allocated operations, support and initial measurement work brings the total economic cost to **£16,123**. Founder time is a real cost even when it creates no incremental cash invoice. The earlier polling-profile growth path is shown separately below for comparison.
 
-At 10,000 DAU, the event-driven target saves roughly **$2,067/month** against the current increment.
-The earlier transport-only hybrid saves another **$337/month before tunnels** under the same retained
-storage assumptions. These comparisons remain useful baselines, but do not price the more extensive
-[host-local implementation plan](host-local-sync-mesh-implementation-plan.md). That plan also moves
-detailed history off the coordinator and compacts Sync, while preserving required hosted recovery.
-It supersedes the earlier recommendation to limit work to polling and transport improvements.
-
-The new plan illustrates a **$5/month broker and compact Sync subtotal at 1,000 DAU**, or about
-**$38 at 10,000 DAU**. These exclude durable Mesh history, leases, additional trust refreshes,
-recovery artifacts and tunnel fees. They are not comparable full-service totals. Core Cloudflare
-targets are below $50 at 1,000 DAU and $250 at 10,000 DAU. Any tunnel supplier fee is additional
-Anvil-side operating cost, not a paid Sync/Mesh feature. Measurement must establish whether these
-targets preserve the current functionality, then include tunnels in the full-service total. The workbook
-still contains only the four earlier scenarios. Add a fifth measured case before using the new
-architecture for a credit burn-down or operational commitment.
+Using the earlier inputs, the event-driven target saves roughly **$2,067/month at 10,000 DAU** against the polling increment; the earlier transport-only hybrid saves another **$337/month before tunnel fees** under the same retained-storage assumptions. Those four cases remain comparison scenarios, but their polling inputs need remeasurement after the client changes below. The broker-and-compact-Sync subtotal of about **$5/month at 1,000 DAU or $38 at 10,000 DAU is not a full-product estimate**. Case 5 also includes durable leases and presence, trust refresh, terminal records, history and recovery artifacts, direct-session refreshes, batched durable activity, retries and fallback. It assumes no released-client migration overlap. The base workload separately assumes 4.84 connected device-hours, 0.25 active-attempt hours and 4.84 active-viewer hours per DAU-day. The 8-hour, three-device sensitivities below make the resulting workload differences explicit. Tunnel supplier fees remain unknown and are Anvil operating costs, not a paid Sync/Mesh feature. This is a planning model, not a measured bill or an operational commitment.
 
 ## Deliverables and how to use the model
 
@@ -30,19 +16,19 @@ architecture for a credit burn-down or operational commitment.
 - [Model inputs](finops-assumptions.json) and [reproducible calculation model](finops-model.mjs). Run `node anvil-app/docs/plans/sync-mesh/finops-model.mjs` from the repository root for the forecast inputs and results.
 - [Product and implementation plan](mesh-access-and-monetisation-plan.md).
 
-In the workbook, change the architecture selector in Assumptions, the monthly **DAU** row, the DAU/MAU ratio, connected hours, storage occupancy, credit balance or expiry. One forecast recalculates the results. Cloud Agents launch month is **0**, meaning disabled. Set it to 7 to explore the explicitly illustrative April 2027 launch. This changes the model only.
+In the workbook, the architecture selector defaults to case 5. Change it, the monthly **DAU** row, the DAU/MAU ratio, connected, attempt or viewer hours, storage occupancy, credit balance or expiry to recalculate the forecast. Cloud Agents launch month is **0**, meaning disabled. Set it to 7 to explore the explicitly illustrative April 2027 launch. This changes the model only.
 
 The report's scenario tables are calculated at the published assumptions as of this date. They do not update when the workbook changes. The workbook has one active forecast and no hidden parallel case models. Currency conversion uses **1 USD = 0.75 GBP**, an editable planning rate rather than a live FX quote. Taxes, FX settlement charges and actual invoice adjustments are excluded. The credit is an expense offset, not revenue or cash.
 
 ## Credit terms and expiry
 
-You confirmed this is startup credit and supplied the expiry date. The model assumes a remaining **USD 10,000** balance today. Cloudflare's public startup terms describe a one-year validity period, R2 coverage capped at USD 10,000, and exclusions including Registrar and AI Gateway. The grant's account-specific terms take precedence. [Cloudflare startup programme](https://www.cloudflare.com/startups/).
+You confirmed a startup grant and supplied the expiry date. For arithmetic, the model assumes a remaining **USD 10,000** balance today. The currency, remaining balance and service eligibility are assumptions, not account-verified facts. Cloudflare's public startup terms describe a one-year validity period, R2 coverage capped at USD 10,000, and exclusions including Registrar and AI Gateway. The grant's account-specific terms take precedence. [Cloudflare startup programme](https://www.cloudflare.com/startups/).
 
 Workers, account coordination, D1 and R2 charges are modelled as eligible. Observability, the shared Workers minimum and future Containers charges are also assumed eligible for arithmetic; confirm those items on your grant or first detailed invoice before relying on the paid-execution scenario. No account balance or invoice was retrieved. Confirm other applications sharing the credit account and enter their burn in Other Cloudflare USD/month, currently zero.
 
 Expiry is modelled conservatively at **00:00 UTC on 18 September 2027**. September includes 17 credit-eligible days and 13 cash-funded days. The model prorates that month's eligible dollar usage by days; actual grant application can depend on billing-period and invoice rules. If September's invoice receives no credit, the base external cash estimate rises from £706 to £897. Confirm the time and invoice treatment. Credits already spent are never restored by expiry, and unused credit becomes zero after expiry.
 
-To consume the grant evenly over the approximately 349 eligible days from today, average eligible burn would be about **$860 per 30 days**. Under the current mix and retention assumptions, roughly **1,838 sustained DAU** would use the full credit by expiry. This is a budget threshold, not a growth target. Productive experiments and measured load tests may be useful uses of excess credit; spending simply to exhaust it has no financial benefit.
+To consume the assumed grant evenly over the approximately 349 eligible days from today, average eligible burn would be about **$860 per 30 days**. The earlier polling-profile model's roughly **1,838 sustained-DAU** exhaustion threshold is not the case-5 threshold. Under case 5's mixed workload, retention and pricing assumptions, approximately **17,475 sustained DAU** would use the assumed $10,000 by expiry. These are budget sensitivities, not growth targets. Productive experiments and measured load tests may be useful uses of excess credit; spending simply to exhaust it has no financial benefit.
 
 ## DAU, MAU and retained accounts
 
@@ -69,13 +55,14 @@ Sync replicates portable workspace definitions, workflow templates, custom agent
 | AccountCoordinator | Account-sharded SQLite journal, job state and hibernating socket support | Rows scanned/written, average retained bytes and awake time; [coordinator](../../../cloud/backend/src/account-coordinator.ts) |
 | Healthy Sync fallback | Four calls per cycle: device roster, pull, recovery security view and dashboard requests | 60-second live fallback versus 5-second socket-down fallback; [Sync runtime](../../../src/main/services/sync-runtime.service.ts), lines 3292-3334 |
 | Renderer resources | Shared 15-second roster and 5-second active-job fallback | Initial reduction is implemented; complete event invalidation remains future work; [shared poller](../../../src/renderer/utils/shared-polling-cache.ts) |
-| Main-process remote chat | 2-second loop fetches active job state | About 432,000 HTTP calls per chat at 8h/day over 30 days; [remote chat](../../../src/main/services/remote-chat.service.ts), lines 1481-1485 |
-| Mesh workers | 30-second lease tick and per-active-attempt job checks | Cost scales with active attempts; [Mesh worker](../../../src/main/services/mesh-worker.service.ts), lines 718-747 |
+| Main-process remote chat | Healthy direct sessions use host push; fallback catch-up is jittered 25–35 seconds | The previous 2-second poll is no longer the healthy-path assumption; fallback volume depends on direct-push availability; [remote chat](../../../src/main/services/remote-chat.service.ts) |
+| Mesh workers | 30-second durable lease renewal carries cancellation state; separate per-attempt job reads were removed | Renewal reads/writes still scale with active attempts; [Mesh worker](../../../src/main/services/mesh-worker.service.ts) |
+| Approval waits | Scoped push wakeups with 25–35-second jittered durable catch-up | Replaces the prior 2-second approval poll while retaining bounded recovery reads |
 | Browser workspace grants | Approved unexpired grants claim commands every 1.5 seconds | About 576,000 extra calls/grant at 8h/day; no grant means the timer performs local work without claim traffic; [dashboard grants](../../../src/main/services/dashboard-grant.service.ts) |
 | D1 | Hosted identity/admission, account/org operations and entitlement snapshots | D1 is not consulted on every ordinary RPC; [hosted enforcement](../../../cloud/backend/src/hosted/enforcement.ts) |
 | R2 | Mesh and shared artifacts | Sync journal and scan pages primarily live in SQLite, not R2; [artifact handling](../../../cloud/backend/src/account-coordinator.ts) |
 
-Current history/receipt/job-event sweep retention is 90 days. Intermediate job activity is bounded to 1 MiB per job. Mesh artifacts are at most 64 MiB each with default 7-day and maximum 30-day retention. Hosted aggregate artifact/history byte limits are **unset**, with operator fair use rather than an automatic fixed account byte ceiling. Shared artifacts are a separate system: 16 MiB/object, 256 MiB/account, default 30-day and maximum 365-day expiry. [Hosted policy](../../../cloud/backend/src/hosted/policy.ts), [account limits and sweep](../../../cloud/backend/src/account-coordinator.ts), [shared artifacts](../../../cloud/backend/src/session-coordinator.ts).
+Intermediate activity payload is bounded to 1 MiB per job and archived as encrypted R2 segments no larger than 1 MiB or 128 events each. Segment expiry uses the source event's original `created_at + 90 days`; after a verified upload, SQLite drops the payload but keeps compact archive references until that same deadline, then a high-water floor replaces them. The model estimates one archived activity job per terminal attempt, one R2 segment per job and a 256 KiB average archive per job; lifecycle event metadata/count and actual segment counts are unmeasured. Mesh task artifacts are at most 64 MiB each with default 7-day and maximum 30-day retention. Hosted aggregate artifact/history byte limits are **unset**, with operator fair use rather than an automatic fixed account byte ceiling. Shared artifacts are a separate system: 16 MiB/object, 256 MiB/account, default 30-day and maximum 365-day expiry. [Hosted policy](../../../cloud/backend/src/hosted/policy.ts), [account limits and sweep](../../../cloud/backend/src/account-coordinator.ts), [shared artifacts](../../../cloud/backend/src/session-coordinator.ts).
 
 This means the forecast is not a guaranteed maximum bill. The 21 MB SQLite, 100 MB R2 and 2 MB D1 per retained account are occupancy assumptions. The SQLite allowance includes 20 MB account state plus a 1 MB allocation for shared session records. R2 covers artifacts rather than repository backup. No automatic deletion of existing user data is proposed by this report.
 
@@ -95,7 +82,7 @@ Sources checked 4 October: [Workers](https://developers.cloudflare.com/workers/p
 
 The model rounds excess object requests and duration to million-unit billing increments, and R2 operations/storage to their billing increments. A small duration excess can therefore add $12.50. SQLite/D1 rows remain proportional in the estimate. Incoming WebSocket messages use the 20:1 object-request billing factor; outgoing frames do not add request charges. Worker CPU uses an assumed 5 ms per HTTP invocation. [Object billing examples](https://developers.cloudflare.com/durable-objects/platform/pricing/).
 
-Logs are budgeted at 10% sampling, two 1 KB events per sampled HTTP call and seven-day retention. This is a proposed budget assumption; current Wrangler files do not establish that logging configuration. Through November, 20m events are included and excess costs $0.60/m. From 1 December 2026, the published model is 50 GB ingestion plus 12 GB-month storage included, then $0.25/GB and $0.10/GB-month. The forecast changes rates in December. [Current Workers logs](https://developers.cloudflare.com/workers/platform/pricing/), [announced Observability pricing](https://developers.cloudflare.com/observability/pricing/).
+Logs are budgeted at 10% sampling, two 1 KB events per sampled HTTP call and seven-day retention. This is a proposed generic service-log assumption; current Wrangler files do not establish that logging configuration. Feature-attribution events use 1% sampling with fixed operation labels and no identifiers; they add no durable counter writes or recurring timers and are covered conservatively within the broader log budget. Through November, 20m events are included and excess costs $0.60/m. From 1 December 2026, the published model is 50 GB ingestion plus 12 GB-month storage included, then $0.25/GB and $0.10/GB-month. The forecast changes rates in December. [Current Workers logs](https://developers.cloudflare.com/workers/platform/pricing/), [announced Observability pricing](https://developers.cloudflare.com/observability/pricing/).
 
 WorkOS AuthKit includes the first million active users. Enterprise SSO starts at $125/connection/month and a custom domain is $99/month. Both are zero in the baseline. Usage above one million MAU requires a separately verified identity price. Free org membership does not imply paid enterprise SSO or org-shared fleet functionality. [WorkOS pricing](https://workos.com/pricing).
 
@@ -121,7 +108,7 @@ The model adds 10% production-like usage and storage for staging, plus two share
 
 The steady-state tables use 30 days, the mixed active-day profile, retained accounts equal to 20 times DAU, no paid execution and December-or-later log pricing. Cash invoices before grant application and economic costs are shown separately.
 
-| DAU | MAU | Current CF/month USD | External spend GBP before credit | Allocated recurring total GBP | CF cash while fully covered |
+| DAU | MAU | Earlier polling-profile CF/month USD | External spend GBP before credit | Allocated recurring total GBP | CF cash while fully covered |
 | --- | --- | --- | --- | --- | --- |
 | 100 | 400 | $49 | £70 | £870 | $0 |
 | 1,000 | 4,000 | $449 | £397 | £1,917 | $0 |
@@ -147,19 +134,20 @@ The model uses 332.8m Worker requests, 709.9m backend-object requests, 3.33bn SQ
 
 ### Comparable Cloudflare bills
 
-| DAU | Original PR91 CF USD | Current increment CF USD | Event target CF USD | Hybrid CF USD before tunnels |
-| --- | --- | --- | --- | --- |
-| 100 | $80 | $49 | $31 | $31 |
-| 1,000 | $784 | $449 | $253 | $214 |
-| 10,000 | $8,318 | $4,926 | $2,859 | $2,522 |
+| DAU | Original PR91 CF USD | Earlier polling-profile CF USD | Event target CF USD | Hybrid before tunnel fees USD | Host-local full scope CF USD (month 12) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100 | $80 | $49 | $31 | $31 | $6 |
+| 1,000 | $784 | $449 | $253 | $214 | $28 |
+| 5,000 | $4,123 | $2,435 | $1,406 | $1,225 | $188 |
+| 10,000 | $8,318 | $4,926 | $2,859 | $2,522 | $435 |
 
-Original PR91 is a reconstructed request budget, not a measured historical invoice. The current increment uses the changed polling cadences plus the remaining main-process chat loop; its SQL, CPU and duration budgets still require measurement. Event and hybrid columns are prospective targets.
+Original PR91 is a reconstructed request budget, not a measured historical invoice. The earlier polling increment includes main-process job polls, per-attempt reads and approval polls that have since been replaced by push or slower catch-up for the described paths; its SQL, CPU and duration budgets still require measurement. Event and hybrid columns are prospective targets. None of these comparison columns is a current bill.
 
-The costs retain free hosted Sync, job acceptance, offline queues, lease fencing, approvals, cancellation and result recovery in every column. There is no paid gate on the user's own fleet or provider integrations. Tunnel costs are omitted only from the explicitly labelled hybrid subtotal; they remain an unknown input rather than a free-infrastructure claim.
+The costs retain free hosted Sync, job acceptance, offline queues, lease fencing, approvals, cancellation and result recovery in every column. There is no paid gate on the user's own fleet or provider integrations. The $38 broker-and-compact-Sync estimate excludes much of that scope; the $434.82 host-local figure is the full modeled Cloudflare usage at 10,000 DAU in month 12 of a flat cohort. Tunnel costs are excluded from cases 4 and 5 because no Anvil-side supplier quote is available; zero in the input is only a calculation placeholder, not a free-infrastructure claim. The model lists three registered execution hosts per MAU but prices one exposed tunnel allocation per MAU as a separate unquoted sensitivity; it does not assume one paid tunnel per registered host.
 
-## USD 10,000 credit burn-down
+## Assumed USD 10,000 credit burn-down: earlier polling baseline
 
-### Flat DAU
+### Flat DAU (earlier polling inputs)
 
 | Flat DAU | MAU at 25% ratio | CF/month USD, current | Credit-funded months if no expiry | Credit used before expiry USD | Unused credit expires USD | Exhaustion or expiry |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -172,7 +160,7 @@ The costs retain free hosted Sync, job acceptance, offline queues, lease fencing
 | 25,000 | 100,000 | $12,518 | 0.8 | $10,000 | $0 | 2026-10-26 |
 | 100,000 | 400,000 | $50,463 | 0.2 | $10,000 | $0 | 2026-10-09 |
 
-“Credit-funded months if no expiry” is a simple $10,000/monthly-cost ratio. It is not real runway beyond 18 September 2027. Dates are approximate straight-line consumption within each forecast period and can vary with invoice timing, traffic patterns and billing increments. Usage-based credit coverage is assumed. At 100,000 DAU the current singleton session path also needs a throughput test; a cheap calculated bill does not establish capacity.
+“Credit-funded months if no expiry” is a simple $10,000/monthly-cost ratio. It is not real runway beyond 18 September 2027. Dates are approximate straight-line consumption within each forecast period and can vary with invoice timing, traffic patterns and billing increments. Usage-based credit coverage is assumed. At 100,000 DAU the earlier polling-profile singleton session path also needs a throughput test; a cheap calculated bill does not establish capacity.
 
 ### Effect of further architecture changes
 
@@ -185,7 +173,7 @@ The costs retain free hosted Sync, job acceptance, offline queues, lease fencing
 
 At the same DAU, the event target retains more credit and delays cash spend. A hybrid before tunnels can extend it further, but the difference is small against its engineering and operating effort. A charged tunnel product could consume credit or cash at a different rate and reverse that result.
 
-### Base growth path
+### Base growth path (earlier polling-profile baseline, not case 5)
 
 | Month | Average DAU | CF usage USD | Credit used USD | Credit balance USD | Outside-CF and post-credit cash GBP |
 | --- | --- | --- | --- | --- | --- |
@@ -204,7 +192,7 @@ At the same DAU, the event target retains more credit and delays cash spend. A h
 
 The September closing balance is zero because unused credit expires. Immediately before expiry, approximately $7,173 remains unused in this path. By 1 September, it has $7,427 remaining. $254 is used during the assumed eligible September portion, and the rest expires. September's external cash line includes the modelled post-expiry Cloudflare share and outside-CF services.
 
-### Growth and cash budget
+### Earlier polling-profile growth and cash budget (comparison only)
 
 | Growth assumption | DAU at Sep-27 | CF credit consumed USD | Unused credit expired USD | External cost before credit GBP | External cash after credit GBP | Cost incl. allocated time GBP |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -214,7 +202,76 @@ The September closing balance is zero because unused credit expires. Immediately
 
 Slow growth ends at 300 DAU, base at 1,000 and fast at 10,000. They are planning scenarios, not adoption predictions. Fast growth starts at 100 DAU and reaches 5,500 in May. Its credit exhaustion estimate is **2027-06-25**. Protect cash for the post-credit bill rather than planning around leftover credit in the base case.
 
-For base growth, hold approximately **£3,533** as a full-price external-services budget with 25% contingency, even though forecast grant-adjusted cash is much lower. Credit cannot be renewed by assumption. If labour is paid externally, add the paid share of £15,416. No runway for the entire company is claimed because salaries, starting company cash, other liabilities and collections are unknown.
+For the earlier polling-profile base growth, hold approximately **£3,533** as a full-price external-services budget with 25% contingency, even though forecast grant-adjusted cash is much lower. Credit cannot be renewed by assumption. If labour is paid externally, add the paid share of £15,416. No runway for the entire company is claimed because salaries, starting company cash, other liabilities and collections are unknown.
+
+## Host-local full-scope planning case
+
+This fifth scenario prices the broker together with compact Sync, durable attempt leases and worker presence, trust refresh, terminal records, retained history, result archives and handoff checkpoints. It models **DAU, connected-device hours, active-attempt hours and active-viewer hours independently**. The greenfield base case has no legacy-client migration overlap. The totals are gross Cloudflare charges before the startup credit, not observed usage or a guaranteed bill. The host-only live route and durable `event.append` split are release-target design assumptions; the machine endpoint currently defaults off, so use a zero machine-protocol share to model the currently available account-WebSocket fallback. The existing $38 broker-and-compact-Sync subtotal at 10,000 DAU is not the whole-product cost.
+
+| Independent driver | Host-local planning assumption |
+| --- | --- |
+| Population and activity | 25% DAU/MAU; 5 retained accounts per MAU; 3 execution hosts per MAU; 1.55 connected devices, 4.84 connected device-hours, 0.25 active-attempt hours and 4.84 active-viewer hours per DAU-day. All activity inputs are independent and unmeasured. |
+| Leases and presence | 120-second attempt lease renewed every 30 seconds; 90-second idle worker presence refresh; 60-second trust refresh |
+| Active direct host sessions | 1 direct session-hour per active-viewer hour (unmeasured; default 4.84 active-viewer hours/DAU-day; editable; peer-pool/all-pairs fanout can exceed one); one Worker HTTP request and four DO calls each 30-second revalidation; 20 SQLite row reads/revalidation (8 fixed plus 4 per registered host at the default three hosts); 0 authoritative row writes; 0.01 DO seconds/call is an unmeasured duration estimate |
+| Optional dashboard grant refresh | Separate 30-second regular RPC, one Worker HTTP plus two DO calls and five estimated SQLite reads; default open-dashboard session factor is zero because not every connected device has a dashboard open; set the editable factor to one for a sensitivity |
+| WebSocket billing | 20 incoming messages per billable request and 0.01 handler seconds per message; outgoing frames add no request charge |
+| Live status and durable history | Illustrative unmeasured 32 status/progress frames per terminal job at 1 KiB/frame; one target host-session copy per machine-path frame by default. Host delivery copies themselves have no modeled Worker/DO calls; actual direct-session fanout and supplier fees are unknown. The 256 KiB average R2 history allowance already includes these status bytes (no second storage charge); it remains below the 1 MiB/job activity budget. |
+| Durable activity append | With the target host path active, one ordinary Worker HTTP request and two DO calls per batch; no account WebSocket fanout and no 20:1 incoming-WS multiplier. Up to 50 frames/256 KiB per batch, flush at one second or terminal/shutdown; mean batch size defaults to one until measured. Count 3 fixed auth reads/batch plus 5 reads and 4 durable writes per accepted frame, and up to 2 aggregate counter writes/batch. Duplicate/gap-row behavior differs; request, row and batch factors are unmeasured planning inputs. |
+| Coordinator writes | 2 authoritative SQLite writes and 2 reads per attempt renewal; 1 read and 1 write per idle-presence refresh; 1 lifetime terminal tombstone per active-attempt hour, 2 KB each; opening stock of 50 records per retained account |
+| History archive amplification | 1 archived job per terminal attempt; 1 segment/job; 256 KB average R2 payload/job; 128 event rows/segment for the conservative operation estimate, counting up to 128 SQLite reads and 260 writes per segment (archive metadata, activity dedupe rows and source-row deletion) |
+| Sync, identity and recovery | 1 MB coordinator SQLite and 1 MB encrypted Sync snapshot per retained account; 100 KB D1 metadata; archived activity expires at original event creation + 90 days; total event payload cap is 1 MiB/job; each segment is ≤1 MiB/128 events and lifecycle metadata/count may add bytes; 10% of attempts retain a max-64 KB public result report in SQLite and a max-64 KB sealed result in R2 for 90 days; assume every terminal job has one sealed input archive, 128 KiB average against the 512 KiB accepted-envelope cap, retained 90 days; separate task artifacts for 10% at an assumed 256 KB average for 7 days (64 MiB max/object, 30-day max retention); checkpoints for 1% at 4 MiB for 30 days |
+| Failure and transition traffic | 5% retry overhead; 1% of connected device-hours on 5-second HTTP fallback (720 requests per affected device-hour, 2 object calls per request); 0% legacy migration/dual-path overlap in the greenfield base case; 10% staging overhead |
+| Terminal sealed-input archive | Assume one input-bearing job per terminal attempt; 128 KiB average object, 512 KiB maximum, 90-day retention from terminal completion. Each new object uses 1 R2 PUT and 2 HEADs (existence check and verification); model 1 GET per object across retention, with each `job.get` hydration adding a GET; 1 DELETE at expiry. One SQLite row update is counted after compaction and one at expiry. At 1,000 DAU, the mature-month estimate is 7,500 objects / 2.95 GB retained, 7,500 PUTs, 15,000 HEADs, 7,500 GETs and 7,500 DELETEs before retry/staging overhead. |
+
+Every host-local value above is an explicit, unmeasured planning input. Replace it with workload traces and account-meter data. The modeled protocol keeps a 120-second attempt lease, 30-second renewal, 90-second worker-presence refresh and 60-second trust refresh. The diagnostic renewal-counter write is removed, so it is zero in the base and remains an editable sensitivity. Two durable attempt/worker-lease row writes per renewal are still counted. Archive row counts use the segment maximum of 128 events; a segment with fewer rows costs less, while more segments per job cost more. The machine-path activity design persists accepted history through `event.append` without account-socket fanout and sends ephemeral live output to active host subscriptions. When the endpoint is off or unavailable, status remains live and durable on the existing account WebSocket fallback. This release-target route has not been proven under production workload; its stated counts and batching must be measured.
+
+The calculation carries account-lifetime idempotency tombstones forward as retained accounts grow, separately includes public result reports in SQLite, sealed result objects in R2, and terminal sealed-input archives for their respective 90-day recovery windows, and models Sync snapshots, D1 metadata, activity archives that expire at their original event creation + 90 days, task artifacts and checkpoints. It does not add a new 90-day period after archival; transient activity archive references share the event's remaining 90-day window, while terminal idempotency tombstones remain for the account lifetime. The 1 MB coordinator SQLite allowance includes compact archive-reference/lifecycle occupancy until measured. Input archives retain opaque client-encrypted envelopes; their identifiers and archive metadata are coordinator-visible. The account retention multiplier keeps stored state billable when DAU falls. Cloud Agents remain disabled, and no paid Anvil feature is assumed. The tunnel fee input is zero only because no Anvil-side supplier quote has been confirmed; include any real supplier invoice in the operating cost.
+
+For each input archive, the nominal fresh-object path checks with HEAD, writes once if missing, then HEAD-verifies before the SQLite envelope is cleared. HEAD and GET are Class B, PUT is Class A, and DELETE is free under the published operation classes. Retry and staging multipliers apply to billable upload/read calls. The GET rate assumes one hydration per archived job over its retention; measure `job.get` calls before treating that as representative. The stated share and mean bytes are conservative planning inputs, not measured population or payload size. [Current object-storage pricing](https://developers.cloudflare.com/r2/pricing/).
+
+At flat 1,000 DAU, one 30-day month models 145,200 direct host-session hours from the independent 4.84 active-viewer hours per DAU-day and 17.424 million 30-second revalidations (17.424 million Worker HTTP requests, 69.696 million DO calls and 348.48 million estimated SQLite reads before retry/staging). The illustrative activity input produces 240,000 status frames / 245.76 MB; a one-frame mean batch yields 240,000 `event.append` requests, 480,000 DO calls, 1.92 million SQLite reads and 1.44 million writes before multipliers. Each live status frame has one local host-session copy in the base; that delivery itself has no Worker/DO operation charge, while the unknown tunnel/supplier cost remains excluded. The measured batch occupancy, session count, SQL reads and actual frame volume can change these totals materially. Setting the separate open-dashboard session factor to one per connected device-hour adds 17.424 million HTTP and 34.848 million DO refresh calls, 87.12 million estimated reads and about **$14.20/month** at 1,000 DAU; the base case keeps it at zero.
+
+### Gross Cloudflare and startup-credit cases
+
+| Flat DAU | Host-local gross CF/month USD | Credit consumed through 18 Sep 2027 USD | Unused credit expires USD | Credit outcome |
+| ---: | ---: | ---: | ---: | --- |
+| 100 | $6.20 | $71.41 | $9,928.59 | Expires with balance |
+| 1,000 | $27.61 | $321.99 | $9,678.01 | Expires with balance |
+| 5,000 | $187.56 | $2,254.08 | $7,745.92 | Expires with balance |
+| 10,000 | $434.82 | $5,270.77 | $4,729.23 | Expires with balance |
+
+The gross monthly column is the September 2027 month in a twelve-period flat-DAU run, so it includes the terminal-record stock accumulated during that year. Credit burn uses the forecast's dated periods and prorates September through 17 September; it assumes the credit applies to every modeled service charge. At these four flat DAU levels the fifth scenario does not exhaust the $10,000 balance before expiry. Actual grant eligibility and invoice treatment still require account confirmation. Terminal tombstones continue to accumulate after the modeled year; this is a month-12 projection, not an indefinite steady state. With `machineProtocolActiveShare=0`, the 1,000-DAU month-12 model falls to **$9.72** because target direct-session revalidation and append calls are removed while status returns to the account WebSocket path. That setting represents today's machine-flag-off behavior, not equivalent host-local capability.
+
+### Heavy three-device workload sensitivity
+
+The default model represents the average connected population, not every user's stated heavy-use pattern. “Eight hours across three devices” can mean eight total device-hours as a person switches among devices, or 24 device-hours if all three stay connected for eight hours. The table separates connected, active-attempt and active-viewer hours. Its typical single-viewer stress row has all three devices connected for eight hours (24 device-hours), one host attempt for eight hours and one viewer subscribed to that host for eight hours. The all-pairs sensitivity models three active hosts/viewers and two target sessions per viewer-hour. Demand dialing means discovered but inactive peers do not imply an all-to-all session pool; the all-pairs row is not the default. Each case keeps the same retry, 1% HTTP-fallback, storage and staging assumptions, with zero client-migration overlap. Amounts include lifetime terminal records accrued over the twelve forecast periods.
+
+| Connected device-hours/DAU-day | Active attempt-hours/DAU-day | Active viewer-hours/DAU-day | Direct sessions per viewer-hour | Host-session copies per status frame | Flat DAU | Sep-27 gross CF USD/month | CF credit used through expiry USD | Unused credit expires USD | Credit exhausted or expires |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 8 (aggregate) | 8 (one host) | 8 | 1 | 1 | 100 | $7.64 | $88.97 | $9,911.03 | Expiry with balance |
+| 8 (aggregate) | 8 (one host) | 8 | 1 | 1 | 1,000 | $197.45 | $2,342.36 | $7,657.64 | Expiry with balance |
+| 8 (aggregate) | 8 (one host) | 8 | 1 | 1 | 5,000 | $1,263.58 | $10,000.00 | $0 | 26 May 2027 |
+| 8 (aggregate) | 8 (one host) | 8 | 1 | 1 | 10,000 | $2,615.10 | $10,000.00 | $0 | 24 Jan 2027 |
+| 24 (all 3 online 8h) | 8 (one host) | 8 (one viewer) | 1 | 1 | 100 | $7.79 | $90.70 | $9,909.30 | Expiry with balance |
+| 24 (all 3 online 8h) | 8 (one host) | 8 (one viewer) | 1 | 1 | 1,000 | $222.87 | $2,642.01 | $7,357.99 | Expiry with balance |
+| 24 (all 3 online 8h) | 8 (one host) | 8 (one viewer) | 1 | 1 | 5,000 | $1,407.06 | $10,000.00 | $0 | 2 May 2027 |
+| 24 (all 3 online 8h) | 8 (one host) | 8 (one viewer) | 1 | 1 | 10,000 | $2,876.93 | $10,000.00 | $0 | 13 Jan 2027 |
+| 24 (all 3 online 8h) | 24 (all 3 hosts) | 24 (three viewers) | 2 (all-pairs) | 2 (all-pairs) | 100 | $33.17 | $389.10 | $9,610.90 | Expiry with balance |
+| 24 (all 3 online 8h) | 24 (all 3 hosts) | 24 (three viewers) | 2 (all-pairs) | 2 (all-pairs) | 1,000 | $847.85 | $9,984.97 | $15.03 | Expiry with balance |
+| 24 (all 3 online 8h) | 24 (all 3 hosts) | 24 (three viewers) | 2 (all-pairs) | 2 (all-pairs) | 5,000 | $4,530.46 | $10,000.00 | $0 | 4 Dec 2026 |
+| 24 (all 3 online 8h) | 24 (all 3 hosts) | 24 (three viewers) | 2 (all-pairs) | 2 (all-pairs) | 10,000 | $9,139.13 | $10,000.00 | $0 | 3 Nov 2026 |
+
+This makes the comparison explicit: at 1,000 DAU, the default mixed cohort's $27.61 month-12 estimate does not describe these heavy interpretations. Eight aggregate device-hours with one eight-hour attempt forecasts $197.45/month. If all three devices stay connected but one viewer follows one executing host for eight hours, the estimate is $222.87/month. Three active viewers with the all-pairs stress assumption reaches $847.85. The assumed 128 archive-event rows per segment also raises SQLite write cost at heavy attempt volume; fewer events per segment would lower it. A higher deployment run length also grows lifetime terminal-record storage beyond these twelve-period amounts.
+
+### Case-5 growth, credit and cash path
+
+| Growth case | DAU in Sep 2027 | Gross Cloudflare usage over forecast USD | Credit used USD | Credit expires USD | External cost before credit GBP | Provider/tool cash after credit GBP |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Slow | 300 | $90.23 | $86.19 | $9,913.81 | £496.97 | £432.33 |
+| Base | 1,000 | $195.44 | $183.48 | $9,816.52 | £706.68 | £569.07 |
+| Fast | 10,000 | $1,992.62 | $1,804.31 | $8,195.69 | £3,324.47 | £1,971.24 |
+
+These case-5 growth paths spend less credit than their final-month DAU would suggest because their higher-traffic months arrive late in the forecast. The base path is not the same as staying flat at 1,000 DAU for a year. Outside-Cloudflare website/tool estimates and the editable FX assumption are included in the GBP columns; tunnel charges remain unpriced and excluded.
 
 ## Savings and alternate architecture
 
@@ -247,9 +304,7 @@ Do not buy one tunnel for every viewer or every registered device. Allocate only
 
 No verified commercial per-host price for this Anvil deployment has been obtained. Under the default model, the hybrid saves **$39 monthly at 1,000 DAU** over the event target. Divided across 4,000 allocated hosts, break-even is just **$0.0097/host/month**. A hypothetical $0.10/host/month costs $400 at that adoption and erases the saving. Zero, $0.10 and $1 are sensitivities, not provider quotes. If ordinary tunnels are available without a separate usage charge under the agreed service terms, the remaining costs are broker calls, allocation operations, support and engineering.
 
-These break-even figures apply only to the earlier transport-only hybrid. The new host-local plan
-changes storage and coordination as well, and needs a separate complete cost case. Retain private
-routes and compatible fallback; measure their use before assuming every user needs an allocated tunnel.
+These break-even figures apply only to the earlier transport-only hybrid; they do not price the fuller host-local case above. Retain private routes and compatible fallback, then measure their use before assuming every user needs an allocated tunnel.
 
 ### 4. Retention and payload size
 
@@ -308,7 +363,7 @@ Illustrative buyer model: 20 billed hours/month, £0.50/hour, 3% of MAU buying. 
 
 These are illustrative price sensitivities, not Anvil offers. At £0.50/hour, marginal contribution is about **£8.16/buyer/month**. At 1,000 DAU/4,000 MAU, roughly 49 buyers cover the full-price external-service bill. Roughly 235 cover the recurring total including allocated free-service time. Small-cohort invoice rounding and shared allowances can differ from the gross marginal calculation.
 
-If the modelled April 2027 launch occurred, base-path execution revenue would be **£6,000**, incremental provider costs **£581**, and contribution **£4,957** across April-September. This would reduce full-price allocated cost from £18,242 to £13,285, before launch engineering and unquoted storage. It would also consume more CF credit, approximately $3,534 total instead of $2,827. The feature remains off, so the committed revenue forecast is **£0**.
+Under the earlier polling-profile base path, if the modelled April 2027 launch occurred, execution revenue would be **£6,000**, incremental provider costs **£581**, and contribution **£4,957** across April-September. This would reduce full-price allocated cost from £18,242 to £13,285, before launch engineering and unquoted storage. It would also consume more CF credit, approximately $3,534 total instead of $2,827. The feature remains off, so the committed revenue forecast is **£0**.
 
 The optional launch needs about 25 peak legacy-shape containers at 1,000 DAU under a 6× peak factor, above the existing 20-instance legacy cap. A 3% conversion assumption does not prove capacity or market demand. Do not use this case as a promise that the current disabled provisioner can serve that volume.
 
@@ -322,11 +377,11 @@ Attribute usage by environment, anonymised account, release/version, operation a
 
 Track daily spend, projected end-of-month gross bill, projected credit exhaustion date and valid-credit days remaining. Alert at 50%, 75% and 90% of the monthly forecast, and at remaining credit of $5,000, $2,500 and $1,000. Separately alert 90, 60 and 30 days before **18 September 2027**, even with a healthy balance. Trigger investigation if request cost per DAU doubles for three days, reconnect/fallback traffic exceeds its budget, cleanup lags, or storage growth exceeds occupancy assumptions. These are proposed alerts, not configured production controls.
 
-At 1,000 DAU, set an initial gross CF budget around **$560/month** (25% over the current $449 estimate) and keep the outside-CF **£60/month** line visible. At 10,000 DAU, that gross CF envelope is about **$6,160/month**. Budgets are not service guarantees. Reforecast after measured changes, compare actual vs budget by meter, and keep p50/p95 account costs plus high-percentile byte/attempt/grant counts. Stop redundant polling, retries and orphaned paid execution before considering changes to free feature access.
+At 1,000 DAU, the earlier polling-profile gross budget was around **$560/month** (25% over its $449 estimate); reforecast that envelope after the client changes and keep the outside-CF **£60/month** line visible. The comparable 10,000-DAU envelope was about **$6,160/month**. Budgets are not service guarantees. Reforecast after measured changes, compare actual vs budget by meter, and keep p50/p95 account costs plus high-percentile byte/attempt/grant counts. Stop redundant polling, retries and orphaned paid execution before considering changes to free feature access.
 
 ## Verification and open inputs
 
-The JavaScript calculation model and workbook were reconciled for all four architecture selections, the optional launch and a zero-DAU final month. The workbook was recalculated, scanned for formula errors and rendered for inspection. Excel-native interactive recalculation has not been exercised. The source pricing pages were checked on 4 October 2026. No production bill, usage export, tunnel quote or benchmark was available.
+The JavaScript calculation model and workbook were reconciled for all five architecture selections, the optional launch and a zero-DAU final month. The case-5 inputs are provisional and require workload measurement; its tunnel charge is unpriced and excluded. The workbook was recalculated, scanned for formula errors and rendered for inspection. Excel-native interactive recalculation has not been exercised. The source pricing pages were checked on 4 October 2026. No production bill, usage export, tunnel quote or benchmark was available.
 
 Open inputs that materially change the projection:
 

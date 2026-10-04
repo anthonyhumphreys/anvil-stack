@@ -29,7 +29,102 @@ export function invoice(u, r, modernLogs) {
   };
 }
 
-export function month(a, dau, registered, index = 0, days = 30) {
+function hostLocalUsage(a, dau, mau, registered, equivalents, days, terminalRecordsOpening) {
+  const h = a.hostLocal;
+  const n = 1 + a.nonprodFraction;
+  const retry = 1 + h.retryTrafficShare;
+  const connectedDeviceHours = dau * h.connectedDeviceHoursPerDauDay * days;
+  const activeAttemptHours = dau * h.activeAttemptHoursPerDauDay * days;
+  const activeViewerHours = dau * h.activeViewerHoursPerDauDay * days;
+  const idleDeviceHours = Math.max(0, connectedDeviceHours - Math.min(connectedDeviceHours, activeAttemptHours));
+  const terminalAttempts = activeAttemptHours * h.terminalAttemptsPerActiveAttemptHour;
+  const renewals = activeAttemptHours * 3600 / h.attemptRenewalSeconds;
+  const trustRefreshes = connectedDeviceHours * 3600 / h.trustRefreshSeconds;
+  const idlePresenceRefreshes = idleDeviceHours * 3600 / h.workerPresenceSeconds;
+  const directHostSessionHours = activeViewerHours * h.directHostSessionHoursPerActiveViewerHour * h.machineProtocolActiveShare;
+  const directHostSessionRefreshes = directHostSessionHours * 3600 / h.directHostSessionRefreshSeconds;
+  const directHostSessionHttpRequests = directHostSessionRefreshes * h.directHostSessionWorkerHttpRequestsPerRefresh;
+  const directHostSessionDoRequests = directHostSessionRefreshes * h.directHostSessionDoRequestsPerRefresh;
+  const grantRevalidationSessionHours = connectedDeviceHours * h.grantRevalidationSessionsPerConnectedDeviceHour;
+  const grantRevalidationRefreshes = grantRevalidationSessionHours * 3600 / h.grantRevalidationRefreshSeconds;
+  const grantRevalidationHttpRequests = grantRevalidationRefreshes * h.grantRevalidationWorkerHttpRequestsPerRefresh;
+  const grantRevalidationDoRequests = grantRevalidationRefreshes * h.grantRevalidationDoRequestsPerRefresh;
+  const socketFactor = 1 - h.fallbackConnectedHourShare;
+  const liveStatusFrames = terminalAttempts * h.archivedJobsPerTerminalAttempt * h.ephemeralStatusFramesPerTerminalJob;
+  const machineStatusFrames = liveStatusFrames * h.machineProtocolActiveShare;
+  const fallbackStatusFrames = liveStatusFrames - machineStatusFrames;
+  const liveStatusBytes = liveStatusFrames * h.ephemeralStatusBytesPerFrame;
+  const centralLiveStatusCopies = fallbackStatusFrames;
+  const hostSessionStatusCopies = machineStatusFrames * h.hostSessionCopiesPerLiveStatusFrame;
+  const eventAppendBatches = machineStatusFrames / Math.max(h.eventAppendMeanFramesPerBatch, 0.01);
+  const eventAppendHttpRequests = eventAppendBatches * h.eventAppendWorkerHttpRequestsPerBatch;
+  const eventAppendDoRequests = eventAppendBatches * h.eventAppendDoRequestsPerBatch;
+  const webSocketMessages = (trustRefreshes + renewals + idlePresenceRefreshes) * socketFactor + fallbackStatusFrames;
+  const fallbackHttp = connectedDeviceHours * h.fallbackConnectedHourShare * h.fallbackHttpRequestsPerDeviceHour;
+  const migration = a.architectures[1];
+  const migrationHttp = equivalents * migration.http * h.migrationOverlapShare;
+  const migrationDo = equivalents * migration.doRequests * h.migrationOverlapShare;
+  const migrationReads = equivalents * migration.reads * h.migrationOverlapShare;
+  const migrationWrites = equivalents * migration.writes * h.migrationOverlapShare;
+  const migrationDuration = dau * a.mix.reduce((v, x) => v + x.share * x.hoursPerDay / 8, 0) * days * 8 * 3600 * migration.awake * h.migrationOverlapShare * a.doMemoryGb;
+  const http = (dau * h.coreHttpRequestsPerDauDay * days + fallbackHttp + migrationHttp + eventAppendHttpRequests + directHostSessionHttpRequests + grantRevalidationHttpRequests) * retry * n;
+  const doRequests = (dau * h.coreDoRequestsPerDauDay * days + webSocketMessages / h.webSocketMessagesPerBillableRequest + eventAppendDoRequests + directHostSessionDoRequests + grantRevalidationDoRequests + fallbackHttp * h.fallbackDoRequestsPerHttp + migrationDo) * retry * n;
+  const doSeconds = dau * h.coreDoSecondsPerDauDay * days + webSocketMessages * h.webSocketHandlerSecondsPerMessage + eventAppendDoRequests * h.eventAppendDoSecondsPerRequest + directHostSessionDoRequests * h.directHostSessionDoSecondsPerRequest + grantRevalidationDoRequests * h.grantRevalidationDoSecondsPerRequest + migrationDuration / a.doMemoryGb;
+  const archiveJobs = terminalAttempts * h.archivedJobsPerTerminalAttempt;
+  const archiveSegments = archiveJobs * h.historyArchiveSegmentsPerJob;
+  const archiveEventRows = archiveSegments * h.historyArchiveEventRowsPerSegment;
+  const sealedInputs = archiveJobs * h.sealedInputShare;
+  const activitySqliteReads = machineStatusFrames * h.eventAppendSqliteReadsPerEvent + eventAppendBatches * h.eventAppendSqliteFixedReadsPerBatch + fallbackStatusFrames * h.fallbackActivitySqliteReadsPerEvent;
+  const activitySqliteWrites = machineStatusFrames * h.eventAppendSqliteWritesPerEvent + eventAppendBatches * h.eventAppendAggregateSqliteWritesPerBatch + fallbackStatusFrames * h.fallbackActivitySqliteWritesPerEvent;
+  // A mature 90-day cohort has one expiry per new input archive each month.
+  const sealedInputDeletes = sealedInputs;
+  const directHostSessionSqliteReadsPerRefresh = h.directHostSessionSqliteFixedReadsPerRefresh + h.directHostSessionSqliteReadsPerRegisteredHost * h.registeredHostsPerMau;
+  const sqliteReads = (dau * h.coreSqliteReadsPerDauDay * days + renewals * h.attemptRenewalSqliteReads + idlePresenceRefreshes * h.workerPresenceSqliteReads + directHostSessionRefreshes * directHostSessionSqliteReadsPerRefresh + grantRevalidationRefreshes * h.grantRevalidationSqliteReadsPerRefresh + terminalAttempts + archiveEventRows + activitySqliteReads + migrationReads) * retry * n;
+  const archiveSqliteWrites = archiveSegments * (4 + 2 * h.historyArchiveEventRowsPerSegment);
+  const sealedInputSqliteWrites = sealedInputs * h.sealedInputSqliteRowsPerCompaction + sealedInputDeletes * h.sealedInputSqliteRowsPerExpiry;
+  const sqliteWrites = (dau * h.coreSqliteWritesPerDauDay * days + renewals * (h.attemptRenewalSqliteRows + h.attemptCounterRowsPerRenewal) + idlePresenceRefreshes * h.workerPresenceSqliteRows + terminalAttempts + archiveSqliteWrites + sealedInputSqliteWrites + activitySqliteWrites + migrationWrites) * retry * n;
+  const terminalRecordsClosing = terminalRecordsOpening + terminalAttempts;
+  const attemptReports = terminalAttempts * h.attemptReportShare;
+  const sealedResults = terminalAttempts * h.sealedResultShare;
+  const resultArtifacts = terminalAttempts * h.resultArtifactShare;
+  const checkpoints = terminalAttempts * h.checkpointShare;
+  const daysPerMonth = days;
+  const historyGb = archiveJobs / daysPerMonth * h.historyArchiveBytesPerJob * h.historyArchiveRetentionDays / 1e9;
+  const attemptReportGb = terminalAttempts / daysPerMonth * h.attemptReportShare * h.attemptReportBytes * h.attemptReportRetentionDays / 1e9;
+  const sealedResultGb = terminalAttempts / daysPerMonth * h.sealedResultShare * h.sealedResultBytes * h.sealedResultRetentionDays / 1e9;
+  const sealedInputGb = sealedInputs / daysPerMonth * h.sealedInputBytes * h.sealedInputRetentionDays / 1e9;
+  const resultGb = terminalAttempts / daysPerMonth * h.resultArtifactShare * h.resultArtifactBytes * h.resultArtifactRetentionDays / 1e9;
+  const checkpointGb = terminalAttempts / daysPerMonth * h.checkpointShare * h.checkpointBytes * h.checkpointRetentionDays / 1e9;
+  const doGb = (registered * h.coordinatorBytesPerRetainedAccount + terminalRecordsClosing * h.terminalRecordBytes) / 1e9 * n + attemptReportGb * n;
+  const r2Gb = (registered * h.syncSnapshotBytesPerRetainedAccount / 1e9 + historyGb + sealedResultGb + sealedInputGb + resultGb + checkpointGb + registered * h.migrationOverlapBytesPerRetainedAccount / 1e9 * h.migrationOverlapShare) * n;
+  const d1Gb = registered * h.d1MetadataBytesPerRetainedAccount / 1e9 * n;
+  const r2A = (dau * h.syncClassAWritesPerDauDay * days + archiveSegments + sealedResults + sealedInputs + resultArtifacts * 2 + checkpoints * 2) * retry * n;
+  const r2B = (dau * h.syncClassBReadsPerDauDay * days + archiveJobs * h.historyArchiveReadsPerJob + sealedResults * h.sealedResultReadsPerObject + sealedInputs * (2 + h.sealedInputGetsPerObject) + resultArtifacts * h.resultArtifactReadsPerArtifact + checkpoints * h.checkpointReadsPerCheckpoint) * retry * n;
+  const d1Reads = (dau * h.d1ReadsPerDauDay * days + trustRefreshes * h.d1RowsPerTrustRefresh) * retry * n;
+  const d1Writes = dau * h.d1WritesPerDauDay * days * retry * n;
+  const cpu = http * a.cpuMsPerHttp;
+  const logEvents = (http + doRequests) * a.logSample * a.logEventsPerHttp;
+  const logGb = logEvents * a.logBytesPerEvent / 1e9;
+  return {
+    usage: {
+      http, cpu, doRequests, doDuration: doSeconds * a.doMemoryGb * retry * n,
+      doReads: sqliteReads, doWrites: sqliteWrites, doGb, r2Gb, r2A, r2B,
+      d1Reads, d1Writes, d1Gb, logEvents, logGb,
+      logStoredGb: logGb * a.logRetentionDays / days,
+      containerCpu: 0, containerMemory: 0, containerDisk: 0, containerEgress: 0,
+    },
+    connectedDeviceHours, activeAttemptHours, activeViewerHours, idleDeviceHours, directHostSessionHours, directHostSessionRefreshes, directHostSessionHttpRequests, directHostSessionDoRequests, directHostSessionSqliteReadsPerRefresh, grantRevalidationSessionHours, grantRevalidationRefreshes, grantRevalidationHttpRequests, grantRevalidationDoRequests, terminalAttempts, attemptReports,
+    terminalRecordsOpening, terminalRecordsClosing, renewals, trustRefreshes,
+    idlePresenceRefreshes, webSocketMessages, liveStatusFrames, machineStatusFrames, fallbackStatusFrames,
+    liveStatusBytes, centralLiveStatusCopies, hostSessionStatusCopies, eventAppendBatches, eventAppendHttpRequests,
+    eventAppendDoRequests, activitySqliteReads, activitySqliteWrites, fallbackHttp, migrationHttp,
+    registeredHosts: mau * h.registeredHostsPerMau, archiveGb: historyGb, archiveJobs, archiveSegments, archiveEventRows, attemptReportGb,
+    sealedResults, sealedResultGb, sealedInputs, sealedInputGb, sealedInputPuts: sealedInputs, sealedInputHeads: 2 * sealedInputs,
+    sealedInputGets: sealedInputs * h.sealedInputGetsPerObject, sealedInputDeletes, resultArtifactGb: resultGb, checkpointGb,
+  };
+}
+
+export function month(a, dau, registered, index = 0, days = 30, state = {}) {
   const mau = dau / a.dauToMau;
   const p = a.architectures[a.architecture - 1];
   const network = a.mix.reduce((v, x) => v + x.share * x.hoursPerDay * x.devices / 24, 0);
@@ -40,7 +135,10 @@ export function month(a, dau, registered, index = 0, days = 30) {
   const buyers = agent.launchMonth > 0 && index + 1 >= agent.launchMonth ? mau * agent.conversion : 0;
   const hours = buyers * agent.hoursPerBuyer;
   const runtime = hours * (1 + agent.runtimeOverhead);
-  const free = {
+  const hostLocal = a.architecture === 5
+    ? hostLocalUsage(a, dau, mau, registered, equivalents, days, state.terminalRecordsOpening ?? registered * a.hostLocal.openingTerminalRecordsPerRetainedAccount)
+    : undefined;
+  const free = hostLocal?.usage ?? {
     http: equivalents * p.http * n,
     cpu: equivalents * p.http * n * a.cpuMsPerHttp,
     doRequests: equivalents * p.doRequests * n,
@@ -57,8 +155,10 @@ export function month(a, dau, registered, index = 0, days = 30) {
     logEvents: equivalents * p.http * n * a.logSample * a.logEventsPerHttp,
     containerCpu: 0, containerMemory: 0, containerDisk: 0, containerEgress: 0,
   };
-  free.logGb = free.logEvents * a.logBytesPerEvent / 1e9;
-  free.logStoredGb = free.logGb * a.logRetentionDays / days;
+  if (!hostLocal) {
+    free.logGb = free.logEvents * a.logBytesPerEvent / 1e9;
+    free.logStoredGb = free.logGb * a.logRetentionDays / days;
+  }
   const combined = {
     ...free,
     http: free.http + runtime * agent.requestsPerHour,
@@ -82,7 +182,7 @@ export function month(a, dau, registered, index = 0, days = 30) {
   const cfFree = sum(freeMeters) + a.otherCloudflareUsd;
   const cfTotal = sum(totalMeters) + a.otherCloudflareUsd;
   const sharedUsd = a.websiteUsd + a.otherToolsUsd + mau * a.websiteReserveUsdPerMau + a.workosCustomDomainUsd + a.workosSsoConnections * 125;
-  const tunnelsUsd = a.architecture === 4 ? mau * a.allocatedHostsPerMau * a.tunnelUsdPerHost : 0;
+  const tunnelsUsd = a.architecture >= 4 ? mau * a.allocatedHostsPerMau * a.tunnelUsdPerHost : 0;
   const freeExternal = (cfFree + sharedUsd + tunnelsUsd) * a.gbpPerUsd;
   const cloudInfra = (cfTotal - cfFree) * a.gbpPerUsd;
   const revenue = hours * agent.priceGbpPerHour;
@@ -99,18 +199,23 @@ export function month(a, dau, registered, index = 0, days = 30) {
     cashReserve: freeExternal * (1 + a.contingency) + (fixedLabor + supportLabor + oneTimeLabor) * a.paidLaborFraction,
     allInNet: allIn - contribution,
     peakContainers: runtime / (days * 24) * agent.peakFactor,
+    ...(hostLocal ? { hostLocal: { ...hostLocal, terminalRecordsClosing: hostLocal.terminalRecordsClosing } } : {}),
   };
 }
 
 export function forecast(a = assumptions, growth = a.growth.base) {
   let registered = 0;
+  let terminalRecords = 0;
   let credit = a.creditUsd;
   return growth.map((dau, i) => {
+    const priorRegistered = registered;
     registered = Math.max(registered, dau / a.dauToMau * a.registeredPerMau);
+    if (a.architecture === 5) terminalRecords += (registered - priorRegistered) * a.hostLocal.openingTerminalRecordsPerRetainedAccount;
     const start = new Date(Date.UTC(2026, 9 + i, i === 0 ? 4 : 1));
     const end = new Date(Date.UTC(2026, 10 + i, 1));
     const days = (end - start) / 86400000;
-    const result = month(a, dau, registered, i, days);
+    const result = month(a, dau, registered, i, days, { terminalRecordsOpening: terminalRecords });
+    if (a.architecture === 5) terminalRecords = result.hostLocal.terminalRecordsClosing;
     const eligibleDays = Math.max(0, Math.min(days, (new Date(a.creditExpires) - start) / 86400000));
     // Planning convention: prorate final-period eligible spend by days.
     // Actual invoice treatment at grant expiry requires provider confirmation.
@@ -129,13 +234,68 @@ export function summarize(rows) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const tables = {};
-  for (const architecture of [1, 2, 3, 4]) {
+  for (const architecture of [1, 2, 3, 4, 5]) {
     const a = { ...assumptions, architecture };
-    tables[a.architectures[architecture - 1].name] = [100, 1000, 10000].map(n => month(a, n, n / a.dauToMau * a.registeredPerMau, 2));
+    tables[a.architectures[architecture - 1].name] = [100, 1000, 5000, 10000].map(n => {
+      if (architecture !== 5) return month(a, n, n / a.dauToMau * a.registeredPerMau, 2);
+      return forecast(a, Array(12).fill(n)).at(-1);
+    });
   }
   const growth = Object.fromEntries(Object.entries(assumptions.growth).map(([k, v]) => [k, { rows: forecast(assumptions, v), totals: summarize(forecast(assumptions, v)) }]));
   const launched = structuredClone(assumptions);
   launched.agents.launchMonth = 7;
   const optionalLaunch = { rows: forecast(launched), totals: summarize(forecast(launched)) };
-  console.log(JSON.stringify({ tables, growth, optionalLaunch }, null, 2));
+  const hostLocal = { ...assumptions, architecture: 5 };
+  const flatCredits = Object.fromEntries([100, 1000, 5000, 10000].map(dau => {
+    const rows = forecast(hostLocal, Array(12).fill(dau));
+    return [dau, { modeledFinalMonthGrossUsd: rows.at(-1).cfTotal, totals: summarize(rows), creditUsedUsd: summarize(rows).creditUsed, creditExpiredUsd: summarize(rows).creditExpired }];
+  }));
+  const hostLocalGrowth = Object.fromEntries(Object.entries(assumptions.growth).map(([name, path]) => {
+    const rows = forecast(hostLocal, path);
+    return [name, { rows, totals: summarize(rows) }];
+  }));
+  const exhaustionDate = rows => {
+    let balance = assumptions.creditUsd;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const eligibleSpend = row.cfTotal * row.eligibleDays / row.days;
+      if (eligibleSpend >= balance && balance > 0) {
+        const start = new Date(Date.UTC(2026, 9 + i, i === 0 ? 4 : 1));
+        const day = new Date(start.getTime() + balance / (row.cfTotal / row.days) * 86400000);
+        return day.toISOString().slice(0, 10);
+      }
+      balance -= Math.min(balance, eligibleSpend);
+      if (row.creditExpired > 0) return '2027-09-18 (expiry with balance)';
+    }
+    return '2027-09-18 (expiry with balance)';
+  };
+  const hostLocalStress = Object.fromEntries([
+    ['aggregate-8-device-hours-one-target', 8, 8, 8, 1, 1],
+    ['24-device-hours-one-active-viewer', 24, 8, 8, 1, 1],
+    ['24-device-hours-all-pairs', 24, 24, 24, 2, 2],
+  ].map(([name, connectedHours, attemptHours, viewerHours, sessionsPerViewerHour, statusCopies]) => {
+    const scenario = structuredClone(hostLocal);
+    scenario.hostLocal.connectedDevicesPerDau = 3;
+    scenario.hostLocal.connectedDeviceHoursPerDauDay = connectedHours;
+    scenario.hostLocal.activeAttemptHoursPerDauDay = attemptHours;
+    scenario.hostLocal.activeViewerHoursPerDauDay = viewerHours;
+    scenario.hostLocal.directHostSessionHoursPerActiveViewerHour = sessionsPerViewerHour;
+    scenario.hostLocal.hostSessionCopiesPerLiveStatusFrame = statusCopies;
+    scenario.mix = [{ name: 'Heavy three-device account', share: 1, hoursPerDay: 8, devices: 3 }];
+    return [name, Object.fromEntries([100, 1000, 5000, 10000].map(dau => {
+      const rows = forecast(scenario, Array(12).fill(dau));
+      const totals = summarize(rows);
+      return [dau, {
+        activeViewerHoursPerDauDay: viewerHours,
+        directHostSessionsPerActiveViewerHour: sessionsPerViewerHour,
+        hostStatusCopiesPerFrame: statusCopies,
+        modeledFinalMonthGrossUsd: rows.at(-1).cfTotal,
+        creditUsedUsd: totals.creditUsed,
+        creditExpiredUsd: totals.creditExpired,
+        creditOutcome: totals.creditExpired > 0 ? 'expiry with balance' : 'exhausted',
+        exhaustionOrExpiry: exhaustionDate(rows),
+      }];
+    }))];
+  }));
+  console.log(JSON.stringify({ tables, growth, optionalLaunch, hostLocalFlatCredits: flatCredits, hostLocalGrowth, hostLocalStress }, null, 2));
 }
