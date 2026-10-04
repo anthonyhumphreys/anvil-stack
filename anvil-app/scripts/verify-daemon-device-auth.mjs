@@ -92,6 +92,7 @@ try {
       durableObjects: {
         ACCOUNT: { className: 'AccountCoordinator', useSQLite: true },
         SESSIONS: { className: 'SessionCoordinator', useSQLite: true },
+        MACHINE_ENDPOINTS: { className: 'MachineEndpointCoordinator', useSQLite: true },
       },
       r2Buckets: ['ARTIFACTS'],
       bindings: { OIDC_ISSUER: issuer, OIDC_CLIENT_ID: clientId },
