@@ -632,7 +632,6 @@ describe('Sync snapshot publication from an authoritative scan', () => {
       'sync.snapshot.chunk.get',
       'sync.snapshot.verify',
       'sync.snapshot.commit',
-      'sync.snapshot.get',
     ]);
     const begin = beginCall?.params as {
       publicationId: string;

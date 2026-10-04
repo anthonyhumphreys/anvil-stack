@@ -1437,7 +1437,8 @@ function sealFrame(input: {
     cipher.final(),
     cipher.getAuthTag(),
   ]);
+  const encodedNonce = nonce.toString('base64');
   input.key.fill(0);
   nonce.fill(0);
-  return { enc: 'aes-256-gcm', nonce: nonce.toString('base64'), ct: ciphertext.toString('base64') };
+  return { enc: 'aes-256-gcm', nonce: encodedNonce, ct: ciphertext.toString('base64') };
 }
