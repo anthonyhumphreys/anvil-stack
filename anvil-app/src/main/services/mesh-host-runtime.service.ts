@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module';
+import { MESH_MACHINE_MAX_FRAME_BYTES } from '../../../cloud/contract/machine.js';
 import type { MeshMachineHost, MeshMachineOperation } from '../../../cloud/contract/machine.js';
 import type { MeshHostConnectionStatus } from '../../shared/sync-runtime.js';
 import {
@@ -6,7 +8,56 @@ import {
   safeMachineErrorCode,
   type MeshMachineAdmissionContext,
   type MeshMachineSessionConnection,
+  type MeshMachineWebSocketFactory,
 } from './mesh-host-client.service.js';
+
+const requireNode = createRequire(import.meta.url);
+
+interface DesktopWebSocketLike {
+  on(event: 'message', listener: (data: unknown) => void): void;
+  on(event: 'error', listener: (error: Error) => void): void;
+  on(event: 'close', listener: () => void): void;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+}
+
+const NodeWebSocket = requireNode('ws') as new (
+  url: string,
+  protocols: string[],
+  options: { maxPayload: number; perMessageDeflate: false },
+) => DesktopWebSocketLike;
+
+/** Node-only desktop transport with an inbound message cap before payload allocation. */
+export function createDesktopMeshMachineSocket(
+  url: string,
+  protocols: string[],
+): ReturnType<MeshMachineWebSocketFactory> {
+  const socket = new NodeWebSocket(url, protocols, {
+    maxPayload: MESH_MACHINE_MAX_FRAME_BYTES,
+    perMessageDeflate: false,
+  });
+  return {
+    on(event, listener) {
+      switch (event) {
+        case 'message':
+          socket.on('message', (data) => listener(data));
+          break;
+        case 'error':
+          socket.on('error', (error) => listener(error));
+          break;
+        case 'close':
+          socket.on('close', () => listener());
+          break;
+      }
+    },
+    send(data) {
+      socket.send(data);
+    },
+    close(code, reason) {
+      socket.close(code, reason);
+    },
+  };
+}
 
 export interface MeshHostRuntimeContext extends Omit<
   MeshMachineAdmissionContext,
@@ -168,7 +219,8 @@ export class MeshHostRuntimePool {
       } catch {
         return;
       }
-      if (generation !== this.generation || this.getContext()?.accountId !== context.accountId) return;
+      if (generation !== this.generation || this.getContext()?.accountId !== context.accountId)
+        return;
 
       const discovered = new Map(
         hosts
@@ -229,7 +281,9 @@ export class MeshHostRuntimePool {
     return this.refreshInFlight;
   }
 
-  private async ensureConnected(enrollmentId: string): Promise<MeshMachineSessionConnection | null> {
+  private async ensureConnected(
+    enrollmentId: string,
+  ): Promise<MeshMachineSessionConnection | null> {
     const context = this.getContext();
     if (context === null) return null;
     let entry = this.entries.get(enrollmentId);
@@ -251,26 +305,27 @@ export class MeshHostRuntimePool {
     const context = this.getContext();
     if (context === null) return null;
     entry.status = statusFor(entry.host, 'connecting');
-    const connect = this.dependencies.connect(entry.host, {
-      apiUrl: context.apiUrl,
-      accessToken: context.accessToken,
-      accountId: context.accountId,
-      enrollmentId: context.enrollmentId,
-      ...(context.fetchFn === undefined ? {} : { fetchFn: context.fetchFn }),
-      ...(context.socketFactory === undefined ? {} : { socketFactory: context.socketFactory }),
-      ...(context.onEvent === undefined ? {} : { onEvent: context.onEvent }),
-      ...(context.onResnapshotRequired === undefined
-        ? {}
-        : { onResnapshotRequired: context.onResnapshotRequired }),
-      onClosed: (closedEnrollmentId) => {
-        const current = this.entries.get(closedEnrollmentId);
-        if (current === undefined || generation !== this.generation) return;
-        current.connection = null;
-        current.status = statusFor(current.host, 'degraded', 'route-unavailable');
-        context.onConnectivityChanged?.();
-        if (this.isRetained(closedEnrollmentId)) this.scheduleReconnect(current, generation);
-      },
-    })
+    const connect = this.dependencies
+      .connect(entry.host, {
+        apiUrl: context.apiUrl,
+        accessToken: context.accessToken,
+        accountId: context.accountId,
+        enrollmentId: context.enrollmentId,
+        ...(context.fetchFn === undefined ? {} : { fetchFn: context.fetchFn }),
+        socketFactory: context.socketFactory ?? createDesktopMeshMachineSocket,
+        ...(context.onEvent === undefined ? {} : { onEvent: context.onEvent }),
+        ...(context.onResnapshotRequired === undefined
+          ? {}
+          : { onResnapshotRequired: context.onResnapshotRequired }),
+        onClosed: (closedEnrollmentId) => {
+          const current = this.entries.get(closedEnrollmentId);
+          if (current === undefined || generation !== this.generation) return;
+          current.connection = null;
+          current.status = statusFor(current.host, 'degraded', 'route-unavailable');
+          context.onConnectivityChanged?.();
+          if (this.isRetained(closedEnrollmentId)) this.scheduleReconnect(current, generation);
+        },
+      })
       .then((connection) => {
         if (generation !== this.generation || this.entries.get(entry.host.enrollmentId) !== entry) {
           connection.close();
@@ -290,9 +345,10 @@ export class MeshHostRuntimePool {
       })
       .catch((error: unknown) => {
         if (generation === this.generation && this.entries.get(entry.host.enrollmentId) === entry) {
-          const code = error instanceof Error && error.message === 'protocol-mismatch'
-            ? 'protocol-mismatch'
-            : safeMachineErrorCode(error) ?? 'route-unavailable';
+          const code =
+            error instanceof Error && error.message === 'protocol-mismatch'
+              ? 'protocol-mismatch'
+              : (safeMachineErrorCode(error) ?? 'route-unavailable');
           entry.status = statusFor(entry.host, 'degraded', code);
           context.onConnectivityChanged?.();
           if (this.isRetained(entry.host.enrollmentId)) this.scheduleReconnect(entry, generation);
@@ -311,7 +367,8 @@ export class MeshHostRuntimePool {
     const delay = 25_000 + Math.floor(Math.random() * 10_001);
     entry.retryTimer = setTimeout(() => {
       entry.retryTimer = null;
-      if (generation !== this.generation || this.entries.get(entry.host.enrollmentId) !== entry) return;
+      if (generation !== this.generation || this.entries.get(entry.host.enrollmentId) !== entry)
+        return;
       if (this.isRetained(entry.host.enrollmentId)) {
         void this.ensureConnected(entry.host.enrollmentId).catch(() => null);
       }
@@ -324,7 +381,11 @@ export class MeshHostRuntimePool {
   }
 
   private scheduleIdleClose(entry: HostEntry): void {
-    if (entry.idleTimer !== null || entry.connection === null || this.isRetained(entry.host.enrollmentId)) {
+    if (
+      entry.idleTimer !== null ||
+      entry.connection === null ||
+      this.isRetained(entry.host.enrollmentId)
+    ) {
       return;
     }
     // A short grace absorbs one-off reads while keeping unused sessions bounded.
@@ -342,7 +403,11 @@ export class MeshHostRuntimePool {
       clearTimeout(entry.idleTimer);
       entry.idleTimer = null;
     }
-    if (entry.connection === null || entry.activeRequests > 0 || this.isRetained(entry.host.enrollmentId)) {
+    if (
+      entry.connection === null ||
+      entry.activeRequests > 0 ||
+      this.isRetained(entry.host.enrollmentId)
+    ) {
       return;
     }
     entry.connection.close();
