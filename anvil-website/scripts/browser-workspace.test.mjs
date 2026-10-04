@@ -35,8 +35,12 @@ const {
   isUsableBrowserMachineRoute,
   openBrowserMachineSessionToken,
   validateBrowserMachineClaims,
+  verifyBrowserBootstrapHostProof,
 } = await import("../lib/browser-workspace-transport.ts");
-const { MESH_MACHINE_CAPABILITIES } = await import("../../anvil-app/cloud/contract/machine.ts");
+const {
+  MESH_MACHINE_CAPABILITIES,
+  meshMachineBootstrapHostProofMessage,
+} = await import("../../anvil-app/cloud/contract/machine.ts");
 
 function fromHex(value) {
   return new Uint8Array(Buffer.from(value, "hex"));
@@ -213,6 +217,57 @@ test("sealed browser session tokens authenticate their full associated scope", a
   ephemeralPrivate.fill(0);
   shared.fill(0);
   wrapKey.fill(0);
+});
+
+test("browser bootstrap host proof rejects forged keys and altered responses", async () => {
+  const dsk = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 11));
+  const response = {
+    v: 1,
+    sessionId: "session-1",
+    sessionToken: { enc: "x25519-aes-256-gcm", ephPub: "ephemeral", nonce: "nonce", ct: "ciphertext" },
+    sessionClaims: {
+      accountId: "account-1",
+      principal: { kind: "dashboard", accountId: "account-1", sourceBrowserId: "grant-1", grantId: "grant-1" },
+      machineId: "machine-1",
+      endpointGeneration: "generation-1",
+      sessionId: "session-1",
+    },
+    machineId: "machine-1",
+    endpointGeneration: "generation-1",
+    sessionExpiresAt: "2030-01-01T00:00:00.000Z",
+    authorizationValidUntil: "2030-01-01T00:00:00.000Z",
+    stream: { epoch: "epoch-1", nextSequence: 1, oldestSequence: 1 },
+  };
+  const challengeId = "challenge-1";
+  const nonce = "nonce-1";
+  const hostProof = createHmac("sha256", dsk)
+    .update(meshMachineBootstrapHostProofMessage({ challengeId, nonce, response }))
+    .digest("base64url");
+
+  assert.equal(
+    await verifyBrowserBootstrapHostProof({ dsk, challengeId, nonce, response, hostProof }),
+    true,
+  );
+  assert.equal(
+    await verifyBrowserBootstrapHostProof({
+      dsk: new Uint8Array(32).fill(9),
+      challengeId,
+      nonce,
+      response,
+      hostProof,
+    }),
+    false,
+  );
+  assert.equal(
+    await verifyBrowserBootstrapHostProof({
+      dsk,
+      challengeId,
+      nonce,
+      response: { ...response, authorizationValidUntil: "2031-01-01T00:00:00.000Z" },
+      hostProof,
+    }),
+    false,
+  );
 });
 
 test("machine stream replay accepts only the next cursor and resnapshots gaps or epoch changes", () => {

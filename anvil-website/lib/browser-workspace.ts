@@ -34,7 +34,7 @@ import {
   browserMachineRouteCandidates,
   type BrowserMachineStreamHandlers,
 } from "@/lib/browser-workspace-transport";
-import type { MeshMachineHost } from "../../anvil-app/cloud/contract/machine.js";
+import type { MeshMachineHost } from "../../anvil-app/cloud/contract/machine";
 import {
   BROWSER_WORKSPACE_OPERATION_SCOPE,
   BROWSER_WORKSPACE_OPERATIONS,

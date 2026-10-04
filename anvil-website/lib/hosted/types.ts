@@ -4,7 +4,7 @@
 // src/hosted/billing-routes.ts. Keep them aligned with the backend — the
 // signer is byte-checked, the payloads are convention-checked.
 
-import type { MeshMachineHost } from "../../../anvil-app/cloud/contract/machine.js";
+import type { MeshMachineHost } from "../../../anvil-app/cloud/contract/machine";
 
 /** Identity the website asserts for a signed-in WorkOS user. */
 export interface HostedIdentity {

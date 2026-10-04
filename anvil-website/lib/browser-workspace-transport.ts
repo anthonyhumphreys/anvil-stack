@@ -8,6 +8,7 @@ import {
   MESH_MACHINE_SOCKET_SUBPROTOCOL,
   MESH_MACHINE_OPERATIONS,
   meshMachineBootstrapProofMessage,
+  meshMachineBootstrapHostProofMessage,
   meshMachineFrameAssociatedData,
   meshMachineSessionTokenAssociatedData,
   meshMachineSocketProofMessage,
@@ -120,6 +121,37 @@ export interface BrowserMachineTransportDependencies {
   fetch?: typeof fetch;
   createSocket?: (url: string, protocol: string) => BrowserMachineSocket;
   now?: () => number;
+}
+
+/** Confirms possession of the DSK against the complete bootstrap transcript. */
+export async function verifyBrowserBootstrapHostProof(input: {
+  dsk: Uint8Array;
+  challengeId: string;
+  nonce: string;
+  response: Omit<MeshMachineBootstrapResponse, "hostProof">;
+  hostProof: string;
+}): Promise<boolean> {
+  if (input.dsk.byteLength !== 32 || !/^[A-Za-z0-9_-]{43}$/.test(input.hostProof)) return false;
+  const expected = encodeBase64Url(
+    await hmacSha256(
+      input.dsk,
+      meshMachineBootstrapHostProofMessage({
+        challengeId: input.challengeId,
+        nonce: input.nonce,
+        response: input.response,
+      }),
+    ),
+  );
+  return constantTimeTextEqual(expected, input.hostProof);
+}
+
+function constantTimeTextEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
 }
 
 export class BrowserMachineTransportError extends Error {
@@ -590,9 +622,11 @@ export class BrowserMachineWorkspaceTransport {
       });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) {
-        const code = isRecord(payload) && isRecord(payload.error) && typeof payload.error.code === "string"
-          ? payload.error.code
-          : `http-${response.status}`;
+        const code = isRecord(payload) && typeof payload.code === "string"
+          ? payload.code
+          : isRecord(payload) && isRecord(payload.error) && typeof payload.error.code === "string"
+            ? payload.error.code
+            : `http-${response.status}`;
         throw new BrowserMachineTransportError(code, `The direct host returned ${response.status}.`);
       }
       return payload as T;
@@ -670,7 +704,7 @@ export class BrowserMachineWorkspaceTransport {
         (BROWSER_WORKSPACE_OPERATIONS as readonly string[]).includes(operation),
       ),
     );
-    const proof = encodeBase64(await hmacSha256(
+    const proof = encodeBase64Url(await hmacSha256(
       this.authorization.dsk,
       meshMachineBootstrapProofMessage(claims as MeshMachineBootstrapClaims),
     ));
@@ -689,10 +723,54 @@ export class BrowserMachineWorkspaceTransport {
       bootstrap.sessionClaims.endpointGeneration !== claims.endpointGeneration ||
       bootstrap.sessionClaims.sessionId !== bootstrap.sessionId ||
       !sameDashboardPrincipal(bootstrap.sessionClaims.principal, claims.principal) ||
+      !isRecord(bootstrap.sessionToken) || bootstrap.sessionToken.enc !== "x25519-aes-256-gcm" ||
+      typeof bootstrap.sessionToken.ephPub !== "string" ||
+      typeof bootstrap.sessionToken.nonce !== "string" ||
+      typeof bootstrap.sessionToken.ct !== "string" ||
+      typeof bootstrap.sessionExpiresAt !== "string" ||
+      typeof bootstrap.authorizationValidUntil !== "string" ||
+      typeof bootstrap.hostProof !== "string" ||
       !isRecord(bootstrap.stream) || typeof bootstrap.stream.epoch !== "string" ||
-      typeof bootstrap.stream.nextSequence !== "number" || !Number.isSafeInteger(bootstrap.stream.nextSequence)
+      typeof bootstrap.stream.nextSequence !== "number" || !Number.isSafeInteger(bootstrap.stream.nextSequence) ||
+      typeof bootstrap.stream.oldestSequence !== "number" || !Number.isSafeInteger(bootstrap.stream.oldestSequence)
     ) {
       throw new BrowserMachineTransportError("invalid-session", "The direct host returned an invalid session.");
+    }
+    const responseWithoutHostProof = {
+      v: 1 as const,
+      sessionId: bootstrap.sessionId,
+      sessionToken: {
+        enc: bootstrap.sessionToken.enc,
+        ephPub: bootstrap.sessionToken.ephPub,
+        nonce: bootstrap.sessionToken.nonce,
+        ct: bootstrap.sessionToken.ct,
+      },
+      sessionClaims: {
+        accountId: bootstrap.sessionClaims.accountId as string,
+        principal: bootstrap.sessionClaims.principal as MeshMachineSessionPrincipal,
+        machineId: bootstrap.sessionClaims.machineId as string,
+        endpointGeneration: bootstrap.sessionClaims.endpointGeneration as string,
+        sessionId: bootstrap.sessionClaims.sessionId as string,
+      },
+      machineId: bootstrap.machineId as string,
+      endpointGeneration: bootstrap.endpointGeneration as string,
+      sessionExpiresAt: bootstrap.sessionExpiresAt,
+      authorizationValidUntil: bootstrap.authorizationValidUntil,
+      stream: {
+        epoch: bootstrap.stream.epoch,
+        nextSequence: bootstrap.stream.nextSequence as number,
+        oldestSequence: bootstrap.stream.oldestSequence as number,
+      },
+    };
+    const hostProofValid = await verifyBrowserBootstrapHostProof({
+      dsk: this.authorization.dsk,
+      challengeId: challenge.challengeId,
+      nonce: challenge.nonce,
+      response: responseWithoutHostProof,
+      hostProof: bootstrap.hostProof,
+    });
+    if (!hostProofValid) {
+      throw new BrowserMachineTransportError("invalid-host-proof", "The direct host did not prove possession of the approved browser key.");
     }
     const tokenInner = await openBrowserMachineSessionToken(
       bootstrap.sessionToken,
@@ -762,7 +840,7 @@ export class BrowserMachineWorkspaceTransport {
     ) {
       throw new BrowserMachineTransportError("invalid-socket-challenge", "The direct host sent an invalid WebSocket challenge.");
     }
-    const proof = encodeBase64(await hmacSha256(
+    const proof = encodeBase64Url(await hmacSha256(
       this.sessionToken,
       meshMachineSocketProofMessage({
         sessionId: this.sessionId,
