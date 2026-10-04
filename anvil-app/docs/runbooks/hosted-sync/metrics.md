@@ -145,3 +145,40 @@ raw synced content, card/payment details, email addresses, WorkOS identities,
 or per-user billing data. `webhook_events.last_error` and
 `billing_audit.detail` are intentionally sanitized. Keep that boundary when
 adding fields or forwarding logs to a third party.
+
+## Sync and Mesh cost attribution
+
+The `feature.usage` metric samples 1% of completed, recognised operations. Its fields are
+`operation`, HTTP `status`, `sampleRate`, `wallMs`, and optional `requestBytes`, `responseBytes`
+and `batchItems`. Labels come from the fixed protocol inventory or machine broker routes.
+Account IDs, device IDs, hostnames, request IDs, credentials and content are excluded. Emission
+does not write a Durable Object counter or create a timer. Keep the sample rate in the query;
+the metric is a usage estimate, not an exact request ledger.
+
+`wallMs` includes downstream waits. It is neither billed Worker CPU nor Durable Object duration.
+Do not read or clone an object stream solely to populate a byte field. Use platform invocation,
+CPU, Durable Object request/duration/storage, D1 and R2 usage for the authoritative totals. Share
+included allowances once across the account when comparing the resulting invoice with the model.
+
+For each acceptance workload, collect these inputs over the same interval:
+
+| Area | Measurement |
+| --- | --- |
+| Broker | Discovery, admission, trust refresh and allocation counts; active and allocated hosts |
+| Ownership | Renewal batches and attempts per batch; worker presence; rejections and retries |
+| Direct interaction | Authenticated session hours; reconnects; host-stream bytes; time using fallback |
+| Sync | Published/current/previous chunk bytes; journal tail; publish and restore operations |
+| History and artifacts | Hot coordinator bytes; verified archive bytes; artifact/checkpoint bytes and expiry |
+| Platform | Requests, CPU, DO duration and indexed rows, D1 rows, R2 operations and byte-time, log ingestion |
+
+Logical sizes from coordinator metadata exclude orphaned or unreferenced objects. Reconcile them
+with bucket totals and cleanup records. Snapshot chunk metadata can explain retained bytes, but
+cannot establish billed GB-days or read/write counts. Likewise, a healthy socket does not prove
+that a Durable Object hibernates; compare the platform duration during idle and active periods.
+
+Run a three-device workload with eight connected hours, then an idle/disconnected workload and
+a forced fallback workload. Record jobs, active attempts, output bytes and recovery operations
+so both architectures perform equivalent work. Update the host-local case in
+`docs/plans/sync-mesh/finops-assumptions.json` using measured inputs. Keep unmeasured fields marked
+as estimates. Supplier tunnel pricing and capacity remain a rollout gate outside the core
+Workers/DO/D1/R2 estimate; they belong in Anvil's operating cost.
