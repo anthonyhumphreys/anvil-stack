@@ -436,13 +436,14 @@ function waitForSpawn(child: ChildProcess, timeoutMs: number): Promise<void> {
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((resolve) => {
-    const timeout = setTimeout(finish, timeoutMs);
+    let timeout: ReturnType<typeof setTimeout>;
     const finish = () => {
       clearTimeout(timeout);
       child.off('exit', finish);
       child.off('close', finish);
       resolve();
     };
+    timeout = setTimeout(finish, timeoutMs);
     child.once('exit', finish);
     child.once('close', finish);
   });
@@ -575,13 +576,18 @@ export async function startManagedEndpointForHost(input: {
     }
     const requestId = randomUUID();
     const endpointUrl = `${baseUrl}/v1/mesh/hosts/${encodeURIComponent(input.machineId)}/endpoint`;
-    let allocationResponse: Response | null = null;
-    let allocationPayload: {
-      allocation?: { state?: unknown; allocationGeneration?: unknown; hostname?: unknown; url?: unknown };
-    } | null = null;
+    type AllocationPayload = {
+      allocation?: {
+        state?: unknown;
+        allocationGeneration?: unknown;
+        hostname?: unknown;
+        url?: unknown;
+      };
+    } | null;
+    let allocationResult: { response: Response; payload: AllocationPayload } | null = null;
     for (let attempt = 0; attempt < 10; attempt += 1) {
       allocationAttempted = true;
-      allocationResponse = await fetchImpl(endpointUrl, {
+      const response = await fetchImpl(endpointUrl, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${context.accessToken}`,
@@ -594,15 +600,18 @@ export async function startManagedEndpointForHost(input: {
           localOrigin: input.localOrigin,
         }),
       });
-      allocationPayload = await allocationResponse.json().catch(() => null) as typeof allocationPayload;
-      if (allocationPayload?.allocation?.state === 'ready' || allocationResponse.status !== 202) break;
+      const payload = await response.json().catch(() => null) as AllocationPayload;
+      allocationResult = { response, payload };
+      if (payload?.allocation?.state === 'ready' || response.status !== 202) break;
       if (attempt < 9) await new Promise((resolve) => setTimeout(resolve, Math.min(1_500, 250 + attempt * 250)));
     }
-    if (allocationResponse === null || !allocationResponse.ok || allocationPayload?.allocation?.state !== 'ready') {
+    const allocationResponse = allocationResult?.response;
+    const allocationPayload = allocationResult?.payload;
+    const allocation = allocationPayload?.allocation;
+    if (allocationResponse === undefined || !allocationResponse.ok || allocation?.state !== 'ready') {
       await postManagedEndpointRelease(fetchImpl, baseUrl, context, input).catch(() => undefined);
       return { status: { state: 'error', machineId: input.machineId, endpointGeneration: input.endpointGeneration, reason: 'broker-unavailable' }, managedOrigin: null, allocationGeneration: null };
     }
-    const allocation = allocationPayload.allocation;
     if (
       !Number.isSafeInteger(allocation.allocationGeneration) ||
       typeof allocation.hostname !== 'string' ||
