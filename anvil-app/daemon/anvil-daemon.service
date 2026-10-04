@@ -10,9 +10,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=__ANVIL_APP_DIR__
-Environment=ANVIL_DATA_DIR=%h/.anvil-daemon
-ExecStart=/usr/bin/env node __ANVIL_APP_DIR__/dist-daemon/anvil-daemon.mjs run
+WorkingDirectory="__ANVIL_APP_DIR__"
+Environment="ANVIL_DATA_DIR=%h/.anvil-daemon"
+ExecStart=/usr/bin/env node "__ANVIL_APP_DIR__/dist-daemon/anvil-daemon.mjs" run
 Restart=on-failure
 RestartSec=5
 
