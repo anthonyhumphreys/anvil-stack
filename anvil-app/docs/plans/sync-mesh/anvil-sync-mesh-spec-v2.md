@@ -1,9 +1,13 @@
 # Anvil Sync & Mesh
 
-> Product policy updated 3 October 2026. Sync and Mesh are free; only future Anvil Cloud Agents will
+> Product policy updated 4 October 2026. Sync and Mesh are free; only future Anvil Cloud Agents will
 > be charged for, and they remain disabled by default for PR91. The approved
 > [implementation plan](mesh-access-and-monetisation-plan.md) supersedes older billing/preview
-> assumptions in historical packets. Security, ownership, durability and fair-use requirements remain.
+> assumptions in historical packets. The [host-local plan](host-local-sync-mesh-implementation-plan.md)
+> defines the current transport and storage implementation. Security, ownership, durability and
+> fair-use requirements remain. The RPC envelope is `anvil-backend/1`; current clients require
+> capability profiles `sync/2` and `mesh/2`. Hosted test state is greenfield, with no legacy-client
+> migration requirement. Local repositories and credentials remain protected.
 
 Product, architecture, and implementation specification, revision 2
 
@@ -59,7 +63,13 @@ Cloudflare is the chosen implementation, not one of several production adapters 
 
 ### Why Cloudflare for this workload
 
-One account's machines naturally share a coordination boundary. Give each account a SQLite-backed `AccountCoordinator` Durable Object. It owns portable entities, change sequence, receipts, enrollments, jobs, attempts, approvals, and artifact manifests. Incoming device WebSockets use the Hibernation API so idle connections do not keep an object resident. Devices always connect outbound; no Tunnel, inbound port, STUN, or TURN is required.
+One account's machines share a coordination boundary. Give each account a SQLite-backed
+`AccountCoordinator` Durable Object. It owns portable entities, change sequence, receipts,
+enrollments, jobs, attempts, approvals, and artifact manifests. Incoming coordinator WebSockets use
+the Hibernation API so idle connections do not keep an object resident. Interactive clients connect
+to an execution host over an authorised private route or an operator-enabled managed HTTPS tunnel.
+The default-off machine endpoint flag gates that host protocol. Hosted durable operations remain
+available when direct transport fails; a sleeping host cannot serve live reads.
 
 ```text
 Renderer → preload → validated IPC → main-process services
@@ -70,7 +80,10 @@ Renderer → preload → validated IPC → main-process services
                                               ├─ AccountCoordinator, one per account
                                               │    ├─ SQLite metadata and durable jobs
                                               │    └─ hibernating device/observer sockets
-                                              └─ R2: approved artifacts/checkpoints
+                                              └─ R2: encrypted snapshots, history, artifacts/checkpoints
+
+Client → encrypted host WebSocket → execution host → user's provider
+                        └─ private route or optional managed HTTPS tunnel
 ```
 
 The entry Worker authenticates and derives account routing. It never accepts an arbitrary client-selected tenant as authority. Account metadata lookup is a low-rate registration concern, not a global coordinator on every request. A small identity-directory object maps issuer/subject to internal account ID and deletion generation; shard it by subject hash, with a persisted provisioning operation for account creation/recovery. There are no cross-account execution transactions.
@@ -81,7 +94,11 @@ Route durable commands and pull operations over authenticated HTTP or the socket
 
 Use one earliest-deadline alarm per account for pending durable deadlines and retention, rescheduling from stored state. Alarms are at-least-once and share that deadline queue. They do not automatically retry coding jobs. Dormant accounts need no polling loop; schedule only real expiry, cleanup, or deletion work. Do not allocate an object per heartbeat or per token stream.
 
-R2 uploads happen outside the SQL transaction with an upload reservation and final verified manifest. Abandoned uploads expire. Artifacts are not the primary job state. This launch does not need D1, KV, Queues, Workflows, Containers, or a separate relay service. Add a product only when a measured requirement cannot be handled by this design.
+R2 uploads happen outside the SQL transaction with an upload reservation and final verified
+manifest. Abandoned uploads expire. Artifacts are not the primary job state. Hosted identity and
+organisation metadata use D1. Machine endpoint allocation has its own durable coordinator, while
+free execution still runs on user-owned machines. Default-off Anvil Cloud Agents use separate
+provisioning infrastructure. New hosted products require a measured need and a cost model.
 
 Cloudflare provides account-scoped coordination and hibernating sockets. Anvil owns offline reconciliation, authorization, protocol evolution, reconnect, and operator tooling. The runtime backend and the deployment tool are separate components with separate contracts. [Durable Objects overview](https://developers.cloudflare.com/durable-objects/), [Hibernating WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
 
@@ -270,7 +287,11 @@ Key hierarchy and distribution live in §6.
 
 ### Retention, reset, and long-offline recovery
 
-Keep incremental changes, full delete tombstones, and receipts for 90 days initially. Enforce an account history-byte quota before accepting new shared changes; never accept a change and then silently discard required recovery history. Local editing remains available while quota is exceeded. Compact asynchronously in bounded batches.
+Keep full delete tombstones and push receipts for 90 days. Incremental journal rows can be
+compacted only through a verified, recoverable snapshot; the published recovery floor explicitly
+requires older clients to rebuild. Never discard recovery data merely to meet a storage estimate.
+Self-hosted deployments retain their configured history quota; hosted deployments use operator
+fair use. Local editing remains available when hosted writes are refused. Compact in bounded batches.
 
 Maintain a small durable consumed-sequence high-water mark per enrollment. Old sequences without a retained receipt return `receipt-expired` and cannot apply again. Do not automatically create a new change ID to retry an uncertain old operation.
 
@@ -287,6 +308,49 @@ A bounded snapshot scan uses immutable entity-key ordering:
 This is a reconciliation scan, not a claim that multiple queries share one database snapshot. Creates behind the scan cursor and concurrent deletes are covered by catch-up. Bound snapshot lifetime to 15 minutes initially. Unsupported or oversized datasets fail with a recoverable explanation; never partially replace the visible database.
 
 Recovery with an expired receipt preserves the intended local version and presents a conflict if its previous acceptance cannot be established. It must not silently replay side effects or resurrect removed content.
+
+### Compact snapshot publication and recovery
+
+`sync/2` adds encrypted recovery snapshots in R2. Any trusted capable device can publish, including
+the only device on an account. Publication begins from a completed full scan containing live
+entities and delete tombstones. Pages use sequential cursors and replay an exact cached page;
+finish fixes the end watermark. Merge the journal through that watermark by revision before
+constructing the snapshot. Sparse local workspace bindings are never a full-account snapshot.
+
+The manifest binds the completed scan, dataset epoch, key version, schema version 2, committed
+cursor, coverage counts and chunk digests. Reserve against the current generation, upload immutable
+chunks of at most 256 KiB, and verify stored lengths and digests. The publisher must then download
+through the reader path, decrypt and stage the complete image before attesting verification and
+committing. The coordinator applies generation/epoch/key fences. An interrupted or losing upload
+cannot replace the active manifest.
+
+Keep the active and previous verified manifests and the journal range needed by the previous
+image. Only snapshot-covered journal rows may be removed. Expired uploads and unreferenced chunks
+use bounded cleanup. New and long-offline devices stage a verified snapshot and catch-up tail,
+then atomically activate their acknowledged base while preserving pending work, conflicts and
+quarantine. Key rotation and account deletion cover retained images and archives.
+
+### Host-local sessions and durable history
+
+The host protocol is `anvil.machine.v1`. Source account tokens go only to the HTTPS broker.
+Enrollment clients obtain an expiring, one-use admission ticket and a proof key sealed to their
+ephemeral X25519 key. The destination consumes the ticket using its own backend credential.
+Dashboard clients additionally prove their host-approved DSK grant and exact website Origin;
+server identity alone grants no host operations.
+
+The host seals the session token to the client key. Directional AES-256-GCM traffic keys protect
+all authenticated WebSocket requests, replies and events. Associated data binds the session,
+machine, endpoint generation, stream epoch, direction, transport sequence and request identity.
+Reconnect preserves transport counters under the same session. Stream replay uses a separate
+bounded cursor and requests a resnapshot after a gap or host restart. Authorization refreshes
+every 30 seconds and fails closed after at most 60 seconds without fresh trust.
+
+Job acceptance, leases, fences, approval/cancellation decisions and terminal request deduplication
+remain durable. Current intermediate activity keeps its 1 MiB per-job budget. Verified R2 archives
+preserve promised event detail until the original event's 90-day deadline; expired detail produces
+an explicit history floor. Terminal sealed inputs and results have separate verified archives and
+90-day detail retention. Minimal outcome/request records continue preventing duplicate execution
+after detail expires. These archives have their own costs and are not workspace Sync.
 
 Server restore rotates a deployment epoch before clients reconnect. Reject old pushes and all old job leases; require device reauthentication and state reconciliation. Backup restore is not ordinary incremental sync.
 
