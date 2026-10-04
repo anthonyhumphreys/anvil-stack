@@ -1,6 +1,6 @@
 // BYOB-02 gate evidence: the unmodified desktop network stack —
 // `discover`, `postAuthRoute`, `rpc`, and the contract's `hashChange` —
-// connects to a NON-Cloudflare implementation of `sync/1` (the in-memory
+// connects to a NON-Cloudflare implementation of `sync/2` (the in-memory
 // Node fixture) with zero code changes. The fixture independently
 // recomputes every payload hash, so canonicalization agreement is proven
 // over the wire rather than assumed.
@@ -63,7 +63,7 @@ describe('BYOB-02: unmodified desktop client against the non-Cloudflare fixture'
     // Discovery: the real client negotiates against the fixture descriptor.
     const connection = await discover(fixtureBaseUrl, { allowLoopbackHttp: true });
     expect(connection.descriptor.protocols).toContain('anvil-backend/1');
-    expect(connection.descriptor.profiles).toContain('sync/1');
+    expect(connection.descriptor.profiles).toContain('sync/2');
     expect(connection.descriptor.authModes).toContain('enrollment-code');
 
     // Enrollment: admin issues a code, the desktop client redeems it.

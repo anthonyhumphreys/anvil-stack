@@ -15,7 +15,7 @@ the fixture by `src/main/services/__tests__/byob-conformance.test.ts`.
   over the wire), device lifecycle ops, `data.export.*`/`data.import.*`,
   `data.operationStatus`, and `account.delete`/`account.deletionStatus`.
 - `fixture-server.mjs` — the non-Cloudflare reference backend: plain
-  `node:http`, in-memory state, `sync/1` only. It exists to prove the
+  `node:http`, in-memory state, `sync/2` only. It exists to prove the
   contract is implementable without Durable Objects, R2, or Workers — it is
   a conformance fixture, not a production backend.
 
@@ -37,5 +37,5 @@ or `pnpm conformance:fixture` / `pnpm conformance` from `cloud/backend`.
 
 Exit code is non-zero on any failed check. Point `--url` at a third-party
 implementation to verify compatibility claims; a backend that passes all
-checks implements the `sync/1` profile correctly enough for the unmodified
+checks implements the `sync/2` profile correctly enough for the unmodified
 desktop to enroll, sync, and manage devices.

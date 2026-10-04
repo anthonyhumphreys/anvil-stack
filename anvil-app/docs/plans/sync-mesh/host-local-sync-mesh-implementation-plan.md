@@ -306,7 +306,8 @@ orchestration internals in `anvil-cloud`, review and update the relevant root `P
 
 ### Protocol cutover and rollout
 
-Require the supported protocol and negotiate capabilities per connection. Bind a job's execution
+The generic RPC envelope remains `anvil-backend/1`; capability profiles are `sync/2` and `mesh/2`.
+Require the supported profiles and negotiate capabilities per connection. Bind a job's execution
 protocol to its attempt generation. Keep hosted fallback for network failure and unsupported direct
 operations. It is not a route for obsolete clients. Never shadow-execute mutations; deduplicate
 requests across transports.

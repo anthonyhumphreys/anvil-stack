@@ -181,7 +181,7 @@ await check('discovery descriptor advertises the frozen contract', async () => {
   const d = await res.json();
   assertEq(d.descriptorVersion, 1, 'descriptorVersion');
   assert(Array.isArray(d.protocols) && d.protocols.includes(PROTOCOL), `protocols must include ${PROTOCOL}`);
-  assert(Array.isArray(d.profiles) && d.profiles.includes('sync/1'), 'profiles must include sync/1');
+  assert(Array.isArray(d.profiles) && d.profiles.includes('sync/2'), 'profiles must include sync/2');
   assert(Array.isArray(d.authModes) && d.authModes.length > 0, 'authModes non-empty');
   for (const key of ['entityBytes', 'pageBytes', 'batchChanges', 'liveFrameBytes']) {
     assert(Number.isInteger(d.limits?.[key]) && d.limits[key] > 0, `limits.${key} positive int`);
@@ -325,6 +325,42 @@ await check('data.export pages entities; data.import previews and commits on ano
   assertEq(commit.applied, 1, 'commit applied');
   const pull = unwrap(await rpc('sync.pull', { cursor: null, maxBytes: 65536 }, bearer(dst)));
   assertEq(pull.changes.find((c) => c.entityId === 'port-me')?.payload?.name, 'Portable', 'imported payload');
+});
+
+await check('compact snapshots verify encrypted chunks and fence competing publications', async () => {
+  const session = await freshSession(`conf-snapshot-${randomUUID()}`);
+  const token = bearer(session);
+  const state = unwrap(await rpc('sync.snapshot.get', {}, token));
+  const data = Buffer.from('opaque-encrypted-snapshot-fixture');
+  const fields = {
+    expectedGeneration: state.manifest?.generation ?? 0, datasetEpoch: state.datasetEpoch,
+    keyVersion: state.keyVersion, schemaVersion: 1, committedCursor: state.currentCursor,
+    entityCount: 0, tombstoneCount: 0,
+    chunks: [{ index: 0, byteLength: data.length, sha256: sha256Hex(data) }],
+  };
+  const input = { ...fields, publicationId: randomUUID(), manifestSha256: sha256Hex(canonicalize(fields)) };
+  unwrap(await rpc('sync.snapshot.begin', input, token));
+  const other = { ...input, publicationId: randomUUID() };
+  unwrap(await rpc('sync.snapshot.begin', other, token));
+  const early = await rpc('sync.snapshot.commit', { publicationId: input.publicationId }, token);
+  assert(early.body?.error, 'commit must reject unverified uploads');
+  const wrong = await rpc('sync.snapshot.chunk.put', { publicationId: input.publicationId, index: 0,
+    bytesBase64: Buffer.from('wrong').toString('base64') }, token);
+  assert(wrong.body?.error, 'wrong bytes must be rejected');
+  for (const publication of [input, other]) {
+    unwrap(await rpc('sync.snapshot.chunk.put', { publicationId: publication.publicationId,
+      index: 0, bytesBase64: data.toString('base64') }, token));
+    const read = unwrap(await rpc('sync.snapshot.chunk.get', { snapshotId: publication.publicationId, index: 0 }, token));
+    assertEq(read.bytesBase64, data.toString('base64'), 'publisher can verify uploaded bytes before commit');
+    unwrap(await rpc('sync.snapshot.verify', { publicationId: publication.publicationId,
+      manifestSha256: publication.manifestSha256 }, token));
+  }
+  const committed = unwrap(await rpc('sync.snapshot.commit', { publicationId: input.publicationId }, token));
+  assertEq(committed.manifest.generation, fields.expectedGeneration + 1, 'generation advances once');
+  const replay = unwrap(await rpc('sync.snapshot.commit', { publicationId: input.publicationId }, token));
+  assertEq(replay.manifest.snapshotId, committed.manifest.snapshotId, 'commit replay is idempotent');
+  const stale = await rpc('sync.snapshot.commit', { publicationId: other.publicationId }, token);
+  assert(stale.body?.error, 'competing publication must not overwrite the committed manifest');
 });
 
 await check('account.delete revokes sessions, purges, and locks the accountId', async () => {

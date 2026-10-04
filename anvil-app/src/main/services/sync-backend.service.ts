@@ -359,7 +359,7 @@ export function getIntegrationPrompt(): string {
     `- Contract digest (stand-in until the frozen bundle digest exists; sha256 of "${preimage}"): ${digest}`,
     '- Backend repository: <repository or new project directory>',
     "- Chosen hosting provider and database: <operator's choice>",
-    '- Required profile: <sync/1 or sync/1 plus mesh/1>',
+    '- Required profile: <sync/2 or sync/2 plus mesh/2>',
     '- Public base URL or intended domain: <HTTPS endpoint>',
     '- Supported authentication mode: <oidc-pkce or enrollment-code>',
     "- Scale, retention, and budget constraints: <operator's values>",

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Anvil Sync & Mesh — non-Cloudflare reference fixture (BYOB-02).
 //
-// A minimal IN-MEMORY backend implementing the `sync/1` profile over plain
+// A minimal IN-MEMORY backend implementing the `sync/2` profile over plain
 // Node http: no Cloudflare, no Durable Objects, no R2 — proving the frozen
 // wire contract is provider-neutral. It exists so the conformance suite
 // (suite.mjs) has a second implementation to run against, and so the
@@ -9,7 +9,7 @@
 //
 // Deliberately a fixture, not a production backend: state is per-process
 // memory, tokens are stored as SHA-256 hashes but everything else trades
-// durability for clarity. Advertised profiles: ['sync/1'] only.
+// durability for clarity. Advertised profiles: ['sync/2'] only.
 //
 //   node fixture-server.mjs [--port 8790]
 //   ADMIN_TOKEN default: 'fixture-admin-token'
@@ -75,6 +75,9 @@ function account(id) {
       changes: [], // append-only journal
       receipts: new Map(), // `${enr}:${seq}` → {contentHash, result}
       enrollments: new Map(), // enrollmentId → { highWater }
+      snapshots: new Map(),
+      snapshot: null,
+      previousSnapshot: null,
     };
     accounts.set(id, a);
   }
@@ -259,10 +262,93 @@ function hashOk(change) {
   return sha256Hex(input) === change.payloadHash;
 }
 
+// Opaque chunk storage for the provider-neutral compact snapshot contract.
+// This in-memory fixture deliberately provides no production durability.
+function snapshotHashInput(p) {
+  return canonicalize({
+    chunks: p.chunks, committedCursor: p.committedCursor, datasetEpoch: p.datasetEpoch,
+    entityCount: p.entityCount, expectedGeneration: p.expectedGeneration,
+    keyVersion: p.keyVersion, schemaVersion: p.schemaVersion, tombstoneCount: p.tombstoneCount,
+  });
+}
+
+function handleSnapshotRpc(session, requestId, operation, p, acct) {
+  const fail = (reason, code = 'malformed-request', status = 400) => rpcError(requestId, code, status, { reason });
+  if (operation === 'sync.snapshot.get') {
+    return rpcOk(requestId, { manifest: acct.snapshot, datasetEpoch: EPOCH, keyVersion: 1,
+      currentCursor: acct.nextSequence - 1, recoveryFloor: 0 });
+  }
+  if (operation === 'sync.snapshot.begin') {
+    if (!p || typeof p.publicationId !== 'string' || !/^[a-f0-9-]{36}$/i.test(p.publicationId) ||
+        p.datasetEpoch !== EPOCH || p.keyVersion !== 1 || p.schemaVersion !== 1 ||
+        !Number.isInteger(p.committedCursor) || p.committedCursor < 0 || p.committedCursor >= acct.nextSequence ||
+        !Number.isInteger(p.entityCount) || p.entityCount < 0 ||
+        !Number.isInteger(p.tombstoneCount) || p.tombstoneCount < 0 ||
+        !Array.isArray(p.chunks) || p.chunks.length === 0 || p.chunks.length > 128 ||
+        p.chunks.some((c, i) => c.index !== i || !Number.isInteger(c.byteLength) ||
+          c.byteLength <= 0 || c.byteLength > 262144 || !/^[a-f0-9]{64}$/.test(c.sha256)) ||
+        sha256Hex(snapshotHashInput(p)) !== p.manifestSha256) return fail('snapshot-invalid');
+    const existing = acct.snapshots.get(p.publicationId);
+    if (existing) {
+      if (existing.owner !== session.enrollmentId || canonicalize(existing.params) !== canonicalize(p))
+        return fail('snapshot-publication-mismatch', 'conflict', 409);
+      return rpcOk(requestId, { publicationId: p.publicationId, uploadExpiresAt: new Date(existing.expiresAt).toISOString() });
+    }
+    if (p.expectedGeneration !== (acct.snapshot?.generation ?? 0)) return fail('snapshot-generation', 'conflict', 409);
+    const expiresAt = Date.now() + 30 * 60 * 1000;
+    acct.snapshots.set(p.publicationId, { owner: session.enrollmentId, params: p, chunks: new Map(),
+      expiresAt, verified: false, committed: null });
+    return rpcOk(requestId, { publicationId: p.publicationId, uploadExpiresAt: new Date(expiresAt).toISOString() });
+  }
+  const id = operation === 'sync.snapshot.chunk.get' ? p?.snapshotId : p?.publicationId;
+  const upload = acct.snapshots.get(id);
+  if (!upload) return fail('snapshot-not-found', 'not-found', 404);
+  if (operation === 'sync.snapshot.chunk.get') {
+    const published = acct.snapshot?.snapshotId === id || acct.previousSnapshot?.snapshotId === id;
+    if (!published && upload.owner !== session.enrollmentId) return fail('snapshot-owner', 'forbidden', 403);
+    const descriptor = upload.params.chunks[p.index];
+    const data = upload.chunks.get(p.index);
+    if (!Number.isInteger(p.index) || !descriptor || !data) return fail('snapshot-chunk-not-found', 'not-found', 404);
+    return rpcOk(requestId, { ...descriptor, bytesBase64: data.toString('base64') });
+  }
+  if (upload.owner !== session.enrollmentId) return fail('snapshot-owner', 'forbidden', 403);
+  if (operation === 'sync.snapshot.commit' && upload.committed) return rpcOk(requestId, upload.committed);
+  if (upload.expiresAt <= Date.now()) return fail('snapshot-upload-expired', 'conflict', 409);
+  if (operation === 'sync.snapshot.chunk.put') {
+    const descriptor = upload.params.chunks[p.index];
+    if (!Number.isInteger(p.index) || !descriptor || typeof p.bytesBase64 !== 'string' ||
+        p.bytesBase64.length > 349528 || !/^[a-zA-Z0-9+/]*={0,2}$/.test(p.bytesBase64)) return fail('snapshot-chunk-invalid');
+    const data = Buffer.from(p.bytesBase64, 'base64');
+    if (data.toString('base64') !== p.bytesBase64 || data.length !== descriptor.byteLength || sha256Hex(data) !== descriptor.sha256)
+      return fail('snapshot-chunk-digest');
+    const alreadyUploaded = upload.chunks.has(p.index);
+    upload.chunks.set(p.index, data);
+    return rpcOk(requestId, { publicationId: id, ...descriptor, alreadyUploaded });
+  }
+  if (operation === 'sync.snapshot.verify') {
+    if (p.manifestSha256 !== upload.params.manifestSha256 ||
+        upload.params.chunks.some(c => !upload.chunks.has(c.index))) return fail('snapshot-incomplete', 'conflict', 409);
+    upload.verified = true;
+    return rpcOk(requestId, { publicationId: id, verified: true });
+  }
+  if (operation === 'sync.snapshot.commit') {
+    if (!upload.verified || upload.params.expectedGeneration !== (acct.snapshot?.generation ?? 0))
+      return fail('snapshot-unverified-or-stale', 'conflict', 409);
+    const { publicationId, expectedGeneration, ...fields } = upload.params;
+    acct.previousSnapshot = acct.snapshot;
+    acct.snapshot = { ...fields, snapshotId: publicationId, generation: expectedGeneration + 1,
+      formatVersion: 2, createdAt: new Date().toISOString() };
+    upload.committed = { manifest: acct.snapshot, previousGeneration: acct.previousSnapshot?.generation ?? null };
+    return rpcOk(requestId, upload.committed);
+  }
+  return fail('unsupported-snapshot-operation');
+}
+
 // ---- RPC dispatch -------------------------------------------------------------
 
 function handleRpcOp(session, requestId, operation, params) {
   const acct = account(session.accountId);
+  if (operation.startsWith('sync.snapshot.')) return handleSnapshotRpc(session, requestId, operation, params, acct);
   switch (operation) {
     case 'session.describe':
       return rpcOk(requestId, {
@@ -715,7 +801,7 @@ async function route(method, path, headers, body) {
       deploymentId: 'fixture-0000-0000-0000-nodeinmemory',
       displayName: 'Anvil conformance fixture (in-memory Node)',
       protocols: [PROTOCOL],
-      profiles: ['sync/1'],
+      profiles: ['sync/2'],
       apiPath: 'v1',
       socketPath: 'v1/connect',
       authModes: ['enrollment-code'],
@@ -870,6 +956,6 @@ const server = createServer((req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   const bound = server.address();
   const port = typeof bound === 'object' && bound !== null ? bound.port : PORT;
-  console.log(`anvil conformance fixture (sync/1, in-memory) on http://127.0.0.1:${port}`);
+  console.log(`anvil conformance fixture (sync/2, in-memory) on http://127.0.0.1:${port}`);
   console.log(`admin token: ${ADMIN_TOKEN}`);
 });
