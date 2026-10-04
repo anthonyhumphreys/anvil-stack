@@ -309,7 +309,7 @@ export class FakeAccountCoordinator {
             previousManifest: null,
             datasetEpoch: this.epoch,
             keyVersion: 0,
-            currentCursor: String(this.currentWatermark()),
+            currentCursor: String(this.currentWatermark()) as SyncCursor,
             recoveryFloor: 0,
           } satisfies SyncSnapshotGetResult;
           break;

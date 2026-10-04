@@ -515,6 +515,7 @@ describe('runSyncCycle pull', () => {
             },
           ],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'deleted-paused-workspace' as SyncCursor,
         }),
       }),
@@ -552,6 +553,7 @@ describe('runSyncCycle pull', () => {
             },
           ],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'workspace-paused' as SyncCursor,
         }),
       }),
@@ -607,6 +609,7 @@ describe('runSyncCycle pull', () => {
         pull: () => ({
           changes: [change],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-3' as SyncCursor,
         }),
       }),
@@ -651,6 +654,7 @@ describe('runSyncCycle pull', () => {
             },
           ],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-conflict' as SyncCursor,
         }),
       }),
@@ -707,6 +711,7 @@ describe('runSyncCycle pull', () => {
             },
           ],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-tip' as SyncCursor,
         }),
       }),
@@ -746,6 +751,7 @@ describe('runSyncCycle pull', () => {
                 },
               ],
               hasMore: true,
+              recoveryFloor: 0,
               nextCursor: 'cursor-page-1' as SyncCursor,
             };
           }
@@ -762,6 +768,7 @@ describe('runSyncCycle pull', () => {
               },
             ],
             hasMore: false,
+            recoveryFloor: 0,
             nextCursor: 'cursor-page-2' as SyncCursor,
           };
         },
@@ -1020,6 +1027,7 @@ describe('runSyncCycle pull', () => {
             },
           ],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-conflict' as SyncCursor,
         }),
       }),
@@ -1055,6 +1063,7 @@ describe('runSyncCycle pull', () => {
             },
           ],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-conflict' as SyncCursor,
         }),
       }),
@@ -1108,6 +1117,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
         pull: () => ({
           changes: [change],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-a' as SyncCursor,
         }),
       }),
@@ -1140,6 +1150,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
         pull: () => ({
           changes: [change],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-w' as SyncCursor,
         }),
       }),
@@ -1182,6 +1193,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
         pull: () => ({
           changes: [change],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-s' as SyncCursor,
         }),
       }),
@@ -1219,6 +1231,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
         pull: () => ({
           changes: [bad, good],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-q' as SyncCursor,
         }),
       }),
@@ -1247,6 +1260,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
         pull: () => ({
           changes: [change],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-1' as SyncCursor,
         }),
       }),
@@ -1267,6 +1281,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
             },
           ],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-2' as SyncCursor,
         }),
       }),
@@ -1303,6 +1318,7 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
             },
           ],
           hasMore: false,
+          recoveryFloor: 0,
           nextCursor: 'cursor-c' as SyncCursor,
         }),
       }),

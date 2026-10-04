@@ -768,7 +768,9 @@ describe('Sync snapshot recovery', () => {
     };
     const tail = pullChange('fallback-template', 2, 'update', 'Caught up from previous');
     const harness = createRpcHarness({
-      snapshotGets: [recoveryGet({ ...current, chunk: corruptCurrentChunk }, previous, '2')],
+      snapshotGets: [
+        recoveryGet({ ...current, chunk: corruptCurrentChunk }, previous, '2' as SyncCursor),
+      ],
       recoveryChunks: recoveryChunks({ ...current, chunk: corruptCurrentChunk }, previous),
       catchupByCursor: new Map([
         [
