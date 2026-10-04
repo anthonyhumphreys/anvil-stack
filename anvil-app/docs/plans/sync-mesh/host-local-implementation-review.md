@@ -1,9 +1,14 @@
 # Host-local Sync and Mesh implementation review
 
-Prepared 4 October 2026. Implementation and review fixes are integrated at source checkpoint
-`e50e2a9`. Automated local project checks pass. The immutable security review is sealed; its
-coverage metadata retains superseded progress records, as explained below. Production acceptance
-remains open.
+Prepared 4 October 2026. The host-local implementation was recorded at checkpoint `2ee256e`. Local project checks at `e50e2a9` cover the unchanged implementation source.
+After the staging-workflow fixes, backend Vitest passed 42 files and 436 tests; workflow-agent
+checks passed 27 tests, typecheck, and self-check. These are local checks, not staging or live
+acceptance. The immutable security review remains sealed; its coverage metadata retains superseded
+progress records, as explained below. Production acceptance remains open.
+
+The current product and rollout boundary is in the [decision record](decisions.md). The
+[staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md) is the operator entry
+for the current candidate. Staging acceptance for that candidate is unrecorded.
 
 ## Source map
 
@@ -47,6 +52,9 @@ session token, which is sealed to the ephemeral client key. Session frames use d
 AES-256-GCM keys. The broker does not relay live session frames.
 
 ## Acceptance limits
+
+The check counts below are historical validation evidence from the reviewed revisions. They do not
+establish signed-in staging or physical WAN acceptance.
 
 - Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`. Direct hosts advertise their
   machine-session and stream capabilities separately.

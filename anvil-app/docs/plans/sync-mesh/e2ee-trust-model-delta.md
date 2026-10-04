@@ -1,10 +1,12 @@
 # Sync & Mesh — E2EE trust-model delta and web dashboard
 
 Branch: `feature/sync-mesh--foundations` · PR #91
-Reviewed head: `49a79a2950534412ecc2236fd1abda5e5bc74d54` (current worktree head at time of writing)
-Companion docs: `anvil-sync-mesh-spec-v2.md`, `cloud-environments.md`, `anvil-backend-integration-contract.md`
+Reviewed head: `49a79a2950534412ecc2236fd1abda5e5bc74d54` (historical review revision)
+Current product and rollout decisions: [decision record](decisions.md). Supporting contracts:
+[cloud environments](cloud-environments.md) and
+[backend integration](anvil-backend-integration-contract.md).
 
-This is the architecture delta the implementation in this change set follows. It records the verified findings against the current head, the simplification that removes their shared cause, the dashboard construction, and the migration implications.
+This record preserves the security findings and design resolutions from that review revision. It is not a status report for the current implementation; use the decision record and implementation review for current product boundaries and rollout evidence.
 
 ## 1. Verified findings at the reviewed head
 

@@ -1,21 +1,27 @@
 # Host-local execution and low-cost Sync and Mesh
 
-Prepared 4 October 2026. Status: implementation and review fixes integrated at source checkpoint
-`e50e2a9`; automated local project checks pass. Security review is sealed, with a coverage metadata
-discrepancy and a remaining mobile native-buffering limit. See the
-[implementation review](host-local-implementation-review.md) for the current source map and
-verification limits.
+Prepared 4 October 2026. This is the detailed implementation and acceptance plan. The current
+product, architecture, and rollout decisions are in the [decision record](decisions.md).
+
+The host-local implementation was recorded at checkpoint `2ee256e`. Local project
+checks at `e50e2a9` cover the unchanged implementation source. After the staging-workflow fixes,
+backend Vitest passed 42 files and 436 tests; workflow-agent checks passed 27 tests, typecheck, and
+self-check. The generated staging plan was reviewed with all flags off and no provider calls or
+service bindings. These are local preparation checks. Record current-candidate CI and live acceptance separately. The immutable security
+review retains a coverage-metadata discrepancy and a remaining mobile native-buffering limit. See
+the [implementation review](host-local-implementation-review.md) and the
+[staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md) for acceptance
+evidence and operator work.
 
 This is a greenfield protocol for current clients. Test hosted state may be reset when needed;
 repository files, local credentials and unrelated local work remain outside those resets. Preserve
 the security and recovery guarantees for new data.
 
-This is the implementation direction for reducing the running cost of free Sync and Mesh. It
-supersedes the future transport recommendation in the
-[product and monetisation plan](mesh-access-and-monetisation-plan.md). That document remains the
-record of the approved free offering and the initial PR91 changes. The
-[FinOps projection](finops-projection.md) and workbook compare the original architecture with the
-full host-local design. Keep projected usage separate from measured deployment costs.
+This plan describes the host-local implementation for free Sync and Mesh. The
+[decision record](decisions.md) is the single authority for product and rollout boundaries. The
+[FinOps projection](finops-projection.md) and workbook retain the assumptions, calculations, and
+scenarios used to estimate costs. Treat them as forecasts until actual usage and invoices are
+measured.
 
 ## Outcome and boundaries
 
@@ -27,8 +33,9 @@ coordinator once the client has connected to its execution host.
 
 Sync and Mesh stay free. Users can run work on their own desktops, servers and machines in their
 cloud accounts, or use supported provider cloud agents. Provider bills remain theirs. Only future
-Anvil Cloud Agents, the execution machines supplied by Anvil, are a paid offering. Keep that feature
-disabled in PR91. Anvil Cloud remains the framework's name.
+Anvil Cloud Agents, the execution machines supplied by Anvil, are a separate paid offering and stay
+disabled by default. Container provisioning is outside the free Sync/Mesh staging workflow. Anvil
+Cloud remains the framework's name.
 
 The cost objective is a small fixed hosting bill at low adoption and low marginal cost as usage
 grows. It is not a promise of zero infrastructure cost. Preserving offline delivery, revocation,
@@ -38,17 +45,23 @@ Keep these product rules:
 
 - No master desktop. Any trusted execution host can own a job; the hosted coordinator arbitrates
   ownership across hosts.
-- Workspace Sync is optional, with Local as the default for newly created workspaces. Existing
-  bindings survive pausing and resuming Sync. Remote task preparation does not silently enable ongoing Sync.
-- Sync covers portable definitions, selected settings, templates and custom agents. Repository
-  files, provider credentials, machine paths and chat transcripts are outside workspace Sync.
-- Personal Sync and Mesh do not require an organisation. Current organisations manage membership,
-  roles and invitations; shared organisation fleets and workspaces are a separate feature.
+- Workspace Sync is optional, with Local as the default for new workspaces. Existing bindings
+  survive pausing and resuming Sync. Remote task preparation does not silently enable ongoing Sync.
+- Workspace Sync carries portable definitions, repository references, preferences, templates,
+  agent definitions, and bootstrap instructions. It does not copy repository contents, `.git`, dirty
+  changes, or machine-local paths. The current serializer includes `remoteUrl`, which may contain
+  embedded credentials, so do not describe every synced metadata field as credential-free.
+  Workspace chat transcripts are not Sync entities, though encrypted Mesh job/result archives may
+  contain prompts or chat output under separate retention rules.
+- A personal account is enough for hosted Sync and Mesh. Current organisations manage membership,
+  roles and invitations; shared organisation fleets and workspaces are outside this feature.
 - Keep private routes, local pairing and self-hosted backends available. Preserve current free
   device/member allowances and resource limits until a separate capacity decision changes them.
 
-Deployment, tunnel purchases and launching paid Cloud Agents remain separate operational steps.
-Keep retention explicit for newly accepted data; a test-state reset is not a retention policy.
+Managed public reachability is an optional operator pilot behind separate default-off controls.
+Anvil Cloud Agents remain disabled by default, and container provisioning is outside the free
+Sync/Mesh staging workflow. Keep retention explicit for new data; a test-state reset is not a
+retention policy.
 
 ## Starting point
 
@@ -56,9 +69,12 @@ The current working tree contains the host-session protocol, companion advertise
 host-served interactive operations, compact Sync snapshots, managed endpoint lifecycle, and desktop,
 browser, mobile and Raycast integration. `ANVIL_MESH_MACHINE_ENDPOINTS` still defaults off and must
 be set by an operator for a selected process. `ANVIL_MESH_MANAGED_ENDPOINTS` is a separate default-off
-gate for managed reachability. Automated local project checks pass; the security review and remaining
-mobile limit are recorded below. Physical WAN acceptance and provider allocation, capacity and pricing have not been
-verified. See the [implementation review](host-local-implementation-review.md).
+gate for managed reachability. Local project checks recorded at `e50e2a9` cover the implementation
+source. After the staging-workflow fixes, backend Vitest passed 42 files and 436 tests; workflow-agent
+checks passed 27 tests, typecheck, and self-check. These local checks do not verify staging or live
+behaviour. The security review and remaining mobile limit are recorded below. Physical WAN acceptance
+and provider allocation, capacity and pricing have not been verified. See the
+[implementation review](host-local-implementation-review.md).
 
 | Area | Current implementation | Remaining acceptance |
 | --- | --- | --- |
@@ -303,15 +319,16 @@ default until their rollout checks pass.
 | --- | --- | --- |
 | 0. Baseline and capability contract | Current profiles, host protocol, stream epochs and typed capabilities are in the working tree. Cost inputs remain projections. | Measure representative hosted requests, duration, rows, storage and network recovery; reconcile with a real provider bill. |
 | 1. Private host sessions | Scoped bootstrap, proof verification, trust checks, revocation and session expiry are integrated behind the default-off host flag. | Verify physical two-host behavior, including replay, cross-account and revoked-device rejection. |
-| 2. Direct interactive traffic | Host reads, commands, cursor replay and client connections are integrated across current desktop, browser, mobile and Raycast surfaces; local project checks pass. | Verify network loss, reconnect, acknowledgements and coordinator recovery on physical devices. |
+| 2. Direct interactive traffic | Host reads, commands, cursor replay and client connections are integrated across current desktop, browser, mobile and Raycast surfaces. Local checks at `e50e2a9` cover the unchanged source; after workflow fixes, backend Vitest passed 42 files and 436 tests. | Verify network loss, reconnect, acknowledgements and coordinator recovery on physical devices. |
 | 3. Small durable Mesh state | Durable ownership, approvals, cancellation, handoff, event archives and status-poll reductions are integrated. | Verify partition, crash, eviction and handoff recovery; measure the hosted workload. Lease cadence remains unchanged. |
 | 4. Compact Sync storage | Encrypted snapshot manifests, verified chunks, publication fencing and bounded journal recovery are integrated. | Verify long-offline/new-device recovery, conflicts, tombstones, key rotation and opt-out before enabling compaction deletion. |
 | 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated behind separate default-off host/backend flags. | Verify real tunnel allocation and cleanup, separate-WAN browser/mobile connections, permitted traffic, capacity, price and billing. |
 | 6. Protocol and rollout | Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`; security review and fixes are recorded. Machine routes advertise their session and stream capabilities separately. | Resolve native mobile receive limits, complete physical acceptance, measure costs and make explicit staged-rollout decisions before changing defaults. |
 
-Do not expand Cloud Agent provisioning as part of managed reachability. A tunnel to a user-owned
-machine is not an Anvil-supplied execution machine. If an implementation touches owned Effect
-orchestration internals in `anvil-cloud`, review and update the relevant root `PATCH.md` entry.
+Managed reachability is an operator pilot, not general availability. Do not expand Cloud Agent
+provisioning as part of it. A tunnel to a user-owned machine is not an Anvil-supplied execution
+machine. If an implementation touches owned Effect orchestration internals in `anvil-cloud`, review
+and update the relevant root `PATCH.md` entry.
 
 ### Protocol cutover and rollout
 
@@ -322,6 +339,8 @@ generation. Keep the coordinator path for durable decisions, accepted-job recove
 operations it supports. Direct host-only reads still require a reachable host. Never shadow-execute
 mutations; deduplicate requests across transports.
 
+Use the [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md) for the
+current staging workflow. No signed-in end-to-end acceptance is recorded for the current candidate.
 Roll out internally, then to proposed 1%, 10%, 50% and full eligible cohorts. Advance only after a
 representative workload and disconnect/recovery cycle at each stage. Independent gates should cover
 host sessions, direct operations, compact Sync reads, compaction deletion and managed endpoints.
@@ -435,11 +454,11 @@ safety or delete recoverable data to meet a budget.
 
 ## Documentation, copy and completion
 
-Keep the Sync/Mesh spec, transport/runbooks, daemon/companion guidance and website setup/status pages
-aligned with the integrated routes. Keep the public pricing boundary unchanged:
+Keep the [decision record](decisions.md), transport/runbooks, daemon/companion guidance and website
+setup/status pages aligned with the integrated routes. Keep the public pricing boundary unchanged:
 
 - "Anvil Sync and Mesh are free. Sync workspace configuration and run agents on your own machines."
-- "Choose which workspaces to sync. Your repository access and provider credentials stay on your machines."
+- "Choose which workspaces to sync. Anvil syncs workspace metadata, not repository contents."
 - "Connect to an online execution host for live work. Required results remain available for their stated retention period."
 - "Anvil Cloud Agents will provide paid hosted execution. They are not available in this release."
 
@@ -448,12 +467,16 @@ unreleased managed reachability, unlimited storage, zero infrastructure cost, in
 universal chat-history backup. Browser, desktop and companion documentation must agree about
 supported operations and offline behaviour.
 
-The implementation and review fixes are integrated at source checkpoint `e50e2a9`; automated local
-project checks pass. The [implementation review](host-local-implementation-review.md) records the
-sealed audit, its metadata discrepancy and the remaining native mobile receive limit. Production rollout requires physical multi-host
-acceptance, measured representative workloads, provider capacity and pricing confirmation, and
-verified recovery before compaction deletion. Keep network retries and current coordinator recovery
-available, and label the new cost case as a projection until those operational checks are complete.
+The host-local implementation was recorded at checkpoint `2ee256e`. Local project checks
+at `e50e2a9` cover the unchanged implementation source. After workflow fixes, backend Vitest passed
+42 files and 436 tests; workflow-agent checks passed 27 tests, typecheck and self-check. These are
+local checks, not staging/live acceptance. The
+[implementation review](host-local-implementation-review.md) preserves the immutable audit, its
+metadata discrepancy, and the remaining native mobile receive limit. Production rollout requires
+physical multi-host acceptance, measured representative workloads, provider capacity and pricing
+confirmation, and verified recovery before compaction deletion. Keep network retries and current
+coordinator recovery available, and label the cost case as a projection until those checks are
+complete.
 
 Provider references for implementation and costing: [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
 [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/),

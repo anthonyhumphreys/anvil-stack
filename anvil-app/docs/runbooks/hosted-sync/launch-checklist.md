@@ -1,122 +1,101 @@
-# Free Sync and Mesh launch checklist
+# Hosted Sync and Mesh rollout checklist
 
-Updated 4 October 2026. Sync and Mesh are free. Only future Anvil Cloud Agents
-are planned as a paid feature, and they remain disabled by default. This is a
-launch checklist, not a production launch record. Operators must attach real
-environment evidence before deployment.
+Sync and Mesh are free. Only future Anvil Cloud Agents are planned as a paid
+feature, and they stay disabled by default. This checklist records release
+gates; it is not evidence that staging or production passed them and does not
+authorize production resource changes.
 
-## Identity and protocol
+## Candidate and deployment
 
-- [ ] Staging and production use separate WorkOS environments, client IDs,
-      Worker/D1/R2 resources, descriptors and service/operator keys. The
-      website and desktop resolve to the same account within each target.
-- [ ] The descriptor advertises `anvil-backend/1`, `sync/2` and `mesh/2`.
-      Sync and Mesh clients require those profiles.
-- [ ] AuthKit sign-in, callback origins, desktop enrollment, device revocation
-      and re-pairing work against the selected target. Development credentials
-      are absent from production.
-- [ ] Selected-target preflight does not require a new Sync subscription price
-      or Stripe availability. Existing billing records and migrations remain
-      intact.
-- [ ] Account lifecycle, local device trust, device limits and operator
-      fair-use policies remain enforced independently of subscriptions.
+- [ ] Record the full candidate SHA. Backend, desktop, daemon, website, and
+      optional client builds used for acceptance identify that same source.
+- [ ] The staging descriptor advertises `anvil-backend/1`, `sync/2`,
+      `mesh/2`, and the current staging identity mode. Do not use an older
+      client path as a fallback.
+- [ ] The default staging workflow deploys the backend only. Cloud Agents,
+      its provisioner, container image deployment, and managed endpoint
+      tunnels are off unless their separate gates below apply.
+- [ ] Staging data belongs to a new disposable test account and isolated
+      test devices. No existing account or customer data was used.
 
-Use [deploy.md](deploy.md) for generated config and staging/production
-selection. Completing local tests does not authorize production resource
-operations.
+Use [staging-next-steps.md](staging-next-steps.md) for the current
+operator sequence and [deploy.md](deploy.md) for the deployment contract.
 
-## Free product acceptance
+## Required staging acceptance
 
-- [ ] A personal account, without an organization or shared fleet, can sync
-      configuration, enroll its machines, submit and complete Mesh jobs,
-      approve, cancel and hand off work after the former preview deadline.
-- [ ] Missing, canceled or unpaid legacy subscriptions and billing lookup
-      failures do not pause free access.
-- [ ] Workspace creation defaults to local and offers free Sync explicitly.
-      Account sign-in and Sync enablement do not silently adopt local
-      workspaces. Existing opted-in replicas retain their data.
-- [ ] Opt-out stops future workspace replication without deleting local work.
-      Re-enable has verified conflict and revision behavior. Task-scoped
-      remote setup works without ongoing Sync.
-- [ ] Device revocation and key rotation fail closed where required. Account
-      deletion and operator restrictions still deny their respective
-      operations.
-- [ ] Scoped browser approval, reconnect and two-device execution are verified
-      on real machines.
-- [ ] Restore, export, import and rollback are rehearsed on a disposable
-      staging account and database. Native runtime and generated headless
-      worker builds match the candidate source.
+- [ ] A new workspace defaults to Local. The user explicitly opts into Sync.
+- [ ] Sync carries only portable definitions, preferences, and bootstrap
+      settings. Each machine has its own repository checkout or mapping;
+      repository bytes, Git history, and dirty changes never move through
+      workspace Sync.
+- [ ] Two physical devices on separate WANs sign in to one disposable staging
+      account and sync harmless changes in both directions.
+- [ ] The default Mesh policy pauses a mutation for approval, displays the
+      exact action, and prevents mutation on denial. An uncertain outcome
+      stays attached to that request until checked or approved.
+- [ ] Reconnect from a saved cursor does not duplicate a request or result.
+- [ ] Revoking a device removes hosted access within 60 seconds while its
+      local data remains available. Fresh authorization reconnects without
+      duplicating work.
 
-## Host sessions and reachability
+Record each item as `PASS`, `FAIL`, or `BLOCKED` in
+[staging acceptance](staging-acceptance.md). A local test or upload result
+does not pass a live gate. Missing a physical host or separate WAN is
+`BLOCKED`.
 
-- [ ] `ANVIL_MESH_MACHINE_ENDPOINTS` is absent or not `true` in default and
-      production configuration until a staged rollout is approved. Setting it
-      is an operator action, not an automatic launch or user preference.
-- [ ] With the flag explicitly set and an active Sync scope, host discovery
-      and session startup work without requiring the Mesh worker opt-in or the
-      legacy companion preference.
-- [ ] Two physical devices on one disposable staging account connect over
-      separate WANs. Test route loss, host sleep and resume, generation change,
-      revocation and reconnect. Local tests and two profiles on one host do not
-      count as WAN acceptance.
-- [ ] The source account bearer goes only to the HTTPS broker. One-use
-      admission tickets expire and reject replay; host policy, session proof,
-      encrypted frames and revocation checks pass on the real route.
-- [ ] The direct session path has a measured, supported fallback when the
-      private route is unavailable. No feature claims reduced hosted traffic
-      until the fallback rate and payload classes are measured.
-- [ ] `ANVIL_MESH_MANAGED_ENDPOINTS` stays off in the host and backend by
-      default. Before a managed pilot, verify target-specific domain and
-      credentials, generation-fenced allocation and cleanup, loopback-only
-      upstream, trusted connector executable handling, failure UX, and
-      measured capacity and cost.
-- [ ] Provider pricing, permitted traffic, account limits, DNS/hostname
-      capacity and billing behavior for managed endpoints have an owner and
-      current evidence. These commercial limits are not yet verified.
+## Optional host tunnel pilot
 
-See [host connections](host-connections.md) for operator setup and protocol
-details. No managed allocation or production flag change is implied by this
-checklist.
+- [ ] Keep `ANVIL_MESH_MANAGED_ENDPOINTS` false by default in both backend and
+      host processes.
+- [ ] If running the explicit `managed_endpoint_pilot` workflow dispatch,
+      provide the protected account, zone, and tunnel API token secrets; use
+      an operator-controlled hostname domain and a trusted `cloudflared`
+      installation on the host.
+- [ ] Test allocation, readiness, route loss, revocation, teardown, and
+      recovery on physical staging hosts. Keep the direct hosted path as the
+      supported fallback.
+
+Managed host tunnels provide host reachability. They are separate from the
+Anvil Cloud Agents provisioner and do not enable Cloud Agents. See
+[host connections](host-connections.md) for the operator requirements.
+
+## Optional client checks and public rollout
+
+- [ ] Record browser dashboard and Raycast results against the same candidate
+      SHA if those clients are part of the release.
+- [ ] Record controlled iPhone companion results against the same candidate
+      SHA if mobile is included. Native WebSocket code may assemble an inbound
+      frame before JavaScript receives it, so controlled testing does not clear
+      the public mobile rollout gate. Keep public rollout blocked until the
+      native receive path can enforce the required size limit before assembly.
+- [ ] Complete the required security review and record its disposition.
+- [ ] Keep endpoint flags off in default and production configurations until
+      physical staging acceptance, security review, and the release owner
+      approve the rollout.
 
 ## Anvil Cloud Agents
 
-- [ ] `ANVIL_CLOUD_AGENTS_ENABLED` is absent or explicitly false in desktop,
-      backend and provisioner candidate configuration. Creation and resume
-      fail before allocating provider resources.
-- [ ] Users' own fleets and BYO cloud providers retain their supported
-      execution paths.
-- [ ] Existing Anvil Cloud Agent status, suspension, cancellation and deletion
-      remain available.
-- [ ] Website and app describe Anvil Cloud Agents as unavailable in this
-      release, with no invented price, paid upgrade CTA or unlimited-compute
-      promise. The Anvil Cloud framework keeps its own name.
+- [ ] `ANVIL_CLOUD_AGENTS_ENABLED` is absent or false in desktop, backend, and
+      provisioner configuration. No staging Sync/Mesh workflow deploys the
+      Cloud Agents provisioner or its container image.
+- [ ] Users' own hosts and supported BYO provider execution remain available
+      through their existing paths.
+- [ ] Any future paid Cloud Agents launch has its own approved scope, access
+      controls, and rollout record. This Sync/Mesh checklist does not authorize
+      it.
 
-## Website and legacy billing
+## Operating cost and public availability
 
-- [ ] Pricing, homepage and product copy, account pages, metadata and docs say
-      Sync and Mesh are free. Remove paid personal/team Sync offers and the
-      Halloween cutoff promise.
-- [ ] Download, sign-in and setup calls replace Sync checkout. Stale API calls
-      cannot create a new session or change paid seats.
-- [ ] Existing billing history and needed portal/cancellation paths remain
-      truthful and usable. Production subscription cancellation/refunds are
-      separately planned operator actions.
-- [ ] Inventory existing Stripe subscriptions and open checkout sessions.
-      Complete the approved billing cutover, including expiring open sessions
-      and stopping legacy renewals, before claiming that no further Sync
-      charges can occur. Retain signed webhook processing for late events; a
-      rejected completion webhook does not reverse a payment.
-- [ ] No preview-end reminders or subscription-required support messages are
-      scheduled for free access.
-
-## Cost, reliability and monitoring
-
-- [ ] Record aggregate request, CPU, Durable Object awake-time, row, storage,
-      artifact and reconnect metrics without secrets or payloads. Reconcile a
-      representative workload with the provider bill.
-- [ ] Allocate an operating budget for free users while Anvil Cloud Agents
-      remain disabled. Configure account spend, retention, request/error-rate
-      and quota alerts with a named responder.
-- [ ] Verify idle, streaming, reconnect, approval, cancellation and handoff
-      behavior after polling changes. Savings must not come from delaying
-      security updates or accepted-job recovery.
+- [ ] Measure idle, active, reconnect and fallback traffic on the staging
+      workload. Compare requests, CPU, Durable Object awake time, storage growth
+      and cleanup with the FinOps assumptions and a real provider bill.
+- [ ] Confirm managed-route capacity, permitted traffic, hostname limits and
+      prices before offering managed reachability beyond the controlled pilot.
+- [ ] Configure spend, error-rate, retention and quota alerts with a named
+      responder. Confirm the remaining Cloudflare startup credit and eligible
+      charges; the recorded expiry is 18 September 2027.
+- [ ] Restore a fresh device from verified Sync state and confirm that a pending
+      change, an opt-out and a deletion survive recovery without resurrecting
+      old data. Keep enough verified state and journal tail for recovery.
+- [ ] Production uses separate identity, resources and credentials. Public
+      availability requires its own approved deployment and acceptance record.

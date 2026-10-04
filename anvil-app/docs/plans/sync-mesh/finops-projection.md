@@ -2,6 +2,10 @@
 
 Prepared 4 October 2026. Forecast: 4 October 2026 to 30 September 2027. Product boundary: free Sync and Mesh; future paid Anvil Cloud Agents. PR91's Cloud Agents flag remains off.
 
+The [decision record](decisions.md) is the current authority for the product and rollout boundary.
+This model preserves scenario assumptions and calculations; it does not establish current usage or
+provider billing.
+
 ## Decision
 
 The primary projection is case 5, the full-scope host-local release target: **$27.61/month at 1,000 DAU and $434.82/month at 10,000 DAU** in month 12 of a flat one-year cohort, before credit. Tunnel supplier fees are excluded because no Anvil-side quote is available. You confirmed a startup grant and its **18 September 2027** expiry; the model assumes a USD denomination and **$10,000 opening balance**, neither of which has been reconciled against the account. At flat 1,000 DAU, this case uses $321.99 by expiry and leaves $9,678.01 unused. Cloud Agents remain off.
@@ -14,7 +18,7 @@ Using the earlier inputs, the event-driven target saves roughly **$2,067/month a
 
 - [Editable financial workbook](outputs/finops-2026-10/anvil-finops-projection.xlsx).
 - [Model inputs](finops-assumptions.json) and [reproducible calculation model](finops-model.mjs). Run `node anvil-app/docs/plans/sync-mesh/finops-model.mjs` from the repository root for the forecast inputs and results.
-- [Product and implementation plan](mesh-access-and-monetisation-plan.md).
+- [Product decisions](decisions.md) and [implementation plan](host-local-sync-mesh-implementation-plan.md).
 
 In the workbook, the architecture selector defaults to case 5. Change it, the monthly **DAU** row, the DAU/MAU ratio, connected, attempt or viewer hours, storage occupancy, credit balance or expiry to recalculate the forecast. Cloud Agents launch month is **0**, meaning disabled. Set it to 7 to explore the explicitly illustrative April 2027 launch. This changes the model only.
 
@@ -46,7 +50,7 @@ The weighted request load is **0.2017 heavy account equivalents per DAU**, and t
 
 ## What the code actually stores and calls
 
-Sync replicates portable workspace definitions, workflow templates, custom agents, selected settings and necessary key/control records. Repository files, credentials, machine-specific paths and chat transcripts are outside portable workspace Sync. Each destination clones through its own repository access. Mesh also stores job state, approvals, event metadata, result/artifact manifests and bounded encrypted payloads. Users' machine compute and provider token charges are paid by those users.
+Workspace Sync replicates portable definitions, repository references, templates, custom agents, selected settings and necessary key/control records. It does not copy repository contents, `.git`, dirty changes, or machine-local paths. The current serializer includes `remoteUrl`, which may contain embedded credentials, so workspace metadata is not guaranteed to be credential-free. Workspace chat transcripts are not Sync entities, though encrypted Mesh job/result archives may contain prompts or chat output under separate retention rules. Each destination clones through its own repository access. Mesh also stores job state, approvals, event metadata, result/artifact manifests and bounded encrypted payloads. Users' machine compute and provider token charges are paid by those users.
 
 | Component | Current behaviour | Cost consequence and evidence |
 | --- | --- | --- |

@@ -1,8 +1,14 @@
 # Anvil backend integration contract
 
-Updated protocol direction, 4 October 2026. RPC envelope `anvil-backend/1`; capability profiles `sync/2` and `mesh/2`.
+Updated 4 October 2026. Current RPC envelope `anvil-backend/1`; required capability profiles
+`sync/2` and `mesh/2`.
 
-This defines the backend extension boundary for the planned Anvil Sync & Mesh launch. It is not a claim that the current released app or a runnable conformance package already implements it. The launch must ship the machine-readable contract and the generic client described here. After that, a compatible backend connects to the existing signed app without rebuilding it.
+This is the supporting backend contract reference. The current product and rollout boundary is in
+the [decision record](decisions.md), with implementation and acceptance detail in the
+[host-local plan](host-local-sync-mesh-implementation-plan.md) and
+[implementation review](host-local-implementation-review.md). The launch targets current clients;
+older-host compatibility is not required. A backend's descriptor does not prove conformance or
+authorize production use.
 
 ## 1. Product contract
 

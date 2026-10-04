@@ -48,6 +48,12 @@ Existing subscription cancellation/refund communication is a separate operator a
 legacy portal path in staging if any existing subscribers need it. No production billing mutations
 are included in this code rollout.
 
+Free Sync and Mesh do not cancel an existing subscription, expire a previously issued Checkout
+Session, or reverse a payment. A separately approved billing cutover must inventory open sessions
+and renewals before anyone claims that no further charges can occur. Keep processing signed late
+webhook events; rejecting a completion event does not reverse a payment. Do not cancel a real
+subscription or issue a refund as part of staging acceptance.
+
 ## Anvil Cloud Agents
 
 `ANVIL_CLOUD_AGENTS_ENABLED` defaults to `'false'`. Only an exact `'true'` enables Anvil-operated

@@ -3,6 +3,11 @@
 Reviewed 25 September 2026 against `fc8286b33259f3285f36ac10ad01884b89d31280`.
 PR: https://github.com/anthonyhumphreys/anvil-stack/pull/91
 
+This is historical review evidence for earlier PR revisions. The current product and rollout
+boundary is in the [decision record](decisions.md). The read-only staging observations below do not
+establish end-to-end acceptance for the current candidate. No signed-in staging acceptance for the
+current candidate is recorded; use the [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md).
+
 ## 3 October connected browser workspace update
 
 The web workspace now selects an account-owned machine by name. Desktop
@@ -134,9 +139,10 @@ CodeQL analysis job only means the scan completed, not that its policy passed.
 
 ## Low priority
 
-1. Rewrite the PR description around its actual scope and current test evidence.
-   The feature status page and runbooks now point to current checks and a real
-   staging acceptance document. Keep unverified launch claims explicit.
+1. Refresh the PR description around its actual scope and current test evidence.
+   The current staging workflow still needs signed-in acceptance. Use the
+   [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md)
+   and keep unverified launch claims explicit.
 2. Split the 11,153-line account coordinator along its existing RPC domains in
    follow-up PRs with contract tests. Avoid mixing that restructuring into the
    environment split.
@@ -222,8 +228,9 @@ Checks performed during this task:
 - `ANVIL_PRODUCTION_HOSTED_BACKEND_URL` in GitHub's `anvil-production`
   environment, once that endpoint is deployed and verified. Without it,
   release builds keep hosted access unavailable.
-- Before paid launch: Stripe live credentials/webhooks, approved prices and
-  business settings, and a named operational owner.
+- Anvil Cloud Agents remain disabled by default. Before any paid hosted-execution
+  launch, decide provider capacity, metering, pricing, billing, and a named
+  operational owner. This review does not enable that service.
 
 Platform references:
 [WorkOS environments](https://workos.com/docs/authkit/environments) and

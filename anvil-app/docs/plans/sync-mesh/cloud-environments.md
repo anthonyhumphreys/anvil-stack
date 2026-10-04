@@ -1,5 +1,10 @@
 # Cloud agent environments (ENV-01…ENV-09)
 
+Current product and rollout boundaries are in the [decision record](decisions.md). This document
+describes the separate environment-provisioning implementation. Anvil Cloud Agents and the
+`anvil-managed` provider stay disabled by default; container provisioning is not part of the free
+Sync/Mesh staging workflow. This implementation document does not authorize a staging deployment.
+
 Status: contract, backend, all four provider adapters, the managed
 tier, and the `anvil-worker` image build landed on
 `feature/sync-mesh--foundations`. AWS Lambda MicroVM, Cloudflare
