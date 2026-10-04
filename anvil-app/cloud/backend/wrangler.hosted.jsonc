@@ -52,6 +52,10 @@
         "name": "SESSIONS",
         "class_name": "SessionCoordinator",
       },
+      {
+        "name": "MACHINE_ENDPOINTS",
+        "class_name": "MachineEndpointCoordinator",
+      },
     ],
   },
   "migrations": [
@@ -62,6 +66,10 @@
     {
       "tag": "v2",
       "new_sqlite_classes": ["SessionCoordinator"],
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["MachineEndpointCoordinator"],
     },
   ],
   // BILL-06: hourly reconcile + metrics sweep. Off-the-hour to avoid the
@@ -102,5 +110,7 @@
     // Anvil-operated Cloud Agents compute is a future opt-in; keep it off.
     "HOSTED_CHECKOUT_ENABLED": "false",
     "ANVIL_CLOUD_AGENTS_ENABLED": "false",
+    // Provider pricing and capacity confirmation are required before this can be enabled.
+    "ANVIL_MESH_MANAGED_ENDPOINTS": "false",
   },
 }

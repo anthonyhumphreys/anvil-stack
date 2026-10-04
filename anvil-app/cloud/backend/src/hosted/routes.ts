@@ -49,6 +49,7 @@ import {
 } from './identity';
 import { emitMetric } from './metrics';
 import { handleFairUseOperatorRequest } from './fair-use-admin';
+import { issueHostedMachineAdmission, listHostedMachineHosts } from './machine-api';
 import { handleHostedOrganizationRequest } from './organizations';
 import { handleHostedOrganizationWebhook } from './organization-webhooks';
 import { verifyHostedServiceRequest } from './service-auth';
@@ -326,6 +327,55 @@ async function handleHostedAccount(body: unknown, db: D1Database): Promise<Respo
   });
 }
 
+async function handleHostedMeshHosts(body: unknown, env: Env, db: D1Database): Promise<Response> {
+  if (!isRecord(body) || !validateHostedIdentity(body)) {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  const account = await getBillingAccountByIdentity(db, body);
+  if (account === null) return rpcErrorResponse(undefined, 'not-found');
+  if (account.lifecycle !== 'active') {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
+  }
+  if (account.sync_account_id === null) {
+    return rpcErrorResponse(undefined, 'not-found', { reason: 'unlinked' });
+  }
+  const result = await listHostedMachineHosts(env, account.sync_account_id);
+  return result === null ? rpcErrorResponse(undefined, 'unavailable') : Response.json(result, {
+    headers: { 'cache-control': 'no-store' },
+  });
+}
+
+async function handleHostedMachineAdmission(body: unknown, env: Env, db: D1Database): Promise<Response> {
+  if (
+    !isRecord(body) ||
+    !validateHostedIdentity(body) ||
+    typeof body['machineId'] !== 'string' ||
+    typeof body['endpointGeneration'] !== 'string' ||
+    typeof body['clientPublicKey'] !== 'string' ||
+    typeof body['bootstrapChallenge'] !== 'string' ||
+    typeof body['grantId'] !== 'string' ||
+    typeof body['origin'] !== 'string' ||
+    typeof body['requestId'] !== 'string'
+  ) return rpcErrorResponse(undefined, 'malformed-request');
+  const account = await getBillingAccountByIdentity(db, body);
+  if (account === null) return rpcErrorResponse(undefined, 'not-found');
+  if (account.lifecycle !== 'active') {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
+  }
+  if (account.sync_account_id === null) {
+    return rpcErrorResponse(undefined, 'not-found', { reason: 'unlinked' });
+  }
+  return issueHostedMachineAdmission(env, account.sync_account_id, {
+    machineId: body['machineId'],
+    endpointGeneration: body['endpointGeneration'],
+    clientPublicKey: body['clientPublicKey'],
+    bootstrapChallenge: body['bootstrapChallenge'],
+    grantId: body['grantId'],
+    origin: body['origin'],
+    requestId: body['requestId'],
+  });
+}
+
 /**
  * Hosted route entry point called from index.ts. Every hosted path 404s on
  * deployments without HOSTED_DB; internal routes additionally require the
@@ -396,6 +446,10 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
           return await handleLinkCode(json, db);
         case '/internal/hosted/account':
           return await handleHostedAccount(json, db);
+        case '/internal/hosted/mesh-hosts':
+          return await handleHostedMeshHosts(json, env, db);
+        case '/internal/hosted/mesh-machine-admission':
+          return await handleHostedMachineAdmission(json, env, db);
         case '/internal/hosted/checkout':
           return await handleCheckout(json, env, db);
         case '/internal/hosted/portal':

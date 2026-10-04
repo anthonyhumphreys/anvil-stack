@@ -3,6 +3,7 @@ declare namespace Cloudflare {
   interface Env {
     ACCOUNT: DurableObjectNamespace;
     SESSIONS: DurableObjectNamespace;
+    MACHINE_ENDPOINTS: DurableObjectNamespace;
     ARTIFACTS: R2Bucket;
     /** Stable identity emitted by the Mesh deployment recipe. */
     ANVIL_DEPLOYMENT_ID?: string;
@@ -81,6 +82,12 @@ declare namespace Cloudflare {
      * managed bootstrap so the environment's worker knows where to dial.
      */
     ANVIL_PUBLIC_API_URL?: string;
+    /** Managed host tunnels remain unavailable unless an operator enables them. */
+    ANVIL_MESH_MANAGED_ENDPOINTS?: string;
+    CLOUDFLARE_TUNNEL_ACCOUNT_ID?: string;
+    CLOUDFLARE_TUNNEL_ZONE_ID?: string;
+    CLOUDFLARE_TUNNEL_API_TOKEN?: string;
+    MACHINE_ENDPOINT_DOMAIN?: string;
   }
 }
 

@@ -13,6 +13,10 @@
         "name": "SESSIONS",
         "class_name": "SessionCoordinator",
       },
+      {
+        "name": "MACHINE_ENDPOINTS",
+        "class_name": "MachineEndpointCoordinator",
+      },
     ],
   },
   "migrations": [
@@ -24,6 +28,10 @@
       "tag": "v2",
       "new_sqlite_classes": ["SessionCoordinator"],
     },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["MachineEndpointCoordinator"],
+    },
   ],
   "r2_buckets": [
     {
@@ -32,6 +40,8 @@
     },
   ],
   "vars": {
+    // User-hosted public tunnel allocation is an operator-gated future path.
+    "ANVIL_MESH_MANAGED_ENDPOINTS": "false",
     // AUTH-01: set OIDC_ISSUER + OIDC_CLIENT_ID to advertise `oidc-pkce`.
     // Set ENROLLMENT_ADMIN_TOKEN (secret) to enable admin code issuance.
     // ANVIL_DEV_SPIKE intentionally absent here: the top-level env is what
@@ -53,6 +63,10 @@
           {
             "name": "SESSIONS",
             "class_name": "SessionCoordinator",
+          },
+          {
+            "name": "MACHINE_ENDPOINTS",
+            "class_name": "MachineEndpointCoordinator",
           },
         ],
       },

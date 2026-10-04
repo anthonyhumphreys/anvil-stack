@@ -3,15 +3,19 @@ import { AccountCoordinator } from './account-coordinator';
 import { SessionCoordinator } from './session-coordinator';
 import { buildDescriptor } from './descriptor';
 import { handleHostedRequest } from './hosted/routes';
+import { handleMachineApiRequest } from './hosted/machine-api';
+import { emitFeatureUsage, type UsageOperation } from './hosted/feature-metrics';
+import { MachineEndpointCoordinator, machineEndpointStub } from './hosted/machine-endpoints';
 import { runHostedReconcile } from './hosted/reconciler';
 import { runHostedOrganizationReconcile } from './hosted/organization-webhooks';
 import { prepareHostedAccountDeletion } from './hosted/organizations';
 import { parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
+import { OPERATIONS, type OperationName } from '../../contract/operations';
 import type { ErrorCode } from '../../contract/envelope';
 import { validateSessionAttestParams } from '../../contract/companion';
 import { selfHostAccountPage } from './account-page';
 
-export { AccountCoordinator, SessionCoordinator };
+export { AccountCoordinator, SessionCoordinator, MachineEndpointCoordinator };
 
 // Allows the 512 KiB sealed job-input envelope plus bounded manifest/RPC framing.
 const RPC_BODY_MAX_BYTES = 640 * 1024;
@@ -23,6 +27,23 @@ function normalizePathname(pathname: string): string {
     end -= 1;
   }
   return end === pathname.length ? pathname : pathname.slice(0, end);
+}
+
+function machineUsageOperation(request: Request): UsageOperation | null {
+  const path = normalizePathname(new URL(request.url).pathname);
+  if (request.method === 'GET' && path === '/v1/mesh/hosts') return 'machine.discover';
+  if (request.method !== 'POST') return null;
+  if (path === '/v1/mesh/admission-tickets/consume') return 'machine.ticket.consume';
+  const match = /^\/v1\/mesh\/hosts\/[A-Za-z0-9_-]{1,128}\/(endpoint|connector-token|presence|admission-tickets|sessions\/revalidate)$/.exec(path);
+  if (match === null) return null;
+  switch (match[1]) {
+    case 'admission-tickets':
+      return 'machine.ticket.issue';
+    case 'sessions/revalidate':
+      return 'machine.trust.refresh';
+    default:
+      return 'machine.endpoint';
+  }
 }
 
 function sessionStub(env: Env): DurableObjectStub {
@@ -181,6 +202,25 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   // unbound, so self-host deployments expose nothing here.
   if (path.startsWith('/v1/hosted/') || path.startsWith('/internal/hosted/')) {
     return handleHostedRequest(request, env);
+  }
+
+  if (path.startsWith('/v1/mesh/')) {
+    const startedAt = Date.now();
+    const auth = await authenticate(request, env);
+    const response = auth === null
+      ? rpcErrorResponse(undefined, 'unauthenticated')
+      : await handleMachineApiRequest(request, env, auth);
+    const operation = machineUsageOperation(request);
+    if (operation !== null) {
+      const declaredBytes = Number(request.headers.get('content-length'));
+      emitFeatureUsage({
+        operation,
+        status: response.status,
+        wallMs: Date.now() - startedAt,
+        ...(Number.isFinite(declaredBytes) && declaredBytes >= 0 ? { requestBytes: declaredBytes } : {}),
+      });
+    }
+    return response;
   }
 
   if (path === '/v1/connect') {
@@ -407,6 +447,33 @@ async function handleSecurityResetRpc(
 }
 
 async function handleRpc(request: Request, env: Env): Promise<Response> {
+  const startedAt = Date.now();
+  let operation: OperationName | null = null;
+  let requestBytes: number | undefined;
+  const response = await handleRpcInternal(request, env, (parsedOperation, parsedBytes) => {
+    if ((OPERATIONS as readonly string[]).includes(parsedOperation)) {
+      operation = parsedOperation as OperationName;
+      requestBytes = parsedBytes;
+    }
+  });
+  if (operation !== null) {
+    const responseBytes = Number(response.headers.get('content-length'));
+    emitFeatureUsage({
+      operation,
+      status: response.status,
+      wallMs: Date.now() - startedAt,
+      ...(requestBytes === undefined ? {} : { requestBytes }),
+      ...(Number.isFinite(responseBytes) && responseBytes >= 0 ? { responseBytes } : {}),
+    });
+  }
+  return response;
+}
+
+async function handleRpcInternal(
+  request: Request,
+  env: Env,
+  onValidEnvelope: (operation: string, requestBytes: number) => void,
+): Promise<Response> {
   if (request.method !== 'POST') {
     return rpcErrorResponse(undefined, 'malformed-request');
   }
@@ -424,6 +491,7 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
   if (!envelope.ok) {
     return rpcErrorResponse(envelope.requestId, envelope.code);
   }
+  onValidEnvelope(envelope.request.operation, new TextEncoder().encode(bodyText).byteLength);
   // `account.deletionStatus` is the one op that must stay reachable after
   // deletion revokes every session — authenticate when we can, otherwise
   // forward the raw Authorization for the session object's admin check.
@@ -500,6 +568,28 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
           envelope.request.requestId,
           code === 'not-found' || code === 'malformed-request' ? code : 'unauthenticated',
         );
+      }
+      if (envelope.request.operation === 'account.delete') {
+        await machineEndpointStub(env).fetch('https://internal.anvil/internal/release-account', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ accountId: auth.accountId }),
+        }).catch(() => undefined);
+      } else if (envelope.request.operation === 'device.revoke') {
+        const params = envelope.request.params;
+        if (
+          typeof params === 'object' && params !== null && !Array.isArray(params) &&
+          typeof (params as Record<string, unknown>)['enrollmentId'] === 'string'
+        ) {
+          await machineEndpointStub(env).fetch('https://internal.anvil/internal/release-enrollment', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              accountId: auth.accountId,
+              enrollmentId: (params as Record<string, unknown>)['enrollmentId'],
+            }),
+          }).catch(() => undefined);
+        }
       }
       return rpcSuccessResponse(envelope.request.requestId, payload);
     }
@@ -656,6 +746,12 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'sync.scan.begin':
     case 'sync.scan.page':
     case 'sync.scan.finish':
+    case 'sync.snapshot.begin':
+    case 'sync.snapshot.chunk.put':
+    case 'sync.snapshot.verify':
+    case 'sync.snapshot.commit':
+    case 'sync.snapshot.get':
+    case 'sync.snapshot.chunk.get':
     // MESH-01 worker lifecycle. device.policy.publish is the local opt-in
     // bootstrap; the account object enforces the fail-closed policy gate on
     // every worker.* operation. MESH-02 adds the durable job/attempt ops.
@@ -700,9 +796,8 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'dashboard.decide':
     case 'dashboard.publish':
     case 'dashboard.revoke':
-    // browser-workspace/1 additive Desktop relay methods. These are
-    // intentionally outside the frozen mesh/1 operation inventory but are
-    // still authenticated and account-scoped through the same RPC path.
+    // browser-workspace operations are part of the required mesh/2 profile
+    // and remain authenticated/account-scoped through the same RPC path.
     case 'dashboard.command.claim':
     case 'dashboard.command.complete':
     // SESSION-03 session ownership handoff.
@@ -710,7 +805,7 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'handoff.get':
     case 'handoff.advance':
     case 'handoff.cancel':
-    // Data portability (sync/1): paged export, staged import, op status.
+    // Data portability (sync/2): paged export, staged import, op status.
     case 'data.export.begin':
     case 'data.export.page':
     case 'data.import.preview':
@@ -733,7 +828,11 @@ export default {
   // the aggregate sweep. No-op on self-host (HOSTED_DB unbound).
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
-      Promise.all([runHostedReconcile(env), runHostedOrganizationReconcile(env)]).then(
+      Promise.all([
+        runHostedReconcile(env),
+        runHostedOrganizationReconcile(env),
+        machineEndpointStub(env).fetch('https://internal.anvil/internal/reconcile', { method: 'POST' }),
+      ]).then(
         () => undefined,
       ),
     );
