@@ -71,6 +71,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Test staging status checks
+        run: node --test scripts/staging-status.node-test.mjs
+
       - name: Test immutable R2 publisher
         working-directory: .
         run: node --test .github/scripts/publish-r2-immutable.test.mjs
