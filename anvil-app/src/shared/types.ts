@@ -1723,6 +1723,8 @@ export interface MobileStartChatInput {
   reasoningEffort?: ReasoningEffort;
   model?: string;
   attachments?: ChatAttachmentInput[];
+  /** Repo-relative references resolved and containment-checked by a Mesh host. */
+  fileMentions?: MobileCompanionFileMentionReference[];
 }
 
 export interface MobileSendChatMessageInput {
@@ -1732,6 +1734,13 @@ export interface MobileSendChatMessageInput {
   reasoningEffort?: ReasoningEffort;
   model?: string;
   attachments?: ChatAttachmentInput[];
+  /** Repo-relative references resolved and containment-checked by a Mesh host. */
+  fileMentions?: MobileCompanionFileMentionReference[];
+}
+
+export interface MobileCompanionFileMentionReference {
+  repoId: string;
+  relativePath: string;
 }
 
 export interface MobileStartChatResult {

@@ -15,12 +15,14 @@ const mocks = vi.hoisted(() => ({
     enrollmentId: 'enr-host' as string | null,
     expiresAt: null as string | null,
   },
+  scope: null as { backendId: string; accountId: string; datasetEpoch: string } | null,
   attestDeviceAccessToken: vi.fn(),
   publishCompanionAdvertisement: vi.fn(async () => ({})),
   listDevices: vi.fn(async () => ({ devices: [] })),
 }));
 
 vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/anvil-mobile-companion-enrollment-test-user-data' },
   BrowserWindow: { getAllWindows: () => [] },
 }));
 
@@ -80,7 +82,7 @@ vi.mock('../chat-persistence.service.js', () => ({
 
 vi.mock('../sync-runtime.service.js', () => ({
   getRuntimeStatus: () => ({ auth: mocks.auth }),
-  activeSyncScope: vi.fn(() => null),
+  activeSyncScope: vi.fn(() => mocks.scope),
   attestDeviceAccessToken: mocks.attestDeviceAccessToken,
   publishCompanionAdvertisement: mocks.publishCompanionAdvertisement,
   getDevicePresence: vi.fn(async () => ({ devices: [] })),
@@ -89,8 +91,10 @@ vi.mock('../sync-runtime.service.js', () => ({
 
 import {
   clearCompanionAttestationCache,
+  ensureMeshCompanionEnrollmentPolicy,
   listCompanionEnrollmentPolicies,
   removeCompanionEnrollmentPolicy,
+  setCompanionDefaultPolicyTier,
   setCompanionEnrollmentPolicy,
   startMobileCompanionServer,
   stopMobileCompanionServer,
@@ -153,6 +157,8 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  mocks.scope = null;
+  setCompanionDefaultPolicyTier(null);
   inMemoryDb.exec('DELETE FROM companion_enrollment_policies');
   clearCompanionAttestationCache();
   mocks.auth.state = 'signed-in';
@@ -290,27 +296,14 @@ describe('mobile companion network exposure', () => {
     expect(wrongPort.headers.get('access-control-allow-origin')).toBeNull();
   });
 
-  it('requires existing companion authentication before exposing the machine route', async () => {
+  it('does not expose the retired bearer-authenticated machine prototype route', async () => {
     const previous = process.env[MESH_MACHINE_ENDPOINT_FLAG];
     try {
       process.env[MESH_MACHINE_ENDPOINT_FLAG] = 'true';
-      const unauthenticated = await api('/api/machine/v1/grants/grant-1/info');
-      const authenticated = await api('/api/machine/v1/grants/grant-1/info', {
+      const retiredRoute = await api('/api/machine/v1/grants/grant-1/info', {
         token: PAIRED_TOKEN,
       });
-
-      expect(unauthenticated.status).toBe(401);
-      expect(authenticated.status).toBe(403);
-      expect(authenticated.body.error).toContain('grant is not available');
-
-      await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
-      setCompanionEnrollmentPolicy('enr-phone', 'observe');
-      const observeDispatch = await api(
-        '/api/machine/v1/machines/test-instance/grants/grant-1/commands/dispatch',
-        { method: 'POST', token: ENROLLMENT_TOKEN },
-      );
-      expect(observeDispatch.status).toBe(403);
-      expect(observeDispatch.body.required).toBe('steer');
+      expect(retiredRoute.status).toBe(404);
     } finally {
       if (previous === undefined) delete process.env[MESH_MACHINE_ENDPOINT_FLAG];
       else process.env[MESH_MACHINE_ENDPOINT_FLAG] = previous;
@@ -319,6 +312,22 @@ describe('mobile companion network exposure', () => {
 });
 
 describe('per-enrollment host policy', () => {
+  it('creates a pending first-contact policy for a Mesh ticket without granting access', () => {
+    mocks.scope = { backendId: 'backend-1', accountId: 'acct-1', datasetEpoch: 'epoch-1' };
+
+    const firstContact = ensureMeshCompanionEnrollmentPolicy('enr-phone', 'acct-1');
+    expect(firstContact).toEqual({ state: 'approval-required' });
+    expect(listCompanionEnrollmentPolicies()).toMatchObject([
+      { enrollmentId: 'enr-phone', accountId: 'acct-1', tier: 'pending' },
+    ]);
+
+    setCompanionEnrollmentPolicy('enr-phone', 'observe');
+    expect(ensureMeshCompanionEnrollmentPolicy('enr-phone', 'acct-1')).toEqual({
+      state: 'authorized',
+      tier: 'observe',
+    });
+  });
+
   it('creates a pending policy on first verified contact and denies the request', async () => {
     const res = await api('/api/chat/threads', { token: ENROLLMENT_TOKEN });
     expect(res.status).toBe(403);

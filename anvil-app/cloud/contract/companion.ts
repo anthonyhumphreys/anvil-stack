@@ -9,6 +9,13 @@
 // `session.attest`, which answers the token's verified identity claims
 // and never echoes the token back.
 
+import {
+  MESH_MACHINE_CAPABILITIES,
+  MESH_MACHINE_OPERATIONS,
+  MESH_MACHINE_PROTOCOL_VERSION,
+  type MeshMachineAdvertisedEndpoint,
+} from './machine.js';
+
 export const COMPANION_PROTOCOL_VERSION = 1;
 
 /** How long an endpoint advertisement stays fresh after its last publish. */
@@ -53,6 +60,8 @@ export interface DeviceAdvertiseParams {
   capabilities: CompanionCapability[];
   /** Advertised companion protocol; defaults to COMPANION_PROTOCOL_VERSION. */
   protocol?: number;
+  /** Optional direct Mesh listener identity. Routes remain broker-owned metadata. */
+  machine?: MeshMachineAdvertisedEndpoint;
 }
 
 export type DeviceAdvertiseResult = { advertised: true };
@@ -67,6 +76,7 @@ export interface DevicePresenceEntry {
   endpoints?: CompanionEndpoint[];
   capabilities?: CompanionCapability[];
   protocol?: number;
+  machine?: MeshMachineAdvertisedEndpoint;
   /** True when this row is the caller's own enrollment. */
   self: boolean;
 }
@@ -131,6 +141,33 @@ export function validateDeviceAdvertiseParams(value: unknown): value is DeviceAd
   }
   if (input['protocol'] !== undefined) {
     if (!Number.isInteger(input['protocol']) || (input['protocol'] as number) < 1) return false;
+  }
+  if (input['machine'] !== undefined) {
+    if (typeof input['machine'] !== 'object' || input['machine'] === null) return false;
+    const machine = input['machine'] as Record<string, unknown>;
+    if (
+      typeof machine['hostEnrollmentId'] !== 'string' ||
+      machine['hostEnrollmentId'].length === 0 ||
+      machine['hostEnrollmentId'].length > 128 ||
+      typeof machine['machineId'] !== 'string' ||
+      machine['machineId'].length === 0 ||
+      machine['machineId'].length > 128 ||
+      typeof machine['endpointGeneration'] !== 'string' ||
+      machine['endpointGeneration'].length === 0 ||
+      machine['endpointGeneration'].length > 128 ||
+      machine['protocolVersion'] !== MESH_MACHINE_PROTOCOL_VERSION ||
+      !Array.isArray(machine['capabilities']) ||
+      !machine['capabilities'].every((item) =>
+        (MESH_MACHINE_CAPABILITIES as readonly string[]).includes(item as string),
+      ) ||
+      !Array.isArray(machine['operations']) ||
+      machine['operations'].length > 64 ||
+      !machine['operations'].every((item) =>
+        (MESH_MACHINE_OPERATIONS as readonly string[]).includes(item as string),
+      )
+    ) {
+      return false;
+    }
   }
   return true;
 }

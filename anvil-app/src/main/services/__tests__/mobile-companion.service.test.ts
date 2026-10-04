@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { MobileOverview } from '../../../shared/types.js';
+import type { ChatMessage, MobileOverview } from '../../../shared/types.js';
+import { loadChatHistory } from '../chat-persistence.service.js';
 import { getWorkspace } from '../workspace.service.js';
 
 vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/anvil-mobile-companion-test-user-data' },
   BrowserWindow: { getAllWindows: () => [] },
 }));
 
@@ -48,6 +50,7 @@ vi.mock('../chat-persistence.service.js', () => ({
 import {
   buildMobileWorkQueue,
   buildWorkflowDigest,
+  readMeshCompanionThreadHistory,
   resolveMobileActiveWorkspace,
 } from '../mobile-companion.service.js';
 
@@ -103,6 +106,42 @@ describe('mobile companion workspace selection', () => {
         'launch-workspace',
       )?.id,
     ).toBe('mac-workspace');
+  });
+});
+
+describe('mesh companion history projection', () => {
+  it('does not expose host paths through event, repo, citation, or attachment metadata', () => {
+    vi.mocked(loadChatHistory).mockReturnValue([
+      {
+        id: 'message-1',
+        role: 'assistant',
+        content: 'Here is the result.',
+        timestamp: '2026-05-26T10:00:00.000Z',
+        event: { type: 'file_read', filePath: '/Users/anthony/private/repo/file.ts' },
+        repoContext: '/Users/anthony/private/repo',
+        citations: [{ filePath: '/Users/anthony/private/repo/file.ts', lineStart: 4 }],
+        attachments: [
+          {
+            id: 'attachment-1',
+            name: 'notes.txt',
+            mimeType: 'text/plain',
+            size: 5,
+            path: '/Users/anthony/private/attachment.txt',
+          },
+        ],
+      } as ChatMessage,
+    ]);
+
+    const [message] = readMeshCompanionThreadHistory('thread-1');
+
+    expect(message).toMatchObject({
+      content: 'Here is the result.',
+      citations: [{ filePath: 'file.ts', lineStart: 4 }],
+      attachments: [{ id: 'attachment-1', name: 'notes.txt', mimeType: 'text/plain', size: 5 }],
+    });
+    expect(message).not.toHaveProperty('event');
+    expect(message).not.toHaveProperty('repoContext');
+    expect(JSON.stringify(message)).not.toContain('/Users/anthony');
   });
 });
 

@@ -4,7 +4,6 @@ import {
   meshMachineAdmissionBootstrapProofMessage,
   meshMachineBootstrapHostProofMessage,
   meshMachineSessionTokenAssociatedData,
-  meshMachineSocketProofMessage,
   meshMachineTrafficKeyDerivation,
   type MeshMachineEnrollmentAdmissionClaims,
   type MeshMachineSessionPrincipal,
@@ -12,6 +11,7 @@ import {
 import {
   createMeshMachineMac,
   newMeshMachineEphemeralIdentity,
+  openMeshMachineFrame,
   openMeshSealedBytes,
   sealMeshMachineFrame,
 } from '../mesh-host-client.service.js';
@@ -368,6 +368,37 @@ describe('Mesh host sessions', () => {
     );
     expect(fixture.service.authenticateSocket(session.response.sessionId, nextSocketNonce, socketProof)).toBe(true);
     expect(() => fixture.service.decryptClientFrame(frame)).toThrow('sequence-invalid');
+    const serverPayload = { kind: 'response' as const, requestId: 'request-0003', result: { ok: true } };
+    const serverFrame = fixture.service.encryptServerPayload(session.response.sessionId, serverPayload);
+    if (serverFrame.type !== 'data') throw new Error('Expected an encrypted server frame.');
+    const serverKeyDerivation = meshMachineTrafficKeyDerivation({
+      sessionId: session.response.sessionId,
+      machineId: identity.machineId,
+      endpointGeneration: identity.endpointGeneration,
+      direction: 'host-to-client',
+    });
+    const serverTrafficKey = Buffer.from(
+      hkdfSync(
+        'sha256',
+        session.token,
+        Buffer.from(serverKeyDerivation.salt, 'utf8'),
+        Buffer.from(serverKeyDerivation.info, 'utf8'),
+        32,
+      ),
+    );
+    expect(serverFrame.envelope.nonce).not.toBe('AAAAAAAAAAAAAAAA');
+    expect(openMeshMachineFrame({
+      key: serverTrafficKey,
+      sessionId: session.response.sessionId,
+      machineId: identity.machineId,
+      endpointGeneration: identity.endpointGeneration,
+      epoch: session.response.stream.epoch,
+      direction: 'host-to-client',
+      requestId: serverPayload.requestId,
+      sequence: serverFrame.sequence,
+      envelope: serverFrame.envelope,
+    })).toEqual(serverPayload);
+    serverTrafficKey.fill(0);
     fixture.service.publishEvent({ workspaceId: 'workspace-1', eventKind: 'output', payload: { text: 'ok' } });
     expect(fixture.service.readyPayload(session.response.sessionId)).toMatchObject({
       kind: 'ready',

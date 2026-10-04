@@ -19,6 +19,7 @@ import {
   deleteChatThread,
   ensureWorkItemChatThread,
   findChatAttachment,
+  findChatAttachmentThreadIds,
   getChatThread,
   getChatThreadProviderBinding,
   listChatThreads,
@@ -416,7 +417,9 @@ describe('chat thread persistence', () => {
     ]);
     expect(history[1].sessionId).toBe(sessionId);
     expect(findChatAttachment('att-1')).toEqual(history[0].attachments?.[0]);
+    expect(findChatAttachmentThreadIds('att-1')).toEqual([thread.id]);
     expect(findChatAttachment('missing')).toBeNull();
+    expect(findChatAttachmentThreadIds('missing')).toEqual([]);
 
     const refreshed = getChatThread(thread.id);
     expect(refreshed?.messageCount).toBe(2);

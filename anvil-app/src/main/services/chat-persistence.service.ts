@@ -152,6 +152,24 @@ export function findChatAttachment(attachmentId: string): ChatAttachment | null 
   return null;
 }
 
+/** Thread identities referencing a particular attachment, for scoped companion reads. */
+export function findChatAttachmentThreadIds(attachmentId: string): string[] {
+  const id = attachmentId.trim();
+  if (!id) return [];
+  return (
+    getDb()
+      .prepare(
+        `SELECT DISTINCT message.thread_id
+         FROM chat_messages AS message
+         JOIN json_each(
+           CASE WHEN json_valid(message.attachments_json) THEN message.attachments_json ELSE '[]' END
+         ) AS attachment
+         WHERE json_extract(attachment.value, '$.id') = ?`,
+      )
+      .all(id) as Array<{ thread_id: string }>
+  ).map((row) => row.thread_id);
+}
+
 function parsePlanSnapshot(value: string | null | undefined): ChatPlanSnapshot | undefined {
   if (!value) return undefined;
   try {
