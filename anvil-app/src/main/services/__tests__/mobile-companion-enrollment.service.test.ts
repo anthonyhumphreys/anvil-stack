@@ -2,13 +2,17 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SCHEMA_SQL } from '../../db/schema.js';
 
 const inMemoryDb = new Database(':memory:');
 inMemoryDb.exec(SCHEMA_SQL);
 
 const mocks = vi.hoisted(() => ({
+  userDataDir: '',
   auth: {
     state: 'signed-in' as 'signed-out' | 'enrolling' | 'signed-in',
     accountId: 'acct-1' as string | null,
@@ -22,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp/anvil-mobile-companion-enrollment-test-user-data' },
+  app: { getPath: () => mocks.userDataDir },
   BrowserWindow: { getAllWindows: () => [] },
 }));
 
@@ -134,6 +138,7 @@ async function api(
 }
 
 beforeAll(async () => {
+  mocks.userDataDir = mkdtempSync(join(tmpdir(), 'anvil-companion-enrollment-'));
   const port = await reservePort();
   inMemoryDb
     .prepare(
@@ -154,6 +159,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await stopMobileCompanionServer();
   inMemoryDb.close();
+  if (mocks.userDataDir) rmSync(mocks.userDataDir, { recursive: true, force: true });
 });
 
 beforeEach(() => {
