@@ -1,11 +1,16 @@
 import * as SecureStore from 'expo-secure-store';
+import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
-import { getAccountConnection, refreshAccountSession } from './anvil-account';
+import { sha256 } from '@noble/hashes/sha2.js';
+import type { MeshMachineOperation } from '../../cloud/contract/machine';
+import { getMeshMachineSession, type MeshMachineEvent } from './mesh-session';
 import type {
   ChatMessage,
   ChatAttachment,
   ChatAttachmentInput,
+  Citation,
   ChatFileMentionSearchResult,
+  CodexEvent,
   CodexRegisteredSkill,
   AgentRunSummary,
   AgentRunSource,
@@ -34,11 +39,7 @@ export interface CompanionConnection {
   deviceName: string;
   pairedAt: string;
   lastUsedAt: string;
-  /**
-   * 'paired' = LAN ticket/manual bearer (default). 'account' = the host is
-   * reached by presenting this device's account access token, resolved live
-   * at request time so rotated sessions never go stale in storage.
-   */
+  /** 'account' uses broker-issued encrypted Mesh sessions; it never sends account bearer to host. */
   authMode?: 'paired' | 'account';
   /** Account enrollment this connection authenticates as (account mode). */
   enrollmentId?: string;
@@ -72,14 +73,23 @@ export interface CompanionStreamEvent {
     | 'settings'
     | 'notes'
     | 'carplay'
-    | 'handover';
+    | 'handover'
+    | 'machine-event';
   generatedAt?: string;
   ok?: boolean;
+  event?: MeshMachineEvent;
+  resnapshotReason?: 'epoch-changed' | 'cursor-expired' | 'sequence-gap';
 }
 
 const CONNECTION_KEY = 'anvil.mobile.connection.v1';
 const CONNECTIONS_KEY = 'anvil.mobile.connections.v2';
 const COMPANION_REQUEST_TIMEOUT_MS = 12_000;
+const CHAT_ATTACHMENT_CHUNK_BYTES = 256 * 1024;
+const MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_CHAT_ATTACHMENTS = 10;
+const MAX_CHAT_ATTACHMENT_BATCH_BYTES = 75 * 1024 * 1024;
+const MAX_INLINE_ATTACHMENT_DATA_URL_CHARS = 350 * 1024;
+const stagedAttachmentBatches = new Map<string, Map<string, string>>();
 const DEFAULT_WORKFLOW_COUNTS: MobileWorkflowDigest['counts'] = {
   pendingApprovals: 0,
   activeSessions: 0,
@@ -132,7 +142,12 @@ export async function loadConnectionState(): Promise<CompanionConnectionState> {
   if (!legacyRaw) return emptyConnectionState();
 
   try {
-    const migrated = normalizeConnection(JSON.parse(legacyRaw));
+    const legacyValue: unknown = JSON.parse(legacyRaw);
+    if (isRecord(legacyValue) && legacyValue.authMode === 'account') {
+      await deleteStoredValue(CONNECTION_KEY);
+      return emptyConnectionState();
+    }
+    const migrated = normalizeConnection(legacyValue);
     const state = { activeConnectionId: migrated.id, connections: [migrated] };
     await saveConnectionState(state);
     await deleteStoredValue(CONNECTION_KEY);
@@ -198,9 +213,7 @@ export async function saveAccountConnection(
 /** Drops every account-mode connection (used on account sign-out). */
 export async function removeAccountConnections(): Promise<void> {
   const state = await loadConnectionState();
-  const connections = state.connections.filter(
-    (connection) => connection.authMode !== 'account',
-  );
+  const connections = state.connections.filter((connection) => connection.authMode !== 'account');
   const activeConnectionId =
     state.activeConnectionId !== null &&
     connections.some((connection) => connection.id === state.activeConnectionId)
@@ -293,6 +306,13 @@ export async function fetchOverview(
   connection: CompanionConnection,
   workspaceId?: string | null,
 ): Promise<MobileOverview> {
+  if (connection.authMode === 'account') {
+    const machine = await getMeshMachineSession(requireAccountHostEnrollment(connection));
+    return normalizeMobileOverview(
+      await machine.request('read.snapshot', workspaceId ? { workspaceId } : {}),
+      true,
+    );
+  }
   const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
   return normalizeMobileOverview(await fetchJson(connection, `/api/overview${query}`));
 }
@@ -301,6 +321,11 @@ export async function fetchWorkspaceSignalDetail(
   connection: CompanionConnection,
   signalId: string,
 ): Promise<MobileWorkspaceSignalDetail | null> {
+  if (connection.authMode === 'account') {
+    return normalizeWorkspaceSignalDetail(
+      await requestAccountMachine(connection, 'read.workspace-signal-detail', { signalId }),
+    );
+  }
   const detail = await fetchJson(
     connection,
     `/api/workspace-health/signals/${encodeURIComponent(signalId)}`,
@@ -311,6 +336,10 @@ export async function fetchWorkspaceSignalDetail(
 export async function fetchThreads(
   connection: CompanionConnection,
 ): Promise<MobileChatThreadSummary[]> {
+  if (connection.authMode === 'account') {
+    const raw = await requestAccountMachine(connection, 'read.chat-threads', {});
+    return mapChatThreads(raw);
+  }
   return fetchJson(connection, '/api/chat/threads');
 }
 
@@ -318,14 +347,91 @@ export async function fetchThreadHistory(
   connection: CompanionConnection,
   threadId: string,
 ): Promise<ChatMessage[]> {
+  if (connection.authMode === 'account') {
+    return mapChatHistory(
+      await requestAccountMachine(connection, 'read.thread-history', { threadId }),
+    );
+  }
   return fetchJson(connection, `/api/chat/threads/${encodeURIComponent(threadId)}/history`);
 }
 
 export function chatAttachmentUrl(connection: CompanionConnection, attachmentId: string): string {
+  if (connection.authMode === 'account') {
+    throw accountRestUnavailable('/api/chat/attachments/:id');
+  }
   return new URL(
     `/api/chat/attachments/${encodeURIComponent(attachmentId)}`,
     trimBaseUrl(connection.baseUrl),
   ).toString();
+}
+
+/** Reads account-mode attachments through bounded encrypted Mesh chunks. */
+export async function fetchChatAttachmentDataUrl(
+  connection: CompanionConnection,
+  attachmentId: string,
+): Promise<string> {
+  if (connection.authMode !== 'account') {
+    throw new Error('Attachment data URLs are only used for encrypted account connections.');
+  }
+  const machine = await getMeshMachineSession(requireAccountHostEnrollment(connection));
+  let totalBytes: number | null = null;
+  let name: string | null = null;
+  let mimeType: string | null = null;
+  let bytes = new Uint8Array(0);
+  let offset = 0;
+  do {
+    const result = await machine.request('read.attachment', {
+      attachmentId,
+      offset,
+      byteLength: CHAT_ATTACHMENT_CHUNK_BYTES,
+    });
+    if (
+      !isRecord(result) ||
+      result.attachmentId !== attachmentId ||
+      !Number.isSafeInteger(result.offset) ||
+      result.offset !== offset ||
+      !Number.isSafeInteger(result.totalBytes) ||
+      (result.totalBytes as number) < 0 ||
+      (result.totalBytes as number) > MAX_CHAT_ATTACHMENT_BYTES ||
+      typeof result.name !== 'string' ||
+      typeof result.mimeType !== 'string' ||
+      typeof result.bytesBase64 !== 'string' ||
+      !Number.isSafeInteger(result.nextOffset)
+    ) {
+      throw new Error('The host returned a malformed attachment chunk.');
+    }
+    const chunk = decodeBase64Chunk(result.bytesBase64);
+    const nextOffset = result.nextOffset as number;
+    const emptyAttachment = result.totalBytes === 0 && offset === 0 && chunk.byteLength === 0;
+    if (
+      (!emptyAttachment && chunk.byteLength === 0) ||
+      chunk.byteLength > CHAT_ATTACHMENT_CHUNK_BYTES ||
+      nextOffset !== offset + chunk.byteLength ||
+      nextOffset > (result.totalBytes as number) ||
+      (totalBytes !== null && totalBytes !== result.totalBytes) ||
+      (name !== null && name !== result.name) ||
+      (mimeType !== null && mimeType !== result.mimeType)
+    ) {
+      throw new Error('The host returned an inconsistent attachment chunk.');
+    }
+    if (totalBytes === null) {
+      totalBytes = result.totalBytes as number;
+      name = result.name;
+      mimeType = result.mimeType;
+      bytes = new Uint8Array(totalBytes);
+    }
+    bytes.set(chunk, offset);
+    offset = nextOffset;
+    if (emptyAttachment) break;
+  } while (totalBytes !== null && offset < totalBytes);
+
+  if (totalBytes === null || offset !== totalBytes || name === null || mimeType === null) {
+    throw new Error('The host returned an incomplete attachment.');
+  }
+  const safeMimeType = /^[A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+$/.test(mimeType)
+    ? mimeType
+    : 'application/octet-stream';
+  return `data:${safeMimeType};name=${encodeURIComponent(name)};base64,${encodeBase64Bytes(bytes)}`;
 }
 
 export async function sendThreadMessage(
@@ -335,6 +441,39 @@ export async function sendThreadMessage(
   input: string | MobileSendChatMessageInput,
 ): Promise<void> {
   const body = typeof input === 'string' ? { sessionId, message: input } : { ...input, sessionId };
+  if (connection.authMode === 'account') {
+    const targetSessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
+    const message = typeof body.message === 'string' ? body.message : '';
+    if (
+      !targetSessionId ||
+      (!message.trim() && !(body.attachments?.length ?? 0) && !(body.fileMentions?.length ?? 0))
+    ) {
+      throw new Error(
+        'Account Mesh can steer an active session only; select an active session first.',
+      );
+    }
+    const attachmentBatch = await resolveAttachmentBatch(connection, body.attachments ?? []);
+    const result = await requestAccountMachine(connection, 'command.steer', {
+      sessionId: targetSessionId,
+      message,
+      ...(body.collaborationMode === undefined
+        ? {}
+        : { collaborationMode: body.collaborationMode }),
+      ...(body.reasoningEffort === undefined ? {} : { reasoningEffort: body.reasoningEffort }),
+      ...(body.model === undefined ? {} : { model: body.model }),
+      ...(body.fileMentions === undefined
+        ? {}
+        : { fileMentions: body.fileMentions.map(validateMeshFileMentionReference) }),
+      ...(attachmentBatch === null
+        ? {}
+        : { batchId: attachmentBatch.batchId, attachmentIds: attachmentBatch.attachmentIds }),
+    });
+    if (attachmentBatch !== null) consumeAttachmentBatch(connection, attachmentBatch);
+    if (!isRecord(result) || result.accepted !== true || result.sessionId !== targetSessionId) {
+      throw new Error('The host did not confirm the Mesh steer request.');
+    }
+    return;
+  }
   await fetchJson(connection, `/api/chat/threads/${encodeURIComponent(threadId)}/messages`, {
     method: 'POST',
     body: JSON.stringify(body),
@@ -345,6 +484,9 @@ export async function prepareChatAttachments(
   connection: CompanionConnection,
   attachments: ChatAttachmentInput[],
 ): Promise<ChatAttachment[]> {
+  if (connection.authMode === 'account') {
+    return stageMeshAttachments(connection, attachments);
+  }
   return fetchJson(connection, '/api/chat/attachments/prepare', {
     method: 'POST',
     body: JSON.stringify({ attachments }),
@@ -355,6 +497,11 @@ export async function searchChatFileMentions(
   connection: CompanionConnection,
   input: { repoIds: string[]; query?: string; limit?: number },
 ): Promise<ChatFileMentionSearchResult[]> {
+  if (connection.authMode === 'account') {
+    return mapFileMentionResults(
+      await requestAccountMachine(connection, 'read.file-mentions', input),
+    );
+  }
   return fetchJson(connection, '/api/chat/file-mentions/search', {
     method: 'POST',
     body: JSON.stringify(input),
@@ -365,6 +512,11 @@ export async function fetchChatSkills(
   connection: CompanionConnection,
   query = '',
 ): Promise<CodexRegisteredSkill[]> {
+  if (connection.authMode === 'account') {
+    return mapRegisteredSkills(
+      await requestAccountMachine(connection, 'read.chat-skills', { query }),
+    );
+  }
   const params = query.trim() ? `?query=${encodeURIComponent(query.trim())}` : '';
   return fetchJson(connection, `/api/chat/skills${params}`);
 }
@@ -373,6 +525,21 @@ export async function startWorkflow(
   connection: CompanionConnection,
   input: MobileStartChatInput,
 ): Promise<MobileStartChatResult> {
+  if (connection.authMode === 'account') {
+    const attachmentBatch = await resolveAttachmentBatch(connection, input.attachments ?? []);
+    const result = await requestAccountMachine(connection, 'command.submit', {
+      ...input,
+      attachments: [],
+      ...(input.fileMentions === undefined
+        ? {}
+        : { fileMentions: input.fileMentions.map(validateMeshFileMentionReference) }),
+      ...(attachmentBatch === null
+        ? {}
+        : { batchId: attachmentBatch.batchId, attachmentIds: attachmentBatch.attachmentIds }),
+    });
+    if (attachmentBatch !== null) consumeAttachmentBatch(connection, attachmentBatch);
+    return mapStartChatResult(result);
+  }
   return fetchJson(connection, '/api/chat/start', {
     method: 'POST',
     body: JSON.stringify(input),
@@ -393,6 +560,15 @@ export async function resolveApprovalByKey(
   requestKey: string,
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
 ): Promise<void> {
+  if (connection.authMode === 'account') {
+    const result = await requestAccountMachine(connection, 'command.approve', {
+      sessionId,
+      requestKey,
+      decision,
+    });
+    assertOkResult(result, 'The host did not confirm the approval decision.');
+    return;
+  }
   await fetchJson(
     connection,
     `/api/approvals/${encodeURIComponent(sessionId)}/${encodeURIComponent(requestKey)}/resolve`,
@@ -407,12 +583,22 @@ export async function interruptSession(
   connection: CompanionConnection,
   sessionId: string,
 ): Promise<void> {
+  if (connection.authMode === 'account') {
+    const result = await requestAccountMachine(connection, 'command.cancel', { sessionId });
+    assertOkResult(result, 'The host did not confirm the interrupt request.');
+    return;
+  }
   await fetchJson(connection, `/api/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
     method: 'POST',
   });
 }
 
 export async function openDesktop(connection: CompanionConnection): Promise<void> {
+  if (connection.authMode === 'account') {
+    const result = await requestAccountMachine(connection, 'command.open-desktop', {});
+    assertOkResult(result, 'The host did not confirm the desktop focus request.');
+    return;
+  }
   await fetchJson(connection, '/api/desktop/open', { method: 'POST' });
 }
 
@@ -421,6 +607,51 @@ export function subscribeToCompanionEvents(
   onEvent: (event: CompanionStreamEvent) => void,
   onError?: () => void,
 ): () => void {
+  if (connection.authMode === 'account') {
+    const enrollmentId = requireAccountHostEnrollment(connection);
+    let cancelled = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectDelayMs = 1_000;
+    let unsubscribe: (() => void) | null = null;
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimer !== null) return;
+      const delay = reconnectDelayMs;
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void connect();
+      }, delay);
+    };
+    const connect = async () => {
+      try {
+        const machine = await getMeshMachineSession(enrollmentId);
+        if (cancelled) return;
+        reconnectDelayMs = 1_000;
+        unsubscribe = machine.subscribe({
+          onEvent: (event) => onEvent({ type: 'machine-event', event }),
+          onResnapshot: (resnapshotReason) => onEvent({ type: 'machine-event', resnapshotReason }),
+          onClosed: () => {
+            if (cancelled) return;
+            onError?.();
+            scheduleReconnect();
+          },
+        });
+      } catch {
+        if (cancelled) return;
+        onError?.();
+        scheduleReconnect();
+      }
+    };
+    void connect();
+    return () => {
+      cancelled = true;
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      unsubscribe?.();
+      unsubscribe = null;
+    };
+  }
+
   const EventSourceCtor = (globalThis as unknown as { EventSource?: EventSourceConstructor })
     .EventSource;
   if (!EventSourceCtor) return () => {};
@@ -513,42 +744,541 @@ async function fetchJson<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const token = await resolveBearer(connection);
+  if (connection.authMode === 'account') {
+    throw accountRestUnavailable(path);
+  }
   const response = await fetchWithTimeout(`${connection.baseUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${connection.token}`,
       ...(init.headers ?? {}),
     },
   });
-  if (connection.authMode === 'account' && response.status === 401) {
-    // The host rejected the presented access token — rotate the device
-    // session once and retry before declaring the connection dead.
-    const refreshed = await refreshAccountSession();
-    if (!refreshed) {
-      return readBody(response) as Promise<T>;
-    }
-    const retry = await fetchWithTimeout(`${connection.baseUrl}${path}`, {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${refreshed.session.accessToken}`,
-        ...(init.headers ?? {}),
-      },
-    });
-    return readBody(retry) as Promise<T>;
-  }
   return readBody(response) as Promise<T>;
 }
 
-async function resolveBearer(connection: CompanionConnection): Promise<string> {
-  if (connection.authMode !== 'account') return connection.token;
-  const account = await getAccountConnection();
-  if (!account) {
-    throw new Error('This host needs an Anvil account sign-in.');
+function requireAccountHostEnrollment(connection: CompanionConnection): string {
+  if (typeof connection.enrollmentId !== 'string' || connection.enrollmentId.trim() === '') {
+    throw new Error('Rediscover the host through the HTTPS Anvil account service.');
   }
-  return account.session.accessToken;
+  return connection.enrollmentId;
+}
+
+async function requestAccountMachine(
+  connection: CompanionConnection,
+  operation: MeshMachineOperation,
+  payload: unknown,
+): Promise<unknown> {
+  const machine = await getMeshMachineSession(requireAccountHostEnrollment(connection));
+  if (!machine.host.operations.includes(operation)) {
+    throw new Error(
+      `The connected host does not provide the current Mesh operation '${operation}'.`,
+    );
+  }
+  try {
+    return await machine.request(operation, payload);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'machine-request-uncertain') {
+      throw new Error(
+        'The host connection dropped before this action was confirmed. Refresh the host state before trying again.',
+      );
+    }
+    if (error instanceof Error && error.message === 'machine-route-unavailable') {
+      throw new Error('Host connection unavailable. Check the host and tap Refresh devices.');
+    }
+    if (error instanceof Error && error.message === 'machine-approval-required') {
+      throw new Error(
+        'Waiting for host approval. On that host, open Settings → Devices → Account device access, approve this device, then tap Refresh devices.',
+      );
+    }
+    if (error instanceof Error && error.message === 'machine-device-denied') {
+      throw new Error('The host denied this device under its local trust policy.');
+    }
+    throw error;
+  }
+}
+
+export function requestEncryptedCompanionOperation(
+  connection: CompanionConnection,
+  operation: MeshMachineOperation,
+  payload: unknown,
+): Promise<unknown> {
+  if (connection.authMode !== 'account') {
+    throw new Error('An encrypted Mesh request requires an account-mode host connection.');
+  }
+  return requestAccountMachine(connection, operation, payload);
+}
+
+function mapChatThreads(value: unknown): MobileChatThreadSummary[] {
+  if (!Array.isArray(value)) throw new Error('The host returned a malformed thread list.');
+  return value.map((item): MobileChatThreadSummary => {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      typeof item.personaId !== 'string' ||
+      typeof item.title !== 'string' ||
+      !Array.isArray(item.repoIds) ||
+      !item.repoIds.every((repoId) => typeof repoId === 'string') ||
+      typeof item.messageCount !== 'number' ||
+      !Number.isFinite(item.messageCount) ||
+      typeof item.updatedAt !== 'string' ||
+      typeof item.pendingApprovalCount !== 'number' ||
+      !Number.isFinite(item.pendingApprovalCount)
+    ) {
+      throw new Error('The host returned a malformed thread summary.');
+    }
+    return {
+      id: item.id,
+      personaId: item.personaId,
+      title: item.title,
+      repoIds: item.repoIds,
+      messageCount: item.messageCount,
+      updatedAt: item.updatedAt,
+      pendingApprovalCount: item.pendingApprovalCount,
+      ...(typeof item.workspaceId === 'string' ? { workspaceId: item.workspaceId } : {}),
+      ...(typeof item.preview === 'string' ? { preview: item.preview } : {}),
+      ...(typeof item.activeSessionId === 'string'
+        ? { activeSessionId: item.activeSessionId }
+        : {}),
+      ...(isSessionStatus(item.activeSessionStatus)
+        ? { activeSessionStatus: item.activeSessionStatus }
+        : {}),
+    };
+  });
+}
+
+function mapChatHistory(value: unknown): ChatMessage[] {
+  if (!Array.isArray(value)) throw new Error('The host returned a malformed chat history.');
+  return value.map((item): ChatMessage => {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      !['user', 'assistant', 'system'].includes(String(item.role)) ||
+      typeof item.content !== 'string' ||
+      typeof item.timestamp !== 'string'
+    ) {
+      throw new Error('The host returned a malformed chat message.');
+    }
+    const attachments =
+      item.attachments === undefined ? undefined : mapChatAttachments(item.attachments);
+    const event = isCodexEvent(item.event) ? item.event : undefined;
+    return {
+      id: item.id,
+      role: item.role as ChatMessage['role'],
+      content: item.content,
+      timestamp: item.timestamp,
+      ...(event === undefined ? {} : { event }),
+      ...(typeof item.repoContext === 'string' ? { repoContext: item.repoContext } : {}),
+      ...(typeof item.personaId === 'string' ? { personaId: item.personaId } : {}),
+      ...(typeof item.threadId === 'string' ? { threadId: item.threadId } : {}),
+      ...(typeof item.sessionId === 'string' ? { sessionId: item.sessionId } : {}),
+      ...(item.citations === undefined ? {} : { citations: mapCitations(item.citations) }),
+      ...(attachments === undefined ? {} : { attachments }),
+    };
+  });
+}
+
+function isCodexEvent(value: unknown): value is CodexEvent {
+  return (
+    isRecord(value) &&
+    typeof value.type === 'string' &&
+    [
+      'text',
+      'thinking',
+      'file_read',
+      'file_edit',
+      'command_exec',
+      'tool_call',
+      'approval_request',
+      'input_request',
+      'subagent_update',
+      'thread_status',
+      'request_resolved',
+      'plan_update',
+      'agent_ui_intent',
+      'agent_ui_intent_resolved',
+      'goal_update',
+      'goal_cleared',
+      'queue_update',
+      'follow_up_delivery',
+      'error',
+      'status',
+      'usage',
+      'turn_outcome',
+      'context_compaction',
+      'usage_context',
+      'thread_metadata',
+    ].includes(value.type)
+  );
+}
+
+function isSessionStatus(
+  value: unknown,
+): value is NonNullable<MobileChatThreadSummary['activeSessionStatus']> {
+  return value === 'starting' || value === 'ready' || value === 'busy' || value === 'error';
+}
+
+function mapCitations(value: unknown): Citation[] {
+  if (!Array.isArray(value)) throw new Error('The host returned malformed chat citations.');
+  return value.map((item): Citation => {
+    if (!isRecord(item) || typeof item.filePath !== 'string') {
+      throw new Error('The host returned malformed chat citations.');
+    }
+    return {
+      filePath: item.filePath,
+      ...(typeof item.lineStart === 'number' ? { lineStart: item.lineStart } : {}),
+      ...(typeof item.lineEnd === 'number' ? { lineEnd: item.lineEnd } : {}),
+      ...(typeof item.snippet === 'string' ? { snippet: item.snippet } : {}),
+    };
+  });
+}
+
+function mapChatAttachments(value: unknown): ChatAttachment[] {
+  if (!Array.isArray(value)) throw new Error('The host returned malformed attachment metadata.');
+  return value.map((item): ChatAttachment => {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      typeof item.name !== 'string' ||
+      typeof item.mimeType !== 'string' ||
+      typeof item.size !== 'number' ||
+      !Number.isSafeInteger(item.size) ||
+      (item.kind !== 'image' && item.kind !== 'file') ||
+      typeof item.createdAt !== 'string'
+    ) {
+      throw new Error('The host returned malformed attachment metadata.');
+    }
+    return {
+      id: item.id,
+      name: item.name,
+      mimeType: item.mimeType,
+      size: item.size,
+      kind: item.kind,
+      // Mesh intentionally does not disclose the host-local attachment path.
+      path: '',
+      createdAt: item.createdAt,
+    };
+  });
+}
+
+async function stageMeshAttachments(
+  connection: CompanionConnection,
+  attachments: ChatAttachmentInput[],
+): Promise<ChatAttachment[]> {
+  if (attachments.length === 0) return [];
+  if (attachments.length > MAX_CHAT_ATTACHMENTS) {
+    throw new Error(`Attach up to ${MAX_CHAT_ATTACHMENTS} files at a time.`);
+  }
+  const parsed = attachments.map(parseMeshAttachmentInput);
+  const totalBytes = parsed.reduce((total, attachment) => total + attachment.bytes.byteLength, 0);
+  if (totalBytes > MAX_CHAT_ATTACHMENT_BATCH_BYTES) {
+    throw new Error('Attachments are limited to 75 MiB total.');
+  }
+  const batchId = Crypto.randomUUID();
+  let prepared: ChatAttachment[];
+  const dataUrlChars = attachments.reduce(
+    (total, attachment) => total + (attachment.dataUrl?.length ?? 0),
+    0,
+  );
+  if (dataUrlChars <= MAX_INLINE_ATTACHMENT_DATA_URL_CHARS) {
+    const result = await requestAccountMachine(connection, 'command.prepare-attachments', {
+      batchId,
+      attachments: attachments.map(({ path: _path, ...attachment }) => attachment),
+    });
+    if (!isRecord(result) || result.batchId !== batchId || !Array.isArray(result.attachments)) {
+      throw new Error('The host returned malformed prepared attachment metadata.');
+    }
+    prepared = mapChatAttachments(result.attachments);
+  } else {
+    prepared = [];
+    for (const attachment of parsed) {
+      const uploadId = Crypto.randomUUID();
+      const begin = await requestAccountMachine(connection, 'command.attachment.begin', {
+        batchId,
+        uploadId,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        totalBytes: attachment.bytes.byteLength,
+      });
+      if (
+        !isRecord(begin) ||
+        begin.batchId !== batchId ||
+        begin.uploadId !== uploadId ||
+        begin.nextOffset !== 0 ||
+        !Number.isSafeInteger(begin.chunkBytes) ||
+        (begin.chunkBytes as number) < 1 ||
+        (begin.chunkBytes as number) > CHAT_ATTACHMENT_CHUNK_BYTES
+      ) {
+        throw new Error('The host returned malformed attachment upload metadata.');
+      }
+      const chunkBytes = begin.chunkBytes as number;
+      for (let offset = 0; offset < attachment.bytes.byteLength; offset += chunkBytes) {
+        const bytes = attachment.bytes.subarray(
+          offset,
+          Math.min(offset + chunkBytes, attachment.bytes.byteLength),
+        );
+        const chunkResult = await requestAccountMachine(connection, 'command.attachment.chunk', {
+          uploadId,
+          offset,
+          bytesBase64: encodeBase64Bytes(bytes),
+        });
+        if (
+          !isRecord(chunkResult) ||
+          chunkResult.uploadId !== uploadId ||
+          chunkResult.nextOffset !== offset + bytes.byteLength
+        ) {
+          throw new Error('The host did not confirm the attachment chunk.');
+        }
+      }
+      const finished = await requestAccountMachine(connection, 'command.attachment.finish', {
+        uploadId,
+        sha256: toHex(sha256(attachment.bytes)),
+      });
+      prepared.push(...mapChatAttachments([finished]));
+    }
+  }
+  if (prepared.length !== attachments.length) {
+    throw new Error('The host returned an incomplete attachment batch.');
+  }
+  const byId = stagedAttachmentBatches.get(connection.id) ?? new Map<string, string>();
+  for (const attachment of prepared) byId.set(attachment.id, batchId);
+  stagedAttachmentBatches.set(connection.id, byId);
+  return prepared;
+}
+
+function parseMeshAttachmentInput(input: ChatAttachmentInput): {
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
+} {
+  if (
+    typeof input.name !== 'string' ||
+    input.name.trim().length === 0 ||
+    input.name.length > 256 ||
+    input.path !== undefined ||
+    typeof input.dataUrl !== 'string'
+  ) {
+    throw new Error(
+      'Encrypted account attachments must contain uploaded file data, not a host path.',
+    );
+  }
+  const match =
+    /^data:([A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+)(?:;[^,]*)?;base64,([A-Za-z0-9+/]*={0,2})$/.exec(
+      input.dataUrl,
+    );
+  if (!match) throw new Error(`Could not read ${input.name}. Choose the file again and retry.`);
+  const bytes = decodeBase64Chunk(match[2] ?? '');
+  if (
+    bytes.byteLength > MAX_CHAT_ATTACHMENT_BYTES ||
+    (input.size !== undefined && input.size !== bytes.byteLength)
+  ) {
+    throw new Error(
+      `${input.name} exceeds the 25 MiB attachment limit or has invalid size metadata.`,
+    );
+  }
+  const mimeType = input.mimeType?.trim() || match[1] || 'application/octet-stream';
+  if (mimeType.length > 128 || !/^[A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+$/.test(mimeType)) {
+    throw new Error(`${input.name} has an invalid content type.`);
+  }
+  return { name: input.name, mimeType, bytes };
+}
+
+async function resolveAttachmentBatch(
+  connection: CompanionConnection,
+  attachments: ChatAttachmentInput[],
+): Promise<{ batchId: string; attachmentIds: string[] } | null> {
+  if (attachments.length === 0) return null;
+  if (attachments.some((attachment) => attachment.dataUrl !== undefined)) {
+    const prepared = await stageMeshAttachments(connection, attachments);
+    return resolveAttachmentIds(
+      connection,
+      prepared.map((attachment) => attachment.id),
+    );
+  }
+  const attachmentIds = attachments.map((attachment) => attachment.id);
+  if (attachmentIds.some((id) => typeof id !== 'string' || id.length === 0)) {
+    throw new Error('Encrypted account attachments must be prepared before sending.');
+  }
+  return resolveAttachmentIds(connection, attachmentIds as string[]);
+}
+
+function resolveAttachmentIds(
+  connection: CompanionConnection,
+  attachmentIds: string[],
+): { batchId: string; attachmentIds: string[] } {
+  const batches = stagedAttachmentBatches.get(connection.id);
+  const batchIds = [...new Set(attachmentIds.map((id) => batches?.get(id)))];
+  if (batchIds.length !== 1 || typeof batchIds[0] !== 'string') {
+    throw new Error('These attachments have expired. Select them again and retry.');
+  }
+  return { batchId: batchIds[0], attachmentIds };
+}
+
+function consumeAttachmentBatch(
+  connection: CompanionConnection,
+  batch: { batchId: string; attachmentIds: string[] },
+): void {
+  const attachments = stagedAttachmentBatches.get(connection.id);
+  if (!attachments) return;
+  for (const attachmentId of batch.attachmentIds) {
+    if (attachments.get(attachmentId) === batch.batchId) attachments.delete(attachmentId);
+  }
+  if (attachments.size === 0) stagedAttachmentBatches.delete(connection.id);
+}
+
+function toHex(value: Uint8Array): string {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function mapFileMentionResults(value: unknown): ChatFileMentionSearchResult[] {
+  if (!Array.isArray(value)) throw new Error('The host returned malformed file search results.');
+  return value.map((item): ChatFileMentionSearchResult => {
+    if (
+      !isRecord(item) ||
+      typeof item.repoId !== 'string' ||
+      typeof item.repoName !== 'string' ||
+      typeof item.relativePath !== 'string' ||
+      typeof item.name !== 'string' ||
+      typeof item.size !== 'number' ||
+      !Number.isSafeInteger(item.size)
+    ) {
+      throw new Error('The host returned a malformed file search result.');
+    }
+    const fileMention = validateMeshFileMentionReference(item);
+    return {
+      repoId: fileMention.repoId,
+      repoName: item.repoName,
+      relativePath: fileMention.relativePath,
+      name: item.name,
+      // The Mesh dispatcher should omit host paths. Keep a relative value for the
+      // shared search-result type; account submissions serialize repoId + relativePath.
+      path: fileMention.relativePath,
+      size: item.size,
+    };
+  });
+}
+
+function validateMeshFileMentionReference(
+  value: unknown,
+): NonNullable<MobileStartChatInput['fileMentions']>[number] {
+  if (
+    !isRecord(value) ||
+    typeof value.repoId !== 'string' ||
+    value.repoId.length === 0 ||
+    value.repoId.length > 256 ||
+    typeof value.relativePath !== 'string' ||
+    value.relativePath.length === 0 ||
+    value.relativePath.length > 4096 ||
+    value.relativePath.startsWith('/') ||
+    value.relativePath.startsWith('\\') ||
+    /^[A-Za-z]:/.test(value.relativePath) ||
+    value.relativePath.includes('\0') ||
+    value.relativePath.split(/[\\/]/).some((segment) => segment === '..' || segment === '.')
+  ) {
+    throw new Error('The host returned an unsafe repository-relative file reference.');
+  }
+  return { repoId: value.repoId, relativePath: value.relativePath };
+}
+
+function mapRegisteredSkills(value: unknown): CodexRegisteredSkill[] {
+  if (!Array.isArray(value)) throw new Error('The host returned malformed skill results.');
+  const scopes: CodexRegisteredSkill['scope'][] = [
+    'codex-global',
+    'codex-system',
+    'user-agents',
+    'project',
+    'plugin',
+    'unknown',
+  ];
+  return value.map((item): CodexRegisteredSkill => {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      typeof item.name !== 'string' ||
+      !scopes.includes(item.scope as CodexRegisteredSkill['scope'])
+    ) {
+      throw new Error('The host returned malformed skill metadata.');
+    }
+    return {
+      id: item.id,
+      name: item.name,
+      // Mesh skill results need display metadata only; never retain host-local paths.
+      path: '',
+      directory: '',
+      scope: item.scope as CodexRegisteredSkill['scope'],
+      ...(typeof item.description === 'string' ? { description: item.description } : {}),
+      ...(typeof item.source === 'string' ? { source: item.source } : {}),
+      ...(Array.isArray(item.tags) && item.tags.every((tag) => typeof tag === 'string')
+        ? { tags: item.tags }
+        : {}),
+      ...(typeof item.updatedAt === 'string' ? { updatedAt: item.updatedAt } : {}),
+    };
+  });
+}
+
+function mapStartChatResult(value: unknown): MobileStartChatResult {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.thread) ||
+    !isRecord(value.session) ||
+    typeof value.queuedMessage !== 'string'
+  ) {
+    throw new Error('The host returned a malformed workflow result.');
+  }
+  const thread = mapChatThreads([value.thread])[0];
+  const session = value.session;
+  if (
+    typeof session.id !== 'string' ||
+    typeof session.personaId !== 'string' ||
+    typeof session.startedAt !== 'string' ||
+    !isSessionStatus(session.status)
+  ) {
+    throw new Error('The host returned a malformed started session.');
+  }
+  return {
+    thread,
+    session: {
+      id: session.id,
+      personaId: session.personaId,
+      startedAt: session.startedAt,
+      status: session.status,
+      ...(typeof session.appThreadId === 'string' ? { appThreadId: session.appThreadId } : {}),
+    },
+    queuedMessage: value.queuedMessage,
+  };
+}
+
+function assertOkResult(value: unknown, message: string): void {
+  if (!isRecord(value) || value.ok !== true) throw new Error(message);
+}
+
+function decodeBase64Chunk(value: string): Uint8Array {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error('The host returned invalid attachment bytes.');
+  }
+  const binary = atob(value);
+  const result = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) result[index] = binary.charCodeAt(index);
+  if (encodeBase64Bytes(result) !== value)
+    throw new Error('The host returned invalid attachment bytes.');
+  return result;
+}
+
+function encodeBase64Bytes(bytes: Uint8Array): string {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)),
+    );
+  }
+  return btoa(binary);
+}
+
+function accountRestUnavailable(path: string): Error {
+  return new Error(
+    `This operation (${path}) is not part of the current encrypted Mesh session. Use a paired local-token connection for this companion-only operation.`,
+  );
 }
 
 type TimedFetchInit = RequestInit & {
@@ -603,7 +1333,7 @@ function trimBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '');
 }
 
-function normalizeMobileOverview(raw: unknown): MobileOverview {
+function normalizeMobileOverview(raw: unknown, hideHostPaths = false): MobileOverview {
   const overview = isRecord(raw) ? raw : {};
   const workspaces = arrayValue(overview.workspaces) as MobileOverview['workspaces'];
   const activeSessions = arrayValue(overview.activeSessions) as MobileOverview['activeSessions'];
@@ -616,9 +1346,18 @@ function normalizeMobileOverview(raw: unknown): MobileOverview {
     .filter((run): run is AgentRunSummary => Boolean(run));
   const quickActions = arrayValue(overview.quickActions) as MobileOverview['quickActions'];
   const notifications = arrayValue(overview.notifications) as MobileOverview['notifications'];
-  const activeWorkspace = isRecord(overview.activeWorkspace)
+  const rawActiveWorkspace = isRecord(overview.activeWorkspace)
     ? (overview.activeWorkspace as unknown as MobileOverview['activeWorkspace'])
     : undefined;
+  const activeWorkspace =
+    hideHostPaths && rawActiveWorkspace
+      ? {
+          ...rawActiveWorkspace,
+          repos: Array.isArray(rawActiveWorkspace.repos)
+            ? rawActiveWorkspace.repos.map((repo) => ({ ...repo, path: '' }))
+            : [],
+        }
+      : rawActiveWorkspace;
   const workflow = normalizeWorkflow(
     overview.workflow,
     activeSessions,
@@ -645,7 +1384,9 @@ function normalizeMobileOverview(raw: unknown): MobileOverview {
     workspaceHealth: normalizeWorkspaceHealth(overview.workspaceHealth),
     workItems: arrayValue(overview.workItems) as MobileOverview['workItems'],
     currentIterationPath:
-      typeof overview.currentIterationPath === 'string' ? overview.currentIterationPath : undefined,
+      !hideHostPaths && typeof overview.currentIterationPath === 'string'
+        ? overview.currentIterationPath
+        : undefined,
     workQueue,
     workflow,
     quickActions,
@@ -1070,8 +1811,9 @@ function normalizeConnection(raw: unknown): CompanionConnection {
   const baseUrl = stringValue(raw.baseUrl, '');
   const token = stringValue(raw.token, '');
   const authMode = raw.authMode === 'account' ? 'account' : 'paired';
-  // Account connections resolve their bearer live; they need no stored token.
-  if (!baseUrl || (authMode === 'paired' && !token)) {
+  const enrollmentId = typeof raw.enrollmentId === 'string' ? raw.enrollmentId : undefined;
+  // Account host rows use their enrollment identity to establish a fresh Mesh session.
+  if (!baseUrl || (authMode === 'paired' && !token) || (authMode === 'account' && !enrollmentId)) {
     throw new Error('Invalid companion connection.');
   }
 
@@ -1084,7 +1826,7 @@ function normalizeConnection(raw: unknown): CompanionConnection {
     pairedAt: stringValue(raw.pairedAt, now),
     lastUsedAt: stringValue(raw.lastUsedAt, now),
     authMode,
-    enrollmentId: typeof raw.enrollmentId === 'string' ? raw.enrollmentId : undefined,
+    enrollmentId,
     requiresHostApproval: raw.requiresHostApproval === true,
   };
 }

@@ -1,6 +1,7 @@
 import { Action, ActionPanel, Icon, List } from '@raycast/api';
 import { useCachedPromise } from '@raycast/utils';
-import { fetchOverview, openDesktop } from './api';
+import { useEffect } from 'react';
+import { fetchOverview, openDesktop, subscribeToMeshUpdates } from './api';
 import { getExtensionBrand } from './brand';
 import { ApprovalListItem } from './components';
 
@@ -8,6 +9,8 @@ export default function ApprovalsCommand() {
   const { data, isLoading, revalidate } = useCachedPromise(fetchOverview);
   const approvals = data?.pendingApprovals ?? [];
   const brand = getExtensionBrand();
+
+  useEffect(() => subscribeToMeshUpdates(() => void revalidate()), [revalidate]);
 
   return (
     <List isLoading={isLoading} searchBarPlaceholder="Search pending approvals">

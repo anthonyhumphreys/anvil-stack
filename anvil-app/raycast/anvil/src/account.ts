@@ -1,18 +1,14 @@
 import { getPreferenceValues, LocalStorage } from '@raycast/api';
+import {
+  connectMeshMachineHost,
+  fetchMeshMachineHosts,
+  meshMachineRouteCandidates,
+  type MeshMachineSessionConnection,
+} from '../../../src/main/services/mesh-host-client.service.js';
+import type { MeshMachineHost } from '../../../cloud/contract/machine.js';
 
-// MOB-01 Phase 3: account-connected mode for Raycast. When the extension
-// has no manual baseUrl/token, it can instead redeem a single-use
-// enrollment code (minted from the account website or an enrolled device)
-// once, keep the device session in LocalStorage, discover enrolled hosts
-// through the account coordinator, and dial their advertised endpoints in
-// preference order (tailscale -> lan -> loopback) presenting the account
-// access token — the host attests it like any other enrollment.
-
-const PROTOCOL = 'anvil-backend/1' as const;
 const SESSION_KEY = 'anvil.account.session';
 const BACKEND_KEY = 'anvil.account.backend';
-const HOST_KEY = 'anvil.account.host';
-const DIAL_TIMEOUT_MS = 4_000;
 
 interface DeviceSession {
   accessToken: string;
@@ -25,26 +21,33 @@ interface DeviceSession {
   displayName?: string;
 }
 
-interface DevicePresenceEntry {
-  enrollmentId: string;
-  online: boolean;
-  lastSeenAt: string;
-  endpoints?: { kind: 'tailscale' | 'lan' | 'loopback'; host: string; port: number }[];
-  capabilities?: string[];
-  protocol?: number;
-  self: boolean;
-}
-
-interface DialedHost {
-  baseUrl: string;
-  enrollmentId: string;
-  dialedAt: number;
-}
-
 export interface AccountPreferences {
   accountApiUrl?: string;
   accountEnrollmentCode?: string;
 }
+
+export interface AccountMeshEvent {
+  enrollmentId: string;
+  epoch: string;
+  sequence: number;
+  workspaceId: string;
+  jobId?: string;
+  eventKind: string;
+  payload: unknown;
+}
+
+export interface AccountMachineTarget {
+  host: MeshMachineHost;
+  connection: MeshMachineSessionConnection;
+}
+
+const activeConnections = new Map<string, MeshMachineSessionConnection>();
+const pendingConnections = new Map<
+  string,
+  { endpointGeneration: string; promise: Promise<MeshMachineSessionConnection> }
+>();
+const latestEndpointGenerations = new Map<string, string>();
+const eventListeners = new Set<(event: AccountMeshEvent) => void>();
 
 export function accountConfigured(): boolean {
   const prefs = getPreferenceValues<AccountPreferences>();
@@ -52,57 +55,60 @@ export function accountConfigured(): boolean {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function secureApiUrl(value: string): URL {
+  const url = new URL(value);
+  if (
+    url.protocol !== 'https:' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== ''
+  ) {
+    throw new Error('Account sign-in requires an HTTPS Anvil API URL.');
+  }
+  if (!url.pathname.endsWith('/')) url.pathname += '/';
+  return url;
 }
 
 function routeUrl(apiUrl: string, route: string): string {
-  const base = apiUrl.endsWith('/') ? apiUrl : `${apiUrl}/`;
-  return new URL(route, base).href;
+  return new URL(route, secureApiUrl(apiUrl)).href;
 }
 
 async function fetchJson(
   url: string,
-  init: { body: unknown; accessToken?: string; timeoutMs?: number },
+  init: { body?: unknown; accessToken?: string; method?: 'GET' | 'POST'; timeoutMs?: number },
 ): Promise<unknown> {
+  const requestUrl = new URL(url);
+  if (requestUrl.protocol !== 'https:' || requestUrl.username || requestUrl.password) {
+    throw new Error('Account credentials can only be sent to an HTTPS Anvil API.');
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), init.timeoutMs ?? 12_000);
   try {
     const response = await fetch(url, {
-      method: 'POST',
+      method: init.method ?? 'POST',
       headers: {
-        'Content-Type': 'application/json',
         Accept: 'application/json',
-        ...(init.accessToken === undefined
-          ? {}
-          : { Authorization: `Bearer ${init.accessToken}` }),
+        ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(init.accessToken === undefined ? {} : { Authorization: `Bearer ${init.accessToken}` }),
       },
+      redirect: 'error',
       signal: controller.signal,
-      body: JSON.stringify(init.body),
+      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
     });
     const payload = (await response.json().catch(() => null)) as unknown;
-    if (isRecord(payload) && isRecord(payload['error'])) {
-      const code =
-        typeof payload['error']['code'] === 'string' ? payload['error']['code'] : 'unauthenticated';
+    if (isRecord(payload) && isRecord(payload.error)) {
+      const code = typeof payload.error.code === 'string' ? payload.error.code : 'unauthenticated';
       throw new Error(code);
     }
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return payload;
   } finally {
     clearTimeout(timeout);
   }
-}
-
-async function rpc<R>(apiUrl: string, accessToken: string, operation: string, params: unknown): Promise<R> {
-  const payload = (await fetchJson(routeUrl(apiUrl, 'rpc'), {
-    accessToken,
-    body: { protocol: PROTOCOL, requestId: crypto.randomUUID(), operation, params },
-  })) as Record<string, unknown>;
-  if (!isRecord(payload) || !('result' in payload)) {
-    throw new Error(`malformed envelope for ${operation}`);
-  }
-  return payload['result'] as R;
 }
 
 async function storedSession(): Promise<{ apiUrl: string; session: DeviceSession } | null> {
@@ -112,7 +118,17 @@ async function storedSession(): Promise<{ apiUrl: string; session: DeviceSession
   ]);
   if (!apiUrl || !raw) return null;
   try {
-    return { apiUrl, session: JSON.parse(raw) as DeviceSession };
+    const session = JSON.parse(raw) as DeviceSession;
+    if (
+      typeof session.accessToken !== 'string' ||
+      typeof session.refreshToken !== 'string' ||
+      typeof session.enrollmentId !== 'string' ||
+      typeof session.accountId !== 'string'
+    ) {
+      return null;
+    }
+    secureApiUrl(apiUrl);
+    return { apiUrl, session };
   } catch {
     return null;
   }
@@ -120,7 +136,7 @@ async function storedSession(): Promise<{ apiUrl: string; session: DeviceSession
 
 async function storeSession(apiUrl: string, session: DeviceSession): Promise<void> {
   await LocalStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  await LocalStorage.setItem(BACKEND_KEY, apiUrl);
+  await LocalStorage.setItem(BACKEND_KEY, secureApiUrl(apiUrl).href);
 }
 
 async function ensureSession(): Promise<{ apiUrl: string; session: DeviceSession }> {
@@ -128,11 +144,12 @@ async function ensureSession(): Promise<{ apiUrl: string; session: DeviceSession
   if (existing) return existing;
 
   const prefs = getPreferenceValues<AccountPreferences>();
-  const apiUrl = prefs.accountApiUrl?.trim().replace(/\/+$/, '');
+  const rawApiUrl = prefs.accountApiUrl?.trim();
   const code = prefs.accountEnrollmentCode?.trim();
-  if (!apiUrl || !code) {
+  if (!rawApiUrl || !code) {
     throw new Error('Set a companion token or an account API URL + enrollment code.');
   }
+  const apiUrl = secureApiUrl(rawApiUrl).href;
   const session = (await fetchJson(routeUrl(apiUrl, 'enroll'), {
     body: {
       proof: { method: 'enrollment-code', code },
@@ -164,97 +181,167 @@ async function refreshSession(): Promise<{ apiUrl: string; session: DeviceSessio
   }
 }
 
-async function probe(baseUrl: string, accessToken: string): Promise<'ready' | 'blocked' | 'down'> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DIAL_TIMEOUT_MS);
+function createRaycastSocket(url: string, protocols: string[]) {
+  const socket = new WebSocket(url, protocols);
+  return {
+    on(event: string, listener: (...args: unknown[]) => void) {
+      socket.addEventListener(event as 'message' | 'error' | 'close', (value) => {
+        if (event === 'message') listener((value as MessageEvent).data);
+        else if (event === 'error') listener(new Error('machine-socket-error'));
+        else listener();
+      });
+    },
+    send(data: string) {
+      socket.send(data);
+    },
+    close(code?: number, reason?: string) {
+      socket.close(code, reason);
+    },
+  };
+}
+
+function publishMeshEvent(event: AccountMeshEvent): void {
+  for (const listener of eventListeners) listener(event);
+}
+
+async function openHostSession(
+  host: MeshMachineHost,
+  account: { apiUrl: string; session: DeviceSession },
+): Promise<MeshMachineSessionConnection> {
+  latestEndpointGenerations.set(host.enrollmentId, host.endpointGeneration);
+  const existing = activeConnections.get(host.enrollmentId);
+  if (
+    existing &&
+    existing.machineId === host.machineId &&
+    existing.endpointGeneration === host.endpointGeneration
+  ) {
+    return existing;
+  }
+  existing?.close();
+  activeConnections.delete(host.enrollmentId);
+  const pending = pendingConnections.get(host.enrollmentId);
+  if (pending?.endpointGeneration === host.endpointGeneration) return pending.promise;
+  let openedConnection: MeshMachineSessionConnection | null = null;
+  const opening = connectMeshMachineHost(host, {
+    apiUrl: account.apiUrl,
+    accessToken: account.session.accessToken,
+    accountId: account.session.accountId,
+    enrollmentId: account.session.enrollmentId,
+    socketFactory: createRaycastSocket,
+    onEvent: publishMeshEvent,
+    onClosed(enrollmentId) {
+      if (activeConnections.get(enrollmentId) === openedConnection) {
+        activeConnections.delete(enrollmentId);
+      }
+    },
+    onResnapshotRequired(event) {
+      publishMeshEvent({
+        ...event,
+        epoch: '',
+        sequence: 0,
+        workspaceId: '',
+        eventKind: 'resnapshot-required',
+        payload: null,
+      });
+    },
+  });
+  const pendingEntry = { endpointGeneration: host.endpointGeneration, promise: opening };
+  pendingConnections.set(host.enrollmentId, pendingEntry);
   try {
-    const response = await fetch(`${baseUrl}/api/chat/threads`, {
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-      signal: controller.signal,
-    });
-    if (response.status === 200) return 'ready';
-    return response.status === 403 ? 'blocked' : 'down';
-  } catch {
-    return 'down';
+    const connection = await opening;
+    openedConnection = connection;
+    if (latestEndpointGenerations.get(host.enrollmentId) !== host.endpointGeneration) {
+      connection.close();
+      throw new Error('route-unavailable');
+    }
+    activeConnections.set(host.enrollmentId, connection);
+    return connection;
   } finally {
-    clearTimeout(timeout);
+    if (pendingConnections.get(host.enrollmentId) === pendingEntry) {
+      pendingConnections.delete(host.enrollmentId);
+    }
   }
 }
 
-async function dial(apiUrl: string, accessToken: string, ownEnrollmentId: string): Promise<DialedHost | null> {
-  const presence = await rpc<{ devices: DevicePresenceEntry[] }>(
-    apiUrl,
-    accessToken,
-    'device.presence',
-    {},
-  );
-  for (const entry of presence.devices) {
-    if (entry.self || entry.enrollmentId === ownEnrollmentId) continue;
-    if (!entry.online) continue;
-    for (const endpoint of entry.endpoints ?? []) {
-      const baseUrl = `http://${endpoint.host}:${endpoint.port}`;
-      const result = await probe(baseUrl, accessToken);
-      if (result === 'ready') {
-        return { baseUrl, enrollmentId: entry.enrollmentId, dialedAt: Date.now() };
-      }
-      if (result === 'blocked') {
-        throw new Error(
-          'This device is waiting for approval on the host — approve it in desktop Settings.',
-        );
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * The companion endpoint to talk to: the dialed account host if one is
- * remembered and still answers, otherwise a fresh presence dial. The
- * bearer is the account access token, rotated transparently on failure.
- */
-export async function resolveAccountTarget(): Promise<{ baseUrl: string; token: string }> {
-  let active = await ensureSession();
-
-  const cachedRaw = await LocalStorage.getItem<string>(HOST_KEY);
-  if (cachedRaw) {
-    try {
-      const cached = JSON.parse(cachedRaw) as DialedHost;
-      if ((await probe(cached.baseUrl, active.session.accessToken)) === 'ready') {
-        return { baseUrl: cached.baseUrl, token: active.session.accessToken };
-      }
-    } catch {
-      // Fall through to a fresh dial.
-    }
-  }
-
-  let host: DialedHost | null;
+/** Discovers through HTTPS, then establishes an encrypted host-local session. */
+export async function resolveAccountMachine(): Promise<AccountMachineTarget> {
+  let account = await ensureSession();
+  let hosts: MeshMachineHost[];
   try {
-    host = await dial(active.apiUrl, active.session.accessToken, active.session.enrollmentId);
+    hosts = await fetchMeshMachineHosts({
+      apiUrl: account.apiUrl,
+      accessToken: account.session.accessToken,
+    });
   } catch (error) {
-    if (!String(error).includes('unauthenticated')) throw error;
+    if (!(error instanceof Error) || !error.message.includes('unauthenticated')) throw error;
     const refreshed = await refreshSession();
     if (!refreshed) throw error;
-    active = refreshed;
-    host = await dial(active.apiUrl, active.session.accessToken, active.session.enrollmentId);
+    account = refreshed;
+    hosts = await fetchMeshMachineHosts({
+      apiUrl: account.apiUrl,
+      accessToken: account.session.accessToken,
+    });
+  }
+  const onlineHosts = hosts.filter(
+    (host) => host.online && host.enrollmentId !== account.session.enrollmentId,
+  );
+  const currentProtocolHosts = onlineHosts.filter(
+    (host) =>
+      host.capabilities.includes('machine.session/1') &&
+      host.capabilities.includes('machine.stream/1') &&
+      host.operations.includes('read.snapshot'),
+  );
+  const candidates = currentProtocolHosts.filter(
+    (host) => meshMachineRouteCandidates(host).length > 0,
+  );
+  if (candidates.length === 0) {
+    if (onlineHosts.length > 0 && currentProtocolHosts.length === 0) {
+      throw new Error('The current Mesh session protocol is unavailable on online hosts.');
+    }
+    throw new Error(
+      'Host connection unavailable. Check that a host is online and Mesh is enabled.',
+    );
   }
 
-  if (host === null) {
-    // Every endpoint refused — the access token may simply be stale.
-    const refreshed = await refreshSession();
-    if (refreshed) {
-      active = refreshed;
-      host = await dial(active.apiUrl, active.session.accessToken, active.session.enrollmentId);
+  let latestError: unknown;
+  for (const host of candidates) {
+    try {
+      return { host, connection: await openHostSession(host, account) };
+    } catch (error) {
+      latestError = error;
+      if (
+        error instanceof Error &&
+        (error.message === 'approval-required' || error.message === 'device-denied')
+      ) {
+        break;
+      }
     }
   }
-  if (host === null) {
-    throw new Error('No enrolled hosts are reachable right now.');
+  if (latestError instanceof Error && latestError.message === 'approval-required') {
+    throw new Error(
+      'A host needs approval. On that host, open Settings → Devices → Account device access and approve Raycast.',
+    );
   }
-
-  await LocalStorage.setItem(HOST_KEY, JSON.stringify(host));
-  return { baseUrl: host.baseUrl, token: active.session.accessToken };
+  if (latestError instanceof Error && latestError.message === 'device-denied') {
+    throw new Error(
+      'A host denied Raycast under its local trust policy. Review host trust settings.',
+    );
+  }
+  if (latestError instanceof Error && latestError.message === 'protocol-mismatch') {
+    throw new Error('The current Mesh session protocol is unavailable on the reachable host.');
+  }
+  throw new Error('Host connection unavailable. Check the host and its current Mesh listener.');
 }
 
-/** Drops the remembered dialed host so the next call redials. */
+export function subscribeToAccountMeshEvents(
+  listener: (event: AccountMeshEvent) => void,
+): () => void {
+  eventListeners.add(listener);
+  return () => eventListeners.delete(listener);
+}
+
+/** Drops live sessions; the next account request rediscovers a current route. */
 export async function forgetDialedHost(): Promise<void> {
-  await LocalStorage.removeItem(HOST_KEY);
+  for (const connection of activeConnections.values()) connection.close();
+  activeConnections.clear();
 }

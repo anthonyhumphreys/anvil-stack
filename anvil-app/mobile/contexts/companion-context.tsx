@@ -87,6 +87,7 @@ interface CompanionContextValue {
   selectHost: (connectionId: string) => Promise<void>;
   forgetHost: (connectionId: string) => Promise<void>;
   disconnect: () => Promise<void>;
+  refreshConnections: () => Promise<void>;
   refresh: () => Promise<void>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
   followDesktopWorkspace: () => Promise<void>;
@@ -339,6 +340,25 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     },
     [connection, connections.length],
   );
+
+  const refreshConnections = useCallback(async () => {
+    const state = await loadConnectionState();
+    const activeConnection =
+      state.connections.find((candidate) => candidate.id === state.activeConnectionId) ?? null;
+    setConnections(state.connections);
+    setConnection((current) =>
+      current !== null &&
+      activeConnection !== null &&
+      sameConnectionRoute(current, activeConnection)
+        ? current
+        : activeConnection,
+    );
+    if (activeConnection?.id !== connection?.id) {
+      await resetHostState(activeConnection, state.connections.length);
+    } else {
+      await publishConnectionWidgetSnapshot(activeConnection, state.connections.length);
+    }
+  }, [connection?.id, resetHostState]);
 
   const selectHost = useCallback(
     async (connectionId: string) => {
@@ -612,6 +632,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       selectHost,
       forgetHost,
       disconnect,
+      refreshConnections,
       refresh,
       selectWorkspace,
       followDesktopWorkspace,
@@ -646,6 +667,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       refresh,
       resolve,
       forgetHost,
+      refreshConnections,
       followDesktopWorkspace,
       selectThread,
       selectHost,
@@ -663,6 +685,18 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
   );
 
   return <CompanionContext.Provider value={value}>{children}</CompanionContext.Provider>;
+}
+
+function sameConnectionRoute(left: CompanionConnection, right: CompanionConnection): boolean {
+  return (
+    left.id === right.id &&
+    left.baseUrl === right.baseUrl &&
+    left.token === right.token &&
+    left.deviceName === right.deviceName &&
+    left.authMode === right.authMode &&
+    left.enrollmentId === right.enrollmentId &&
+    left.requiresHostApproval === right.requiresHostApproval
+  );
 }
 
 export function useCompanion(): CompanionContextValue {

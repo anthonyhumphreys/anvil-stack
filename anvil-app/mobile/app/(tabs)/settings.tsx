@@ -1,6 +1,14 @@
 import { MaterialIcons } from '@react-native-vector-icons/material-icons';
-import { useEffect, useRef, useState } from 'react';
-import { Alert, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+  type ColorValue,
+} from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import type { DevicePresenceEntry } from '../../../cloud/contract/companion';
 import {
@@ -10,7 +18,7 @@ import {
   signOutAccount,
   type AccountConnection,
 } from '@/lib/anvil-account';
-import { dialAccountHosts } from '@/lib/account-dial';
+import { dialAccountHosts, type DialedHost } from '@/lib/account-dial';
 import { removeAccountConnections } from '@/lib/anvil-api';
 import {
   ActionButton,
@@ -39,6 +47,7 @@ export default function SettingsScreen() {
     selectHost,
     forgetHost,
     disconnect,
+    refreshConnections,
     refresh,
   } = useCompanion();
   const [permission, requestPermission] = useCameraPermissions();
@@ -50,30 +59,40 @@ export default function SettingsScreen() {
   const [manualToken, setManualToken] = useState('');
   const [account, setAccount] = useState<AccountConnection | null>(null);
   const [accountDevices, setAccountDevices] = useState<DevicePresenceEntry[]>([]);
+  const [accountHostDialResults, setAccountHostDialResults] = useState<DialedHost[]>([]);
   const [accountApiUrl, setAccountApiUrl] = useState('');
   const [accountCode, setAccountCode] = useState('');
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
 
-  const refreshAccount = async () => {
+  const refreshAccount = useCallback(async () => {
     const connection = await getAccountConnection();
     setAccount(connection);
+    setAccountError(null);
     if (!connection) {
       setAccountDevices([]);
+      setAccountHostDialResults([]);
+      await refreshConnections();
       return;
     }
+    setAccountHostDialResults([]);
     try {
       const presence = await getAccountPresence();
       setAccountDevices(presence.devices);
-      await dialAccountHosts();
+      const dialed = await dialAccountHosts();
+      setAccountHostDialResults(dialed);
+      await refreshConnections();
+      const unavailable = dialed.find((host) => host.outcome !== 'ready');
+      if (unavailable) setAccountError(dialOutcomeGuidance(unavailable.outcome));
     } catch (err) {
       setAccountError(err instanceof Error ? err.message : 'Failed to load account devices');
     }
-  };
+  }, [refreshConnections]);
 
   useEffect(() => {
-    void refreshAccount();
-  }, []);
+    const timer = setTimeout(() => void refreshAccount(), 0);
+    return () => clearTimeout(timer);
+  }, [refreshAccount]);
 
   const connectAccount = async () => {
     setAccountBusy(true);
@@ -247,18 +266,24 @@ export default function SettingsScreen() {
                   <MaterialIcons
                     name="circle"
                     size={10}
-                    color={device.online ? companionColors.green : companionColors.faint}
+                    color={accountDeviceIndicatorColor(
+                      device,
+                      accountHostDialResults.find(
+                        (result) => result.enrollmentId === device.enrollmentId,
+                      ),
+                    )}
                   />
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text numberOfLines={1} style={titleStyle}>
                       {device.self ? 'This device' : device.enrollmentId}
                     </Text>
                     <Text numberOfLines={1} style={subtleStyle}>
-                      {device.online
-                        ? `online · ${(device.endpoints ?? [])
-                            .map((endpoint) => endpoint.kind)
-                            .join(', ') || 'cloud only'}`
-                        : `last seen ${new Date(device.lastSeenAt).toLocaleString()}`}
+                      {accountDeviceStatus(
+                        device,
+                        accountHostDialResults.find(
+                          (result) => result.enrollmentId === device.enrollmentId,
+                        ),
+                      )}
                     </Text>
                   </View>
                 </View>
@@ -397,17 +422,11 @@ export default function SettingsScreen() {
                       {host.deviceName || hostLabel(host.baseUrl)}
                     </Text>
                     <Text selectable numberOfLines={1} style={subtleStyle}>
-                      {host.requiresHostApproval
-                        ? 'waiting for approval on host'
-                        : host.baseUrl}
+                      {host.requiresHostApproval ? 'waiting for approval on host' : host.baseUrl}
                     </Text>
                   </View>
                   {host.authMode === 'account' ? (
-                    <MaterialIcons
-                      name="cloud-done"
-                      size={16}
-                      color={companionColors.accentInk}
-                    />
+                    <MaterialIcons name="cloud-done" size={16} color={companionColors.accentInk} />
                   ) : null}
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -580,6 +599,50 @@ function hostLabel(baseUrl: string): string {
     return new URL(baseUrl).host;
   } catch {
     return 'Anvil host';
+  }
+}
+
+function accountDeviceStatus(device: DevicePresenceEntry, dial?: DialedHost): string {
+  if (device.self) return 'This device';
+  if (!device.online) return `offline · last seen ${new Date(device.lastSeenAt).toLocaleString()}`;
+  if (!dial) return 'Host connection unavailable · check host setup and refresh';
+  switch (dial.outcome) {
+    case 'ready':
+      return 'Encrypted Mesh session ready';
+    case 'approval-required':
+      return 'Waiting for approval on this host';
+    case 'denied':
+      return 'Denied by this host’s local trust policy';
+    case 'protocol-mismatch':
+      return 'Current Mesh session protocol unavailable · check host setup';
+    case 'route-unavailable':
+      return 'Host connection unavailable · check again';
+    case 'authorization-unavailable':
+      return 'Authorization unavailable · check account trust and host settings';
+  }
+}
+
+function accountDeviceIndicatorColor(device: DevicePresenceEntry, dial?: DialedHost): ColorValue {
+  if (device.self || dial?.outcome === 'ready') return companionColors.green;
+  if (!device.online) return companionColors.faint;
+  if (dial?.outcome === 'denied') return companionColors.red;
+  return companionColors.accent;
+}
+
+function dialOutcomeGuidance(outcome: DialedHost['outcome']): string {
+  switch (outcome) {
+    case 'approval-required':
+      return 'A host needs approval. On that host, open Settings → Devices → Account device access, approve this device, then tap Refresh devices.';
+    case 'denied':
+      return 'A host denied this device. Review its local trust settings, then tap Refresh devices.';
+    case 'protocol-mismatch':
+      return 'A host does not have the current Mesh session protocol available. Check its Sync & Mesh setup, then tap Refresh devices.';
+    case 'route-unavailable':
+      return 'Host connection unavailable. Check that the host is online and its Mesh listener is available, then tap Refresh devices.';
+    case 'authorization-unavailable':
+      return 'A host could not authorize this device. Check account trust and host enrollment, then tap Refresh devices.';
+    case 'ready':
+      return '';
   }
 }
 
