@@ -18,7 +18,7 @@ import { TerminalPanel } from "@/components/site/terminal-panel";
 import {
   docsHighlights,
   githubRepositoryUrl,
-  hostedUpsell,
+  hostedSyncInfo,
   latestDesktopDmgUrl,
   productLines,
   syncLayer,
@@ -165,13 +165,13 @@ function SyncLayerSection() {
               <aside className="flex flex-col rounded-lg border bg-background p-5">
                 <div className="flex items-center gap-2.5">
                   <Server className="size-4 text-accent" aria-hidden="true" />
-                  <h3 className="font-semibold">{hostedUpsell.title}</h3>
+                  <h3 className="font-semibold">{hostedSyncInfo.title}</h3>
                 </div>
-                <p className="mt-3 flex-1 text-sm leading-6 text-muted-foreground">{hostedUpsell.body}</p>
+                <p className="mt-3 flex-1 text-sm leading-6 text-muted-foreground">{hostedSyncInfo.body}</p>
                 <div className="mt-5">
                   <Button asChild variant="outline" size="sm">
-                    <Link href={hostedUpsell.href}>
-                      {hostedUpsell.cta}
+                    <Link href={hostedSyncInfo.href}>
+                      {hostedSyncInfo.cta}
                       <ArrowRight data-icon="inline-end" aria-hidden="true" />
                     </Link>
                   </Button>

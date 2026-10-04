@@ -4,9 +4,7 @@ import { deploymentVariable } from "@/lib/deployment-env.js";
 import { normalizePathWithQuery, signRequest } from "./signing";
 import type {
   HostedAccount,
-  HostedBillingInterval,
   HostedBillingOverview,
-  HostedCheckoutResult,
   HostedDashboardRequestInput,
   HostedDashboardRequestResult,
   HostedDashboardTrustRevokeInput,
@@ -24,14 +22,10 @@ import type {
   HostedEntitlement,
   HostedIdentity,
   HostedOrganizationAcceptResult,
-  HostedOrganizationCloseResult,
   HostedOrganizationCreateResult,
   HostedOrganizationInviteResult,
   HostedOrganizationListResult,
-  HostedOrganizationMemberSeatResult,
   HostedOrganizationRole,
-  HostedOrganizationSeatChangeResult,
-  HostedSeatIncreaseQuote,
   HostedLinkCodeResult,
   HostedPairDeviceResult,
   HostedPortalResult,
@@ -40,9 +34,6 @@ import type {
 
 const encoder = new TextEncoder();
 const REQUEST_TIMEOUT_MS = 10_000;
-
-/** Hosted sync is free through 31 Oct 2026; paid enforcement starts here. */
-export const HOSTED_PAID_ENFORCEMENT_AT = "2026-11-01T00:00:00Z";
 
 function backendOrigin(): string | null {
   const origin = deploymentVariable("BACKEND_ORIGIN", "ANVIL_BACKEND_ORIGIN");
@@ -77,7 +68,7 @@ export function hostedConfigured(): boolean {
 /**
  * Error raised for a non-2xx response from `/internal/hosted/*`. `code` is
  * the backend's RPC error code (`unauthenticated`, `forbidden`, `not-found`,
- * `unavailable`, …); `details` carries e.g. `reason: 'checkout-disabled'`.
+ * `unavailable`, …); `details` may carry a backend-specific reason.
  */
 export class HostedApiError extends Error {
   readonly status: number;
@@ -188,7 +179,7 @@ export function getAccount(identity: HostedIdentity): Promise<HostedAccount> {
   return hostedCall<HostedAccount>("/internal/hosted/account", identity);
 }
 
-/** POST /internal/hosted/billing — entitlement + subscription + checkout state. */
+/** POST /internal/hosted/billing — access state and legacy payment records. */
 export function getBilling(identity: HostedIdentity): Promise<HostedBillingOverview> {
   return hostedCall<HostedBillingOverview>("/internal/hosted/billing", identity);
 }
@@ -196,18 +187,6 @@ export function getBilling(identity: HostedIdentity): Promise<HostedBillingOverv
 /** POST /internal/hosted/entitlement — stored entitlement snapshot. */
 export function getEntitlement(identity: HostedIdentity): Promise<HostedEntitlement> {
   return hostedCall<HostedEntitlement>("/internal/hosted/entitlement", identity);
-}
-
-/** POST /internal/hosted/checkout — Stripe Checkout session for an interval. */
-export function createCheckout(
-  identity: HostedIdentity,
-  interval: HostedBillingInterval
-): Promise<HostedCheckoutResult> {
-  return hostedCall<HostedCheckoutResult>("/internal/hosted/checkout", {
-    ...identity,
-    planKey: "sync_personal",
-    interval
-  });
 }
 
 /** POST /internal/hosted/portal — Stripe Customer Portal session. */
@@ -226,96 +205,21 @@ export function createOrganizationPortal(
   });
 }
 
-export function createTeamCheckout(
-  identity: HostedIdentity,
-  organizationId: string,
-  interval: HostedBillingInterval,
-  seats = 5
-): Promise<HostedCheckoutResult> {
-  return hostedCall<HostedCheckoutResult>("/internal/hosted/checkout", {
-    ...identity,
-    planKey: "sync_team",
-    organizationId,
-    interval,
-    seats
-  });
-}
-
-export function updateOrganizationSeats(
-  identity: HostedIdentity,
-  organizationId: string,
-  seats: number
-): Promise<HostedOrganizationSeatChangeResult> {
-  return hostedCall<HostedOrganizationSeatChangeResult>("/internal/hosted/seats", {
-    ...identity,
-    organizationId,
-    seats
-  });
-}
-
-export function quoteOrganizationSeatIncrease(
-  identity: HostedIdentity,
-  organizationId: string,
-  seats: number
-): Promise<HostedSeatIncreaseQuote> {
-  return hostedCall<HostedSeatIncreaseQuote>("/internal/hosted/seats/quote", {
-    ...identity,
-    organizationId,
-    seats
-  });
-}
-
-export function confirmOrganizationSeatIncrease(
-  identity: HostedIdentity,
-  organizationId: string,
-  quoteId: string
-): Promise<HostedOrganizationSeatChangeResult> {
-  return hostedCall<HostedOrganizationSeatChangeResult>("/internal/hosted/seats/confirm", {
-    ...identity,
-    organizationId,
-    quoteId
-  });
-}
-
-export function updateOrganizationMemberSeat(
-  identity: HostedIdentity,
-  organizationId: string,
-  workosUserId: string,
-  assigned: boolean
-): Promise<HostedOrganizationMemberSeatResult> {
-  return hostedCall<HostedOrganizationMemberSeatResult>("/internal/hosted/organization-seat", {
-    identity,
-    organizationId,
-    workosUserId,
-    assigned
-  });
-}
-
 export function listOrganizations(identity: HostedIdentity): Promise<HostedOrganizationListResult> {
   return hostedCall<HostedOrganizationListResult>("/internal/hosted/organizations", { identity });
 }
 
-export function closeOrganization(
-  identity: HostedIdentity,
-  organizationId: string
-): Promise<HostedOrganizationCloseResult> {
-  return hostedCall<HostedOrganizationCloseResult>("/internal/hosted/organization-close", {
-    identity,
-    organizationId
-  });
-}
-
+/** Creates a free organisation with its owner counted within the five-member limit. */
 export function createOrganization(
   identity: HostedIdentity,
   name: string,
-  idempotencyKey: string,
-  ownerSeatAssigned = true
+  idempotencyKey: string
 ): Promise<HostedOrganizationCreateResult> {
   return hostedCall<HostedOrganizationCreateResult>("/internal/hosted/organization-create", {
     identity,
     name,
     idempotencyKey,
-    ownerSeatAssigned
+    ownerSeatAssigned: true
   });
 }
 

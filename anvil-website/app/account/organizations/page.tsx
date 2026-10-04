@@ -8,7 +8,7 @@ import { listOrganizations } from "@/lib/hosted";
 import type { HostedIdentity } from "@/lib/hosted/types";
 
 export const dynamic = "force-dynamic";
-export const metadata: Metadata = { title: "Organisation billing | Anvil", robots: { index: false } };
+export const metadata: Metadata = { title: "Organisation membership | Anvil", robots: { index: false } };
 
 export default async function OrganizationsPage({
   searchParams
@@ -34,16 +34,17 @@ async function OrganizationData({
   return (
     <div className="grid gap-6">
       <header className="grid gap-1">
-        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Organisation billing</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Organisation membership</h1>
         <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
-          A team account pays for hosted access for named developers. It does not share their
-          workspaces, repositories, artifacts, devices, or workers.
+          Manage membership, invitations, roles, and legacy billing records. Membership does not
+          share workspaces, devices, or Sync &amp; Mesh data; each person&apos;s Sync &amp; Mesh
+          access stays independent.
         </p>
       </header>
 
       {inviteState === "accepted" ? (
         <p role="status" className="rounded-md border bg-muted/30 px-4 py-3 text-sm">
-          Your organisation invitation was accepted and its seat is active.
+          Your organisation invitation was accepted.
         </p>
       ) : inviteState === "invalid" ? (
         <p role="alert" className="rounded-md border border-destructive/50 px-4 py-3 text-sm">
@@ -57,33 +58,37 @@ async function OrganizationData({
         </p>
       ) : inviteState === "waitlist" ? (
         <p role="alert" className="rounded-md border px-4 py-3 text-sm">
-          Hosted access requires WorkOS waitlist approval.{" "}
+          WorkOS account approval is required for hosted Sync &amp; Mesh.{" "}
           <Link href="/waitlist" className="font-medium underline underline-offset-4">
             Request access
           </Link>{" "}
           then ask the organisation owner to send a new invitation after your account is admitted.
         </p>
+      ) : inviteState === "member-limit" ? (
+        <p role="alert" className="rounded-md border px-4 py-3 text-sm">
+          This organisation has reached its limit of five allocated member seats. Ask the service
+          operator whether a higher fair-use limit is available.
+        </p>
       ) : null}
 
-      {organizations.ok ? (
+      {organizations.ok || organizations.code === "not-found" ? (
         <OrganizationsPanel
-          organizations={organizations.data.organizations}
+          organizations={organizations.ok ? organizations.data.organizations : []}
           currentUserId={identity.workosUserId}
         />
       ) : (
         <p role="alert" className="rounded-md border px-4 py-3 text-sm text-muted-foreground">
-          {organizations.code === "not-found"
-            ? "No organisation billing is available for this account yet."
-            : organizations.code === "unconfigured"
-              ? "Organisation billing is not configured on this deployment."
-              : `Could not load organisations (${organizations.status || "network"}). Try again shortly.`}
+          {organizations.code === "unconfigured"
+            ? "Organisation records are not configured on this deployment."
+            : `Could not load organisations (${organizations.status || "network"}). Try again shortly.`}
         </p>
       )}
 
       <p className="max-w-3xl text-xs leading-5 text-muted-foreground">
-        Team invitations are limited to people who already have an Anvil account. New teammates
-        must be admitted through the WorkOS waitlist first. Removing a seat ends hosted access paid
-        by that organisation but does not delete the person&apos;s account or private data.
+        Invitations are limited to people with an admitted Anvil account. New members must pass the
+        WorkOS account approval flow first. Removing someone from an organisation changes only that
+        membership; their account, devices, and Sync &amp; Mesh access stay with them. Owners can
+        review or cancel old subscription records from the payment portal.
       </p>
     </div>
   );

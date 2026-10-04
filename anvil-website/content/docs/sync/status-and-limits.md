@@ -35,13 +35,12 @@ the docs point at when they say "alpha." If a claim anywhere else in
   website service channel and WorkOS clients. The development spike requires
   an unpackaged build plus `ANVIL_ENABLE_SYNC_SPIKE=1`; the source tree alone
   does not make hosted connectivity live.
-- **Production provisioning is pending**: the production WorkOS app, Stripe
-  live keys, D1 database id, secrets bundle, and live-account verification are
-  not recorded here.
-- **Preview terms are policy values, not deployment evidence**: the current
-  policy date is free through 31 October 2026, with paid enforcement from
-  `2026-11-01T00:00:00Z`. Pricing is not approved — no price exists to quote.
-  See [Anvil-hosted sync](/docs/sync/hosted).
+- **Production provisioning is pending**: the production WorkOS app, D1
+  database id, secrets bundle, and live-account verification are not recorded
+  here. Stripe is not required for Sync & Mesh access.
+- **Sync & Mesh are free.** Production availability of the
+  Anvil-hosted backend remains gated while WorkOS, production D1, secrets, and
+  live-account verification are completed. See [Anvil-hosted sync](/docs/sync/hosted).
 
 ## Known gaps
 
@@ -128,7 +127,7 @@ Work that is known, named, and not yet done:
 | Export, import, delete | [Data portability](/docs/sync/data-portability) |
 | Deploy your own | [Self-deploy](/docs/sync/self-deploy) |
 | Prove compatibility | [Conformance](/docs/sync/conformance) |
-| Billing, /account, provisioning | [Anvil-hosted](/docs/sync/hosted) |
+| Hosted availability and legacy billing records | [Anvil-hosted](/docs/sync/hosted) |
 
 Found an edge not listed here? That is a docs bug —
 [contributing](/docs/project/contributing) covers how to file it.

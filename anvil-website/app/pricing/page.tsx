@@ -5,58 +5,47 @@ import { ArrowRight, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
-import { workosConfigured } from "@/lib/workos-env";
 
 export const metadata: Metadata = {
   title: "Pricing | Anvil",
   description:
-    "Anvil hosted access is free for admitted preview users through Halloween 2026. Personal plans start at £8/month; team billing starts at £35/month for five developers."
+    "Anvil Sync & Mesh are free. Existing provider integrations use your own accounts. Anvil Cloud Agents hosted compute will be paid when available; no price or release date is set."
 };
 
-const hostedPoints = [
-  "End-to-end encrypted sync of workspaces, templates, agents, and approved settings",
-  "Mesh job dispatch to your own enrolled devices",
-  "Hosted artifact storage under fair use",
-  "Device pairing, rename, and revoke from the web account"
+const syncPoints = [
+  "Encrypted sync for workspace definitions, templates, agents, and approved settings",
+  "Mesh jobs and session handoff across machines you control",
+  "Use local, Anvil-hosted, self-hosted, or compatible backends",
+  "No Anvil subscription or billing account required"
 ];
 
-const selfHostPoints = [
-  "Same Sync v1 contract — the desktop does not care who operates the backend",
-  "Deploy the open-source backend to your own Cloudflare account",
-  "Or point at any third-party implementation that passes the conformance suite",
-  "No hosted account, subscription, or entitlement checks"
+const providerPoints = [
+  "Run on machines you own, or VMs in provider accounts you configure",
+  "Use supported AWS, Cloudflare, and Vercel sandbox integrations",
+  "Anvil does not charge for these integrations",
+  "Cloud providers and model providers bill your account directly"
 ];
 
 const faqs = [
   {
-    q: "Who can use hosted Anvil during preview?",
-    a: "Access is invite-only through the WorkOS waitlist. Anvil reviews requests and approves people before they can create an account. Existing users can still sign in."
+    q: "Does Sync & Mesh have an Anvil subscription?",
+    a: "No. Sync & Mesh are free, including the Anvil-hosted service when it is available. You can also run the backend yourself or use a compatible implementation."
   },
   {
-    q: "What happens on 1 November 2026?",
-    a: "Paid enforcement begins at 2026-11-01T00:00:00Z. Each developer will need a Personal subscription or a seat funded by a team. Preview access will not convert into a charge automatically. Local-only mode remains free."
+    q: "Can I run agents through my machines and provider accounts?",
+    a: "Yes. Run on machines you own, VMs in accounts you configure, or supported AWS, Cloudflare, and Vercel sandbox integrations. Anvil does not charge for these integrations. Cloud and model providers bill you directly."
   },
   {
-    q: "Can my organisation see my work?",
-    a: "No. A team seat pays for hosted access only. Membership does not give owners access to personal workspaces, repositories, artifacts, devices, or execution environments. Shared projects are not part of this release."
+    q: "What is Anvil Cloud Agents?",
+      a: "Anvil Cloud is the open-source runtime and CLI. Anvil Cloud Agents is the planned hosted compute service for running agents on Anvil-managed infrastructure. It is not yet available, and hosted compute will be paid when it launches."
   },
   {
-    q: "How many devices are included?",
-    a: "Each developer can enroll up to five trusted devices, across personal and team funding. Revoke an old device to make room for a replacement."
-  },
-  {
-    q: "Are there usage charges?",
-    a: "There are no automatic usage charges or normal-use caps on projects and jobs. Hosted storage and transfer are covered by fair use; sustained exceptional usage is handled with notice."
-  },
-  {
-    q: "Why would I pay instead of self-hosting?",
-    a: "If operating a Cloudflare Worker, R2 bucket, D1 database, and WorkOS/Stripe wiring sounds fine, self-hosting is free. Hosted buys you the operated account, device, sync, and billing surfaces."
+    q: "Are model and cloud provider charges included?",
+    a: "No. You connect your own provider accounts and credentials. Any charges for models, VMs, storage, or other provider resources go directly to those providers."
   }
 ];
 
 export default function PricingPage() {
-  const authEnabled = workosConfigured();
-
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader active="pricing" />
@@ -64,50 +53,71 @@ export default function PricingPage() {
         <section className="border-b">
           <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8 lg:py-24">
             <div className="max-w-3xl">
-              <h1 className="text-4xl font-semibold leading-[1.02] tracking-[-0.03em] sm:text-5xl lg:text-6xl">
-                Hosted access, solo or team funded.
+              <p className="font-mono text-xs uppercase tracking-[0.12em] text-accent">
+                Pricing and provider costs
+              </p>
+              <h1 className="mt-4 text-4xl font-semibold leading-[1.02] tracking-[-0.03em] sm:text-5xl lg:text-6xl">
+                Sync &amp; Mesh are free. Hosted agent compute is a separate product.
               </h1>
               <p className="mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
-                The preview is invite-only and free through 31 October 2026. From 1 November, pay
-                personally or use a seat paid for by your team. Self-hosting remains free.
+                Sync &amp; Mesh are free. You can run agent work on your own machines
+                and provider accounts. Anvil Cloud Agents will charge for Anvil-managed hosted
+                compute when that service is available. There is no price or release date yet.
               </p>
               <div className="mt-7 flex flex-wrap gap-3">
-                {authEnabled ? (
-                  <Button asChild>
-                    <Link href="/waitlist">
-                      Request preview access
-                      <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                    </Link>
-                  </Button>
-                ) : null}
+                <Button asChild>
+                  <Link href="/docs/sync/overview">
+                    Read about Sync &amp; Mesh
+                    <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                  </Link>
+                </Button>
                 <Button asChild variant="outline">
-                  <Link href="/account">Already admitted? Sign in</Link>
+                  <Link href="/docs/cloud/agent-sandboxes">Read agent execution documentation</Link>
                 </Button>
               </div>
             </div>
           </div>
         </section>
 
-        <section className="py-14 lg:py-16" aria-labelledby="plans-heading">
+        <section className="py-14 lg:py-16" aria-labelledby="pricing-model-heading">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="mb-8 max-w-2xl">
-              <h2 id="plans-heading" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                One hosted service. Two ways to pay.
+              <h2 id="pricing-model-heading" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
+                What costs money
               </h2>
               <p className="mt-3 text-base leading-7 text-muted-foreground">
-                Personal and team-funded developers get the same hosted features and five trusted
-                devices. Team plans combine billing; they do not combine private work.
+                Anvil charges only for future compute that Anvil operates. Your own infrastructure
+                and provider accounts stay under your control.
               </p>
             </div>
 
             <div className="grid gap-5 lg:grid-cols-3">
               <article className="flex flex-col rounded-lg border border-accent/50 bg-card p-6">
-                <h3 className="text-xl font-semibold">Preview</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Approved waitlist members.</p>
-                <p className="mt-5 text-3xl font-semibold">Free</p>
-                <p className="mt-1 text-sm text-muted-foreground">through 31 October 2026 · no card</p>
+                <h3 className="text-xl font-semibold">Anvil Sync &amp; Mesh</h3>
+                <p className="mt-1 text-sm text-muted-foreground">Free</p>
+                <p className="mt-5 text-3xl font-semibold">£0</p>
+                <p className="mt-1 text-sm text-muted-foreground">No subscription required</p>
                 <ul className="mt-5 grid flex-1 gap-2 text-sm text-muted-foreground">
-                  {hostedPoints.map((point) => (
+                  {syncPoints.map((point) => (
+                    <li key={point} className="flex items-start gap-2">
+                      <Check className="proof-check" aria-hidden="true" />
+                      <span>{point}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-5 border-t pt-4 text-xs leading-5 text-muted-foreground">
+                  Anvil-hosted Sync &amp; Mesh is not yet available. The hosted service is being
+                  prepared for launch.
+                </p>
+              </article>
+
+              <article className="flex flex-col rounded-lg border bg-card p-6">
+                <h3 className="text-xl font-semibold">Your machines and providers</h3>
+                <p className="mt-1 text-sm text-muted-foreground">No Anvil integration fee</p>
+                <p className="mt-5 text-3xl font-semibold">Your account</p>
+                <p className="mt-1 text-sm text-muted-foreground">You pay the provider directly</p>
+                <ul className="mt-5 grid flex-1 gap-2 text-sm text-muted-foreground">
+                  {providerPoints.map((point) => (
                     <li key={point} className="flex items-start gap-2">
                       <Check className="proof-check" aria-hidden="true" />
                       <span>{point}</span>
@@ -117,54 +127,28 @@ export default function PricingPage() {
               </article>
 
               <article className="flex flex-col rounded-lg border bg-card p-6">
-                <h3 className="text-xl font-semibold">Personal</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Your account, your hosted access.</p>
-                <dl className="mt-5 grid gap-2 text-sm">
-                  <div className="flex items-baseline justify-between gap-4">
-                    <dt className="text-muted-foreground">Monthly</dt>
-                    <dd className="text-2xl font-semibold">£8<span className="text-sm font-normal text-muted-foreground"> / month</span></dd>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-4">
-                    <dt className="text-muted-foreground">Annual</dt>
-                    <dd className="text-xl font-semibold">£80<span className="text-sm font-normal text-muted-foreground"> / year</span></dd>
-                  </div>
-                </dl>
-                <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                  Five devices. No normal-use caps on projects or jobs. Hosted storage and transfer
-                  are covered by fair use.
+                <h3 className="text-xl font-semibold">Anvil Cloud Agents</h3>
+                <p className="mt-1 text-sm text-muted-foreground">Anvil-managed hosted compute</p>
+                <p className="mt-5 text-2xl font-semibold">Paid when available</p>
+                <p className="mt-1 text-sm text-muted-foreground">Not yet available</p>
+                <p className="mt-5 flex-1 text-sm leading-6 text-muted-foreground">
+                  This future service will run agent compute on infrastructure operated by Anvil.
+                  It is separate from Sync &amp; Mesh and from provider integrations you configure
+                  yourself.
                 </p>
-                <p className="mt-auto pt-5 text-xs text-muted-foreground">Available from 1 November 2026.</p>
-              </article>
-
-              <article className="flex flex-col rounded-lg border bg-card p-6">
-                <h3 className="text-xl font-semibold">Small Team</h3>
-                <p className="mt-1 text-sm text-muted-foreground">One invoice for up to five developers.</p>
-                <dl className="mt-5 grid gap-2 text-sm">
-                  <div className="flex items-baseline justify-between gap-4">
-                    <dt className="text-muted-foreground">Monthly · 5 seats</dt>
-                    <dd className="text-2xl font-semibold">£35<span className="text-sm font-normal text-muted-foreground"> / month</span></dd>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-4">
-                    <dt className="text-muted-foreground">Annual · 5 seats</dt>
-                    <dd className="text-xl font-semibold">£350<span className="text-sm font-normal text-muted-foreground"> / year</span></dd>
-                  </div>
-                </dl>
-                <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                  Five seats are the minimum purchase. From seat six, add £7/month or £70/year per
-                  developer. Each person keeps five devices.
+                <p className="mt-5 border-t pt-4 text-xs leading-5 text-muted-foreground">
+                  Model and provider charges are separate and billed by those providers.
                 </p>
-                <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                  The organisation pays for hosted access only. Personal work remains private; this
-                  plan does not include shared workspaces.
-                </p>
-                <p className="mt-auto pt-5 text-xs text-muted-foreground">Available from 1 November 2026.</p>
               </article>
             </div>
 
             <div className="mt-8 grid gap-8 border-y py-6 md:grid-cols-[0.7fr_1.3fr]">
               <div>
-                <h3 className="font-semibold">Self-host</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Your backend, your rules. Free always.</p>
+                <h3 className="font-semibold">Run the backend yourself</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Sync &amp; Mesh software is open source. Your infrastructure provider may charge
+                  for resources in your account.
+                </p>
                 <Button asChild variant="outline" className="mt-4">
                   <Link href="/docs/sync/self-deploy">
                     Self-deploy guide
@@ -172,36 +156,12 @@ export default function PricingPage() {
                   </Link>
                 </Button>
               </div>
-              <ul className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
-                {selfHostPoints.map((point) => (
-                  <li key={point} className="flex items-start gap-2">
-                    <Check className="proof-check" aria-hidden="true" />
-                    <span>{point}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <div className="mt-8 rounded-lg border bg-muted/30 p-5">
-              <h3 className="font-semibold">Fair use and the preview deadline</h3>
-              <ul className="mt-3 grid gap-2 text-sm text-muted-foreground">
-                <li>
-                  Paid enforcement starts 1 November 2026 at 00:00 UTC. Preview accounts will not
-                  become paid subscriptions automatically.
-                </li>
-                <li>
-                  The five-device limit applies per person. Hosted storage and transfer follow fair
-                  use; no automatic usage charges apply.
-                </li>
-                <li>
-                  If hosted access is not the right fit, local-only use and self-hosting remain
-                  available. See the{" "}
-                  <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline underline-offset-4">
-                    status and limits
-                  </Link>{" "}
-                  notes for current implementation details.
-                </li>
-              </ul>
+              <p className="text-sm leading-6 text-muted-foreground">
+                Anvil Cloud is the open-source runtime and CLI. The paid service described here is
+                only the future hosted compute operated by Anvil under the Anvil Cloud Agents name.
+                Cloud deployment plans report resource counts and cost drivers; they are not a bill
+                or an estimate from Anvil.
+              </p>
             </div>
           </div>
         </section>
@@ -213,7 +173,7 @@ export default function PricingPage() {
                 Asked, answered
               </h2>
               <p className="mt-3 text-base leading-7 text-muted-foreground">
-                How access, billing, and team membership work during and after preview.
+                The distinction is who operates and pays for the compute.
               </p>
             </div>
             <dl className="grid gap-0">

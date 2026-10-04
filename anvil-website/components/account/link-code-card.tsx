@@ -42,8 +42,8 @@ export function LinkCodeCard() {
       <CardHeader>
         <CardTitle>Link an existing Anvil install</CardTitle>
         <CardDescription>
-          Already syncing on a device? This code binds that sync account to your sign-in so billing
-          and device management work here.
+          Already syncing on a device? This code links that sync account to your sign-in for
+          account and device management.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">

@@ -8,8 +8,7 @@ import {
   GitBranch,
   MonitorSmartphone,
   Server,
-  Share2,
-  Timer
+  Share2
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -199,9 +198,11 @@ export default function SyncPage() {
               </h2>
               <p className="mt-4 text-base leading-7 text-muted-foreground">
                 A workflow can ask for a temporary environment on AWS Lambda MicroVM, Cloudflare
-                Sandbox, Vercel Sandbox, or the Anvil-managed tier. The adapter boots a worker,
-                the worker joins the mesh, and credentials arrive only for the attempt that needs
-                them. Local work stays on enrolled devices and does not need an environment.
+                Sandbox, Vercel Sandbox, or Anvil Cloud Agents. Existing AWS, Cloudflare, and Vercel
+                integrations use accounts you configure; those providers bill you directly. Anvil
+                Cloud Agents is planned Anvil-operated compute. It is not yet available and will
+                be paid when it launches. Local work stays on enrolled devices and does not need a
+                hosted environment.
               </p>
               <div className="mt-6 flex flex-wrap gap-3">
                 <Button asChild>
@@ -238,10 +239,9 @@ export default function SyncPage() {
           </div>
           <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-6 lg:px-8">
             <p className="max-w-4xl border-t pt-4 text-sm leading-6 text-muted-foreground">
-              This table describes the Desktop mesh environment path. Anvil Cloud has a separate
-              agent-execution control plane with an AWS preview transport; it is not the same
-              provider matrix. Hosted environments still depend on the launch checklist: worker
-              image, production persistence, account verification, and service configuration.
+              This table describes agent environments connected through Desktop Mesh. Anvil Cloud
+              has a separate agent-execution control plane and an AWS preview transport. The
+              Anvil Cloud Agents hosted service is not yet available.
             </p>
           </div>
         </section>
@@ -278,9 +278,9 @@ export default function SyncPage() {
                 Anvil-hosted, if you would rather not run it
               </h2>
               <p className="mt-4 text-base leading-7 text-muted-foreground">
-                The same Sync v1 backend with WorkOS sign-in, device management, billing, and
-                artifact storage handled for you. The preview policy is free through 31 October
-                2026. Production provisioning is still being finished, and self-hosting remains open.
+                The same Sync v1 backend with WorkOS sign-in, device management, and artifact
+                storage handled for you. Sync &amp; Mesh are free. Production
+                provisioning is still in progress, so hosted availability remains gated.
               </p>
               <div className="mt-6 flex flex-wrap gap-3">
                 <Button asChild>
@@ -290,7 +290,7 @@ export default function SyncPage() {
                   </Link>
                 </Button>
                 <Button asChild variant="outline">
-                  <Link href="/pricing">Pricing and dates</Link>
+                  <Link href="/pricing">Pricing model</Link>
                 </Button>
               </div>
             </div>
@@ -305,8 +305,8 @@ export default function SyncPage() {
                     "Sealed sync of workspaces, templates, agents, and approved settings",
                     "Mesh job dispatch to your enrolled devices",
                     "Sealed artifact storage within your account limits",
-                    "Web account: devices, pair codes, billing, data deletion",
-                    "Entitlement enforced at the backend, with fail-closed writes and bounded grace"
+                    "Web account: devices, pair codes, data deletion, and legacy billing records",
+                    "Backend-enforced account, security, and fair-use limits; billing health does not gate Sync & Mesh"
                   ].map((point) => (
                     <li key={point} className="flex items-start gap-2.5 px-5 py-3.5 text-sm leading-6 text-muted-foreground">
                       <Check className="proof-check" aria-hidden="true" />
@@ -317,12 +317,12 @@ export default function SyncPage() {
               </div>
               <div className="grid gap-4 rounded-lg border bg-muted/30 p-5 sm:grid-cols-2">
                 <div className="flex items-start gap-3">
-                  <Timer className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                  <Check className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
                   <div>
-                    <p className="font-medium">Free through 31 October 2026</p>
+                    <p className="font-medium">Free</p>
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                      The current policy starts paid enforcement on 1 November 2026. Reads and
-                      local-only mode are not gated.
+                      No Sync &amp; Mesh subscription is required. Authentication, account lifecycle,
+                      and fair-use restrictions still apply.
                     </p>
                   </div>
                 </div>

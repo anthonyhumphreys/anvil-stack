@@ -27,7 +27,7 @@ const startHref: Record<Exclude<ProductId, "start" | "project">, string> = {
 
 const statusLabel: Record<Exclude<ProductId, "start" | "project">, string> = {
   desktop: "Active development",
-  sync: "Alpha — hosted preview",
+  sync: "Sync & Mesh are free",
   cloud: "Alpha",
   registry: "Alpha",
   "node-base": "Companion surface"

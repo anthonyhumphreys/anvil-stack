@@ -1,19 +1,15 @@
-import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
+import type { Metadata } from "next";
 import Link from "next/link";
-import { PreviewDeadlineNotice } from "@/components/account/preview-deadline-notice";
+
+import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
 import { BillingActions } from "@/components/account/billing-actions";
 import { EntitlementStateBadge, entitlementSummary } from "@/components/account/entitlement";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  formatDate,
-  hostedFailureMessage,
-  loadAccountContext,
-  tryHosted
-} from "@/lib/account";
+import { formatDate, hostedFailureMessage, loadAccountContext, tryHosted } from "@/lib/account";
 import { getBilling } from "@/lib/hosted";
 import type { HostedIdentity } from "@/lib/hosted/types";
 
-export const metadata = { title: "Billing | Anvil" };
+export const metadata: Metadata = { title: "Billing history | Anvil" };
 
 export default async function BillingPage() {
   const ctx = await loadAccountContext();
@@ -27,62 +23,34 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
 
   return (
     <div className="grid gap-6">
-      <header className="grid gap-1">
-        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Billing</h1>
-        <p className="text-sm text-muted-foreground">
-          Entitlement, subscription, and payment state reported by the sync backend.
+      <header className="grid gap-2">
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Billing history</h1>
+        <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
+          Sync &amp; Mesh are free. Old subscriptions do not unlock additional Sync or
+          Mesh features. If a legacy subscription still renews, use its payment portal to review or
+          cancel it.
         </p>
       </header>
-
-      <PreviewDeadlineNotice />
-
-      {billing.ok && billing.data.entitlement.state === "grace" ? (
-        <p role="alert" className="rounded-md border border-accent/60 bg-[oklch(var(--accent)/0.08)] px-4 py-3 text-sm">
-          Access is in a grace period
-          {billing.data.entitlement.graceUntil
-            ? ` until ${formatDate(billing.data.entitlement.graceUntil)}`
-            : ""}
-          . A renewal failed or billing could not be refreshed — reconcile or update payment before
-          the grace window ends.
-        </p>
-      ) : null}
 
       <Card>
         <CardHeader>
           <div className="flex items-start justify-between gap-3">
             <div className="grid gap-1.5">
-              <CardTitle>Entitlement</CardTitle>
-              <CardDescription>Current access state for hosted sync.</CardDescription>
+              <CardTitle>Sync &amp; Mesh access</CardTitle>
+              <CardDescription>Current access state reported by the backend.</CardDescription>
             </div>
-            {billing.ok ? (
-              <EntitlementStateBadge state={billing.data.entitlement.state} />
-            ) : null}
+            {billing.ok ? <EntitlementStateBadge state={billing.data.entitlement.state} /> : null}
           </div>
         </CardHeader>
-        <CardContent className="grid gap-4">
+        <CardContent>
           {billing.ok ? (
-            <>
-              <p className="text-sm text-muted-foreground">
-                {entitlementSummary(billing.data.entitlement)}
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Hosted access is currently funded by{" "}
-                <span className="font-medium text-foreground">
-                  {billing.data.entitlement.fundedBy === "team"
-                    ? "an organisation seat"
-                    : billing.data.entitlement.fundedBy === "personal"
-                      ? "your personal subscription"
-                      : billing.data.entitlement.fundedBy === "preview"
-                        ? "the preview"
-                        : "no active plan"}
-                </span>
-                .
-              </p>
-            </>
+            <p className="text-sm text-muted-foreground">
+              {entitlementSummary(billing.data.entitlement)}
+            </p>
           ) : billing.code === "not-found" ? (
             <p className="text-sm text-muted-foreground">
-              No hosted billing account exists yet — it is created the first time you pair a device
-              or start checkout.
+              No hosted account exists yet. Pair a device to create one. Sync &amp; Mesh do not
+              require a billing account.
             </p>
           ) : (
             <p className="text-sm text-muted-foreground">
@@ -95,42 +63,41 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
       {billing.ok && billing.data.teamSponsorship !== null ? (
         <Card>
           <CardHeader>
-            <CardTitle>Team sponsorship</CardTitle>
+            <CardTitle>Legacy organisation subscription</CardTitle>
             <CardDescription>
-              Your hosted access is funded by a seat in {billing.data.teamSponsorship.organizationName}.
+              Historical billing record for {billing.data.teamSponsorship.organizationName}.
+              Sync &amp; Mesh access does not depend on it.
             </CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-3">
+          <CardContent className="grid gap-4">
             <dl className="grid gap-3 text-sm sm:grid-cols-2">
               <div>
-                <dt className="text-xs font-medium text-muted-foreground">Team plan</dt>
+                <dt className="text-xs font-medium text-muted-foreground">Status</dt>
+                <dd className="mt-0.5">{billing.data.teamSponsorship.status}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-muted-foreground">Billing interval</dt>
                 <dd className="mt-0.5">
-                  {billing.data.teamSponsorship.interval === "year" ? "Annual" : "Monthly"} ·{" "}
-                  {billing.data.teamSponsorship.status}
+                  {billing.data.teamSponsorship.interval === "year" ? "Annual" : "Monthly"}
                 </dd>
               </div>
               <div>
-                <dt className="text-xs font-medium text-muted-foreground">Team period ends</dt>
+                <dt className="text-xs font-medium text-muted-foreground">Period ends</dt>
                 <dd className="mt-0.5">
                   {formatDate(billing.data.teamSponsorship.currentPeriodEnd) ?? "—"}
                 </dd>
               </div>
-              <div>
-                <dt className="text-xs font-medium text-muted-foreground">Team seat capacity</dt>
-                <dd className="mt-0.5">{billing.data.teamSponsorship.seatCapacity}</dd>
-              </div>
               {billing.data.teamSponsorship.cancelAtPeriodEnd ? (
                 <div>
                   <dt className="text-xs font-medium text-muted-foreground">Cancellation</dt>
-                  <dd className="mt-0.5">The organisation plan ends with this period.</dd>
+                  <dd className="mt-0.5">Scheduled at the end of this period.</dd>
                 </div>
               ) : null}
             </dl>
             <p className="text-xs leading-5 text-muted-foreground">
-              Your personal subscription, if any, remains separate and is not cancelled by a team
-              seat. You can review organisation membership and funding on the{" "}
+              Organisation owners can review or cancel legacy billing on the{" "}
               <Link href="/account/organizations" className="underline underline-offset-4">
-                organisation billing page
+                organisation account page
               </Link>
               .
             </p>
@@ -141,22 +108,22 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
       {billing.ok ? (
         <Card>
           <CardHeader>
-            <CardTitle>Subscription</CardTitle>
+            <CardTitle>Legacy personal subscription</CardTitle>
             <CardDescription>
               {billing.data.subscription === null
-                ? "No paid subscription on file."
-                : "Latest provider-verified subscription."}
+                ? "No personal subscription record is on file."
+                : "Existing payment-provider record. It does not change Sync & Mesh access."}
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
             {billing.data.subscription !== null ? (
               <dl className="grid gap-3 text-sm sm:grid-cols-2">
                 <div>
-                  <dt className="text-xs font-medium text-muted-foreground">Plan</dt>
+                  <dt className="text-xs font-medium text-muted-foreground">Plan record</dt>
                   <dd className="mt-0.5 font-mono text-xs">{billing.data.subscription.planKey}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs font-medium text-muted-foreground">Interval</dt>
+                  <dt className="text-xs font-medium text-muted-foreground">Billing interval</dt>
                   <dd className="mt-0.5">{billing.data.subscription.interval}</dd>
                 </div>
                 <div>
@@ -164,7 +131,7 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
                   <dd className="mt-0.5 font-mono text-xs">{billing.data.subscription.status}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs font-medium text-muted-foreground">Current period ends</dt>
+                  <dt className="text-xs font-medium text-muted-foreground">Period ends</dt>
                   <dd className="mt-0.5">
                     {formatDate(billing.data.subscription.currentPeriodEnd) ?? "—"}
                   </dd>
@@ -172,40 +139,30 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
                 {billing.data.subscription.cancelAtPeriodEnd ? (
                   <div className="sm:col-span-2">
                     <dt className="text-xs font-medium text-muted-foreground">Cancellation</dt>
-                    <dd className="mt-0.5">Cancels at the end of the current period.</dd>
+                    <dd className="mt-0.5">Scheduled at the end of this period.</dd>
                   </div>
                 ) : null}
               </dl>
             ) : (
               <p className="text-sm text-muted-foreground">
-                Hosted sync is free through 31 October 2026. Paid plans start 1 Nov 2026 — until
-                then there is nothing to subscribe to.
+                No subscription is needed to use Sync &amp; Mesh.
               </p>
             )}
             {billing.data.pendingCheckout !== null ? (
               <p className="text-sm text-muted-foreground">
-                A checkout session opened {formatDate(billing.data.pendingCheckout.createdAt) ?? "recently"}{" "}
-                is still pending — finishing it updates this view.
+                An unfinished legacy checkout is still on file. It does not affect your Sync &amp;
+                Mesh access.
               </p>
             ) : null}
-            <p className="text-xs leading-5 text-muted-foreground">
-              This page shows your personal subscription. If an organisation assigns you a team seat,
-              that funds hosted access separately; it does not cancel or alter personal billing.
-            </p>
-            {/* The portal needs a Stripe customer, which checkout creates —
-                the billing payload does not expose one directly, so any
-                subscription or pending checkout is the visible signal. */}
             <BillingActions
-              checkoutAvailable={billing.data.checkoutAvailable}
-              personalSubscriptionStatus={billing.data.subscription?.status ?? null}
               hasStripeCustomer={
                 billing.data.subscription !== null || billing.data.pendingCheckout !== null
               }
             />
             {billing.data.lastReconcileAt !== null || billing.data.lastWebhookAt !== null ? (
               <p className="text-xs text-muted-foreground">
-                Last reconcile: {formatDate(billing.data.lastReconcileAt) ?? "never"} · Last webhook:{" "}
-                {formatDate(billing.data.lastWebhookAt) ?? "never"}
+                Billing history refreshed: {formatDate(billing.data.lastReconcileAt) ?? "never"} ·
+                Last provider event: {formatDate(billing.data.lastWebhookAt) ?? "never"}
               </p>
             ) : null}
           </CardContent>

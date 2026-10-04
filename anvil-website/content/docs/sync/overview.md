@@ -26,6 +26,10 @@ desktop build talks to an Anvil-operated deployment, a Worker on your own
 Cloudflare account, or a third-party implementation that passes the
 conformance suite.
 
+Sync & Mesh are free. Authentication, account lifecycle, security
+policy, and fair-use limits still apply. The hosted backend is not broadly
+available while Anvil-hosted production access is being prepared.
+
 This is alpha infrastructure. The architecture, contract, and lifecycle are
 implemented and tested, and the system has been rehearsed on real Cloudflare
 deployments — but a physical multi-device demo has not happened yet. See
@@ -38,7 +42,7 @@ Settings → Sync & Mesh offers four modes:
 | Mode | Behavior |
 | --- | --- |
 | Local only | Nothing leaves the device. A remembered backend is paused, not forgotten. The default. |
-| Anvil-hosted | The operated backend path, enabled by `ANVIL_HOSTED_BACKEND_URL` for a tested HTTPS origin. Production availability is still pending. See [Anvil-hosted sync](/docs/sync/hosted). |
+| Anvil-hosted | The operated backend path, enabled by `ANVIL_HOSTED_BACKEND_URL` for a tested HTTPS origin. Production availability is still pending; Sync & Mesh remain free. See [Anvil-hosted sync](/docs/sync/hosted). |
 | Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare deployment* in the picker). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
 | Compatible backend | Any URL implementing the frozen Sync v1 contract — see [Backend conformance](/docs/sync/conformance). |
 
@@ -87,7 +91,7 @@ claims, start there, then [How sync works](/docs/sync/sync-engine).
 | Export, import, or delete my data | [Data portability and deletion](/docs/sync/data-portability) |
 | Deploy the backend myself | [Self-deploy the backend](/docs/sync/self-deploy) |
 | Build a compatible backend | [Backend conformance](/docs/sync/conformance) |
-| Check preview terms and billing | [Anvil-hosted sync](/docs/sync/hosted) |
+| Check hosted availability and legacy billing records | [Anvil-hosted sync](/docs/sync/hosted) |
 | See every known gap in one place | [Status and limits](/docs/sync/status-and-limits) |
 
 The older single-page version of this material lives at

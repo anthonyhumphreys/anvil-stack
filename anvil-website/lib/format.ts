@@ -1,7 +1,7 @@
 // Small display helpers shared by server and client components — keep this
 // module free of `server-only` so client components can import it.
 
-/** "31 October 2026" style dates for entitlement timestamps. */
+/** Formats entitlement timestamps as UTC dates. */
 export function formatDate(value: string | number | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const date = new Date(value);

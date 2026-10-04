@@ -2,7 +2,6 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 
 import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
-import { PreviewDeadlineNotice } from "@/components/account/preview-deadline-notice";
 import { EntitlementStateBadge, entitlementSummary } from "@/components/account/entitlement";
 import { PairDeviceCard } from "@/components/account/pair-device-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,11 +27,9 @@ export default async function AccountOverviewPage() {
       <header className="grid gap-1">
         <h1 className="text-3xl font-semibold tracking-[-0.02em]">Account</h1>
         <p className="text-sm text-muted-foreground">
-          Your hosted sync identity, entitlement, and paired devices.
+          Your sign-in, Sync &amp; Mesh status, and paired devices.
         </p>
       </header>
-
-      <PreviewDeadlineNotice />
 
       <Card>
         <CardHeader>
@@ -81,9 +78,9 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
         <CardHeader>
           <div className="flex items-start justify-between gap-3">
             <div className="grid gap-1.5">
-              <CardTitle>Hosted sync entitlement</CardTitle>
+              <CardTitle>Sync &amp; Mesh status</CardTitle>
               <CardDescription>
-                What the backend currently grants this account.
+                Current access state and limits reported by the backend.
               </CardDescription>
             </div>
             {entitlement.ok ? <EntitlementStateBadge state={entitlement.data.state} /> : null}
@@ -117,25 +114,25 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs font-medium text-muted-foreground">Hosted access funded by</dt>
+                  <dt className="text-xs font-medium text-muted-foreground">Legacy billing record</dt>
                   <dd className="mt-0.5 text-sm">
                     {entitlement.data.fundedBy === "team" ? (
                       <Link href="/account/organizations" className="underline underline-offset-4">
-                        Organisation seat
+                        Legacy organisation subscription
                       </Link>
                     ) : entitlement.data.fundedBy === "personal" ? (
-                      "Personal subscription"
+                      "Legacy personal subscription"
                     ) : entitlement.data.fundedBy === "preview" ? (
-                      "Preview"
+                      "Preview record"
                     ) : (
-                      "No current funding"
+                      "No subscription required"
                     )}
                   </dd>
                 </div>
               </dl>
               {entitlement.data.planKey ? (
                 <p className="text-sm text-muted-foreground">
-                  Plan: <span className="font-mono text-xs">{entitlement.data.planKey}</span>
+                  Legacy plan key: <span className="font-mono text-xs">{entitlement.data.planKey}</span>
                 </p>
               ) : null}
             </>

@@ -26,7 +26,7 @@ The public documentation is organized by product and by task: Learn, Build, and 
 - [Mesh jobs](/docs/sync/mesh-jobs): Dispatch work to enrolled machines; compute and credentials stay on the user's hardware.
 - [Session handoff](/docs/sync/session-handoff): Move a running session between devices through sealed checkpoints.
 - [Self-deploy the backend](/docs/sync/self-deploy): Run the same Sync v1 worker on your own Cloudflare account.
-- [Hosted sync](/docs/sync/hosted): The Anvil-operated backend — free through 31 October 2026, paid plan from 1 November 2026.
+- [Hosted sync](/docs/sync/hosted): The Anvil-operated Sync & Mesh backend is free; production availability is still being provisioned.
 - [Status and limits](/docs/sync/status-and-limits): What is proven, what is still pending.
 
 ## More detail

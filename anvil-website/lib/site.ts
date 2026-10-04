@@ -82,8 +82,8 @@ export const syncModes = [
   },
   {
     mode: "Anvil-hosted",
-    body: "Use the operated preview when your build has a configured HTTPS origin. Production provisioning is still pending.",
-    cost: "Preview / staging"
+    body: "Anvil-hosted Sync & Mesh are free and not yet available.",
+    cost: "Free"
   },
   {
     mode: "Your Cloudflare",
@@ -97,36 +97,36 @@ export const syncModes = [
   }
 ];
 
-export const hostedUpsell = {
+export const hostedSyncInfo = {
   title: "Anvil-hosted, if you would rather not run it",
-  body: "The same Sync v1 backend with WorkOS sign-in, device management, billing, and artifact storage handled for you. The preview policy is free through 31 October 2026. Production provisioning is still being finished. Self-hosting remains the open path.",
-  cta: "See hosted sync",
+  body: "The same Sync v1 backend with WorkOS sign-in, device management, and artifact storage handled for you. Sync & Mesh are free. Anvil-hosted access is being prepared and is not yet available. Self-hosting remains an option.",
+  cta: "See Sync & Mesh",
   href: "/sync"
 };
 
 export const agentExecutionModes = [
   {
     provider: "AWS Lambda MicroVM",
-    detail: "Isolated, sessionful workspaces provisioned through the desktop mesh worker.",
+    detail: "Isolated workspaces provisioned in the AWS account you configure through the desktop mesh worker.",
     status: "Desktop adapter",
     href: "/docs/cloud/aws-preview"
   },
   {
     provider: "Cloudflare Sandbox",
-    detail: "A customer-deployed provisioner for environments that stay in your account.",
+    detail: "A customer-deployed provisioner for environments that stay in your Cloudflare account.",
     status: "Desktop adapter",
     href: "/docs/cloud/agent-sandboxes"
   },
   {
     provider: "Vercel Sandbox",
-    detail: "A provider adapter for short-lived, non-persistent sandbox work.",
+    detail: "A provider adapter for short-lived sandbox work in the Vercel account you configure.",
     status: "Desktop adapter",
     href: "/docs/cloud/agent-sandboxes"
   },
   {
-    provider: "Anvil-managed",
-    detail: "An Anvil-operated Cloudflare environment with hosted entitlement caps.",
-    status: "Hosted path pending launch gates",
+    provider: "Anvil Cloud Agents",
+    detail: "Future Anvil-operated hosted compute for running agent workspaces. Not yet available.",
+    status: "Not yet available · paid when released",
     href: "/docs/cloud/agent-sandboxes"
   }
 ] as const;
@@ -143,7 +143,7 @@ export const syncDocsProduct = {
   boundary:
     "Owns account identity, device enrollment, sealed entity replication, mesh job coordination, artifact shares, and session handoff.",
   status:
-    "Alpha: implemented end to end and rehearsed on real deployments; hosted staging/QA is available when configured, while production provisioning is still finishing.",
+    "Alpha: implemented end to end and rehearsed on real deployments; hosted staging and QA are available when configured, while Anvil-hosted production is being prepared and is not yet available.",
   icon: Network,
   href: "/docs/sync/overview",
   repoHref: githubRepositoryUrl,
@@ -154,7 +154,7 @@ export const syncDocsProduct = {
     "Mesh jobs claimed by your own machines. Compute and credentials never leave them",
     "Session handoff moves a run between devices through sealed checkpoints",
     "Artifact share links decrypt in the browser; the key lives in the URL fragment",
-    "Four backends: local-only, Anvil-hosted, your Cloudflare, or any conformant server"
+    "Four backends: local-only, Anvil-hosted, your Cloudflare, or any conformant server. Sync & Mesh are free."
   ],
   links: [
     { label: "Encryption and keys", href: "/docs/sync/encryption" },
@@ -168,7 +168,7 @@ export const accountNavItems = [
   { label: "Overview", href: "/account" },
   { label: "Workspace", href: "/account/workspace" },
   { label: "Dashboard", href: "/account/dashboard" },
-  { label: "Billing", href: "/account/billing" },
+  { label: "Billing history", href: "/account/billing" },
   { label: "Organisation", href: "/account/organizations" },
   { label: "Devices", href: "/account/devices" },
   { label: "Security", href: "/account/security" },
@@ -243,11 +243,11 @@ export const productLines = [
     repoName: "anvil-cloud/",
     eyebrow: "Portable app runtime",
     description:
-      "A local-first TypeScript platform for Anvil Cells and contract-first Agents: small runtime units with explicit capabilities, generated manifests, local inspection, approval gates, and adapter-driven deployment.",
+      "The open-source, local-first runtime and CLI for Anvil Cells and contract-first Agents. Anvil Cloud Agents is a planned hosted compute service that is not yet available and will be paid when released.",
     boundary:
       "Owns the Cell contract, Agent contract, runtime, auth, builder, local server, Lens, generated client, CLI, and deployment adapter boundary.",
     status:
-      "Alpha implementation spans runtime, agents, auth, workflows, services, Lens, builder, local, client, CLI, and AWS preview packages.",
+      "Alpha implementation spans runtime, agents, auth, workflows, services, Lens, builder, local, client, CLI, and AWS preview packages. Anvil Cloud Agents hosted compute is unavailable; no price or release date has been set.",
     icon: Cloud,
     image: "/hero-anvil.png",
     imageAlt: "Anvil Cloud concept showing runtime, manifest, and adapter boundaries.",
@@ -258,6 +258,7 @@ export const productLines = [
       "Cell DSL for queries, mutations, endpoints, jobs, durable workflows, supervised services, and mounted agents",
       "Contract-first Anvil Agents with capabilities, approvals, provider-neutral manifests, local stub inference, and AWS Bedrock provider support",
       "Agent Sandbox contract and AWS Lambda MicroVM provider for sandbox-required, sessionful agent workspaces",
+      "Existing provider integrations run on accounts you configure; cloud and model providers bill you directly",
       "Real auth: declarative per-handler access control, a local IdP signing real JWTs, OIDC providers by config",
       "Builder pipeline for import policy, typecheck, bundle, manifest, generated client output, and agent validation",
       "Anvil Lens local management UI plus an AWS preview adapter with CloudFormation synthesis"
@@ -435,7 +436,7 @@ export const docsProductGuides = [
     icon: Cloud,
     href: "/docs/cloud/overview",
     description:
-      "Cell contract, Anvil Agents, Agent Sandboxes, auth, durable workflows, supervised services, local runtime, Anvil Lens, builder, Guard checks, CLI, generated client, AWS preview adapter, and alpha limits.",
+      "Cell contract, Anvil Agents, Agent Sandboxes, auth, durable workflows, supervised services, local runtime, Anvil Lens, builder, Guard checks, CLI, generated client, AWS preview adapter, and alpha limits. Anvil Cloud Agents hosted compute is unavailable and will be paid when released.",
     links: [
       { label: "Quickstart", href: "/docs/cloud/quickstart" },
       { label: "Agents", href: "/docs/cloud/agents" },

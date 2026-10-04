@@ -56,7 +56,7 @@ Cloud features are off by default. Enabling them reveals the Cloud Workbench; it
 
 ## Sync & Mesh
 
-The Sync & Mesh settings section chooses the backend mode — local only, Anvil-hosted (disabled in this build), your own Cloudflare deployment, or a compatible third-party backend — and handles sign-in and device enrollment. Signed-in accounts get device management (rename, revoke), remote execution supervision (jobs, attempts, approvals, live activity, handoffs), a mesh worker opt-in that stays device-local, and data portability (export to file, staged import with conflict preview, account deletion).
+The Sync & Mesh settings section chooses the backend mode — local only, Anvil-hosted (disabled in this build), your own Cloudflare deployment, or a compatible third-party backend — and handles sign-in and device enrollment. Sync & Mesh are free. Signed-in accounts get device management (rename, revoke), remote execution supervision (jobs, attempts, approvals, live activity, handoffs), a mesh worker opt-in that stays device-local, and data portability (export to file, staged import with conflict preview, account deletion). Authentication, account lifecycle, backend security rules, and fair-use limits still apply.
 
 The panel itself is covered in [Sync and Mesh](/docs/desktop/sync-and-mesh); the encryption, sync, job, handoff, and self-deploy mechanics behind it are in the [Sync & Mesh docs](/docs/sync/overview).
 

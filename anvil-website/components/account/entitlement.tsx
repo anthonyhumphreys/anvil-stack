@@ -3,9 +3,9 @@ import type { HostedAccessState, HostedEntitlement } from "@/lib/hosted/types";
 import { formatDate } from "@/lib/format";
 
 const STATE_LABELS: Record<HostedAccessState, string> = {
-  preview: "Preview",
+  preview: "Legacy preview",
   active: "Active",
-  grace: "Grace",
+  grace: "Legacy billing grace",
   restricted: "Restricted",
   unknown: "Unknown"
 };
@@ -20,7 +20,7 @@ export function EntitlementStateBadge({ state }: { state: HostedAccessState }) {
           ? "destructive"
           : "outline";
   return (
-    <Badge variant={variant} className={state === "preview" ? "border-accent/60" : undefined}>
+    <Badge variant={variant} className={state === "preview" || state === "grace" ? "border-accent/60" : undefined}>
       {STATE_LABELS[state]}
     </Badge>
   );
@@ -30,25 +30,21 @@ export function EntitlementStateBadge({ state }: { state: HostedAccessState }) {
 export function entitlementSummary(entitlement: HostedEntitlement): string {
   switch (entitlement.state) {
     case "preview": {
-      const ends = formatDate(entitlement.previewEndsAt);
-      return ends
-        ? `Hosted sync is free during the preview — access runs through ${ends}.`
-        : "Hosted sync is free during the preview.";
+      return "Sync & Mesh are free. This account still reports a legacy preview state.";
     }
     case "active": {
-      const until = formatDate(entitlement.accessUntil);
-      return until
-        ? `Paid sync access — current period ends ${until}.`
-        : "Paid sync access is active.";
+      return entitlement.reason === "free"
+        ? "Sync & Mesh access is active and does not require a subscription."
+        : "Sync & Mesh access is active.";
     }
     case "grace": {
       const until = formatDate(entitlement.graceUntil);
       return until
-        ? `A renewal failed or billing is unreachable — access continues in grace until ${until}.`
-        : "Access continues in a bounded grace period.";
+        ? `A legacy billing record is in grace until ${until}. Sync & Mesh access does not depend on billing.`
+        : "A legacy billing record is in grace. Sync & Mesh access does not depend on billing.";
     }
     case "restricted":
-      return "Hosted sync is restricted for this account — see Billing for the reason.";
+      return "The backend reports this account as restricted. This can reflect an account, security, or policy decision.";
     case "unknown":
       return "The backend could not determine the entitlement state.";
   }

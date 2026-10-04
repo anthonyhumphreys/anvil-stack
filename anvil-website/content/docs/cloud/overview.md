@@ -1,7 +1,7 @@
 ---
 title: Anvil Cloud
 navTitle: Overview
-description: Build Anvil Cells with typed contracts, local runtime, generated manifests, and adapter-based deployment.
+description: Build Anvil Cells with typed contracts, local runtime, generated manifests, and adapter-based deployment. Anvil Cloud Agents hosted compute is planned and unavailable.
 product: Anvil Cloud
 section: Start here
 journey: learn
@@ -12,6 +12,13 @@ order: 10
 
 Anvil Cloud is the project in `anvil-cloud`: a local-first TypeScript platform
 for small app units called Anvil Cells.
+
+Anvil Cloud is the open-source runtime and CLI. Anvil Cloud Agents is the
+planned hosted compute service for running agents on infrastructure operated
+by Anvil. That service is unavailable and disabled by default; it will be paid
+when released, but no price or release date has been set. Existing integrations
+run on machines or provider accounts you configure, and those providers bill
+you directly.
 
 A Cell declares app behavior, data shape, and required capabilities. Anvil runs it locally through the same request boundary used by deployment adapters, then emits manifests, generated client metadata, and deploy artifacts that can be inspected before anything reaches a provider.
 

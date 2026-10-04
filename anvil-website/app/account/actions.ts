@@ -7,7 +7,6 @@ import { signOut } from "@/lib/workos-sdk";
 import { hostedIdentity } from "@/lib/auth";
 import { hostedFailureMessage } from "@/lib/account";
 import {
-  createCheckout,
   createLinkCode,
   createPortal,
   deleteAccount,
@@ -20,7 +19,6 @@ import {
   HostedApiError
 } from "@/lib/hosted";
 import type {
-  HostedBillingInterval,
   HostedDataStatusResult,
   HostedDeleteAccountResult,
   HostedLinkCodeResult,
@@ -43,40 +41,19 @@ function fail(error: unknown): ActionResult<never> {
       error.details && typeof error.details["reason"] === "string"
         ? (error.details["reason"] as string)
         : null;
-    if (reason === "checkout-disabled") {
-      return {
-        ok: false,
-        message: "Checkout is not enabled on this deployment. Production paid access begins 1 November 2026."
-      };
-    }
     if (reason === "waitlist-approval-required") {
       return {
         ok: false,
         message:
-          "Hosted access is invite-only. Request access through the WorkOS waitlist and finish signup after approval."
-      };
-    }
-    if (reason === "personal-subscription-active") {
-      return {
-        ok: false,
-        message: "You already have a personal subscription. Use Manage billing to review or change it."
-      };
-    }
-    if (reason === "team-subscription-active") {
-      return {
-        ok: false,
-        message: "An organisation seat is already funding hosted access. Review team billing before starting another plan."
+          "WorkOS account approval is required to use hosted Sync & Mesh. Request access through the waitlist and finish signup after approval."
       };
     }
     if (reason === "last-organization-owner") {
       return {
         ok: false,
         code: "last-organization-owner",
-        message: "Transfer ownership or close your organisation before deleting this hosted account."
+        message: "Transfer organisation ownership before deleting this hosted account."
       };
-    }
-    if (reason === "checkout-pending") {
-      return { ok: false, message: "A checkout is already open for this account. Finish it or wait for it to expire." };
     }
     if (reason === "account-deleted") {
       return { ok: false, message: "This hosted account has been deleted." };
@@ -161,22 +138,6 @@ export async function revokeDeviceAction(
     const data = await revokeDevice(identity, enrollmentId);
     revalidateAccount();
     return { ok: true, data };
-  } catch (error) {
-    return fail(error);
-  }
-}
-
-export async function createCheckoutAction(
-  interval: HostedBillingInterval
-): Promise<ActionResult<{ checkoutUrl: string }>> {
-  const identity = await requireIdentity();
-  if (!identity) return NOT_CONFIGURED;
-  if (interval !== "month" && interval !== "year") {
-    return { ok: false, message: "Unknown billing interval." };
-  }
-  try {
-    const data = await createCheckout(identity, interval);
-    return { ok: true, data: { checkoutUrl: data.checkoutUrl } };
   } catch (error) {
     return fail(error);
   }

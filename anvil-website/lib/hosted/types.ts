@@ -42,6 +42,7 @@ export interface HostedEntitlement {
   checkedAt: string;
   revision: number;
   reason:
+    | "free"
     | "preview"
     | "paid"
     | "renewal-failed"

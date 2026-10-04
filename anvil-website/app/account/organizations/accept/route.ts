@@ -9,7 +9,7 @@ const INVITATION_PATH = "/account/organizations/accept";
 
 function redirectTo(
   request: NextRequest,
-  result: "accepted" | "invalid" | "unavailable" | "waitlist" | "none"
+  result: "accepted" | "invalid" | "unavailable" | "waitlist" | "member-limit" | "none"
 ) {
   const url = new URL(result === "none" ? "/account" : "/account/organizations", request.url);
   if (result !== "none") url.searchParams.set("invite", result);
@@ -26,7 +26,7 @@ function redirectTo(
   return response;
 }
 
-/** Completes the Anvil seat reservation after WorkOS has accepted the invite. */
+/** Completes the backend member reservation after WorkOS has accepted the invite. */
 export async function GET(request: NextRequest) {
   if (!workosConfigured()) return redirectTo(request, "unavailable");
 
@@ -57,6 +57,7 @@ export async function GET(request: NextRequest) {
       if (reason === "waitlist-approval-required" || reason === "account-not-admitted") {
         return redirectTo(request, "waitlist");
       }
+      if (reason === "no-team-seats") return redirectTo(request, "member-limit");
       if (
         reason === "invalid-invitation" ||
         reason === "invitation-expired-or-revoked" ||

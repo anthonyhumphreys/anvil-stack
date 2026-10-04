@@ -1,7 +1,7 @@
 ---
 title: Status and limits
 navTitle: Status and limits
-description: Current alpha maturity, working surfaces, non-goals, and known limits for Anvil Cloud.
+description: Current alpha maturity, working surfaces, non-goals, and known limits for Anvil Cloud, including the unavailable Anvil Cloud Agents hosted service.
 product: Anvil Cloud
 section: Reference
 journey: reference
@@ -13,6 +13,12 @@ order: 200
 Anvil Cloud is alpha software with real implementation across the runtime,
 builder, local server, React/Vite client path, CLI, Lens, and AWS preview
 adapter.
+
+Anvil Cloud Agents is the planned hosted compute service operated by Anvil. It
+is unavailable and disabled by default. Hosted compute will be paid when
+released, but no price or release date has been set. Existing provider
+integrations use accounts you configure, and those cloud and model providers
+bill you directly.
 
 Use it for inspection, local development, adapter design, demos, tests, and
 contribution work. Do not treat it as production hosting. The useful question is
@@ -67,7 +73,7 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Agent evals are local-first                  | Mounted agent eval suites run locally through `anvil-cloud eval`, support baseline comparisons, and can write updated baselines for CI review. Hosted eval orchestration and remote eval execution are not wired yet.                                                                                                                                         |
 | Agent sessions are local-first               | Mounted agents support local persisted sessions, ordered events, continuation tokens, and SSE replay streams. AWS preview session transport and hosted continuation are not wired yet. See [Anvil Agents](/docs/cloud/agents).                                                                                                                                           |
 | Channels are contract-first                  | Channel bindings compile into the manifest and local simulation can route messages into mounted agent sessions. Real Slack/GitHub/Discord adapters, signature verification, and deployed webhook ingress are not wired yet. See [Anvil Agents](/docs/cloud/agents).                                                                                                       |
-| Agent Sandboxes have a runnable control plane | Runtime contracts, local providers, idempotent leases, durable cursor events, controls, budgets, cleanup receipts, authenticated HTTP/service boundaries, immutable snapshots, one-time grants, Desktop controls, subscription-auth intent, and AWS read-only transport exist. A deployed compatible worker, concrete subscription-login runners, sandbox-aware Lens, hosted persistence, and real-account verification remain. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
+| Agent Sandboxes have a runnable control plane | Runtime contracts, local providers, idempotent leases, durable cursor events, controls, budgets, cleanup receipts, authenticated HTTP/service boundaries, immutable snapshots, one-time grants, Desktop controls, provider-account authentication intent, and AWS read-only transport exist. Anvil Cloud Agents hosted compute is unavailable and disabled by default. A deployed compatible worker, concrete provider login runners, sandbox-aware Lens, hosted persistence, and real-account verification remain. Hosted compute will be paid when released; no price or release date has been set. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
 
 ## What to verify before trusting a Cell
 

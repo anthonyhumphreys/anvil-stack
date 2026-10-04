@@ -29,7 +29,7 @@ The panel offers four modes:
 | Mode | Behavior |
 | --- | --- |
 | Local only | Nothing leaves the device. Any remembered backend is paused, not forgotten. |
-| Anvil-hosted | The operated backend, enabled when `ANVIL_HOSTED_BACKEND_URL` names a tested HTTPS origin. Production availability is still pending. |
+| Anvil-hosted | Free Sync & Mesh on the operated backend when available. Production provisioning is still in progress. |
 | Your Cloudflare | A backend you deploy to your own Cloudflare account with `anvil-cloud mesh`. |
 | Compatible backend | Any URL implementing the Sync v1 contract. |
 
@@ -37,7 +37,8 @@ Pinning a backend stores the association only — no data uploads until you
 sign in and enable sync. See [Self-deploy](/docs/sync/self-deploy) for the
 deploy path, [Conformance](/docs/sync/conformance) for proving a third-party
 backend, and [Hosted](/docs/sync/hosted) for the state of the operated
-service.
+service. Sync & Mesh do not require a subscription. Authentication, account
+lifecycle, security rules, and fair-use limits still apply.
 
 ## Signing in and enrollment
 
