@@ -12,6 +12,7 @@ import {
   type SyncScope,
 } from '../../../shared/sync-mesh';
 import type {
+  ScannedEntity,
   SyncCursor,
   SyncPullResult,
   SyncPushParams,
@@ -22,6 +23,11 @@ import type {
   SyncSnapshotGetResult,
   SyncedChange,
 } from '../../../../cloud/contract/sync';
+import {
+  CRYPTO_ENTITY_DEVICE_IDENTITY,
+  isCryptoBoundaryEntityType,
+  isSealedEntityPayload,
+} from '../../../../cloud/contract/sealed';
 import {
   BackendRpcError,
   type BackendConnection,
@@ -77,7 +83,12 @@ import {
   getWorkflowTemplate,
   saveWorkflowTemplate,
 } from '../workflow.service';
-import { setAccountKeyBootstrapEligibility } from '../sync-keyring.service';
+import {
+  installAccountKey,
+  listDeviceIdentities,
+  sealEntityPayload,
+  setAccountKeyBootstrapEligibility,
+} from '../sync-keyring.service';
 import { getEditableAgent, saveEditableAgent } from '../editable-agent.service';
 import { getSettings } from '../settings.service';
 import { createWorkspace, deleteWorkspace, updateWorkspace } from '../workspace.service';
@@ -162,6 +173,8 @@ function fakeRpc(handlers: {
   scanPage?: (params: unknown) => SyncScanPageResult | Promise<SyncScanPageResult>;
   scanFinish?: (params: unknown) => SyncScanFinishResult | Promise<SyncScanFinishResult>;
   onPush?: () => void | Promise<void>;
+  /** Return plain fixture payloads unchanged to exercise the strict wire boundary. */
+  sealDomainPayloads?: boolean;
 }): SyncEngineRpc {
   return async <R = unknown>(
     _connection: Pick<BackendConnection, 'apiUrl'>,
@@ -177,7 +190,11 @@ function fakeRpc(handlers: {
       }
       case 'sync.pull': {
         const result = handlers.pull ? await handlers.pull(params) : emptyPull();
-        return rpcResult(result) as RpcResult<R>;
+        const wireResult =
+          handlers.sealDomainPayloads === false
+            ? result
+            : { ...result, changes: result.changes.map(sealFixtureEntityPayload) };
+        return rpcResult(wireResult) as RpcResult<R>;
       }
       case 'sync.scan.begin': {
         if (!handlers.scanBegin) throw new Error('unexpected RPC operation sync.scan.begin');
@@ -185,7 +202,12 @@ function fakeRpc(handlers: {
       }
       case 'sync.scan.page': {
         if (!handlers.scanPage) throw new Error('unexpected RPC operation sync.scan.page');
-        return rpcResult(await handlers.scanPage(params)) as RpcResult<R>;
+        const result = await handlers.scanPage(params);
+        const wireResult =
+          handlers.sealDomainPayloads === false
+            ? result
+            : { ...result, entities: result.entities.map(sealFixtureEntityPayload) };
+        return rpcResult(wireResult) as RpcResult<R>;
       }
       case 'sync.scan.finish': {
         if (!handlers.scanFinish) throw new Error('unexpected RPC operation sync.scan.finish');
@@ -205,6 +227,30 @@ function fakeRpc(handlers: {
       default:
         throw new Error(`unexpected RPC operation ${operation}`);
     }
+  };
+}
+
+function sealFixtureEntityPayload<T extends SyncedChange | ScannedEntity>(entity: T): T {
+  if (
+    entity.operation === 'delete' ||
+    entity.payload === undefined ||
+    isCryptoBoundaryEntityType(entity.entityType) ||
+    isSealedEntityPayload(entity.payload)
+  ) {
+    return entity;
+  }
+  return {
+    ...entity,
+    payload: sealEntityPayload(
+      SCOPE,
+      {
+        entityType: entity.entityType,
+        entityId: entity.entityId,
+        operation: entity.operation,
+        schemaVersion: entity.schemaVersion,
+      },
+      entity.payload,
+    ),
   };
 }
 
@@ -230,6 +276,7 @@ beforeEach(() => {
      DELETE FROM repos;`,
   );
   db.prepare('INSERT OR IGNORE INTO settings (id) VALUES (1)').run();
+  installAccountKey(SCOPE, 1, Buffer.alloc(32, 0x41), 'recovery');
 });
 
 describe('runSyncCycle push', () => {
@@ -274,6 +321,37 @@ describe('runSyncCycle push', () => {
     expect(snapshot.pendingCount).toBe(0);
     expect(snapshot.lastPushAt).not.toBeNull();
     expect(snapshot.lastPullAt).not.toBeNull();
+  });
+
+  it('rejects unsealed domain content in a push-conflict response', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Original'));
+    upsertBinding(SCOPE, ET, saved.id, {
+      basePayloadJson: canonicalJson(templatePayload(saved.id, 'Original')),
+      baseRevision: 1,
+    });
+    saveWorkflowTemplate(templateInput('Local edit'), saved.id);
+
+    await expect(
+      cycle(
+        fakeRpc({
+          push: (params) => {
+            const { changes } = params as SyncPushParams;
+            return {
+              results: changes.map((change) => ({
+                status: 'conflict' as const,
+                changeId: change.changeId,
+                remoteRevision: 2,
+                remoteContent: templatePayload(saved.id, 'Unsealed remote'),
+              })),
+            };
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'malformed' });
+
+    expect(listConflicts(SCOPE)).toEqual([]);
+    expect(listOutboxRows(SCOPE).map((row) => row.state)).toEqual(['dispatched']);
   });
 
   it('keeps dispatched rows durably replayable when push RPC throws', async () => {
@@ -1093,6 +1171,39 @@ describe('runSyncCycle pull', () => {
 });
 
 describe('runSyncCycle pull — ENTITY-01 types', () => {
+  it('continues handling plaintext device-identity crypto-boundary records', async () => {
+    activateEnrollment();
+    const change: SyncedChange = {
+      entityType: CRYPTO_ENTITY_DEVICE_IDENTITY,
+      entityId: 'peer-identity',
+      operation: 'create',
+      payload: {
+        v: 1,
+        enrollmentId: 'peer-identity',
+        pub: Buffer.alloc(32, 0x42).toString('base64'),
+      },
+      revision: 1,
+      schemaVersion: 1,
+      sequence: 1,
+    };
+
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [change],
+          hasMore: false,
+          recoveryFloor: 0,
+          nextCursor: 'cursor-device-identity' as SyncCursor,
+        }),
+      }),
+    );
+
+    expect(listDeviceIdentities(SCOPE).map((identity) => identity.enrollmentId)).toContain(
+      'peer-identity',
+    );
+    expect(getBinding(SCOPE, CRYPTO_ENTITY_DEVICE_IDENTITY, 'peer-identity')).toBeNull();
+  });
+
   it('applies a remote editable-agent create', async () => {
     activateEnrollment();
     const change: SyncedChange = {
@@ -1168,6 +1279,38 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
         .all('ws-remote'),
     ).toHaveLength(1);
     expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, 'ws-remote')?.baseRevision).toBe(4);
+  });
+
+  it('quarantines an unsealed workspace payload instead of applying it', async () => {
+    activateEnrollment();
+    const change: SyncedChange = {
+      entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+      entityId: 'ws-unsealed',
+      operation: 'create',
+      payload: { id: 'ws-unsealed', name: 'Forged plaintext', repos: [] },
+      revision: 1,
+      schemaVersion: 1,
+      sequence: 1,
+    };
+
+    await cycle(
+      fakeRpc({
+        sealDomainPayloads: false,
+        pull: () => ({
+          changes: [change],
+          hasMore: false,
+          recoveryFloor: 0,
+          nextCursor: 'cursor-unsealed' as SyncCursor,
+        }),
+      }),
+    );
+
+    expect(db.prepare('SELECT id FROM workspaces WHERE id = ?').get('ws-unsealed')).toBeUndefined();
+    expect(getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, 'ws-unsealed')).toMatchObject({
+      baseRevision: null,
+      quarantineJson: expect.stringContaining('Forged plaintext'),
+    });
+    expect(getSyncState(SCOPE)?.cursor).toBe('cursor-unsealed');
   });
 
   it('applies a remote settings update to allowlisted fields only', async () => {

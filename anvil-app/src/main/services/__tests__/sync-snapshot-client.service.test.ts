@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync, createGzip } from 'node:zlib';
+import { Readable } from 'node:stream';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +26,7 @@ import {
   type SyncSnapshotManifest,
   type SyncedChange,
 } from '../../../../cloud/contract/sync';
+import { isCryptoBoundaryEntityType, isSealedEntityPayload } from '../../../../cloud/contract/sealed';
 import {
   BackendRpcError,
   type BackendConnection,
@@ -57,6 +59,7 @@ import {
   resetSyncEngineForTests,
   runSyncCycle,
   SyncEngineError,
+  SYNC_SNAPSHOT_MAX_EXPANDED_BYTES,
   type SyncEngineRpc,
 } from '../sync-engine.service';
 import {
@@ -109,6 +112,7 @@ interface SnapshotRpcOptions {
   recoveryChunks?: Map<string, StoredChunk>;
   corruptPublicationReadback?: boolean;
   failPublicationBegin?: boolean;
+  sealDomainPayloads?: boolean;
 }
 
 interface SnapshotRpcHarness {
@@ -197,6 +201,30 @@ function pullChange(
   };
 }
 
+function sealFixtureEntityPayload<T extends SyncedChange | ScannedEntity>(entity: T): T {
+  if (
+    entity.operation === 'delete' ||
+    entity.payload === undefined ||
+    isCryptoBoundaryEntityType(entity.entityType) ||
+    isSealedEntityPayload(entity.payload)
+  ) {
+    return entity;
+  }
+  return {
+    ...entity,
+    payload: sealEntityPayload(
+      SCOPE,
+      {
+        entityType: entity.entityType,
+        entityId: entity.entityId,
+        operation: entity.operation,
+        schemaVersion: entity.schemaVersion,
+      },
+      entity.payload,
+    ),
+  };
+}
+
 function makeSnapshot(
   cursor: string,
   entities: SyncSnapshotDocument['entities'],
@@ -238,6 +266,70 @@ function makeSnapshot(
       ...descriptor,
       bytesBase64: sealed.bytes.toString('base64'),
     },
+  };
+}
+
+async function makeExpansionBombSnapshot(
+  cursor: string,
+  options: { snapshotId: string; generation: number },
+): Promise<SnapshotFixture> {
+  const document: SyncSnapshotDocument = {
+    formatVersion: 2,
+    datasetEpoch: SCOPE.datasetEpoch,
+    keyVersion: KEY_VERSION,
+    schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
+    committedCursor: cursor as SyncCursor,
+    entities: [
+      recoveryEntity(
+        SYNC_ENTITY_WORKFLOW_TEMPLATE,
+        'snapshot-expansion-fallback',
+        1,
+        templatePayload('snapshot-expansion-fallback', 'Overexpanded current generation'),
+      ),
+    ],
+  };
+  const canonicalDocument = canonicalizeJson(document);
+  const prefix = Buffer.from(`${canonicalDocument.slice(0, -1)},"padding":"`, 'utf8');
+  const suffix = Buffer.from('"}', 'utf8');
+  let remaining = SYNC_SNAPSHOT_MAX_EXPANDED_BYTES + 1 - prefix.byteLength - suffix.byteLength;
+  const repeated = Buffer.alloc(1024 * 1024, 0x41);
+  function* sourceChunks() {
+    yield prefix;
+    while (remaining > 0) {
+      const size = Math.min(repeated.byteLength, remaining);
+      yield repeated.subarray(0, size);
+      remaining -= size;
+    }
+    yield suffix;
+  }
+  const gzip = Readable.from(sourceChunks()).pipe(createGzip({ level: 1 }));
+  const compressedChunks: Buffer[] = [];
+  for await (const part of gzip) compressedChunks.push(Buffer.from(part));
+  const compressed = Buffer.concat(compressedChunks);
+  repeated.fill(0);
+  const sealed = sealAccountBytes(SCOPE, SNAPSHOT_AAD(KEY_VERSION, cursor), compressed);
+  compressed.fill(0);
+  const descriptor: SyncSnapshotChunkDescriptor = {
+    index: 0,
+    byteLength: sealed.bytes.byteLength,
+    sha256: hash(sealed.bytes),
+  };
+  return {
+    manifest: {
+      formatVersion: 2,
+      snapshotId: options.snapshotId,
+      generation: options.generation,
+      datasetEpoch: SCOPE.datasetEpoch,
+      keyVersion: KEY_VERSION,
+      schemaVersion: SYNC_SNAPSHOT_SCHEMA_VERSION,
+      committedCursor: cursor as SyncCursor,
+      entityCount: 1,
+      tombstoneCount: 0,
+      manifestSha256: 'd'.repeat(64),
+      chunks: [descriptor],
+      createdAt: '2026-10-01T00:00:00.000Z',
+    },
+    chunk: { ...descriptor, bytesBase64: sealed.bytes.toString('base64') },
   };
 }
 
@@ -322,7 +414,10 @@ function createRpcHarness(options: SnapshotRpcOptions = {}): SnapshotRpcHarness 
           break;
         case 'sync.scan.page':
           result = {
-            entities: options.scanEntities ?? [],
+            entities:
+              options.sealDomainPayloads === false
+                ? (options.scanEntities ?? [])
+                : (options.scanEntities ?? []).map(sealFixtureEntityPayload),
             nextCursor: null,
             done: true,
           };
@@ -341,7 +436,7 @@ function createRpcHarness(options: SnapshotRpcOptions = {}): SnapshotRpcHarness 
         case 'sync.pull': {
           const cursor = typeof input['cursor'] === 'string' ? input['cursor'] : '0';
           const scanStart = String(options.scanWatermarkStart ?? 0);
-          result = options.catchupByCursor?.get(cursor) ?? {
+          const pull = options.catchupByCursor?.get(cursor) ?? {
             changes: [],
             hasMore: false,
             nextCursor:
@@ -350,6 +445,10 @@ function createRpcHarness(options: SnapshotRpcOptions = {}): SnapshotRpcHarness 
                 : (cursor as SyncCursor),
             recoveryFloor: 0,
           };
+          result =
+            options.sealDomainPayloads === false
+              ? pull
+              : { ...pull, changes: pull.changes.map(sealFixtureEntityPayload) };
           break;
         }
         case 'sync.snapshot.begin':
@@ -735,6 +834,52 @@ describe('Sync snapshot recovery', () => {
     expect(getSyncState(SCOPE)).toMatchObject({ cursor: '2', resetRequired: false });
     expect(harness.calls.some((call) => call.operation === 'sync.scan.begin')).toBe(false);
     expect(harness.calls.filter((call) => call.operation === 'sync.pull')).toHaveLength(2);
+  });
+
+  it('bounds snapshot expansion and recovers from the previous generation', async () => {
+    const current = await makeExpansionBombSnapshot('2', {
+      snapshotId: 'snapshot-expansion-bomb',
+      generation: 2,
+    });
+    const previous = makeSnapshot(
+      '1',
+      [
+        recoveryEntity(
+          SYNC_ENTITY_WORKFLOW_TEMPLATE,
+          'snapshot-expansion-fallback',
+          1,
+          templatePayload('snapshot-expansion-fallback', 'Previous generation'),
+        ),
+      ],
+      { snapshotId: 'snapshot-before-expansion-bomb', generation: 1 },
+    );
+    const tail = pullChange('snapshot-expansion-fallback', 2, 'update', 'Recovered safely');
+    const harness = createRpcHarness({
+      snapshotGets: [recoveryGet(current, previous, '2' as SyncCursor)],
+      recoveryChunks: recoveryChunks(current, previous),
+      catchupByCursor: new Map([
+        [
+          '1',
+          {
+            changes: [tail],
+            hasMore: false,
+            nextCursor: '2' as SyncCursor,
+            recoveryFloor: 1,
+          },
+        ],
+      ]),
+    });
+    updateSyncState(SCOPE, { resetRequired: true });
+
+    await cycle(harness.rpc);
+
+    expect(getWorkflowTemplate('snapshot-expansion-fallback')?.name).toBe('Recovered safely');
+    expect(getSyncState(SCOPE)).toMatchObject({ cursor: '2', resetRequired: false });
+    expect(
+      harness.calls
+        .filter((call) => call.operation === 'sync.snapshot.chunk.get')
+        .map((call) => (call.params as { snapshotId: string }).snapshotId),
+    ).toEqual(['snapshot-expansion-bomb', 'snapshot-before-expansion-bomb']);
   });
 
   it('falls back to the previous verified manifest when the current generation chunk is corrupt', async () => {

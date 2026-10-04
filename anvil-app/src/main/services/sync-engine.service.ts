@@ -106,6 +106,9 @@ const SCAN_PAGE_LIMIT = 500;
 const CATCHUP_PAGE_LIMIT = 500;
 const SYNC_SNAPSHOT_CHUNK_BYTES = 256 * 1024;
 const SYNC_SNAPSHOT_MAX_CHUNKS = 1_024;
+const SYNC_SNAPSHOT_MAX_STORED_BYTES = SYNC_SNAPSHOT_CHUNK_BYTES * SYNC_SNAPSHOT_MAX_CHUNKS;
+/** The plaintext document and encrypted upload each share the backend's 256 MiB size ceiling. */
+export const SYNC_SNAPSHOT_MAX_EXPANDED_BYTES = SYNC_SNAPSHOT_MAX_STORED_BYTES;
 
 export type SyncEngineRpc = <R = unknown>(
   connection: Pick<BackendConnection, 'apiUrl'>,
@@ -471,7 +474,7 @@ async function maybePublishPortableSnapshot(
       result.datasetEpoch !== input.scope.datasetEpoch ||
       !Number.isSafeInteger(result.keyVersion) ||
       typeof result.currentCursor !== 'string' ||
-      !isRecord(result.manifest) && result.manifest !== null
+      (!isRecord(result.manifest) && result.manifest !== null)
     ) {
       throw new SyncEngineError('sync.snapshot.get returned a malformed publication result', {
         retryable: false,
@@ -500,15 +503,18 @@ async function maybePublishPortableSnapshot(
     const createdAt = Date.parse(result.manifest.createdAt);
     const staleByAge = !Number.isFinite(createdAt) || now - createdAt >= SNAPSHOT_MAX_AGE_MS;
     const staleByChanges =
-      manifestCursor === null ||
-      currentCursor - manifestCursor >= SNAPSHOT_MAX_UNCOMPACTED_CHANGES;
+      manifestCursor === null || currentCursor - manifestCursor >= SNAPSHOT_MAX_UNCOMPACTED_CHANGES;
     if (staleByAge || staleByChanges) await scanCycle(input, rpcFn);
   } catch (error) {
     const mapped = toSyncEngineError(error);
     // Snapshot compaction is opportunistic. Keep the successful push/pull
     // useful when a maintenance probe is unavailable, but do not hide scope
     // supersession or malformed server data.
-    if (mapped.code === 'superseded' || mapped.code === 'malformed' || mapped.code === 'epoch-mismatch') {
+    if (
+      mapped.code === 'superseded' ||
+      mapped.code === 'malformed' ||
+      mapped.code === 'epoch-mismatch'
+    ) {
       throw mapped;
     }
   }
@@ -543,10 +549,10 @@ type WireDomainResult =
   | { kind: 'quarantined'; reason: string; rawJson: string };
 
 /**
- * Converts a wire payload to domain JSON. Sealed envelopes unseal locally;
- * failures quarantine the raw envelope JSON so a later key delivery can
- * retry without a re-fetch. Plaintext payloads (crypto-boundary entities,
- * pre-sealing history) pass through unchanged.
+ * Converts a domain entity wire payload to local JSON. Sealed envelopes
+ * unseal locally; failures and unsealed values quarantine their raw JSON so
+ * damaged or unauthenticated records cannot become domain state. Crypto
+ * boundary records remain plaintext by protocol and are handled by callers.
  */
 function wirePayloadToDomain(
   scope: SyncScope,
@@ -555,8 +561,15 @@ function wirePayloadToDomain(
   payload: unknown,
 ): WireDomainResult {
   if (payload === undefined) return { kind: 'domain', json: null };
-  if (!isSealedEntityPayload(payload)) {
+  if (isCryptoBoundaryEntityType(entityType)) {
     return { kind: 'domain', json: canonicalJson(payload) };
+  }
+  if (!isSealedEntityPayload(payload)) {
+    return {
+      kind: 'quarantined',
+      reason: 'unsealed-payload',
+      rawJson: canonicalJson(payload),
+    };
   }
   try {
     const domain = unsealEntityPayload(scope, { entityType, entityId }, payload);
@@ -742,12 +755,7 @@ async function scanCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
 
   // Catch-up: apply every change in (watermarkStart, watermarkEnd] onto the
   // staged snapshot so activation reflects state at the end watermark.
-  const caughtUp = await catchUpStagedState(
-    input,
-    rpcFn,
-    begin.resumeCursor,
-    finish.nextCursor,
-  );
+  const caughtUp = await catchUpStagedState(input, rpcFn, begin.resumeCursor, finish.nextCursor);
   if (!caughtUp) {
     throw new SyncEngineError('scan catch-up did not reach its finish watermark', {
       retryable: true,
@@ -850,7 +858,7 @@ async function restorePublishedSnapshot(
         assertCurrent(input);
         const bytes = decodeSnapshotChunk(chunkResult, descriptor);
         totalBytes += bytes.byteLength;
-        if (totalBytes > SYNC_SNAPSHOT_CHUNK_BYTES * SYNC_SNAPSHOT_MAX_CHUNKS) {
+        if (totalBytes > SYNC_SNAPSHOT_MAX_STORED_BYTES) {
           bytes.fill(0);
           throw new Error('snapshot-size-limit');
         }
@@ -1063,7 +1071,7 @@ async function publishSnapshotFromStaging(
     typeof snapshot.keyVersion !== 'number' ||
     !Number.isSafeInteger(snapshot.keyVersion) ||
     typeof snapshot.recoveryFloor !== 'number' ||
-    !isRecord(snapshot.manifest) && snapshot.manifest !== null
+    (!isRecord(snapshot.manifest) && snapshot.manifest !== null)
   ) {
     throw new SyncEngineError('sync.snapshot.get returned a malformed result', {
       retryable: false,
@@ -1136,7 +1144,15 @@ async function publishSnapshotFromStaging(
     committedCursor: nextCursor,
     entities,
   };
-  const plaintext = Buffer.from(canonicalizeJson(document), 'utf8');
+  const plaintext = encodeSnapshotPlaintext(document);
+  if (plaintext === null) {
+    snapshotProbeAt.set(scopeKey(input.scope), Date.now());
+    console.warn(
+      `[Sync] Snapshot exceeds the ${SYNC_SNAPSHOT_MAX_EXPANDED_BYTES}-byte plaintext limit; ` +
+        'keeping the journal as the recovery source and retrying after the probe interval.',
+    );
+    return;
+  }
   const compressed = gzipSync(plaintext, { level: 6 });
   plaintext.fill(0);
   const aad = syncSnapshotAssociatedData(input.scope, snapshot.keyVersion, nextCursor);
@@ -1155,7 +1171,12 @@ async function publishSnapshotFromStaging(
   }
   if (chunks.length === 0 || chunks.length > SYNC_SNAPSHOT_MAX_CHUNKS) {
     sealed.bytes.fill(0);
-    return; // Keep the journal as the recovery source when a snapshot is too large.
+    snapshotProbeAt.set(scopeKey(input.scope), Date.now());
+    console.warn(
+      `[Sync] Encrypted snapshot exceeds the ${SYNC_SNAPSHOT_MAX_STORED_BYTES}-byte upload limit; ` +
+        'keeping the journal as the recovery source and retrying after the probe interval.',
+    );
+    return;
   }
   const descriptors: SyncSnapshotChunkDescriptor[] = chunks.map((bytes, index) => ({
     index,
@@ -1255,10 +1276,7 @@ function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function decodeSnapshotChunk(
-  value: unknown,
-  expected: SyncSnapshotChunkDescriptor,
-): Buffer {
+function decodeSnapshotChunk(value: unknown, expected: SyncSnapshotChunkDescriptor): Buffer {
   if (
     !isRecord(value) ||
     value.index !== expected.index ||
@@ -1302,7 +1320,7 @@ function decodeSyncSnapshot(
       keyVersion,
       sealedBytes,
     );
-    plaintext = gunzipSync(compressed);
+    plaintext = gunzipSync(compressed, { maxOutputLength: SYNC_SNAPSHOT_MAX_EXPANDED_BYTES });
     const parsed = JSON.parse(plaintext.toString('utf8')) as unknown;
     if (
       !isRecord(parsed) ||
@@ -1356,6 +1374,12 @@ function decodeSyncSnapshot(
   }
 }
 
+function encodeSnapshotPlaintext(document: SyncSnapshotDocument): Buffer | null {
+  const serialized = canonicalizeJson(document);
+  if (Buffer.byteLength(serialized, 'utf8') > SYNC_SNAPSHOT_MAX_EXPANDED_BYTES) return null;
+  return Buffer.from(serialized, 'utf8');
+}
+
 function mapPushItemResult(
   scope: SyncScope,
   entityByChangeId: Map<string, { entityType: string; entityId: string }>,
@@ -1366,12 +1390,32 @@ function mapPushItemResult(
       return { changeId: item.changeId, revision: item.revision, status: 'accepted' };
     case 'conflict': {
       // Conflict content arrives in wire form: unseal it so the conflict
-      // record and any merge UI see the domain payload. If it cannot be
-      // opened (missing key version, tamper), the raw envelope is kept —
-      // the conflict stays reviewable, just not mergeable yet.
+      // record and any merge UI see the domain payload. A missing key version
+      // or tampered envelope remains reviewable as a raw envelope; unsealed
+      // non-crypto domain content is a malformed sync/2 response.
       const entity = entityByChangeId.get(item.changeId);
       let remotePayload: unknown = item.remoteContent;
-      if (entity !== undefined && isSealedEntityPayload(item.remoteContent)) {
+      if (entity === undefined) {
+        throw new SyncEngineError('sync.push conflict referenced an unknown change', {
+          retryable: false,
+          code: 'malformed',
+        });
+      }
+      if (
+        item.remoteContent !== null &&
+        !isCryptoBoundaryEntityType(entity.entityType) &&
+        !isSealedEntityPayload(item.remoteContent)
+      ) {
+        throw new SyncEngineError('sync.push conflict returned an unsealed domain payload', {
+          retryable: false,
+          code: 'malformed',
+        });
+      }
+      if (
+        item.remoteContent !== null &&
+        !isCryptoBoundaryEntityType(entity.entityType) &&
+        isSealedEntityPayload(item.remoteContent)
+      ) {
         try {
           remotePayload = unsealEntityPayload(
             scope,
@@ -1716,11 +1760,7 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
             entityType: entity.entityType,
             entityId: entity.entityId,
             operation:
-              entity.operation === 'delete'
-                ? 'delete'
-                : domainJson === null
-                  ? 'create'
-                  : 'update',
+              entity.operation === 'delete' ? 'delete' : domainJson === null ? 'create' : 'update',
             payload: entity.payloadJson === null ? undefined : JSON.parse(entity.payloadJson),
             revision: entity.revision,
             schemaVersion: entity.schemaVersion,
