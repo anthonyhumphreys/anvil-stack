@@ -19,6 +19,7 @@ import type {
   SyncScanBeginResult,
   SyncScanFinishResult,
   SyncScanPageResult,
+  SyncSnapshotGetResult,
   SyncedChange,
 } from '../../../../cloud/contract/sync';
 import {
@@ -136,7 +137,7 @@ function activateEnrollment(id = ENROLLMENT): void {
 }
 
 function emptyPull(nextCursor: string = EMPTY_CURSOR): SyncPullResult {
-  return { changes: [], hasMore: false, nextCursor: nextCursor as SyncCursor };
+  return { changes: [], hasMore: false, nextCursor: nextCursor as SyncCursor, recoveryFloor: 0 };
 }
 
 function acceptPush(params: unknown, revision = 1): SyncPushResult {
@@ -189,6 +190,17 @@ function fakeRpc(handlers: {
       case 'sync.scan.finish': {
         if (!handlers.scanFinish) throw new Error('unexpected RPC operation sync.scan.finish');
         return rpcResult(await handlers.scanFinish(params)) as RpcResult<R>;
+      }
+      case 'sync.snapshot.get': {
+        const result: SyncSnapshotGetResult = {
+          manifest: null,
+          previousManifest: null,
+          datasetEpoch: SCOPE.datasetEpoch,
+          keyVersion: 0,
+          currentCursor: '0' as SyncCursor,
+          recoveryFloor: 0,
+        };
+        return rpcResult(result) as RpcResult<R>;
       }
       default:
         throw new Error(`unexpected RPC operation ${operation}`);
@@ -770,7 +782,7 @@ describe('runSyncCycle pull', () => {
           scanId: 'scan-1',
           watermarkStart: 4,
           resumeCursor: '4' as SyncCursor,
-          epoch: '1',
+          epoch: SCOPE.datasetEpoch,
         }),
         scanPage: () => ({
           entities: [
@@ -778,6 +790,7 @@ describe('runSyncCycle pull', () => {
               entityType: ET,
               entityId: 'scanned-tpl',
               revision: 4,
+              operation: 'create',
               schemaVersion: 1,
               payload: templatePayload('scanned-tpl', 'From scan'),
             },
@@ -789,7 +802,7 @@ describe('runSyncCycle pull', () => {
           scanId: 'scan-1',
           complete: true,
           watermarkEnd: 4,
-          epoch: '1',
+          epoch: SCOPE.datasetEpoch,
           nextCursor: '4' as SyncCursor,
         }),
         pull: () => {
@@ -823,8 +836,8 @@ describe('runSyncCycle pull', () => {
         scanBegin: () => ({
           scanId: 'scan-reset-conflict',
           watermarkStart: 8,
-          resumeCursor: 'cursor-8' as SyncCursor,
-          epoch: '1',
+          resumeCursor: '8' as SyncCursor,
+          epoch: SCOPE.datasetEpoch,
         }),
         scanPage: () => ({
           entities: [
@@ -832,6 +845,7 @@ describe('runSyncCycle pull', () => {
               entityType: ET,
               entityId: saved.id,
               revision: 9,
+              operation: 'update',
               schemaVersion: 1,
               payload: templatePayload(saved.id, 'Remote reset version'),
             },
@@ -843,10 +857,10 @@ describe('runSyncCycle pull', () => {
           scanId: 'scan-reset-conflict',
           complete: true,
           watermarkEnd: 9,
-          epoch: '1',
-          nextCursor: 'cursor-9' as SyncCursor,
+          epoch: SCOPE.datasetEpoch,
+          nextCursor: '9' as SyncCursor,
         }),
-        pull: () => emptyPull('cursor-9'),
+        pull: () => emptyPull('9'),
       }),
     );
 
@@ -890,8 +904,8 @@ describe('runSyncCycle pull', () => {
         scanBegin: () => ({
           scanId: 'scan-converged-conflict',
           watermarkStart: 8,
-          resumeCursor: 'cursor-8' as SyncCursor,
-          epoch: '1',
+          resumeCursor: '8' as SyncCursor,
+          epoch: SCOPE.datasetEpoch,
         }),
         scanPage: () => ({
           entities: [
@@ -899,6 +913,7 @@ describe('runSyncCycle pull', () => {
               entityType: ET,
               entityId: saved.id,
               revision: 9,
+              operation: 'update',
               schemaVersion: 1,
               payload: local,
             },
@@ -910,10 +925,10 @@ describe('runSyncCycle pull', () => {
           scanId: 'scan-converged-conflict',
           complete: true,
           watermarkEnd: 9,
-          epoch: '1',
-          nextCursor: 'cursor-9' as SyncCursor,
+          epoch: SCOPE.datasetEpoch,
+          nextCursor: '9' as SyncCursor,
         }),
-        pull: () => emptyPull('cursor-9'),
+        pull: () => emptyPull('9'),
       }),
     );
 
@@ -955,18 +970,18 @@ describe('runSyncCycle pull', () => {
         scanBegin: () => ({
           scanId: 'scan-deleted-conflict',
           watermarkStart: 8,
-          resumeCursor: 'cursor-8' as SyncCursor,
-          epoch: '1',
+          resumeCursor: '8' as SyncCursor,
+          epoch: SCOPE.datasetEpoch,
         }),
         scanPage: () => ({ entities: [], nextCursor: null, done: true }),
         scanFinish: () => ({
           scanId: 'scan-deleted-conflict',
           complete: true,
           watermarkEnd: 9,
-          epoch: '1',
-          nextCursor: 'cursor-9' as SyncCursor,
+          epoch: SCOPE.datasetEpoch,
+          nextCursor: '9' as SyncCursor,
         }),
-        pull: () => emptyPull('cursor-9'),
+        pull: () => emptyPull('9'),
       }),
     );
 
@@ -1343,7 +1358,7 @@ describe('runSyncCycle BILL-05 hosted write gate', () => {
             scanId: 'scan-1',
             watermarkStart: 0,
             resumeCursor: '0' as SyncCursor,
-            epoch: '1',
+            epoch: SCOPE.datasetEpoch,
           };
         },
       }),

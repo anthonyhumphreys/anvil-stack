@@ -21,6 +21,7 @@ import {
   type SyncScanBeginResult,
   type SyncScanFinishResult,
   type SyncScanPageResult,
+  type SyncSnapshotGetResult,
   type SyncedChange,
 } from '../../../../cloud/contract/sync';
 import { DEFAULT_LIMITS, PROTOCOL } from '../../../../cloud/contract/version';
@@ -252,6 +253,7 @@ export class FakeAccountCoordinator {
       changes,
       nextCursor: String(lastSequence) as SyncCursor,
       hasMore,
+      recoveryFloor: 0,
     };
   }
 
@@ -301,6 +303,17 @@ export class FakeAccountCoordinator {
       }
       let result: unknown;
       switch (operation) {
+        case 'sync.snapshot.get': {
+          result = {
+            manifest: null,
+            previousManifest: null,
+            datasetEpoch: this.epoch,
+            keyVersion: 0,
+            currentCursor: String(this.currentWatermark()),
+            recoveryFloor: 0,
+          } satisfies SyncSnapshotGetResult;
+          break;
+        }
         case 'sync.push': {
           result = this.push(auth, parsePushParams(parsed['params']));
           break;
@@ -365,7 +378,6 @@ export class FakeAccountCoordinator {
     const scan = this.loadScan(params.scanId);
     const after = params.cursor === null ? null : (JSON.parse(params.cursor) as [string, string]);
     const rows = [...this.entities.entries()]
-      .filter(([, row]) => row.operation !== 'delete')
       .map(([key, row]) => {
         const [entityType, entityId] = key.split('\0') as [string, string];
         return { entityType, entityId, row };
@@ -397,7 +409,8 @@ export class FakeAccountCoordinator {
         entityId: entry.entityId,
         revision: entry.row.revision,
         schemaVersion: entry.row.schemaVersion,
-        payload: entry.row.payload,
+        operation: entry.row.operation,
+        ...(entry.row.operation === 'delete' ? {} : { payload: entry.row.payload }),
       };
       const size = utf8ByteLength(JSON.stringify(scanned));
       if (entities.length > 0 && usedBytes + size > maxBytes) {

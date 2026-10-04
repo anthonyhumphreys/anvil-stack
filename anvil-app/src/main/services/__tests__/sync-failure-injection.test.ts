@@ -395,7 +395,9 @@ describe('reset and scan boundaries', () => {
         entityId: 'stale-entity',
         revision: 9,
         schemaVersion: 1,
+        operation: 'update',
         payloadJson: '{"stale":true}',
+        wirePayloadJson: '{"stale":true}',
       },
     ]);
     expect(listScanStaging(SCOPE)).toHaveLength(1);
