@@ -53,6 +53,10 @@ interface RemoteChatContext {
   reapHostedEnvironment?: (environmentId: string) => Promise<unknown>;
   suspendHostedEnvironment?: (environmentId: string) => Promise<CloudEnvironment>;
   resumeHostedEnvironment?: (environmentId: string) => Promise<CloudEnvironment>;
+  /** Direct host-session read; account RPC remains the route when push is not healthy. */
+  readHostJob?: (targetEnrollmentId: string, jobId: string) => Promise<JobGetResult | null>;
+  hasHealthyHostPush?: (targetEnrollmentId: string) => boolean;
+  retainHost?: (targetEnrollmentId: string) => () => void;
 }
 
 interface StoredTurn extends RemoteChatTurn {
@@ -122,11 +126,15 @@ const SOURCE_THREAD_CONTEXT_CHARS = 30_000;
 const SOURCE_THREAD_CONTEXT_TURNS = 40;
 
 let contextProvider: (() => RemoteChatContext | null) | null = null;
-let tickTimer: ReturnType<typeof setInterval> | null = null;
+let tickTimer: ReturnType<typeof setTimeout> | null = null;
 let tickInFlight: Promise<void> | null = null;
+const REMOTE_CHAT_FALLBACK_MIN_MS = 25_000;
+const REMOTE_CHAT_FALLBACK_MAX_MS = 35_000;
+const remoteChatHostReleases = new Map<string, () => void>();
 
 export function configureRemoteChatContext(provider: () => RemoteChatContext | null): void {
   contextProvider = provider;
+  reconcileRemoteChatHostDemand();
 }
 
 function context(): RemoteChatContext {
@@ -232,6 +240,39 @@ function save(record: StoredChat): void {
       record.createdAt,
       now,
     );
+  reconcileRemoteChatHostDemand();
+}
+
+function reconcileRemoteChatHostDemand(): void {
+  const current = contextProvider?.() ?? null;
+  const wanted = new Set<string>();
+  if (current?.scope !== undefined && current.retainHost !== undefined) {
+    for (const row of rows()) {
+      let chat: StoredChat;
+      try {
+        chat = JSON.parse(row.record_json) as StoredChat;
+      } catch {
+        continue;
+      }
+      if (
+        chat.target !== 'anvil-hosted-cloud' &&
+        !['paused', 'ended', 'completed', 'failed', 'cancelled'].includes(chat.state)
+      ) {
+        wanted.add(chat.targetEnrollmentId);
+      }
+    }
+    for (const enrollmentId of wanted) {
+      if (!remoteChatHostReleases.has(enrollmentId)) {
+        remoteChatHostReleases.set(enrollmentId, current.retainHost(enrollmentId));
+      }
+    }
+  }
+  for (const [enrollmentId, release] of remoteChatHostReleases) {
+    if (!wanted.has(enrollmentId)) {
+      release();
+      remoteChatHostReleases.delete(enrollmentId);
+    }
+  }
 }
 
 function publicRecord(record: StoredChat): RemoteChatRecord {
@@ -250,15 +291,18 @@ function publicRecord(record: StoredChat): RemoteChatRecord {
     ...(record.sourceSessionId === undefined ? {} : { sourceSessionId: record.sourceSessionId }),
     ...(record.handoffId === undefined ? {} : { handoffId: record.handoffId }),
     state: record.state,
-    turns: record.turns.map(({ id, prompt, state, response, jobId, error, createdAt }) => ({
+    turns: record.turns.map(
+      ({ id, prompt, state, response, responseTruncated, jobId, error, createdAt }) => ({
       id,
       prompt,
       state,
       ...(response === undefined ? {} : { response }),
+      ...(responseTruncated === undefined ? {} : { responseTruncated }),
       ...(jobId === undefined ? {} : { jobId }),
       ...(error === undefined ? {} : { error }),
       createdAt,
-    })),
+      }),
+    ),
     ...(record.prepareJobId === undefined ? {} : { prepareJobId: record.prepareJobId }),
     ...(record.jobId === undefined ? {} : { jobId: record.jobId }),
     ...(record.error === undefined ? {} : { error: record.error }),
@@ -439,9 +483,20 @@ export function adoptHandoffRemoteChat(input: {
 async function jobRpc<T>(
   operation: string,
   params: unknown,
-  expected?: Pick<StoredChat, 'backendId' | 'accountId' | 'scopeEpoch'>,
+  expected?: Pick<StoredChat, 'backendId' | 'accountId' | 'scopeEpoch'> &
+    Partial<Pick<StoredChat, 'targetEnrollmentId'>>,
 ): Promise<T> {
   const ctx = expected === undefined ? context() : assertScope(expected);
+  if (operation === 'job.get' && expected?.targetEnrollmentId !== undefined) {
+    const jobId =
+      typeof params === 'object' && params !== null && 'jobId' in params
+        ? (params as { jobId?: unknown }).jobId
+        : undefined;
+    if (typeof jobId === 'string' && ctx.readHostJob !== undefined) {
+      const direct = await ctx.readHostJob(expected.targetEnrollmentId, jobId);
+      if (direct !== null) return direct as T;
+    }
+  }
   return (await rpc<T>({ apiUrl: ctx.apiUrl }, operation, params, ctx.accessToken)).result;
 }
 
@@ -1106,6 +1161,7 @@ async function observeJob(chat: StoredChat, turn: StoredTurn, jobId: string): Pr
         const record = opened as Record<string, unknown>;
         if (typeof record['assistantOutput'] === 'string')
           turn.response = record['assistantOutput'];
+        if (record['assistantOutputTruncated'] === true) turn.responseTruncated = true;
         const resumeHandle = record['resumeHandle'];
         if (typeof resumeHandle === 'string' && resumeHandle.length > 0)
           turn.resumeHandle = resumeHandle;
@@ -1479,14 +1535,60 @@ async function checkpointHostedChat(chat: StoredChat): Promise<void> {
 }
 
 export function remoteChatOnReady(): void {
+  reconcileRemoteChatHostDemand();
   if (tickTimer !== null) return;
   void remoteChatTick();
-  tickTimer = setInterval(() => void remoteChatTick(), 2_000);
+  scheduleFallbackTick();
 }
 
 export function remoteChatOnGone(): void {
-  if (tickTimer !== null) clearInterval(tickTimer);
+  if (tickTimer !== null) clearTimeout(tickTimer);
   tickTimer = null;
+  for (const release of remoteChatHostReleases.values()) release();
+  remoteChatHostReleases.clear();
+}
+
+/** Only lifecycle changes need a durable job refresh; activity frames are already the live view. */
+export function remoteChatOnHostEvent(event?: { eventKind?: string }): void {
+  if (event?.eventKind === 'activity') return;
+  void remoteChatTick().finally(scheduleFallbackTick);
+}
+
+export function remoteChatOnHostConnectivityChanged(): void {
+  scheduleFallbackTick();
+}
+
+function needsFallbackTick(): boolean {
+  const current = contextProvider?.() ?? null;
+  if (current === null) return false;
+  for (const row of rows()) {
+    const chat = readStored(row.id);
+    if (chat === null || ['paused', 'ended', 'completed', 'failed', 'cancelled'].includes(chat.state))
+      continue;
+    if (chat.target === 'anvil-hosted-cloud') return true;
+    const active = chat.turns.find((turn) => turn.id === chat.activeTurnId);
+    const jobId = active?.jobId ?? chat.prepareJobId;
+    if (
+      jobId === undefined ||
+      current.hasHealthyHostPush?.(chat.targetEnrollmentId) !== true
+    )
+      return true;
+  }
+  return false;
+}
+
+function scheduleFallbackTick(): void {
+  if (tickTimer !== null) clearTimeout(tickTimer);
+  tickTimer = null;
+  if (!needsFallbackTick()) return;
+  const delay =
+    REMOTE_CHAT_FALLBACK_MIN_MS +
+    Math.floor(Math.random() * (REMOTE_CHAT_FALLBACK_MAX_MS - REMOTE_CHAT_FALLBACK_MIN_MS + 1));
+  tickTimer = setTimeout(() => {
+    tickTimer = null;
+    void remoteChatTick().finally(scheduleFallbackTick);
+  }, delay);
+  if (typeof tickTimer.unref === 'function') tickTimer.unref();
 }
 
 export function remoteChatTick(): Promise<void> {
@@ -1506,6 +1608,7 @@ export function remoteChatTick(): Promise<void> {
     }
   })().finally(() => {
     tickInFlight = null;
+    scheduleFallbackTick();
   });
   return tickInFlight;
 }

@@ -353,7 +353,7 @@ describe('job claim + diagnostic execution', () => {
   });
 
   it('does nothing when the claim is not granted', async () => {
-    rpcHandler = (op) => {
+    rpcHandler = (op, _params) => {
       if (op === 'job.claim') {
         throw new BackendRpcError({ code: 'conflict', retryable: false });
       }
@@ -364,7 +364,7 @@ describe('job claim + diagnostic execution', () => {
   });
 
   it('reports failure for an unsupported job kind', async () => {
-    rpcHandler = (op) => {
+    rpcHandler = (op, params) => {
       if (op === 'job.claim') {
         const job = makeJob('job-2', 'workflow-node');
         return {
@@ -376,6 +376,12 @@ describe('job claim + diagnostic execution', () => {
       }
       if (op === 'attempt.report') {
         return { status: 'applied' };
+      }
+      if (op === 'event.append') {
+        const events = (params as { events: Array<{ streamId: string; sequence: number }> }).events;
+        return {
+          results: events.map((event) => ({ ...event, status: 'journaled' })),
+        };
       }
       return {};
     };
@@ -440,7 +446,7 @@ describe('job claim + diagnostic execution', () => {
       ...CTX,
       sendFrame: (frame: unknown) => sentFrames.push(frame as Record<string, unknown>),
     }));
-    rpcHandler = (op) => {
+    rpcHandler = (op, params) => {
       if (op === 'job.claim') {
         const job = makeJob('job-act');
         return {
@@ -452,6 +458,10 @@ describe('job claim + diagnostic execution', () => {
       }
       if (op === 'attempt.report') {
         return { status: 'applied' };
+      }
+      if (op === 'event.append') {
+        const events = (params as { events: Array<{ streamId: string; sequence: number }> }).events;
+        return { results: events.map((event) => ({ ...event, status: 'journaled' })) };
       }
       return {};
     };
@@ -467,6 +477,9 @@ describe('job claim + diagnostic execution', () => {
       expect(payload.kind).toBe('status');
       expect(payload.byteLength).toBe(payload.text.length);
     });
+    const appends = rpcCalls.filter((call) => call.operation === 'event.append');
+    expect(appends).toHaveLength(1);
+    expect((appends[0]!.params as { events: unknown[] }).events).toHaveLength(activities.length);
   });
 
   it('treats a failing frame sender as best-effort — execution still completes', async () => {

@@ -467,7 +467,7 @@ describe('sync-backend.service association', () => {
     const prompt = getIntegrationPrompt();
     expect(prompt).toContain(TEST_APP_VERSION);
     expect(prompt).toContain('anvil-backend/1');
-    expect(prompt).toContain('sync/1');
+    expect(prompt).toContain('sync/2');
     expect(prompt).toContain('stand-in');
   });
 

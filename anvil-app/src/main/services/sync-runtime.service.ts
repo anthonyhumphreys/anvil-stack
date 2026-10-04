@@ -4,6 +4,8 @@ import {
   configureRemoteChatContext,
   remoteChatOnReady,
   remoteChatOnGone,
+  remoteChatOnHostEvent,
+  remoteChatOnHostConnectivityChanged,
 } from './remote-chat.service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -35,11 +37,16 @@ import type {
   ApprovalDecideResult,
   ApprovalGetResult,
   ApprovalRecord,
+  EventPullParams,
+  EventPullResult,
+  JobCreateParams,
+  JobCreateResult,
   JobCancelResult,
   JobGetResult,
   JobListResult,
   JobSummary,
 } from '../../../cloud/contract/jobs.js';
+import type { ActivityFrame } from '../../../cloud/contract/socket.js';
 import type { HandoffGetResult, HandoffRecord } from '../../../cloud/contract/handoff.js';
 import type {
   DashboardRequest,
@@ -48,9 +55,14 @@ import type {
 } from '../../../cloud/contract/dashboard.js';
 import type {
   BrowserWorkspaceCommand,
+  BrowserWorkspaceCommandEnvelope,
   BrowserWorkspaceExecutionContext,
   DashboardCommandClaimResult,
   DashboardCommandCompleteResult,
+} from '../../../cloud/contract/browser-workspace.js';
+import {
+  BROWSER_WORKSPACE_OPERATION_SCOPE,
+  isBrowserWorkspaceOperation,
 } from '../../../cloud/contract/browser-workspace.js';
 import type { HostedEntitlement } from '../../../cloud/contract/entitlements.js';
 import type {
@@ -61,6 +73,12 @@ import type {
   EnvironmentReapResult,
   EnvironmentSuspendResult,
 } from '../../../cloud/contract/environment.js';
+import type {
+  ChatAttachmentInput,
+  CarPlayNoteRequest,
+  MobileSendChatMessageInput,
+  MobileStartChatInput,
+} from '../../shared/types.js';
 import {
   requestEnvironment,
   addProviderConnection,
@@ -78,7 +96,8 @@ import type {
   DevicePresenceResult,
   SessionAttestResult,
 } from '../../../cloud/contract/companion.js';
-import { PROTOCOL } from '../../../cloud/contract/version.js';
+import { PROFILES, PROTOCOL } from '../../../cloud/contract/version.js';
+import { executeWithMeshHostCommandReceipt } from './mesh-host-command-receipts.service.js';
 import {
   SPIKE_DATASET_EPOCH,
   type SyncAdoptionPreviewItem,
@@ -153,6 +172,7 @@ import {
   configureMeshWorkerContext,
   getMeshWorkerStatus,
   handleJobAvailable,
+  notifyMeshWorkerAttemptEvent,
   meshWorkerOnSyncGone,
   meshWorkerOnSyncReady,
   reconcileMeshAttemptsOnBoot,
@@ -234,15 +254,36 @@ import {
 import {
   approveDashboardRequest,
   configureDashboardGrantContext,
+  executeDashboardGrantMachineCommand,
   denyDashboardRequest,
   listDashboardGrantWorkspaces,
   listDashboardGrants,
   pumpBrowserWorkspaceCommands,
+  dispatchDashboardGrantCommandQueue,
   revokeDashboardGrant,
   serviceDashboardGrants,
   type DashboardGrantRevalidation,
   type DashboardWorkspaceCommand,
 } from './dashboard-grant.service.js';
+import {
+  configureMeshHostSessionBindings,
+  publishMeshHostEvent,
+  type MeshHostOperationInput,
+} from './mesh-host-session.service.js';
+import type { MeshHostAdmissionAuthorization } from './mesh-host-session.service.js';
+import {
+  fetchMeshMachineBrokerJson,
+} from './mesh-host-client.service.js';
+import { MeshHostRuntimePool, type MeshHostRuntimeContext } from './mesh-host-runtime.service.js';
+import {
+  configureMeshManagedEndpointLifecycle,
+} from './mesh-managed-connector.service.js';
+import { isMeshMachineEndpointEnabled } from './mesh-machine-endpoint.service.js';
+import { getMeshMachineHostStatus } from './mesh-host-status.service.js';
+import type {
+  MeshMachineAdmissionConsumeResponse,
+} from '../../../cloud/contract/machine.js';
+import { MESH_MACHINE_OPERATIONS } from '../../../cloud/contract/machine.js';
 import {
   disposeBrowserWorkspaceExecutor,
   executeBrowserWorkspaceCommand,
@@ -274,12 +315,9 @@ import {
 import { getDb } from '../db/database.js';
 import { SCHEMA_VERSION } from '../db/schema.js';
 
-/** Fallback cadence while the live channel is down. */
-const POLL_MS = 5_000;
-/** Slower safety-net cadence while the live channel is connected. */
-const POLL_LIVE_FALLBACK_MS = 60_000;
-/** Browser workspace commands need interactive delivery even on a quiet socket. */
-const DASHBOARD_COMMAND_PUMP_MS = 1_500;
+/** Bounded catch-up when push is unavailable; healthy sockets do not poll. */
+const FALLBACK_MIN_MS = 25_000;
+const FALLBACK_MAX_MS = 35_000;
 const SPIKE_ACCESS_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 /** Refresh this far before the access token's stated expiry. */
 const REFRESH_AHEAD_MS = 60_000;
@@ -293,6 +331,7 @@ const REFRESH_MIN_DELAY_MS = 5_000;
  */
 const HOSTED_SITE_ORIGIN = 'https://anvil.dev';
 const HOSTED_ACCOUNT_URL = `${HOSTED_SITE_ORIGIN}/account`;
+const HOSTED_ACCOUNT_URL_PROTOCOLS: ReadonlySet<string> = new Set(['https:', 'http:']);
 
 /**
  * Resolves the hosted account destination without allowing an environment
@@ -308,6 +347,7 @@ export function resolveHostedAccountUrl(
   if (!value) return HOSTED_ACCOUNT_URL;
   try {
     const url = new URL(value);
+    if (!HOSTED_ACCOUNT_URL_PROTOCOLS.has(url.protocol)) return HOSTED_ACCOUNT_URL;
     if (url.username || url.password) return HOSTED_ACCOUNT_URL;
     if (url.protocol === 'https:') return url.href;
     if (
@@ -324,25 +364,8 @@ export function resolveHostedAccountUrl(
 }
 /** Focus/reconnect refreshes are throttled so focus cycling can't spam it. */
 const HOSTED_REFRESH_MIN_INTERVAL_MS = 60_000;
-/**
- * `error.details.reason` values on a 403 that mean "hosted access paused"
- * (BILL-03 classification). `account-deleted` is deliberately absent — it is
- * a permanent account teardown handled by the deletion path, not a pause.
- */
-const HOSTED_DENIAL_REASONS: ReadonlySet<string> = new Set([
-  'subscription-required',
-  'preview-ended',
-  'billing-unavailable',
-]);
-/** Historical billing pauses must not pin free Sync after a client upgrade. */
-const LEGACY_BILLING_REASONS: ReadonlySet<string> = new Set([
-  ...HOSTED_DENIAL_REASONS,
-  'billing-outage',
-  'renewal-failed',
-]);
-
 function isHostedWritePaused(row: { restricted: boolean; reason: string } | null): boolean {
-  return row?.restricted === true && !LEGACY_BILLING_REASONS.has(row.reason);
+  return row?.restricted === true;
 }
 /** Entitlement states the renderer chip understands; anything else → 'unknown'. */
 const HOSTED_STATES: ReadonlySet<string> = new Set([
@@ -356,8 +379,8 @@ const HOSTED_STATES: ReadonlySet<string> = new Set([
 export type SyncConnectionState = 'offline' | 'connecting' | 'live';
 
 let auth: SyncAuthService | null = null;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let dashboardCommandPumpTimer: ReturnType<typeof setInterval> | null = null;
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let dashboardCommandPumpTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let lastError: string | null = null;
 let sessionExpired = false;
@@ -381,6 +404,7 @@ let devSpikeEnabled = false;
 /** Test hook: routes ALL backend HTTP (enroll/refresh/revoke/issue + engine rpc). */
 let fetchOverride: typeof fetch | undefined;
 let runtimeUserDataDir: string | null = null;
+let meshHostPool: MeshHostRuntimePool | null = null;
 interface PendingPairingRedemption {
   backendId: string;
   accountId: string;
@@ -421,6 +445,14 @@ function sessionBoundToBackend(
   return !backend.identityReviewRequired && fields !== null && fields.backendId === backend.id;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isMeshMachineOperation(value: string): value is import('../../../cloud/contract/machine.js').MeshMachineOperation {
+  return MESH_MACHINE_OPERATIONS.includes(value as (typeof MESH_MACHINE_OPERATIONS)[number]);
+}
+
 export interface SyncRuntimeInitOptions {
   /** Enables the spike enrollment fixture. Pass `!app.isPackaged`. */
   devSpikeEnabled?: boolean;
@@ -431,6 +463,12 @@ export interface SyncRuntimeInitOptions {
   listenLoopback?: ListenLoopbackFn;
   /** Test seam: replaces the `ws`-backed socket factory for the live channel. */
   createSocket?: WebSocketFactory;
+}
+
+function syncLocalMeshHostListener(): void {
+  void import('./mobile-companion.service.js')
+    .then(({ syncMobileCompanionServer }) => syncMobileCompanionServer())
+    .catch(() => undefined);
 }
 
 export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOptions = {}): void {
@@ -444,6 +482,20 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   devSpikeEnabled = options.devSpikeEnabled === true;
   fetchOverride = options.fetchFn;
   createSocketOverride = options.createSocket;
+  meshHostPool?.stop();
+  meshHostPool = new MeshHostRuntimePool(getMeshHostRuntimeContext);
+  configureMeshHostSessionRuntimeBindings();
+  configureMeshManagedEndpointLifecycle({
+    context: () => {
+      const context = currentHostSessionRpcContext();
+      return context === null
+        ? null
+        : { apiUrl: context.apiUrl, accessToken: context.accessToken };
+    },
+    enabled: isMeshMachineEndpointEnabled,
+    ...(fetchOverride === undefined ? {} : { fetch: fetchOverride }),
+  });
+  syncLocalMeshHostListener();
   // Compact terminal sync metadata (acknowledged/rejected outbox rows,
   // resolved conflicts) past the local retention window.
   sweepLocalSyncRetention();
@@ -468,7 +520,15 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       enrollmentId: fields.enrollmentId,
       ...(scope === null ? {} : { scope }),
       ...(runtimeUserDataDir === null ? {} : { userDataDir: runtimeUserDataDir }),
-      sendFrame: (frame) => liveSocket?.send(JSON.stringify(frame)),
+      sendFrame: (frame) => {
+        if (isMeshActivityFrame(frame)) {
+          const deliveredByHost = publishLocalMeshActivity(frame, scope);
+          if (!deliveredByHost) liveSocket?.send(JSON.stringify(frame));
+          return;
+        }
+        liveSocket?.send(JSON.stringify(frame));
+      },
+      publishAttemptLifecycle: (input) => publishLocalMeshAttemptLifecycle(input, scope),
       isLive: () => liveState === 'live' && liveSocket !== null,
       mintEnvironmentCode: async (options) => {
         const issued = await issueEnrollmentCode({
@@ -564,6 +624,18 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       accessToken: token,
       enrollmentId: fields.enrollmentId,
       scope,
+      readHostJob: async (targetEnrollmentId, jobId) => {
+        const result = await meshHostPool?.request<JobGetResult>(
+          targetEnrollmentId,
+          'read.job',
+          { jobId },
+        );
+        return result?.job?.id === jobId ? result : null;
+      },
+      hasHealthyHostPush: (targetEnrollmentId) =>
+        meshHostPool?.hasHealthyPush(targetEnrollmentId) === true,
+      retainHost: (targetEnrollmentId) =>
+        meshHostPool?.retain(targetEnrollmentId) ?? (() => undefined),
       requestHostedEnvironment: async ({ environmentId, displayName, purpose }) => {
         const limits = await getManagedEnvironmentLimits();
         const result = await requestCloudEnvironment({
@@ -767,6 +839,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   }
   if (isSyncEnabled()) {
     ensureCurrentEnrollment();
+    meshHostPool.start();
     connectLiveChannel();
     armFallbackPoll();
     armDashboardCommandPump();
@@ -784,6 +857,989 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   }
 }
 
+function getMeshHostRuntimeContext(): MeshHostRuntimeContext | null {
+  const backend = getActiveBackend();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  const token = auth?.getAccessToken() ?? null;
+  if (
+    !isSyncEnabled() ||
+    backend === null ||
+    fields === null ||
+    token === null ||
+    !sessionBoundToBackend(backend, fields)
+  ) {
+    return null;
+  }
+  return {
+    apiUrl: apiUrlFor(backend),
+    accessToken: token,
+    accountId: fields.accountId,
+    enrollmentId: fields.enrollmentId,
+    ...(fetchOverride === undefined ? {} : { fetchFn: fetchOverride }),
+    onEvent: (event) => {
+      const payload = event.payload;
+      if (event.eventKind === 'activity') {
+        const frame = meshActivityFrameFromHostEvent(payload);
+        if (frame !== null) {
+          notifyMeshWorkerAttemptEvent(frame.attemptId);
+          handleActivityFrame(frame);
+        }
+      }
+      remoteChatOnHostEvent(event);
+    },
+    onResnapshotRequired: () => remoteChatOnHostEvent(),
+    onConnectivityChanged: () => {
+      remoteChatOnHostConnectivityChanged();
+      armDashboardCommandPump();
+    },
+  };
+}
+
+function configureMeshHostSessionRuntimeBindings(): void {
+  configureMeshHostSessionBindings({
+    consumeAdmissionTicket: async (ticket) => {
+      const context = currentHostSessionRpcContext();
+      if (context === null) throw new Error('Mesh admission is unavailable.');
+      const result = await fetchMeshMachineBrokerJson({
+        apiUrl: context.apiUrl,
+        accessToken: context.accessToken,
+        path: 'mesh/admission-tickets/consume',
+        method: 'POST',
+        body: { ticket },
+        ...(fetchOverride === undefined ? {} : { fetchFn: fetchOverride }),
+      });
+      if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+        throw new Error('Mesh admission response is malformed.');
+      }
+      return result as MeshMachineAdmissionConsumeResponse;
+    },
+    authorizeAdmission: async (claims): Promise<MeshHostAdmissionAuthorization> => {
+      const context = currentHostSessionRpcContext();
+      if (
+        context === null ||
+        claims.accountId !== context.accountId ||
+        claims.hostEnrollmentId !== context.enrollmentId ||
+        claims.principal.sourceEnrollmentId === context.enrollmentId
+      ) {
+        return { state: 'unavailable' };
+      }
+      try {
+        const { ensureMeshCompanionEnrollmentPolicy } = await import('./mobile-companion.service.js');
+        const policy = ensureMeshCompanionEnrollmentPolicy(
+          claims.principal.sourceEnrollmentId,
+          context.accountId,
+        );
+        if (policy.state !== 'authorized') return policy;
+        return {
+          state: 'authorized',
+          principal: {
+            kind: 'enrollment',
+            accountId: context.accountId,
+            sourceEnrollmentId: claims.principal.sourceEnrollmentId,
+            tier: policy.tier,
+          },
+        };
+      } catch {
+        return { state: 'unavailable' };
+      }
+    },
+    revalidateAdmission: async (claims) => {
+      const context = currentHostSessionRpcContext();
+      if (
+        context === null ||
+        claims.accountId !== context.accountId ||
+        claims.hostEnrollmentId !== context.enrollmentId
+      ) {
+        return { authorized: false, validUntil: '' };
+      }
+      try {
+        const result = await fetchMeshMachineBrokerJson({
+          apiUrl: context.apiUrl,
+          accessToken: context.accessToken,
+          path: `mesh/hosts/${encodeURIComponent(claims.hostMachineId)}/sessions/revalidate`,
+          method: 'POST',
+          body: {
+            sourceEnrollmentId: claims.principal.sourceEnrollmentId,
+            endpointGeneration: claims.endpointGeneration,
+          },
+          ...(fetchOverride === undefined ? {} : { fetchFn: fetchOverride }),
+        });
+        if (
+          typeof result !== 'object' ||
+          result === null ||
+          Array.isArray(result) ||
+          typeof (result as Record<string, unknown>)['authorized'] !== 'boolean' ||
+          typeof (result as Record<string, unknown>)['validUntil'] !== 'string'
+        ) {
+          return { authorized: false, validUntil: '' };
+        }
+        return {
+          authorized: (result as { authorized: boolean }).authorized,
+          validUntil: (result as { validUntil: string }).validUntil,
+        };
+      } catch {
+        return { authorized: false, validUntil: '' };
+      }
+    },
+    dispatchOperation: dispatchMeshHostOperation,
+  });
+}
+
+function currentHostSessionRpcContext(): {
+  apiUrl: string;
+  accessToken: string;
+  accountId: string;
+  enrollmentId: string;
+  scope: SyncScope;
+} | null {
+  const backend = getActiveBackend();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  const accessToken = auth?.getAccessToken() ?? null;
+  const scope = currentScope();
+  if (
+    backend === null ||
+    fields === null ||
+    accessToken === null ||
+    scope === null ||
+    !sessionBoundToBackend(backend, fields) ||
+    scope.accountId !== fields.accountId ||
+    scope.backendId !== backend.id
+  ) {
+    return null;
+  }
+  return {
+    apiUrl: apiUrlFor(backend),
+    accessToken,
+    accountId: fields.accountId,
+    enrollmentId: fields.enrollmentId,
+    scope,
+  };
+}
+
+async function dispatchMeshHostOperation(input: MeshHostOperationInput): Promise<unknown> {
+  const context = currentHostSessionRpcContext();
+  if (context === null || input.principal.accountId !== context.accountId) {
+    throw new Error('Mesh host session is no longer authorized.');
+  }
+  return dispatchMeshHostOperationIdempotently(input, context.scope);
+}
+
+function dispatchMeshHostOperationIdempotently(
+  input: MeshHostOperationInput,
+  scope: SyncScope,
+): Promise<unknown> {
+  if (!isNativeMeshMutation(input)) {
+    return dispatchMeshHostOperationOnce(input, scope);
+  }
+  const principalId = input.principal.kind === 'enrollment'
+    ? input.principal.sourceEnrollmentId
+    : input.principal.grantId;
+  const digest = createHash('sha256').update(canonicalJson({
+    operation: input.operation,
+    payload: input.payload,
+  })).digest('hex');
+  return executeWithMeshHostCommandReceipt({
+    scope,
+    principalId,
+    requestId: input.requestId,
+    operation: input.operation,
+    payloadHash: digest,
+    execute: () => dispatchMeshHostOperationOnce(input, scope),
+  });
+}
+
+function isNativeMeshMutation(input: MeshHostOperationInput): boolean {
+  const payload = input.payload;
+  if (
+    isBrowserWorkspaceOperation(input.operation) ||
+    input.operation === 'dashboard.command.wake'
+  ) {
+    return false;
+  }
+  if (input.operation === 'command.submit') {
+    return isRecord(payload) &&
+      !('requestedTarget' in payload) &&
+      [
+        'actionId',
+        'message',
+        'title',
+        'personaId',
+        'workspaceId',
+        'repoIds',
+        'batchId',
+        'attachmentIds',
+        'attachments',
+        'fileMentions',
+      ].some((field) => field in payload);
+  }
+  if (input.operation === 'command.approve') {
+    return isRecord(payload) && typeof payload['sessionId'] === 'string';
+  }
+  if (input.operation === 'command.cancel') {
+    return isRecord(payload) && typeof payload['sessionId'] === 'string';
+  }
+  return (
+    input.operation === 'command.steer' ||
+    input.operation === 'command.prepare-attachments' ||
+    input.operation === 'command.open-desktop' ||
+    input.operation === 'command.attachment.begin' ||
+    input.operation === 'command.attachment.chunk' ||
+    input.operation === 'command.attachment.finish' ||
+    input.operation === 'command.carplay-pause' ||
+    input.operation === 'command.carplay-pause-all' ||
+    input.operation === 'command.carplay-approval' ||
+    input.operation === 'command.carplay-note' ||
+    input.operation === 'command.carplay-handover'
+  );
+}
+
+async function dispatchMeshHostOperationOnce(
+  input: MeshHostOperationInput,
+  scope: SyncScope,
+): Promise<unknown> {
+  if (!isMeshMachineOperation(input.operation)) {
+    throw new Error('Unsupported Mesh host operation.');
+  }
+  const payload = input.payload;
+  if (input.operation === 'read.snapshot') {
+    const workspaceId = isRecord(payload) && typeof payload['workspaceId'] === 'string'
+      ? payload['workspaceId']
+      : undefined;
+    if (input.principal.kind === 'dashboard') {
+      if (
+        workspaceId === undefined ||
+        !input.scope.workspaceIds.includes(workspaceId)
+      ) {
+        throw new Error('Dashboard snapshots require one explicitly granted workspace.');
+      }
+    }
+    const { getMeshCompanionOverview } = await import('./mobile-companion.service.js');
+    const overview = getMeshCompanionOverview(workspaceId);
+    if (input.principal.kind !== 'dashboard') return overview;
+    const scopedWorkspaceId = workspaceId;
+    if (scopedWorkspaceId === undefined) throw new Error('Dashboard workspace is required.');
+    const allowed = new Set(input.scope.workspaceIds);
+    return {
+      generatedAt: overview.generatedAt,
+      activeWorkspace: overview.activeWorkspace,
+      workspaces: overview.workspaces.filter((workspace) => allowed.has(workspace.id)),
+      activeSessions: overview.activeSessions.filter(
+        (session) => session.workspaceId === scopedWorkspaceId,
+      ),
+      pendingApprovals: overview.pendingApprovals.filter((approval) =>
+        approval.workspaceId !== undefined && allowed.has(approval.workspaceId)),
+      threads: overview.threads.filter((thread) =>
+        thread.workspaceId !== undefined && allowed.has(thread.workspaceId)),
+      recentRuns: overview.recentRuns.filter((run) => run.workspaceId === scopedWorkspaceId),
+      workspaceHealth: overview.workspaceHealth,
+      workItems: overview.workItems,
+      ...(overview.currentIterationPath === undefined
+        ? {}
+        : { currentIterationPath: overview.currentIterationPath }),
+    };
+  }
+  if (input.operation === 'read.job') {
+    if (!isRecord(payload) || typeof payload['jobId'] !== 'string') {
+      throw new Error('read.job requires a jobId.');
+    }
+    const result = await accountRpc<JobGetResult>('job.get', { jobId: payload['jobId'] });
+    assertMeshReadWorkspace(input, result.job.inputManifest.inputs['workspaceId']);
+    return result;
+  }
+  if (input.operation === 'read.events') {
+    if (!isRecord(payload) || typeof payload['scope'] !== 'string') {
+      throw new Error('read.events requires an event scope.');
+    }
+    const result = await accountRpc<EventPullResult>(
+      'event.pull',
+      payload as unknown as EventPullParams,
+    );
+    if (input.principal.kind === 'dashboard') {
+      const job = await accountRpc<JobGetResult>('job.get', { jobId: result.jobId });
+      assertMeshReadWorkspace(input, job.job.inputManifest.inputs['workspaceId']);
+    }
+    return result;
+  }
+
+  if (input.operation.startsWith('read.')) {
+    requireMeshEnrollmentPrincipal(input);
+    const companion = await import('./mobile-companion.service.js');
+    if (input.operation === 'read.chat-threads') {
+      if (isRecord(payload) && payload['workspaceId'] !== undefined &&
+          typeof payload['workspaceId'] !== 'string') {
+        throw new Error('read.chat-threads workspace id is invalid.');
+      }
+      const workspaceId = isRecord(payload) && typeof payload['workspaceId'] === 'string'
+        ? payload['workspaceId']
+        : undefined;
+      assertMeshWorkspaceAccess(input, workspaceId);
+      const threads = companion.listMeshCompanionChatThreads(workspaceId);
+      return input.scope.workspaceIds.length === 0 || workspaceId !== undefined
+        ? threads
+        : threads.filter((thread) => input.scope.workspaceIds.includes(thread.workspaceId ?? ''));
+    }
+    if (input.operation === 'read.thread-history') {
+      if (!isRecord(payload) || typeof payload['threadId'] !== 'string') {
+        throw new Error('read.thread-history requires a thread id.');
+      }
+      const access = companion.getMeshCompanionThreadAccess(payload['threadId']);
+      if (access === null) throw new Error('Chat thread is no longer available.');
+      assertMeshWorkspaceAccess(input, access.workspaceId);
+      if (input.scope.repositoryIds.length > 0 &&
+          access.repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))) {
+        throw new Error('Thread history is outside the Mesh repository scope.');
+      }
+      return companion.readMeshCompanionThreadHistory(payload['threadId']);
+    }
+    if (input.operation === 'read.workspace-signal-detail') {
+      if (!isRecord(payload) || typeof payload['signalId'] !== 'string') {
+        throw new Error('read.workspace-signal-detail requires a signal id.');
+      }
+      const detail = companion.readMeshCompanionWorkspaceSignal(payload['signalId']);
+      if (detail === null) return null;
+      const allowedWorkspaceIds = input.scope.workspaceIds;
+      if (allowedWorkspaceIds.length > 0) {
+        const visible = allowedWorkspaceIds.some((workspaceId) =>
+          companion.getMobileOverview(workspaceId).workspaceHealth.signals.some(
+            (signal) => signal.id === payload['signalId'],
+          ));
+        if (!visible) throw new Error('Workspace signal is outside the Mesh workspace scope.');
+      }
+      return detail;
+    }
+    if (input.operation === 'read.chat-skills') {
+      const query = isRecord(payload) && typeof payload['query'] === 'string'
+        ? payload['query']
+        : '';
+      return companion.getMeshCompanionChatSkills(query);
+    }
+    if (input.operation === 'read.file-mentions') {
+      if (!isRecord(payload) || !Array.isArray(payload['repoIds']) ||
+          payload['repoIds'].some((repoId) => typeof repoId !== 'string')) {
+        throw new Error('read.file-mentions requires repository ids.');
+      }
+      const repoIds = payload['repoIds'] as string[];
+      if (input.scope.repositoryIds.length > 0 &&
+          repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))) {
+        throw new Error('File mention search is outside the Mesh repository scope.');
+      }
+      return companion.searchMeshCompanionFileMentions({
+        repoIds,
+        ...(typeof payload['query'] === 'string' ? { query: payload['query'] } : {}),
+        ...(typeof payload['limit'] === 'number' ? { limit: payload['limit'] } : {}),
+      });
+    }
+    if (input.operation === 'read.attachment') {
+      if (!isRecord(payload) || typeof payload['attachmentId'] !== 'string' ||
+          typeof payload['offset'] !== 'number' || typeof payload['byteLength'] !== 'number') {
+        throw new Error('read.attachment requires an attachment id and bounded byte range.');
+      }
+      if (input.scope.workspaceIds.length > 0) {
+        const accesses = companion.getMeshCompanionAttachmentThreadAccess(payload['attachmentId']);
+        const visible = accesses.some((access) =>
+          access.workspaceId !== undefined &&
+          input.scope.workspaceIds.includes(access.workspaceId) &&
+          (input.scope.repositoryIds.length === 0 ||
+            access.repoIds.every((repoId) => input.scope.repositoryIds.includes(repoId))));
+        if (!visible) throw new Error('Attachment is outside the Mesh workspace scope.');
+      }
+      return companion.readMeshCompanionAttachmentChunk({
+        attachmentId: payload['attachmentId'],
+        offset: payload['offset'],
+        byteLength: payload['byteLength'],
+      });
+    }
+    if (input.operation === 'read.carplay-snapshot') {
+      return companion.getMeshCarPlaySnapshot();
+    }
+    if (input.operation === 'read.carplay-approval') {
+      if (!isRecord(payload) || typeof payload['approvalId'] !== 'string') {
+        throw new Error('read.carplay-approval requires an approval id.');
+      }
+      return companion.getMeshCarPlayApproval(payload['approvalId']);
+    }
+  }
+
+  if (isBrowserWorkspaceOperation(input.operation)) {
+    if (input.principal.kind !== 'dashboard' || !isBrowserWorkspaceCommandEnvelope(payload)) {
+      throw new Error('Browser workspace commands require a matching dashboard grant envelope.');
+    }
+    if (payload.operation !== input.operation || payload.requestId !== input.principal.grantId) {
+      throw new Error('Browser workspace command does not match the selected operation or grant.');
+    }
+    return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
+  }
+  if (input.operation === 'dashboard.command.wake') {
+    if (input.principal.kind !== 'dashboard' || !isRecord(payload) ||
+        payload['requestId'] !== input.principal.grantId) {
+      throw new Error('Dashboard command wake requires its exact grant id.');
+    }
+    return dispatchDashboardGrantCommandQueue(scope, input.principal.grantId);
+  }
+  if (input.operation === 'command.submit') {
+    if (input.principal.kind === 'dashboard' && isBrowserWorkspaceCommandEnvelope(payload)) {
+      assertDashboardCommandScope(input.scope, payload, 'submit-task');
+      return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
+    }
+      if (isRecord(payload) && !('requestedTarget' in payload)) {
+        requireMeshEnrollmentPrincipal(input, 'steer');
+      const mobileInput = omitMeshAttachmentClaim(payload) as MobileStartChatInput;
+      assertMobileWorkflowScope(input, mobileInput);
+      if (mobileInput.attachments?.some((attachment) => attachment.path !== undefined)) {
+        throw new Error('Mesh workflow attachments must use encrypted upload references.');
+      }
+      const { claimedAttachments, batchId } = await claimMeshCompanionAttachments(input, payload);
+      const companion = await import('./mobile-companion.service.js');
+      const fileAttachments = await resolveMeshFileMentions(input, payload, mobileInput.workspaceId);
+      const result = await companion.startMeshCompanionWorkflow(
+        mobileInput,
+        [...claimedAttachments, ...fileAttachments],
+      );
+      return { ...result, ...(batchId === undefined ? {} : { batchId }) };
+    }
+    if (!isRecord(payload) || payload['requestId'] !== input.requestId ||
+        typeof payload['payloadHash'] !== 'string' || !isRecord(payload['requestedTarget']) ||
+        payload['requestedTarget']['kind'] !== 'device' ||
+        payload['requestedTarget']['enrollmentId'] !== currentHostSessionRpcContext()?.enrollmentId) {
+      throw new Error('command.submit must target this host with its durable request id.');
+    }
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    payload['workspaceId'] = requireMeshWorkspaceForMutation(
+      input,
+      typeof payload['workspaceId'] === 'string' ? payload['workspaceId'] : undefined,
+    );
+    return accountRpc<JobCreateResult>('job.create', payload as unknown as JobCreateParams);
+  }
+  if (input.operation === 'command.approve') {
+    if (input.principal.kind === 'dashboard' && isBrowserWorkspaceCommandEnvelope(payload)) {
+      assertDashboardCommandScope(input.scope, payload, 'approve-action');
+      return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
+    }
+    if (isRecord(payload) && typeof payload['sessionId'] === 'string' &&
+        typeof payload['requestKey'] === 'string' &&
+        (payload['decision'] === 'accept' || payload['decision'] === 'acceptForSession' ||
+         payload['decision'] === 'decline' || payload['decision'] === 'cancel')) {
+      requireMeshEnrollmentPrincipal(input, 'approve');
+      const { resolveMeshCompanionApproval } = await import('./mobile-companion.service.js');
+      return resolveMeshCompanionApproval(
+        payload['sessionId'],
+        payload['requestKey'],
+        payload['decision'],
+        typeof payload['optionId'] === 'string' ? payload['optionId'] : undefined,
+      );
+    }
+    if (!isRecord(payload) || typeof payload['approvalId'] !== 'string' ||
+        (payload['decision'] !== 'approved' && payload['decision'] !== 'denied')) {
+      throw new Error('command.approve requires a decision for one approval.');
+    }
+    requireMeshEnrollmentPrincipal(input, 'approve');
+    const approval = await accountRpc<ApprovalGetResult>('approval.get', {
+      approvalId: payload['approvalId'],
+    });
+    const targetApproval = approval.approvals.find((candidate) =>
+      candidate.id === payload['approvalId']);
+    if (targetApproval === undefined) throw new Error('Approval is no longer available.');
+    await assertMeshJobTargetsThisHost(targetApproval.jobId);
+    return accountRpc<ApprovalDecideResult>('approval.decide', {
+      approvalId: payload['approvalId'],
+      decision: payload['decision'],
+      ...(typeof payload['reason'] === 'string' ? { reason: payload['reason'] } : {}),
+    });
+  }
+  if (input.operation === 'command.cancel') {
+    if (input.principal.kind === 'dashboard' && isBrowserWorkspaceCommandEnvelope(payload)) {
+      assertDashboardCommandScope(input.scope, payload, 'submit-task');
+      return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
+    }
+    if (isRecord(payload) && typeof payload['sessionId'] === 'string') {
+      requireMeshEnrollmentPrincipal(input, 'steer');
+      const { interruptMeshCompanionSession } = await import('./mobile-companion.service.js');
+      return interruptMeshCompanionSession(payload['sessionId']);
+    }
+    if (!isRecord(payload) || typeof payload['jobId'] !== 'string') {
+      throw new Error('command.cancel requires a job id.');
+    }
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    await assertMeshJobTargetsThisHost(payload['jobId']);
+    return accountRpc<JobCancelResult>('job.cancel', { jobId: payload['jobId'] });
+  }
+  if (input.operation === 'command.steer') {
+    if (input.principal.kind === 'dashboard' && isBrowserWorkspaceCommandEnvelope(payload)) {
+      assertDashboardCommandScope(input.scope, payload, 'workspace-write');
+      return executeDashboardGrantMachineCommand(scope, input.principal.grantId, payload);
+    }
+    if (!isRecord(payload) || typeof payload['sessionId'] !== 'string' ||
+        typeof payload['message'] !== 'string' || payload['message'].length === 0 ||
+        payload['message'].length > 32_000) {
+      throw new Error('command.steer requires a bounded message and local session id.');
+    }
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    const mobileInput = omitMeshAttachmentClaim(payload) as MobileSendChatMessageInput;
+    if (mobileInput.attachments?.some((attachment) => attachment.path !== undefined)) {
+      throw new Error('Mesh message attachments must use encrypted upload references.');
+    }
+    const companion = await import('./mobile-companion.service.js');
+    const thread = companion.listMeshCompanionChatThreads().find(
+      (candidate) => candidate.activeSessionId === payload['sessionId'],
+    );
+    if (thread === undefined) throw new Error('This session has no active companion thread.');
+    assertMeshWorkspaceAccess(input, thread.workspaceId);
+    if (input.scope.repositoryIds.length > 0 &&
+        thread.repoIds.some((repoId) => !input.scope.repositoryIds.includes(repoId))) {
+      throw new Error('This session is outside the Mesh repository scope.');
+    }
+    const { claimedAttachments, batchId } = await claimMeshCompanionAttachments(input, payload);
+    const fileAttachments = await resolveMeshFileMentions(input, payload, thread.workspaceId);
+    const result = await companion.sendMeshCompanionMessage(
+      payload['sessionId'],
+      mobileInput,
+      [...claimedAttachments, ...fileAttachments],
+    );
+    return { ...result, ...(batchId === undefined ? {} : { batchId }) };
+  }
+  if (input.operation === 'command.prepare-attachments') {
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    if (!isRecord(payload) || typeof payload['batchId'] !== 'string' ||
+        !Array.isArray(payload['attachments'])) {
+      throw new Error('command.prepare-attachments requires a batch id and attachments.');
+    }
+    const companion = await import('./mobile-companion.service.js');
+    const attachments = companion.prepareMeshCompanionAttachments(
+      payload['attachments'] as ChatAttachmentInput[],
+      companion.getMeshCompanionAttachmentContext(input.sessionId, input.principal),
+      payload['batchId'],
+    );
+    return {
+      batchId: payload['batchId'],
+      attachments,
+    };
+  }
+  if (input.operation === 'command.attachment.begin' ||
+      input.operation === 'command.attachment.chunk' ||
+      input.operation === 'command.attachment.finish') {
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    if (!isRecord(payload)) throw new Error(`${input.operation} requires an object payload.`);
+    const companion = await import('./mobile-companion.service.js');
+    if (input.operation === 'command.attachment.begin') {
+      return companion.beginMeshCompanionAttachmentUploadForSession(
+        input.sessionId,
+        input.principal,
+        {
+          batchId: requireString(payload, 'batchId'),
+          uploadId: requireString(payload, 'uploadId'),
+          name: requireString(payload, 'name'),
+          mimeType: requireString(payload, 'mimeType'),
+          totalBytes: requireNumber(payload, 'totalBytes'),
+        },
+      );
+    }
+    if (input.operation === 'command.attachment.chunk') {
+      return companion.writeMeshCompanionAttachmentChunkForSession(
+        input.sessionId,
+        input.principal,
+        {
+          uploadId: requireString(payload, 'uploadId'),
+          offset: requireNumber(payload, 'offset'),
+          bytesBase64: requireString(payload, 'bytesBase64'),
+        },
+      );
+    }
+    return companion.finishMeshCompanionAttachmentUploadForSession(
+      input.sessionId,
+      input.principal,
+      {
+        uploadId: requireString(payload, 'uploadId'),
+        sha256: requireString(payload, 'sha256'),
+      },
+    );
+  }
+  if (input.operation === 'command.open-desktop') {
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    const { openMeshCompanionDesktop } = await import('./mobile-companion.service.js');
+    return openMeshCompanionDesktop();
+  }
+  if (input.operation === 'command.carplay-pause') {
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    if (!isRecord(payload) || typeof payload['sessionId'] !== 'string') {
+      throw new Error('command.carplay-pause requires a session id.');
+    }
+    const { pauseMeshCarPlaySession } = await import('./mobile-companion.service.js');
+    return pauseMeshCarPlaySession(payload['sessionId']);
+  }
+  if (input.operation === 'command.carplay-pause-all') {
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    const { pauseAllMeshCarPlaySessions } = await import('./mobile-companion.service.js');
+    return pauseAllMeshCarPlaySessions();
+  }
+  if (input.operation === 'command.carplay-approval') {
+    requireMeshEnrollmentPrincipal(input, 'approve');
+    if (!isRecord(payload) || typeof payload['approvalId'] !== 'string' ||
+        (payload['decision'] !== 'approve' && payload['decision'] !== 'decline' &&
+         payload['decision'] !== 'later')) {
+      throw new Error('command.carplay-approval requires a supported decision.');
+    }
+    const { resolveMeshCarPlayApproval } = await import('./mobile-companion.service.js');
+    return resolveMeshCarPlayApproval({
+      approvalId: payload['approvalId'],
+      decision: payload['decision'],
+    });
+  }
+  if (input.operation === 'command.carplay-note') {
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    if (!isRecord(payload) || typeof payload['body'] !== 'string' ||
+        (payload['source'] !== 'carplay' && payload['source'] !== 'siri')) {
+      throw new Error('command.carplay-note requires a valid note.');
+    }
+    payload['workspaceId'] = requireMeshWorkspaceForMutation(
+      input,
+      typeof payload['workspaceId'] === 'string' ? payload['workspaceId'] : undefined,
+    );
+    const { createMeshCarPlayNote } = await import('./mobile-companion.service.js');
+    return createMeshCarPlayNote(payload as unknown as CarPlayNoteRequest);
+  }
+  if (input.operation === 'command.carplay-handover') {
+    requireMeshEnrollmentPrincipal(input, 'steer');
+    if (!isRecord(payload) || (payload['workspaceId'] !== undefined &&
+        typeof payload['workspaceId'] !== 'string')) {
+      throw new Error('command.carplay-handover requires an optional workspace id.');
+    }
+    const workspaceId = requireMeshWorkspaceForMutation(
+      input,
+      payload['workspaceId'] as string | undefined,
+    );
+    const { startMeshCarPlayHandover } = await import('./mobile-companion.service.js');
+    return startMeshCarPlayHandover({
+      ...(workspaceId === undefined ? {} : { workspaceId }),
+    });
+  }
+  throw new Error(`Unsupported Mesh host operation: ${input.operation}`);
+}
+
+function requireMeshEnrollmentPrincipal(
+  input: MeshHostOperationInput,
+  requiredTier: 'observe' | 'approve' | 'steer' = 'observe',
+): Extract<MeshHostOperationInput['principal'], { kind: 'enrollment' }> {
+  if (input.principal.kind !== 'enrollment') {
+    throw new Error('This companion operation requires an enrolled device session.');
+  }
+  const tierRank = { observe: 0, approve: 1, steer: 2 } as const;
+  if (tierRank[input.principal.tier] < tierRank[requiredTier]) {
+    throw new Error('This companion operation requires a higher device trust tier.');
+  }
+  return input.principal;
+}
+
+function assertMeshWorkspaceAccess(input: MeshHostOperationInput, workspaceId?: string): void {
+  if (
+    workspaceId !== undefined &&
+    input.scope.workspaceIds.length > 0 &&
+    !input.scope.workspaceIds.includes(workspaceId)
+  ) {
+    throw new Error('Operation is outside the Mesh workspace scope.');
+  }
+  if (workspaceId === undefined && input.scope.workspaceIds.length === 1) return;
+  if (workspaceId === undefined && input.scope.workspaceIds.length > 1) {
+    // Read-list operations can filter to the allowed set; mutations must name a workspace.
+    return;
+  }
+}
+
+function requireMeshWorkspaceForMutation(
+  input: MeshHostOperationInput,
+  workspaceId?: string,
+): string | undefined {
+  if (input.scope.workspaceIds.length === 0) return workspaceId;
+  if (workspaceId !== undefined) {
+    assertMeshWorkspaceAccess(input, workspaceId);
+    return workspaceId;
+  }
+  if (input.scope.workspaceIds.length === 1) return input.scope.workspaceIds[0];
+  throw new Error('Choose a workspace within the Mesh scope.');
+}
+
+function assertMobileWorkflowScope(
+  input: MeshHostOperationInput,
+  workflow: MobileStartChatInput,
+): void {
+  if (
+    (workflow.workspaceId !== undefined && typeof workflow.workspaceId !== 'string') ||
+    (workflow.repoIds !== undefined &&
+      (!Array.isArray(workflow.repoIds) ||
+        workflow.repoIds.some((repoId) => typeof repoId !== 'string')))
+  ) {
+    throw new Error('Workflow workspace or repository scope is invalid.');
+  }
+  assertMeshWorkspaceAccess(input, workflow.workspaceId);
+  if (
+    input.scope.workspaceIds.length > 0 &&
+    workflow.workspaceId === undefined &&
+    input.scope.workspaceIds.length === 1
+  ) {
+    workflow.workspaceId = input.scope.workspaceIds[0];
+  } else if (input.scope.workspaceIds.length > 0 && workflow.workspaceId === undefined) {
+    throw new Error('Choose a workspace within the Mesh grant before starting a workflow.');
+  }
+  if (
+    input.scope.repositoryIds.length > 0 &&
+    workflow.repoIds?.some((repoId) => !input.scope.repositoryIds.includes(repoId))
+  ) {
+    throw new Error('Workflow repositories are outside the Mesh scope.');
+  }
+}
+
+function omitMeshAttachmentClaim(payload: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...payload };
+  delete rest['batchId'];
+  delete rest['attachmentIds'];
+  delete rest['fileMentions'];
+  return rest;
+}
+
+async function resolveMeshFileMentions(
+  input: MeshHostOperationInput,
+  payload: Record<string, unknown>,
+  sessionWorkspaceId?: string,
+): Promise<ChatAttachmentInput[]> {
+  const fileMentions = payload['fileMentions'];
+  if (fileMentions === undefined) return [];
+  if (!Array.isArray(fileMentions) || fileMentions.length > 10 ||
+      fileMentions.some((item) =>
+        !isRecord(item) || typeof item['repoId'] !== 'string' ||
+        typeof item['relativePath'] !== 'string')) {
+    throw new Error('File mention attachment list is invalid.');
+  }
+  const workspaceId = requireMeshWorkspaceForMutation(input, sessionWorkspaceId);
+  if (workspaceId === undefined) {
+    throw new Error('File mention attachments require an explicitly selected workspace.');
+  }
+  const references = fileMentions as Array<{ repoId: string; relativePath: string }>;
+  if (input.scope.repositoryIds.length > 0 &&
+      references.some((reference) => !input.scope.repositoryIds.includes(reference.repoId))) {
+    throw new Error('File mention attachments are outside the Mesh repository scope.');
+  }
+  const companion = await import('./mobile-companion.service.js');
+  return companion.resolveMeshCompanionFileMentions(
+    workspaceId,
+    input.scope.repositoryIds,
+    references,
+  );
+}
+
+async function claimMeshCompanionAttachments(
+  input: MeshHostOperationInput,
+  payload: Record<string, unknown>,
+): Promise<{ claimedAttachments: ChatAttachmentInput[]; batchId?: string }> {
+  const hasBatch = typeof payload['batchId'] === 'string';
+  const hasAttachments = Array.isArray(payload['attachmentIds']);
+  if (!hasBatch && !hasAttachments) return { claimedAttachments: [] };
+  if (!hasBatch || !hasAttachments ||
+      (payload['attachmentIds'] as unknown[]).some((id) => typeof id !== 'string')) {
+    throw new Error('Attachment references require a batch id and attachment id list.');
+  }
+  const attachmentIds = payload['attachmentIds'] as string[];
+  if (attachmentIds.length === 0 || attachmentIds.length > 10) {
+    throw new Error('Attachment reference list is empty or too large.');
+  }
+  const principal = requireMeshEnrollmentPrincipal(input, 'steer');
+  const { claimMeshCompanionAttachmentsForSession } = await import('./mobile-companion.service.js');
+  const claimedAttachments = await claimMeshCompanionAttachmentsForSession(
+    input.sessionId,
+    principal,
+    { batchId: payload['batchId'] as string, attachmentIds },
+  );
+  return { claimedAttachments, batchId: payload['batchId'] as string };
+}
+
+function requireString(payload: Record<string, unknown>, field: string): string {
+  const value = payload[field];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${field} is required.`);
+  }
+  return value;
+}
+
+function requireNumber(payload: Record<string, unknown>, field: string): number {
+  const value = payload[field];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    throw new Error(`${field} must be a safe integer.`);
+  }
+  return value;
+}
+
+async function assertMeshJobTargetsThisHost(jobId: string): Promise<void> {
+  const result = await accountRpc<JobGetResult>('job.get', { jobId });
+  const hostEnrollmentId = currentHostSessionRpcContext()?.enrollmentId;
+  if (
+    hostEnrollmentId === undefined ||
+    result.job.requestedTarget.kind !== 'device' ||
+    result.job.requestedTarget.enrollmentId !== hostEnrollmentId
+  ) {
+    throw new Error('Job is not assigned to this host.');
+  }
+}
+
+function assertMeshReadWorkspace(input: MeshHostOperationInput, workspaceId: unknown): void {
+  if (
+    input.principal.kind === 'dashboard' &&
+    (typeof workspaceId !== 'string' || !input.scope.workspaceIds.includes(workspaceId))
+  ) {
+    throw new Error('Mesh read is outside the dashboard workspace grant.');
+  }
+}
+
+function assertDashboardCommandScope(
+  scope: MeshHostOperationInput['scope'],
+  command: BrowserWorkspaceCommandEnvelope,
+  expectedScope: string,
+): void {
+  const operationScope = BROWSER_WORKSPACE_OPERATION_SCOPE[command.operation];
+  if (
+    operationScope !== expectedScope ||
+    !scope.workspaceIds.includes(command.workspaceId) ||
+    (command.repositoryId !== undefined && !scope.repositoryIds.includes(command.repositoryId)) ||
+    !scope.scopes.includes(expectedScope)
+  ) {
+    throw new Error('Browser workspace command is outside the approved scope.');
+  }
+}
+
+function isBrowserWorkspaceCommandEnvelope(value: unknown): value is BrowserWorkspaceCommandEnvelope {
+  return isRecord(value) &&
+    value['v'] === 1 &&
+    value['enc'] === 'aes-256-gcm' &&
+    typeof value['requestId'] === 'string' &&
+    typeof value['commandId'] === 'string' &&
+    isBrowserWorkspaceOperation(value['operation']) &&
+    typeof value['workspaceId'] === 'string' &&
+    typeof value['expiresAt'] === 'string' &&
+    typeof value['nonce'] === 'string' &&
+    typeof value['ct'] === 'string' &&
+    (value['repositoryId'] === undefined || typeof value['repositoryId'] === 'string');
+}
+
+function isMeshActivityFrame(
+  frame: unknown,
+): frame is Record<string, unknown> & { type: 'activity'; streamId: string } {
+  return (
+    isRecord(frame) &&
+    frame['type'] === 'activity' &&
+    typeof frame['streamId'] === 'string' &&
+    frame['streamId'] !== 'control'
+  );
+}
+
+function meshActivityFrameFromHostEvent(payload: unknown): ActivityFrame | null {
+  if (
+    !isRecord(payload) ||
+    typeof payload['attemptId'] !== 'string' || payload['attemptId'].length === 0 ||
+    typeof payload['generation'] !== 'number' || !Number.isSafeInteger(payload['generation']) ||
+    typeof payload['streamId'] !== 'string' || payload['streamId'].length === 0 ||
+    payload['streamId'] === 'control' ||
+    typeof payload['sequence'] !== 'number' || !Number.isSafeInteger(payload['sequence']) ||
+    !isRecord(payload['payload'])
+  ) return null;
+  const activity = payload['payload'];
+  if (
+    (activity['kind'] !== 'stdout' && activity['kind'] !== 'stderr' &&
+      activity['kind'] !== 'status') ||
+    typeof activity['text'] !== 'string' ||
+    Buffer.byteLength(activity['text'], 'utf8') > 256 * 1024 ||
+    typeof activity['byteLength'] !== 'number' || !Number.isSafeInteger(activity['byteLength']) ||
+    activity['byteLength'] < 0 ||
+    typeof activity['truncated'] !== 'boolean'
+  ) return null;
+  return {
+    type: 'activity',
+    version: 1,
+    id: `mesh-${payload['attemptId']}-${payload['streamId']}-${payload['sequence']}`,
+    attemptId: payload['attemptId'],
+    generation: payload['generation'],
+    streamId: payload['streamId'],
+    sequence: payload['sequence'],
+    payload: {
+      kind: activity['kind'],
+      text: activity['text'],
+      byteLength: activity['byteLength'],
+      truncated: activity['truncated'],
+    },
+  };
+}
+
+function publishLocalMeshActivity(frame: unknown, scope: SyncScope | null): boolean {
+  if (
+    scope === null ||
+    !isRecord(frame) ||
+    !isMeshActivityFrame(frame) ||
+    typeof frame['attemptId'] !== 'string' ||
+    typeof frame['generation'] !== 'number' ||
+    typeof frame['streamId'] !== 'string' ||
+    typeof frame['sequence'] !== 'number' ||
+    !isRecord(frame['payload'])
+  ) {
+    return false;
+  }
+  const host = getMeshMachineHostStatus();
+  if (!host.enabled || !host.running) return false;
+  try {
+    const attempt = getDb()
+      .prepare('SELECT job_id, manifest_json FROM mesh_attempts WHERE id = ?')
+      .get(frame['attemptId']) as { job_id: string; manifest_json: string } | undefined;
+    if (attempt === undefined) return false;
+    const manifest = JSON.parse(attempt.manifest_json) as unknown;
+    if (!isRecord(manifest) || !isRecord(manifest['inputs'])) return false;
+    const workspaceId = manifest['inputs']['workspaceId'];
+    if (typeof workspaceId !== 'string' || workspaceId.length === 0) return false;
+    publishMeshHostEvent(
+      {
+        workspaceId,
+        jobId: attempt.job_id,
+        eventKind: 'activity',
+        payload: {
+          attemptId: frame['attemptId'],
+          generation: frame['generation'],
+          streamId: frame['streamId'],
+          sequence: frame['sequence'],
+          payload: frame['payload'],
+        },
+      },
+      scope,
+    );
+    return true;
+  } catch {
+    // Activity is durable through event.append; caller falls back to account push if host publish fails.
+    return false;
+  }
+}
+
+function publishLocalMeshAttemptLifecycle(
+  input: { attemptId: string; jobId: string; outcome: 'completed' | 'failed'; status: string },
+  scope: SyncScope | null,
+): void {
+  const host = getMeshMachineHostStatus();
+  if (scope === null || !host.enabled || !host.running) return;
+  try {
+    const attempt = getDb()
+      .prepare('SELECT job_id, manifest_json FROM mesh_attempts WHERE id = ?')
+      .get(input.attemptId) as { job_id: string; manifest_json: string } | undefined;
+    if (attempt === undefined || attempt.job_id !== input.jobId) return;
+    const manifest = JSON.parse(attempt.manifest_json) as unknown;
+    if (!isRecord(manifest) || !isRecord(manifest['inputs'])) return;
+    const workspaceId = manifest['inputs']['workspaceId'];
+    if (typeof workspaceId !== 'string' || workspaceId.length === 0) return;
+    publishMeshHostEvent(
+      {
+        workspaceId,
+        jobId: input.jobId,
+        eventKind: 'attempt.reported',
+        payload: input,
+      },
+      scope,
+    );
+  } catch {
+    // Durable job state is already committed remotely; clients recover from their bounded fallback.
+  }
+}
+
 export function resetSyncRuntimeForTests(): void {
   runtimeGeneration += 1;
   stopPolling();
@@ -797,6 +1853,9 @@ export function resetSyncRuntimeForTests(): void {
   resetMeshHandoffForTests();
   resetMeshDispatchForTests();
   resetMeshIntegrationForTests();
+  meshHostPool?.stop();
+  meshHostPool = null;
+  configureMeshManagedEndpointLifecycle(null);
   auth = null;
   lastError = null;
   sessionExpired = false;
@@ -881,11 +1940,13 @@ function ensureCurrentEnrollment(): void {
 function resumeSyncAfterEnrollment(): void {
   if (!isSyncEnabled()) return;
   ensureCurrentEnrollment();
+  meshHostPool?.start();
   connectLiveChannel();
   armFallbackPoll();
   armDashboardCommandPump();
   meshWorkerOnSyncReady();
   remoteChatOnReady();
+  syncLocalMeshHostListener();
   startHandoffRecovery();
   void reconcileHandoffsWhenReady().catch((error: unknown) => {
     console.warn('[Sync] Handoff recovery will retry on reconnect:', error);
@@ -1985,6 +3046,7 @@ export async function resetEncryptedSyncAccount(
   clearCompanionAuthCaches();
   requireAuth().signOutLocal();
   disconnectBackend();
+  syncLocalMeshHostListener();
   sessionExpired = false;
   lastError = null;
 }
@@ -2000,19 +3062,7 @@ export async function listDevices(): Promise<DeviceListResult> {
   // state before exposing it to the renderer. A server-side trusted row alone
   // never grants local E2EE access: a device remains pending here until its
   // local identity has been verified and the keyring has accepted a wrap.
-  let security: SecurityView = {};
-  try {
-    security = await accountRpc<SecurityView>('security.get', {});
-  } catch (error) {
-    // Older self-hosted backends may not expose device-security metadata yet;
-    // keep the enrollment list useful while preserving all auth failures.
-    if (
-      !(error instanceof BackendRpcError) ||
-      (error.code !== 'unsupported-operation' && error.code !== 'not-found')
-    ) {
-      throw error;
-    }
-  }
+  const security = await accountRpc<SecurityView>('security.get', {});
   const remote = new Map<string, SecurityEnrollmentView>();
   if (Array.isArray(security.enrollments)) {
     for (const entry of security.enrollments) {
@@ -2268,7 +3318,7 @@ async function flushRotationReports(scope: SyncScope): Promise<void> {
       });
       markRotationReported(scope, rotation.rotationId);
     } catch {
-      // Offline or pre-upgrade backend — retried on the next cycle.
+      // A transient backend failure is retried on the next sync cycle.
     }
   }
 }
@@ -2748,6 +3798,8 @@ export function enableSync(): SyncRuntimeStatus {
   // publish the device identity again when Sync is actually enabled. This
   // also marks the first device trusted locally before key provisioning.
   initializeSyncCrypto();
+  meshHostPool?.start();
+  syncLocalMeshHostListener();
   connectLiveChannel();
   armFallbackPoll();
   armDashboardCommandPump();
@@ -2783,6 +3835,9 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   }
   service.signOutLocal();
   disconnectBackend();
+  meshHostPool?.stop();
+  syncLocalMeshHostListener();
+  configureMeshManagedEndpointLifecycle(null);
   keyRotationBlockedScopeKey = null;
   meshWorkerOnSyncGone();
   remoteChatOnGone();
@@ -2854,6 +3909,8 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
     recovering: snapshot?.recovering ?? false,
     sessionExpired,
     meshWorker: getMeshWorkerStatus(),
+    meshHost: getMeshMachineHostStatus(),
+    meshHosts: meshHostPool?.statuses() ?? [],
     hosted: scope === null ? null : hostedStatusFor(scope.backendId, scope.accountId),
     lastError,
     lastPushAt: snapshot?.lastPushAt ?? null,
@@ -2872,6 +3929,8 @@ export function stopSyncRuntimeForOneShot(): void {
   stopPolling();
   clearSessionRefresh();
   teardownLiveChannel();
+  meshHostPool?.stop();
+  configureMeshManagedEndpointLifecycle(null);
   meshWorkerOnSyncGone();
   remoteChatOnGone();
   stopHandoffRecovery();
@@ -3020,38 +4079,14 @@ function currentHostedStatus(): SyncHostedStatus | null {
 /**
  * Persists the backend's reported entitlement. `entitlement === null` means
  * `session.describe` omitted the field — a self-host backend — so any stale
- * row is deleted rather than left gating. `restrictedReason` is set only on
- * the mid-flight 403 path, where no entitlement payload exists yet; it writes
- * a minimal restricted row that the immediately-fired describe refresh then
- * replaces with the authoritative record.
+ * row is deleted rather than left gating.
  */
 function recordEntitlement(
   pair: { backendId: string; accountId: string },
   entitlement: HostedEntitlement | null,
-  restrictedReason?: string,
 ): void {
   if (entitlement === null) {
-    if (restrictedReason === undefined) {
-      clearSyncEntitlement(pair.backendId, pair.accountId);
-      return;
-    }
-    upsertSyncEntitlement({
-      backendId: pair.backendId,
-      accountId: pair.accountId,
-      state: 'restricted',
-      source: 'none',
-      planKey: null,
-      fundedBy: 'none',
-      organizationId: null,
-      deviceLimit: 5,
-      previewEndsAt: null,
-      accessUntil: null,
-      graceUntil: null,
-      checkedAt: new Date().toISOString(),
-      revision: 0,
-      reason: restrictedReason,
-      restricted: !LEGACY_BILLING_REASONS.has(restrictedReason),
-    });
+    clearSyncEntitlement(pair.backendId, pair.accountId);
     return;
   }
   upsertSyncEntitlement({
@@ -3069,11 +4104,7 @@ function recordEntitlement(
     checkedAt: entitlement.checkedAt,
     revision: entitlement.revision,
     reason: entitlement.reason,
-    // Account/security restrictions remain authoritative. A historical billing
-    // refusal cannot create a local subscription requirement for free Sync.
-    restricted:
-      (entitlement.state === 'restricted' || entitlement.state === 'unknown') &&
-      !LEGACY_BILLING_REASONS.has(entitlement.reason),
+    restricted: entitlement.state === 'restricted' || entitlement.state === 'unknown',
   });
 }
 
@@ -3230,7 +4261,7 @@ export async function exportSyncDiagnostics(): Promise<SyncDiagnostics> {
   return {
     generatedAt: new Date().toISOString(),
     protocol: PROTOCOL,
-    profile: 'sync/1',
+    profile: PROFILES[0],
     schemaVersion: SCHEMA_VERSION,
     installationId: getOrCreateInstallationId(),
     status: getRuntimeStatus(),
@@ -3312,7 +4343,7 @@ export async function requestSync(): Promise<void> {
       connection: { apiUrl: paths.apiUrl, limits: backend.descriptor.limits },
       accessToken: token,
       // Pause account/security restrictions while reads and control stay
-      // available. Historical billing restrictions cannot gate free Sync.
+      // available.
       writeGate: () => ({
         allowed:
           !isHostedWritePaused(getSyncEntitlement(scope.backendId, scope.accountId)) &&
@@ -3335,24 +4366,6 @@ export async function requestSync(): Promise<void> {
     }
   } catch (error) {
     if (!guard()) return;
-    const hostedReason =
-      error instanceof SyncEngineError && error.code === 'forbidden'
-        ? error.details?.['reason']
-        : undefined;
-    if (typeof hostedReason === 'string' && HOSTED_DENIAL_REASONS.has(hostedReason)) {
-      // An older backend can still report a retired billing refusal. Retain
-      // the outbox and refresh its status, but do not create a local paywall.
-      // The engine has already pulled before propagating the write refusal.
-      recordEntitlement(
-        { backendId: scope.backendId, accountId: scope.accountId },
-        null,
-        hostedReason,
-      );
-      lastError =
-        'This backend still restricts Sync by subscription. Update the backend to use free Sync and Mesh.';
-      void refreshHostedEntitlement().catch(() => undefined);
-      return;
-    }
     lastError = error instanceof Error ? error.message : String(error);
     if (error instanceof SyncEngineError && !error.retryable && error.code === 'unauthenticated') {
       sessionExpired = true;
@@ -3368,10 +4381,13 @@ export function onBackendDisconnected(): void {
   runtimeGeneration += 1;
   stopPolling();
   teardownLiveChannel();
+  meshHostPool?.stop();
+  configureMeshManagedEndpointLifecycle(null);
   meshWorkerOnSyncGone();
   remoteChatOnGone();
   stopHandoffRecovery();
   meshObserverOnGone();
+  syncLocalMeshHostListener();
 }
 
 /**
@@ -3392,45 +4408,58 @@ export function onSystemResume(): void {
  */
 function armFallbackPoll(): void {
   if (pollTimer !== null) {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer);
     pollTimer = null;
   }
-  pollTimer = setInterval(
-    () => {
-      if (liveState !== 'live') {
-        connectLiveChannel();
-      }
-      void requestSync().catch(() => {
+  if (liveState === 'live' || !isSyncEnabled()) return;
+  pollTimer = setTimeout(() => {
+    pollTimer = null;
+    if (!isSyncEnabled()) return;
+    connectLiveChannel();
+    void requestSync()
+      .catch(() => {
         // lastError is recorded inside requestSync.
-      });
-    },
-    liveState === 'live' ? POLL_LIVE_FALLBACK_MS : POLL_MS,
-  );
+      })
+      .finally(armFallbackPoll);
+  }, boundedFallbackDelay());
+  pollTimer.unref?.();
 }
 
 function armDashboardCommandPump(): void {
   stopDashboardCommandPump();
-  dashboardCommandPumpTimer = setInterval(() => {
-    if (!isSyncEnabled()) return;
+  if (!isSyncEnabled() || meshHostPool?.statuses().some((host) => host.state === 'live')) return;
+  dashboardCommandPumpTimer = setTimeout(() => {
+    dashboardCommandPumpTimer = null;
+    if (!isSyncEnabled() || meshHostPool?.statuses().some((host) => host.state === 'live')) return;
     const scope = currentScope();
-    if (scope === null) return;
+    if (scope === null) {
+      armDashboardCommandPump();
+      return;
+    }
     const generation = runtimeGeneration;
     void pumpBrowserWorkspaceCommands(
       scope,
       () => generation === runtimeGeneration && isSyncEnabled(),
-    ).catch(() => undefined);
-  }, DASHBOARD_COMMAND_PUMP_MS);
+    )
+      .catch(() => undefined)
+      .finally(armDashboardCommandPump);
+  }, boundedFallbackDelay());
+  dashboardCommandPumpTimer.unref?.();
+}
+
+function boundedFallbackDelay(): number {
+  return FALLBACK_MIN_MS + Math.floor(Math.random() * (FALLBACK_MAX_MS - FALLBACK_MIN_MS + 1));
 }
 
 function stopDashboardCommandPump(): void {
   if (dashboardCommandPumpTimer === null) return;
-  clearInterval(dashboardCommandPumpTimer);
+  clearTimeout(dashboardCommandPumpTimer);
   dashboardCommandPumpTimer = null;
 }
 
 function stopPolling(): void {
   if (pollTimer !== null) {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer);
     pollTimer = null;
   }
   stopDashboardCommandPump();
@@ -3492,6 +4521,8 @@ function connectLiveChannel(): void {
         liveState = 'live';
         reconnectAttempt = 0;
         armFallbackPoll();
+        meshHostPool?.start();
+        syncLocalMeshHostListener();
         // Catch up anything missed while the channel was down.
         meshWorkerOnSyncReady();
         remoteChatOnReady();
@@ -3504,16 +4535,23 @@ function connectLiveChannel(): void {
         void requestSync().catch(() => undefined);
         break;
       case 'sync.invalidate':
+        void meshHostPool?.refresh().catch(() => undefined);
         void requestSync().catch(() => undefined);
         break;
       case 'job.available':
+        void meshHostPool?.refresh().catch(() => undefined);
         void handleJobAvailable(frame.jobId).catch(() => undefined);
         break;
+      case 'worker.available':
+        void meshHostPool?.refresh().catch(() => undefined);
+        break;
       case 'activity':
+        notifyMeshWorkerAttemptEvent(frame.attemptId);
         handleActivityFrame(frame);
         break;
       case 'gap':
         // Attempt-stream gap — the observer replays the durable journal.
+        notifyMeshWorkerAttemptEvent(frame.attemptId);
         handleGapFrame(frame);
         break;
       case 'auth.expiring':
@@ -3603,19 +4641,36 @@ function reconcileHandoffsWhenReady(): Promise<void> {
   return handoffReconciliationInFlight;
 }
 
-let handoffRecoveryTimer: ReturnType<typeof setInterval> | null = null;
+let handoffRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 function startHandoffRecovery(): void {
-  if (handoffRecoveryTimer !== null) return;
-  handoffRecoveryTimer = setInterval(() => {
-    void reconcileHandoffsWhenReady().catch((error: unknown) => {
-      console.warn('[Sync] Handoff recovery will retry:', error);
-    });
-  }, 15_000);
-  handoffRecoveryTimer.unref();
+  if (handoffRecoveryTimer !== null || !hasPendingHandoffRecovery()) return;
+  handoffRecoveryTimer = setTimeout(() => {
+    handoffRecoveryTimer = null;
+    void reconcileHandoffsWhenReady()
+      .catch((error: unknown) => {
+        console.warn('[Sync] Handoff recovery will retry:', error);
+      })
+      .finally(startHandoffRecovery);
+  }, boundedFallbackDelay());
+  handoffRecoveryTimer.unref?.();
+}
+
+function hasPendingHandoffRecovery(): boolean {
+  const scope = currentScope();
+  if (scope === null) return false;
+  const row = getDb()
+    .prepare(
+      `SELECT 1 FROM mesh_handoff_journal
+       WHERE backend_id = ? AND account_id = ? AND scope_epoch = ?
+         AND state NOT IN ('completed', 'cancelled', 'failed')
+       LIMIT 1`,
+    )
+    .get(scope.backendId, scope.accountId, scope.datasetEpoch);
+  return row !== undefined;
 }
 
 function stopHandoffRecovery(): void {
   if (handoffRecoveryTimer === null) return;
-  clearInterval(handoffRecoveryTimer);
+  clearTimeout(handoffRecoveryTimer);
   handoffRecoveryTimer = null;
 }

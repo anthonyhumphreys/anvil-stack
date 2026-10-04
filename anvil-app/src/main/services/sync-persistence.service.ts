@@ -1428,7 +1428,10 @@ export interface StagedScanEntity {
   entityId: string;
   revision: number;
   schemaVersion: number;
+  operation: SyncOperation;
   payloadJson: string | null;
+  /** Original sealed wire payload used only to build portable encrypted snapshots. */
+  wirePayloadJson: string | null;
 }
 
 interface ScanStagingRow {
@@ -1436,7 +1439,9 @@ interface ScanStagingRow {
   entity_id: string;
   revision: number;
   schema_version: number;
+  operation: SyncOperation;
   payload_json: string | null;
+  wire_payload_json: string | null;
 }
 
 interface ScanRunRow {
@@ -1478,12 +1483,16 @@ export function stageScanEntities(scope: SyncScope, entities: StagedScanEntity[]
   const params = scopeParams(scope);
   const insert = db.prepare(
     `INSERT INTO sync_scan_staging
-       (backend_id, account_id, dataset_epoch, entity_type, entity_id, revision, schema_version, payload_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       (backend_id, account_id, dataset_epoch, entity_type, entity_id, revision, schema_version,
+        operation, payload_json, wire_payload_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(backend_id, account_id, dataset_epoch, entity_type, entity_id) DO UPDATE SET
        revision = excluded.revision,
        schema_version = excluded.schema_version,
-       payload_json = excluded.payload_json`,
+       operation = excluded.operation,
+       payload_json = excluded.payload_json,
+       wire_payload_json = excluded.wire_payload_json
+     WHERE excluded.revision > sync_scan_staging.revision`,
   );
   for (const entity of entities) {
     insert.run(
@@ -1492,7 +1501,9 @@ export function stageScanEntities(scope: SyncScope, entities: StagedScanEntity[]
       entity.entityId,
       entity.revision,
       entity.schemaVersion,
+      entity.operation,
       entity.payloadJson,
+      entity.wirePayloadJson,
     );
   }
 }
@@ -1507,39 +1518,40 @@ export function stageScanChange(
     schemaVersion: number;
     operation: SyncOperation;
     payloadJson: string | null;
+    wirePayloadJson: string | null;
   },
 ): void {
   const db = getDb();
   const params = scopeParams(scope);
-  if (change.operation === 'delete') {
-    db.prepare(
-      `DELETE FROM sync_scan_staging
-       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?`,
-    ).run(...params, change.entityType, change.entityId);
-    return;
-  }
   db.prepare(
     `INSERT INTO sync_scan_staging
-       (backend_id, account_id, dataset_epoch, entity_type, entity_id, revision, schema_version, payload_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       (backend_id, account_id, dataset_epoch, entity_type, entity_id, revision, schema_version,
+        operation, payload_json, wire_payload_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(backend_id, account_id, dataset_epoch, entity_type, entity_id) DO UPDATE SET
        revision = excluded.revision,
        schema_version = excluded.schema_version,
-       payload_json = excluded.payload_json`,
+       operation = excluded.operation,
+       payload_json = excluded.payload_json,
+       wire_payload_json = excluded.wire_payload_json
+     WHERE excluded.revision > sync_scan_staging.revision`,
   ).run(
     ...params,
     change.entityType,
     change.entityId,
     change.revision,
     change.schemaVersion,
+    change.operation,
     change.payloadJson,
+    change.wirePayloadJson,
   );
 }
 
 export function listScanStaging(scope: SyncScope): StagedScanEntity[] {
   const rows = getDb()
     .prepare(
-      `SELECT entity_type, entity_id, revision, schema_version, payload_json
+      `SELECT entity_type, entity_id, revision, schema_version, operation, payload_json,
+              wire_payload_json
        FROM sync_scan_staging WHERE ${SCOPE_WHERE}
        ORDER BY entity_type ASC, entity_id ASC`,
     )
@@ -1549,7 +1561,9 @@ export function listScanStaging(scope: SyncScope): StagedScanEntity[] {
     entityId: row.entity_id,
     revision: row.revision,
     schemaVersion: row.schema_version,
+    operation: row.operation,
     payloadJson: row.payload_json,
+    wirePayloadJson: row.wire_payload_json,
   }));
 }
 

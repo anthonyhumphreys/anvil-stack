@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 105;
+export const SCHEMA_VERSION = 107;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1414,7 +1414,9 @@ CREATE TABLE IF NOT EXISTS sync_scan_staging (
   entity_id TEXT NOT NULL,
   revision INTEGER NOT NULL,
   schema_version INTEGER NOT NULL,
+  operation TEXT NOT NULL DEFAULT 'update' CHECK (operation IN ('create', 'update', 'delete')),
   payload_json TEXT,
+  wire_payload_json TEXT,
   PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
 );
 -- BILL-05: last-known hosted entitlement per (backend, account). Self-host
@@ -1682,6 +1684,20 @@ CREATE TABLE IF NOT EXISTS cloud_environments (
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_environments_scope
   ON cloud_environments (backend_id, account_id, state);
+CREATE TABLE IF NOT EXISTS mesh_host_command_receipts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('executing', 'completed')),
+  result_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (backend_id, account_id, principal_id, request_id),
+  CHECK ((status = 'executing' AND result_json IS NULL) OR (status = 'completed' AND result_json IS NOT NULL))
+);
 -- Local-first activation funnel events (§7 Measurement). Rows are never
 -- transmitted; they exist only for local funnel analysis.
 CREATE TABLE IF NOT EXISTS activation_events (
@@ -3740,6 +3756,32 @@ CREATE TABLE IF NOT EXISTS sync_paused_changes (
   change_json TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
+`,
+  106: `
+-- Current scan pages include durable tombstones and preserve sealed wire rows
+-- for complete account snapshots. In-flight pre-v2 scans are discarded.
+DELETE FROM sync_scan_staging;
+DELETE FROM sync_scan_runs;
+ALTER TABLE sync_scan_staging ADD COLUMN operation TEXT NOT NULL DEFAULT 'update'
+  CHECK (operation IN ('create', 'update', 'delete'));
+ALTER TABLE sync_scan_staging ADD COLUMN wire_payload_json TEXT;
+`,
+  107: `
+-- Crash-fence native Mesh mutations before their local side effects.
+CREATE TABLE IF NOT EXISTS mesh_host_command_receipts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('executing', 'completed')),
+  result_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (backend_id, account_id, principal_id, request_id),
+  CHECK ((status = 'executing' AND result_json IS NULL) OR (status = 'completed' AND result_json IS NOT NULL))
 );
 `,
 };

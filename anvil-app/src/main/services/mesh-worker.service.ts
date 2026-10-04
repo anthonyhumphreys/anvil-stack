@@ -122,6 +122,13 @@ import type {
   ResultManifestVerification,
 } from '../../../cloud/contract/jobs.js';
 import {
+  EVENT_APPEND_MAX_BYTES,
+  EVENT_APPEND_MAX_EVENTS,
+  type EventAppendParams,
+  type EventAppendResult,
+} from '../../../cloud/contract/jobs.js';
+import type { ActivityPayload } from '../../../cloud/contract/socket.js';
+import {
   EPHEMERAL_ENV_CAPABILITY,
   isEnvironmentProviderId,
   type EnvironmentProviderId,
@@ -152,6 +159,13 @@ interface MeshWorkerContext {
    * so a null sender (socket down) just skips emission.
    */
   sendFrame?: (frame: unknown) => void;
+  /** Publishes one durable attempt state transition over the direct host stream. */
+  publishAttemptLifecycle?: (input: {
+    attemptId: string;
+    jobId: string;
+    outcome: 'completed' | 'failed';
+    status: string;
+  }) => void;
   /**
    * True while the account socket is live. Control-channel sends (approval
    * requests) must NOT silently drop — callers check this and fail closed.
@@ -562,6 +576,7 @@ async function doConnectWorker(): Promise<void> {
 /** Called by the runtime when sync becomes enabled / the channel goes live. */
 export function meshWorkerOnSyncReady(): void {
   if (!isMeshWorkerEnabled()) return;
+  for (const attemptId of activityAppendQueues.keys()) void flushActivityAppend(attemptId);
   void publishWorkerPolicy()
     .then(() => connectWorker())
     .then(() => publishReplicas())
@@ -603,6 +618,14 @@ export function meshWorkerOnSyncGone(): void {
   stopHeartbeat();
   // enabled stays set — the worker re-arms on the next ready transition.
   writeWorkerState({ incarnation: null, lease_expires_at: null });
+  clearActivityAppendQueues();
+}
+
+function clearActivityAppendQueues(): void {
+  for (const queue of activityAppendQueues.values()) {
+    if (queue.timer !== null) clearTimeout(queue.timer);
+  }
+  activityAppendQueues.clear();
 }
 
 function armHeartbeat(): void {
@@ -1073,14 +1096,33 @@ function isCancelRequested(attemptId: string): boolean {
  * Sequence is per-attempt monotonic so observers can detect gaps.
  */
 const activitySequences = new Map<string, number>();
+interface ActivityAppendQueue {
+  incarnation: string;
+  generation: number;
+  events: EventAppendParams['events'];
+  timer: ReturnType<typeof setTimeout> | null;
+  inFlight: boolean;
+}
+const activityAppendQueues = new Map<string, ActivityAppendQueue>();
+const ACTIVITY_APPEND_MAX_AGE_MS = 1_000;
+const ACTIVITY_APPEND_RETRY_MIN_MS = 25_000;
+const ACTIVITY_APPEND_RETRY_MAX_MS = 35_000;
+
 function emitActivity(attempt: ExecutionAttempt, text: string): void {
-  const send = workerContext()?.sendFrame;
-  if (send === undefined) return;
+  const context = workerContext();
+  if (context === null) return;
   const streamId = `attempt:${attempt.id}`;
   const sequence = (activitySequences.get(streamId) ?? 0) + 1;
   activitySequences.set(streamId, sequence);
+  const payload: ActivityPayload = {
+    kind: 'status',
+    text,
+    byteLength: Buffer.byteLength(text, 'utf8'),
+    truncated: false,
+  };
+  const event: EventAppendParams['events'][number] = { streamId, sequence, payload };
   try {
-    send({
+    context.sendFrame?.({
       type: 'activity',
       version: 1,
       id: randomUUID(),
@@ -1088,11 +1130,118 @@ function emitActivity(attempt: ExecutionAttempt, text: string): void {
       generation: attempt.fence,
       streamId,
       sequence,
-      payload: { kind: 'status', text, byteLength: text.length, truncated: false },
+      payload,
     });
   } catch {
-    // Socket mid-reconnect — the durable journal still records the transition.
+    // The durable event.append path below recovers the transition.
   }
+  enqueueActivityAppend(attempt.id, attempt.workerIncarnation, attempt.fence, event);
+}
+
+function enqueueActivityAppend(
+  attemptId: string,
+  incarnation: string,
+  generation: number,
+  event: EventAppendParams['events'][number],
+): void {
+  const ctx = workerContext();
+  if (ctx === null) return;
+  let queue = activityAppendQueues.get(attemptId);
+  if (queue !== undefined && (queue.incarnation !== incarnation || queue.generation !== generation)) {
+    return;
+  }
+  if (queue === undefined) {
+    queue = { incarnation, generation, events: [], timer: null, inFlight: false };
+    activityAppendQueues.set(attemptId, queue);
+  }
+  const next = [...queue.events, event];
+  if (Buffer.byteLength(JSON.stringify(next), 'utf8') > EVENT_APPEND_MAX_BYTES) {
+    if (queue.events.length === 0) return;
+    void flushActivityAppend(attemptId);
+    // A single event fits the cap; start the next batch after the current one.
+    const later = activityAppendQueues.get(attemptId);
+    if (later === undefined) return;
+    later.events.push(event);
+    scheduleActivityAppend(later, attemptId, ACTIVITY_APPEND_MAX_AGE_MS);
+    return;
+  }
+  queue.events.push(event);
+  if (queue.events.length >= EVENT_APPEND_MAX_EVENTS) {
+    void flushActivityAppend(attemptId);
+    return;
+  }
+  if (queue.timer === null) scheduleActivityAppend(queue, attemptId, ACTIVITY_APPEND_MAX_AGE_MS);
+}
+
+function scheduleActivityAppend(
+  queue: ActivityAppendQueue,
+  attemptId: string,
+  delayMs: number,
+): void {
+  if (queue.timer !== null) clearTimeout(queue.timer);
+  queue.timer = setTimeout(() => {
+    queue.timer = null;
+    void flushActivityAppend(attemptId);
+  }, delayMs);
+  queue.timer.unref?.();
+}
+
+async function flushActivityAppend(attemptId: string): Promise<void> {
+  const queue = activityAppendQueues.get(attemptId);
+  if (queue === undefined || queue.inFlight || queue.events.length === 0) return;
+  if (queue.timer !== null) {
+    clearTimeout(queue.timer);
+    queue.timer = null;
+  }
+  const batch = queue.events.slice(0, EVENT_APPEND_MAX_EVENTS);
+  if (Buffer.byteLength(JSON.stringify(batch), 'utf8') > EVENT_APPEND_MAX_BYTES) return;
+  queue.events = queue.events.slice(batch.length);
+  queue.inFlight = true;
+  let failed = false;
+  try {
+    const result = await meshRpc<EventAppendResult>('event.append', {
+      attemptId,
+      incarnation: queue.incarnation,
+      generation: queue.generation,
+      events: batch,
+    } satisfies EventAppendParams);
+    if (
+      !Array.isArray(result.results) ||
+      result.results.length !== batch.length ||
+      result.results.some(
+        (item, index) =>
+          item.streamId !== batch[index]?.streamId ||
+          item.sequence !== batch[index]?.sequence ||
+          !['journaled', 'dropped', 'duplicate'].includes(item.status),
+      )
+    ) {
+      throw new Error('event-append-response-invalid');
+    }
+  } catch (error) {
+    failed = true;
+    queue.events = [...batch, ...queue.events];
+    const terminalFenceFailure =
+      error instanceof BackendRpcError &&
+      !error.retryable &&
+      ['conflict', 'forbidden', 'not-found', 'stale-generation'].includes(error.code);
+    if (terminalFenceFailure) {
+      if (queue.timer !== null) clearTimeout(queue.timer);
+      activityAppendQueues.delete(attemptId);
+      return;
+    }
+    // Retain the exact stream sequences and let durable dedupe make retries safe.
+  } finally {
+    queue.inFlight = false;
+  }
+  if (activityAppendQueues.get(attemptId) !== queue || queue.events.length === 0) {
+    activityAppendQueues.delete(attemptId);
+    return;
+  }
+  const delay = failed
+    ? ACTIVITY_APPEND_RETRY_MIN_MS +
+      Math.floor(Math.random() * (ACTIVITY_APPEND_RETRY_MAX_MS - ACTIVITY_APPEND_RETRY_MIN_MS + 1))
+    : ACTIVITY_APPEND_MAX_AGE_MS;
+  scheduleActivityAppend(queue, attemptId, delay);
 }
 
 /**
@@ -2810,10 +2959,11 @@ async function reportAttempt(
 ): Promise<void> {
   const db = getDb();
   const row = db
-    .prepare('SELECT incarnation, fence FROM mesh_attempts WHERE id = ?')
-    .get(attemptId) as { incarnation: string; fence: number } | undefined;
+    .prepare('SELECT job_id, incarnation, fence FROM mesh_attempts WHERE id = ?')
+    .get(attemptId) as { job_id: string; incarnation: string; fence: number } | undefined;
   if (!row) return;
   const ctx = workerContext();
+  await flushActivityAppend(attemptId);
   const taskKey =
     job !== undefined && ctx?.scope !== undefined ? taskKeyFor(ctx.scope, job.id) : null;
   const sealedResult =
@@ -2836,6 +2986,12 @@ async function reportAttempt(
       ...(outcome === 'failed' && typeof result['error'] === 'string'
         ? { error: result['error'] }
         : {}),
+    });
+    ctx?.publishAttemptLifecycle?.({
+      attemptId,
+      jobId: row.job_id,
+      outcome,
+      status: report.status,
     });
     if (report.status === 'late-result-retained') {
       // Fence was stale — the backend kept the result for forensics but the
@@ -2887,6 +3043,7 @@ export function resetMeshWorkerForTests(): void {
   connectInFlight = null;
   contextProvider = null;
   activitySequences.clear();
+  clearActivityAppendQueues();
   controlSequences.clear();
   attemptGrantEnv.clear();
   attemptCodexHostAuthJson.clear();

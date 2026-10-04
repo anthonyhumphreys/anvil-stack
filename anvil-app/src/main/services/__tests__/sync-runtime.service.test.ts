@@ -122,7 +122,7 @@ function descriptorFixture(
     deploymentId,
     displayName: 'Test backend',
     protocols: [PROTOCOL],
-    profiles: ['sync/1'],
+    profiles: ['sync/2'],
     apiPath: 'v1',
     socketPath: 'v1/connect',
     authModes: ['enrollment-code'],
@@ -794,7 +794,21 @@ function fakeBackend(
         return Response.json({
           requestId,
           serverTime: new Date().toISOString(),
-          result: { changes: [], nextCursor: '0', hasMore: false },
+          result: { changes: [], nextCursor: '0', hasMore: false, recoveryFloor: 0 },
+        });
+      }
+      if (operation === 'sync.snapshot.get') {
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: {
+            manifest: null,
+            previousManifest: null,
+            datasetEpoch: SPIKE_DATASET_EPOCH,
+            keyVersion: 0,
+            currentCursor: '0',
+            recoveryFloor: 0,
+          },
         });
       }
       if (operation === 'sync.push') {
@@ -1280,7 +1294,16 @@ function cannedSyncRpc(onCall: () => void) {
       operation === 'sync.push'
         ? { results: [] }
         : operation === 'sync.pull'
-          ? { changes: [], nextCursor: '0', hasMore: false }
+          ? { changes: [], nextCursor: '0', hasMore: false, recoveryFloor: 0 }
+          : operation === 'sync.snapshot.get'
+            ? {
+                manifest: null,
+                previousManifest: null,
+                datasetEpoch: SPIKE_DATASET_EPOCH,
+                keyVersion: 0,
+                currentCursor: '0',
+                recoveryFloor: 0,
+              }
           : operation === 'sync.scan.begin'
             ? {
                 scanId: 'scan-1',
@@ -1585,26 +1608,6 @@ describe('hosted entitlement (BILL-05)', () => {
     });
   });
 
-  it.each(['subscription-required', 'preview-ended', 'billing-unavailable'])(
-    'does not pause free writes for a cached legacy %s refusal',
-    async (reason) => {
-      const backend = fakeBackend({ entitlement: { ...RESTRICTED_ENTITLEMENT, reason } });
-      const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
-      initSyncRuntime(dir, {
-        fetchFn: backend.fetchFn,
-        createSocket: fakeSocketFactory().createSocket,
-      });
-      pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
-      await enrollOn(backend);
-      enableSync();
-      await refreshHostedEntitlement();
-      expect(getRuntimeStatus().hosted?.restricted).toBe(false);
-      backend.calls.length = 0;
-      await requestSync();
-      expect(rpcOps(backend)).toContain('sync.push');
-    },
-  );
-
   it('shows the account-specific fair-use notice with its effective date in hosted status', async () => {
     const fairUseNotice: SyncFairUseStatus = {
       status: 'notice',
@@ -1712,7 +1715,7 @@ describe('hosted entitlement (BILL-05)', () => {
       graceUntil: null,
       checkedAt: '2026-09-11T10:00:00Z',
       revision: 7,
-      reason: 'subscription-required',
+      reason: 'account-paused',
       restricted: true,
     });
     const hosted = await refreshHostedEntitlement();
@@ -1766,41 +1769,6 @@ describe('hosted entitlement (BILL-05)', () => {
     backend.calls.length = 0;
     await requestSync();
     expect(rpcOps(backend)).toContain('sync.push');
-  });
-
-  it('a legacy billing refusal keeps outbox rows without pinning a local payment pause', async () => {
-    const backend = fakeBackend({
-      // Authoritative describe flips to restricted the moment a push was denied.
-      entitlement: () =>
-        backend.calls.some((c) => c.operation === 'sync.push')
-          ? { ...RESTRICTED_ENTITLEMENT, reason: 'subscription-required' }
-          : PREVIEW_ENTITLEMENT,
-      denyPush: 'subscription-required',
-    });
-    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
-    initSyncRuntime(dir, {
-      fetchFn: backend.fetchFn,
-      createSocket: fakeSocketFactory().createSocket,
-    });
-    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
-    await enrollOn(backend);
-    enableSync(); // the kick itself runs the denied cycle
-
-    // A legacy backend response must not pin free Sync behind a local paywall.
-    await vi.waitFor(() => {
-      const row = getSyncEntitlement('backend-1', 'account-1');
-      expect(row?.restricted).toBe(false);
-      expect(row?.reason).toBe('subscription-required');
-    });
-    // The pull still ran before the refusal propagated.
-    expect(rpcOps(backend)).toContain('sync.pull');
-    expect(getRuntimeStatus().lastError).toContain('Update the backend');
-    // The denied push must not consume or drop local outbox rows.
-    expect(listOutboxRows(SCOPE).length).toBeGreaterThan(0);
-
-    // A retry still reports the incompatible backend without a payment pause.
-    await requestSync();
-    expect(getRuntimeStatus().lastError).toContain('Update the backend');
   });
 
   it('onAppFocus re-reads hosted access once the throttle window passes', async () => {
@@ -1861,9 +1829,15 @@ describe('hosted entitlement (BILL-05)', () => {
   });
 
   it('falls back for unsafe hosted account overrides', () => {
-    expect(resolveHostedAccountUrl('http://evil.example/account', false)).toBe(
-      'https://anvil.dev/account',
-    );
-    expect(resolveHostedAccountUrl('javascript:alert(1)', false)).toBe('https://anvil.dev/account');
+    for (const value of [
+      'http://evil.example/account',
+      'javascript:alert(1)',
+      'data:text/html,hello',
+      'file:///etc/passwd',
+      'ftp://localhost/account',
+      'https://user:password@anvil.dev/account',
+    ]) {
+      expect(resolveHostedAccountUrl(value, false)).toBe('https://anvil.dev/account');
+    }
   });
 });
