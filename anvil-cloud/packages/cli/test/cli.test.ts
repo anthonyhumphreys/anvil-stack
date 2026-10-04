@@ -2186,6 +2186,10 @@ describe("main", () => {
           durableObjects: [
             { binding: "ACCOUNT", className: "AccountCoordinator" },
             { binding: "SESSIONS", className: "SessionCoordinator" },
+            {
+              binding: "MACHINE_ENDPOINTS",
+              className: "MachineEndpointCoordinator",
+            },
           ],
           connection: {
             ready: true,
@@ -2207,7 +2211,9 @@ describe("main", () => {
       expect(generated.migrations).toEqual([
         { tag: "v1", new_sqlite_classes: ["AccountCoordinator"] },
         { tag: "v2", new_sqlite_classes: ["SessionCoordinator"] },
+        { tag: "v3", new_sqlite_classes: ["MachineEndpointCoordinator"] },
       ]);
+      expect(generated.vars.ANVIL_MESH_MANAGED_ENDPOINTS).toBe("false");
       expect(output).not.toContain("ENROLLMENT_ADMIN_TOKEN");
       expect(output).not.toContain("ANVIL_DEV_SPIKE");
       expect(process.exitCode).toBeUndefined();
@@ -4087,15 +4093,18 @@ async function writeMeshBackendFixture(rootDir: string): Promise<string> {
     "bindings": [
       { "name": "ACCOUNT", "class_name": "AccountCoordinator" },
       { "name": "SESSIONS", "class_name": "SessionCoordinator" },
+      { "name": "MACHINE_ENDPOINTS", "class_name": "MachineEndpointCoordinator" },
     ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["AccountCoordinator"] },
     { "tag": "v2", "new_sqlite_classes": ["SessionCoordinator"] },
+    { "tag": "v3", "new_sqlite_classes": ["MachineEndpointCoordinator"] },
   ],
   "r2_buckets": [
     { "binding": "ARTIFACTS", "bucket_name": "anvil-spike-artifacts" },
   ],
+  "vars": { "ANVIL_MESH_MANAGED_ENDPOINTS": "false" },
 }
 `,
     "utf8",

@@ -24,6 +24,12 @@ const WORKER_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const WORKER_NAME_MAX_LENGTH = 63;
 const DEPLOYMENT_ID_VAR = "ANVIL_DEPLOYMENT_ID";
 const DEPLOYMENT_NAME_VAR = "ANVIL_DEPLOYMENT_NAME";
+const MANAGED_ENDPOINTS_VAR = "ANVIL_MESH_MANAGED_ENDPOINTS";
+const MANAGED_ENDPOINT_PROVIDER_SECRETS = [
+  "CLOUDFLARE_TUNNEL_ACCOUNT_ID",
+  "CLOUDFLARE_TUNNEL_ZONE_ID",
+  "CLOUDFLARE_TUNNEL_API_TOKEN",
+] as const;
 
 /**
  * Development-only backend environment keys. They must never be emitted by a
@@ -39,7 +45,12 @@ const DEV_ONLY_ENVIRONMENT_KEYS = ["ANVIL_DEV_SPIKE"];
 const EXPECTED_DURABLE_OBJECTS = [
   { binding: "ACCOUNT", className: "AccountCoordinator" },
   { binding: "SESSIONS", className: "SessionCoordinator" },
+  { binding: "MACHINE_ENDPOINTS", className: "MachineEndpointCoordinator" },
 ] as const;
+const REQUIRED_MACHINE_ENDPOINT_MIGRATION = {
+  tag: "v3",
+  sqliteClass: "MachineEndpointCoordinator",
+} as const;
 
 const EXPECTED_R2_BINDING = "ARTIFACTS";
 
@@ -427,6 +438,9 @@ export async function provisionMeshSecrets(
   const names = Object.keys(options.secrets);
   const allowed = new Set([
     "ENROLLMENT_ADMIN_TOKEN",
+    ...(options.plan.vars[MANAGED_ENDPOINTS_VAR] === "true"
+      ? MANAGED_ENDPOINT_PROVIDER_SECRETS
+      : []),
     ...(options.plan.deploymentMode === "hosted"
       ? [
           "HOSTED_SERVICE_KEYS",
@@ -666,10 +680,21 @@ export async function createMeshDeploymentPlan(
             binding.className === expected.className,
         ),
     );
+    const machineEndpointsMigrationMissing = !source.newClassMigrations.some(
+      (migration) =>
+        migration.tag === REQUIRED_MACHINE_ENDPOINT_MIGRATION.tag &&
+        migration.newSqliteClasses.includes(
+          REQUIRED_MACHINE_ENDPOINT_MIGRATION.sqliteClass,
+        ),
+    );
     const missingR2 = source.r2Buckets.every(
       (bucket) => bucket.binding !== EXPECTED_R2_BINDING,
     );
-    if (missingDurableObjects.length > 0 || missingR2) {
+    if (
+      missingDurableObjects.length > 0 ||
+      machineEndpointsMigrationMissing ||
+      missingR2
+    ) {
       diagnostics.push({
         code: "MESH_BACKEND_BINDINGS_MISSING",
         severity: "block",
@@ -677,7 +702,9 @@ export async function createMeshDeploymentPlan(
           "The backend Wrangler configuration does not declare the expected Mesh bindings.",
         hint: `Expected Durable Object bindings ${EXPECTED_DURABLE_OBJECTS.map(
           (item) => `${item.binding} (${item.className})`,
-        ).join(", ")} and R2 bucket binding ${EXPECTED_R2_BINDING}.`,
+        ).join(
+          ", ",
+        )}, migration ${REQUIRED_MACHINE_ENDPOINT_MIGRATION.tag} for ${REQUIRED_MACHINE_ENDPOINT_MIGRATION.sqliteClass}, and R2 bucket binding ${EXPECTED_R2_BINDING}.`,
       });
     }
   }
@@ -695,6 +722,7 @@ export async function createMeshDeploymentPlan(
         "STRIPE_WEBHOOK_SECRET",
         "MANAGED_PROVISIONER_TOKEN",
         "ENROLLMENT_ADMIN_TOKEN",
+        ...MANAGED_ENDPOINT_PROVIDER_SECRETS,
       ].includes(name)
     ) {
       diagnostics.push({
@@ -713,6 +741,9 @@ export async function createMeshDeploymentPlan(
   }
   if (vars.ANVIL_CLOUD_AGENTS_ENABLED === undefined) {
     vars.ANVIL_CLOUD_AGENTS_ENABLED = "false";
+  }
+  if (vars[MANAGED_ENDPOINTS_VAR] === undefined) {
+    vars[MANAGED_ENDPOINTS_VAR] = "false";
   }
 
   // Descriptor identity belongs to the deployment target, so every generated
@@ -748,6 +779,17 @@ export async function createMeshDeploymentPlan(
           ? "Enables admin-issued enrollment codes."
           : "Operator-provisioned Worker secret.",
     });
+  }
+  if (vars[MANAGED_ENDPOINTS_VAR] === "true") {
+    for (const name of MANAGED_ENDPOINT_PROVIDER_SECRETS) {
+      if (secrets.some((secret) => secret.name === name)) continue;
+      secrets.push({
+        name,
+        required: true,
+        devOnly: false,
+        purpose: "Authenticates managed machine endpoint provisioning.",
+      });
+    }
   }
   if (
     options.managedProvisionerService &&

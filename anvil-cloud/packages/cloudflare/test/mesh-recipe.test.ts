@@ -40,11 +40,13 @@ const BACKEND_WRANGLER_CONFIG = `{
     "bindings": [
       { "name": "ACCOUNT", "class_name": "AccountCoordinator" },
       { "name": "SESSIONS", "class_name": "SessionCoordinator" },
+      { "name": "MACHINE_ENDPOINTS", "class_name": "MachineEndpointCoordinator" },
     ],
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["AccountCoordinator"] },
     { "tag": "v2", "new_sqlite_classes": ["SessionCoordinator"] },
+    { "tag": "v3", "new_sqlite_classes": ["MachineEndpointCoordinator"] },
   ],
   "r2_buckets": [
     { "binding": "ARTIFACTS", "bucket_name": "anvil-spike-artifacts" },
@@ -125,11 +127,19 @@ describe("Mesh backend recipe planning", () => {
     expect(plan.durableObjects).toEqual([
       { binding: "ACCOUNT", className: "AccountCoordinator" },
       { binding: "SESSIONS", className: "SessionCoordinator" },
+      { binding: "MACHINE_ENDPOINTS", className: "MachineEndpointCoordinator" },
     ]);
     expect(plan.migrations).toEqual([
       { tag: "v1", newClasses: [], newSqliteClasses: ["AccountCoordinator"] },
       { tag: "v2", newClasses: [], newSqliteClasses: ["SessionCoordinator"] },
+      {
+        tag: "v3",
+        newClasses: [],
+        newSqliteClasses: ["MachineEndpointCoordinator"],
+      },
     ]);
+    expect(plan.vars.ANVIL_MESH_MANAGED_ENDPOINTS).toBe("false");
+    expect(plan.secrets).toEqual([]);
     expect(plan.r2Buckets).toEqual([
       { binding: "ARTIFACTS", bucketName: "anvil-spike-artifacts" },
     ]);
@@ -151,6 +161,7 @@ describe("Mesh backend recipe planning", () => {
       ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production-acct-1",
       ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production-acct-1)",
       ANVIL_CLOUD_AGENTS_ENABLED: "false",
+      ANVIL_MESH_MANAGED_ENDPOINTS: "false",
     });
   });
 
@@ -194,6 +205,47 @@ describe("Mesh backend recipe planning", () => {
     });
   });
 
+  it("blocks a backend whose machine endpoint binding has no v3 SQLite migration", async () => {
+    const backendDir = await createBackendProject();
+    await writeFile(
+      BACKEND_WRANGLER_PATH(backendDir),
+      JSON.stringify({
+        main: "src/index.ts",
+        compatibility_date: "2026-09-01",
+        durable_objects: {
+          bindings: [
+            { name: "ACCOUNT", class_name: "AccountCoordinator" },
+            { name: "SESSIONS", class_name: "SessionCoordinator" },
+            {
+              name: "MACHINE_ENDPOINTS",
+              class_name: "MachineEndpointCoordinator",
+            },
+          ],
+        },
+        migrations: [
+          { tag: "v1", new_sqlite_classes: ["AccountCoordinator"] },
+          { tag: "v2", new_sqlite_classes: ["SessionCoordinator"] },
+        ],
+        r2_buckets: [
+          { binding: "ARTIFACTS", bucket_name: "anvil-spike-artifacts" },
+        ],
+      }),
+      "utf8",
+    );
+
+    const plan = await createMeshDeploymentPlan(baseOptions(backendDir));
+
+    expect(plan.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "MESH_BACKEND_BINDINGS_MISSING",
+        severity: "block",
+        hint: expect.stringContaining(
+          "migration v3 for MachineEndpointCoordinator",
+        ),
+      }),
+    );
+  });
+
   it("selects the hosted config and preserves D1, cron, and service bindings", async () => {
     const backendDir = await createBackendProject();
     await writeFile(
@@ -204,9 +256,14 @@ describe("Mesh backend recipe planning", () => {
         "compatibility_date": "2026-09-01",
         "durable_objects": { "bindings": [
           { "name": "ACCOUNT", "class_name": "AccountCoordinator" },
-          { "name": "SESSIONS", "class_name": "SessionCoordinator" }
+          { "name": "SESSIONS", "class_name": "SessionCoordinator" },
+          { "name": "MACHINE_ENDPOINTS", "class_name": "MachineEndpointCoordinator" }
         ] },
-        "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AccountCoordinator"] }],
+        "migrations": [
+          { "tag": "v1", "new_sqlite_classes": ["AccountCoordinator"] },
+          { "tag": "v2", "new_sqlite_classes": ["SessionCoordinator"] },
+          { "tag": "v3", "new_sqlite_classes": ["MachineEndpointCoordinator"] }
+        ],
         "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "hosted-artifacts" }],
         "triggers": { "crons": ["17 * * * *"] },
         "services": [{ "binding": "MANAGED_PROVISIONER", "service": "anvil-mesh-provisioner" }],
@@ -229,6 +286,7 @@ describe("Mesh backend recipe planning", () => {
       { binding: "MANAGED_PROVISIONER", service: "anvil-mesh-provisioner" },
     ]);
     expect(config.vars.ANVIL_CLOUD_AGENTS_ENABLED).toBe("false");
+    expect(config.vars.ANVIL_MESH_MANAGED_ENDPOINTS).toBe("false");
     expect(config.d1_databases[0]).toMatchObject({
       binding: "HOSTED_DB",
       database_name: "anvil-hosted-billing",
@@ -254,17 +312,65 @@ describe("Mesh backend recipe planning", () => {
         bindings: [
           { name: "ACCOUNT", class_name: "AccountCoordinator" },
           { name: "SESSIONS", class_name: "SessionCoordinator" },
+          {
+            name: "MACHINE_ENDPOINTS",
+            class_name: "MachineEndpointCoordinator",
+          },
         ],
       },
       migrations: [
         { tag: "v1", new_sqlite_classes: ["AccountCoordinator"] },
         { tag: "v2", new_sqlite_classes: ["SessionCoordinator"] },
+        { tag: "v3", new_sqlite_classes: ["MachineEndpointCoordinator"] },
       ],
       r2_buckets: [
         { binding: "ARTIFACTS", bucket_name: "anvil-spike-artifacts" },
       ],
     });
     expect(config).not.toHaveProperty("env");
+    expect(config.vars.ANVIL_MESH_MANAGED_ENDPOINTS).toBe("false");
+  });
+
+  it("requires provider credentials only when managed endpoint provisioning is enabled", async () => {
+    const backendDir = await createBackendProject();
+    const plan = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      vars: { ANVIL_MESH_MANAGED_ENDPOINTS: "true" },
+    });
+
+    expect(plan.vars.ANVIL_MESH_MANAGED_ENDPOINTS).toBe("true");
+    expect(plan.secrets).toEqual([
+      {
+        name: "CLOUDFLARE_TUNNEL_ACCOUNT_ID",
+        required: true,
+        devOnly: false,
+        purpose: "Authenticates managed machine endpoint provisioning.",
+      },
+      {
+        name: "CLOUDFLARE_TUNNEL_ZONE_ID",
+        required: true,
+        devOnly: false,
+        purpose: "Authenticates managed machine endpoint provisioning.",
+      },
+      {
+        name: "CLOUDFLARE_TUNNEL_API_TOKEN",
+        required: true,
+        devOnly: false,
+        purpose: "Authenticates managed machine endpoint provisioning.",
+      },
+    ]);
+
+    const leaked = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      vars: { CLOUDFLARE_TUNNEL_API_TOKEN: "secret-value" },
+    });
+    expect(leaked.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "MESH_SECRET_IN_VARS",
+        severity: "block",
+      }),
+    );
+    expect(leaked.vars).not.toHaveProperty("CLOUDFLARE_TUNNEL_API_TOKEN");
   });
 
   it("carries cumulative migrations on every deploy, including existing", async () => {
@@ -282,10 +388,16 @@ describe("Mesh backend recipe planning", () => {
     expect(plan.migrations).toEqual([
       { tag: "v1", newClasses: [], newSqliteClasses: ["AccountCoordinator"] },
       { tag: "v2", newClasses: [], newSqliteClasses: ["SessionCoordinator"] },
+      {
+        tag: "v3",
+        newClasses: [],
+        newSqliteClasses: ["MachineEndpointCoordinator"],
+      },
     ]);
     expect(config.migrations).toEqual([
       { tag: "v1", new_sqlite_classes: ["AccountCoordinator"] },
       { tag: "v2", new_sqlite_classes: ["SessionCoordinator"] },
+      { tag: "v3", new_sqlite_classes: ["MachineEndpointCoordinator"] },
     ]);
   });
 
@@ -306,6 +418,10 @@ describe("Mesh backend recipe planning", () => {
           bindings: [
             { name: "ACCOUNT", class_name: "AccountCoordinator" },
             { name: "SESSIONS", class_name: "SessionCoordinator" },
+            {
+              name: "MACHINE_ENDPOINTS",
+              class_name: "MachineEndpointCoordinator",
+            },
           ],
         },
         r2_buckets: [
@@ -338,6 +454,7 @@ describe("Mesh backend recipe planning", () => {
       ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production",
       ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production)",
       ANVIL_CLOUD_AGENTS_ENABLED: "false",
+      ANVIL_MESH_MANAGED_ENDPOINTS: "false",
       OIDC_ISSUER: "https://issuer.example.com",
     });
     expect(JSON.stringify(plan)).not.toContain("ANVIL_DEV_SPIKE");
@@ -385,6 +502,7 @@ describe("Mesh backend recipe planning", () => {
       ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production",
       ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production)",
       ANVIL_CLOUD_AGENTS_ENABLED: "false",
+      ANVIL_MESH_MANAGED_ENDPOINTS: "false",
       ANVIL_DEV_SPIKE: "true",
     });
     expect(plan.secrets).toEqual([
@@ -786,7 +904,7 @@ describe("Mesh lifecycle gating", () => {
     const backendDir = await createBackendProject();
     await writeFile(
       path.join(backendDir, "wrangler.hosted.jsonc"),
-      `{"name":"hosted","main":"src/index.ts","compatibility_date":"2026-09-01","durable_objects":{"bindings":[{"name":"ACCOUNT","class_name":"AccountCoordinator"},{"name":"SESSIONS","class_name":"SessionCoordinator"}]},"migrations":[{"tag":"v1","new_sqlite_classes":["AccountCoordinator"]}],"r2_buckets":[{"binding":"ARTIFACTS","bucket_name":"artifacts"}],"d1_databases":[{"binding":"HOSTED_DB","database_name":"billing","database_id":"<placeholder>"}],"vars":{"HOSTED_BILLING_ENFORCEMENT":"true"}}`,
+      `{"name":"hosted","main":"src/index.ts","compatibility_date":"2026-09-01","durable_objects":{"bindings":[{"name":"ACCOUNT","class_name":"AccountCoordinator"},{"name":"SESSIONS","class_name":"SessionCoordinator"},{"name":"MACHINE_ENDPOINTS","class_name":"MachineEndpointCoordinator"}]},"migrations":[{"tag":"v1","new_sqlite_classes":["AccountCoordinator"]},{"tag":"v2","new_sqlite_classes":["SessionCoordinator"]},{"tag":"v3","new_sqlite_classes":["MachineEndpointCoordinator"]}],"r2_buckets":[{"binding":"ARTIFACTS","bucket_name":"artifacts"}],"d1_databases":[{"binding":"HOSTED_DB","database_name":"billing","database_id":"<placeholder>"}],"vars":{"HOSTED_BILLING_ENFORCEMENT":"true","ANVIL_MESH_MANAGED_ENDPOINTS":"false"}}`,
       "utf8",
     );
     const plan = await createMeshDeploymentPlan({

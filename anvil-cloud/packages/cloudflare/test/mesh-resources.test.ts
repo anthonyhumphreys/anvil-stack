@@ -32,12 +32,21 @@ async function fixture() {
       bindings: [
         { name: "ACCOUNT", class_name: "AccountCoordinator" },
         { name: "SESSIONS", class_name: "SessionCoordinator" },
+        { name: "MACHINE_ENDPOINTS", class_name: "MachineEndpointCoordinator" },
       ],
     },
     migrations: [
       {
         tag: "v1",
-        new_sqlite_classes: ["AccountCoordinator", "SessionCoordinator"],
+        new_sqlite_classes: ["AccountCoordinator"],
+      },
+      {
+        tag: "v2",
+        new_sqlite_classes: ["SessionCoordinator"],
+      },
+      {
+        tag: "v3",
+        new_sqlite_classes: ["MachineEndpointCoordinator"],
       },
     ],
     r2_buckets: [{ binding: "ARTIFACTS", bucket_name: "artifacts-test" }],
@@ -49,7 +58,10 @@ async function fixture() {
         migrations_dir: "migrations",
       },
     ],
-    vars: { HOSTED_BILLING_ENFORCEMENT: "true" },
+    vars: {
+      HOSTED_BILLING_ENFORCEMENT: "true",
+      ANVIL_MESH_MANAGED_ENDPOINTS: "false",
+    },
   };
   await writeFile(
     path.join(root, "wrangler.hosted.jsonc"),
@@ -206,6 +218,39 @@ describe("Mesh resource lifecycle", () => {
     const result = await provisionMeshSecrets({ plan, secrets, run });
     expect(result.ok).toBe(true);
     expect(result.created).toEqual(
+      Object.keys(secrets)
+        .sort()
+        .map((name) => `secret:${name}`),
+    );
+  });
+
+  it("keeps managed endpoint credentials unavailable until the opt-in var is true", async () => {
+    const { options } = await fixture();
+    const secrets = {
+      CLOUDFLARE_TUNNEL_ACCOUNT_ID: "account-id",
+      CLOUDFLARE_TUNNEL_ZONE_ID: "zone-id",
+      CLOUDFLARE_TUNNEL_API_TOKEN: "provider-token",
+    };
+    const offRun = runner();
+    const off = await provisionMeshSecrets({
+      plan: await createMeshDeploymentPlan(options),
+      secrets,
+      run: offRun,
+    });
+    expect(off.ok).toBe(false);
+    expect(offRun).not.toHaveBeenCalled();
+
+    const onRun = runner();
+    const on = await provisionMeshSecrets({
+      plan: await createMeshDeploymentPlan({
+        ...options,
+        vars: { ANVIL_MESH_MANAGED_ENDPOINTS: "true" },
+      }),
+      secrets,
+      run: onRun,
+    });
+    expect(on.ok).toBe(true);
+    expect(on.created).toEqual(
       Object.keys(secrets)
         .sort()
         .map((name) => `secret:${name}`),

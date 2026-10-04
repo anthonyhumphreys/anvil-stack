@@ -328,8 +328,19 @@ try {
       throw new Error("deployment-admin secret missing from production plan");
     }
     const bindings = plan.durableObjects.map((d) => d.binding).sort();
-    if (bindings.join(",") !== "ACCOUNT,SESSIONS") {
+    if (bindings.join(",") !== "ACCOUNT,MACHINE_ENDPOINTS,SESSIONS") {
       throw new Error(`unexpected DO bindings: ${bindings}`);
+    }
+    const machineEndpointMigration = plan.migrations.some(
+      (migration) =>
+        migration.tag === "v3" &&
+        migration.newSqliteClasses.includes("MachineEndpointCoordinator"),
+    );
+    if (!machineEndpointMigration) {
+      throw new Error("MachineEndpointCoordinator v3 migration missing");
+    }
+    if (plan.vars.ANVIL_MESH_MANAGED_ENDPOINTS !== "false") {
+      throw new Error("managed machine endpoint provisioning must default off");
     }
     if (!plan.r2Buckets.some((b) => b.binding === "ARTIFACTS")) {
       throw new Error("ARTIFACTS R2 binding missing");
@@ -422,10 +433,13 @@ try {
           );
         }
         if (
-          !d.profiles.includes("sync/1") ||
+          !d.profiles.includes("sync/2") ||
+          !d.profiles.includes("mesh/2") ||
           !d.authModes.includes("enrollment-code")
         ) {
-          throw new Error("descriptor must advertise sync/1 + enrollment-code");
+          throw new Error(
+            "descriptor must advertise sync/2 + mesh/2 + enrollment-code",
+          );
         }
         return { deploymentId: d.deploymentId, profiles: d.profiles };
       });
