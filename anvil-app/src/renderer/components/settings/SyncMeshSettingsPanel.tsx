@@ -449,12 +449,12 @@ export function SyncMeshSettingsPanel(): ReactNode {
           ? 'Recovering'
           : runtime?.syncEnabled === true
             ? runtime.connectionState === 'live'
-              ? 'Live'
+              ? 'Live updates'
               : runtime.connectionState === 'connecting'
                 ? 'Connecting'
                 : runtime.lastError
-                  ? 'Offline · needs attention'
-                  : 'Offline · polling'
+                  ? 'Needs attention'
+                  : 'Periodic updates'
             : signedIn
               ? 'Ready to enable'
               : backendReady
@@ -466,13 +466,15 @@ export function SyncMeshSettingsPanel(): ReactNode {
       ? 'Available after Sync'
       : runtime.meshWorker.enabled
         ? runtime.meshWorker.connected
-          ? 'Ready'
-          : 'Connecting'
+          ? 'Connected'
+          : runtime.meshWorker.lastError
+            ? 'Offline'
+            : 'Connecting'
         : 'Off';
   const meshSummaryTone = runtime?.meshWorker.lastError
     ? 'text-warning'
     : runtime?.meshWorker.enabled && runtime.meshWorker.connected
-      ? 'text-accent'
+      ? 'text-success'
       : 'text-text-primary';
   const syncSummaryTone =
     runtime?.sessionExpired === true || runtime?.lastError || runtime?.quotaExceeded === true
@@ -490,7 +492,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
     <div className="space-y-3">
       <Panel
         title="Sync & Mesh at a glance"
-        description="Sync and Mesh are free. See what this device is connected to and whether it can run Mesh jobs."
+        description="Sync and Mesh are free. Choose Sync per workspace to share its definitions, templates, custom agents, and selected settings. Repo files and provider credentials stay on your machines. Mesh jobs run there too."
       >
         <div className="grid gap-2 sm:grid-cols-3" aria-live="polite">
           <OverviewItem
@@ -500,7 +502,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
             tone={syncSummaryTone}
             detail={
               runtime?.syncEnabled === true
-                ? `${runtime.pendingCount} pending · ${runtime.conflictCount} conflict${runtime.conflictCount === 1 ? '' : 's'}${runtime.rejectedCount > 0 ? ` · ${runtime.rejectedCount} rejected` : ''}`
+                ? `${runtime.pendingCount} waiting · ${runtime.conflictCount} conflict${runtime.conflictCount === 1 ? '' : 's'}${runtime.rejectedCount > 0 ? ` · ${runtime.rejectedCount} need attention` : ''}`
                 : 'Changes stay on this device until Sync is enabled.'
             }
           />
@@ -511,8 +513,12 @@ export function SyncMeshSettingsPanel(): ReactNode {
             tone={meshSummaryTone}
             detail={
               runtime?.meshWorker.enabled
-                ? `${runtime.meshWorker.activeAttempts} job${runtime.meshWorker.activeAttempts === 1 ? '' : 's'} running`
-                : 'A separate permission for this device.'
+                ? runtime.meshWorker.connected
+                  ? `${runtime.meshWorker.activeAttempts} job${runtime.meshWorker.activeAttempts === 1 ? '' : 's'} running · ready for more`
+                  : runtime.meshWorker.lastError
+                    ? 'This device cannot reach the service. Anvil will retry.'
+                    : 'Connecting this device to Mesh.'
+                : 'This device is not allowed to run Mesh jobs.'
             }
           />
           <OverviewItem
@@ -1399,10 +1405,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
         {runtime?.syncEnabled === true && (
           <p className="text-xs text-text-tertiary">
             {runtime.connectionState === 'live'
-              ? 'Live channel connected — changes arrive instantly.'
+              ? 'Connected. Changes arrive as they happen.'
               : runtime.connectionState === 'connecting'
-                ? 'Live channel connecting; fallback polling is running.'
-                : 'Live channel offline; fallback polling is running.'}
+                ? 'Connecting to keep changes up to date.'
+                : 'Live updates are unavailable. Anvil will keep checking for changes while it reconnects.'}
           </p>
         )}
         {runtime?.lastError && <p className="text-xs text-error">{runtime.lastError}</p>}
@@ -1476,8 +1482,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
               <p className="mt-2 text-xs text-text-tertiary">
                 {runtime.meshWorker.connected
                   ? `Ready to run jobs. ${runtime.meshWorker.activeAttempts} job${runtime.meshWorker.activeAttempts === 1 ? '' : 's'} running.`
-                  : 'Connecting to the service. Anvil will retry automatically.'}
-                {runtime.meshWorker.lastError ? ' The last connection attempt failed.' : ''}
+                  : runtime.meshWorker.lastError
+                    ? 'This device could not connect. Anvil will retry automatically.'
+                    : 'Connecting this device so it can run jobs.'}
               </p>
             )}
           </div>

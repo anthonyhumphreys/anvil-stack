@@ -8,7 +8,12 @@ import type {
 } from '../../../shared/types';
 import type { RemoteChatRecord, RemoteCredentialChoice } from '../../../shared/remote-chat';
 import type { CloudAgentProviderStatus } from '../../../shared/cloud-agent';
-import type { ApprovalRecord, SyncAttemptActivity, SyncDevice } from '../../../shared/sync-runtime';
+import type {
+  ApprovalRecord,
+  SyncAttemptActivity,
+  SyncDevice,
+  SyncRuntimeStatus,
+} from '../../../shared/sync-runtime';
 import { sharedPollingCache } from '../../utils/shared-polling-cache';
 
 export const HOSTED_CHAT_TARGET = 'anvil-hosted-cloud';
@@ -34,6 +39,7 @@ interface ChatTargetSyncScope {
   authState: string;
   needsIdentityReview: boolean;
   recovering: boolean;
+  meshHosts: SyncRuntimeStatus['meshHosts'];
 }
 
 interface MeshJobView {
@@ -88,6 +94,7 @@ export function useChatRunTarget(input: {
 }) {
   const [target, updateTarget] = useState('local');
   const [devices, setDevices] = useState<SyncDevice[]>([]);
+  const [meshHosts, setMeshHosts] = useState<SyncRuntimeStatus['meshHosts']>([]);
   const [providers, setProviders] = useState<CloudAgentProviderStatus[]>([]);
   const [records, setRecords] = useState<RemoteChatRecord[]>([]);
   const [meshJobView, setMeshJobView] = useState<{ jobId: string; value: MeshJobView } | null>(
@@ -143,6 +150,7 @@ export function useChatRunTarget(input: {
             authState: runtime.auth.state,
             needsIdentityReview: runtime.backendIdentityReviewRequired,
             recovering: runtime.recovering,
+            meshHosts: runtime.meshHosts,
           };
         },
         (snapshot) => {
@@ -152,6 +160,7 @@ export function useChatRunTarget(input: {
             if (activeCacheScopeKey.current !== null) {
               setRecords([]);
               setDevices([]);
+              setMeshHosts([]);
               setProviders([]);
               setHostedAgentsEnabled(false);
               setMeshJobView(null);
@@ -169,6 +178,7 @@ export function useChatRunTarget(input: {
           if (activeCacheScopeKey.current !== nextKey) {
             setRecords([]);
             setDevices([]);
+            setMeshHosts([]);
             setProviders([]);
             setHostedAgentsEnabled(false);
             setMeshJobView(null);
@@ -178,6 +188,7 @@ export function useChatRunTarget(input: {
             pending.current = null;
             setError(null);
           }
+          setMeshHosts(current.meshHosts);
           activeCacheScopeKey.current = nextKey;
           setCacheScopeKey(nextKey);
         },
@@ -508,6 +519,7 @@ export function useChatRunTarget(input: {
     target,
     setTarget,
     devices,
+    meshHosts,
     providerReady,
     hostedAgentsEnabled,
     sessionLimitSeconds,

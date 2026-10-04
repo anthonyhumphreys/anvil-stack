@@ -181,7 +181,7 @@ export function WorkspaceCategory() {
       <SettingsPanel
         panelId="workspace-sync"
         title="Workspace Sync"
-        description="Choose whether this workspace replicates to your other signed-in devices."
+        description="Local keeps this workspace here; Sync shares its definition and selected settings across devices, while repository files and provider credentials stay on this machine."
       >
         <SegmentedControl<'local' | 'sync'>
           label="Workspace Sync"

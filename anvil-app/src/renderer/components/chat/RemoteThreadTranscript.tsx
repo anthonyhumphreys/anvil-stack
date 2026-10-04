@@ -1,26 +1,27 @@
 import { useEffect, useRef } from 'react';
-import { Loader2 } from 'lucide-react';
+import { AlertTriangle, Loader2 } from 'lucide-react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
 import type { ComposedChatTurn } from './chat-turns';
 import { agentProviderLabel } from '../../utils/agent-display';
+import { remoteChatConnectionNotice } from '../../utils/remote-chat-connection-status';
 import type { useChatRunTarget } from './useChatRunTarget';
 
 const STATE_LABELS: Record<string, string> = {
-  provisioning: 'Starting cloud worker',
+  provisioning: 'Preparing machine',
   preparing: 'Preparing workspace',
   starting: 'Starting agent',
   running: 'Working',
-  'awaiting-approval': 'Needs your approval',
+  'awaiting-approval': 'Approval needed',
   'cancel-requested': 'Stopping',
   completed: 'Turn complete',
   failed: 'Could not complete this turn',
   cancelled: 'Stopped',
-  paused: 'Cloud worker paused. Send a message to resume.',
-  ended: 'Cloud session ended. Start a new chat to continue in the cloud.',
-  suspending: 'Saving workspace',
-  checkpointing: 'Saving workspace',
-  resuming: 'Resuming cloud worker',
+  paused: 'Session paused. Send a message to resume.',
+  ended: 'Session ended. Start a new chat to continue.',
+  suspending: 'Saving work',
+  checkpointing: 'Saving work',
+  resuming: 'Resuming session',
 };
 
 export function RemoteThreadTranscript({
@@ -43,6 +44,26 @@ export function RemoteThreadTranscript({
     if (followLatest.current) end.current?.scrollIntoView({ block: 'nearest' });
   }, [record?.updatedAt, run.activity.length]);
   if (!record) return null;
+  const targetDevice = run.devices.find(
+    (device) => device.enrollmentId === record.targetEnrollmentId,
+  );
+  const targetLabel = run.hosted
+    ? run.hostedAgentsEnabled
+      ? 'Anvil Cloud Agents'
+      : 'Anvil Cloud Agents unavailable'
+    : (targetDevice?.displayName ?? `Device ${record.targetEnrollmentId.slice(0, 8)}`);
+  const approvalRequired = record.state === 'awaiting-approval' || run.approvals.length > 0;
+  const hostState = run.meshHosts.find(
+    (host) => host.enrollmentId === record.targetEnrollmentId,
+  )?.state;
+  const activeHostState = run.busy || approvalRequired ? hostState : undefined;
+  const connectionNotice = remoteChatConnectionNotice({
+    approvalRequired,
+    approvalActionsAvailable: run.approvals.length > 0,
+    hostState: activeHostState,
+    targetName: targetLabel,
+    fallbackLabel: STATE_LABELS[record.state] ?? 'Remote work in progress',
+  });
   return (
     <div
       className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
@@ -92,6 +113,12 @@ export function RemoteThreadTranscript({
                   {agentProviderLabel(record.provider)}
                 </p>
                 <MarkdownRenderer content={turn.response} />
+                {turn.responseTruncated === true && (
+                  <p className="mt-2 flex items-start gap-1.5 text-xs text-warning" role="status">
+                    <AlertTriangle size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+                    <span>The response was cut short. Ask the agent to continue if needed.</span>
+                  </p>
+                )}
               </div>
             )}
             {turn.error && (
@@ -102,18 +129,23 @@ export function RemoteThreadTranscript({
           </section>
         ))}
         <div className="flex items-center gap-2 text-xs text-text-secondary" role="status">
-          {run.busy && (
+          {run.busy && activeHostState !== 'offline' && !approvalRequired && (
             <Loader2
               size={14}
               className="animate-spin motion-reduce:animate-none"
               aria-hidden="true"
             />
           )}
-          <span>
-            {STATE_LABELS[record.state] ?? record.state} ·{' '}
-            {run.hosted ? 'Anvil Cloud Agents' : 'Remote device'}
-          </span>
+          <span>{connectionNotice.label}</span>
         </div>
+        {connectionNotice.detail && (
+          <p
+            className={`text-xs ${connectionNotice.tone === 'warning' ? 'text-warning' : 'text-text-tertiary'}`}
+            role="status"
+          >
+            {connectionNotice.detail}
+          </p>
+        )}
         {run.hosted && !run.busy && record.state !== 'ended' && (
           <details className="text-xs text-text-secondary">
             <summary className="cursor-pointer">Cloud session</summary>

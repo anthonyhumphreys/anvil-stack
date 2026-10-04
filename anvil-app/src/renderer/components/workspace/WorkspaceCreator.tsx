@@ -335,8 +335,9 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
                 ]}
               />
               <p className="text-xs text-text-tertiary">
-                Local only keeps this workspace on this device. Sync shares its workspace definition
-                and portable settings with your other signed-in devices. You can change this later.
+                Local keeps this workspace here; Sync shares its definition and selected settings
+                across devices, while repository files and provider credentials stay on this
+                machine.
               </p>
             </div>
 

@@ -339,6 +339,17 @@ export interface MeshWorkerStatus {
   lastError: string | null;
 }
 
+/** Renderer-safe view of an enrolled execution host's current connection. */
+export interface MeshHostConnectionStatus {
+  enrollmentId: string;
+  state: 'offline' | 'connecting' | 'live' | 'degraded';
+  /** Current route is diagnostic detail; normal UI should describe state only. */
+  route: 'private' | 'https' | 'managed' | 'account' | null;
+  capabilities: string[];
+  /** Sanitized error code only. Never include endpoint or transport error text. */
+  lastError?: string;
+}
+
 export interface SyncRuntimeStatus {
   auth: SyncAuthPublicSnapshot;
   /** Active account dataset epoch; null when this device has no signed-in scope. */
@@ -362,6 +373,8 @@ export interface SyncRuntimeStatus {
   sessionExpired: boolean;
   /** Device-local mesh worker state (opt-in is never synced). */
   meshWorker: MeshWorkerStatus;
+  /** Current authenticated connection state for enrolled mesh hosts. */
+  meshHosts: MeshHostConnectionStatus[];
   /** Last-known hosted entitlement; null for self-host backends. */
   hosted: SyncHostedStatus | null;
   lastError: string | null;
