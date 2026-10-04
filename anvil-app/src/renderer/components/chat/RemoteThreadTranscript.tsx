@@ -130,7 +130,7 @@ export function RemoteThreadTranscript({
           </section>
         ))}
         <div className="flex items-center gap-2 text-xs text-text-secondary" role="status">
-          {run.busy && activeHostState !== 'offline' && !approvalRequired && (
+          {run.busy && activeHostConnection?.state !== 'offline' && !approvalRequired && (
             <Loader2
               size={14}
               className="animate-spin motion-reduce:animate-none"
