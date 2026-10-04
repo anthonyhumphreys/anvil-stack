@@ -14,6 +14,7 @@ export const SYNC_SNAPSHOT_CHUNK_MAX_COUNT = 1_024;
 export const SYNC_SNAPSHOT_MAX_BYTES =
   SYNC_SNAPSHOT_CHUNK_MAX_BYTES * SYNC_SNAPSHOT_CHUNK_MAX_COUNT;
 export const SYNC_SNAPSHOT_MAX_ENTITY_COUNT = 1_000_000;
+export const SYNC_SNAPSHOT_MAX_KEY_VERSION = 2 ** 31 - 1;
 export const SYNC_SNAPSHOT_UPLOAD_TTL_MS = 30 * 60 * 1000;
 export const SYNC_SNAPSHOT_MAX_OPEN_UPLOADS = 2;
 
@@ -46,7 +47,7 @@ export function parseSyncSnapshotBeginParams(value: unknown): SyncSnapshotBeginP
   if (typeof datasetEpoch !== 'string' || datasetEpoch.length < 1 || datasetEpoch.length > 128) {
     throw new RpcFailure('malformed-request', { reason: 'datasetEpoch' });
   }
-  if (!isPositiveInteger(keyVersion) || keyVersion > 2 ** 31 - 1) {
+  if (!isPositiveInteger(keyVersion) || keyVersion > SYNC_SNAPSHOT_MAX_KEY_VERSION) {
     throw new RpcFailure('malformed-request', { reason: 'keyVersion' });
   }
   if (schemaVersion !== SYNC_SNAPSHOT_SCHEMA_VERSION) {

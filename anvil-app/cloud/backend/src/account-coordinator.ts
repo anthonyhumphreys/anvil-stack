@@ -16,6 +16,7 @@ import {
   parseSyncSnapshotCommitParams,
   parseSyncSnapshotVerifyParams,
   syncSnapshotObjectKey,
+  SYNC_SNAPSHOT_MAX_KEY_VERSION,
   SYNC_SNAPSHOT_MAX_OPEN_UPLOADS,
   SYNC_SNAPSHOT_UPLOAD_TTL_MS,
 } from './compact-sync';
@@ -753,6 +754,8 @@ const SWEEP_BATCH_ROWS = 500;
 const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** Quick follow-up while a bounded pass still has expired rows left. */
 const SWEEP_CONTINUE_MS = 1_000;
+/** Retry transient R2 purge failures without hot-looping the scheduled alarm. */
+const SWEEP_R2_RETRY_MS = 60_000;
 /**
  * Every hosted-data table account deletion purges. `artifacts` and
  * `sync_meta` are handled specially (R2 keys / the tombstone itself);
@@ -764,7 +767,6 @@ const ACCOUNT_PURGE_TABLES = [
   'changes',
   'receipts',
   'scans',
-  'sync_snapshot_chunks',
   'sync_snapshot_publications',
   'sync_snapshots',
   'event_archives',
@@ -3405,15 +3407,8 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   private queueSyncSnapshotDeletion(snapshotId: string): void {
-    const chunks = this.ctx.storage.sql
-      .exec<SyncSnapshotChunkRow>(
-        'SELECT * FROM sync_snapshot_chunks WHERE publication_id = ?',
-        snapshotId,
-      )
-      .toArray();
-    for (const chunk of chunks) this.pendingR2Deletes.push(chunk.r2_key);
     this.ctx.storage.sql.exec(
-      'DELETE FROM sync_snapshot_chunks WHERE publication_id = ?',
+      `UPDATE sync_snapshot_chunks SET state = 'deleting' WHERE publication_id = ?`,
       snapshotId,
     );
     this.ctx.storage.sql.exec('DELETE FROM sync_snapshots WHERE snapshot_id = ?', snapshotId);
@@ -3422,6 +3417,59 @@ export class AccountCoordinator extends DurableObject<Env> {
        WHERE publication_id = ?`,
       snapshotId,
     );
+  }
+
+  /**
+   * Drains a bounded, durable queue of snapshot chunk R2 deletes. The SQL row
+   * stays in `deleting` until R2 confirms the idempotent delete, so a failed
+   * request (or an interrupted post-delete SQL commit) is retried by a later
+   * alarm instead of orphaning the object.
+   */
+  private async processQueuedSyncSnapshotChunkDeletes(limit: number): Promise<{
+    deleted: number;
+    failed: number;
+  }> {
+    const chunks = this.ctx.storage.sql
+      .exec<SyncSnapshotChunkRow>(
+        `SELECT * FROM sync_snapshot_chunks WHERE state = 'deleting'
+         ORDER BY uploaded_at, publication_id, chunk_index LIMIT ?`,
+        limit,
+      )
+      .toArray();
+    let deleted = 0;
+    let failed = 0;
+    for (let start = 0; start < chunks.length; start += 32) {
+      const page = chunks.slice(start, start + 32);
+      const results = await Promise.allSettled(
+        page.map((chunk) => this.env.ARTIFACTS.delete(chunk.r2_key)),
+      );
+      const completed: SyncSnapshotChunkRow[] = [];
+      for (let index = 0; index < results.length; index += 1) {
+        const result = results[index];
+        const chunk = page[index];
+        if (result?.status === 'fulfilled' && chunk !== undefined) {
+          completed.push(chunk);
+        } else {
+          failed += 1;
+        }
+      }
+      if (completed.length > 0) {
+        let deletedFromQueue = 0;
+        this.commit(() => {
+          for (const chunk of completed) {
+            deletedFromQueue += this.ctx.storage.sql.exec(
+              `DELETE FROM sync_snapshot_chunks
+               WHERE publication_id = ? AND chunk_index = ? AND r2_key = ? AND state = 'deleting'`,
+              chunk.publication_id,
+              chunk.chunk_index,
+              chunk.r2_key,
+            ).rowsWritten;
+          }
+        });
+        deleted += deletedFromQueue;
+      }
+    }
+    return { deleted, failed };
   }
 
   private handleScanBegin(requestId: string, params: unknown): Response {
@@ -4105,7 +4153,14 @@ export class AccountCoordinator extends DurableObject<Env> {
   private observeSyncKeyVersion(payload: unknown): void {
     if (!isRecord(payload)) return;
     const version = payload['keyVersion'];
-    if (!Number.isSafeInteger(version) || typeof version !== 'number' || version < 1) return;
+    if (
+      !Number.isSafeInteger(version) ||
+      typeof version !== 'number' ||
+      version < 1 ||
+      version > SYNC_SNAPSHOT_MAX_KEY_VERSION
+    ) {
+      return;
+    }
     const current = Number(this.readMeta('key_version'));
     if (version > current) this.writeMeta('key_version', String(version));
   }
@@ -11689,6 +11744,48 @@ export class AccountCoordinator extends DurableObject<Env> {
         'DELETE FROM data_operations WHERE created_at < ?',
         now - SNAPSHOT_LIFETIME_MS,
       );
+      // Expired, uncommitted publications no longer occupy upload capacity.
+      // Turn their chunk rows into durable R2 delete intent before removing
+      // anything; committed active/prior snapshots are excluded explicitly.
+      const expiredSnapshotUploads = this.ctx.storage.sql
+        .exec<{ publication_id: string }>(
+          `SELECT publication_id FROM sync_snapshot_publications p
+           WHERE state IN ('uploading', 'verified') AND committed_at IS NULL
+             AND upload_expires_at <= ?
+             AND NOT EXISTS (
+               SELECT 1 FROM sync_snapshots s
+               WHERE s.snapshot_id = p.publication_id AND s.state IN ('active', 'retained')
+             )
+           ORDER BY upload_expires_at, publication_id LIMIT ?`,
+          now,
+          SWEEP_BATCH_ROWS,
+        )
+        .toArray();
+      for (const row of expiredSnapshotUploads) {
+        this.ctx.storage.sql.exec(
+          `UPDATE sync_snapshot_publications SET state = 'expired'
+           WHERE publication_id = ? AND state IN ('uploading', 'verified')
+             AND committed_at IS NULL AND upload_expires_at <= ?`,
+          row.publication_id,
+          now,
+        );
+      }
+      this.ctx.storage.sql.exec(
+        `UPDATE sync_snapshot_chunks SET state = 'deleting'
+         WHERE rowid IN (
+           SELECT c.rowid FROM sync_snapshot_chunks c
+           JOIN sync_snapshot_publications p ON p.publication_id = c.publication_id
+           WHERE c.state != 'deleting' AND p.state = 'expired'
+             AND p.committed_at IS NULL AND p.upload_expires_at <= ?
+             AND NOT EXISTS (
+               SELECT 1 FROM sync_snapshots s
+               WHERE s.snapshot_id = p.publication_id AND s.state IN ('active', 'retained')
+             )
+           ORDER BY p.upload_expires_at, c.publication_id, c.chunk_index LIMIT ?
+         )`,
+        now,
+        SWEEP_BATCH_ROWS,
+      );
       // MESH-01: revoked worker records are audit state; drop the row and its
       // replica summaries once the 30-day audit window has passed. Stale (not
       // revoked) incarnations are NOT deleted — availability is derived from
@@ -11874,6 +11971,28 @@ export class AccountCoordinator extends DurableObject<Env> {
       });
       reconciledArtifacts += 1;
     }
+    const snapshotChunkDeletes = await this.processQueuedSyncSnapshotChunkDeletes(SWEEP_BATCH_ROWS);
+    this.commit(() => {
+      this.ctx.storage.sql.exec(
+        `DELETE FROM sync_snapshot_publications
+         WHERE rowid IN (
+           SELECT p.rowid FROM sync_snapshot_publications p
+           WHERE p.state = 'expired' AND p.committed_at IS NULL
+             AND p.upload_expires_at <= ?
+             AND NOT EXISTS (
+               SELECT 1 FROM sync_snapshots s
+               WHERE s.snapshot_id = p.publication_id AND s.state IN ('active', 'retained')
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM sync_snapshot_chunks c
+               WHERE c.publication_id = p.publication_id
+             )
+           ORDER BY p.upload_expires_at, p.publication_id LIMIT ?
+         )`,
+        now,
+        SWEEP_BATCH_ROWS,
+      );
+    });
     // ENV-09: managed provisions/reaps run post-commit alongside artifact
     // reconciliation — same pattern (collect in-commit, fetch post-commit,
     // commit outcomes). No-op without the provisioner binding.
@@ -11888,6 +12007,21 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (deletedEvents > 0) {
       this.commit(() => this.bumpCounter('sweep_events_deleted', deletedEvents));
     }
+    const snapshotCleanupPending =
+      this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `SELECT
+           (SELECT COUNT(*) FROM sync_snapshot_chunks WHERE state = 'deleting') +
+           (SELECT COUNT(*) FROM sync_snapshot_publications p
+            WHERE p.state IN ('uploading', 'verified', 'expired')
+              AND p.committed_at IS NULL AND p.upload_expires_at <= ?
+              AND NOT EXISTS (
+                SELECT 1 FROM sync_snapshots s
+                WHERE s.snapshot_id = p.publication_id AND s.state IN ('active', 'retained')
+              )) AS n`,
+          now,
+        )
+        .one().n > 0;
     const continued =
       deletedChanges === SWEEP_BATCH_ROWS ||
       deletedReceipts === SWEEP_BATCH_ROWS ||
@@ -11900,9 +12034,15 @@ export class AccountCoordinator extends DurableObject<Env> {
       expiredResultArchives >= 32 ||
       compactedResults >= 32 ||
       expiredJobInputs >= 32 ||
-      compactedJobInputs >= 32;
+      compactedJobInputs >= 32 ||
+      snapshotCleanupPending;
     await this.ctx.storage.setAlarm(
-      Date.now() + (continued ? SWEEP_CONTINUE_MS : SWEEP_INTERVAL_MS),
+      Date.now() +
+        (snapshotChunkDeletes.failed > 0
+          ? SWEEP_R2_RETRY_MS
+          : continued
+            ? SWEEP_CONTINUE_MS
+            : SWEEP_INTERVAL_MS),
     );
     const nextHostedChat = this.ctx.storage.sql
       .exec<{ n: number }>(
@@ -11943,6 +12083,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     purgedRows: number;
   }> {
     const now = Date.now();
+    let purged = 0;
     this.commit(() => {
       if (this.readMetaOrNull('deletion_state') === null) {
         this.writeMeta('deletion_state', 'deleting');
@@ -11950,11 +12091,20 @@ export class AccountCoordinator extends DurableObject<Env> {
         this.writeMeta('deletion_purged_rows', '0');
         this.writeMeta('epoch', `deleted-${crypto.randomUUID()}`);
       }
-      const purged = this.runPurgePass();
+      purged = this.runPurgePass();
       this.writeMeta(
         'deletion_purged_rows',
         String(Number(this.readMeta('deletion_purged_rows')) + purged),
       );
+    });
+    const snapshotChunkDeletes = await this.processQueuedSyncSnapshotChunkDeletes(SWEEP_BATCH_ROWS);
+    this.commit(() => {
+      if (snapshotChunkDeletes.deleted > 0) {
+        this.writeMeta(
+          'deletion_purged_rows',
+          String(Number(this.readMeta('deletion_purged_rows')) + snapshotChunkDeletes.deleted),
+        );
+      }
       if (this.purgeRemaining() === 0) {
         this.ctx.storage.sql.exec("DELETE FROM sync_meta WHERE key = 'event_archive_key'");
         this.writeMeta('deletion_state', 'deleted');
@@ -11966,7 +12116,9 @@ export class AccountCoordinator extends DurableObject<Env> {
       ws.close(1008, 'account deleted');
     }
     if (this.readMetaOrNull('deletion_state') === 'deleting') {
-      await this.ctx.storage.setAlarm(now + SWEEP_CONTINUE_MS);
+      await this.ctx.storage.setAlarm(
+        now + (snapshotChunkDeletes.failed > 0 ? SWEEP_R2_RETRY_MS : SWEEP_CONTINUE_MS),
+      );
     }
     return {
       state: this.readMetaOrNull('deletion_state') === 'deleted' ? 'deleted' : 'deleting',
@@ -11977,10 +12129,13 @@ export class AccountCoordinator extends DurableObject<Env> {
   /** One bounded pass over every hosted table. Returns rows purged. */
   private runPurgePass(): number {
     let purged = 0;
-    const syncSnapshotChunks = this.ctx.storage.sql
-      .exec<{ r2_key: string }>(`SELECT r2_key FROM sync_snapshot_chunks LIMIT ${SWEEP_BATCH_ROWS}`)
-      .toArray();
-    for (const row of syncSnapshotChunks) this.pendingR2Deletes.push(row.r2_key);
+    this.ctx.storage.sql.exec(
+      `UPDATE sync_snapshot_chunks SET state = 'deleting'
+       WHERE rowid IN (
+         SELECT rowid FROM sync_snapshot_chunks WHERE state != 'deleting'
+         ORDER BY uploaded_at, publication_id, chunk_index LIMIT ${SWEEP_BATCH_ROWS}
+       )`,
+    );
     const eventArchives = this.ctx.storage.sql
       .exec<{ r2_key: string }>(`SELECT r2_key FROM event_archives LIMIT ${SWEEP_BATCH_ROWS}`)
       .toArray();
@@ -12026,7 +12181,10 @@ export class AccountCoordinator extends DurableObject<Env> {
   private purgeRemaining(): number {
     const clause = ACCOUNT_PURGE_TABLES.map((t) => `(SELECT COUNT(*) FROM ${t})`).join(' + ');
     const row = this.ctx.storage.sql
-      .exec<{ n: number }>(`SELECT ${clause} + (SELECT COUNT(*) FROM artifacts) AS n`)
+      .exec<{ n: number }>(
+        `SELECT ${clause} + (SELECT COUNT(*) FROM sync_snapshot_chunks) +
+         (SELECT COUNT(*) FROM artifacts) AS n`,
+      )
       .one();
     return row.n;
   }
