@@ -321,8 +321,21 @@ export function BrowserWorkspaceClient({
   machines: WorkspaceMachineOption[];
   discoveryDetail?: string;
 }) {
-  const client = useBrowserWorkspace({ accountScope, resumeStoredSession: true });
-  const { auth, error: authError, execute, requestAccess, lock, disconnect } = client;
+  const client = useBrowserWorkspace({
+    accountScope,
+    resumeStoredSession: true,
+    meshHosts: machines.flatMap((machine) => machine.meshHost ? [machine.meshHost] : []),
+  });
+  const {
+    auth,
+    error: authError,
+    execute,
+    requestAccess,
+    lock,
+    disconnect,
+    directStatus,
+    subscribeMachineEvents,
+  } = client;
   const workspaceId = auth.workspace?.workspaceId;
   const enrollmentId = auth.workspace?.enrollmentId;
   const [repositories, setRepositories] = useState<RawRepository[]>([]);
@@ -565,6 +578,28 @@ export function BrowserWorkspaceClient({
   useEffect(() => {
     if (selectedThreadId && !history[selectedThreadId]) queueMicrotask(() => void loadThreadHistory(selectedThreadId));
   }, [history, loadThreadHistory, selectedThreadId]);
+
+  useEffect(() => {
+    if (!ready || !workspaceId || !selectedThreadId || directStatus.state !== "live") return;
+    let timer: number | null = null;
+    let cancelled = false;
+    const update = async () => {
+      if (cancelled) return;
+      await Promise.all([refresh(), loadThreadHistory(selectedThreadId)]);
+    };
+    const unsubscribe = subscribeMachineEvents([workspaceId], {
+      onEvent: () => {
+        if (timer !== null) window.clearTimeout(timer);
+        timer = window.setTimeout(() => void update(), 250);
+      },
+      onResnapshot: () => update(),
+    });
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+      unsubscribe();
+    };
+  }, [directStatus.state, loadThreadHistory, ready, refresh, selectedThreadId, subscribeMachineEvents, workspaceId]);
 
   useEffect(() => {
     lastHistoryPollAt.current = 0;
@@ -1031,7 +1066,13 @@ export function BrowserWorkspaceClient({
     const connectedMachine = machines.find((machine) => machine.enrollmentId === enrollmentId);
     const desktopName = connectedMachine?.displayName ?? (auth.workspace ? `Anvil machine · ${auth.workspace.enrollmentId.slice(0, 8)}` : undefined);
     return {
-      connection: { state: ready ? "connected" : auth.status === "pending" || (auth.status === "ready" && selectedEnrollmentId !== enrollmentId) ? "connecting" : auth.status === "ended" && auth.reason === "revoked" ? "permission-denied" : "unavailable", desktopName, targetEnrollmentId: enrollmentId, detail: commandError ?? (loading ? "Loading workspace…" : auth.status === "pending" ? "Waiting for approval in Anvil Desktop…" : ready && !dataIsCurrent ? "Loading workspace…" : authError ?? undefined), checkedAt: lastRefresh },
+      connection: {
+        state: ready ? "connected" : auth.status === "pending" || (auth.status === "ready" && selectedEnrollmentId !== enrollmentId) ? "connecting" : auth.status === "ended" && auth.reason === "revoked" ? "permission-denied" : "unavailable",
+        desktopName,
+        targetEnrollmentId: enrollmentId,
+        detail: commandError ?? (loading ? "Loading workspace…" : auth.status === "pending" ? "Waiting for approval in Anvil Desktop…" : ready && !dataIsCurrent ? "Loading workspace…" : authError ?? (ready ? directStatus.detail : undefined)),
+        checkedAt: lastRefresh,
+      },
       repositories: repoModels,
       sessions: threadModels,
       activeRepositoryId,
@@ -1049,7 +1090,7 @@ export function BrowserWorkspaceClient({
       canSubmitTasks: dataIsCurrent && auth.scopes.includes("submit-task"),
       canApproveActions: dataIsCurrent && auth.scopes.includes("approve-action"),
     };
-  }, [approvals, auth.reason, auth.scopes, auth.status, auth.workspace, authError, changes, commandError, enrollmentId, files, grantKey, history, lastRefresh, loadedGrantKey, loading, machines, preview, ready, repositories, selectedEnrollmentId, selectedRepositoryId, selectedThreadId, sessions, terminalSession, threads, workflows]);
+  }, [approvals, auth.reason, auth.scopes, auth.status, auth.workspace, authError, changes, commandError, directStatus.detail, enrollmentId, files, grantKey, history, lastRefresh, loadedGrantKey, loading, machines, preview, ready, repositories, selectedEnrollmentId, selectedRepositoryId, selectedThreadId, sessions, terminalSession, threads, workflows]);
 
   const actions: WorkspaceActions = useMemo(() => ({
     onSelectRepository: setSelectedRepositoryId,

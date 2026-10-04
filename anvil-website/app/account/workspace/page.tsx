@@ -21,7 +21,11 @@ export default async function AccountWorkspacePage() {
   if (ctx.status === "backend-unconfigured") return <BackendNotConfigured />;
   const result = await tryHosted(() => listWorkspaceMachines(ctx.identity));
   const machines = result.ok
-    ? result.data.map((machine) => ({ enrollmentId: machine.enrollmentId, displayName: machine.name }))
+    ? result.data.map((machine) => ({
+        enrollmentId: machine.enrollmentId,
+        displayName: machine.name,
+        ...(machine.meshHost ? { meshHost: machine.meshHost } : {}),
+      }))
     : [];
   const discoveryDetail = result.ok
     ? undefined

@@ -24,9 +24,17 @@ import {
   revokeBrowserWorkspaceGrantAction,
   revokeBrowserWorkspaceTrustAction,
   submitBrowserWorkspaceCommandAction,
+  issueBrowserWorkspaceMachineAdmissionAction,
   type BrowserWorkspaceAccessRequest,
   type BrowserWorkspaceActionResult
 } from "@/app/account/workspace/actions";
+import {
+  BrowserMachineWorkspaceTransport,
+  BrowserMachineTransportError,
+  browserMachineRouteCandidates,
+  type BrowserMachineStreamHandlers,
+} from "@/lib/browser-workspace-transport";
+import type { MeshMachineHost } from "../../anvil-app/cloud/contract/machine.js";
 import {
   BROWSER_WORKSPACE_OPERATION_SCOPE,
   BROWSER_WORKSPACE_OPERATIONS,
@@ -118,8 +126,15 @@ export interface BrowserWorkspaceExecution<T = unknown> extends BrowserWorkspace
 export interface BrowserWorkspaceHookOptions {
   /** WorkOS user id from loadAccountContext. It scopes IndexedDB records. */
   accountScope: string;
+  /** Trusted host routes from the signed WorkOS-scoped discovery response. */
+  meshHosts?: readonly MeshMachineHost[];
   /** Opt into polling for a stored pending request on initial render. */
   resumeStoredSession?: boolean;
+}
+
+export interface BrowserWorkspaceDirectStatus {
+  state: "connecting" | "live" | "fallback";
+  detail?: string;
 }
 
 export class BrowserWorkspaceCommandError extends Error {
@@ -174,6 +189,7 @@ interface TrackedCommand extends BrowserWorkspaceCommandMetadata {
   backendId: string;
   generation: number;
   trustId?: string;
+  transport?: "machine";
 }
 
 const TERMINAL_STATES = new Set<DashboardCommandState>([
@@ -183,6 +199,28 @@ const TERMINAL_STATES = new Set<DashboardCommandState>([
   "revoked",
   "unknown-outcome"
 ]);
+const DIRECT_READ_OPERATIONS = new Set<BrowserWorkspaceOperation>([
+  "workspace.get",
+  "repo.list",
+  "file.list",
+  "file.read",
+  "chat.thread.list",
+  "chat.execution.options",
+  "chat.history.read",
+  "chat.status",
+  "git.status",
+  "git.diff",
+  "workflow.list",
+  "workflow.get",
+  "terminal.read",
+  "preview.screenshot",
+]);
+
+interface DirectCommandDispatch {
+  commandId: string;
+  state: "completed" | "failed" | "uncertain" | "processing" | "not-ready";
+  result?: BrowserWorkspaceResultEnvelope;
+}
 
 function isOperation(value: string): value is BrowserWorkspaceOperation {
   return (BROWSER_WORKSPACE_OPERATIONS as readonly string[]).includes(value);
@@ -306,6 +344,61 @@ function resultError(data: unknown): { code: string; message: string } | undefin
     : undefined;
 }
 
+async function openCommandResult<T>(
+  trackedCommand: TrackedCommand,
+  result: BrowserWorkspaceResultEnvelope,
+  state: "completed" | "failed",
+): Promise<BrowserWorkspaceExecution<T>> {
+  let opened: unknown;
+  try {
+    opened = await openBrowserWorkspaceResult(
+      trackedCommand.dsk,
+      result,
+      {
+        backendId: trackedCommand.backendId,
+        accountId: trackedCommand.accountId,
+        requestId: trackedCommand.requestId,
+        commandId: trackedCommand.commandId,
+        operation: trackedCommand.operation,
+        workspaceId: trackedCommand.workspaceId,
+        ...(trackedCommand.repositoryId === undefined
+          ? {}
+          : { repositoryId: trackedCommand.repositoryId }),
+        expiresAt: trackedCommand.expiresAt,
+      },
+    );
+  } catch {
+    throw new BrowserWorkspaceCommandError(
+      trackedCommand.commandId,
+      "The workspace result could not be authenticated.",
+      true,
+    );
+  }
+  const error = resultError(opened);
+  return {
+    ...publicCommandMetadata(trackedCommand),
+    state,
+    ok: state === "completed" && error === undefined,
+    uncertain: false,
+    data: opened as T,
+    ...(error === undefined ? {} : { error }),
+  };
+}
+
+function directCommandDispatch(value: unknown, commandId: string): DirectCommandDispatch | null {
+  if (!isRecord(value) || value.commandId !== commandId) return null;
+  const state = value.state;
+  if (state !== "completed" && state !== "failed" && state !== "uncertain" && state !== "processing" && state !== "not-ready") {
+    return null;
+  }
+  if (value.result !== undefined && !isRecord(value.result)) return null;
+  return {
+    commandId,
+    state,
+    ...(value.result === undefined ? {} : { result: value.result as unknown as BrowserWorkspaceResultEnvelope }),
+  };
+}
+
 function wipeTrustMaterial(trust: BrowserWorkspaceTrustRecord | null): void {
   if (trust === null) return;
   trust.privateKey.fill(0);
@@ -318,7 +411,7 @@ function wipeTrustMaterial(trust: BrowserWorkspaceTrustRecord | null): void {
  * the caller and are not cached in module state.
  */
 export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
-  const { accountScope, resumeStoredSession = true } = options;
+  const { accountScope, meshHosts = [], resumeStoredSession = true } = options;
   const store = useMemo(() => new BrowserWorkspaceKeyStore(), []);
   const [phase, setPhase] = useState<Phase>({ kind: "locked" });
   const phaseRef = useRef<Phase>({ kind: "locked" });
@@ -331,6 +424,12 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
   const ownerScope = useRef(accountScope);
   const [error, setError] = useState<string | null>(null);
   const [derivedCode, setDerivedCode] = useState<{ requestId: string; code: string }>();
+  const directTransport = useRef<BrowserMachineWorkspaceTransport | null>(null);
+  const [directStatus, setDirectStatus] = useState<BrowserWorkspaceDirectStatus>({
+    state: "fallback",
+    detail: "Using the hosted workspace relay while checking for a direct host route.",
+  });
+  const [directRetry, setDirectRetry] = useState(0);
 
   const replacePhase = useCallback((next: Phase, invalidateCommands = true) => {
     if (invalidateCommands) sessionGeneration.current += 1;
@@ -905,6 +1004,122 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
     replacePhase({ kind: "locked" });
   }, [accountScope, replacePhase, setRenewal, store]);
 
+  const directTargetEnrollmentId = phase.kind === "ready" ? phase.workspace.enrollmentId : null;
+  const directHost = useMemo(
+    () => meshHosts.find((host) => host.enrollmentId === directTargetEnrollmentId),
+    [directTargetEnrollmentId, meshHosts],
+  );
+  const directRoutes = useMemo(() => browserMachineRouteCandidates(directHost), [directHost]);
+
+  const subscribeMachineEvents = useCallback(
+    (workspaceIds: readonly string[], handlers: BrowserMachineStreamHandlers) => {
+      const transport = directTransport.current;
+      if (!transport?.isOpen) return () => {};
+      transport.subscribe([...workspaceIds], handlers);
+      return () => transport.unsubscribe();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    const scheduleRetry = () => {
+      if (cancelled || retryTimer !== null) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        if (!cancelled) setDirectRetry((value) => value + 1);
+      }, 15_000);
+    };
+    const previous = directTransport.current;
+    directTransport.current = null;
+    previous?.close();
+
+    if (phase.kind !== "ready") {
+      setDirectStatus({ state: "fallback", detail: "Authorize a Desktop workspace to enable direct host updates." });
+      return () => { cancelled = true; };
+    }
+    if (directHost?.enrollmentId !== phase.workspace.enrollmentId || directRoutes.length === 0) {
+      setDirectStatus({ state: "fallback", detail: "Direct host access is unavailable from this browser; using the hosted relay." });
+      return () => { cancelled = true; };
+    }
+
+    const generation = sessionGeneration.current;
+    setDirectStatus({ state: "connecting", detail: "Checking the approved Desktop’s direct host route." });
+    void (async () => {
+      for (const route of directRoutes) {
+        if (cancelled || generation !== sessionGeneration.current) return;
+        const dsk = new Uint8Array(phase.dsk);
+        let transport: BrowserMachineWorkspaceTransport | null = null;
+        try {
+          transport = await BrowserMachineWorkspaceTransport.connect({
+            route,
+            accountId: phase.accountId,
+            grantId: phase.record.requestId,
+            targetEnrollmentId: phase.workspace.enrollmentId,
+            workspaceId: phase.workspace.workspaceId,
+            repositoryIds: phase.workspace.repoIds,
+            scopes: phase.scopes,
+            ...(phase.trustId === undefined ? {} : { trustId: phase.trustId }),
+            dsk,
+            origin: phase.origin,
+            issueAdmissionTicket: async ({ clientPublicKey, bootstrapChallenge }) => {
+              const result = await issueBrowserWorkspaceMachineAdmissionAction({
+                machineId: route.machineId,
+                endpointGeneration: route.endpointGeneration,
+                clientPublicKey,
+                bootstrapChallenge,
+                grantId: phase.record.requestId,
+              });
+              if (!result.ok) {
+                throw new BrowserMachineTransportError(
+                  result.code,
+                  "The workspace service could not authorize a direct host session.",
+                );
+              }
+              return result.data;
+            },
+          });
+          if (cancelled || generation !== sessionGeneration.current) {
+            transport.close();
+            return;
+          }
+          directTransport.current = transport;
+          transport.setDisconnectedHandler(() => {
+            if (cancelled || directTransport.current !== transport) return;
+            directTransport.current = null;
+            setDirectStatus({
+              state: "fallback",
+              detail: "The direct host connection closed; the hosted relay remains available and updates may be delayed.",
+            });
+            scheduleRetry();
+          });
+          setDirectStatus({ state: "live" });
+          return;
+        } catch {
+          transport?.close();
+        } finally {
+          dsk.fill(0);
+        }
+      }
+      if (!cancelled && generation === sessionGeneration.current) {
+        setDirectStatus({
+          state: "fallback",
+          detail: "This browser cannot reach the approved Desktop directly; using the hosted relay.",
+        });
+        scheduleRetry();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      const current = directTransport.current;
+      directTransport.current = null;
+      current?.close();
+    };
+  }, [directHost, directRetry, directRoutes, phase]);
+
   useEffect(() => {
     if (phase.kind !== "ready" || phase.trustId === undefined || phase.trustExpiresAt === undefined) return;
     let cancelled = false;
@@ -973,6 +1188,112 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
         tracked.current.get(commandId) === trackedCommand;
       const promise = (async (): Promise<BrowserWorkspaceExecution<T>> => {
         const deadline = Date.now() + timeoutMs;
+        if (trackedCommand.transport === "machine") {
+          const pending = await store.listPendingCommands(accountScope, trackedCommand.requestId);
+          const saved = pending.find((item) => item.command.commandId === trackedCommand.commandId);
+          if (saved === undefined) {
+            return {
+              ...publicCommandMetadata(trackedCommand),
+              state: "unknown-outcome",
+              ok: false,
+              uncertain: true,
+            };
+          }
+          let fallBackToHosted = false;
+          while (Date.now() < deadline) {
+            if (!sessionIsCurrent()) {
+              throw new BrowserWorkspaceCommandError(
+                commandId,
+                "The browser workspace session ended while this command was running.",
+                true,
+              );
+            }
+            const transport = directTransport.current;
+            if (!transport?.isOpen) {
+              await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+              continue;
+            }
+            try {
+              const response = await transport.request(
+                trackedCommand.operation,
+                saved.command,
+                Math.max(1_000, Math.min(8_000, deadline - Date.now())),
+              );
+              const dispatch = directCommandDispatch(response.result, trackedCommand.commandId);
+              if (dispatch === null) {
+                return {
+                  ...publicCommandMetadata(trackedCommand),
+                  state: "unknown-outcome",
+                  ok: false,
+                  uncertain: true,
+                  error: { code: "invalid-direct-result", message: "The Desktop returned an invalid command receipt." },
+                };
+              }
+              if (dispatch.state === "completed" || dispatch.state === "failed") {
+                if (dispatch.result === undefined) {
+                  return {
+                    ...publicCommandMetadata(trackedCommand),
+                    state: "unknown-outcome",
+                    ok: false,
+                    uncertain: true,
+                  };
+                }
+                const result = await openCommandResult<T>(trackedCommand, dispatch.result, dispatch.state);
+                await store.removePendingCommand(accountScope, trackedCommand.requestId, trackedCommand.commandId);
+                tracked.current.delete(commandId);
+                return result;
+              }
+              if (dispatch.state === "not-ready") {
+                // The host explicitly confirms it did not accept the command, so the
+                // existing hosted submit path is safe to use with this same envelope.
+                fallBackToHosted = true;
+                break;
+              }
+            } catch (error) {
+              if (error instanceof BrowserMachineTransportError && !error.sent) {
+                // No frame reached the host. Hosted submit is safe for this command ID.
+                fallBackToHosted = true;
+                break;
+              }
+              // A sent frame can have executed even if its receipt was lost. Resubmit
+              // the same sealed envelope over a direct session to hit the host receipt.
+            }
+            await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          }
+          if (!fallBackToHosted) {
+            return {
+              ...publicCommandMetadata(trackedCommand),
+              state: "unknown-outcome",
+              ok: false,
+              uncertain: true,
+            };
+          }
+          trackedCommand.transport = undefined;
+          await store.savePendingCommand({ ...saved, transport: undefined });
+          const hostedSubmit = await submitBrowserWorkspaceCommandAction(
+            trackedCommand.requestId,
+            saved.command,
+          );
+          if (!hostedSubmit.ok) {
+            return {
+              ...publicCommandMetadata(trackedCommand),
+              state: "unknown-outcome",
+              ok: false,
+              uncertain: hostedSubmit.code === "unavailable" || hostedSubmit.code === "timeout",
+              error: { code: hostedSubmit.code, message: hostedSubmit.message },
+            };
+          }
+          if (hostedSubmit.data.state === "expired" || hostedSubmit.data.state === "revoked") {
+            await store.removePendingCommand(accountScope, trackedCommand.requestId, trackedCommand.commandId);
+            tracked.current.delete(commandId);
+            return {
+              ...publicCommandMetadata(trackedCommand),
+              state: hostedSubmit.data.state,
+              ok: false,
+              uncertain: false,
+            };
+          }
+        }
         for (;;) {
           if (!sessionIsCurrent()) {
             throw new BrowserWorkspaceCommandError(
@@ -1111,9 +1432,10 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
           ...metadata,
           dsk: phase.dsk,
           accountId: phase.accountId,
-        backendId: phase.backendId,
+          backendId: phase.backendId,
           trustId: phase.trustId,
-          generation
+          generation,
+          ...(pending.transport === "machine" ? { transport: "machine" as const } : {}),
         });
         void pollCommand(pending.command.commandId).catch(() => undefined);
       }
@@ -1178,12 +1500,14 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
         );
       }
       const metadata = commandMetadataFromEnvelope(envelope);
+      const useDirectMachine = directTransport.current?.isOpen === true;
       try {
         await store.savePendingCommand({
           accountScope,
           requestId: current.record.requestId,
           command: envelope,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          ...(useDirectMachine ? { transport: "machine" as const } : {}),
         });
       } catch (error) {
         throw new BrowserWorkspaceCommandError(
@@ -1205,8 +1529,10 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
         accountId: current.accountId,
         backendId: current.backendId,
         generation: commandGeneration,
+        ...(useDirectMachine ? { transport: "machine" as const } : {}),
         ...(current.trustId === undefined ? {} : { trustId: current.trustId })
       });
+      if (useDirectMachine) return pollCommand<T>(commandId);
       const submitted = await submitBrowserWorkspaceCommandAction(current.record.requestId, envelope);
       if (!commandStillTracked()) {
         throw new BrowserWorkspaceCommandError(
@@ -1246,6 +1572,8 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
     lock,
     refresh: pollStatus,
     disconnect,
-    isReady: phase.kind === "ready" && phase.record.accountScope === accountScope && Date.parse(phase.expiresAt) > Date.now()
+    isReady: phase.kind === "ready" && phase.record.accountScope === accountScope && Date.parse(phase.expiresAt) > Date.now(),
+    directStatus,
+    subscribeMachineEvents,
   };
 }

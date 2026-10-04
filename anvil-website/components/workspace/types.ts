@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { MeshMachineHost } from "../../../anvil-app/cloud/contract/machine.ts";
 
 export type WorkspaceView = "conversation" | "files" | "changes" | "runs" | "terminal" | "preview" | "context";
 
@@ -9,6 +10,7 @@ export interface WorkspaceMachineOption {
   enrollmentId: string;
   displayName: string;
   self?: boolean;
+  meshHost?: MeshMachineHost;
 }
 
 export interface WorkspaceExecutionProvider {

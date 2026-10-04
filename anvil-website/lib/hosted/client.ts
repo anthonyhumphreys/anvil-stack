@@ -31,6 +31,15 @@ import type {
   HostedPortalResult,
   HostedReconcileResult
 } from "./types";
+import {
+  MESH_MACHINE_CAPABILITIES,
+  MESH_MACHINE_OPERATIONS,
+  type MeshMachineHost,
+  type MeshMachineHostsResponse,
+  type MeshMachineRoute,
+  type MeshMachineAdmissionIssueRequest,
+  type MeshMachineAdmissionIssueResponse
+} from "../../../anvil-app/cloud/contract/machine.js";
 
 const encoder = new TextEncoder();
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -86,6 +95,39 @@ export class HostedApiError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMeshMachineRoute(value: unknown, machineId: string, endpointGeneration: string): value is MeshMachineRoute {
+  if (!isRecord(value)) return false;
+  if (
+    (value.kind !== "private" && value.kind !== "https" && value.kind !== "managed") ||
+    typeof value.url !== "string" || value.machineId !== machineId ||
+    value.endpointGeneration !== endpointGeneration || typeof value.reachableUntil !== "string" ||
+    !Number.isFinite(Date.parse(value.reachableUntil))
+  ) return false;
+  try {
+    const url = new URL(value.url);
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password && !url.search && !url.hash;
+  } catch {
+    return false;
+  }
+}
+
+function isMeshMachineHost(value: unknown): value is MeshMachineHost {
+  if (!isRecord(value) || !Array.isArray(value.capabilities) || !Array.isArray(value.operations) || !Array.isArray(value.routes)) return false;
+  if (
+    typeof value.enrollmentId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(value.enrollmentId) ||
+    typeof value.machineId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(value.machineId) ||
+    typeof value.endpointGeneration !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(value.endpointGeneration) ||
+    value.protocolVersion !== 1 ||
+    typeof value.online !== "boolean" || typeof value.lastSeenAt !== "string" ||
+    typeof value.reachableUntil !== "string" || !Number.isFinite(Date.parse(value.reachableUntil)) ||
+    !["disabled", "unallocated", "allocating", "ready", "retiring", "failed"].includes(String(value.allocationState)) ||
+    !value.capabilities.every((item) => typeof item === "string" && (MESH_MACHINE_CAPABILITIES as readonly string[]).includes(item)) ||
+    !value.operations.every((item) => typeof item === "string" && (MESH_MACHINE_OPERATIONS as readonly string[]).includes(item)) ||
+    !value.routes.every((route) => isMeshMachineRoute(route, value.machineId as string, value.endpointGeneration as string))
+  ) return false;
+  return true;
 }
 
 /**
@@ -311,11 +353,35 @@ export function listDevices(identity: HostedIdentity): Promise<HostedDeviceListR
   return hostedCall<HostedDeviceListResult>("/internal/hosted/devices", identity);
 }
 
+/** Signed, WorkOS-scoped discovery for browser clients that hold no device bearer. */
+export async function listMeshHosts(identity: HostedIdentity): Promise<MeshMachineHost[]> {
+  const result = await hostedCall<MeshMachineHostsResponse>("/internal/hosted/mesh-hosts", identity);
+  if (!isRecord(result) || result.v !== 1 || !Array.isArray(result.hosts)) return [];
+  return result.hosts.filter(isMeshMachineHost);
+}
+
+/** Issues a one-use admission ticket through the signed WorkOS identity channel. */
+export function issueMeshMachineAdmissionTicket(
+  identity: HostedIdentity,
+  machineId: string,
+  request: Extract<MeshMachineAdmissionIssueRequest, { kind: "dashboard" }>,
+): Promise<MeshMachineAdmissionIssueResponse> {
+  return hostedCall<MeshMachineAdmissionIssueResponse>("/internal/hosted/mesh-machine-admission", {
+    ...identity,
+    machineId,
+    ...request,
+  });
+}
+
 /** Active person-owned machines that a browser may target for Desktop approval. */
 export async function listWorkspaceMachines(
   identity: HostedIdentity,
 ): Promise<HostedWorkspaceMachine[]> {
-  const { devices } = await listDevices(identity);
+  const [{ devices }, meshHosts] = await Promise.all([
+    listDevices(identity),
+    listMeshHosts(identity).catch(() => []),
+  ]);
+  const meshHostByEnrollment = new Map(meshHosts.map((host) => [host.enrollmentId, host]));
   return devices
     .filter(
       (device) =>
@@ -327,6 +393,9 @@ export async function listWorkspaceMachines(
       enrollmentId: device.enrollmentId,
       name: device.displayName?.trim() || `Anvil Desktop · ${device.enrollmentId.slice(-6)}`,
       status: "unknown",
+      ...(meshHostByEnrollment.has(device.enrollmentId)
+        ? { meshHost: meshHostByEnrollment.get(device.enrollmentId) }
+        : {}),
     }));
 }
 

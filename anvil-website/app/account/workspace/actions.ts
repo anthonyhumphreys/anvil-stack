@@ -7,6 +7,7 @@ import {
   getDashboardStatus,
   hostedConfigured,
   HostedApiError,
+  issueMeshMachineAdmissionTicket,
   revokeDashboardTrust,
   revokeDashboardGrant,
   submitDashboardCommand,
@@ -28,6 +29,7 @@ import type {
   HostedDashboardRequestResult,
   HostedDashboardStatus
 } from "@/lib/hosted/types";
+import type { MeshMachineAdmissionIssueResponse } from "../../../../anvil-app/cloud/contract/machine.js";
 import { workosConfigured } from "@/lib/workos-env";
 
 export type BrowserWorkspaceActionResult<T> =
@@ -280,6 +282,66 @@ export async function browserWorkspaceStatusAction(
   }
   try {
     return { ok: true, data: await getDashboardStatus(identity, requestId) };
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export interface BrowserWorkspaceMachineAdmissionInput {
+  machineId: string;
+  endpointGeneration: string;
+  clientPublicKey: string;
+  bootstrapChallenge: string;
+  grantId: string;
+}
+
+/** Issues a host-bound, one-use ticket using the verified WorkOS identity and browser Origin. */
+export async function issueBrowserWorkspaceMachineAdmissionAction(
+  input: BrowserWorkspaceMachineAdmissionInput,
+): Promise<BrowserWorkspaceActionResult<MeshMachineAdmissionIssueResponse>> {
+  const identity = await requireIdentity();
+  if (!identity) return NOT_CONFIGURED;
+  if (
+    !isRecord(input) ||
+    typeof input.machineId !== "string" || !SCOPE_ID_PATTERN.test(input.machineId) ||
+    typeof input.endpointGeneration !== "string" || !SCOPE_ID_PATTERN.test(input.endpointGeneration) ||
+    typeof input.clientPublicKey !== "string" || !KEY_PATTERN.test(input.clientPublicKey) ||
+    decodedBase64Bytes(input.clientPublicKey) !== 32 ||
+    typeof input.bootstrapChallenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(input.bootstrapChallenge) ||
+    typeof input.grantId !== "string" || !REQUEST_ID_PATTERN.test(input.grantId)
+  ) {
+    return { ok: false, code: "malformed-request", message: "Malformed direct host authorization request." };
+  }
+  const requestIdentity = await requestOrigin();
+  if (requestIdentity === null) {
+    return { ok: false, code: "origin-required", message: "Open the workspace from its secure website address and try again." };
+  }
+  try {
+    const response = await issueMeshMachineAdmissionTicket(identity, input.machineId, {
+      kind: "dashboard",
+      endpointGeneration: input.endpointGeneration,
+      clientPublicKey: input.clientPublicKey,
+      bootstrapChallenge: input.bootstrapChallenge,
+      grantId: input.grantId,
+      origin: requestIdentity.origin,
+      requestId: crypto.randomUUID(),
+    });
+    const claims = isRecord(response) && isRecord(response.claims) ? response.claims : null;
+    const principal = claims && isRecord(claims.principal) ? claims.principal : null;
+    const issuedAt = claims && typeof claims.issuedAt === "string" ? Date.parse(claims.issuedAt) : NaN;
+    const expiresAt = claims && typeof claims.expiresAt === "string" ? Date.parse(claims.expiresAt) : NaN;
+    if (
+      !isRecord(response) || response.v !== 1 || typeof response.ticket !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(response.ticket) ||
+      !claims || claims.v !== 1 || claims.hostMachineId !== input.machineId ||
+      claims.endpointGeneration !== input.endpointGeneration || claims.clientPublicKey !== input.clientPublicKey ||
+      claims.bootstrapChallenge !== input.bootstrapChallenge || principal?.kind !== "dashboard" ||
+      principal.grantId !== input.grantId || principal.origin !== requestIdentity.origin ||
+      !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) ||
+      issuedAt > Date.now() + 5_000 || expiresAt <= Date.now() || expiresAt - issuedAt > 60_000
+    ) {
+      return { ok: false, code: "invalid-ticket", message: "The direct host admission ticket was invalid." };
+    }
+    return { ok: true, data: response };
   } catch (error) {
     return fail(error);
   }

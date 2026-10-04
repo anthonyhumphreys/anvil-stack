@@ -72,6 +72,8 @@ export interface BrowserWorkspacePendingCommand {
   requestId: string;
   command: BrowserWorkspaceCommandEnvelope;
   createdAt: string;
+  /** Set only for commands whose host submission may need direct replay after reload. */
+  transport?: "machine";
 }
 
 type StoredCiphertext = {
@@ -118,6 +120,7 @@ type StoredCommandCiphertext = {
   repositoryId?: string;
   expiresAt: string;
   createdAt: string;
+  transport?: "machine";
   nonce: string;
   ct: string;
 };
@@ -213,8 +216,7 @@ function trustAssociatedData(record: Pick<BrowserWorkspaceTrustRecord, "accountS
 }
 
 function commandAssociatedData(command: BrowserWorkspacePendingCommand): Uint8Array {
-  return encoder.encode(
-    [
+  const values = [
       "anvil/browser-workspace-pending-command/v1",
       command.accountScope,
       command.requestId,
@@ -223,8 +225,9 @@ function commandAssociatedData(command: BrowserWorkspacePendingCommand): Uint8Ar
       command.command.workspaceId,
       command.command.repositoryId ?? "",
       command.command.expiresAt
-    ].join("|")
-  );
+    ];
+  if (command.transport === "machine") values.push("machine");
+  return encoder.encode(values.join("|"));
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -401,6 +404,7 @@ async function decryptPendingCommand(
     accountScope: stored.accountScope,
     requestId: stored.requestId,
     createdAt: stored.createdAt,
+    ...(stored.transport === "machine" ? { transport: "machine" as const } : {}),
     command: {
       v: 1,
       enc: "aes-256-gcm",
@@ -428,7 +432,8 @@ async function decryptPendingCommand(
     accountScope: stored.accountScope,
     requestId: stored.requestId,
     command,
-    createdAt: stored.createdAt
+    createdAt: stored.createdAt,
+    ...(stored.transport === "machine" ? { transport: "machine" as const } : {})
   };
   // The row's clear metadata is checked before returning the decrypted envelope.
   if (
@@ -552,6 +557,7 @@ async function persistPendingCommandIndexedDb(command: BrowserWorkspacePendingCo
         : { repositoryId: command.command.repositoryId }),
       expiresAt: command.command.expiresAt,
       createdAt: command.createdAt,
+      ...(command.transport === "machine" ? { transport: "machine" as const } : {}),
       ...encrypted
     };
     const tx = database.transaction(KEY_STORE, "readwrite");
