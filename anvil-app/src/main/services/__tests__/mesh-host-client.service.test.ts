@@ -216,6 +216,43 @@ describe('mesh host route and frame helpers', () => {
     ).rejects.toThrow('authorization-unavailable');
     expect(setup.socketURLs).toEqual([]);
   });
+
+  it('cancels an oversized streaming response as soon as the byte limit is crossed', async () => {
+    let cancelled = false;
+    let requestSignal: AbortSignal | undefined;
+    const fetchFn: typeof fetch = async (_input, init = {}) => {
+      requestSignal = init.signal as AbortSignal;
+      let chunks = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunks += 1;
+          controller.enqueue(new Uint8Array(chunks === 1 ? 400 * 1024 : 200 * 1024));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+    const target = host(Date.now());
+    const privateRoute = target.routes.find((route) => route.kind === 'private');
+    if (privateRoute === undefined) throw new Error('Expected a private route fixture.');
+
+    await expect(
+      connectMeshMachineHost(
+        { ...target, routes: [privateRoute] },
+        {
+          apiUrl: 'https://account.example.test/v1/',
+          accessToken: 'source-device-secret',
+          accountId: 'account-1',
+          enrollmentId: 'source-device',
+          fetchFn,
+        },
+      ),
+    ).rejects.toThrow('route-unavailable');
+    expect(cancelled).toBe(true);
+    expect(requestSignal?.aborted).toBe(true);
+  });
 });
 
 interface CapturedFetch {

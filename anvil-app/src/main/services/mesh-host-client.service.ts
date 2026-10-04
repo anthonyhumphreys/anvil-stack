@@ -1255,16 +1255,19 @@ async function fetchMachineJson(
   url: string,
   init: RequestInit,
 ): Promise<unknown> {
+  const controller = new AbortController();
   const response = await fetchImpl(url, {
     ...init,
     redirect: 'error',
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
     headers: { accept: 'application/json', ...init.headers },
   });
-  const body = await response.text();
-  if (Buffer.byteLength(body, 'utf8') > MESH_MACHINE_MAX_FRAME_BYTES) {
-    throw new Error('machine-response-too-large');
-  }
+  const bodyBytes = await readBoundedResponseBody(
+    response,
+    MESH_MACHINE_MAX_FRAME_BYTES,
+    controller,
+  );
+  const body = bodyBytes.toString('utf8');
   let parsed: unknown;
   try {
     parsed = JSON.parse(body) as unknown;
@@ -1283,4 +1286,37 @@ async function fetchMachineJson(
     throw new Error('route-unavailable');
   }
   return parsed;
+}
+
+async function readBoundedResponseBody(
+  response: Response,
+  maximumBytes: number,
+  controller: AbortController,
+): Promise<Buffer> {
+  const body = response.body;
+  if (body === null) {
+    throw new Error(response.ok ? 'machine-response-malformed' : 'route-unavailable');
+  }
+
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maximumBytes) {
+        const error = new Error('machine-response-too-large');
+        controller.abort(error);
+        await reader.cancel(error).catch(() => undefined);
+        throw error;
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, totalBytes);
 }
