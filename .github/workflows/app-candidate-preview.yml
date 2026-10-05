@@ -61,6 +61,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: anvil-preview-pr-${{ inputs.pull_request }}-${{ inputs.head_sha }}-darwin-arm64
-          path: anvil-app/dist/previews/
+          path: |
+            anvil-app/dist/previews/**/*.dmg
+            anvil-app/dist/previews/**/*.zip
+            anvil-app/dist/previews/**/preview-manifest.json
           if-no-files-found: warn
           retention-days: 14

@@ -38,6 +38,7 @@ const manifest = {
 };
 const env = {
   ...process.env,
+  ANVIL_DEPLOYMENT_ENV: 'staging',
   ANVIL_PREVIEW_BUILD: JSON.stringify(identity),
   ANVIL_UPDATE_ORIGIN: '',
   CSC_IDENTITY_AUTO_DISCOVERY: 'false',

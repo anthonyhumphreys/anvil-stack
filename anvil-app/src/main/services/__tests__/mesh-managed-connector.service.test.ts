@@ -80,17 +80,63 @@ describe('managed machine connector process', () => {
     expect(removeTempDir).toHaveBeenCalledWith('/tmp/anvil-managed-connector-test');
   });
 
-  it('reports an unsupported local fallback when cloudflared is unavailable', async () => {
-    const spawn = vi.fn<ConnectorSpawn>();
+  it('finds the conventional macOS Homebrew install when PATH is empty', async () => {
+    const child = new FakeChild();
+    let command = '';
+    const checkedPaths: string[] = [];
     const connector = new MeshManagedConnector({
       enabled: () => true,
       env: { PATH: '' },
-      pathExists: async () => false,
+      platform: 'darwin',
+      arch: 'arm64',
+      resourcesPath: '/mock/resources',
+      pathExists: async (path) => {
+        checkedPaths.push(path);
+        return path === '/opt/homebrew/bin/cloudflared';
+      },
+      spawn: (binary) => {
+        command = binary;
+        queueMicrotask(() => child.emit('spawn'));
+        return child as unknown as ReturnType<ConnectorSpawn>;
+      },
+      makeTempDir: async () => '/tmp/anvil-managed-connector-test',
+      writeSecretFile: async () => undefined,
+      removeTempDir: async () => undefined,
+      startupTimeoutMs: 100,
+      stopTimeoutMs: 100,
+    });
+
+    const status = await connector.start(assignment);
+
+    expect(status.state).toBe('running');
+    expect(command).toBe('/opt/homebrew/bin/cloudflared');
+    expect(checkedPaths).toEqual([
+      '/mock/resources/cloudflared/darwin-arm64/cloudflared',
+      '/opt/homebrew/bin/cloudflared',
+    ]);
+    await connector.stop();
+  });
+
+  it('reports an unsupported local fallback when cloudflared is unavailable', async () => {
+    const spawn = vi.fn<ConnectorSpawn>();
+    const pathExists = vi.fn(async (_path: string, _executable: boolean) => false);
+    const connector = new MeshManagedConnector({
+      enabled: () => true,
+      env: { PATH: '' },
+      platform: 'darwin',
+      arch: 'arm64',
+      resourcesPath: '/mock/resources',
+      pathExists,
       spawn,
     });
 
     const status = await connector.start(assignment);
     expect(status).toMatchObject({ state: 'unsupported', reason: 'binary-unavailable' });
     expect(spawn).not.toHaveBeenCalled();
+    expect(pathExists.mock.calls.map(([path]) => path)).toEqual([
+      '/mock/resources/cloudflared/darwin-arm64/cloudflared',
+      '/opt/homebrew/bin/cloudflared',
+      '/usr/local/bin/cloudflared',
+    ]);
   });
 });

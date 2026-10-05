@@ -4,9 +4,17 @@ import { access, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { isMeshEndpointFlagEnabled } from './mesh-endpoint-flag.service.js';
 
 export const MESH_MANAGED_ENDPOINTS_FLAG = 'ANVIL_MESH_MANAGED_ENDPOINTS';
 export const MESH_CLOUDFLARED_PATH = 'ANVIL_CLOUDFLARED_PATH';
+
+function isManagedEndpointsEnabled(env: NodeJS.ProcessEnv): boolean {
+  return isMeshEndpointFlagEnabled(
+    env[MESH_MANAGED_ENDPOINTS_FLAG],
+    process.env.ANVIL_MESH_MANAGED_ENDPOINTS,
+  );
+}
 
 export type ManagedConnectorState = 'stopped' | 'starting' | 'running' | 'unsupported' | 'error';
 
@@ -126,7 +134,7 @@ export class MeshManagedConnector {
   constructor(options: MeshManagedConnectorOptions = {}) {
     const env = options.env ?? process.env;
     this.options = {
-      enabled: options.enabled ?? (() => env[MESH_MANAGED_ENDPOINTS_FLAG] === 'true'),
+      enabled: options.enabled ?? (() => isManagedEndpointsEnabled(env)),
       env,
       resourcesPath: options.resourcesPath ?? process.resourcesPath,
       platform: options.platform ?? process.platform,
@@ -393,6 +401,9 @@ async function resolveCloudflaredPath(options: NormalizedOptions): Promise<strin
   if (options.resourcesPath) {
     candidates.push(join(options.resourcesPath, 'cloudflared', bundledPlatform, executableName));
   }
+  if (options.platform === 'darwin') {
+    candidates.push('/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared');
+  }
   for (const directory of (options.env.PATH ?? '').split(delimiter)) {
     if (directory.length > 0) candidates.push(join(directory, executableName));
   }
@@ -503,7 +514,7 @@ export async function startManagedEndpointForHost(input: {
   const lifecycle = managedEndpointLifecycle;
   if (
     lifecycle === null ||
-    !(lifecycle.enabled ?? (() => process.env[MESH_MANAGED_ENDPOINTS_FLAG] === 'true'))()
+    !(lifecycle.enabled ?? (() => isManagedEndpointsEnabled(process.env)))()
   ) {
     clearManagedPresenceHeartbeat();
     const current = managedConnector.status();
@@ -524,7 +535,7 @@ export async function startManagedEndpointForHost(input: {
   }
   const env = process.env;
   const path = await resolveCloudflaredPath({
-    enabled: lifecycle.enabled ?? (() => env[MESH_MANAGED_ENDPOINTS_FLAG] === 'true'),
+    enabled: lifecycle.enabled ?? (() => isManagedEndpointsEnabled(env)),
     env,
     resourcesPath: process.resourcesPath,
     platform: process.platform,
