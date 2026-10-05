@@ -392,7 +392,7 @@ describe('managed machine endpoint broker', () => {
     let providerStarted = makeDeferred<void>();
     let holdNextProviderCall = true;
     const tunnelId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    const dnsId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const dnsId = '023e105f4ecef8ad9ca31a8372d0c353';
     const providerFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = new URL(input.toString());
       const method = init?.method ?? 'GET';
