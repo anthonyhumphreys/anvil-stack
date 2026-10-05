@@ -195,7 +195,7 @@ export class CloudflareTunnelProvider {
     await this.expectOk(list, 'list DNS records');
     const listEnvelope = (await list.json()) as CloudflareEnvelope<DnsRecord[]>;
     const matching = (Array.isArray(listEnvelope.result) ? listEnvelope.result : []).filter(
-      (record) => record.type === 'CNAME' && record.name === hostname && isUuid(record.id),
+      (record) => record.type === 'CNAME' && record.name === hostname && isDnsRecordId(record.id),
     );
     if (matching.length > 1) {
       throw new CloudflareTunnelError('multiple DNS records match allocation hostname', false);
@@ -218,7 +218,7 @@ export class CloudflareTunnelProvider {
     );
     await this.expectOk(created, 'create DNS record');
     const createdEnvelope = (await created.json()) as CloudflareEnvelope<DnsRecord>;
-    if (!isUuid(createdEnvelope.result?.id)) {
+    if (!isDnsRecordId(createdEnvelope.result?.id)) {
       throw new CloudflareTunnelError('Cloudflare returned an invalid DNS identity', true);
     }
     return createdEnvelope.result.id;
@@ -233,7 +233,7 @@ export class CloudflareTunnelProvider {
     await this.expectOk(response, 'list DNS records');
     const envelope = (await response.json()) as CloudflareEnvelope<DnsRecord[]>;
     const matches = (Array.isArray(envelope.result) ? envelope.result : []).filter(
-      (record) => record.type === 'CNAME' && record.name === hostname && isUuid(record.id),
+      (record) => record.type === 'CNAME' && record.name === hostname && isDnsRecordId(record.id),
     );
     if (matches.length > 1) {
       throw new CloudflareTunnelError('multiple DNS records match allocation hostname', false);
@@ -255,7 +255,7 @@ export class CloudflareTunnelProvider {
   }
 
   private async deleteDnsRecord(recordId: string): Promise<void> {
-    if (!isUuid(recordId)) throw new Error('invalid DNS record identity');
+    if (!isDnsRecordId(recordId)) throw new Error('invalid DNS record identity');
     const response = await this.call(
       'DELETE',
       `/zones/${encodeURIComponent(this.config.zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
@@ -320,4 +320,8 @@ export function normalizeLoopbackService(value: string): string {
 
 function isUuid(value: unknown): value is string {
   return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isDnsRecordId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{32}$/i.test(value);
 }

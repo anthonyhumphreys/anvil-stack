@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { CloudflareTunnelError, CloudflareTunnelProvider } from '../src/hosted/cloudflare-tunnel';
 
 const tunnelId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const dnsRecordId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const dnsRecordId = '023e105f4ecef8ad9ca31a8372d0c353';
 const hostname = 'host-0123456789abcdef01234567.mesh.example.test';
 const tunnelName = 'anvil-host-0123456789abcdef01234567-g1';
 const operationId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -114,5 +114,104 @@ describe('Cloudflare managed tunnel adapter', () => {
     expect(error).toBeInstanceOf(CloudflareTunnelError);
     expect(error).toMatchObject({ retryable: false, status: 403 });
     expect((error as Error).message).not.toContain('provider leaked secret body');
+  });
+
+  it('reconciles an existing DNS record and removes it by its Cloudflare identity', async () => {
+    const calls: Array<{ method: string; path: string }> = [];
+    const request = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = new URL(input.toString());
+      const method = init?.method ?? 'GET';
+      calls.push({ method, path: url.pathname });
+
+      if (url.pathname.endsWith('/cfd_tunnel') && method === 'GET') {
+        return response([{ id: tunnelId, name: tunnelName, deleted_at: null }]);
+      }
+      if (url.pathname.endsWith(`/cfd_tunnel/${tunnelId}/configurations`) && method === 'PUT') {
+        return response({});
+      }
+      if (url.pathname.endsWith('/dns_records') && method === 'GET') {
+        return response([{
+          id: dnsRecordId,
+          type: 'CNAME',
+          name: hostname,
+          content: 'old-target.example.test',
+        }]);
+      }
+      if (url.pathname.endsWith(`/dns_records/${dnsRecordId}`) && method === 'PUT') {
+        return response({});
+      }
+      if (url.pathname.endsWith(`/cfd_tunnel/${tunnelId}/token`) && method === 'GET') {
+        return response(connectorToken);
+      }
+      if (url.pathname.endsWith(`/dns_records/${dnsRecordId}`) && method === 'DELETE') {
+        return response({});
+      }
+      if (url.pathname.endsWith(`/cfd_tunnel/${tunnelId}`) && method === 'DELETE') {
+        return response({});
+      }
+      throw new Error(`unexpected Cloudflare API request: ${method} ${url.pathname}`);
+    };
+
+    const tunnels = provider(request as typeof fetch);
+    const allocation = await tunnels.ensure({
+      stableName: tunnelName,
+      stableHostLabel: 'host-0123456789abcdef01234567',
+      operationId,
+    });
+    expect(allocation.dnsRecordId).toBe(dnsRecordId);
+    expect(calls).toContainEqual({
+      method: 'PUT',
+      path: `/client/v4/zones/cloudflare-zone/dns_records/${dnsRecordId}`,
+    });
+
+    await tunnels.removeByName({
+      stableName: tunnelName,
+      stableHostLabel: 'host-0123456789abcdef01234567',
+    });
+    expect(calls).toContainEqual({
+      method: 'DELETE',
+      path: `/client/v4/zones/cloudflare-zone/dns_records/${dnsRecordId}`,
+    });
+    expect(calls).toContainEqual({
+      method: 'DELETE',
+      path: `/client/v4/accounts/cloudflare-account/cfd_tunnel/${tunnelId}`,
+    });
+  });
+
+  it('rejects malformed DNS IDs returned by Cloudflare and never deletes with a malformed stored ID', async () => {
+    const calls: string[] = [];
+    const request = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = new URL(input.toString());
+      const method = init?.method ?? 'GET';
+      calls.push(`${method} ${url.pathname}`);
+
+      if (url.pathname.endsWith('/cfd_tunnel') && method === 'GET') {
+        return response([{ id: tunnelId, name: tunnelName, deleted_at: null }]);
+      }
+      if (url.pathname.endsWith(`/cfd_tunnel/${tunnelId}/configurations`) && method === 'PUT') {
+        return response({});
+      }
+      if (url.pathname.endsWith('/dns_records') && method === 'GET') return response([]);
+      if (url.pathname.endsWith('/dns_records') && method === 'POST') {
+        return response({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' });
+      }
+      throw new Error(`unexpected Cloudflare API request: ${method} ${url.pathname}`);
+    };
+
+    const tunnels = provider(request as typeof fetch);
+    await expect(tunnels.ensure({
+      stableName: tunnelName,
+      stableHostLabel: 'host-0123456789abcdef01234567',
+      operationId,
+    })).rejects.toMatchObject({
+      name: 'CloudflareTunnelError',
+      message: 'Cloudflare returned an invalid DNS identity',
+      retryable: true,
+    });
+
+    calls.length = 0;
+    await expect(tunnels.remove({ tunnelId, dnsRecordId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }))
+      .rejects.toThrow('invalid DNS record identity');
+    expect(calls).toEqual([]);
   });
 });
