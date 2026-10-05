@@ -13,8 +13,8 @@ authorize production resource changes.
       `mesh/2`, and the current staging identity mode. Do not use an older
       client path as a fallback.
 - [ ] The default staging workflow deploys the backend only. Cloud Agents,
-      its provisioner, container image deployment, and managed endpoint
-      tunnels are off unless their separate gates below apply.
+      its provisioner and container image deployment are off. Staging managed
+      tunnels use the separately saved rollout choice and required secrets.
 - [ ] Staging data belongs to a new disposable test account and isolated
       test devices. No existing account or customer data was used.
 
@@ -43,17 +43,18 @@ Record each item as `PASS`, `FAIL`, or `BLOCKED` in
 does not pass a live gate. Missing a physical host or separate WAN is
 `BLOCKED`.
 
-## Optional host tunnel pilot
+## Managed host tunnel rehearsal
 
-- [ ] Keep `ANVIL_MESH_MANAGED_ENDPOINTS` false by default in both backend and
-      host processes.
-- [ ] If running the explicit `managed_endpoint_pilot` workflow dispatch,
-      provide the protected account, zone, and tunnel API token secrets; use
+- [ ] Keep endpoint defaults off in ordinary and production builds. The
+      isolated staging preview embeds both flags; normal staging backend
+      pushes preserve its saved managed setting.
+- [ ] Provide the protected account, zone, and tunnel API token secrets; use
       an operator-controlled hostname domain and a trusted `cloudflared`
       installation on the host.
 - [ ] Test allocation, readiness, route loss, revocation, teardown, and
-      recovery on physical staging hosts. Keep the direct hosted path as the
-      supported fallback.
+      recovery on physical staging hosts. Verify DNS and tunnel deletion after
+      the connector stops. Use supported coordinator reads where available;
+      never automatically retry an uncertain mutation through another route.
 
 Managed host tunnels provide host reachability. They are separate from the
 Anvil Cloud Agents provisioner and do not enable Cloud Agents. See

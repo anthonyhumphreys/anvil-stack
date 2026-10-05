@@ -1,6 +1,7 @@
 # Host-local Sync and Mesh implementation review
 
-Prepared 4 October 2026. The host-local implementation was recorded at checkpoint `2ee256e`. Local project checks at `e50e2a9` cover the unchanged implementation source.
+Prepared 4 October 2026, rollout controls updated 5 October. The host-local implementation was
+recorded at checkpoint `2ee256e`. Local project checks at `e50e2a9` cover that implementation checkpoint.
 After the staging-workflow fixes, backend Vitest passed 42 files and 436 tests; workflow-agent
 checks passed 27 tests, typecheck, and self-check. These are local checks, not staging or live
 acceptance. The immutable security review remains sealed; its coverage metadata retains superseded
@@ -9,6 +10,12 @@ progress records, as explained below. Production acceptance remains open.
 The current product and rollout boundary is in the [decision record](decisions.md). The
 [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md) is the operator entry
 for the current candidate. Staging acceptance for that candidate is unrecorded.
+
+The 5 October staging activation changes correct Cloudflare DNS IDs, embed endpoint flags in the
+isolated preview, find installed macOS connectors, and preserve the saved backend rollout choice.
+Focused DNS tests and backend typecheck passed. Preview gate/resolver tests, app Node typecheck and
+changed-code lint passed. Deployment guards passed 30 tests; staging readiness passed six tests.
+These checks do not establish real tunnel allocation or physical-device acceptance.
 
 ## Source map
 
@@ -25,19 +32,22 @@ for the current candidate. Staging acceptance for that candidate is unrecorded.
 ## Rollout controls
 
 `ANVIL_MESH_MACHINE_ENDPOINTS` is disabled unless the main process receives the exact value `true`.
-It is an operator setting for a selected application or daemon process; the app does not enable it
-automatically or ask users to guess it. A signed-in host also needs an active Sync scope. This host
+Ordinary builds keep it as an operator setting for a selected application or daemon process. The
+isolated staging candidate embeds both endpoint flags, so testers need no flag setup. An explicit
+runtime `false` overrides the embedded value. A signed-in host also needs an active Sync scope. This host
 lifecycle is independent of the Mesh worker opt-in and the local companion preference.
 
-`ANVIL_MESH_MANAGED_ENDPOINTS` is a separate default-off setting on both the host and backend. When
+`ANVIL_MESH_MANAGED_ENDPOINTS` is a separate setting on the host and backend. Ordinary and
+production defaults remain off. Staging backend deployments preserve the saved rollout choice. When
 enabled for a selected target, the backend needs an operator-controlled `MACHINE_ENDPOINT_DOMAIN`
 and protected `CLOUDFLARE_TUNNEL_ACCOUNT_ID`, `CLOUDFLARE_TUNNEL_ZONE_ID` and
 `CLOUDFLARE_TUNNEL_API_TOKEN` secrets. The hosted deployment wrapper requires all three when the
 generated flag is `true` and rejects these values from public Worker variables. Account and zone IDs
 may be shared across stages; production needs a distinct API token.
 
-The host resolves `cloudflared` from `ANVIL_CLOUDFLARED_PATH`, the packaged resource, then `PATH`.
-It checks that the selected executable can run, launches it without a shell with auto-update
+The host resolves `cloudflared` from `ANVIL_CLOUDFLARED_PATH`, the packaged resource, conventional
+macOS Homebrew paths, then `PATH`. It checks that the selected executable can run and launches it
+without a shell with auto-update
 disabled, and does not download or install it. It does not check file ownership or parent-directory
 permissions. Operators must supply a trusted binary from a path writable only by the intended
 administrator; that ownership condition is not enforced by the runtime.

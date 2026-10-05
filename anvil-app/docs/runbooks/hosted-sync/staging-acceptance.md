@@ -98,6 +98,15 @@ existing device with one pending portable change and check that recovery does
 not discard it or apply it twice. Record any available snapshot restore and
 export/import results separately; an unrun recovery flow is `BLOCKED`.
 
+## Managed host connections
+
+The current staging preview enables host sessions and managed HTTPS tunnels.
+Record allocation, real ingress, anonymous session refusal, restart, reconnect,
+revocation and DNS/tunnel cleanup. A single-host transport smoke provides early
+evidence but does not pass app session authentication or physical separate-WAN
+acceptance. Setup is described in [deploy.md](deploy.md) and
+[host-connections.md](host-connections.md).
+
 ## Optional checks
 
 Record optional checks separately. They do not substitute for a required
@@ -107,11 +116,8 @@ physical gate.
   once, then approve read-only access. Reload the same tab, revoke the grant,
   and confirm the dashboard locks. A fresh read-only grant must reconnect
   without restoring the revoked grant.
-- **Host sessions:** test private-route discovery with the current candidate
-  when the host-session flag is enabled for the staging devices. Exercise
-  route loss, host restart, reconnect, and revocation. Managed HTTPS tunnels
-  are a separate, explicit pilot described in [deploy.md](deploy.md) and
-  [host-connections.md](host-connections.md).
+- **Private-route discovery:** check that reachable private routes are
+  preferred when available.
 - **Mobile companion and Raycast:** use builds from the same candidate SHA.
   Record platform and build identity. Mobile native WebSocket stacks may
   assemble a frame before JavaScript can reject it; controlled staging

@@ -1,7 +1,8 @@
 # Host connections for Sync and Mesh
 
 Status: implementation is integrated at source checkpoint `47dd506`; automated
-local project checks passed. Formal security review remains open. Physical WAN
+local project checks passed. Security review evidence and its remaining limits
+are recorded in the [implementation review](../../plans/sync-mesh/host-local-implementation-review.md). Physical WAN
 reachability, real managed-tunnel allocation and cleanup, and commercial terms
 have not been accepted. No provider bill has been verified. This guide describes
 the operator-controlled rollout, not production availability.
@@ -13,13 +14,13 @@ organization, shared fleet or paid Sync plan is not required. Sync and Mesh are
 free. Anvil Cloud Agents are a separate future paid feature and remain
 default-off.
 
-When a host has an active Sync scope and its Anvil process receives the exact
-environment value `ANVIL_MESH_MACHINE_ENDPOINTS=true`, the Sync runtime
-discovers trusted hosts on that account and maintains direct host sessions when
-a valid route is available. The flag is off unless an operator sets it on a
-selected process. The app does not enable it automatically or ask users to set
-it; users should not expect host sessions unless the release operator has
-enabled the path.
+When a host has an active Sync scope and host sessions are enabled, the Sync
+runtime discovers trusted hosts on that account and maintains sessions over a
+valid route. The isolated staging candidate embeds both endpoint flags, so
+testers need no flag setup. Ordinary builds default off; a selected daemon can
+opt in with `ANVIL_MESH_MACHINE_ENDPOINTS=true` and
+`ANVIL_MESH_MANAGED_ENDPOINTS=true`. An explicit runtime `false` overrides a
+preview's embedded setting. The backend separately controls managed allocation.
 
 For a user, the normal setup is to sign in to the same account on each device,
 enable Sync in **Settings → Sync & Mesh** on the devices that should share
@@ -129,7 +130,8 @@ the connector stops. It is not stored in daemon config, argv or status output.
 
 The host process also needs a trusted `cloudflared` executable. The current
 resolver checks `ANVIL_CLOUDFLARED_PATH`, then the packaged resource, then
-`PATH`, and requires execute permission. It starts the process without a shell,
+the conventional macOS Homebrew paths, then `PATH`, and requires execute
+permission. It starts the process without a shell,
 passes `--no-autoupdate`, and does not download or install the binary. The
 resolver does not check file ownership or parent-directory permissions.
 Operators must point it at a binary installed through their trusted software

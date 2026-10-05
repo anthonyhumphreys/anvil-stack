@@ -21,8 +21,16 @@ Neither establishes signed-in or physical-device acceptance.
 
 The core staging target uses existing Worker, D1 and R2 resources. Sync and Mesh
 are free, checkout is disabled, and Anvil Cloud Agents are disabled. It deploys
-no Cloud Agent provisioner or container image. Managed host endpoints also stay
-off during the first rehearsal.
+no Cloud Agent provisioner or container image. The current rehearsal includes
+managed host endpoints. Private routes are preferred where reachable; a managed
+HTTPS tunnel provides reachability across separate networks.
+
+Before enabling the Worker, save `ANVIL_MESH_MANAGED_ENDPOINTS=true` and
+`MACHINE_ENDPOINT_DOMAIN=anvilstack.dev` in the protected staging configuration,
+and install the three tunnel secrets described in [deploy.md](deploy.md).
+`pnpm staging:status` treats those secrets and the managed setting as required
+for this rehearsal. It checks secret names and domain syntax, not token
+permissions or live connectivity.
 
 ## 2. Deploy and obtain the desktop preview
 
@@ -51,11 +59,14 @@ gh workflow run app-candidate-preview.yml \
 
 The [candidate workflow](https://github.com/anthonyhumphreys/anvil-stack/actions/workflows/app-candidate-preview.yml)
 retains a DMG, ZIP and checksum manifest for 14 days. Use the artifact from the
-matching SHA. The preview has separate application data and no update publishing.
+matching SHA. The preview has separate application data, embeds both host
+connection flags, targets staging, and has no update publishing. No tester
+flag setup is required.
 It is unsigned; macOS installation acceptance remains part of the rehearsal.
 
 Use the [backend workflow](https://github.com/anthonyhumphreys/anvil-stack/actions/workflows/sync-backend-staging.yml)
-to inspect deployment progress. Its default run keeps managed endpoints off.
+to inspect deployment progress. Automatic pushes preserve the saved staging
+managed endpoint setting; they do not silently disable it.
 The website preview is linked from [PR91](https://github.com/anthonyhumphreys/anvil-stack/pull/91).
 Confirm its commit and staging account environment before signing in.
 The staging WorkOS callback returns to `staging.anvilstack.dev`. For this
@@ -83,10 +94,12 @@ Follow [staging acceptance](staging-acceptance.md) in order. The required result
       a Mesh worker only after its separate opt-in.
 - [ ] A harmless job completes on the second machine. Approval, denial,
       cancellation and the worker's maximum permission mode behave as shown.
-- [ ] On separate WANs with a working private route, test direct host sessions,
-      disconnect, sleep/resume and reconnect without duplicate commands or
-      silently lost output. Enable `ANVIL_MESH_MACHINE_ENDPOINTS=true` only on
-      the selected test processes as explained in [host connections](host-connections.md).
+- [ ] With a trusted `cloudflared` installation on each test host, confirm
+      managed allocation and first connection. Test host sessions across
+      separate WANs, disconnect, sleep/resume and reconnect without duplicate
+      commands or silently lost output. A separate private network is not
+      required for the managed route. Daemons still need the flags described
+      in [host connections](host-connections.md).
 - [ ] Revoking a device closes its access within the documented maximum
       60-second trust window; a fresh enrollment reconnects.
 - [ ] Restore and deletion work on the disposable account. Record any failed or
@@ -98,20 +111,26 @@ is the existing acceptance ticket. Store no recovery codes, tokens or secret
 values in the record. The [four-surface checks](four-device-test-plan.md) cover
 browser, mobile and Raycast tests when those clients are included in the pilot.
 
-## 4. Managed endpoint pilot, after the core rehearsal
+## 4. Managed endpoint evidence and cleanup
 
 This is host reachability, separate from Anvil Cloud Agents. It needs an
 operator-controlled domain, three protected staging tunnel secrets and a trusted
-`cloudflared` executable on each test host. The first deployment does not need
-them. No hostname or credentials have been invented for this pilot.
+`cloudflared` executable on each test host. The selected account owns
+`anvilstack.dev`. Allocated hosts use a single subdomain beneath it, so this
+setup does not need a deeper wildcard certificate.
 
 Prepare the [managed setup and acceptance](host-connections.md#managed-endpoint-setup),
-then manually dispatch the backend workflow from the candidate branch with
-`managed_endpoint_pilot=true`. Its preflight rejects missing configuration.
-Enable the matching host process flag only for participating hosts. Record real
-allocation, connection, failure, cleanup and provider cost evidence. A normal
-backend push disables managed endpoints again; finish pilot cleanup before that
-push.
+then deploy the candidate with the saved staging rollout flag. The optional
+`managed_endpoint_pilot=true` dispatch can enable a single run, but does not
+persist that choice. Preflight rejects missing configuration or credentials.
+Record real allocation, connection, failure, cleanup and provider cost evidence.
+After stopping each host, verify both its DNS record and tunnel are gone.
+Process exit alone does not establish provider cleanup. A single-host smoke
+test is useful early evidence; it does not pass the physical separate-WAN gate.
+
+To disable staging managed allocation, save the rollout flag as `false` and
+deploy. Release active hosts first and verify provider cleanup. Production and
+ordinary release builds remain off.
 
 ## 5. Merge and public rollout
 

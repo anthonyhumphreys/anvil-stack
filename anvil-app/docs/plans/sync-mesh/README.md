@@ -21,7 +21,7 @@ their separate retention rules. Personal hosted use needs no organisation; share
 fleets and workspaces are not included.
 
 Mesh runs live work on an execution host. An encrypted WebSocket connects clients to that host over
-an authorised private route or, during an explicitly approved pilot, a managed tunnel. The broker
+an authorised private route or, during the approved staging rehearsal, a managed tunnel. The broker
 handles identity, discovery, and connection bootstrap. The durable coordinator retains accepted-job
 ownership, approvals, cancellation, handoff, and supported recovery decisions; it does not replace
 host-only reads. Anvil application services do not relay encrypted machine-session frames. A

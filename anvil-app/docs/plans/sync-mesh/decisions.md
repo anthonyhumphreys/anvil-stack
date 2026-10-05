@@ -1,6 +1,6 @@
 # Sync and Mesh decisions
 
-Current product, architecture, and rollout decisions, 4 October 2026. This record governs the
+Current product, architecture, and rollout decisions, 5 October 2026. This record governs the
 feature. The [implementation plan](host-local-sync-mesh-implementation-plan.md) holds technical
 detail; the [implementation review](host-local-implementation-review.md) holds audit evidence and
 acceptance limits.
@@ -21,8 +21,11 @@ acceptance limits.
 - Users run Mesh work on their own machines or through providers they configure and pay. Anvil
   Cloud Agents, meaning Anvil-supplied execution containers, are a separate paid service and stay
   disabled by default. Container provisioning is not part of the free Sync/Mesh staging workflow.
-- Managed public reachability is an optional operator pilot behind separate default-off controls.
-  It is not general availability and does not make Sync or Mesh billable.
+- Managed public reachability is included in the controlled staging rehearsal, approved on
+  5 October 2026. The isolated desktop preview embeds both endpoint flags. Automatic backend
+  deployments preserve the saved staging rollout setting. Ordinary and production builds remain
+  off. This is not general availability and does not make Sync or Mesh billable. A separate
+  private network is not a prerequisite for physical testing through managed tunnels.
 
 ## Architecture boundary
 

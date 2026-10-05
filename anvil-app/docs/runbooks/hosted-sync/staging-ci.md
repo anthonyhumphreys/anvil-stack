@@ -15,8 +15,9 @@ guards, builds the Cloud CLI, generates staging config from
 Worker, and checks the public descriptor.
 
 The manual `workflow_dispatch` input `managed_endpoint_pilot` defaults to
-`false`. The normal push and dispatch paths force
-`ANVIL_MESH_MANAGED_ENDPOINTS=false` and
+`false`. Pushes and normal dispatches preserve the saved
+`ANVIL_MESH_MANAGED_ENDPOINTS` setting in the staging vars. The manual input
+can additionally enable it for one run. Both paths force
 `ANVIL_CLOUD_AGENTS_ENABLED=false`. The workflow deploys the backend only. It
 does not deploy the Anvil Cloud Agents provisioner, build or deploy a
 container image, create a managed environment, or enroll a device.
@@ -32,14 +33,15 @@ The `anvil-staging` GitHub environment needs these secrets:
   settings. It must set `HOSTED_CHECKOUT_ENABLED` to the string `false`.
   Never put secret values in this JSON.
 
-For an explicit managed host tunnel pilot only, set
-`managed_endpoint_pilot: true`, provide a valid `MACHINE_ENDPOINT_DOMAIN` in
+For the current managed host rehearsal, save
+`ANVIL_MESH_MANAGED_ENDPOINTS: "true"` and a valid `MACHINE_ENDPOINT_DOMAIN` in
 `ANVIL_STAGING_WORKER_VARS_JSON`, and add protected secrets
 `CLOUDFLARE_TUNNEL_ACCOUNT_ID`, `CLOUDFLARE_TUNNEL_ZONE_ID`, and
 `CLOUDFLARE_TUNNEL_API_TOKEN`, scoped to the required tunnel operations in
-that account and zone. The workflow enables the backend tunnel flag only for
-that dispatch. The participating host still needs its own explicit
-managed-endpoint setting and a trusted `cloudflared` binary. See
+that account and zone. Automatic deployments retain this setting. A
+participating daemon needs its own explicit endpoint settings; the isolated
+staging desktop preview embeds both flags. Each host needs a trusted
+`cloudflared` binary. See
 [deploy.md](deploy.md) and [host connections](host-connections.md).
 
 Keep the pilot off until its controlled domain, scoped Cloudflare token, and
@@ -53,7 +55,9 @@ Use `.github/workflows/app-candidate-preview.yml` to build an unsigned macOS
 arm64 candidate. Select the candidate branch, provide the pull request number
 and its full 40-character head SHA, and use the current SHA. The workflow
 checks that the selected ref and current pull request both match the supplied
-SHA before building.
+SHA before building. The preview pins the staging environment and enables host
+and managed connections in the packaged main process. Explicit runtime
+`false` can disable either flag. This does not change ordinary build defaults.
 
 The run retains the DMG, ZIP, and `preview-manifest.json` for 14 days. The
 manifest identifies the commit and hashes the installable files. This preview

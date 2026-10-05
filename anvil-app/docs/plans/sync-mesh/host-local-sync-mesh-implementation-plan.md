@@ -58,7 +58,9 @@ Keep these product rules:
 - Keep private routes, local pairing and self-hosted backends available. Preserve current free
   device/member allowances and resource limits until a separate capacity decision changes them.
 
-Managed public reachability is an optional operator pilot behind separate default-off controls.
+Managed public reachability is part of the controlled staging rehearsal approved on 5 October 2026.
+Ordinary and production defaults remain off. The staging preview embeds the endpoint flags and
+automatic staging backend pushes preserve the saved rollout setting.
 Anvil Cloud Agents remain disabled by default, and container provisioning is outside the free
 Sync/Mesh staging workflow. Keep retention explicit for new data; a test-state reset is not a
 retention policy.
@@ -67,9 +69,9 @@ retention policy.
 
 The current working tree contains the host-session protocol, companion advertisement and admission,
 host-served interactive operations, compact Sync snapshots, managed endpoint lifecycle, and desktop,
-browser, mobile and Raycast integration. `ANVIL_MESH_MACHINE_ENDPOINTS` still defaults off and must
-be set by an operator for a selected process. `ANVIL_MESH_MANAGED_ENDPOINTS` is a separate default-off
-gate for managed reachability. Local project checks recorded at `e50e2a9` cover the implementation
+browser, mobile and Raycast integration. Both endpoint flags default off in ordinary builds. The
+isolated staging preview embeds them; daemons need operator opt-in. The backend requires a separately
+saved managed setting and protected tunnel credentials. Local project checks recorded at `e50e2a9` cover the implementation
 source. After the staging-workflow fixes, backend Vitest passed 42 files and 436 tests; workflow-agent
 checks passed 27 tests, typecheck, and self-check. These local checks do not verify staging or live
 behaviour. The security review and remaining mobile limit are recorded below. Physical WAN acceptance
