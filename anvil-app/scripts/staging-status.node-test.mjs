@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   candidateRelation,
   inspectWorkerFlags,
+  inspectManagedDomain,
   summarizeChecks,
   summarizeWorkflowRun,
   validatePublicDescriptor,
@@ -27,18 +28,18 @@ test('PR checks fail closed for failures, pending checks, and empty results', ()
 });
 
 test('staging worker flags expose only whether each safe expected value matches', () => {
-  const expectedDisabledFlags = {
+  const expectedStagingFlags = {
     HOSTED_CHECKOUT_ENABLED: 'false',
     ANVIL_CLOUD_AGENTS_ENABLED: 'false',
-    ANVIL_MESH_MANAGED_ENDPOINTS: 'false',
+    ANVIL_MESH_MANAGED_ENDPOINTS: 'true',
   };
   assert.deepEqual(
-    inspectWorkerFlags(expectedDisabledFlags).map(({ state }) => state),
+    inspectWorkerFlags(expectedStagingFlags).map(({ state }) => state),
     ['match', 'match', 'match'],
   );
 
   const mismatch = inspectWorkerFlags({
-    ...expectedDisabledFlags,
+    ...expectedStagingFlags,
     ANVIL_CLOUD_AGENTS_ENABLED: 'true',
   }).find(({ name }) => name === 'ANVIL_CLOUD_AGENTS_ENABLED');
   assert.deepEqual(mismatch, {
@@ -46,6 +47,22 @@ test('staging worker flags expose only whether each safe expected value matches'
     expected: 'false',
     state: 'mismatch',
   });
+});
+
+test('managed staging reports missing, invalid and valid domains without exposing configuration', () => {
+  assert.deepEqual(inspectManagedDomain({}), { state: 'missing' });
+  assert.deepEqual(inspectManagedDomain({ MACHINE_ENDPOINT_DOMAIN: 'https://evil.test/path' }), {
+    state: 'failed',
+  });
+  assert.deepEqual(
+    inspectManagedDomain({ MACHINE_ENDPOINT_DOMAIN: 'anvilstack.dev', secret: 'never-display' }),
+    { state: 'passed' },
+  );
+  const disabled = inspectWorkerFlags({ ANVIL_MESH_MANAGED_ENDPOINTS: 'false' });
+  assert.equal(
+    disabled.find(({ name }) => name === 'ANVIL_MESH_MANAGED_ENDPOINTS').state,
+    'mismatch',
+  );
 });
 
 test('a workflow run only identifies the current candidate when its head matches', () => {

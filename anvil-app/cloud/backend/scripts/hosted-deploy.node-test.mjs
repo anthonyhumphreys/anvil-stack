@@ -982,14 +982,14 @@ test('staging CI deploys the v2 backend without managed provisioner resources', 
   }
 });
 
-test('staging workflow keeps the managed endpoint pilot opt-in and targets current profiles', () => {
+test('staging workflow uses the saved rollout choice and targets current profiles', () => {
   const workflow = readFileSync(
     new URL('../../../../.github/workflows/sync-backend-staging.yml', import.meta.url),
     'utf8',
   );
   assert.match(workflow, /managed_endpoint_pilot:[\s\S]*?type: boolean[\s\S]*?default: false/);
-  assert.match(workflow, /configured\.ANVIL_CLOUD_AGENTS_ENABLED = 'false'/);
-  assert.match(workflow, /configured\.ANVIL_MESH_MANAGED_ENDPOINTS = 'false'/);
+  assert.match(workflow, /import \{ stagingVars \} from '\.\/scripts\/staging-config\.mjs'/);
+  assert.match(workflow, /steps\.staging_config\.outputs\.managed_endpoints == 'true'/);
   assert.match(workflow, /\(\.profiles \| index\("sync\/2"\)\)/);
   assert.match(workflow, /\(\.profiles \| index\("mesh\/2"\)\)/);
   const descriptor = readFileSync(new URL('../src/descriptor.ts', import.meta.url), 'utf8');

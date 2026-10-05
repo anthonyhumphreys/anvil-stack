@@ -12,7 +12,7 @@
     "conformance:fixture": "node conformance/suite.mjs --fixture",
     "verify:hosted-config": "node scripts/verify-hosted-config.mjs",
     "hosted:deploy": "node scripts/hosted-deploy.mjs",
-    "test:hosted-deploy": "node --test scripts/hosted-deploy.node-test.mjs scripts/hosted-fair-use.node-test.mjs"
+    "test:hosted-deploy": "node --test scripts/hosted-deploy.node-test.mjs scripts/hosted-fair-use.node-test.mjs scripts/staging-config.node-test.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.7",

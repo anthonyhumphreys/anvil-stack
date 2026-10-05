@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { isManagedEndpointDomain } from '../cloud/backend/scripts/staging-config.mjs';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -15,8 +16,6 @@ const requiredSecrets = [
   'HOSTED_SERVICE_KEYS',
   'WORKOS_API_KEY',
   'WORKOS_WEBHOOK_SECRET',
-];
-const pilotSecrets = [
   'CLOUDFLARE_TUNNEL_ACCOUNT_ID',
   'CLOUDFLARE_TUNNEL_ZONE_ID',
   'CLOUDFLARE_TUNNEL_API_TOKEN',
@@ -24,7 +23,7 @@ const pilotSecrets = [
 const expectedFlags = {
   HOSTED_CHECKOUT_ENABLED: 'false',
   ANVIL_CLOUD_AGENTS_ENABLED: 'false',
-  ANVIL_MESH_MANAGED_ENDPOINTS: 'false',
+  ANVIL_MESH_MANAGED_ENDPOINTS: 'true',
 };
 const runFields = 'databaseId,headSha,headBranch,status,conclusion,createdAt';
 
@@ -113,6 +112,13 @@ export function inspectWorkerFlags(config) {
       state: value === undefined ? 'missing' : value === expected ? 'match' : 'mismatch',
     };
   });
+}
+
+export function inspectManagedDomain(config) {
+  const value = record(config) ? config.MACHINE_ENDPOINT_DOMAIN : undefined;
+  return {
+    state: value === undefined ? 'missing' : isManagedEndpointDomain(value) ? 'passed' : 'failed',
+  };
 }
 
 export function validatePublicDescriptor(descriptor, target) {
@@ -262,7 +268,6 @@ async function secretStatus() {
       state: 'blocked',
       requiredPresent: [],
       requiredMissing: [],
-      optionalMissing: [],
       reason: 'secret names unavailable',
     };
   }
@@ -273,7 +278,6 @@ async function secretStatus() {
     state: requiredMissing.length ? 'failed' : 'passed',
     requiredPresent,
     requiredMissing,
-    optionalMissing: pilotSecrets.filter((name) => !names.has(name)),
     reason: null,
   };
 }
@@ -289,12 +293,19 @@ async function workerFlagStatus() {
     return {
       state: 'blocked',
       flags: inspectWorkerFlags(null).map((flag) => ({ ...flag, state: 'unavailable' })),
+      domain: { state: 'unavailable' },
       reason: 'variable names unavailable',
     };
   }
   const key = 'ANVIL_STAGING_WORKER_VARS_JSON';
   const scope = envNames.has(key) ? ['--env', 'anvil-staging'] : repoNames.has(key) ? [] : null;
-  if (!scope) return { state: 'failed', flags: inspectWorkerFlags({}), reason: null };
+  if (!scope)
+    return {
+      state: 'failed',
+      flags: inspectWorkerFlags({}),
+      domain: inspectManagedDomain({}),
+      reason: null,
+    };
   const envelope = await ghJson(['variable', 'get', key, ...scope, '--json', 'value']);
   const config =
     record(envelope) && typeof envelope.value === 'string' ? parseJson(envelope.value) : null;
@@ -302,13 +313,19 @@ async function workerFlagStatus() {
     return {
       state: 'blocked',
       flags: inspectWorkerFlags(null).map((flag) => ({ ...flag, state: 'unavailable' })),
+      domain: { state: 'unavailable' },
       reason: 'worker variable unavailable or invalid',
     };
   }
   const flags = inspectWorkerFlags(config);
+  const domain = inspectManagedDomain(config);
   return {
-    state: flags.every((flag) => flag.state === 'match') ? 'passed' : 'failed',
+    state:
+      flags.every((flag) => flag.state === 'match') && domain.state === 'passed'
+        ? 'passed'
+        : 'failed',
     flags,
+    domain,
     reason: null,
   };
 }
@@ -453,7 +470,7 @@ function render(report) {
       : `Public backend descriptor: ${report.backend.descriptor.state.toUpperCase()} (${report.backend.descriptor.reason ?? report.backend.descriptor.missing.join(', ')})`,
     `Required GitHub secrets: ${report.secrets.state}${report.secrets.requiredPresent.length ? `, present ${report.secrets.requiredPresent.join(', ')}` : ''}${report.secrets.requiredMissing.length ? `, missing ${report.secrets.requiredMissing.join(', ')}` : ''}${report.secrets.reason ? ` (${report.secrets.reason})` : ''}`,
     `Desired staging worker flags: ${report.workerFlags.flags.map(({ name, expected, state }) => `${name}=${expected} (${state})`).join(', ')}${report.workerFlags.reason ? ` (${report.workerFlags.reason})` : ''}`,
-    `Optional tunnel pilot secrets: ${report.secrets.state === 'blocked' ? 'BLOCKED (secret names unavailable)' : report.secrets.optionalMissing.length ? `missing ${report.secrets.optionalMissing.join(', ')} (does not block core staging)` : 'all present'}`,
+    `Managed endpoint domain: ${report.workerFlags.domain.state}. Secret presence and domain syntax do not prove provider permissions or tunnel connectivity.`,
     'Manual acceptance: NOT VERIFIED. CI and a matching descriptor do not pass signed-in or physical-device tests.',
     'Next:',
     ...report.nextCommands.map((command) => `  - ${command}`),
