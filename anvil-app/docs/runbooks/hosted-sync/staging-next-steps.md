@@ -128,6 +128,31 @@ After stopping each host, verify both its DNS record and tunnel are gone.
 Process exit alone does not establish provider cleanup. A single-host smoke
 test is useful early evidence; it does not pass the physical separate-WAN gate.
 
+For an operator's transport check, `scripts/managed-endpoint-smoke.mjs` creates
+one disposable synthetic account and host, starts the trusted Homebrew
+`cloudflared`, and verifies a marker through the public HTTPS tunnel. It then
+stops the connector, releases the endpoint, checks Cloudflare for the DNS record
+and tunnel's absence, clears the host advertisement and revokes the enrollment.
+The empty synthetic account namespace remains. It does not test the app's
+session authentication, sign-in UX or two physical networks.
+
+Run it only after the managed staging deployment succeeds. Supply an
+owner-only JSON file with mode `0600` containing `enrollmentAdminToken`,
+`cloudflareApiToken`, `cloudflareAccountId`, `cloudflareZoneId` and `domain`.
+These values must target the staging account, zone and `anvilstack.dev` domain.
+The script rejects other targets and never prints credentials or host URLs:
+
+```sh
+cd /Users/anthonyhumphreys/Code/anvil/anvil-app
+node scripts/managed-endpoint-smoke.mjs --credentials-file /protected/path/staging-smoke.json
+```
+
+Use a temporary `ENROLLMENT_ADMIN_TOKEN` on the staging Worker for this check.
+Preserve any existing admin secret, remove the temporary secret afterwards and
+verify its removal. Delete the local credential file after the check. Save the
+sanitized JSON result with the candidate's staging acceptance record. A failed
+cleanup result needs investigation before another allocation.
+
 To disable staging managed allocation, save the rollout flag as `false` and
 deploy. Release active hosts first and verify provider cleanup. Production and
 ordinary release builds remain off.

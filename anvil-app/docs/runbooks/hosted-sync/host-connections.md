@@ -144,8 +144,9 @@ values in that target's configured backend secret source, then use the
 selected-target deployment wrapper to install them. With the feature flag
 enabled, its secret validation requires all three values. The Cloudflare
 account and zone IDs may be shared by staging and production; keep the API
-token distinct between those environments. Keep every value out of generated
-vars, command history and this repository. See [hosted backend secret inputs](secret-inputs.md)
+token distinct between those environments. Keep the API token out of generated
+vars, command history and this repository. Account and zone IDs are identifiers;
+the wrapper still accepts them through its protected secret source. See [hosted backend secret inputs](secret-inputs.md)
 for the accepted secret sources.
 
 Before a managed rollout, confirm the provider's current account limits,
