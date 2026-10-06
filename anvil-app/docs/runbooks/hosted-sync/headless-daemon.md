@@ -136,25 +136,17 @@ Starts the live sync socket, companion server (`:47631` by default — same sett
 
 ## Direct host sessions
 
-The direct Mesh host endpoint is off unless the daemon process has
-`ANVIL_MESH_MACHINE_ENDPOINTS=true`. It also needs an active signed-in Sync
-scope. For a staging host, pass the flag to the long-running process:
+The direct Mesh host endpoint is available by default once the daemon has an
+active signed-in Sync scope. Run the daemon normally; no endpoint flag is
+required in the process or its launchd/systemd service environment. This is
+independent of `anvil-daemon worker on|off` and the companion preference. It
+does not opt the daemon into Mesh job execution.
 
-```sh
-ANVIL_MESH_MACHINE_ENDPOINTS=true \
-  node dist-daemon/anvil-daemon.mjs run
-```
-
-For launchd or systemd, set the same variable in the service environment and
-restart the daemon. The flag is independent of `anvil-daemon worker on|off`
-and the legacy companion preference. It does not opt the daemon into Mesh job
-execution. Keep it unset in default and production environments until the
-host-session rollout gate has passed.
-
-`ANVIL_MESH_MANAGED_ENDPOINTS=true` is a separate opt-in. It only starts a
-managed connector when the backend has managed endpoint provisioning enabled
-and its provider configuration is complete. Do not set it on a daemon by
-itself. The host needs a trusted, executable `cloudflared` supplied by the
+Managed connectors are also available by default. They start only when the
+backend has managed provisioning enabled and its provider configuration is
+complete. Explicit runtime `ANVIL_MESH_MACHINE_ENDPOINTS=false` or
+`ANVIL_MESH_MANAGED_ENDPOINTS=false` can disable the respective client path.
+The host needs a trusted, executable `cloudflared` supplied by the
 operator or packaged with the application; the daemon does not install or
 update it. The runtime checks execute permission but does not check the
 binary's owner or parent-directory permissions. Use a path writable only by

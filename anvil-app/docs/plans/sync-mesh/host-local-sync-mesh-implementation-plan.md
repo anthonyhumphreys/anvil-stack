@@ -60,8 +60,9 @@ Keep these product rules:
   device/member allowances and resource limits until a separate capacity decision changes them.
 
 Managed public reachability is part of the controlled staging rehearsal approved on 5 October 2026.
-Ordinary and production defaults remain off. The staging preview embeds the endpoint flags and
-automatic staging backend pushes preserve the saved rollout setting.
+Host sessions and managed connectors are available by default in app and daemon builds.
+User Sync and worker opt-ins remain required. Production backend provisioning remains off, and
+automatic staging backend pushes preserve the saved provisioning setting.
 Anvil Cloud Agents remain disabled by default, and container provisioning is outside the free
 Sync/Mesh staging workflow. Keep retention explicit for new data; a test-state reset is not a
 retention policy.
@@ -70,9 +71,9 @@ retention policy.
 
 The current working tree contains the host-session protocol, companion advertisement and admission,
 host-served interactive operations, compact Sync snapshots, managed endpoint lifecycle, and desktop,
-browser, mobile and Raycast integration. Both endpoint flags default off in ordinary builds. The
-isolated staging preview embeds them; daemons need operator opt-in. The backend requires a separately
-saved managed setting and protected tunnel credentials. Local project checks recorded at `e50e2a9` cover the implementation
+browser, mobile and Raycast integration. Host sessions and managed connectors are available by
+default in ordinary and preview builds. Explicit runtime `false` remains an operator disable switch.
+The backend requires a separately saved managed setting and protected tunnel credentials. Local project checks recorded at `e50e2a9` cover the implementation
 source. After the staging-workflow fixes, backend Vitest passed 42 files and 436 tests; workflow-agent
 checks passed 27 tests, typecheck, and self-check. These local checks do not verify staging or live
 behaviour. The security review and remaining mobile limit are recorded below.
@@ -85,7 +86,7 @@ Physical WAN acceptance, provider capacity and pricing remain open. See the
 | --- | --- | --- |
 | Hosted account state | `cloud/backend/src/account-coordinator.ts`, `cloud/backend/src/hosted/` | Exercise durable acceptance, recovery and ownership through disconnect and eviction scenarios |
 | Authentication and session state | `cloud/backend/src/hosted/machine-endpoints.ts`, `cloud/contract/machine.ts` | Verify current trust, ticket replay rejection, expiry and revocation on physical hosts |
-| Host entry point | `src/main/services/mobile-companion.service.ts`, `mesh-host-session.service.ts`, `mesh-machine-endpoint.service.ts` | Verify operator-gated startup follows the active Sync scope independently of worker opt-in and the companion preference |
+| Host entry point | `src/main/services/mobile-companion.service.ts`, `mesh-host-session.service.ts`, `mesh-machine-endpoint.service.ts` | Verify startup follows the active Sync scope independently of worker opt-in and the companion preference |
 | Execution and fencing | `mesh-worker.service.ts`, `mesh-dispatch.service.ts`, `mesh-ownership.service.ts`, `mesh-handoff.service.ts` | Verify single ownership, acknowledgements, cancellation and recovery across disconnects |
 | Remote reads and writes | `mesh-host-client.service.ts`, `remote-chat.service.ts`, `mesh-observe.service.ts`, `mesh-command.service.ts` | Exercise host streams, cursor recovery, explicit acknowledgements and current coordinator-backed recovery where supported |
 | Portable data | `sync-engine.service.ts`, `sync-persistence.service.ts`, `sync-runtime.service.ts`, backend snapshot handlers | Verify encrypted snapshots, bounded journal recovery, tombstones, conflicts and safe compaction |
@@ -317,18 +318,18 @@ price for this deployment. Do not base scaling on creating extra accounts to eva
 ## Delivery sequence
 
 The sequence below records implementation slices and their remaining gates; it is not a current
-deployment or user-acceptance record. The managed endpoint pilot is enabled for staging. Ordinary
-and production build defaults remain off.
+deployment or user-acceptance record. The managed endpoint pilot is enabled for staging. Client
+host sessions are available by default; production backend provisioning remains off.
 
 | Increment | Current status | Remaining acceptance |
 | --- | --- | --- |
 | 0. Baseline and capability contract | Current profiles, host protocol, stream epochs and typed capabilities are in the working tree. Cost inputs remain projections. | Measure representative hosted requests, duration, rows, storage and network recovery; reconcile with a real provider bill. |
-| 1. Private host sessions | Scoped bootstrap, proof verification, trust checks, revocation and session expiry are integrated behind a host flag. Ordinary builds default off; the isolated staging preview embeds the flag. | Verify physical two-host behavior, including replay, cross-account and revoked-device rejection. |
+| 1. Private host sessions | Scoped bootstrap, proof verification, trust checks, revocation and session expiry are integrated and available by default once the signed-in Sync scope is active. | Verify physical two-host behavior, including replay, cross-account and revoked-device rejection. |
 | 2. Direct interactive traffic | Host reads, commands, cursor replay and client connections are integrated across current desktop, browser, mobile and Raycast surfaces. Local checks at `e50e2a9` and the later 42-file/436-test backend run are historical preparation evidence, not verification of the current candidate. | Verify network loss, reconnect, acknowledgements and coordinator recovery on physical devices. |
 | 3. Small durable Mesh state | Durable ownership, approvals, cancellation, handoff, event archives and status-poll reductions are integrated. | Verify partition, crash, eviction and handoff recovery; measure the hosted workload. Lease cadence remains unchanged. |
 | 4. Compact Sync storage | Encrypted snapshot manifests, verified chunks, publication fencing and bounded journal recovery are integrated. | Verify long-offline/new-device recovery, conflicts, tombstones, key rotation and opt-out before enabling compaction deletion. |
-| 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated behind separate host/backend flags. The controlled staging pilot is enabled; ordinary and production defaults remain off. Transport results are recorded in the staging evidence. | Complete separate-WAN browser/mobile acceptance and verify permitted traffic, capacity, price and billing. |
-| 6. Protocol and rollout | Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`; security review and fixes are recorded. Machine routes advertise their session and stream capabilities separately. | Resolve native mobile receive limits, complete physical acceptance, measure costs and make explicit staged-rollout decisions before changing defaults. |
+| 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated. Client connectors are available by default; backend provisioning remains operator-controlled. The controlled staging pilot is enabled; production provisioning remains off. Transport results are recorded in the staging evidence. | Complete separate-WAN browser/mobile acceptance and verify permitted traffic, capacity, price and billing. |
+| 6. Protocol and rollout | Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`; security review and fixes are recorded. Machine routes advertise their session and stream capabilities separately. | Resolve native mobile receive limits, complete physical acceptance, measure costs and make explicit staged-rollout decisions before enabling production provisioning. |
 
 Managed reachability is an operator pilot, not general availability. Do not expand Cloud Agent
 provisioning as part of it. A tunnel to a user-owned machine is not an Anvil-supplied execution

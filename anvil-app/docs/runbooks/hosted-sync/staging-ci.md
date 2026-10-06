@@ -41,8 +41,8 @@ For the current managed host rehearsal, save
 `CLOUDFLARE_TUNNEL_ACCOUNT_ID`, `CLOUDFLARE_TUNNEL_ZONE_ID`, and
 `CLOUDFLARE_TUNNEL_API_TOKEN`, scoped to the required tunnel operations in
 that account and zone. Automatic deployments retain this setting. A
-participating daemon needs its own explicit endpoint settings; the isolated
-staging desktop preview embeds both flags. Each host needs a trusted
+participating desktop or daemon has host sessions and the managed connector
+available by default. Each host needs a trusted
 `cloudflared` binary. See
 [deploy.md](deploy.md) and [host connections](host-connections.md).
 
@@ -51,19 +51,21 @@ trusted host connector are ready. The workflow's descriptor check requires
 `anvil-backend/1`, `sync/2`, `mesh/2`, `workos-device`, and the staging public
 client.
 
-## macOS desktop candidate
+## Desktop candidates
 
-Use `.github/workflows/app-candidate-preview.yml` to build an unsigned macOS
-arm64 candidate. Select the candidate branch, provide the pull request number
+Use `.github/workflows/app-candidate-preview.yml` to build unsigned macOS arm64
+and Linux x64 candidates in one run. Select the candidate branch, provide the pull request number
 and its full 40-character head SHA, and use the current SHA. The workflow
 checks that the selected ref and current pull request both match the supplied
-SHA before building. The preview pins the staging environment and enables host
-and managed connections in the packaged main process. Explicit runtime
-`false` can disable either flag. This does not change ordinary build defaults.
+SHA before building. The preview pins the staging environment. Host sessions
+and the managed connector are available by default in preview and ordinary builds.
+Explicit runtime `false` remains an operator disable switch. Workspace Sync
+and Mesh job execution still require their separate user opt-ins.
 
-The run retains the DMG, ZIP, and `preview-manifest.json` for 14 days. The
-manifest identifies the commit and hashes the installable files. This preview
-does not sign, notarize, publish updates, or run live acceptance. Build the
+The run retains macOS DMG and ZIP files, Linux AppImage, `.deb` and `.pacman`
+files, and a `preview-manifest.json` for each platform for 14 days. Each
+manifest identifies the commit and hashes the installable files. These previews
+do not sign, notarize, publish updates, or run live acceptance. Build the
 website from the same candidate commit when it is part of the test.
 
 ## What CI proves

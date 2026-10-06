@@ -54,13 +54,13 @@ deployment wrapper deliberately accepts them through the protected secret
 source alongside the API token.
 
 The dispatch updates backend configuration and supplies credentials to the
-backend deployment. It does not enable a host process. Separately opt in the
-selected staging daemon with both endpoint flags and point it at
+backend deployment. Desktop and daemon host connections are available by
+default once the signed-in Sync scope is active. Supply
 a trusted `cloudflared` binary installed through the host's normal software
 process. The resolver does not download the binary or verify its file owner.
 Without the controlled domain, scoped tunnel token, and trusted connector,
-leave allocation off. The isolated staging desktop preview embeds the flags
-and discovers normal macOS Homebrew installations. See [host connections](host-connections.md) for host
+leave backend allocation off. Desktop previews target staging and discover
+normal macOS Homebrew installations. See [host connections](host-connections.md) for host
 setup and acceptance limits.
 
 Do not put the tunnel token or other credentials in Worker variables, command

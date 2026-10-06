@@ -15,13 +15,13 @@ organization, shared fleet or paid Sync plan is not required. Sync and Mesh are
 free. Anvil Cloud Agents are a separate future paid feature and remain
 default-off.
 
-When a host has an active Sync scope and host sessions are enabled, the Sync
-runtime discovers trusted hosts on that account and maintains sessions over a
-valid route. The isolated staging candidate embeds both endpoint flags, so
-testers need no flag setup. Ordinary builds default off; a selected daemon can
-opt in with `ANVIL_MESH_MACHINE_ENDPOINTS=true` and
-`ANVIL_MESH_MANAGED_ENDPOINTS=true`. An explicit runtime `false` overrides a
-preview's embedded setting. The backend separately controls managed allocation.
+When a host has an active signed-in Sync scope, the Sync runtime discovers
+trusted hosts on that account and maintains sessions over a valid route. Host
+sessions and the managed connector are available by default in desktop and
+daemon builds. Users and testers need no feature flags. Explicit runtime
+`ANVIL_MESH_MACHINE_ENDPOINTS=false` or `ANVIL_MESH_MANAGED_ENDPOINTS=false`
+remains an operator disable switch. The backend separately controls managed
+allocation.
 
 For a user, the normal setup is to sign in to the same account on each device,
 enable Sync in **Settings → Sync & Mesh** on the devices that should share
@@ -70,31 +70,25 @@ attach to a later host session.
 
 ## Operator rollout
 
-Keep endpoint flags off in default configs. Enable the private host-session
-path only in a selected staging build and on the physical hosts taking part in
-the test. The app reads the exact string `true` from the main process
-environment:
+Desktop and daemon builds have host sessions available by default. Choose the
+staging backend, sign in, enable Sync, and complete device trust approval:
 
 ```sh
 cd anvil-app
 ANVIL_DEPLOYMENT_ENV=staging \
 ANVIL_HOSTED_BACKEND_URL="$MESH_ORIGIN" \
-ANVIL_MESH_MACHINE_ENDPOINTS=true \
 pnpm dev
 ```
 
-For a daemon test, sign in or enroll against the selected staging backend, then
-set the flag on the long-running `run` process:
+For a daemon test, sign in or enroll against the staging backend, then run:
 
 ```sh
-ANVIL_MESH_MACHINE_ENDPOINTS=true \
 node dist-daemon/anvil-daemon.mjs run
 ```
 
-The flag is a process setting. Put it in the staging launchd/systemd service
-environment when the daemon is supervised. Do not set it in the repository's
-default config or production service until the rollout gate passes. It does
-not enable the Mesh worker.
+No endpoint flag is required in launchd or systemd. This availability does not
+enable Mesh job execution. Explicit `false` process settings remain operator
+controls for temporarily disabling host sessions or the managed connector.
 
 The current backend descriptor uses the `anvil-backend/1` envelope and the
 required `sync/2` and `mesh/2` profiles. The host protocol has its own
@@ -111,9 +105,9 @@ data directory on the same computer is not physical-device evidence.
 
 ## Managed endpoint setup
 
-Managed reachability is a separate opt-in on both sides. It requires
-`ANVIL_MESH_MANAGED_ENDPOINTS=true` in the host process and the backend Worker,
-plus a configured domain and provider credentials. The backend needs:
+Managed connectors are available by default on the host. Provisioning requires
+`ANVIL_MESH_MANAGED_ENDPOINTS=true` in the backend Worker, a configured domain
+and provider credentials. The backend needs:
 
 - `MACHINE_ENDPOINT_DOMAIN` as a Worker variable for an operator-controlled
   hostname domain.
@@ -166,8 +160,8 @@ Before enabling this path beyond a staging cohort, record results from
 physical hosts on separate WANs. Include first connection, idle reconnect,
 host sleep and resume, route change, revocation, managed allocation failure,
 and recovery through the existing hosted operation path where supported.
-Keep the private-session flag off in production until those results and the
-managed provider terms have an owner and approval.
+Keep managed backend provisioning off in production until those results and
+the managed provider terms have an owner and approval.
 
 For the worker lifecycle, trust tiers and daemon controls, see
 [the headless daemon guide](headless-daemon.md). For the staged service

@@ -22,9 +22,12 @@ acceptance limits.
   Cloud Agents, meaning Anvil-supplied execution containers, are a separate paid service and stay
   disabled by default. Container provisioning is not part of the free Sync/Mesh staging workflow.
 - Managed public reachability is included in the controlled staging rehearsal, approved on
-  5 October 2026. The isolated desktop preview embeds both endpoint flags. Automatic backend
-  deployments preserve the saved staging rollout setting. Ordinary and production builds remain
-  off. This is not general availability and does not make Sync or Mesh billable. A separate
+  5 October 2026. From 6 October, host sessions and managed connectors are available by default
+  in desktop and daemon builds. Explicit runtime `false` remains an operator disable switch.
+  Availability does not enable workspace Sync or Mesh job execution without user opt-in.
+  Automatic backend deployments preserve the saved staging provisioning setting; production
+  provisioning remains off. This is not general availability and does not make Sync or Mesh
+  billable. A separate
   private network is not a prerequisite for physical testing through managed tunnels.
 
 ## Architecture boundary

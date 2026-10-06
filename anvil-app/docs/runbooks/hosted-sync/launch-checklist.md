@@ -45,9 +45,10 @@ does not pass a live gate. Missing a physical host or separate WAN is
 
 ## Managed host tunnel rehearsal
 
-- [ ] Keep endpoint defaults off in ordinary and production builds. The
-      isolated staging preview embeds both flags; normal staging backend
-      pushes preserve its saved managed setting.
+- [ ] Verify host sessions and managed connectors are available by default
+      without enabling workspace Sync or Mesh job execution without consent.
+      Staging backend pushes preserve its saved managed provisioning setting.
+      Production backend provisioning stays off.
 - [ ] Provide the protected account, zone, and tunnel API token secrets; use
       an operator-controlled hostname domain and a trusted `cloudflared`
       installation on the host.
@@ -70,9 +71,8 @@ Anvil Cloud Agents provisioner and do not enable Cloud Agents. See
       the public mobile rollout gate. Keep public rollout blocked until the
       native receive path can enforce the required size limit before assembly.
 - [ ] Complete the required security review and record its disposition.
-- [ ] Keep endpoint flags off in default and production configurations until
-      physical staging acceptance, security review, and the release owner
-      approve the rollout.
+- [ ] Keep production managed provisioning off until physical staging
+      acceptance, security review, and the release owner approve the rollout.
 
 ## Anvil Cloud Agents
 

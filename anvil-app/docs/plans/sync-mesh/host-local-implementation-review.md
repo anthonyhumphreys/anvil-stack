@@ -50,14 +50,13 @@ separate WANs, app sign-in/session authentication and sleep/reconnect behavior r
 
 ## Rollout controls
 
-`ANVIL_MESH_MACHINE_ENDPOINTS` is disabled unless the main process receives the exact value `true`.
-Ordinary builds keep it as an operator setting for a selected application or daemon process. The
-isolated staging candidate embeds both endpoint flags, so testers need no flag setup. An explicit
-runtime `false` overrides the embedded value. A signed-in host also needs an active Sync scope. This host
+Host-local Mesh sessions and managed connectors are available by default in desktop and daemon
+builds from 6 October. Testers need no feature flags. Explicit runtime `false` can disable either
+client path as an operator control. A signed-in host needs an active Sync scope. This host
 lifecycle is independent of the Mesh worker opt-in and the local companion preference.
 
-`ANVIL_MESH_MANAGED_ENDPOINTS` is a separate setting on the host and backend. Ordinary and
-production defaults remain off. Staging backend deployments preserve the saved rollout choice. When
+`ANVIL_MESH_MANAGED_ENDPOINTS` separately controls backend provisioning. Production backend
+provisioning remains off. Staging deployments preserve the saved rollout choice. When
 enabled for a selected target, the backend needs an operator-controlled `MACHINE_ENDPOINT_DOMAIN`
 and protected `CLOUDFLARE_TUNNEL_ACCOUNT_ID`, `CLOUDFLARE_TUNNEL_ZONE_ID` and
 `CLOUDFLARE_TUNNEL_API_TOKEN` secrets. The hosted deployment wrapper requires all three when the
@@ -121,7 +120,7 @@ establish signed-in staging or physical WAN acceptance.
   absent, managed tunnel count was zero with complete pagination, and no host DNS records remained.
   Do not record an overall staging pass. Physical hosts on separate WANs, app sign-in/session authentication,
   sleep/disconnect recovery on real networks, provider capacity/traffic terms and an actual provider
-  bill remain unverified. Production rollout flags remain off until those gates have owners and evidence.
+  bill remain unverified. Production managed provisioning remains off until those gates have owners and evidence.
 
 ## Review changes and remaining mobile limit
 

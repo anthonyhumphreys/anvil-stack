@@ -60,7 +60,7 @@ deployment. Verify the workflow's commit SHA, then wait for its success and for
 PR checks to pass on that exact candidate. The saved staging managed-endpoint
 setting is preserved; no managed-pilot input is needed. Do not treat earlier
 green checks as acceptance of a new candidate.
-Then build the isolated macOS arm64 preview:
+Then build the isolated macOS arm64 and Linux x64 previews in one run:
 
 ```sh
 anvil_candidate_sha="$(git rev-parse HEAD)"
@@ -71,11 +71,14 @@ gh workflow run app-candidate-preview.yml \
 ```
 
 The [candidate workflow](https://github.com/anthonyhumphreys/anvil-stack/actions/workflows/app-candidate-preview.yml)
-retains a DMG, ZIP and checksum manifest for 14 days. Use the artifact from the
-matching SHA. The preview has separate application data, embeds both host
-connection flags, targets staging, and has no update publishing. No tester
-flag setup is required.
-It is unsigned; macOS installation acceptance remains part of the rehearsal.
+retains separate platform artifacts for 14 days: DMG and ZIP for macOS arm64;
+AppImage, `.deb` and `.pacman` for Linux x64. Each includes a checksum manifest.
+Use both previews from the matching SHA. They have separate application data,
+target staging, and have no update publishing. Mesh is available by default.
+The Linux package and executable identities are distinct from ordinary Anvil.
+No tester flag setup is required. The previews are unsigned; native installation
+acceptance remains part of the rehearsal. See [candidate previews](../../candidate-previews.md)
+for platform details.
 
 Use the [backend workflow](https://github.com/anthonyhumphreys/anvil-stack/actions/workflows/sync-backend-staging.yml)
 to inspect deployment progress. Automatic pushes preserve the saved staging
@@ -164,8 +167,8 @@ the candidate's acceptance record. Confirm provider cleanup before another
 allocation; a rate-limited audit is not proof of deletion.
 
 To disable staging managed allocation, save the rollout flag as `false` and
-deploy. Release active hosts first and verify provider cleanup. Production and
-ordinary release builds remain off.
+deploy. Release active hosts first and verify provider cleanup. Production
+managed provisioning remains off; client availability does not enable a backend.
 
 ## 5. Merge and public rollout
 

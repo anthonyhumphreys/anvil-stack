@@ -425,7 +425,7 @@ export async function buildStagingStatusReport() {
   block(samePrHead, 'PR #91 head changed while status was read');
   block(checks.state === 'passed', 'PR checks are not all passing');
   block(readyRun(latestRun), 'latest staging workflow is not successful on the current PR head');
-  block(readyRun(preview), 'desktop preview has not succeeded for the current PR head');
+  block(readyRun(preview), 'desktop previews have not succeeded for the current PR head');
   block(descriptor.state === 'passed', 'public descriptor does not match the staging target');
   block(secrets.state === 'passed', 'required staging secrets are missing or unavailable');
   block(
@@ -443,7 +443,7 @@ export async function buildStagingStatusReport() {
   ];
   if (pr?.headSha && pr.branch && relation === 'current' && !readyRun(preview)) {
     report.nextCommands.push(
-      `Build the exact desktop preview with: gh workflow run app-candidate-preview.yml --ref ${shellQuote(pr.branch)} -f pull_request=91 -f head_sha=${pr.headSha}`,
+      `Build the exact macOS and Linux previews with: gh workflow run app-candidate-preview.yml --ref ${shellQuote(pr.branch)} -f pull_request=91 -f head_sha=${pr.headSha}`,
     );
   }
   if (report.preflight.state === 'ready_for_manual_acceptance') {
@@ -463,7 +463,7 @@ function render(report) {
       : 'PR #91: BLOCKED (remote head unavailable)',
     `Latest staging workflow: ${formatRun(report.backend.latestRun)}`,
     'The staging workflow head identifies the deployed candidate; descriptor profiles do not prove commit identity.',
-    `Candidate desktop preview: ${formatRun(report.preview.candidateRun)}`,
+    `Candidate macOS and Linux previews: ${formatRun(report.preview.candidateRun)}`,
     `Staging backend target: ${report.backend.targetName ?? 'unavailable'} at ${report.backend.targetUrl ?? 'unavailable'}`,
     report.backend.descriptor.state === 'passed'
       ? 'Public backend descriptor: PASS'
