@@ -9,7 +9,7 @@ import { isMeshEndpointFlagEnabled } from './mesh-endpoint-flag.service.js';
 export const MESH_MANAGED_ENDPOINTS_FLAG = 'ANVIL_MESH_MANAGED_ENDPOINTS';
 export const MESH_CLOUDFLARED_PATH = 'ANVIL_CLOUDFLARED_PATH';
 
-function isManagedEndpointsEnabled(env: NodeJS.ProcessEnv): boolean {
+export function isMeshManagedEndpointEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return isMeshEndpointFlagEnabled(
     env[MESH_MANAGED_ENDPOINTS_FLAG],
     process.env.ANVIL_MESH_MANAGED_ENDPOINTS,
@@ -134,7 +134,7 @@ export class MeshManagedConnector {
   constructor(options: MeshManagedConnectorOptions = {}) {
     const env = options.env ?? process.env;
     this.options = {
-      enabled: options.enabled ?? (() => isManagedEndpointsEnabled(env)),
+      enabled: options.enabled ?? (() => isMeshManagedEndpointEnabled(env)),
       env,
       resourcesPath: options.resourcesPath ?? process.resourcesPath,
       platform: options.platform ?? process.platform,
@@ -193,8 +193,11 @@ export class MeshManagedConnector {
     this.requestedAssignment = null;
     const run = this.operation.then(async () => {
       const current = this.active?.assignment;
+      if (current === undefined) {
+        this.lastStatus = { state: 'stopped' };
+        return this.status();
+      }
       if (
-        current === undefined ||
         current.machineId !== input.machineId ||
         current.endpointGeneration !== input.endpointGeneration ||
         current.allocationGeneration !== input.allocationGeneration
@@ -514,10 +517,20 @@ export async function startManagedEndpointForHost(input: {
   const lifecycle = managedEndpointLifecycle;
   if (
     lifecycle === null ||
-    !(lifecycle.enabled ?? (() => isManagedEndpointsEnabled(process.env)))()
+    !(lifecycle.enabled ?? isMeshManagedEndpointEnabled)()
   ) {
     clearManagedPresenceHeartbeat();
     const current = managedConnector.status();
+    if (
+      current.machineId !== input.machineId ||
+      current.endpointGeneration !== input.endpointGeneration
+    ) {
+      return {
+        status: { state: 'unsupported', reason: 'disabled' },
+        managedOrigin: null,
+        allocationGeneration: null,
+      };
+    }
     const status = await stopManagedEndpointForHost({
       machineId: input.machineId,
       endpointGeneration: input.endpointGeneration,
@@ -535,7 +548,7 @@ export async function startManagedEndpointForHost(input: {
   }
   const env = process.env;
   const path = await resolveCloudflaredPath({
-    enabled: lifecycle.enabled ?? (() => isManagedEndpointsEnabled(env)),
+    enabled: lifecycle.enabled ?? (() => isMeshManagedEndpointEnabled(env)),
     env,
     resourcesPath: process.resourcesPath,
     platform: process.platform,

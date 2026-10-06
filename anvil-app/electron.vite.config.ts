@@ -1,7 +1,7 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { meshPreviewBuildDefines } from './scripts/mesh-preview-build-config.mjs';
+import { meshBuildDefines } from './scripts/mesh-build-config.mjs';
 
 const buildBrand = process.env.ANVIL_BRAND ?? process.env.npm_config_brand ?? '';
 const updateOrigin = process.env.ANVIL_UPDATE_ORIGIN ?? '';
@@ -35,9 +35,7 @@ const define = {
 };
 const mainDefine = {
   ...define,
-  ...meshPreviewBuildDefines({
-    deploymentEnv,
-    previewBuild: process.env.ANVIL_PREVIEW_BUILD,
+  ...meshBuildDefines({
     machineEndpoints: process.env.ANVIL_MESH_MACHINE_ENDPOINTS,
     managedEndpoints: process.env.ANVIL_MESH_MANAGED_ENDPOINTS,
   }),

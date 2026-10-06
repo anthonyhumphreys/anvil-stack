@@ -273,7 +273,10 @@ import {
 import type { MeshHostAdmissionAuthorization } from './mesh-host-session.service.js';
 import { fetchMeshMachineBrokerJson } from './mesh-host-client.service.js';
 import { MeshHostRuntimePool, type MeshHostRuntimeContext } from './mesh-host-runtime.service.js';
-import { configureMeshManagedEndpointLifecycle } from './mesh-managed-connector.service.js';
+import {
+  configureMeshManagedEndpointLifecycle,
+  isMeshManagedEndpointEnabled,
+} from './mesh-managed-connector.service.js';
 import { isMeshMachineEndpointEnabled } from './mesh-machine-endpoint.service.js';
 import { getMeshMachineHostStatus } from './mesh-host-status.service.js';
 import type { MeshMachineAdmissionConsumeResponse } from '../../../cloud/contract/machine.js';
@@ -486,7 +489,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       const context = currentHostSessionRpcContext();
       return context === null ? null : { apiUrl: context.apiUrl, accessToken: context.accessToken };
     },
-    enabled: isMeshMachineEndpointEnabled,
+    enabled: () => isMeshMachineEndpointEnabled() && isMeshManagedEndpointEnabled(),
     ...(fetchOverride === undefined ? {} : { fetch: fetchOverride }),
   });
   syncLocalMeshHostListener();

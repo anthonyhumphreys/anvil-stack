@@ -1,6 +1,6 @@
 import { isMeshEndpointFlagEnabled } from './mesh-endpoint-flag.service.js';
 
-/** Operator rollout gate for the host-local encrypted Mesh listener. */
+/** Optional operator override for the host-local encrypted Mesh listener. */
 export const MESH_MACHINE_ENDPOINT_FLAG = 'ANVIL_MESH_MACHINE_ENDPOINTS';
 
 export function isMeshMachineEndpointEnabled(

@@ -1,8 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   MeshManagedConnector,
+  configureMeshManagedConnector,
+  configureMeshManagedEndpointLifecycle,
+  resetMeshManagedConnectorForTests,
+  startManagedEndpointForHost,
   type ConnectorSpawn,
 } from '../mesh-managed-connector.service.js';
 
@@ -46,17 +50,28 @@ describe('managed machine connector process', () => {
       pathExists: async (path) => path === '/opt/cloudflared',
       spawn,
       makeTempDir: async () => '/tmp/anvil-managed-connector-test',
-      writeSecretFile: async (_path, secret) => { writtenSecret = secret; },
+      writeSecretFile: async (_path, secret) => {
+        writtenSecret = secret;
+      },
       removeTempDir,
       startupTimeoutMs: 100,
       stopTimeoutMs: 100,
     });
 
     const status = await connector.start(assignment);
-    expect(status).toMatchObject({ state: 'running', machineId: assignment.machineId, allocationGeneration: 4 });
+    expect(status).toMatchObject({
+      state: 'running',
+      machineId: assignment.machineId,
+      allocationGeneration: 4,
+    });
     expect(writtenSecret).toBe(assignment.connectorToken);
     expect(args).toEqual([
-      'tunnel', '--no-autoupdate', '--loglevel', 'error', 'run', '--token-file',
+      'tunnel',
+      '--no-autoupdate',
+      '--loglevel',
+      'error',
+      'run',
+      '--token-file',
       '/tmp/anvil-managed-connector-test/token',
     ]);
     expect(args.join(' ')).not.toContain(assignment.connectorToken);
@@ -138,5 +153,106 @@ describe('managed machine connector process', () => {
       '/opt/homebrew/bin/cloudflared',
       '/usr/local/bin/cloudflared',
     ]);
+  });
+});
+
+describe('managed endpoint availability', () => {
+  afterEach(() => {
+    resetMeshManagedConnectorForTests();
+    vi.unstubAllEnvs();
+  });
+
+  it('does not contact the broker or launch a connector when explicitly disabled', async () => {
+    vi.stubEnv('ANVIL_MESH_MANAGED_ENDPOINTS', 'false');
+    const fetchBroker = vi.fn<typeof fetch>();
+    const spawn = vi.fn<ConnectorSpawn>();
+    const pathExists = vi.fn(async () => true);
+    configureMeshManagedConnector({ spawn, pathExists });
+    configureMeshManagedEndpointLifecycle({
+      context: () => ({
+        apiUrl: 'https://backend.example.test',
+        accessToken: 'test-account-token',
+      }),
+      fetch: fetchBroker,
+    });
+
+    const result = await startManagedEndpointForHost({
+      machineId: assignment.machineId,
+      endpointGeneration: assignment.endpointGeneration,
+      localOrigin: assignment.localOrigin,
+    });
+
+    expect(result).toEqual({
+      status: { state: 'unsupported', reason: 'disabled' },
+      managedOrigin: null,
+      allocationGeneration: null,
+    });
+    expect(fetchBroker).not.toHaveBeenCalled();
+    expect(pathExists).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('attempts a connector without a client feature flag', async () => {
+    vi.stubEnv('ANVIL_MESH_MANAGED_ENDPOINTS', undefined);
+    const pathExists = vi.fn(async () => false);
+    const connector = new MeshManagedConnector({
+      env: { PATH: '' },
+      resourcesPath: '/mock/resources',
+      platform: 'linux',
+      arch: 'x64',
+      pathExists,
+    });
+
+    expect(await connector.start(assignment)).toMatchObject({
+      state: 'unsupported',
+      reason: 'binary-unavailable',
+    });
+    expect(pathExists).toHaveBeenCalled();
+  });
+
+  it('releases a crashed connector once when managed endpoints are disabled', async () => {
+    const child = new FakeChild();
+    const connector = new MeshManagedConnector({
+      enabled: () => true,
+      env: { PATH: '', ANVIL_CLOUDFLARED_PATH: '/opt/cloudflared' },
+      pathExists: async () => true,
+      spawn: () => {
+        queueMicrotask(() => child.emit('spawn'));
+        return child as unknown as ReturnType<ConnectorSpawn>;
+      },
+      makeTempDir: async () => '/tmp/anvil-managed-connector-test',
+      writeSecretFile: async () => undefined,
+      removeTempDir: async () => undefined,
+    });
+    configureMeshManagedConnector(connector);
+    await connector.start(assignment);
+    child.exitCode = 1;
+    child.emit('exit', 1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(connector.status()).toMatchObject({ state: 'error', reason: 'process-exited' });
+
+    vi.stubEnv('ANVIL_MESH_MANAGED_ENDPOINTS', 'false');
+    const fetchBroker = vi.fn<typeof fetch>(async () => new Response('{}'));
+    configureMeshManagedEndpointLifecycle({
+      context: () => ({
+        apiUrl: 'https://backend.example.test',
+        accessToken: 'test-account-token',
+      }),
+      fetch: fetchBroker,
+    });
+    const input = {
+      machineId: assignment.machineId,
+      endpointGeneration: assignment.endpointGeneration,
+      localOrigin: assignment.localOrigin,
+    };
+    await startManagedEndpointForHost(input);
+    await startManagedEndpointForHost(input);
+
+    expect(connector.status()).toEqual({ state: 'stopped' });
+    expect(fetchBroker).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchBroker.mock.calls[0][1]!.body as string)).toMatchObject({
+      action: 'release',
+      allocationGeneration: assignment.allocationGeneration,
+    });
   });
 });
