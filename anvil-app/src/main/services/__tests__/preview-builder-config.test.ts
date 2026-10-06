@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { validateConfiguration } from 'app-builder-lib/out/util/config/config.js';
+import { DebugLogger } from 'builder-util/out/DebugLogger.js';
 
 const helper = '../../../../scripts/preview-builder-config.mjs';
 const { previewBuilderConfig } = await import(helper);
@@ -114,6 +115,6 @@ describe('preview packaging protocol isolation', () => {
       executableName: 'anvil-preview-pr12-habcdef01',
       packageName: 'anvil-preview-pr12-habcdef01',
     });
-    await expect(validateConfiguration(preview, { isEnabled: false })).resolves.toBeUndefined();
+    await expect(validateConfiguration(preview, new DebugLogger(false))).resolves.toBeUndefined();
   });
 });
