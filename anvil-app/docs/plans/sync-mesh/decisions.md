@@ -30,6 +30,26 @@ acceptance limits.
   billable. A separate
   private network is not a prerequisite for physical testing through managed tunnels.
 
+## Device setup and trust
+
+- First-run onboarding offers Sync after agent setup, with a visible local-only
+  choice. Hosted setup is one sign-in action; custom service controls are advanced.
+  Authentication is followed by security setup and explicit device Sync consent.
+- Offer automatic own-account connection as the recommended, explicit account
+  choice; keep mutual device-code verification as the stricter alternative.
+  Initial setup creates a separately saved recovery code. A new automatic device
+  waits for an online trusted device to deliver its account key, or uses recovery.
+- Automatic admission requires an immutable authenticated X25519 enrollment
+  binding and possession proof, exact identity matches, eligible durable account
+  membership, current policy, and revocation checks. It deliberately trusts the
+  identity provider and pinned service's membership attestation; account/provider
+  compromise or a malicious service can admit a recipient in this mode. Manual
+  code comparison retains the independent out-of-band check. See
+  [device connection and encryption access](automatic-device-trust.md).
+- Worker execution remains separate permission on each machine. Sync setup never
+  grants it. Login codes, device-verification codes and recovery codes have
+  different purposes and are labelled separately in the daemon.
+
 ## Architecture boundary
 
 - The current backend contract is `anvil-backend/1` with required `sync/2` and `mesh/2` profiles.

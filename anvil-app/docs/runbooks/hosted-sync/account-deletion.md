@@ -45,8 +45,10 @@ transition is audited (`account.delete-requested` in `billing_audit`).
 `security.reset` discards the encrypted data generation and fences old device
 sessions, but it does not delete the hosted identity or billing account. The
 hosted billing row and subscription remain active while the account security
-generation advances; the next successful sign-in receives the new generation
-and must establish fresh encryption material. Treat this as encrypted-data
+generation advances immediately to a fresh Sync mapping. Reading website data
+status cannot delete the retained identity. The next successful sign-in receives
+the new generation and must establish fresh encryption material. Old managed
+endpoints are retired with the revoked data generation. Treat this as encrypted-data
 loss with account continuity, not as account deletion.
 
 For self-hosted deployments, a reset tombstones the old account generation.

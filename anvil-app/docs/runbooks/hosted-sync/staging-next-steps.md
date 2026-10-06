@@ -106,16 +106,20 @@ Follow [staging acceptance](staging-acceptance.md) in order. The required result
       definition and preferences. The other machine links or clones its own
       checkout; repository files, Git history and uncommitted changes are not
       uploaded by workspace Sync. Opt-out leaves local work intact.
-- [ ] Device trust and host access approval are understandable. A device becomes
-      a Mesh worker only after its separate opt-in.
+- [ ] Onboarding offers one hosted sign-in action and a local-only choice. Save
+      recovery, choose automatic connection or mutual device-code verification,
+      and confirm the local-item preview before enabling Sync. Automatic connection
+      waits clearly for an online trusted device. A device becomes a Mesh worker
+      only after its separate opt-in.
 - [ ] A harmless job completes on the second machine. Approval, denial,
       cancellation and the worker's maximum permission mode behave as shown.
 - [ ] With a trusted `cloudflared` installation on each test host, confirm
       managed allocation and first connection. Test host sessions across
       separate WANs, disconnect, sleep/resume and reconnect without duplicate
       commands or silently lost output. A separate private network is not
-      required for the managed route. Daemons still need the flags described
-      in [host connections](host-connections.md).
+      required for the managed route. Current desktop and daemon builds enable
+      host connections by default; follow [host connections](host-connections.md)
+      for prerequisites and diagnostics. Worker execution still needs opt-in.
 - [ ] Revoking a device closes its access within the documented maximum
       60-second trust window; a fresh enrollment reconnects.
 - [ ] Restore and deletion work on the disposable account. Record any failed or

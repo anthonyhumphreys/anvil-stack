@@ -33,87 +33,96 @@ and each can be revoked without touching the others.
   public half as a device-identity entity — the crypto boundary other devices
   wrap keys to. See [Encryption and keys](/docs/sync/encryption).
 
-## First device: sign in
+## First device: sign in and connect
 
-1. Settings → Sync & Mesh → pick a backend mode (anything but Local only).
-2. For a hosted headless machine, run:
+Onboarding offers Sync after you set up your agent. Choose **Use on this
+device** to continue locally, or **Sign in to Anvil** to connect your account.
+You can also start from Settings → Sync & Mesh. Anvil checks the hosted
+service and opens browser sign-in in one action; custom services and
+enrollment codes are under **Advanced connection settings**.
 
-   ```sh
-   anvil-daemon sign-in --api-url https://<backend>
-   ```
+After signing in, choose how new devices connect:
 
-   The command prints the WorkOS verification URI and public user code, then
-   waits for approval. Add `--worker` only for a machine that should execute
-   Mesh jobs. For a self-hosted enrollment-code bootstrap, issue the first code
-   from that backend's operator `/account` page, then use normal device
-   management afterward.
-3. Desktop sign-in uses the WorkOS issuer and public client advertised by the
-   backend; a compatible backend uses whatever issuer it declares.
-4. The backend creates the enrollment; the device generates and publishes its
-   X25519 identity.
-5. The first sealed write mints ADK v1 locally. From that point, everything
-   the device syncs is sealed.
+- **Automatic connection (recommended):** your signed-in devices receive
+  encrypted access from a connected trusted device.
+- **Verify each device with a code:** compare and approve the matching
+  device-verification code on both devices.
 
-## Pair a second device
+Save the recovery code shown during setup. It is shown once and lets you
+reconnect when your trusted devices are unavailable. Then choose **Connect
+this device** after reviewing what Sync will upload. New workspaces remain
+Local unless you choose Sync; repository contents and local checkouts are
+not copied. Running Mesh jobs on this device needs its separate opt-in.
 
-Two flows. The difference is how the ADK reaches the new device.
+For a hosted headless machine:
 
-### In-app pairing payload
+```sh
+anvil-daemon sign-in --api-url https://<backend>
+anvil-daemon security status
+```
 
-The signed-in device packages the ADK for the new device before the new
-device exists.
+The browser address and code printed by `sign-in` are for account sign-in.
+They are not a device-verification code. The command reports whether the
+new device is ready or what to do next. Run the daemon to keep it connected
+while it waits for another device; one-shot sign-in exits after authentication.
+Add `--worker` only when you want that machine to execute Mesh jobs.
+See the [hosted setup guide](/docs/sync/hosted).
 
-1. On the enrolled device: **Connect a device**. The backend mints an
-   enrollment code; the app seals the ADK inside a pairing blob under a fresh
-   one-time secret and queues the blob for the redeemer.
-2. Carry the payload to the new device. It looks like
-   `anvil-pair-{code}.{nonce}.{secret}` — type it or scan it. The secret in
-   the tail is what protects the ADK; it travels only in this string, never
-   through the server.
-3. On the new device: enter the payload. It redeems the code (the server sees
-   only the code), registers the pairing secret locally, pulls the sealed
-   pairing blob, and unwraps the ADK.
-4. In Sync & Mesh on both devices, open **Compare & verify** and confirm the
-   same SAS. Both ends must authenticate and confirm the matching value before
-   either client accepts the key delivery. Upgraded clients reject an
-   unsigned legacy wrap; after upgrading, resend the pairing payload or use
-   the manual verification flow.
-5. Done — the new device can unseal everything the account has written.
+## Add another device
 
-Both devices can derive the same 9-digit SAS from their public keys for a
-manual MITM check. The Devices list exposes this through **Compare & verify**;
-both devices must show and confirm the same code before an authenticated wrap
-is accepted.
+With automatic connection selected, sign in to the same account on the new
+device and keep Anvil running on a connected trusted device. Access is
+shared automatically after the enrollment's public key and account proof
+are checked. If every trusted device is offline, the new device shows that
+it is waiting. Bring one online or use your saved recovery code.
 
-### Recovery-code unlock
+Automatic connection deliberately relies on your account authentication
+and the pinned service's membership attestation. Someone who can sign in
+to your account could connect a device while a trusted device is online;
+a compromised service could also fabricate that attestation. Choose code
+verification if you want an independent comparison before each new device
+receives encrypted access. The service does not receive the account key or
+recovery code in either flow.
 
-A website code starts enrollment but carries no key material. Configure
-recovery on the first trusted device, then save the generated recovery code
-separately. The new device can recover without an online peer:
+### Code verification
 
-1. On `/account` → devices, mint a pair/link code. It is a bare enrollment
-   code; the website never sees the recovery code or ADK.
-2. On the new device, sign in (or run the daemon's `sign-in` command) and
-   redeem the enrollment code.
-3. Use the device security recovery flow with the saved recovery code. The
-   device decrypts the opaque recovery envelope locally and installs the ADK
-   version bundle.
+On each device, open Settings → Sync & Mesh → Devices and select the other
+device's **Compare & verify** action. Both must display the same device code.
+Confirm the match on both ends: the connected device approves and sends the
+account-key bundle, while the new device approves the issuer to accept it.
+The website roster can show and revoke devices, but cannot perform this
+key-delivery approval by itself.
 
-WorkOS authentication proves identity and creates the enrollment; it does not
-decrypt account content. Recovery replacement issues a new code and replaces
-the current backend envelope, so save the new code before discarding the old
-one. A retained old bundle can open only the historical key versions it
-contains. Future authenticated enrollments require manual approval by default;
-`auto-trust-authenticated` is an explicit account policy and does not promote
-existing pending devices. Manual approval compares the same 9-digit SAS on both
-devices. Desktop exposes this as **Compare & verify** on both ends. A headless
-daemon uses `anvil-daemon security verify <enrollmentId>` on each device, then
-both devices run `anvil-daemon security approve`: the existing trusted device
-approves the new enrollment and sends the authenticated key wrap, while the
-new device approves the old enrollment locally to accept that wrap. The
-website roster can show and revoke devices, but it cannot perform this
-key-delivery approval by itself. Passkey-backed encryption unlock is not
-implemented.
+On the daemon, use `anvil-daemon security devices` to find the other device,
+then `anvil-daemon security verify <device>` to display its verification
+code. The readable output gives the matching approval command. The browser
+sign-in code and the device-verification code are different codes.
+
+### Recovery when devices are unavailable
+
+Sign in, then enter your separately saved recovery code in Device access.
+The device decrypts the opaque recovery envelope locally and installs the
+account-key version bundle. No existing device needs to be online. The
+headless daemon accepts recovery only through stdin or a protected file;
+avoid putting it in command arguments or shell history.
+
+Recovery replacement issues a new code and replaces the current envelope.
+Save the new code before discarding the old one. A retained old bundle can
+open only the historical key versions it contains. Encryption passkeys are
+not implemented.
+
+### Enrollment and pairing codes
+
+Advanced connection settings can create a one-use pairing code for another
+device. An in-app pairing payload includes a client-held secret used to
+open the recipient's encrypted account-key bundle. A bare code from the
+website starts enrollment but carries no decryption key. These code-based
+paths continue to use mutual device verification or recovery; automatic
+connection is reserved for eligible durable OIDC/WorkOS enrollments.
+
+Changing the account policy applies to future enrollments. It does not
+promote existing pending devices or remove access from devices already
+connected. Revoked enrollments cannot become trusted again.
 
 ## Manage the roster
 
@@ -160,8 +169,6 @@ rotates when a surviving trusted device next reconciles, as described in
 - Recovery-code unlock needs the separately saved client secret; there is no
   server-side key escrow to fall back on, so the code must remain separately
   saved by the user.
-- Upgraded clients reject unsigned legacy key wraps. Re-pair or complete the
-  two-device SAS confirmation after upgrading.
 - A device revocation invalidates the local recovery refresh root; replace
   recovery and save the newly issued code before refreshing that envelope.
 - Pairing-payload redemption is covered by lifecycle tests; the full

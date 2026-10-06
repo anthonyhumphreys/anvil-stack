@@ -41,17 +41,19 @@ deployments — but a physical multi-device demo has not happened yet. See
 
 ## Account backend modes
 
-Settings → Sync & Mesh offers four account backend modes:
+Onboarding and Settings → Sync & Mesh offer one hosted sign-in action. Custom
+service choices remain in **Advanced connection settings**:
 
 | Mode | Behavior |
 | --- | --- |
 | Local only | No account backend is connected. A remembered backend is paused, not forgotten. New workspaces default to Local. |
-| Anvil-hosted | The operated backend path, enabled by `ANVIL_HOSTED_BACKEND_URL` for a tested HTTPS origin. Production availability is still pending; Sync & Mesh remain free. See [Anvil-hosted sync](/docs/sync/hosted). |
-| Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare deployment* in the picker). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
+| Anvil-hosted | **Sign in to Anvil** uses the hosted HTTPS service configured for this build. Production availability is still pending; Sync & Mesh remain free. See [Anvil-hosted sync](/docs/sync/hosted). |
+| Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare service* in advanced settings). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
 | Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles — see [Backend conformance](/docs/sync/conformance). |
 
-Pinning a backend stores the association. Sign in and enable Sync before
-uploading portable configuration. Choose Local or Sync separately for each
+Sign-in checks and pins the service without uploading configuration. Choose
+automatic connection or code verification, save recovery, and explicitly
+connect this device before uploading portable configuration. Choose Local or Sync separately for each
 workspace. If the backend's endpoint or issuer changes, the app requires
 re-review before sending credentials again.
 

@@ -15,9 +15,10 @@ device codes, private user data, or full logs in the record.
 
 Record the results in the current [ANV-11 acceptance ticket](https://linear.app/anvil-stack/issue/ANV-11/run-hosted-sync-staging-acceptance-for-pr-91).
 
-Run every live test with a newly created disposable staging account and fresh
-test data. Do not use production credentials, an existing account, or valuable
-data. Record each gate as `PASS`, `FAIL`, or `BLOCKED`, with a short result and
+Run every live test with a disposable staging account and fresh test data.
+A dedicated test account can be reused after an encrypted-data reset and
+verification of its fresh generation. Do not use production credentials or
+valuable data. Record each gate as `PASS`, `FAIL`, or `BLOCKED`, with a short result and
 the blocker where applicable. A skipped test, local mock, or successful
 deployment is not a pass.
 
@@ -30,14 +31,32 @@ staging identity flow must advertise `workos-device` and the staging public
 client. Stop and mark this gate `BLOCKED` if the descriptor is stale or any
 required field is missing. Do not test through an older protocol profile.
 
-Sign in to the staging website and the desktop with the same disposable user.
-The account and device pages must load without configuration or service
-errors. Enroll Device A and Device B using the current desktop flow with new
-device trust set to require approval. Compare the short verification code on
-both devices and confirm it on both ends before trusting B. WorkOS sign-in
-alone is not device-trust acceptance. Both physical devices must appear under
-that website account as active. Two local profiles on one computer do not
-satisfy the device gate.
+Sign in to the staging website and both devices with the same disposable user.
+The account and device pages must load without configuration or service errors.
+Both physical devices must appear under that website account as active. Two
+local profiles on one computer do not satisfy the device gate.
+
+## Device setup acceptance
+
+Use the exact current candidate on both devices and its matching staging backend.
+Record each path separately:
+
+- First-run role → agent → Sync, including the visible local-only completion path.
+- One hosted sign-in action, cancellation/retry, and blocked changed-service identity.
+- First-device automatic/code policy choice, once-only recovery-code acknowledgement,
+  explicit Sync adoption, and a new workspace remaining Local by default.
+- A second same-account device connects automatically while a trusted device is online;
+  it waits clearly when all trusted devices are offline, then connects when one returns.
+  Before its user enables Sync, only its own device identity may be published.
+- Code-verification mode shows the same device code on both ends. The daemon's browser
+  sign-in code is clearly distinguished from that device code. Confirm the match
+  on both devices. Recovery works without a peer.
+- Revocation blocks delivery and retained public identities cannot restore access.
+- Authentication, device connection and Sync do not enable worker execution. Opt in
+  separately before a harmless Mesh job.
+
+WorkOS sign-in alone is not device-trust acceptance. Do not store verification
+or recovery codes, tokens, or keys with acceptance evidence.
 
 ## Workspace behavior
 

@@ -28,8 +28,7 @@ production provisioning and its operational credentials remain pending.
 The website `/account` area uses a WorkOS browser session. It calls the
 backend through the separately configured, signed hosted service channel.
 Desktop enrollment is a backend protocol: the desktop follows the issuer and
-auth mode advertised by the backend, then redeems a device code from the
-account page. Hosted OIDC uses issuer
+auth mode advertised by the validated backend, then completes browser sign-in. Hosted OIDC uses issuer
 `https://api.workos.com/user_management`, the desktop public `OIDC_CLIENT_ID`,
 and scopes `openid profile`. The website's `WORKOS_CLIENT_ID` is also supplied
 to the hosted Worker as `HOSTED_WORKOS_CLIENT_ID` when those clients differ.
@@ -54,9 +53,9 @@ the daemon receives neither. See the [WorkOS CLI Auth documentation](https://wor
 
 To sign in:
 
-- **Desktop:** Set `ANVIL_HOSTED_BACKEND_URL`, open Settings → Sync & Mesh →
-  Anvil-hosted, review the discovered endpoint and issuer, then complete the
-  advertised sign-in flow. The callback is
+- **Desktop:** In a configured build, open onboarding or Settings → Sync & Mesh
+  and choose **Sign in to Anvil**. Anvil discovers and validates the service
+  before browser sign-in; a changed address or issuer needs review. The callback is
   `http://127.0.0.1:<ephemeral-port>/callback`; the desktop chooses an
   ephemeral port in the documented loopback range. Enrollment follows the
   normal device flow — see [Devices and pairing](/docs/sync/devices).
