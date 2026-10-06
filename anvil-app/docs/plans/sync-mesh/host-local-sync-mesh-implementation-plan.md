@@ -75,8 +75,10 @@ isolated staging preview embeds them; daemons need operator opt-in. The backend 
 saved managed setting and protected tunnel credentials. Local project checks recorded at `e50e2a9` cover the implementation
 source. After the staging-workflow fixes, backend Vitest passed 42 files and 436 tests; workflow-agent
 checks passed 27 tests, typecheck, and self-check. These local checks do not verify staging or live
-behaviour. The security review and remaining mobile limit are recorded below. Physical WAN acceptance
-and provider allocation, capacity and pricing have not been verified. See the
+behaviour. The security review and remaining mobile limit are recorded below.
+Current managed staging transport results are in the
+[transport evidence](../../runbooks/hosted-sync/staging-transport-evidence.md).
+Physical WAN acceptance, provider capacity and pricing remain open. See the
 [implementation review](host-local-implementation-review.md).
 
 | Area | Current implementation | Remaining acceptance |
@@ -325,7 +327,7 @@ and production build defaults remain off.
 | 2. Direct interactive traffic | Host reads, commands, cursor replay and client connections are integrated across current desktop, browser, mobile and Raycast surfaces. Local checks at `e50e2a9` and the later 42-file/436-test backend run are historical preparation evidence, not verification of the current candidate. | Verify network loss, reconnect, acknowledgements and coordinator recovery on physical devices. |
 | 3. Small durable Mesh state | Durable ownership, approvals, cancellation, handoff, event archives and status-poll reductions are integrated. | Verify partition, crash, eviction and handoff recovery; measure the hosted workload. Lease cadence remains unchanged. |
 | 4. Compact Sync storage | Encrypted snapshot manifests, verified chunks, publication fencing and bounded journal recovery are integrated. | Verify long-offline/new-device recovery, conflicts, tombstones, key rotation and opt-out before enabling compaction deletion. |
-| 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated behind separate host/backend flags. The controlled staging pilot is enabled; ordinary and production defaults remain off. | Verify real tunnel allocation and cleanup, separate-WAN browser/mobile connections, permitted traffic, capacity, price and billing. |
+| 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated behind separate host/backend flags. The controlled staging pilot is enabled; ordinary and production defaults remain off. Transport results are recorded in the staging evidence. | Complete separate-WAN browser/mobile acceptance and verify permitted traffic, capacity, price and billing. |
 | 6. Protocol and rollout | Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`; security review and fixes are recorded. Machine routes advertise their session and stream capabilities separately. | Resolve native mobile receive limits, complete physical acceptance, measure costs and make explicit staged-rollout decisions before changing defaults. |
 
 Managed reachability is an operator pilot, not general availability. Do not expand Cloud Agent

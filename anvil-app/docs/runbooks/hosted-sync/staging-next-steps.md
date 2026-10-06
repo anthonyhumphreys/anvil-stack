@@ -21,32 +21,45 @@ Neither establishes signed-in or physical-device acceptance.
 
 The core staging target uses existing Worker, D1 and R2 resources. Sync and Mesh
 are free, checkout is disabled, and Anvil Cloud Agents are disabled. It deploys
-no Cloud Agent provisioner or container image. The current rehearsal includes
-managed host endpoints. Private routes are preferred where reachable; a managed
-HTTPS tunnel provides reachability across separate networks.
+no Cloud Agent provisioner or container image. The managed endpoint pilot is
+enabled for `anvilstack.dev`; production remains off. Private routes are
+preferred where reachable, with the managed HTTPS tunnel available across
+separate networks.
 
-Before enabling the Worker, save `ANVIL_MESH_MANAGED_ENDPOINTS=true` and
-`MACHINE_ENDPOINT_DOMAIN=anvilstack.dev` in the protected staging configuration,
-and install the three tunnel secrets described in [deploy.md](deploy.md).
-`pnpm staging:status` treats those secrets and the managed setting as required
-for this rehearsal. It checks secret names and domain syntax, not token
+The scoped token `anvil-staging-managed-tunnels` is stored as
+`CLOUDFLARE_TUNNEL_API_TOKEN` in the 1Password Anvil hosted staging Environment
+and GitHub's protected `anvil-staging` environment. Its scope and expiry are recorded in the
+[transport evidence](staging-transport-evidence.md). Keep its value in those
+stores. `pnpm staging:status` checks secret names and domain syntax, not token
 permissions or live connectivity.
 
 ## 2. Deploy and obtain the desktop preview
 
 The agent can complete these steps with the existing GitHub staging access.
-Pushing `feature/sync-mesh--foundations` automatically deploys the backend and
-starts PR checks and the website preview. For a later candidate:
+Pushing backend, contract or cloud source changes on
+`feature/sync-mesh--foundations` automatically deploys the backend. PR checks
+and the website preview follow their own workflow triggers. Backend workflow
+path filters exclude documentation and operator-script-only changes. For a
+candidate with only those changes, manually dispatch the staging backend
+workflow on the branch so the backend deployment matches the candidate commit.
+For a later candidate:
 
 ```sh
 cd /Users/anthonyhumphreys/Code/anvil
 git status --short
 git push origin feature/sync-mesh--foundations
+# Only needed if the change did not trigger an automatic backend deployment:
+gh workflow run sync-backend-staging.yml \
+  --repo anthonyhumphreys/anvil-stack \
+  --ref feature/sync-mesh--foundations
 gh pr checks 91 --repo anthonyhumphreys/anvil-stack
 ```
 
-Wait for the backend workflow and PR checks to pass for that exact commit.
-Do not treat earlier green checks as acceptance of a new candidate.
+Dispatch only when the pushed change did not trigger an automatic backend
+deployment. Verify the workflow's commit SHA, then wait for its success and for
+PR checks to pass on that exact candidate. The saved staging managed-endpoint
+setting is preserved; no managed-pilot input is needed. Do not treat earlier
+green checks as acceptance of a new candidate.
 Then build the isolated macOS arm64 preview:
 
 ```sh
@@ -113,28 +126,25 @@ browser, mobile and Raycast tests when those clients are included in the pilot.
 
 ## 4. Managed endpoint evidence and cleanup
 
-This is host reachability, separate from Anvil Cloud Agents. It needs an
-operator-controlled domain, three protected staging tunnel secrets and a trusted
-`cloudflared` executable on each test host. The selected account owns
-`anvilstack.dev`. Allocated hosts use a single subdomain beneath it, so this
-setup does not need a deeper wildcard certificate.
+This is host reachability, separate from Anvil Cloud Agents. Staging uses the
+operator-controlled `anvilstack.dev` domain and the protected token described in
+the [transport evidence](staging-transport-evidence.md). Allocated hosts use one
+subdomain beneath it. Keep Cloud Agents and checkout disabled, and leave
+production managed endpoints off.
 
-Prepare the [managed setup and acceptance](host-connections.md#managed-endpoint-setup),
-then deploy the candidate with the saved staging rollout flag. The optional
-`managed_endpoint_pilot=true` dispatch can enable a single run, but does not
-persist that choice. Preflight rejects missing configuration or credentials.
-Record real allocation, connection, failure, cleanup and provider cost evidence.
-After stopping each host, verify both its DNS record and tunnel are gone.
-Process exit alone does not establish provider cleanup. A single-host smoke
-test is useful early evidence; it does not pass the physical separate-WAN gate.
+Public HTTPS transport and provider cleanup were verified with a disposable
+synthetic host on 6 October. The script's API audits were rate-limited; separate
+checks confirmed no remaining tunnel or DNS record and no temporary admin
+credential. The [transport evidence](staging-transport-evidence.md) records the
+checks, cleanup fix and limits. No additional synthetic allocation is needed.
+Your next step is the physical-device rehearsal above: sign-in, application
+session authentication and separate-WAN recovery remain open.
 
-For an operator's transport check, `scripts/managed-endpoint-smoke.mjs` creates
-one disposable synthetic account and host, starts the trusted Homebrew
-`cloudflared`, and verifies a marker through the public HTTPS tunnel. It then
-stops the connector, releases the endpoint, checks Cloudflare for the DNS record
-and tunnel's absence, clears the host advertisement and revokes the enrollment.
-The synthetic account namespace retains its revoked enrollment. It does not test the app's
-session authentication, sign-in UX or two physical networks.
+For a future transport smoke, `scripts/managed-endpoint-smoke.mjs` creates one
+disposable synthetic account and host, starts the trusted Homebrew `cloudflared`,
+and verifies a marker through public HTTPS. It then stops the connector, releases
+the endpoint, checks provider cleanup, clears the advertisement and revokes the
+enrollment. The synthetic account namespace retains its revoked enrollment.
 
 Run it only after the managed staging deployment succeeds. Supply an
 owner-only JSON file with mode `0600` containing `enrollmentAdminToken`,
@@ -147,11 +157,11 @@ cd /Users/anthonyhumphreys/Code/anvil/anvil-app
 node scripts/managed-endpoint-smoke.mjs --credentials-file /protected/path/staging-smoke.json
 ```
 
-Use a temporary `ENROLLMENT_ADMIN_TOKEN` on the staging Worker for this check.
-Preserve any existing admin secret, remove the temporary secret afterwards and
-verify its removal. Delete the local credential file after the check. Save the
-sanitized JSON result with the candidate's staging acceptance record. A failed
-cleanup result needs investigation before another allocation.
+Use a temporary `ENROLLMENT_ADMIN_TOKEN` on the staging Worker. Preserve any
+existing admin secret, remove the temporary secret afterwards and verify its
+removal. Delete the local credential file. Save the sanitized JSON result with
+the candidate's acceptance record. Confirm provider cleanup before another
+allocation; a rate-limited audit is not proof of deletion.
 
 To disable staging managed allocation, save the rollout flag as `false` and
 deploy. Release active hosts first and verify provider cleanup. Production and

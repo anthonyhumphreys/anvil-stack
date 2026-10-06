@@ -52,8 +52,10 @@ account balance and eligibility before using it as budget.
 - [Remote chats](remote-chats.md) and
   [execution permission decision](verification-security-remediation.md)
 
-Physical multi-host acceptance, signed-in staging acceptance, managed endpoint allocation and
-cleanup, provider capacity and pricing, and actual billed usage remain open. The immutable security
+Managed staging transport results are recorded in the
+[transport evidence](../../runbooks/hosted-sync/staging-transport-evidence.md).
+Physical multi-host acceptance, signed-in staging acceptance, provider capacity and pricing,
+and actual billed usage remain open. The immutable security
 review also records a coverage-metadata discrepancy and a mobile native receive-buffering limit.
 See the [review](host-local-implementation-review.md) and
 [operator next steps](../../runbooks/hosted-sync/staging-next-steps.md) before rollout.

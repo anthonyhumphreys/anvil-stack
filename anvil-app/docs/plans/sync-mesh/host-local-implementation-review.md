@@ -1,7 +1,8 @@
 # Host-local Sync and Mesh implementation review
 
-Prepared 4 October 2026, rollout controls updated 5 October. The host-local implementation was
-recorded at checkpoint `2ee256e`. Local project checks at `e50e2a9` cover that implementation checkpoint.
+Prepared 4 October 2026. Rollout controls were updated 5 October, and transport evidence was
+updated 6 October. The host-local implementation was recorded at checkpoint `2ee256e`. Local
+project checks at `e50e2a9` cover that implementation checkpoint.
 After the staging-workflow fixes, backend Vitest passed 42 files and 436 tests; workflow-agent
 checks passed 27 tests, typecheck, and self-check. These are local checks, not staging or live
 acceptance. The immutable security review remains sealed; its coverage metadata retains superseded
@@ -15,7 +16,25 @@ The 5 October staging activation changes correct Cloudflare DNS IDs, embed endpo
 isolated preview, find installed macOS connectors, and preserve the saved backend rollout choice.
 Focused DNS tests and backend typecheck passed. Preview gate/resolver tests, app Node typecheck and
 changed-code lint passed. Deployment guards passed 30 tests; staging readiness passed six tests.
-These checks do not establish real tunnel allocation or physical-device acceptance.
+
+Backend run 37413757753 passed 42 files and 442 tests and checked all six required runtime bindings.
+That was followed by cleanup fix `dedab943`: SQLite `rowsWritten` includes index maintenance, so
+release now uses `UPDATE RETURNING`; a regression test exercises real Durable Object SQLite.
+Backend run
+[37414829188](https://github.com/anthonyhumphreys/anvil-stack/actions/runs/37414829188)
+passed 42 files and 443 tests. The earlier smoke on `3a8353a` passed allocation, connector-token
+issuance, connector startup and public HTTPS marker ingress, but cleanup failed. The first smoke
+after the fix verified cleanup, but marker ingress timed out. A controlled repeat with temporary
+operator Node IPv4 flags passed allocation, token issuance, connector startup and public marker
+transport. Its five HTTP responses were one 200, three 404s and one 530, with no network errors.
+The smoke script reported cleanup incomplete after Cloudflare DNS/tunnel reads and temporary admin
+deletion returned 429. Independent checks after refreshing Wrangler authorization confirmed admin
+secret absence, zero managed tunnels with complete pagination, and no host DNS records. Runtime
+configuration had all six required bindings, managed endpoints enabled, Cloud Agents and checkout
+disabled, and the expected domain. This confirms synthetic transport and cleanup only; no overall
+staging acceptance pass is recorded. See the
+[transport evidence](../../runbooks/hosted-sync/staging-transport-evidence.md). Physical hosts on
+separate WANs, app sign-in/session authentication and sleep/reconnect behavior remain unverified.
 
 ## Source map
 
@@ -93,9 +112,16 @@ establish signed-in staging or physical WAN acceptance.
   while merging the final draft. All nine final review groups and candidate dispositions are
   recorded. Scan `a8cb3712-65ad-4b87-bdc3-1a3b96712a4a` is sealed; a separate report reconciliation
   records this metadata discrepancy without rewriting it.
-- Physical hosts on separate WANs, sleep/disconnect recovery on real networks, actual managed tunnel
-  allocation and cleanup, provider capacity/traffic terms, and an actual provider bill have not been
-  verified. Production rollout flags remain off until those gates have owners and evidence.
+- The `3a8353a` synthetic-host smoke passed managed allocation and public HTTPS ingress, but cleanup
+  failed because SQLite `rowsWritten` includes index maintenance. Fix `dedab943` uses `UPDATE
+  RETURNING` and has a real Durable Object SQLite regression test. Backend run 37414829188 passed 42
+  files and 443 tests. The first post-fix smoke verified cleanup but marker ingress timed out. A
+  controlled repeat with temporary operator Node IPv4 flags passed transport; the smoke script's
+  cleanup verification hit HTTP 429. Independent checks confirmed the temporary admin secret was
+  absent, managed tunnel count was zero with complete pagination, and no host DNS records remained.
+  Do not record an overall staging pass. Physical hosts on separate WANs, app sign-in/session authentication,
+  sleep/disconnect recovery on real networks, provider capacity/traffic terms and an actual provider
+  bill remain unverified. Production rollout flags remain off until those gates have owners and evidence.
 
 ## Review changes and remaining mobile limit
 

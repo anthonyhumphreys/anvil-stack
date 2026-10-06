@@ -1,6 +1,6 @@
 # Sync and Mesh decisions
 
-Current product, architecture, and rollout decisions, 5 October 2026. This record governs the
+Current product, architecture, and rollout decisions, 6 October 2026. This record governs the
 feature. The [implementation plan](host-local-sync-mesh-implementation-plan.md) holds technical
 detail; the [implementation review](host-local-implementation-review.md) holds audit evidence and
 acceptance limits.
@@ -56,10 +56,12 @@ acceptance limits.
   42 files and 436 tests, plus 27 workflow-agent tests, typecheck, and self-check. Its generated CI
   staging plan had no provider calls or service bindings and all flags off; it predates the enabled
   managed staging pilot. Record current-candidate CI and live acceptance separately.
-- Staging acceptance for the current candidate remains unrecorded. Follow the
-  [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md). Physical WAN
-  acceptance, managed-tunnel allocation and cleanup, provider capacity and pricing, production
-  billing, and measured storage growth remain open gates.
+- Managed staging transport results are recorded in the
+  [transport evidence](../../runbooks/hosted-sync/staging-transport-evidence.md).
+  Signed-in and physical-device acceptance remain open. Follow the
+  [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md).
+  Provider capacity and pricing, production billing, and measured storage growth
+  remain public-rollout gates.
 - The immutable security review retains its coverage-metadata discrepancy and the mobile native
   WebSocket receive-buffering limit. Both remain visible in the
   [implementation review](host-local-implementation-review.md); neither clears public rollout.

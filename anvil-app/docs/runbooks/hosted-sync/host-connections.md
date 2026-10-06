@@ -2,9 +2,10 @@
 
 Status: implementation is integrated at source checkpoint `47dd506`; automated
 local project checks passed. Security review evidence and its remaining limits
-are recorded in the [implementation review](../../plans/sync-mesh/host-local-implementation-review.md). Physical WAN
-reachability, real managed-tunnel allocation and cleanup, and commercial terms
-have not been accepted. No provider bill has been verified. This guide describes
+are recorded in the [implementation review](../../plans/sync-mesh/host-local-implementation-review.md).
+Current managed staging transport results are in the
+[transport evidence](staging-transport-evidence.md). Physical WAN reachability
+and commercial terms remain open. No provider bill has been verified. This guide describes
 the operator-controlled rollout, not production availability.
 
 ## User flow
