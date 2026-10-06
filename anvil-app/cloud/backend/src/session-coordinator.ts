@@ -38,10 +38,7 @@ import {
   type VerifiedAuth,
 } from './auth';
 import { sha256Hex } from './hash';
-import {
-  hostedEnforcementEnabled,
-  resolveAccountEntitlement,
-} from './hosted/enforcement';
+import { hostedEnforcementEnabled, resolveAccountEntitlement } from './hosted/enforcement';
 import { resolveHostedLimits } from './hosted/billing';
 import { freeHostedEntitlement, PREVIEW_END_MS } from './hosted/policy';
 import type {
@@ -83,6 +80,7 @@ import { hostedIdentityFromOidcSubject, initialHostedSyncAccountId } from './hos
 import {
   HostedConflictError,
   bumpGeneration,
+  findBillingBySyncAccount,
   getBillingAccountByIdentity,
   setSyncAccountLink,
 } from './hosted/store';
@@ -1015,6 +1013,19 @@ export class SessionCoordinator extends DurableObject<Env> {
     return (
       billing.sync_account_id ?? (await initialHostedSyncAccountId(identity).catch(() => null))
     );
+  }
+
+  /** Moves hosted reset flows off the tombstoned generation before the website probes it. */
+  private async advanceHostedGenerationAfterReset(accountId: string): Promise<void> {
+    const db = this.env.HOSTED_DB;
+    if (db === undefined) return;
+    const billing = await findBillingBySyncAccount(db, accountId);
+    if (billing === null || billing.lifecycle !== 'active') return;
+
+    let nextAccountId = (await bumpGeneration(db, billing.id)).syncAccountId;
+    while (this.deletionRow(nextAccountId) !== null) {
+      nextAccountId = (await bumpGeneration(db, billing.id)).syncAccountId;
+    }
   }
 
   /** Reserves a WorkOS proof exactly once after provider identity succeeds. */
@@ -2974,6 +2985,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     });
     const deleted = await this.deleteAccountById(accountId);
     const result = (await deleted.json()) as AccountDeleteResult;
+    await this.advanceHostedGenerationAfterReset(accountId);
     return Response.json(
       {
         ...result,

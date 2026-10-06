@@ -32,6 +32,7 @@ export interface VerifiedAuth {
 }
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9_~-]{1,128}$/;
 const TOKEN_PATTERN = /^anvil_(at|rt)_[A-Za-z0-9_-]{32,128}$/;
 
 /**
@@ -52,7 +53,7 @@ export function parseSpikeAuth(header: string | null): SpikeAuth | null {
   if (accountId === undefined || enrollmentId === undefined) {
     return null;
   }
-  if (!ID_PATTERN.test(accountId) || !ID_PATTERN.test(enrollmentId)) {
+  if (!ACCOUNT_ID_PATTERN.test(accountId) || !ID_PATTERN.test(enrollmentId)) {
     return null;
   }
   return { accountId, enrollmentId };
@@ -89,7 +90,7 @@ export function parseVerifiedAuth(request: Request): VerifiedAuth | null {
   if (
     typeof accountId !== 'string' ||
     typeof enrollmentId !== 'string' ||
-    !ID_PATTERN.test(accountId) ||
+    !ACCOUNT_ID_PATTERN.test(accountId) ||
     !ID_PATTERN.test(enrollmentId)
   ) {
     return null;

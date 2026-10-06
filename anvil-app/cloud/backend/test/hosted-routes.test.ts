@@ -7,10 +7,12 @@ import type { HostedIdentity } from '../src/hosted/identity';
 import { handleHostedRequest } from '../src/hosted/routes';
 import { signHostedServiceRequest } from '../src/hosted/service-auth';
 import {
+  bumpGeneration,
   consumeServiceNonce,
   getBillingAccountByIdentity,
   getOrCreateBillingAccount,
   markBillingLifecycle,
+  setSyncAccountLink,
 } from '../src/hosted/store';
 import migrationSql from '../migrations/hosted-billing/0001_init.sql?raw';
 import { postRpc } from './helpers';
@@ -271,10 +273,27 @@ describe('hosted pair-device', () => {
     const session2 = await enrollWithCode(pair2.body['code'] as string, 'inst-gen2');
     expect(session2.accountId).toBe(nextAccount);
 
+    const status = await signedHostedPost('/internal/hosted/data-status', identity);
+    expect(status.status).toBe(200);
+    expect(status.body['syncAccountId']).toBe(nextAccount);
+    expect(status.body['tombstoned']).toBe(false);
+    expect(status.body['deletion']).toEqual({ state: 'none' });
+
     const account = await signedHostedPost('/internal/hosted/account', identity);
     expect(account.status).toBe(200);
     expect(account.body['syncAccountId']).toBe(nextAccount);
     expect(account.body['generation']).toBe(2);
+  });
+
+  it('does not apply a stale deletion probe to a newer hosted generation', async () => {
+    const identity = makeIdentity(`stale-probe-${crypto.randomUUID()}`);
+    const billing = await getOrCreateBillingAccount(hostedDb(), identity);
+    const oldAccountId = 'old-sync-generation';
+    await setSyncAccountLink(hostedDb(), billing.id, oldAccountId);
+    await bumpGeneration(hostedDb(), billing.id);
+
+    expect(await markBillingLifecycle(hostedDb(), billing.id, 'deleted', oldAccountId)).toBe(false);
+    expect((await getBillingAccountByIdentity(hostedDb(), identity))?.lifecycle).toBe('active');
   });
 
   it('resets through security, preserves hosted billing, and pairs on a fresh generation', async () => {
@@ -312,6 +331,22 @@ describe('hosted pair-device', () => {
       true,
     );
 
+    // Reset immediately moves the billing link off the old generation, so
+    // opening the website data-status page before signing in again cannot
+    // turn this recoverable reset into permanent hosted account deletion.
+    const statusAfterReset = await signedHostedPost('/internal/hosted/data-status', identity);
+    expect(statusAfterReset.status).toBe(200);
+    const newAccountId = `${oldAccountId}~2`;
+    expect(statusAfterReset.body).toEqual({
+      syncAccountId: newAccountId,
+      tombstoned: false,
+      deletion: { state: 'none' },
+    });
+    const billingAfterStatus = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(billingAfterStatus?.lifecycle).toBe('active');
+    expect(billingAfterStatus?.generation).toBe(2);
+    expect(billingAfterStatus?.sync_account_id).toBe(newAccountId);
+
     const oldToken = await postRpc('device.list', {}, `Bearer ${first.accessToken}`);
     expect(oldToken.status).toBe(401);
     const oldCode = await SELF.fetch('https://spike.test/v1/enroll', {
@@ -326,7 +361,6 @@ describe('hosted pair-device', () => {
 
     const secondPair = await signedHostedPost('/internal/hosted/pair-device', identity);
     expect(secondPair.status).toBe(200);
-    const newAccountId = `${oldAccountId}~2`;
     expect(secondPair.body['accountId']).toBe(newAccountId);
     const second = await enrollWithCode(secondPair.body['code'] as string, 'inst-reset-new');
     expect(second.accountId).toBe(newAccountId);

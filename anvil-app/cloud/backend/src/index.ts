@@ -9,7 +9,7 @@ import { MachineEndpointCoordinator, machineEndpointStub } from './hosted/machin
 import { runHostedReconcile } from './hosted/reconciler';
 import { runHostedOrganizationReconcile } from './hosted/organization-webhooks';
 import { prepareHostedAccountDeletion } from './hosted/organizations';
-import { parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
+import { isRecord, parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
 import { OPERATIONS, type OperationName } from '../../contract/operations';
 import type { ErrorCode } from '../../contract/envelope';
 import { validateSessionAttestParams } from '../../contract/companion';
@@ -442,6 +442,18 @@ async function handleSecurityResetRpc(
         ? (code as ErrorCode)
         : 'unauthenticated';
     return rpcErrorResponse(requestId, mapped);
+  }
+  // Reset fences the old account generation just like account deletion.
+  // Release its managed routes as well so revoked devices do not leave
+  // provider resources behind while the hosted identity stays active.
+  if (isRecord(payload) && typeof payload['accountId'] === 'string') {
+    await machineEndpointStub(env)
+      .fetch('https://internal.anvil/internal/release-account', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId: payload['accountId'] }),
+      })
+      .catch(() => undefined);
   }
   return rpcSuccessResponse(requestId, payload);
 }

@@ -80,9 +80,7 @@ export async function getBillingAccountByIdentity(
   identity: HostedIdentity,
 ): Promise<BillingAccountRow | null> {
   return db
-    .prepare(
-      'SELECT * FROM billing_accounts WHERE workos_client_id = ? AND workos_user_id = ?',
-    )
+    .prepare('SELECT * FROM billing_accounts WHERE workos_client_id = ? AND workos_user_id = ?')
     .bind(identity.workosClientId, identity.workosUserId)
     .first<BillingAccountRow>();
 }
@@ -205,7 +203,14 @@ export async function bumpGeneration(
        WHERE id = ? AND lifecycle = 'active'
          AND generation = ? AND sync_account_id IS ?`,
     )
-    .bind(syncAccountId, generation, Date.now(), billingAccountId, row.generation, row.sync_account_id)
+    .bind(
+      syncAccountId,
+      generation,
+      Date.now(),
+      billingAccountId,
+      row.generation,
+      row.sync_account_id,
+    )
     .run();
   if (result.meta.changes !== 1) {
     throw new HostedConflictError('billing account generation guard rejected the write');
@@ -216,22 +221,29 @@ export async function bumpGeneration(
 /**
  * Lifecycle transitions are one-way: active → deleting → deleted. Anything
  * else (resurrection, skipping states) lands zero rows and returns false.
+ * When reconciling a probed generation, pass its id so a stale probe cannot
+ * apply deletion to a billing row that has since advanced to a new mapping.
  */
 export async function markBillingLifecycle(
   db: D1Database,
   billingAccountId: string,
   next: 'deleting' | 'deleted',
+  expectedSyncAccountId?: string,
 ): Promise<boolean> {
-  const result = await db
-    .prepare(
-      `UPDATE billing_accounts SET lifecycle = ?, updated_at = ?
-       WHERE id = ? AND (
-         (? = 'deleting' AND lifecycle = 'active') OR
-         (? = 'deleted' AND lifecycle IN ('active', 'deleting'))
-       )`,
-    )
-    .bind(next, Date.now(), billingAccountId, next, next)
-    .run();
+  const syncAccountGuard = expectedSyncAccountId === undefined ? '' : ' AND sync_account_id = ?';
+  const statement = db.prepare(
+    `UPDATE billing_accounts SET lifecycle = ?, updated_at = ?
+     WHERE id = ? AND (
+       (? = 'deleting' AND lifecycle = 'active') OR
+       (? = 'deleted' AND lifecycle IN ('active', 'deleting'))
+     )${syncAccountGuard}`,
+  );
+  const result =
+    expectedSyncAccountId === undefined
+      ? await statement.bind(next, Date.now(), billingAccountId, next, next).run()
+      : await statement
+          .bind(next, Date.now(), billingAccountId, next, next, expectedSyncAccountId)
+          .run();
   return result.meta.changes === 1;
 }
 
@@ -293,10 +305,7 @@ export async function issueHostedLinkCode(
  * unexpired code, so a replayed code can never win the race twice.
  * Returns the owning billing_account_id, or null for wrong/spent/expired.
  */
-export async function consumeHostedLinkCode(
-  db: D1Database,
-  code: string,
-): Promise<string | null> {
+export async function consumeHostedLinkCode(db: D1Database, code: string): Promise<string | null> {
   const normalized = normalizeLinkCode(code);
   if (normalized.length === 0) return null;
   const codeHash = await sha256Hex(normalized);

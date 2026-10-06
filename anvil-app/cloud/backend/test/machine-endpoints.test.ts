@@ -312,6 +312,38 @@ describe('managed machine endpoint broker', () => {
     expect(JSON.stringify(view)).not.toContain('connectorToken');
   });
 
+  it('retires only the reset account endpoints, including a regenerated account', async () => {
+    const accountId = `${randomId('acct')}~2`;
+    const source = await enroll(accountId, 'Reset device');
+    const unrelatedAccount = randomId('acct');
+    const hostMachineId = machineId();
+    await runInDurableObject(machineStub(), (_instance: MachineEndpointCoordinator, state) => {
+      const now = Date.now();
+      for (const owner of [accountId, unrelatedAccount]) {
+        state.storage.sql.exec(
+          `INSERT INTO machine_endpoint_allocations
+           (account_id, machine_id, host_enrollment_id, endpoint_generation, allocation_generation,
+            state, stable_host_label, stable_tunnel_name, hostname, provider_operation_id, request_id,
+            created_at, updated_at, last_reachable_at, retry_at, attempts, lock_until)
+           VALUES (?, ?, ?, ?, 1, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`,
+          owner, hostMachineId, source.enrollmentId, generation(), owner, owner,
+          `${owner}.mesh.example.test`, crypto.randomUUID(), randomId('request'), now, now, now, now,
+        );
+      }
+    });
+    const reset = await postRpc(
+      'security.reset',
+      { accountId, confirmation: 'RESET ENCRYPTED DATA' },
+      `Bearer ${source.accessToken}`,
+    );
+    expectSuccess(reset);
+    const own = await machineRequest('/internal/list', { accountId });
+    expect(own.status).toBe(200);
+    expect(await own.json()).toMatchObject({ allocations: [{ state: 'retiring' }] });
+    const unrelated = await machineRequest('/internal/list', { accountId: unrelatedAccount });
+    expect(await unrelated.json()).toMatchObject({ allocations: [{ state: 'ready' }] });
+  });
+
   it('releases a ready allocation through the real SQLite claim and Cloudflare cleanup', async () => {
     env.ANVIL_MESH_MANAGED_ENDPOINTS = 'false';
     env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = 'test-cloudflare-account';

@@ -115,7 +115,8 @@ const ALLOCATION_LOCK_MS = 90_000;
 const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_BODY_BYTES = 16 * 1024;
 const HOST_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+// Hosted encrypted-data resets append ~N to the authenticated account id.
+const ACCOUNT_ID = /^[A-Za-z0-9_~-]{1,128}$/;
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HOST_GENERATION = /^[A-Za-z0-9_-]{16,128}$/;
 

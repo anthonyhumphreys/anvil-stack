@@ -159,11 +159,16 @@ export async function handleHostedDeviceRevoke(
     enrollmentId: body['enrollmentId'],
   });
   if (response.ok) {
-    await machineEndpointStub(env).fetch('https://internal.anvil/internal/release-enrollment', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ accountId: resolved.syncAccountId, enrollmentId: body['enrollmentId'] }),
-    }).catch(() => undefined);
+    await machineEndpointStub(env)
+      .fetch('https://internal.anvil/internal/release-enrollment', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          accountId: resolved.syncAccountId,
+          enrollmentId: body['enrollmentId'],
+        }),
+      })
+      .catch(() => undefined);
   }
   return response;
 }
@@ -240,9 +245,9 @@ export async function handleHostedDataStatus(
     (await probeAccountDeletion(env, syncAccountId)) ??
     ({ state: tombstoned ? 'deleting' : 'none' } as const);
   if (deletion.state === 'deleted') {
-    await markBillingLifecycle(db, account.id, 'deleted');
+    await markBillingLifecycle(db, account.id, 'deleted', syncAccountId);
   } else if (deletion.state === 'deleting' || tombstoned) {
-    await markBillingLifecycle(db, account.id, 'deleting');
+    await markBillingLifecycle(db, account.id, 'deleting', syncAccountId);
   }
   return Response.json({ syncAccountId, tombstoned, deletion });
 }
@@ -286,11 +291,13 @@ export async function handleHostedDeleteAccount(
   if (!response.ok || (payload?.state !== 'deleting' && payload?.state !== 'deleted')) {
     return rpcErrorResponse(undefined, 'unavailable');
   }
-  await machineEndpointStub(env).fetch('https://internal.anvil/internal/release-account', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ accountId: account.sync_account_id }),
-  }).catch(() => undefined);
+  await machineEndpointStub(env)
+    .fetch('https://internal.anvil/internal/release-account', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId: account.sync_account_id }),
+    })
+    .catch(() => undefined);
   // First request transitions the billing row and leaves the audit mark;
   // repeats land zero rows on the lifecycle guard and stay silent.
   if (account.lifecycle === 'active' && (await markBillingLifecycle(db, account.id, 'deleting'))) {
