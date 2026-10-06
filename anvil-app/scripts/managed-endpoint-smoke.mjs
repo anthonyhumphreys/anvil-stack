@@ -263,28 +263,97 @@ async function allocateAndDiscover(
   throw new Failure('allocation-timeout');
 }
 
+function ingressNetworkErrorCategory(error) {
+  if (error?.name === 'AbortError') return 'timeout';
+  const code = error?.cause?.code ?? error?.code;
+  if (typeof code !== 'string') return 'other';
+  if (
+    new Set([
+      'ETIMEDOUT',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_BODY_TIMEOUT',
+      'ERR_SOCKET_TIMEOUT',
+    ]).has(code)
+  )
+    return 'timeout';
+  if (new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_FAIL', 'EAI_NONAME']).has(code)) return 'dns';
+  if (
+    /^ERR_(?:TLS|SSL)_/.test(code) ||
+    new Set([
+      'CERT_HAS_EXPIRED',
+      'DEPTH_ZERO_SELF_SIGNED_CERT',
+      'SELF_SIGNED_CERT_IN_CHAIN',
+      'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    ]).has(code)
+  )
+    return 'tls';
+  if (
+    new Set([
+      'ECONNREFUSED',
+      'ECONNRESET',
+      'ECONNABORTED',
+      'EPIPE',
+      'UND_ERR_SOCKET',
+      'UND_ERR_CONNECT',
+    ]).has(code)
+  )
+    return 'connection';
+  return 'other';
+}
+
 async function ingress(url, marker, child) {
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 120_000;
+  const diagnostics = {
+    attempts: 0,
+    httpResponseCount: 0,
+    httpStatusCounts: {},
+    networkErrorCounts: { dns: 0, tls: 0, timeout: 0, connection: 0, other: 0 },
+    markerMismatchCount: 0,
+  };
+  const countStatus = (status) => {
+    const key = String(status);
+    const counts = diagnostics.httpStatusCounts;
+    if (key in counts) counts[key]++;
+    else if (Object.keys(counts).length < 8) counts[key] = 1;
+    else counts.other = (counts.other ?? 0) + 1;
+  };
+  const finish = (reached) => {
+    diagnostics.outcome = reached
+      ? 'marker-reached'
+      : diagnostics.httpResponseCount > 0
+        ? 'http-response-without-marker'
+        : 'network-errors-only';
+    return { reached, diagnostics };
+  };
+
   while (Date.now() < deadline) {
     if (interrupted && !cleaningUp) throw new Failure('interrupted');
     if (child.exitCode !== null || child.signalCode !== null) throw new Failure('connector-exited');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 7_000);
+    const timer = setTimeout(() => controller.abort(), Math.min(7_000, deadline - Date.now()));
+    diagnostics.attempts++;
     try {
       const response = await fetch(url, {
         redirect: 'manual',
         cache: 'no-store',
         signal: controller.signal,
       });
-      if (response.status === 200 && (await response.text()) === marker) return true;
-    } catch {
-      /* Allow the connector time to attach. */
+      diagnostics.httpResponseCount++;
+      countStatus(response.status);
+      if (response.status === 200) {
+        if ((await response.text()) === marker) return finish(true);
+        diagnostics.markerMismatchCount++;
+      }
+    } catch (error) {
+      diagnostics.networkErrorCounts[ingressNetworkErrorCategory(error)]++;
     } finally {
       clearTimeout(timer);
     }
-    await wait(1_000);
+    const remaining = deadline - Date.now();
+    if (remaining > 0) await wait(Math.min(1_000, remaining));
   }
-  return false;
+  return finish(false);
 }
 
 async function cloudflareAbsent(path, token) {
@@ -385,6 +454,7 @@ async function main() {
     server = null,
     child = null,
     secretDir = null;
+  let ingressDiagnostics = null;
   let machineId = null,
     generation = null,
     allocationGeneration = null,
@@ -562,8 +632,9 @@ async function main() {
       setTimeout(() => reject(new Failure('cloudflared-spawn-timeout')), 5_000).unref?.();
     });
     checks.connectorStarted = true;
-    if (!(await ingress(`https://${hostname}${markerPath}`, marker, child)))
-      throw new Failure('loopback-ingress-failed');
+    const ingressResult = await ingress(`https://${hostname}${markerPath}`, marker, child);
+    ingressDiagnostics = ingressResult.diagnostics;
+    if (!ingressResult.reached) throw new Failure('loopback-ingress-failed');
     checks.loopbackIngress = true;
   } catch (error) {
     failure = error instanceof Failure ? error : new Failure('unexpected-failure');
@@ -643,6 +714,7 @@ async function main() {
       },
       checks,
       statuses,
+      ingressDiagnostics,
       failure: failure ? { code: failure.code, status: failure.status } : null,
     })}\n`,
   );
