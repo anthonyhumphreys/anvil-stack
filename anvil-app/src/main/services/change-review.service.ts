@@ -887,9 +887,11 @@ export function recordNativeReviewEvidence(
   }
   if (input.headSha !== review.candidate.head)
     throw new Error('Native build does not match this candidate head.');
+  const supportedPlatformArch =
+    (input.platform === 'darwin' && ['arm64', 'x64'].includes(input.arch)) ||
+    (input.platform === 'linux' && input.arch === 'x64');
   if (
-    input.platform !== 'darwin' ||
-    !['arm64', 'x64'].includes(input.arch) ||
+    !supportedPlatformArch ||
     !['passed', 'failed', 'unsupported', 'unavailable'].includes(input.status) ||
     !['unsigned', 'signed', 'unavailable'].includes(input.signing)
   )

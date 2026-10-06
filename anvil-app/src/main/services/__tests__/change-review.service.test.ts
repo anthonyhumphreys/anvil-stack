@@ -516,4 +516,27 @@ describe('delivery evidence identity', () => {
       'clean candidate commit',
     );
   });
+  it('records Linux x64 observations and rejects unsupported Linux architectures', async () => {
+    const review = await reviewWithRun();
+    const input = {
+      buildId: 'pr-7-head-linux-x64-1',
+      headSha: 'head',
+      platform: 'linux' as const,
+      arch: 'x64' as const,
+      status: 'unavailable' as const,
+      signing: 'unsigned' as const,
+      notes: 'Linux package built; native installation not yet checked',
+    };
+    const recorded = recordNativeReviewEvidence(review.id, input);
+    expect(recorded.nativeEvidence?.[0]).toMatchObject({
+      platform: 'linux',
+      arch: 'x64',
+      signing: 'unsigned',
+      provenance: 'human-observed',
+    });
+    expect(recorded.decisions).toEqual([]);
+    expect(() => recordNativeReviewEvidence(review.id, { ...input, arch: 'arm64' })).toThrow(
+      'Invalid native verification result',
+    );
+  });
 });

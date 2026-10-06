@@ -46,7 +46,7 @@ const manifest = {
   ...identity,
   createdAt: new Date().toISOString(),
   status: 'failed',
-  signing: platform === 'darwin' ? 'unavailable' : 'not-configured',
+  signing: platform === 'darwin' ? 'unavailable' : 'unsigned',
   manualChecks: 'not-run',
   artifacts: [],
   limitations: [

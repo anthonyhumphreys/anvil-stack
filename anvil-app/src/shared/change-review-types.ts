@@ -41,7 +41,7 @@ export interface ReviewNativeEvidence {
   id: string;
   buildId: string;
   headSha: string;
-  platform: 'darwin';
+  platform: 'darwin' | 'linux';
   arch: 'arm64' | 'x64';
   status: 'passed' | 'failed' | 'unsupported' | 'unavailable';
   signing: 'unsigned' | 'signed' | 'unavailable';
