@@ -2183,8 +2183,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       row.enrollment_class === 'device' &&
       row.enrollment_expires_at === null &&
       (row.proof_method === 'oidc-pkce' || row.proof_method === 'workos-device') &&
-      this.trustState(row) === 'trusted' &&
-      (row.trust_source === 'first-device' || row.trust_source === 'automatic-auth')
+      this.trustState(row) === 'trusted'
     );
   }
 

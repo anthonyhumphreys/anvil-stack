@@ -570,7 +570,7 @@ describe('OIDC enrollment trust policy', () => {
     ).toBe(409);
   });
 
-  it('rejects enrollment-code, manual, duplicate-key, invalid-proof, and replay bindings', async () => {
+  it('binds trusted provider devices and rejects pending, code, duplicate-key, invalid-proof, and replay bindings', async () => {
     const authority = await makeOidcAuthority();
     env.OIDC_ISSUER = ISSUER;
     env.OIDC_CLIENT_ID = CLIENT_ID;
@@ -582,21 +582,25 @@ describe('OIDC enrollment trust policy', () => {
     const rootProof = await deviceIdentityProof(rootChallenge, rootIdentity);
     expectSuccess(await bindIdentity(first, rootChallenge, rootIdentity, rootProof));
 
+    const manualIdentity = await deviceIdentityKeyPair();
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: manualIdentity.identityPub },
+          bearer(manual),
+        )
+      ).status,
+    ).toBe(403);
     const manualApproval = await postRpc(
       'security.approve',
       { enrollmentId: manual.enrollmentId, source: 'manual-approval' },
       bearer(first),
     );
     expect(manualApproval.status).toBe(200);
-    expect(
-      (
-        await postRpc(
-          'security.identityChallenge',
-          { identityPub: (await deviceIdentityKeyPair()).identityPub },
-          bearer(manual),
-        )
-      ).status,
-    ).toBe(403);
+    const manualChallenge = await identityChallenge(manual, manualIdentity.identityPub);
+    const manualProof = await deviceIdentityProof(manualChallenge, manualIdentity);
+    expectSuccess(await bindIdentity(manual, manualChallenge, manualIdentity, manualProof));
 
     const recovery = await ed25519Material();
     expectSuccess<SecurityView>(
