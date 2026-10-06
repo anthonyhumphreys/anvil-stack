@@ -69,6 +69,7 @@ import {
   type SecurityChallengeProof,
   type SecurityChallengeRow,
   decodeBase64Url,
+  encodeBase64Url,
   parseSecurityProof,
   randomChallenge,
   verifySecurityProof,
@@ -107,6 +108,8 @@ const SESSION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const SECURITY_POLICY_DEFAULT = 'require-approval' as const;
 const SECURITY_POLICIES = ['require-approval', 'auto-trust-authenticated'] as const;
 const SECURITY_ENCRYPTED_DATA_CONFIRMATION = 'RESET ENCRYPTED DATA' as const;
+const DEVICE_IDENTITY_CHALLENGE_TTL_MS = 2 * 60 * 1000;
+const DEVICE_IDENTITY_BINDING_INFO = 'anvil-device-identity-binding-v1';
 // WorkOS polling normally waits five seconds. A one-second DO-wide floor
 // blocks random-code floods while leaving legitimate device polling intact.
 const WORKOS_DEVICE_MIN_ATTEMPT_INTERVAL_MS = 1_000;
@@ -149,6 +152,8 @@ interface SessionRow {
   trust_state: 'pending' | 'trusted' | 'revoked' | null;
   trusted_at: number | null;
   signing_public_key: string | null;
+  identity_pub: string | null;
+  identity_bound_at: number | null;
   trust_source:
     | 'first-device'
     | 'manual-approval'
@@ -184,6 +189,33 @@ interface AccountSecurityRow {
   bootstrap_enrollment_id: string | null;
   created_at: number;
   updated_at: number;
+}
+
+interface DeviceIdentityChallengeRow {
+  challenge_id: string;
+  account_id: string;
+  enrollment_id: string;
+  identity_pub: string;
+  challenge: string;
+  server_public_key: string;
+  server_private_key: string;
+  expires_at: number;
+  created_at: number;
+}
+
+interface DeviceIdentityBindingContext {
+  accountId: string;
+  challenge: string;
+  challengeId: string;
+  enrollmentId: string;
+  identityPub: string;
+  serverPublicKey: string;
+}
+
+function deviceIdentityBindingMessage(context: DeviceIdentityBindingContext): Uint8Array {
+  return new TextEncoder().encode(
+    canonicalizeJson({ action: 'bind-device-identity', ...context, v: 1 }),
+  );
 }
 
 interface SharedArtifactRow {
@@ -393,8 +425,39 @@ export class SessionCoordinator extends DurableObject<Env> {
       'trust_generation',
       'ALTER TABLE device_sessions ADD COLUMN trust_generation INTEGER',
     );
+    this.ensureColumn(
+      'device_sessions',
+      'identity_pub',
+      'ALTER TABLE device_sessions ADD COLUMN identity_pub TEXT',
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'identity_bound_at',
+      'ALTER TABLE device_sessions ADD COLUMN identity_bound_at INTEGER',
+    );
     this.ctx.storage.sql.exec(
       'CREATE INDEX IF NOT EXISTS idx_sessions_trust ON device_sessions (account_id, trust_state)',
+    );
+    this.ctx.storage.sql.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_account_identity
+       ON device_sessions (account_id, identity_pub) WHERE identity_pub IS NOT NULL`,
+    );
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS device_identity_challenges (
+         challenge_id TEXT PRIMARY KEY,
+         account_id TEXT NOT NULL,
+         enrollment_id TEXT NOT NULL,
+         identity_pub TEXT NOT NULL,
+         challenge TEXT NOT NULL,
+         server_public_key TEXT NOT NULL,
+         server_private_key TEXT NOT NULL,
+         expires_at INTEGER NOT NULL,
+         created_at INTEGER NOT NULL
+       )`,
+    );
+    this.ctx.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_device_identity_challenges_expiry
+       ON device_identity_challenges (expires_at)`,
     );
     this.ensureColumn(
       'enrollment_codes',
@@ -695,6 +758,20 @@ export class SessionCoordinator extends DurableObject<Env> {
         case 'POST /internal/security-challenge': {
           const response = await this.ctx.blockConcurrencyWhile(() =>
             this.handleSecurityChallenge(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/security-identity-challenge': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleDeviceIdentityChallenge(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/security-bind-identity': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleBindDeviceIdentity(request),
           );
           await this.ensureSweepAlarm();
           return response;
@@ -1518,6 +1595,10 @@ export class SessionCoordinator extends DurableObject<Env> {
       Date.now(),
       row.enrollment_id,
     );
+    this.ctx.storage.sql.exec(
+      'DELETE FROM device_identity_challenges WHERE enrollment_id = ?',
+      row.enrollment_id,
+    );
     this.invalidateRecoveryOnTrustedRevoke(row.account_id, row);
     // Close live sockets on this enrollment (best effort — the account object
     // may be hibernating; validation still rejects its next request).
@@ -1859,7 +1940,7 @@ export class SessionCoordinator extends DurableObject<Env> {
         `SELECT enrollment_id, display_name, installation_id, credential_generation,
                 revoked_at, created_at, enrollment_class, provider,
                 enrollment_expires_at, environment_id, proof_method, trust_state,
-                trusted_at, trust_source
+                trusted_at, trust_source, identity_pub, identity_bound_at
          FROM device_sessions WHERE account_id = ? ORDER BY created_at ASC`,
         accountId,
       )
@@ -1895,6 +1976,9 @@ export class SessionCoordinator extends DurableObject<Env> {
       trustState: this.trustState(row),
       trustSource: sourceFor(row),
       trustedAt: row.trusted_at === null ? null : new Date(row.trusted_at).toISOString(),
+      identityPub: row.identity_pub,
+      identityBoundAt:
+        row.identity_bound_at === null ? null : new Date(row.identity_bound_at).toISOString(),
       revoked: row.revoked_at !== null,
       self: row.enrollment_id === callerEnrollmentId,
       createdAt: new Date(Number(row.created_at)).toISOString(),
@@ -2009,6 +2093,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     return {
       accountId,
       policy: security.policy,
+      newDeviceTrustPolicy: security.policy,
       revision: security.revision,
       generation: security.generation,
       recoveryRevision: security.recovery_revision,
@@ -2068,6 +2153,294 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (typeof value !== 'string' || value.length > 128) return false;
     const decoded = decodeBase64Url(value);
     return decoded !== null && decoded.byteLength === 32;
+  }
+
+  private validDeviceIdentityPub(value: unknown): value is string {
+    if (typeof value !== 'string' || value.length > 128) return false;
+    const decoded = decodeBase64Url(value);
+    if (decoded === null || decoded.byteLength !== 32) return false;
+    let binary = '';
+    for (const byte of decoded) binary += String.fromCharCode(byte);
+    if (value !== btoa(binary)) return false;
+    if (((decoded[31] ?? 0) & 0x80) !== 0) return false;
+    let coordinate = 0n;
+    for (let index = decoded.length - 1; index >= 0; index -= 1) {
+      coordinate = (coordinate << 8n) | BigInt(decoded[index] ?? 0);
+    }
+    return coordinate < (1n << 255n) - 19n;
+  }
+
+  private validIdentityProof(value: unknown): value is string {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value)) return false;
+    const decoded = decodeBase64Url(value);
+    return decoded !== null && decoded.byteLength === 32 && encodeBase64Url(decoded) === value;
+  }
+
+  private eligibleIdentityEnrollment(row: SessionRow): boolean {
+    return (
+      row.revoked_at === null &&
+      !enrollmentExpired(row, Date.now()) &&
+      row.enrollment_class === 'device' &&
+      row.enrollment_expires_at === null &&
+      (row.proof_method === 'oidc-pkce' || row.proof_method === 'workos-device') &&
+      this.trustState(row) === 'trusted' &&
+      (row.trust_source === 'first-device' || row.trust_source === 'automatic-auth')
+    );
+  }
+
+  private async deriveIdentitySharedSecret(
+    privateKey: CryptoKey,
+    identityPub: string,
+  ): Promise<Uint8Array | null> {
+    const publicBytes = decodeBase64Url(identityPub);
+    if (publicBytes === null || publicBytes.byteLength !== 32) return null;
+    try {
+      const publicKey = await crypto.subtle.importKey(
+        'raw',
+        publicBytes,
+        { name: 'X25519' },
+        false,
+        [],
+      );
+      const deriveAlgorithm = {
+        name: 'X25519',
+        public: publicKey,
+      } as unknown as SubtleCryptoDeriveKeyAlgorithm;
+      const sharedSecret = new Uint8Array(
+        await crypto.subtle.deriveBits(deriveAlgorithm, privateKey, 256),
+      );
+      return sharedSecret.every((byte) => byte === 0) ? null : sharedSecret;
+    } catch {
+      return null;
+    }
+  }
+
+  private async verifyDeviceIdentityProof(
+    challenge: DeviceIdentityChallengeRow,
+    proofValue: unknown,
+  ): Promise<boolean> {
+    if (!this.validIdentityProof(proofValue)) return false;
+    const privateBytes = decodeBase64Url(challenge.server_private_key);
+    const challengeBytes = decodeBase64Url(challenge.challenge);
+    const proofBytes = decodeBase64Url(proofValue);
+    if (
+      privateBytes === null ||
+      challengeBytes === null ||
+      proofBytes === null ||
+      privateBytes.byteLength === 0 ||
+      challengeBytes.byteLength !== 32 ||
+      proofBytes.byteLength !== 32
+    ) {
+      return false;
+    }
+    try {
+      const privateKey = await crypto.subtle.importKey(
+        'pkcs8',
+        privateBytes,
+        { name: 'X25519' },
+        false,
+        ['deriveBits'],
+      );
+      const sharedSecret = await this.deriveIdentitySharedSecret(
+        privateKey,
+        challenge.identity_pub,
+      );
+      if (sharedSecret === null) return false;
+      const hkdfKey = await crypto.subtle.importKey('raw', sharedSecret, 'HKDF', false, [
+        'deriveKey',
+      ]);
+      const macKey = await crypto.subtle.deriveKey(
+        {
+          name: 'HKDF',
+          hash: 'SHA-256',
+          salt: challengeBytes,
+          info: new TextEncoder().encode(DEVICE_IDENTITY_BINDING_INFO),
+        },
+        hkdfKey,
+        { name: 'HMAC', hash: 'SHA-256', length: 256 },
+        false,
+        ['verify'],
+      );
+      return await crypto.subtle.verify(
+        { name: 'HMAC' },
+        macKey,
+        proofBytes,
+        deviceIdentityBindingMessage({
+          accountId: challenge.account_id,
+          challenge: challenge.challenge,
+          challengeId: challenge.challenge_id,
+          enrollmentId: challenge.enrollment_id,
+          identityPub: challenge.identity_pub,
+          serverPublicKey: challenge.server_public_key,
+        }),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private async handleDeviceIdentityChallenge(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    if (!this.eligibleIdentityEnrollment(caller.row)) {
+      return rpcErrorResponse(undefined, 'forbidden', {
+        reason: 'durable-authenticated-enrollment-required',
+      });
+    }
+    const body = await readJson(request);
+    if (!isRecord(body) || !this.validDeviceIdentityPub(body['identityPub'])) {
+      return authError('malformed-request');
+    }
+    if (caller.row.identity_pub !== null) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'identity-already-bound' });
+    }
+    const duplicate = this.ctx.storage.sql
+      .exec<{ enrollment_id: string }>(
+        `SELECT enrollment_id FROM device_sessions
+         WHERE account_id = ? AND identity_pub = ? LIMIT 1`,
+        caller.auth.accountId,
+        body['identityPub'],
+      )
+      .toArray()[0];
+    if (duplicate !== undefined) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'identity-already-bound' });
+    }
+
+    const now = Date.now();
+    const challengeId = `dib_${crypto.randomUUID()}`;
+    const challenge = randomChallenge();
+    try {
+      const pair = (await crypto.subtle.generateKey({ name: 'X25519' }, true, [
+        'deriveBits',
+      ])) as CryptoKeyPair;
+      const serverPublicKey = encodeBase64Url(
+        new Uint8Array((await crypto.subtle.exportKey('raw', pair.publicKey)) as ArrayBuffer),
+      );
+      const sharedSecret = await this.deriveIdentitySharedSecret(
+        pair.privateKey,
+        body['identityPub'],
+      );
+      if (sharedSecret === null) return authError('malformed-request');
+      const privateKeyBytes = new Uint8Array(
+        (await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer,
+      );
+      this.ctx.storage.sql.exec(
+        'DELETE FROM device_identity_challenges WHERE expires_at <= ? OR enrollment_id = ?',
+        now,
+        caller.auth.enrollmentId,
+      );
+      this.ctx.storage.sql.exec(
+        `INSERT INTO device_identity_challenges
+         (challenge_id, account_id, enrollment_id, identity_pub, challenge,
+          server_public_key, server_private_key, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        challengeId,
+        caller.auth.accountId,
+        caller.auth.enrollmentId,
+        body['identityPub'],
+        challenge,
+        serverPublicKey,
+        encodeBase64Url(privateKeyBytes),
+        now + DEVICE_IDENTITY_CHALLENGE_TTL_MS,
+        now,
+      );
+      return Response.json(
+        {
+          challengeId,
+          challenge,
+          accountId: caller.auth.accountId,
+          enrollmentId: caller.auth.enrollmentId,
+          identityPub: body['identityPub'],
+          serverPublicKey,
+          expiresAt: new Date(now + DEVICE_IDENTITY_CHALLENGE_TTL_MS).toISOString(),
+        },
+        { status: 200 },
+      );
+    } catch {
+      return rpcErrorResponse(undefined, 'unavailable');
+    }
+  }
+
+  private async handleBindDeviceIdentity(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    if (!this.eligibleIdentityEnrollment(caller.row)) {
+      return rpcErrorResponse(undefined, 'forbidden', {
+        reason: 'durable-authenticated-enrollment-required',
+      });
+    }
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['challengeId'] !== 'string' ||
+      body['challengeId'].length < 8 ||
+      body['challengeId'].length > 128 ||
+      !this.validDeviceIdentityPub(body['identityPub']) ||
+      !this.validIdentityProof(body['proof'])
+    ) {
+      return authError('malformed-request');
+    }
+    const challenge = this.ctx.storage.sql
+      .exec('SELECT * FROM device_identity_challenges WHERE challenge_id = ?', body['challengeId'])
+      .toArray()[0] as unknown as DeviceIdentityChallengeRow | undefined;
+    if (
+      challenge === undefined ||
+      challenge.account_id !== caller.auth.accountId ||
+      challenge.enrollment_id !== caller.auth.enrollmentId ||
+      challenge.identity_pub !== body['identityPub'] ||
+      challenge.expires_at <= Date.now()
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'identity-challenge-expired-or-invalid',
+      });
+    }
+    if (!(await this.verifyDeviceIdentityProof(challenge, body['proof']))) {
+      return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-identity-proof' });
+    }
+    this.ctx.storage.sql.exec(
+      'DELETE FROM device_identity_challenges WHERE challenge_id = ?',
+      challenge.challenge_id,
+    );
+    if (caller.row.identity_pub !== null) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'identity-already-bound' });
+    }
+    const duplicate = this.ctx.storage.sql
+      .exec<{ enrollment_id: string }>(
+        `SELECT enrollment_id FROM device_sessions
+         WHERE account_id = ? AND identity_pub = ? LIMIT 1`,
+        caller.auth.accountId,
+        body['identityPub'],
+      )
+      .toArray()[0];
+    if (duplicate !== undefined) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'identity-already-bound' });
+    }
+    const now = Date.now();
+    const bound = this.ctx.storage.sql
+      .exec<{ enrollment_id: string }>(
+        `UPDATE OR IGNORE device_sessions
+         SET identity_pub = ?, identity_bound_at = ?
+         WHERE account_id = ? AND enrollment_id = ? AND identity_pub IS NULL
+           AND revoked_at IS NULL AND enrollment_class = 'device'
+         RETURNING enrollment_id`,
+        body['identityPub'],
+        now,
+        caller.auth.accountId,
+        caller.auth.enrollmentId,
+      )
+      .toArray();
+    if (bound.length !== 1) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'identity-already-bound' });
+    }
+    return Response.json(
+      {
+        accountId: caller.auth.accountId,
+        enrollmentId: caller.auth.enrollmentId,
+        identityPub: body['identityPub'],
+        identityBoundAt: new Date(now).toISOString(),
+      },
+      { status: 200 },
+    );
   }
 
   private canMaintainInvalidatedRecovery(row: SessionRow, security: AccountSecurityRow): boolean {
@@ -2647,7 +3020,8 @@ export class SessionCoordinator extends DurableObject<Env> {
       .exec(
         `SELECT enrollment_id, installation_id, display_name,
                 credential_generation, revoked_at, created_at,
-                enrollment_class, provider, enrollment_expires_at, environment_id, trust_state
+                enrollment_class, provider, enrollment_expires_at, environment_id, trust_state,
+                proof_method, trust_source, identity_pub, identity_bound_at
          FROM device_sessions WHERE account_id = ? ORDER BY created_at ASC`,
         accountId,
       )
@@ -2663,6 +3037,16 @@ export class SessionCoordinator extends DurableObject<Env> {
         createdAt: new Date(Number(row.created_at)).toISOString(),
         self: row.enrollment_id === selfEnrollmentId,
         trustState,
+        proofMethod:
+          row.proof_method === 'oidc-pkce'
+            ? ('oidc-pkce' as const)
+            : row.proof_method === 'workos-device'
+              ? ('workos-device' as const)
+              : ('enrollment-code' as const),
+        trustSource: row.trust_source ?? 'unknown',
+        identityPub: row.identity_pub,
+        identityBoundAt:
+          row.identity_bound_at === null ? null : new Date(row.identity_bound_at).toISOString(),
         ...(row.enrollment_class === null || row.enrollment_class === 'device'
           ? {}
           : { enrollmentClass: row.enrollment_class as EnrollmentClass }),
@@ -2802,6 +3186,10 @@ export class SessionCoordinator extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       "UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?), trust_state = 'revoked' WHERE enrollment_id = ?",
       Date.now(),
+      row.enrollment_id,
+    );
+    this.ctx.storage.sql.exec(
+      'DELETE FROM device_identity_challenges WHERE enrollment_id = ?',
       row.enrollment_id,
     );
     this.invalidateRecoveryOnTrustedRevoke(row.account_id, row);
@@ -3402,6 +3790,10 @@ export class SessionCoordinator extends DurableObject<Env> {
     // before the account purge is reported. The tombstone prevents any stale
     // challenge or enrollment from reviving that generation.
     this.ctx.storage.sql.exec('DELETE FROM security_challenges WHERE account_id = ?', accountId);
+    this.ctx.storage.sql.exec(
+      'DELETE FROM device_identity_challenges WHERE account_id = ?',
+      accountId,
+    );
     this.ctx.storage.sql.exec('DELETE FROM account_security WHERE account_id = ?', accountId);
     this.ctx.storage.sql.exec('DELETE FROM security_audit WHERE account_id = ?', accountId);
     // Shared artifacts die with the account: rows plus their R2 objects.
@@ -3517,6 +3909,10 @@ export class SessionCoordinator extends DurableObject<Env> {
     let deletedSessions = 0;
     let deletedChallenges = 0;
     this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        'DELETE FROM device_identity_challenges WHERE expires_at <= ?',
+        now,
+      );
       deletedCodes = this.ctx.storage.sql
         .exec<{ n: number }>(
           `DELETE FROM enrollment_codes

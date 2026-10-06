@@ -610,6 +610,8 @@ async function handleRpcInternal(
     }
     case 'security.get':
     case 'security.challenge':
+    case 'security.identityChallenge':
+    case 'security.bindIdentity':
     case 'security.configure':
     case 'security.recover':
     case 'security.approve':
@@ -620,15 +622,19 @@ async function handleRpcInternal(
           ? '/internal/security-get'
           : envelope.request.operation === 'security.challenge'
             ? '/internal/security-challenge'
-            : envelope.request.operation === 'security.configure'
-              ? '/internal/security-configure'
-              : envelope.request.operation === 'security.recover'
-                ? '/internal/security-recover'
-                : envelope.request.operation === 'security.approve'
-                  ? '/internal/security-approve'
-                  : envelope.request.operation === 'security.setPolicy'
-                    ? '/internal/security-set-policy'
-                    : '/internal/security-update-recovery';
+            : envelope.request.operation === 'security.identityChallenge'
+              ? '/internal/security-identity-challenge'
+              : envelope.request.operation === 'security.bindIdentity'
+                ? '/internal/security-bind-identity'
+                : envelope.request.operation === 'security.configure'
+                  ? '/internal/security-configure'
+                  : envelope.request.operation === 'security.recover'
+                    ? '/internal/security-recover'
+                    : envelope.request.operation === 'security.approve'
+                      ? '/internal/security-approve'
+                      : envelope.request.operation === 'security.setPolicy'
+                        ? '/internal/security-set-policy'
+                        : '/internal/security-update-recovery';
       const response = await sessionStub(env).fetch(
         new Request(`https://internal.anvil${internal}`, {
           method: 'POST',

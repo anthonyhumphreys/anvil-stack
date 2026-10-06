@@ -61,6 +61,70 @@ export interface RecoveryRequestBinding {
   payloadHash: string;
 }
 
+/** One-use possession challenge for binding an X25519 key to this enrollment. */
+export interface DeviceIdentityChallengeRequest {
+  /** Canonical standard base64 encoded raw X25519 public key (32 bytes). */
+  identityPub: string;
+}
+
+export interface DeviceIdentityChallengeResult {
+  challengeId: string;
+  /** Unpadded base64url encoded 32-byte random challenge. */
+  challenge: string;
+  accountId: string;
+  enrollmentId: string;
+  /** Echoed in the same canonical standard-base64 form as the request. */
+  identityPub: string;
+  /** Unpadded base64url encoded ephemeral raw X25519 public key (32 bytes). */
+  serverPublicKey: string;
+  expiresAt: string;
+}
+
+export interface BindDeviceIdentityRequest {
+  challengeId: string;
+  /** Canonical standard base64 encoded raw X25519 public key (32 bytes). */
+  identityPub: string;
+  /** Unpadded base64url encoded HMAC-SHA-256 proof (32 bytes). */
+  proof: string;
+}
+
+export interface BindDeviceIdentityResult {
+  accountId: string;
+  enrollmentId: string;
+  identityPub: string;
+  identityBoundAt: string;
+}
+
+/** Security roster fields used to decide whether authenticated auto-trust can run. */
+export interface DeviceIdentityEnrollmentSummary {
+  enrollmentId: string;
+  /** Canonical standard base64 raw X25519 public key; null until bound. */
+  identityPub: string | null;
+  identityBoundAt: string | null;
+  proofMethod: 'oidc-pkce' | 'workos-device' | 'enrollment-code';
+  enrollmentClass: 'device' | 'ephemeral';
+  trustState: 'pending' | 'trusted' | 'revoked';
+  trustSource:
+    | 'unknown'
+    | 'first-device'
+    | 'manual-approval'
+    | 'pairing'
+    | 'recovery'
+    | 'automatic-auth';
+  provider?: string;
+  revoked: boolean;
+  enrollmentExpiresAt?: string;
+}
+
+export interface DeviceIdentitySecurityView {
+  accountId: string;
+  /** Existing policy field retained for older consumers. */
+  policy: DeviceTrustPolicy;
+  /** Explicit policy name for the incoming-device auto-trust decision. */
+  newDeviceTrustPolicy: DeviceTrustPolicy;
+  enrollments: DeviceIdentityEnrollmentSummary[];
+}
+
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;

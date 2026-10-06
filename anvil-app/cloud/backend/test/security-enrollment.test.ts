@@ -1,7 +1,7 @@
 import { env, runInDurableObject, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
-import type { DeviceSession, OidcPkceProof } from '../../contract/auth';
+import type { DeviceSession, EnrollmentCodeIssueResult, OidcPkceProof } from '../../contract/auth';
 import { recoveryRequestBindingBytes } from '../../contract/device-security';
 import { canonicalizeJson } from '../../contract/sync';
 import { encodeBase64Url } from '../src/device-security';
@@ -30,13 +30,31 @@ type EnrollmentView = {
   proofMethod: string;
   trustState: string;
   trustSource: string;
+  identityPub: string | null;
+  identityBoundAt: string | null;
 };
 
 type SecurityView = {
   generation: number;
   policy: string;
+  newDeviceTrustPolicy: string;
   recoveryInvalidated: boolean;
   enrollments: EnrollmentView[];
+};
+
+type DeviceIdentityChallenge = {
+  challengeId: string;
+  challenge: string;
+  accountId: string;
+  enrollmentId: string;
+  identityPub: string;
+  serverPublicKey: string;
+  expiresAt: string;
+};
+
+type DeviceIdentityKeyPair = {
+  identityPub: string;
+  privateKey: CryptoKey;
 };
 
 async function makeOidcAuthority(): Promise<OidcAuthority> {
@@ -175,6 +193,127 @@ function bearer(session: DeviceSession): string {
 
 async function securityView(session: DeviceSession): Promise<SecurityView> {
   return expectSuccess<SecurityView>(await postRpc('security.get', {}, bearer(session)));
+}
+
+async function deviceIdentityKeyPair(): Promise<DeviceIdentityKeyPair> {
+  const pair = (await crypto.subtle.generateKey({ name: 'X25519' }, true, [
+    'deriveBits',
+  ])) as CryptoKeyPair;
+  return {
+    identityPub: standardBase64(
+      new Uint8Array((await crypto.subtle.exportKey('raw', pair.publicKey)) as ArrayBuffer),
+    ),
+    privateKey: pair.privateKey,
+  };
+}
+
+async function deviceIdentityProof(
+  challenge: DeviceIdentityChallenge,
+  identity: DeviceIdentityKeyPair,
+): Promise<string> {
+  const serverPublicBytes = decodeBase64UrlForTest(challenge.serverPublicKey);
+  const challengeBytes = decodeBase64UrlForTest(challenge.challenge);
+  const serverPublicKey = await crypto.subtle.importKey(
+    'raw',
+    serverPublicBytes,
+    { name: 'X25519' },
+    false,
+    [],
+  );
+  const deriveAlgorithm = {
+    name: 'X25519',
+    public: serverPublicKey,
+  } as unknown as SubtleCryptoDeriveKeyAlgorithm;
+  const sharedSecret = await crypto.subtle.deriveBits(deriveAlgorithm, identity.privateKey, 256);
+  const hkdfKey = await crypto.subtle.importKey('raw', sharedSecret, 'HKDF', false, ['deriveKey']);
+  const hmacKey = await crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: challengeBytes,
+      info: new TextEncoder().encode('anvil-device-identity-binding-v1'),
+    },
+    hkdfKey,
+    { name: 'HMAC', hash: 'SHA-256', length: 256 },
+    false,
+    ['sign'],
+  );
+  const message = new TextEncoder().encode(
+    canonicalizeJson({
+      action: 'bind-device-identity',
+      accountId: challenge.accountId,
+      challenge: challenge.challenge,
+      challengeId: challenge.challengeId,
+      enrollmentId: challenge.enrollmentId,
+      identityPub: challenge.identityPub,
+      serverPublicKey: challenge.serverPublicKey,
+      v: 1,
+    }),
+  );
+  return encodeBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', hmacKey, message)));
+}
+
+function decodeBase64UrlForTest(value: string): Uint8Array {
+  const padded =
+    value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function encodeBase64UrlForTest(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function identityChallenge(
+  session: DeviceSession,
+  identityPub: string,
+): Promise<DeviceIdentityChallenge> {
+  return expectSuccess<DeviceIdentityChallenge>(
+    await postRpc('security.identityChallenge', { identityPub }, bearer(session)),
+  );
+}
+
+async function bindIdentity(
+  session: DeviceSession,
+  challenge: DeviceIdentityChallenge,
+  identity: DeviceIdentityKeyPair,
+  proof?: string,
+) {
+  const proofValue = proof ?? (await deviceIdentityProof(challenge, identity));
+  return postRpc(
+    'security.bindIdentity',
+    { challengeId: challenge.challengeId, identityPub: identity.identityPub, proof: proofValue },
+    bearer(session),
+  );
+}
+
+async function issueEnrollmentCode(
+  accountId: string,
+  options: Record<string, unknown> = {},
+): Promise<EnrollmentCodeIssueResult> {
+  env.ENROLLMENT_ADMIN_TOKEN = 'identity-binding-test-admin';
+  const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer identity-binding-test-admin',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ accountId, ...options }),
+  });
+  expect(response.status).toBe(200);
+  return (await response.json()) as EnrollmentCodeIssueResult;
+}
+
+async function enrollCode(code: string, installationId: string): Promise<DeviceSession> {
+  const response = await SELF.fetch('https://spike.test/v1/enroll', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ proof: { method: 'enrollment-code', code }, installationId }),
+  });
+  expect(response.status).toBe(200);
+  return (await response.json()) as DeviceSession;
 }
 
 function standardBase64(bytes: Uint8Array): string {
@@ -319,6 +458,247 @@ describe('OIDC enrollment trust policy', () => {
         expect.objectContaining({ enrollmentId: pending.enrollmentId, trustState: 'pending' }),
       ]),
     );
+  });
+
+  it('binds trusted durable OIDC identities once with an enrollment-bound X25519 proof', async () => {
+    const authority = await makeOidcAuthority();
+    env.OIDC_ISSUER = ISSUER;
+    env.OIDC_CLIENT_ID = CLIENT_ID;
+    const subject = `identity-binding-${crypto.randomUUID()}`;
+    const first = await enrollOidc(authority, authority.issue(subject), 'identity-first');
+    const pending = await enrollOidc(authority, authority.issue(subject), 'identity-pending');
+    const identity = await deviceIdentityKeyPair();
+
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: identity.identityPub },
+          bearer(pending),
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: encodeBase64UrlForTest(decodeBase64UrlForTest(identity.identityPub)) },
+          bearer(first),
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: standardBase64(new Uint8Array(32)) },
+          bearer(first),
+        )
+      ).status,
+    ).toBe(400);
+
+    const challenge = await identityChallenge(first, identity.identityPub);
+    expect(challenge).toMatchObject({
+      accountId: first.accountId,
+      enrollmentId: first.enrollmentId,
+      identityPub: identity.identityPub,
+      serverPublicKey: expect.any(String),
+      challenge: expect.any(String),
+    });
+    const proof = await deviceIdentityProof(challenge, identity);
+    const bound = expectSuccess<{
+      accountId: string;
+      enrollmentId: string;
+      identityPub: string;
+      identityBoundAt: string;
+    }>(await bindIdentity(first, challenge, identity, proof));
+    expect(bound).toMatchObject({
+      accountId: first.accountId,
+      enrollmentId: first.enrollmentId,
+      identityPub: identity.identityPub,
+    });
+    expect(Number.isNaN(Date.parse(bound.identityBoundAt))).toBe(false);
+
+    const view = await securityView(first);
+    expect(view).toMatchObject({
+      policy: 'require-approval',
+      newDeviceTrustPolicy: 'require-approval',
+      enrollments: expect.arrayContaining([
+        expect.objectContaining({
+          enrollmentId: first.enrollmentId,
+          proofMethod: 'oidc-pkce',
+          enrollmentClass: 'device',
+          trustState: 'trusted',
+          trustSource: 'first-device',
+          identityPub: identity.identityPub,
+          identityBoundAt: bound.identityBoundAt,
+        }),
+      ]),
+    });
+    const roster = expectSuccess<{ devices: Array<Record<string, unknown>> }>(
+      await postRpc('device.list', {}, bearer(first)),
+    );
+    expect(roster.devices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          enrollmentId: first.enrollmentId,
+          proofMethod: 'oidc-pkce',
+          identityPub: identity.identityPub,
+          identityBoundAt: bound.identityBoundAt,
+        }),
+      ]),
+    );
+
+    const rebindKey = await deviceIdentityKeyPair();
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: rebindKey.identityPub },
+          bearer(first),
+        )
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await postRpc(
+          'security.bindIdentity',
+          { challengeId: challenge.challengeId, identityPub: identity.identityPub, proof },
+          bearer(first),
+        )
+      ).status,
+    ).toBe(409);
+  });
+
+  it('rejects enrollment-code, manual, duplicate-key, invalid-proof, and replay bindings', async () => {
+    const authority = await makeOidcAuthority();
+    env.OIDC_ISSUER = ISSUER;
+    env.OIDC_CLIENT_ID = CLIENT_ID;
+    const subject = `identity-eligibility-${crypto.randomUUID()}`;
+    const first = await enrollOidc(authority, authority.issue(subject), 'eligibility-first');
+    const manual = await enrollOidc(authority, authority.issue(subject), 'eligibility-manual');
+    const rootIdentity = await deviceIdentityKeyPair();
+    const rootChallenge = await identityChallenge(first, rootIdentity.identityPub);
+    const rootProof = await deviceIdentityProof(rootChallenge, rootIdentity);
+    expectSuccess(await bindIdentity(first, rootChallenge, rootIdentity, rootProof));
+
+    const manualApproval = await postRpc(
+      'security.approve',
+      { enrollmentId: manual.enrollmentId, source: 'manual-approval' },
+      bearer(first),
+    );
+    expect(manualApproval.status).toBe(200);
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: (await deviceIdentityKeyPair()).identityPub },
+          bearer(manual),
+        )
+      ).status,
+    ).toBe(403);
+
+    const recovery = await ed25519Material();
+    expectSuccess<SecurityView>(
+      await postRpc(
+        'security.configure',
+        {
+          policy: 'auto-trust-authenticated',
+          backendId: `identity-backend-${crypto.randomUUID()}`,
+          envelope: recoveryEnvelope(recovery.publicKey),
+        },
+        bearer(first),
+      ),
+    );
+    const automatic = await enrollOidc(authority, authority.issue(subject), 'eligibility-auto');
+    const duplicateKeyChallenge = await postRpc(
+      'security.identityChallenge',
+      { identityPub: rootIdentity.identityPub },
+      bearer(automatic),
+    );
+    expect(duplicateKeyChallenge.status).toBe(409);
+
+    const automaticIdentity = await deviceIdentityKeyPair();
+    const automaticChallenge = await identityChallenge(automatic, automaticIdentity.identityPub);
+    const invalidProof = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+    expect(
+      (await bindIdentity(automatic, automaticChallenge, automaticIdentity, invalidProof)).status,
+    ).toBe(401);
+    expect(
+      (
+        await postRpc(
+          'security.bindIdentity',
+          {
+            challengeId: automaticChallenge.challengeId,
+            identityPub: automaticIdentity.identityPub,
+            proof: await deviceIdentityProof(automaticChallenge, automaticIdentity),
+          },
+          bearer(first),
+        )
+      ).status,
+    ).toBe(409);
+
+    const acceptedProof = await deviceIdentityProof(automaticChallenge, automaticIdentity);
+    expectSuccess(
+      await bindIdentity(automatic, automaticChallenge, automaticIdentity, acceptedProof),
+    );
+    expect(
+      (
+        await postRpc(
+          'security.bindIdentity',
+          {
+            challengeId: automaticChallenge.challengeId,
+            identityPub: automaticIdentity.identityPub,
+            proof: acceptedProof,
+          },
+          bearer(automatic),
+        )
+      ).status,
+    ).toBe(409);
+
+    expect(
+      (await postRpc('device.revoke', { enrollmentId: automatic.enrollmentId }, bearer(first)))
+        .status,
+    ).toBe(200);
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: (await deviceIdentityKeyPair()).identityPub },
+          bearer(automatic),
+        )
+      ).status,
+    ).toBe(401);
+
+    const codeAccount = `acct-identity-code-${crypto.randomUUID()}`;
+    const code = await issueEnrollmentCode(codeAccount);
+    const codeEnrollment = await enrollCode(code.code, 'identity-code-enrollment');
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: (await deviceIdentityKeyPair()).identityPub },
+          bearer(codeEnrollment),
+        )
+      ).status,
+    ).toBe(403);
+
+    const ephemeralCode = await issueEnrollmentCode(`acct-identity-env-${crypto.randomUUID()}`, {
+      enrollmentClass: 'ephemeral',
+      provider: 'test',
+      sessionTtlSeconds: 300,
+      environmentId: `env-${crypto.randomUUID()}`,
+    });
+    const ephemeral = await enrollCode(ephemeralCode.code, 'identity-ephemeral-enrollment');
+    expect(
+      (
+        await postRpc(
+          'security.identityChallenge',
+          { identityPub: (await deviceIdentityKeyPair()).identityPub },
+          bearer(ephemeral),
+        )
+      ).status,
+    ).toBe(401);
   });
 
   it('revokes old OIDC credentials, fences old recovery maintenance, and advances auto trust generation', async () => {

@@ -264,7 +264,9 @@ export interface DeviceSummary {
   self: boolean;
   /** Server audit state; the desktop keyring remains the E2EE authority. */
   trustState?: 'pending' | 'trusted' | 'revoked';
-  /** How the server recorded the enrollment's trust transition. */
+  /** Enrollment method used to authenticate the device account identity. */
+  proofMethod?: 'oidc-pkce' | 'workos-device' | 'enrollment-code';
+  /** Source of the server trust transition, when known. */
   trustSource?:
     | 'unknown'
     | 'first-device'
@@ -274,6 +276,10 @@ export interface DeviceSummary {
     | 'automatic-auth'
     | 'recovery-code'
     | 'local-device';
+  /** Bound X25519 public key; null until the enrollment completes proof of possession. */
+  identityPub?: string | null;
+  /** Server time at which the immutable identity key was bound. */
+  identityBoundAt?: string | null;
   trustedAt?: string | null;
   /**
    * `ephemeral` marks a cloud-environment enrollment (ENV-01); absent on
