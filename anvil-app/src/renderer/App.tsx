@@ -383,9 +383,9 @@ export function App() {
     );
   }
 
-  // O1–O5: one merged welcome — role + primary agent in two steps. Optional
-  // integrations (work items, git provider, docs) are deferred to point of
-  // need; the persisted onboardingStep resumes mid-flow after relaunch.
+  // O1–O5: first-run welcome covers role, primary agent, and optional Sync.
+  // Other integrations are deferred to point of need; onboardingStep records
+  // completion before the workspace creator so relaunches resume there.
   if (!userRole || !connectorsConfigured) {
     return (
       <BrandProvider>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { SyncDeviceSecurityStatus } from '../../shared/sync-device-security';
 import type {
   SyncBackendConnectionMode,
   SyncBackendDiscovery,
@@ -26,6 +27,7 @@ export type SyncSetupBusy =
   | null;
 
 const RUNTIME_POLL_INTERVAL_MS = 5_000;
+const SECURITY_REFRESH_INTERVAL_MS = 60_000;
 
 export interface SyncMeshSetupController {
   mode: SyncSetupMode;
@@ -37,7 +39,11 @@ export interface SyncMeshSetupController {
   status: SyncBackendStatus | null;
   statusLoading: boolean;
   runtime: SyncRuntimeStatus | null;
+  security: SyncDeviceSecurityStatus | null;
+  recoveryCodePending: boolean;
+  setRecoveryCodePending: (pending: boolean) => void;
   adoptionPreview: SyncAdoptionPreviewItem[];
+  adoptionPreviewAvailable: boolean;
   conflicts: SyncConflictView[];
   devices: SyncDevice[];
   discovery: SyncBackendDiscovery | null;
@@ -53,6 +59,7 @@ export interface SyncMeshSetupController {
   handlePin: () => Promise<void>;
   handleResolveIdentityReview: () => Promise<void>;
   handleSignIn: () => Promise<void>;
+  handleConnectHosted: () => Promise<void>;
   handleEnrollWithCode: () => Promise<void>;
   handleEnableSync: () => Promise<void>;
   handleMeshChange: () => Promise<void>;
@@ -78,16 +85,24 @@ export function useSyncMeshSetup({
   const [status, setStatus] = useState<SyncBackendStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(!preview);
   const [runtime, setRuntime] = useState<SyncRuntimeStatus | null>(null);
+  const [security, setSecurity] = useState<SyncDeviceSecurityStatus | null>(null);
+  const [recoveryCodePending, setRecoveryCodePending] = useState(false);
   const [adoptionPreview, setAdoptionPreview] = useState<SyncAdoptionPreviewItem[]>([]);
+  const [adoptionPreviewAvailable, setAdoptionPreviewAvailable] = useState(false);
   const [conflicts, setConflicts] = useState<SyncConflictView[]>([]);
   const [devices, setDevices] = useState<SyncDevice[]>([]);
   const [discovery, setDiscovery] = useState<SyncBackendDiscovery | null>(null);
   const [busy, setBusy] = useState<SyncSetupBusy>(null);
   const [error, setError] = useState<string | null>(null);
   const runtimeRefreshSequence = useRef(0);
+  const fullRefreshSequence = useRef(0);
+  const securityReady = useRef(false);
+  const lastSecurityRefresh = useRef(0);
 
   const refresh = useCallback(async (): Promise<void> => {
     if (preview) return;
+    const sequence = ++fullRefreshSequence.current;
+    runtimeRefreshSequence.current += 1;
     setStatusLoading(true);
     setError(null);
     setBusy((current) => (current === null ? 'loading' : current));
@@ -95,8 +110,8 @@ export function useSyncMeshSetup({
       const [statusNext, runtimeNext, previewNext, conflictsNext] = await Promise.all([
         window.anvil.syncBackend.status(),
         window.anvil.syncRuntime.status(),
-        window.anvil.syncRuntime.preview(),
-        window.anvil.syncRuntime.conflicts(),
+        window.anvil.syncRuntime.preview().catch(() => null),
+        window.anvil.syncRuntime.conflicts().catch(() => []),
       ]);
       const hosted =
         runtimeNext.auth.state === 'signed-in'
@@ -105,18 +120,26 @@ export function useSyncMeshSetup({
               .catch(() => runtimeNext.hosted)
           : runtimeNext.hosted;
       const runtimeWithHosted = { ...runtimeNext, hosted };
+      if (sequence !== fullRefreshSequence.current) return;
       setStatus(statusNext);
       setRuntime(runtimeWithHosted);
-      setAdoptionPreview(previewNext);
+      setSecurity(null);
+      setAdoptionPreview(previewNext ?? []);
+      setAdoptionPreviewAvailable(previewNext !== null);
       setConflicts(conflictsNext);
       if (runtimeNext.auth.state === 'signed-in') {
-        try {
-          setDevices(await window.anvil.syncRuntime.listDevices());
-        } catch {
-          // Device management is supplementary; retain the last successful list.
-        }
+        const [devicesNext, securityNext] = await Promise.all([
+          window.anvil.syncRuntime.listDevices().catch(() => []),
+          window.anvil.syncRuntime.getDeviceSecurityStatus().catch(() => null),
+        ]);
+        if (sequence !== fullRefreshSequence.current) return;
+        setDevices(devicesNext);
+        setSecurity(securityNext);
+        securityReady.current = securityNext?.hasAccountKey === true;
+        lastSecurityRefresh.current = Date.now();
       } else {
         setDevices([]);
+        securityReady.current = false;
       }
       if (statusNext.connectionMode !== 'local') setModeState(statusNext.connectionMode);
       setEndpointState((current) => {
@@ -128,8 +151,10 @@ export function useSyncMeshSetup({
     } catch (err) {
       setError(toErrorMessage(err, 'Could not read Sync & Mesh status.'));
     } finally {
-      setStatusLoading(false);
-      setBusy((current) => (current === 'loading' ? null : current));
+      if (sequence === fullRefreshSequence.current) {
+        setStatusLoading(false);
+        setBusy((current) => (current === 'loading' ? null : current));
+      }
     }
   }, [preview]);
 
@@ -154,11 +179,28 @@ export function useSyncMeshSetup({
   const refreshRuntime = useCallback(async (): Promise<void> => {
     const sequence = ++runtimeRefreshSequence.current;
     try {
-      const next = await window.anvil.syncRuntime.status();
+      const readSecurity =
+        !securityReady.current ||
+        Date.now() - lastSecurityRefresh.current >= SECURITY_REFRESH_INTERVAL_MS;
+      const [next, securityNext] = await Promise.all([
+        window.anvil.syncRuntime.status(),
+        readSecurity
+          ? window.anvil.syncRuntime.getDeviceSecurityStatus().catch(() => null)
+          : Promise.resolve(undefined),
+      ]);
       if (sequence !== runtimeRefreshSequence.current) return;
       setRuntime((current) =>
         current === null ? next : { ...next, hosted: current.hosted ?? next.hosted },
       );
+      if (next.auth.state !== 'signed-in') {
+        setSecurity(null);
+        securityReady.current = false;
+      } else if (securityNext !== undefined) {
+        const sameAccount = securityNext?.accountId === next.auth.accountId;
+        setSecurity(sameAccount ? securityNext : null);
+        securityReady.current = sameAccount && securityNext?.hasAccountKey === true;
+        lastSecurityRefresh.current = Date.now();
+      }
     } catch {
       // Full refreshes and the next poll remain authoritative.
     }
@@ -262,6 +304,23 @@ export function useSyncMeshSetup({
     }
   }, [refresh]);
 
+  const handleConnectHosted = useCallback(async (): Promise<void> => {
+    if (preview) return;
+    setBusy('signing-in');
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.connectHosted();
+      await refresh();
+    } catch (err) {
+      setError(toErrorMessage(err, 'Sign-in did not complete. Try again.'));
+      // A changed service identity must be visible even when sign-in stops.
+      await refresh().catch(() => undefined);
+      setError(toErrorMessage(err, 'Sign-in did not complete. Try again.'));
+    } finally {
+      setBusy(null);
+    }
+  }, [preview, refresh]);
+
   const handleEnrollWithCode = useCallback(async (): Promise<void> => {
     if (enrollmentCode.trim() === '') return;
     setBusy('enrolling');
@@ -322,6 +381,7 @@ export function useSyncMeshSetup({
   const canEnableSync =
     backendPinned === true &&
     signedIn &&
+    adoptionPreviewAvailable &&
     status?.identityReviewRequired !== true &&
     runtime?.sessionExpired !== true;
 
@@ -335,7 +395,11 @@ export function useSyncMeshSetup({
     status,
     statusLoading,
     runtime,
+    security,
+    recoveryCodePending,
+    setRecoveryCodePending,
     adoptionPreview,
+    adoptionPreviewAvailable,
     conflicts,
     devices,
     discovery,
@@ -351,6 +415,7 @@ export function useSyncMeshSetup({
     handlePin,
     handleResolveIdentityReview,
     handleSignIn,
+    handleConnectHosted,
     handleEnrollWithCode,
     handleEnableSync,
     handleMeshChange,
