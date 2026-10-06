@@ -50,12 +50,12 @@ acceptance limits.
 
 ## Rollout and cost limits
 
-- The host-local implementation was recorded at checkpoint `2ee256e`. Local project
-  checks were recorded at implementation checkpoint `e50e2a9`, whose implementation source is
-  unchanged by the staging preparation. After the staging-workflow fixes, the full backend Vitest run passed
-  42 files and 436 tests; workflow-agent checks passed 27 tests, typecheck, and self-check. The
-  generated CI staging plan was reviewed with no provider calls, no service bindings, and all flags
-  off. These are local preparation checks. Record current-candidate CI and live acceptance separately.
+- The host-local implementation was recorded at checkpoint `2ee256e`. Local project checks at
+  `e50e2a9` and subsequent staging-workflow preparation are historical evidence for those revisions,
+  not checks of later staging/client changes. That earlier preparation passed backend Vitest across
+  42 files and 436 tests, plus 27 workflow-agent tests, typecheck, and self-check. Its generated CI
+  staging plan had no provider calls or service bindings and all flags off; it predates the enabled
+  managed staging pilot. Record current-candidate CI and live acceptance separately.
 - Staging acceptance for the current candidate remains unrecorded. Follow the
   [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md). Physical WAN
   acceptance, managed-tunnel allocation and cleanup, provider capacity and pricing, production

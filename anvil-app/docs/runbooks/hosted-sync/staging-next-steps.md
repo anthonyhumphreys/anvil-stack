@@ -133,7 +133,7 @@ one disposable synthetic account and host, starts the trusted Homebrew
 `cloudflared`, and verifies a marker through the public HTTPS tunnel. It then
 stops the connector, releases the endpoint, checks Cloudflare for the DNS record
 and tunnel's absence, clears the host advertisement and revokes the enrollment.
-The empty synthetic account namespace remains. It does not test the app's
+The synthetic account namespace retains its revoked enrollment. It does not test the app's
 session authentication, sign-in UX or two physical networks.
 
 Run it only after the managed staging deployment succeeds. Supply an

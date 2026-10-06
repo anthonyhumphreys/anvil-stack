@@ -424,11 +424,20 @@ async function main() {
     tunnelName = `anvil-${label}-g1`;
     const displayName = 'Disposable staging managed endpoint transport smoke';
 
-    const issued = await broker('/v1/enrollment-codes', {
-      method: 'POST',
-      token: creds.enrollmentAdminToken,
-      body: { accountId, displayName },
-    });
+    // A newly deployed temporary secret can take time to reach the serving
+    // Worker and session object. Retry only rejected issuance, before any code
+    // exists, and keep a bounded deadline for an incorrect credential.
+    let issued;
+    const enrollmentDeadline = Date.now() + 30_000;
+    do {
+      issued = await broker('/v1/enrollment-codes', {
+        method: 'POST',
+        token: creds.enrollmentAdminToken,
+        body: { accountId, displayName },
+      });
+      if (issued.status !== 401 || Date.now() + 2_000 > enrollmentDeadline) break;
+      await wait(2_000);
+    } while (Date.now() < enrollmentDeadline);
     statuses.enrollmentIssue = issued.status;
     if (issued.status !== 200 || typeof issued.payload?.code !== 'string')
       throw new Failure('enrollment-issue-failed', issued.status);

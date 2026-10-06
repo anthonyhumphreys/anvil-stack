@@ -98,7 +98,7 @@ jobs:
           }), { mode: 0o600 });
           JS
           pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json plan --json
-      - name: Validate, migrate and deploy staging
+      - name: Validate, migrate, deploy and install staging secrets
         if: steps.staging_config.outputs.managed_endpoints != 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
@@ -110,7 +110,8 @@ jobs:
           pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json apply --dry-run --json
           pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json migrate --json
           pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json apply --test-deployment --json
-      - name: Validate, migrate and deploy staging managed endpoints
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json secrets --json
+      - name: Validate, migrate, deploy and install managed staging secrets
         if: steps.staging_config.outputs.managed_endpoints == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
@@ -128,6 +129,25 @@ jobs:
           pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json apply --dry-run --json
           pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json migrate --json
           pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json apply --test-deployment --json
+          pnpm hosted:deploy -- --environment staging --manifest hosted-targets.ci.json secrets --json
+      - name: Verify installed staging secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
+          MANAGED_ENDPOINTS: ${{ steps.staging_config.outputs.managed_endpoints }}
+        run: |
+          pnpm exec wrangler secret list --format json --config .wrangler/mesh/anvil-sync-hosted-staging/wrangler.jsonc > .wrangler/staging-secret-names.json
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          const installed = JSON.parse(readFileSync('.wrangler/staging-secret-names.json', 'utf8'));
+          const names = new Set(installed.map(secret => secret.name));
+          const required = ['HOSTED_SERVICE_KEYS', 'WORKOS_API_KEY', 'WORKOS_WEBHOOK_SECRET'];
+          if (process.env.MANAGED_ENDPOINTS === 'true') required.push(
+            'CLOUDFLARE_TUNNEL_ACCOUNT_ID', 'CLOUDFLARE_TUNNEL_ZONE_ID', 'CLOUDFLARE_TUNNEL_API_TOKEN',
+          );
+          const missing = required.filter(name => !names.has(name));
+          if (missing.length) throw new Error(`Required staging secrets not installed: ${missing.join(', ')}`);
+          console.log(`Verified ${required.length} required staging secret names`);
+          JS
       - name: Verify deployed staging identity
         run: |
           curl --fail --silent --show-error --retry 3 \

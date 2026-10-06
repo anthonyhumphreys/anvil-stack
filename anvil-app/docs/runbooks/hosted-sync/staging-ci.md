@@ -12,7 +12,9 @@ backend on matching pushes to `develop` and
 `feature/sync-mesh--foundations`. The workflow checks backend and deployment
 guards, builds the Cloud CLI, generates staging config from
 `hosted-targets.ci.json`, reviews a plan, applies D1 migrations, deploys the
-Worker, and checks the public descriptor.
+Worker, installs the protected runtime secrets, verifies their names on the
+deployed Worker, and checks the public descriptor. Validating CI inputs alone
+does not install Worker secrets. Both deployment paths install them explicitly.
 
 The manual `workflow_dispatch` input `managed_endpoint_pilot` defaults to
 `false`. Pushes and normal dispatches preserve the saved

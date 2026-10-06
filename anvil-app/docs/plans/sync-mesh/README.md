@@ -5,11 +5,13 @@ The current product, architecture, and rollout boundary is in the
 implementation review records security evidence and acceptance limits. Use the
 [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md) for operator work.
 
-The host-local implementation was recorded at checkpoint `2ee256e`. Local
-project checks at `e50e2a9` cover the unchanged implementation source. After the staging-workflow
-fixes, backend Vitest passed 42 files and 436 tests; workflow-agent checks passed 27 tests,
-typecheck, and self-check. The generated staging plan was reviewed with all flags off and no
-provider calls or service bindings. These are local preparation checks. Record current-candidate CI and live acceptance separately.
+The host-local implementation was recorded at checkpoint `2ee256e`. Local project
+checks were recorded at `e50e2a9`. Later staging-workflow preparation passed backend Vitest
+with 42 files and 436 tests, plus 27 workflow-agent tests, typecheck, and self-check. Its generated
+staging plan had all flags off and no provider calls or service bindings; that was before the
+managed staging pilot was enabled. These are historical local-preparation results for those
+revisions, not verification of the current source or deployment. Record current-candidate CI and
+live acceptance separately.
 
 Sync is free and opt-in per workspace. Local is the default for new workspaces. Sync carries
 portable workspace definitions, repository references, preferences, templates, agent definitions,

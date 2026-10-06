@@ -3,11 +3,12 @@
 Prepared 4 October 2026. This is the detailed implementation and acceptance plan. The current
 product, architecture, and rollout decisions are in the [decision record](decisions.md).
 
-The host-local implementation was recorded at checkpoint `2ee256e`. Local project
-checks at `e50e2a9` cover the unchanged implementation source. After the staging-workflow fixes,
-backend Vitest passed 42 files and 436 tests; workflow-agent checks passed 27 tests, typecheck, and
-self-check. The generated staging plan was reviewed with all flags off and no provider calls or
-service bindings. These are local preparation checks. Record current-candidate CI and live acceptance separately. The immutable security
+The host-local implementation was recorded at checkpoint `2ee256e`. Local project checks at
+`e50e2a9` and subsequent staging-workflow preparation are historical evidence for those revisions,
+not checks of later staging/client changes. That earlier preparation passed backend Vitest across
+42 files and 436 tests, plus 27 workflow-agent tests, typecheck, and self-check. Its generated
+staging plan had all flags off and no provider calls or service bindings; it predates the managed
+staging pilot. Record current-candidate CI and live acceptance separately. The immutable security
 review retains a coverage-metadata discrepancy and a remaining mobile native-buffering limit. See
 the [implementation review](host-local-implementation-review.md) and the
 [staging next-steps runbook](../../runbooks/hosted-sync/staging-next-steps.md) for acceptance
@@ -313,18 +314,18 @@ price for this deployment. Do not base scaling on creating extra accounts to eva
 
 ## Delivery sequence
 
-The sequence below records the implementation slices and their remaining gates. All code is in the
-current working tree; this is not a deployment or user-acceptance record. New routes remain off by
-default until their rollout checks pass.
+The sequence below records implementation slices and their remaining gates; it is not a current
+deployment or user-acceptance record. The managed endpoint pilot is enabled for staging. Ordinary
+and production build defaults remain off.
 
 | Increment | Current status | Remaining acceptance |
 | --- | --- | --- |
 | 0. Baseline and capability contract | Current profiles, host protocol, stream epochs and typed capabilities are in the working tree. Cost inputs remain projections. | Measure representative hosted requests, duration, rows, storage and network recovery; reconcile with a real provider bill. |
-| 1. Private host sessions | Scoped bootstrap, proof verification, trust checks, revocation and session expiry are integrated behind the default-off host flag. | Verify physical two-host behavior, including replay, cross-account and revoked-device rejection. |
-| 2. Direct interactive traffic | Host reads, commands, cursor replay and client connections are integrated across current desktop, browser, mobile and Raycast surfaces. Local checks at `e50e2a9` cover the unchanged source; after workflow fixes, backend Vitest passed 42 files and 436 tests. | Verify network loss, reconnect, acknowledgements and coordinator recovery on physical devices. |
+| 1. Private host sessions | Scoped bootstrap, proof verification, trust checks, revocation and session expiry are integrated behind a host flag. Ordinary builds default off; the isolated staging preview embeds the flag. | Verify physical two-host behavior, including replay, cross-account and revoked-device rejection. |
+| 2. Direct interactive traffic | Host reads, commands, cursor replay and client connections are integrated across current desktop, browser, mobile and Raycast surfaces. Local checks at `e50e2a9` and the later 42-file/436-test backend run are historical preparation evidence, not verification of the current candidate. | Verify network loss, reconnect, acknowledgements and coordinator recovery on physical devices. |
 | 3. Small durable Mesh state | Durable ownership, approvals, cancellation, handoff, event archives and status-poll reductions are integrated. | Verify partition, crash, eviction and handoff recovery; measure the hosted workload. Lease cadence remains unchanged. |
 | 4. Compact Sync storage | Encrypted snapshot manifests, verified chunks, publication fencing and bounded journal recovery are integrated. | Verify long-offline/new-device recovery, conflicts, tombstones, key rotation and opt-out before enabling compaction deletion. |
-| 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated behind separate default-off host/backend flags. | Verify real tunnel allocation and cleanup, separate-WAN browser/mobile connections, permitted traffic, capacity, price and billing. |
+| 5. Managed reachability | Loopback ingress and generation-fenced allocation are integrated behind separate host/backend flags. The controlled staging pilot is enabled; ordinary and production defaults remain off. | Verify real tunnel allocation and cleanup, separate-WAN browser/mobile connections, permitted traffic, capacity, price and billing. |
 | 6. Protocol and rollout | Current clients require `anvil-backend/1`, `sync/2` and `mesh/2`; security review and fixes are recorded. Machine routes advertise their session and stream capabilities separately. | Resolve native mobile receive limits, complete physical acceptance, measure costs and make explicit staged-rollout decisions before changing defaults. |
 
 Managed reachability is an operator pilot, not general availability. Do not expand Cloud Agent
@@ -469,10 +470,10 @@ unreleased managed reachability, unlimited storage, zero infrastructure cost, in
 universal chat-history backup. Browser, desktop and companion documentation must agree about
 supported operations and offline behaviour.
 
-The host-local implementation was recorded at checkpoint `2ee256e`. Local project checks
-at `e50e2a9` cover the unchanged implementation source. After workflow fixes, backend Vitest passed
-42 files and 436 tests; workflow-agent checks passed 27 tests, typecheck and self-check. These are
-local checks, not staging/live acceptance. The
+The host-local implementation was recorded at checkpoint `2ee256e`. Local project checks at
+`e50e2a9` and the later staging-workflow checks are historical local-preparation evidence for those
+revisions, not verification of the current source or deployment. The backend Vitest run passed 42
+files and 436 tests; workflow-agent checks passed 27 tests, typecheck and self-check. The
 [implementation review](host-local-implementation-review.md) preserves the immutable audit, its
 metadata discrepancy, and the remaining native mobile receive limit. Production rollout requires
 physical multi-host acceptance, measured representative workloads, provider capacity and pricing
