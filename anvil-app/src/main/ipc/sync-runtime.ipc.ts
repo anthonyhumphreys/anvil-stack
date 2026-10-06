@@ -11,6 +11,7 @@ import { isPermissionMode } from '../../../cloud/contract/permissions.js';
 import type { ReasoningEffort } from '../../shared/types.js';
 import { setMeshMaximumPermissionMode } from '../services/mesh-worker.service.js';
 import { ipcMain } from 'electron';
+import { connectHostedSync } from '../services/sync-setup.service.js';
 import {
   approveDashboardGrant,
   addCloudProviderConnection,
@@ -326,6 +327,7 @@ export function registerSyncRuntimeHandlers(): void {
   ipcMain.handle('sync-runtime:preview', () => previewAdoption());
 
   ipcMain.handle('sync-runtime:sign-in', () => signInWithOidc());
+  ipcMain.handle('sync-runtime:connect-hosted', () => connectHostedSync());
 
   ipcMain.handle('sync-runtime:enroll-with-code', (_event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload['code'] !== 'string') {

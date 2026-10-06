@@ -827,6 +827,8 @@ export interface AnvilAPI {
     preview: () => Promise<SyncAdoptionPreviewItem[]>;
     /** Production sign-in: system-browser OIDC + PKCE at the pinned backend. */
     signIn: () => Promise<SyncAuthPublicSnapshot>;
+    /** Discover the configured Anvil service and sign in; uploading stays off. */
+    connectHosted: () => Promise<SyncAuthPublicSnapshot>;
     enrollWithCode: (code: string) => Promise<SyncAuthPublicSnapshot>;
     issueEnrollmentCode: () => Promise<SyncIssuedEnrollmentCode>;
     spikeEnroll: (input: SyncSpikeEnrollInput) => Promise<SyncAuthPublicSnapshot>;

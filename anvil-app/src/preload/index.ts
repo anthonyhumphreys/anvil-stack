@@ -844,6 +844,7 @@ const api: AnvilAPI = {
         .then((result: { environment: CloudEnvironmentRecord }) => result.environment),
     preview: () => ipcRenderer.invoke('sync-runtime:preview'),
     signIn: () => ipcRenderer.invoke('sync-runtime:sign-in'),
+    connectHosted: () => ipcRenderer.invoke('sync-runtime:connect-hosted'),
     enrollWithCode: (code: string) => ipcRenderer.invoke('sync-runtime:enroll-with-code', { code }),
     issueEnrollmentCode: (): Promise<SyncIssuedEnrollmentCode> =>
       ipcRenderer.invoke('sync-runtime:issue-enrollment-code'),
