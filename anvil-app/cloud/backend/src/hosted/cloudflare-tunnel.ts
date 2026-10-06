@@ -34,12 +34,24 @@ interface DnsRecord {
   content?: string;
 }
 
+export type CloudflareTunnelPhase =
+  | 'tunnel-list'
+  | 'tunnel-create'
+  | 'tunnel-configure'
+  | 'dns-list'
+  | 'dns-update'
+  | 'dns-create'
+  | 'token-read'
+  | 'dns-delete'
+  | 'tunnel-delete';
+
 /** Provider API failures retain retryability without exposing response bodies or credentials. */
 export class CloudflareTunnelError extends Error {
   constructor(
     message: string,
     readonly retryable: boolean,
     readonly status: number | null = null,
+    readonly phase: CloudflareTunnelPhase | 'unknown' = 'unknown',
   ) {
     super(message);
     this.name = 'CloudflareTunnelError';
@@ -108,9 +120,9 @@ export class CloudflareTunnelProvider {
     // reject deletion; a later reconciliation retries the same two idempotent steps.
     await this.deleteDnsRecord(input.dnsRecordId);
     const path = `/accounts/${encodeURIComponent(this.config.accountId)}/cfd_tunnel/${encodeURIComponent(input.tunnelId)}`;
-    const response = await this.call('DELETE', path);
+    const response = await this.call('DELETE', path, undefined, 'tunnel-delete');
     if (response.status === 404) return;
-    await this.expectOk(response, 'delete tunnel');
+    await this.expectOk(response, 'delete tunnel', 'tunnel-delete');
   }
 
   async removeByName(input: { stableName: string; stableHostLabel: string }): Promise<void> {
@@ -122,8 +134,10 @@ export class CloudflareTunnelProvider {
       const response = await this.call(
         'DELETE',
         `/accounts/${encodeURIComponent(this.config.accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}`,
+        undefined,
+        'tunnel-delete',
       );
-      if (response.status !== 404) await this.expectOk(response, 'delete tunnel');
+      if (response.status !== 404) await this.expectOk(response, 'delete tunnel', 'tunnel-delete');
     }
   }
 
@@ -132,14 +146,16 @@ export class CloudflareTunnelProvider {
     const response = await this.call(
       'GET',
       `/accounts/${encodeURIComponent(this.config.accountId)}/cfd_tunnel?${query.toString()}`,
+      undefined,
+      'tunnel-list',
     );
-    await this.expectOk(response, 'list tunnels');
+    await this.expectOk(response, 'list tunnels', 'tunnel-list');
     const envelope = (await response.json()) as CloudflareEnvelope<TunnelRecord[]>;
     const matches = (Array.isArray(envelope.result) ? envelope.result : []).filter(
       (record) => record.name === stableName && record.deleted_at == null && isUuid(record.id),
     );
     if (matches.length > 1) {
-      throw new CloudflareTunnelError('multiple tunnels match allocation operation', false);
+      throw new CloudflareTunnelError('multiple tunnels match allocation operation', false, null, 'tunnel-list');
     }
     return matches[0]?.id ?? null;
   }
@@ -157,11 +173,12 @@ export class CloudflareTunnelProvider {
         config_src: 'cloudflare',
         metadata: { anvil_operation_id: operationId },
       },
+      'tunnel-create',
     );
-    await this.expectOk(response, 'create tunnel');
+    await this.expectOk(response, 'create tunnel', 'tunnel-create');
     const envelope = (await response.json()) as CloudflareEnvelope<TunnelRecord>;
     if (!isUuid(envelope.result?.id)) {
-      throw new CloudflareTunnelError('Cloudflare returned an invalid tunnel identity', true);
+      throw new CloudflareTunnelError('Cloudflare returned an invalid tunnel identity', true, null, 'tunnel-create');
     }
     return envelope.result.id;
   }
@@ -182,8 +199,9 @@ export class CloudflareTunnelProvider {
           ],
         },
       },
+      'tunnel-configure',
     );
-    await this.expectOk(response, 'configure tunnel');
+    await this.expectOk(response, 'configure tunnel', 'tunnel-configure');
   }
 
   private async ensureDnsRecord(hostname: string, tunnelTarget: string): Promise<string> {
@@ -191,14 +209,16 @@ export class CloudflareTunnelProvider {
     const list = await this.call(
       'GET',
       `/zones/${encodeURIComponent(this.config.zoneId)}/dns_records?${query.toString()}`,
+      undefined,
+      'dns-list',
     );
-    await this.expectOk(list, 'list DNS records');
+    await this.expectOk(list, 'list DNS records', 'dns-list');
     const listEnvelope = (await list.json()) as CloudflareEnvelope<DnsRecord[]>;
     const matching = (Array.isArray(listEnvelope.result) ? listEnvelope.result : []).filter(
       (record) => record.type === 'CNAME' && record.name === hostname && isDnsRecordId(record.id),
     );
     if (matching.length > 1) {
-      throw new CloudflareTunnelError('multiple DNS records match allocation hostname', false);
+      throw new CloudflareTunnelError('multiple DNS records match allocation hostname', false, null, 'dns-list');
     }
     const existing = matching[0];
     if (existing?.id && existing.content === tunnelTarget) return existing.id;
@@ -207,19 +227,21 @@ export class CloudflareTunnelProvider {
         'PUT',
         `/zones/${encodeURIComponent(this.config.zoneId)}/dns_records/${encodeURIComponent(existing.id)}`,
         { type: 'CNAME', name: hostname, content: tunnelTarget, proxied: true, ttl: 1 },
+        'dns-update',
       );
-      await this.expectOk(updated, 'update DNS record');
+      await this.expectOk(updated, 'update DNS record', 'dns-update');
       return existing.id;
     }
     const created = await this.call(
       'POST',
       `/zones/${encodeURIComponent(this.config.zoneId)}/dns_records`,
       { type: 'CNAME', name: hostname, content: tunnelTarget, proxied: true, ttl: 1 },
+      'dns-create',
     );
-    await this.expectOk(created, 'create DNS record');
+    await this.expectOk(created, 'create DNS record', 'dns-create');
     const createdEnvelope = (await created.json()) as CloudflareEnvelope<DnsRecord>;
     if (!isDnsRecordId(createdEnvelope.result?.id)) {
-      throw new CloudflareTunnelError('Cloudflare returned an invalid DNS identity', true);
+      throw new CloudflareTunnelError('Cloudflare returned an invalid DNS identity', true, null, 'dns-create');
     }
     return createdEnvelope.result.id;
   }
@@ -229,14 +251,16 @@ export class CloudflareTunnelProvider {
     const response = await this.call(
       'GET',
       `/zones/${encodeURIComponent(this.config.zoneId)}/dns_records?${query.toString()}`,
+      undefined,
+      'dns-list',
     );
-    await this.expectOk(response, 'list DNS records');
+    await this.expectOk(response, 'list DNS records', 'dns-list');
     const envelope = (await response.json()) as CloudflareEnvelope<DnsRecord[]>;
     const matches = (Array.isArray(envelope.result) ? envelope.result : []).filter(
       (record) => record.type === 'CNAME' && record.name === hostname && isDnsRecordId(record.id),
     );
     if (matches.length > 1) {
-      throw new CloudflareTunnelError('multiple DNS records match allocation hostname', false);
+      throw new CloudflareTunnelError('multiple DNS records match allocation hostname', false, null, 'dns-list');
     }
     return matches[0]?.id ?? null;
   }
@@ -245,11 +269,13 @@ export class CloudflareTunnelProvider {
     const response = await this.call(
       'GET',
       `/accounts/${encodeURIComponent(this.config.accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/token`,
+      undefined,
+      'token-read',
     );
-    await this.expectOk(response, 'read tunnel token');
+    await this.expectOk(response, 'read tunnel token', 'token-read');
     const envelope = (await response.json()) as CloudflareEnvelope<string>;
     if (typeof envelope.result !== 'string' || envelope.result.length < 40 || envelope.result.length > 8_192) {
-      throw new CloudflareTunnelError('Cloudflare returned an invalid tunnel credential', false);
+      throw new CloudflareTunnelError('Cloudflare returned an invalid tunnel credential', false, null, 'token-read');
     }
     return envelope.result;
   }
@@ -259,14 +285,16 @@ export class CloudflareTunnelProvider {
     const response = await this.call(
       'DELETE',
       `/zones/${encodeURIComponent(this.config.zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      undefined,
+      'dns-delete',
     );
     if (response.status === 404) return;
-    await this.expectOk(response, 'delete DNS record');
+    await this.expectOk(response, 'delete DNS record', 'dns-delete');
   }
 
-  private async call(method: string, path: string, body?: unknown): Promise<Response> {
+  private async call(method: string, path: string, body: unknown, phase: CloudflareTunnelPhase): Promise<Response> {
     try {
-      return await this.fetchImpl(`${this.apiBaseUrl}${path}`, {
+      return await this.fetchImpl.call(globalThis, `${this.apiBaseUrl}${path}`, {
         method,
         headers: {
           authorization: `Bearer ${this.config.apiToken}`,
@@ -275,14 +303,14 @@ export class CloudflareTunnelProvider {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch {
-      throw new CloudflareTunnelError('Cloudflare API request failed', true);
+      throw new CloudflareTunnelError('Cloudflare API request failed', true, null, phase);
     }
   }
 
-  private async expectOk(response: Response, action: string): Promise<void> {
+  private async expectOk(response: Response, action: string, phase: CloudflareTunnelPhase): Promise<void> {
     if (response.ok) return;
     const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-    throw new CloudflareTunnelError(`Cloudflare could not ${action}`, retryable, response.status);
+    throw new CloudflareTunnelError(`Cloudflare could not ${action}`, retryable, response.status, phase);
   }
 }
 

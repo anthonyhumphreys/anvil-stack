@@ -112,8 +112,23 @@ describe('Cloudflare managed tunnel adapter', () => {
       error = caught;
     }
     expect(error).toBeInstanceOf(CloudflareTunnelError);
-    expect(error).toMatchObject({ retryable: false, status: 403 });
+    expect(error).toMatchObject({ retryable: false, status: 403, phase: 'tunnel-list' });
     expect((error as Error).message).not.toContain('provider leaked secret body');
+  });
+
+  it('calls the platform fetch function with its required global receiver', async () => {
+    const request = async function (
+      this: unknown,
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ): Promise<Response> {
+      expect(this).toBe(globalThis);
+      expect(init?.method).toBe('GET');
+      expect(new URL(input.toString()).pathname).toContain('/cfd_tunnel');
+      return response([]);
+    };
+
+    await expect(provider(request as typeof fetch).findTunnel(tunnelName)).resolves.toBeNull();
   });
 
   it('reconciles an existing DNS record and removes it by its Cloudflare identity', async () => {

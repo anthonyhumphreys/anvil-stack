@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DeviceSession, EnrollmentCodeIssueResult } from '../../contract/auth';
 import type { MeshMachineHostsResponse } from '../../contract/machine';
-import { machineEndpointStub, type MachineEndpointAllocationView } from '../src/hosted/machine-endpoints';
+import {
+  createProvider,
+  machineEndpointStub,
+  type MachineEndpointAllocationView,
+} from '../src/hosted/machine-endpoints';
 import type { MachineEndpointCoordinator } from '../src/hosted/machine-endpoints';
 import { expectSuccess, postRpc } from './helpers';
 
@@ -93,12 +97,14 @@ function hostAdvertisement(hostEnrollmentId: string, id: string, endpointGenerat
   };
 }
 
-function machineStub() {
-  return machineEndpointStub(env);
+function machineStub(name?: string) {
+  return name === undefined
+    ? machineEndpointStub(env)
+    : env.MACHINE_ENDPOINTS.get(env.MACHINE_ENDPOINTS.idFromName(name));
 }
 
-async function machineRequest(path: string, body: unknown): Promise<Response> {
-  return machineStub().fetch(`https://internal.anvil${path}`, {
+async function machineRequest(path: string, body: unknown, stub = machineStub()): Promise<Response> {
+  return stub.fetch(`https://internal.anvil${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -114,6 +120,16 @@ afterEach(() => {
 });
 
 describe('managed machine endpoint broker', () => {
+  it('keeps a configured provider available for cleanup when allocation is disabled', () => {
+    env.ANVIL_MESH_MANAGED_ENDPOINTS = 'false';
+    env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = 'test-cloudflare-account';
+    env.CLOUDFLARE_TUNNEL_ZONE_ID = 'test-cloudflare-zone';
+    env.CLOUDFLARE_TUNNEL_API_TOKEN = 'test-cloudflare-token-value';
+    env.MACHINE_ENDPOINT_DOMAIN = 'mesh.example.test';
+
+    expect(createProvider(env)).not.toBeNull();
+  });
+
   it('discovers a host across enrollments and fences one-use admission to its current identity', async () => {
     const accountId = randomId('acct');
     const source = await enroll(accountId, 'Mesh client');
@@ -293,6 +309,105 @@ describe('managed machine endpoint broker', () => {
     const view = (await list.json()) as { allocations: MachineEndpointAllocationView[] };
     expect(view.allocations[0]).toMatchObject({ state: 'retiring' });
     expect(JSON.stringify(view)).not.toContain('connectorToken');
+  });
+
+  it('reports missing and invalid provider configuration without logging its values', async () => {
+    env.ANVIL_MESH_MANAGED_ENDPOINTS = 'true';
+    env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = 'sentinel-account-id';
+    env.CLOUDFLARE_TUNNEL_ZONE_ID = 'sentinel-zone-id';
+    env.CLOUDFLARE_TUNNEL_API_TOKEN = '';
+    env.MACHINE_ENDPOINT_DOMAIN = 'sentinel.mesh.example.test';
+    const isolatedStub = machineStub(randomId('machine-endpoint-test'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      const response = await machineRequest('/internal/allocate', {
+        accountId: randomId('acct'),
+        machineId: machineId(),
+        hostEnrollmentId: randomId('enrollment'),
+        endpointGeneration: generation(),
+        requestId: randomId('allocation-request'),
+        localOrigin: 'http://127.0.0.1:43127',
+      }, isolatedStub);
+      expect(response.status).toBe(503);
+
+      env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = 'invalid account id';
+      env.CLOUDFLARE_TUNNEL_API_TOKEN = 'sentinel-cloudflare-api-token';
+      const invalidConfigResponse = await machineRequest('/internal/allocate', {
+        accountId: randomId('acct'),
+        machineId: machineId(),
+        hostEnrollmentId: randomId('enrollment'),
+        endpointGeneration: generation(),
+        requestId: randomId('allocation-request'),
+        localOrigin: 'http://127.0.0.1:43127',
+      }, isolatedStub);
+      expect(invalidConfigResponse.status).toBe(503);
+
+      const events = log.mock.calls
+        .map(([line]) => (typeof line === 'string' ? JSON.parse(line) as Record<string, unknown> : null))
+        .filter((event) => event?.metric === 'managed_endpoint.provider_failure');
+      expect(events).toContainEqual(expect.objectContaining({
+        phase: 'configuration',
+        reason: 'config-missing',
+        missingBindings: ['CLOUDFLARE_TUNNEL_API_TOKEN'],
+        status: 503,
+        retryable: false,
+      }));
+      expect(events).toContainEqual(expect.objectContaining({
+        phase: 'configuration',
+        reason: 'config-invalid',
+        missingBindings: [],
+        status: 503,
+        retryable: false,
+      }));
+      const serializedLogs = JSON.stringify(log.mock.calls);
+      expect(serializedLogs).not.toContain('sentinel-account-id');
+      expect(serializedLogs).not.toContain('sentinel-zone-id');
+      expect(serializedLogs).not.toContain('sentinel.mesh.example.test');
+      expect(serializedLogs).not.toContain('sentinel-cloudflare-api-token');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('logs provider phase and status without response bodies or credentials', async () => {
+    const apiToken = 'sentinel-cloudflare-api-token-value';
+    const responseBody = 'sentinel provider response must stay private';
+    env.ANVIL_MESH_MANAGED_ENDPOINTS = 'true';
+    env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = 'test-cloudflare-account';
+    env.CLOUDFLARE_TUNNEL_ZONE_ID = 'test-cloudflare-zone';
+    env.CLOUDFLARE_TUNNEL_API_TOKEN = apiToken;
+    env.MACHINE_ENDPOINT_DOMAIN = 'mesh.example.test';
+    vi.stubGlobal('fetch', async () => new Response(responseBody, { status: 403 }));
+    const isolatedStub = machineStub(randomId('machine-endpoint-test'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      const response = await machineRequest('/internal/allocate', {
+        accountId: randomId('acct'),
+        machineId: machineId(),
+        hostEnrollmentId: randomId('enrollment'),
+        endpointGeneration: generation(),
+        requestId: randomId('allocation-request'),
+        localOrigin: 'http://127.0.0.1:43127',
+      }, isolatedStub);
+      expect(response.status).toBe(503);
+
+      const events = log.mock.calls
+        .map(([line]) => (typeof line === 'string' ? JSON.parse(line) as Record<string, unknown> : null))
+        .filter((event) => event?.metric === 'managed_endpoint.provider_failure');
+      expect(events).toContainEqual(expect.objectContaining({
+        phase: 'tunnel-list',
+        status: 403,
+        retryable: false,
+      }));
+      const serializedLogs = JSON.stringify(log.mock.calls);
+      expect(serializedLogs).not.toContain(apiToken);
+      expect(serializedLogs).not.toContain(responseBody);
+    } finally {
+      log.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('serializes concurrent allocation retries around one durable provider operation', async () => {

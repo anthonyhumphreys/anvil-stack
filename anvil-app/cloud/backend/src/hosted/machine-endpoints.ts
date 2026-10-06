@@ -12,7 +12,9 @@ import {
   CloudflareTunnelError,
   CloudflareTunnelProvider,
   normalizeLoopbackService,
+  type CloudflareTunnelPhase,
 } from './cloudflare-tunnel';
+import { emitMetric } from './metrics';
 
 export type MachineEndpointAllocationState =
   | 'unallocated'
@@ -265,9 +267,28 @@ export class MachineEndpointCoordinator extends DurableObject<Env> {
   }
 
   private async allocate(input: AllocateInput): Promise<Response> {
-    if (!managedProvisioningEnabled(this.env)) return jsonError(503, 'provider-unavailable');
-    const provider = createProvider(this.env);
-    if (provider === null) return jsonError(503, 'provider-unavailable');
+    if (this.env.ANVIL_MESH_MANAGED_ENDPOINTS !== 'true') {
+      emitMetric('managed_endpoint.provider_failure', {
+        phase: 'configuration',
+        reason: 'feature-disabled',
+        missingBindings: [],
+        status: 503,
+        retryable: false,
+      });
+      return jsonError(503, 'provider-unavailable');
+    }
+    const setup = configureProvider(this.env);
+    if (setup.provider === null) {
+      emitMetric('managed_endpoint.provider_failure', {
+        phase: 'configuration',
+        reason: setup.reason,
+        missingBindings: setup.missingBindings,
+        status: 503,
+        retryable: false,
+      });
+      return jsonError(503, 'provider-unavailable');
+    }
+    const provider = setup.provider;
     // This async hash yields control to other requests. Complete it before
     // reading quota counts so each request's count and durable reservation
     // remain in one synchronous turn.
@@ -762,6 +783,7 @@ export class MachineEndpointCoordinator extends DurableObject<Env> {
       const refreshed = this.get(row.account_id, row.machine_id);
       return Response.json({ allocation: refreshed === null ? emptyView(row.machine_id, row.endpoint_generation) : toView(refreshed) }, { status: nextState === 'ready' ? 201 : 202 });
     } catch (error) {
+      emitProviderFailure(error);
       const now = Date.now();
       const retryable = !(error instanceof CloudflareTunnelError) || error.retryable;
       const current = this.get(row.account_id, row.machine_id);
@@ -842,7 +864,8 @@ export class MachineEndpointCoordinator extends DurableObject<Env> {
         lockId ?? null,
         lockId ?? null,
       );
-    } catch {
+    } catch (error) {
+      emitProviderFailure(error);
       const now = Date.now();
       this.ctx.storage.sql.exec(
         `UPDATE machine_endpoint_allocations SET retry_at = ?, lock_id = NULL, lock_until = 0,
@@ -1177,34 +1200,79 @@ function isTokenInput(value: unknown): value is TokenInput {
   return isHostGenerationInput(value) && Number.isSafeInteger(value['allocationGeneration']);
 }
 
-function managedProvisioningEnabled(env: Env): boolean {
-  return (
-    env.ANVIL_MESH_MANAGED_ENDPOINTS === 'true' &&
-    providerConfigured(env)
-  );
-}
+type CloudflareBindingName =
+  | 'CLOUDFLARE_TUNNEL_ACCOUNT_ID'
+  | 'CLOUDFLARE_TUNNEL_ZONE_ID'
+  | 'CLOUDFLARE_TUNNEL_API_TOKEN'
+  | 'MACHINE_ENDPOINT_DOMAIN';
 
-function providerConfigured(env: Env): boolean {
-  return (
-    typeof env.CLOUDFLARE_TUNNEL_ACCOUNT_ID === 'string' &&
-    typeof env.CLOUDFLARE_TUNNEL_ZONE_ID === 'string' &&
-    typeof env.CLOUDFLARE_TUNNEL_API_TOKEN === 'string' &&
-    typeof env.MACHINE_ENDPOINT_DOMAIN === 'string'
-  );
-}
+type ProviderSetup =
+  | { provider: CloudflareTunnelProvider; reason?: never; missingBindings?: never }
+  | {
+      provider: null;
+      reason: 'config-missing' | 'config-invalid';
+      missingBindings: CloudflareBindingName[];
+    };
 
-function createProvider(env: Env): CloudflareTunnelProvider | null {
-  if (!providerConfigured(env)) return null;
-  try {
-    return new CloudflareTunnelProvider({
-      accountId: env.CLOUDFLARE_TUNNEL_ACCOUNT_ID!,
-      zoneId: env.CLOUDFLARE_TUNNEL_ZONE_ID!,
-      apiToken: env.CLOUDFLARE_TUNNEL_API_TOKEN!,
-      publicDomain: env.MACHINE_ENDPOINT_DOMAIN!,
-    });
-  } catch {
-    return null;
+const CLOUDFLARE_PHASES: readonly CloudflareTunnelPhase[] = [
+  'tunnel-list',
+  'tunnel-create',
+  'tunnel-configure',
+  'dns-list',
+  'dns-update',
+  'dns-create',
+  'token-read',
+  'dns-delete',
+  'tunnel-delete',
+];
+
+function configureProvider(env: Env): ProviderSetup {
+  const requiredBindings: Array<[CloudflareBindingName, string | undefined]> = [
+    ['CLOUDFLARE_TUNNEL_ACCOUNT_ID', env.CLOUDFLARE_TUNNEL_ACCOUNT_ID],
+    ['CLOUDFLARE_TUNNEL_ZONE_ID', env.CLOUDFLARE_TUNNEL_ZONE_ID],
+    ['CLOUDFLARE_TUNNEL_API_TOKEN', env.CLOUDFLARE_TUNNEL_API_TOKEN],
+    ['MACHINE_ENDPOINT_DOMAIN', env.MACHINE_ENDPOINT_DOMAIN],
+  ];
+  const missingBindings = requiredBindings
+    .filter(([, value]) => typeof value !== 'string' || value.trim() === '')
+    .map(([name]) => name);
+  if (missingBindings.length > 0) {
+    return { provider: null, reason: 'config-missing', missingBindings };
   }
+  try {
+    return {
+      provider: new CloudflareTunnelProvider({
+        accountId: env.CLOUDFLARE_TUNNEL_ACCOUNT_ID!,
+        zoneId: env.CLOUDFLARE_TUNNEL_ZONE_ID!,
+        apiToken: env.CLOUDFLARE_TUNNEL_API_TOKEN!,
+        publicDomain: env.MACHINE_ENDPOINT_DOMAIN!,
+      }),
+    };
+  } catch {
+    return { provider: null, reason: 'config-invalid', missingBindings: [] };
+  }
+}
+
+export function createProvider(env: Env): CloudflareTunnelProvider | null {
+  return configureProvider(env).provider;
+}
+
+function emitProviderFailure(error: unknown): void {
+  const isProviderError = error instanceof CloudflareTunnelError;
+  const phase = isProviderError && CLOUDFLARE_PHASES.includes(error.phase as CloudflareTunnelPhase)
+    ? error.phase
+    : 'unknown';
+  const fields: Record<string, unknown> = {
+    phase,
+    retryable: isProviderError ? error.retryable : true,
+  };
+  if (
+    isProviderError && error.status !== null && Number.isInteger(error.status) &&
+    error.status >= 100 && error.status <= 599
+  ) {
+    fields.status = error.status;
+  }
+  emitMetric('managed_endpoint.provider_failure', fields);
 }
 
 function toView(row: AllocationRow): MachineEndpointAllocationView {
