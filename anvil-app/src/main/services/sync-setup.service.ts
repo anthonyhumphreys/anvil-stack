@@ -14,7 +14,9 @@ async function connect(): Promise<SyncAuthPublicSnapshot> {
   }
   const endpoint = normalizeBaseUrl(before.hostedBackendUrl);
   const runtime = getRuntimeStatus();
-  const sameService = before.baseUrl !== null && normalizeBaseUrl(before.baseUrl) === endpoint;
+  // Pinned endpoints are already normalized, including custom loopback HTTP
+  // services. Comparing them must not revalidate one as a hosted HTTPS URL.
+  const sameService = before.baseUrl === endpoint;
   if (before.identityReviewRequired) {
     throw new Error('The service identity has changed. Review it in settings before signing in.');
   }

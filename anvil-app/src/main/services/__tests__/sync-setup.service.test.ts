@@ -98,6 +98,16 @@ describe('one-action hosted sign-in', () => {
     expect(mocks.pin).not.toHaveBeenCalled();
   });
 
+  it('gives a disconnect instruction for an active custom loopback service', async () => {
+    mocks.status.mockReturnValue({
+      ...initialStatus,
+      baseUrl: 'http://127.0.0.1:8799/',
+      state: 'active',
+    });
+    await expect(connectHostedSync()).rejects.toThrow('Disconnect your current service');
+    expect(mocks.discover).not.toHaveBeenCalled();
+  });
+
   it('shows an actionable error when this build has no hosted endpoint', async () => {
     mocks.status.mockReturnValue({ ...initialStatus, hostedBackendUrl: null });
     await expect(connectHostedSync()).rejects.toThrow('custom service');

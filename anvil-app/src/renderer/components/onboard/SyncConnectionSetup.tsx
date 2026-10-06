@@ -60,9 +60,22 @@ function securityMessage(security: SyncDeviceSecurityStatus): string {
 
 function summarizeAdoption(items: SyncMeshSetupController['adoptionPreview']): string {
   if (items.length === 0) return 'No existing items will be added to your account.';
-  const counts = new Map<string, number>();
-  for (const item of items) counts.set(item.entityType, (counts.get(item.entityType) ?? 0) + 1);
-  return `${items.length} local item${items.length === 1 ? '' : 's'} will be encrypted and synced${counts.size > 1 ? ` across ${counts.size} types` : ''}.`;
+  return `${items.length} local item${items.length === 1 ? '' : 's'} will be encrypted and synced. Items already connected to another account stay there.`;
+}
+
+function adoptionTypeLabel(entityType: string): string {
+  switch (entityType) {
+    case 'workspace-definition':
+      return 'Workspace';
+    case 'workflow-template':
+      return 'Workflow template';
+    case 'editable-agent':
+      return 'Agent';
+    case 'settings':
+      return 'Settings';
+    default:
+      return 'Item';
+  }
 }
 
 function isIdentityReviewRequired(setup: SyncMeshSetupController): boolean {
@@ -714,7 +727,9 @@ export function SyncConnectionSetup({
                         </summary>
                         <ul className="mt-1 list-inside list-disc space-y-0.5">
                           {setup.adoptionPreview.map((item) => (
-                            <li key={`${item.entityType}:${item.entityId}`}>{item.name}</li>
+                            <li key={`${item.entityType}:${item.entityId}`}>
+                              {adoptionTypeLabel(item.entityType)}: {item.name}
+                            </li>
                           ))}
                         </ul>
                       </details>
