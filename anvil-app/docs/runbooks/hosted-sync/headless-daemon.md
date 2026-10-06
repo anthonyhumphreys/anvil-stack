@@ -70,12 +70,14 @@ export ANVIL_DATA_DIR=~/.anvil-daemon   # optional; this is the default
 node dist-daemon/anvil-daemon.mjs sign-in --api-url https://<backend>
 ```
 
-The command discovers and pins the backend, prints the public verification URI
-and user code, and waits for authorization for the bounded provider lifetime.
-It never prints the private device code, access token, or refresh token. Press
-Ctrl-C to cancel; the command exits with status `130` and never clears saved
-session state. A daemon with an existing session must be signed out before
-starting a new sign-in.
+The command discovers and pins the backend, prints the verification URI and
+public **WorkOS sign-in code**, and waits for authorization for the bounded
+provider lifetime. Enter that code only on the WorkOS page: it signs this
+daemon into your account and is not the Anvil device-verification code. The
+daemon never prints the private device code, access token, or refresh token.
+Press Ctrl-C to cancel; the command exits with status `130` and never clears
+saved session state. A daemon with an existing session must be signed out
+before starting a new sign-in.
 
 Pass `--worker` only when this host should opt into Mesh execution:
 
@@ -84,33 +86,60 @@ node dist-daemon/anvil-daemon.mjs sign-in --api-url https://<backend> --worker
 ```
 
 The worker choice is device-local and independent of authentication. Without
-the flag, sign-in does not grant worker permission. The successful sign-in
-command returns to the shell; start the long-running services with `run`.
+the flag or a saved `worker on` choice, sign-in does not grant worker
+permission. The sign-in result reports whether the account's encrypted key is
+ready and gives the next step for that account's device policy. Start the
+long-running services with `run`.
 
-After authorization, an existing trusted device may still need to approve this
-enrollment. The one-shot sign-in publishes the daemon identity before it
-returns, so both devices can complete the manual two-device check from their
-shells. Run `security verify <enrollmentId>` on both devices and compare the
-same `NNN-NNN-NNN` code. Then approve in both directions:
+The WorkOS sign-in code is separate from the nine-digit **device-verification
+code** (SAS). The SAS confirms the two device identities; only use it after
+both signed-in devices show the same value. For manual approval, run
+`anvil-daemon security devices` on each device and use its numbered list to
+select the other device. You can also pass an enrollment ID for scripting.
+The one-shot sign-in publishes the daemon identity before it returns.
 
 ```sh
-# Existing trusted device: authorize the new enrollment and wrap the account key.
+# New daemon: show the code for the existing trusted device.
 anvil-daemon security devices
-anvil-daemon security verify <new-enrollment-id>
-anvil-daemon security approve <new-enrollment-id> --verification-code <NNN-NNN-NNN>
+anvil-daemon security verify <existing-device-number>
 
-# New daemon: verify and locally accept the authenticated wrap from the old device.
+# Existing daemon: show the same code for the new daemon.
 anvil-daemon security devices
-anvil-daemon security verify <old-enrollment-id>
-anvil-daemon security approve <old-enrollment-id> --verification-code <NNN-NNN-NNN>
+anvil-daemon security verify <new-device-number>
+
+# New daemon: accept the encrypted key from the existing daemon.
+anvil-daemon security approve <existing-device-number> --verification-code <NNN-NNN-NNN>
+
+# Existing daemon: trust the new daemon and send its encrypted key.
+anvil-daemon security approve <new-device-number> --verification-code <NNN-NNN-NNN>
 ```
 
-Both approvals are required: the existing device authorizes the enrollment and
-sends the authenticated key wrap, while the new daemon verifies the sender and
-accepts that wrap locally. Desktop **Compare & verify** performs the same
-two-ended confirmation. If the account uses encrypted recovery instead, unlock
-it separately with `anvil-daemon security unlock --stdin`; configure a new
-recovery envelope with `anvil-daemon security setup`.
+Both devices must approve the same code. In the desktop app, open **Settings →
+Sync & Mesh → Devices**, select the daemon, and compare and confirm the code
+shown by the daemon. A second daemon uses its own device number for the new
+daemon in `security approve`. Approval on the existing device sends an
+authenticated encrypted key wrap; approval on the new daemon accepts that
+wrap locally.
+
+With automatic connection enabled, a future WorkOS-authenticated device is
+trusted automatically and receives its encrypted key from a trusted device
+when that device is online. An offline trusted device cannot send a key; the
+new daemon waits until one is available. The saved recovery code can unlock it
+without another device being online:
+
+```sh
+anvil-daemon security unlock --stdin
+```
+
+Recovery is an offline fallback, not the automatic connection policy. For
+most personal accounts, choose automatic connection on the first device with
+`anvil-daemon security setup --policy auto-trust-authenticated`; it trusts
+future devices authenticated to that account and sends their encrypted key
+when an existing trusted device is online. Choose
+`anvil-daemon security setup` to keep the stricter manual-approval policy.
+Both modes configure a recovery code, which is printed once and should be
+stored securely. The CLI still defaults to manual approval when `setup` is
+invoked without a policy.
 
 ## Enrollment-code bootstrap
 
@@ -156,11 +185,14 @@ the broker, tunnel and acceptance details.
 ## Operate
 
 ```sh
-anvil-daemon status                              # runtime + worker + auth snapshot
-anvil-daemon security status                     # trust, policy, key, and recovery metadata
-anvil-daemon security devices                    # enrolled device roster
-anvil-daemon security verify <enrollmentId>      # print the 9-digit SAS
-anvil-daemon security approve <enrollmentId> --verification-code <NNN-NNN-NNN>
+anvil-daemon status                              # readable runtime + worker status
+anvil-daemon status --json                       # machine-readable runtime status
+anvil-daemon security status                     # readable trust, key, and recovery status
+anvil-daemon security status --json              # machine-readable security status
+anvil-daemon security devices                    # numbered device list
+anvil-daemon security devices --json             # include enrollment IDs for scripts
+anvil-daemon security verify <device-number>     # show the 9-digit device-verification code
+anvil-daemon security approve <device-number> --verification-code <NNN-NNN-NNN>
 anvil-daemon security setup                      # configure recovery; prints the new code once
 anvil-daemon security setup --policy auto-trust-authenticated
 anvil-daemon security unlock --stdin             # read the saved recovery code from stdin
@@ -176,15 +208,21 @@ anvil-daemon companion on|off
 anvil-daemon sign-out
 ```
 
-`security setup` defaults to `require-approval`, and the policy command only
-changes how future authenticated device enrollments are trusted. Existing
-trusted, pending, and revoked memberships are not rewritten by a policy
-change. A new device still signs in first and then unlocks its encrypted
-account data with the separately saved recovery code; WorkOS authentication
-alone never decrypts account content. A recovery code is accepted only through
-stdin or a regular owner-only file, so do not put it in a command argument or
-environment variable. Setup and replacement print the new code once on
-stdout; save it before the command exits.
+`security setup` defaults to `require-approval`; selecting
+`auto-trust-authenticated` is an explicit account-level choice for future
+WorkOS-authenticated devices. It also allows those devices to receive an
+encrypted key wrap from an existing trusted device when that device is online.
+The setting does not retroactively change enrollments that were already
+pending. Under automatic connection, account sign-in is sufficient to join a
+new device, so protecting the account login is essential. Under manual
+approval, compare the same device-verification code on both devices before
+approving.
+
+A recovery code is accepted only through stdin or a regular owner-only file;
+do not put it in a command argument or environment variable. Setup and
+replacement print the new code once on stdout; save it before the command
+exits. `security status` reports whether this device has an encrypted account
+key and whether recovery is available locally.
 
 Device trust does not enable the mesh worker or grant companion observe,
 approve, or steer permissions. The enrollment-code command still enables sync

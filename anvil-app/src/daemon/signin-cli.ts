@@ -41,6 +41,8 @@ export interface SignInSignalSource {
 export interface RunSignInOptions {
   start: (signal: AbortSignal) => Promise<SignInDeviceFlow>;
   onSuccess?: () => Promise<void> | void;
+  /** Security-aware next actions; a status lookup failure must not undo sign-in success. */
+  nextSteps?: () => Promise<readonly string[]> | readonly string[];
   io?: SignInCliIo;
   signals?: SignInSignalSource;
 }
@@ -199,9 +201,10 @@ export async function runSignIn(options: RunSignInOptions): Promise<RunSignInRes
       validateFlow(flow);
       io.stdout(
         [
-          'Open this URL on a browser-capable device:',
+          'WorkOS sign-in — open this URL on a browser-capable device:',
           `  ${flow.verificationUri}`,
-          `Enter this public code: ${flow.userCode}`,
+          `WorkOS sign-in code: ${flow.userCode}`,
+          'This code is only for signing in on WorkOS. It is not a device-verification code.',
           `Waiting for authorization (expires in ${Math.ceil(flow.expiresIn)} seconds)…`,
         ].join('\n'),
       );
@@ -210,20 +213,19 @@ export async function runSignIn(options: RunSignInOptions): Promise<RunSignInRes
         throw new Error('cancelled');
       }
       await options.onSuccess?.();
-      io.stdout(
-        [
-          '[anvil-daemon] signed in.',
-          '',
-          'If the device is waiting for manual approval, compare codes on both devices:',
-          '  anvil-daemon security devices',
-          '  anvil-daemon security verify <enrollmentId>',
-          '  anvil-daemon security approve <enrollmentId> --verification-code <NNN-NNN-NNN>',
-          'If this account uses recovery, unlock the encrypted account data with:',
-          '  anvil-daemon security unlock --stdin',
-          'To configure recovery on this device, run:',
-          '  anvil-daemon security setup',
-        ].join('\n'),
-      );
+      let nextSteps: readonly string[];
+      try {
+        nextSteps = (await options.nextSteps?.()) ?? [
+          'Check encrypted-device readiness with `anvil-daemon security status`.',
+          'Run `anvil-daemon run` to start syncing.',
+        ];
+      } catch {
+        nextSteps = [
+          'Sign-in succeeded. Check device readiness with `anvil-daemon security status`.',
+          'Run `anvil-daemon run` to start syncing.',
+        ];
+      }
+      io.stdout(['[anvil-daemon] signed in.', '', ...nextSteps].join('\n'));
       return { exitCode: 0, cancelled: false };
     } catch (error) {
       const sessionPersisted = flow?.isSessionPersisted?.() === true;
@@ -234,6 +236,12 @@ export async function runSignIn(options: RunSignInOptions): Promise<RunSignInRes
       if (cancelled) {
         io.stderr('[anvil-daemon] sign-in cancelled; no saved session was cleared.');
         return { exitCode: 130, cancelled: true };
+      }
+      if (sessionPersisted) {
+        io.stderr(
+          '[anvil-daemon] signed in, but post-sign-in setup failed; the saved session remains. Run `anvil-daemon status` for details.',
+        );
+        return { exitCode: 1, cancelled: false };
       }
       io.stderr(failureMessage(error));
       return { exitCode: 1, cancelled: false };

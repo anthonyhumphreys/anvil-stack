@@ -75,7 +75,7 @@ describe('daemon sign-in command parsing', () => {
 });
 
 describe('daemon sign-in orchestration', () => {
-  it('prints only the public verification details and runs post-login work', async () => {
+  it('labels the WorkOS login code separately and prints security-aware next steps', async () => {
     const io = output();
     let completed = false;
     const result = await runSignIn({
@@ -91,16 +91,54 @@ describe('daemon sign-in orchestration', () => {
       onSuccess: () => {
         completed = true;
       },
+      nextSteps: () => [
+        'This device is waiting for approval.',
+        'Run `anvil-daemon security devices` to choose a device.',
+      ],
     });
 
     expect(result).toEqual({ exitCode: 0, cancelled: false });
     expect(completed).toBe(true);
     expect(io.stdoutLines.join('\n')).toContain('https://example.authkit.app/device');
     expect(io.stdoutLines.join('\n')).toContain('RRGQ-BJVS');
-    expect(io.stdoutLines.join('\n')).toContain('anvil-daemon security verify <enrollmentId>');
-    expect(io.stdoutLines.join('\n')).toContain('anvil-daemon security unlock --stdin');
+    expect(io.stdoutLines.join('\n')).toContain('WorkOS sign-in code: RRGQ-BJVS');
+    expect(io.stdoutLines.join('\n')).toContain('not a device-verification code');
+    expect(io.stdoutLines.join('\n')).toContain('This device is waiting for approval.');
+    expect(io.stdoutLines.join('\n')).toContain('anvil-daemon security devices');
     expect(io.stdoutLines.join('\n')).not.toContain('device_code');
     expect(io.stdoutLines.join('\n')).not.toContain('private');
+  });
+
+  it('keeps sign-in success truthful when a follow-up status lookup fails', async () => {
+    const io = output();
+    const result = await runSignIn({
+      io,
+      signals: fakeSignals(),
+      start: async () => flow(),
+      nextSteps: () => {
+        throw new Error('untrusted provider response');
+      },
+    });
+
+    expect(result).toEqual({ exitCode: 0, cancelled: false });
+    expect(io.stdoutLines.join('\n')).toContain('Sign-in succeeded. Check device readiness');
+    expect(io.stdoutLines.join('\n')).not.toContain('untrusted provider response');
+  });
+
+  it('reports a persisted session when post-sign-in setup fails', async () => {
+    const io = output();
+    const result = await runSignIn({
+      io,
+      signals: fakeSignals(),
+      start: async () => flow({ isSessionPersisted: () => true }),
+      onSuccess: () => {
+        throw new Error('local config failure');
+      },
+    });
+
+    expect(result).toEqual({ exitCode: 1, cancelled: false });
+    expect(io.stderrLines.join('\n')).toContain('signed in, but post-sign-in setup failed');
+    expect(io.stderrLines.join('\n')).not.toContain('local config failure');
   });
 
   it('cancels polling on SIGINT, leaves the session untouched, and returns 130', async () => {

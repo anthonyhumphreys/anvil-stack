@@ -56,9 +56,13 @@ import {
   unlockDeviceRecovery,
 } from '../main/services/sync-runtime.service.js';
 import {
-  formatVerificationCode,
+  formatVerificationInstructions,
+  formatDeviceList,
+  formatDeviceSecurityStatus,
+  formatSignInNextSteps,
   parseSecurityCommand,
   readRecoveryCode,
+  selectDevice,
   type SecurityCommand,
 } from './security-cli.js';
 import { parseSignInCommand, runSignIn } from './signin-cli.js';
@@ -123,11 +127,11 @@ function usage(): never {
   anvil-daemon vault setup --key-file <absolute-path-outside-data-dir>
   anvil-daemon vault use keychain|vault
   anvil-daemon vault migrate [--vault-passphrase-stdin]
-  anvil-daemon status
-  anvil-daemon security status
-  anvil-daemon security devices
-  anvil-daemon security verify <enrollmentId>
-  anvil-daemon security approve <enrollmentId> --verification-code <NNN-NNN-NNN>
+  anvil-daemon status [--json]
+  anvil-daemon security status [--json]
+  anvil-daemon security devices [--json]
+  anvil-daemon security verify <device-number|enrollmentId>
+  anvil-daemon security approve <device-number|enrollmentId> --verification-code <NNN-NNN-NNN>
   anvil-daemon security setup [--policy <require-approval|auto-trust-authenticated>]
   anvil-daemon security unlock (--stdin | --file <protected-file>)
   anvil-daemon security policy <require-approval|auto-trust-authenticated>
@@ -184,13 +188,19 @@ async function cmdEnroll(): Promise<void> {
     allowLoopbackHttp: apiUrl.includes('127.0.0.1') || apiUrl.includes('localhost'),
   });
   pinBackend({ baseUrl: conn.baseUrl, descriptor: conn.descriptor });
-  const snapshot = await enrollWithEnrollmentCode(code);
+  await enrollWithEnrollmentCode(code);
   enableSync();
   await setMobileCompanionEnabled(true);
   if (hasFlag('--worker') || readConfig().worker === true) {
     await setMeshWorkerOptIn(true);
   }
-  console.log(`[anvil-daemon] enrolled: ${JSON.stringify(snapshot)}`);
+  console.log('[anvil-daemon] enrolled and sync enabled.');
+  console.log(
+    hasFlag('--worker') || readConfig().worker === true
+      ? 'Mesh worker: enabled for this host by explicit opt-in.'
+      : 'Mesh worker: off. Use `anvil-daemon worker on` only if this host should run jobs.',
+  );
+  console.log('Run `anvil-daemon run` to keep syncing and serve the companion app.');
 }
 
 /**
@@ -219,6 +229,11 @@ async function cmdSignIn(args: readonly string[]): Promise<void> {
     onSuccess: () => {
       if (command.worker) writeConfig({ worker: true });
     },
+    nextSteps: async () =>
+      formatSignInNextSteps(
+        await getDeviceSecurityStatus(),
+        command.worker || readConfig().worker === true,
+      ),
   });
   process.exitCode = result.exitCode;
 }
@@ -241,7 +256,10 @@ async function cmdRun(): Promise<void> {
   if (config.worker === true) {
     await setMeshWorkerOptIn(true);
   }
-  console.log(`[anvil-daemon] running — status: ${JSON.stringify(getRuntimeStatus())}`);
+  const runningStatus = getRuntimeStatus();
+  console.log(
+    `[anvil-daemon] running — sync ${runningStatus.connectionState}; mesh worker ${runningStatus.meshWorker.enabled ? 'enabled' : 'off'}.`,
+  );
 
   const shutdown = (signal: string) => {
     console.log(`[anvil-daemon] ${signal} — shutting down`);
@@ -252,10 +270,41 @@ async function cmdRun(): Promise<void> {
   setInterval(() => undefined, 60_000); // keepalive — real work rides sockets/timers
 }
 
-function cmdStatus(): void {
+function formatRuntimeStatus(status: ReturnType<typeof getRuntimeStatus>): string {
+  const authLabel =
+    status.auth.state === 'signed-in'
+      ? 'signed in'
+      : status.auth.state === 'enrolling'
+        ? 'sign-in in progress'
+        : 'signed out';
+  const lines = [
+    'Anvil daemon status',
+    `  Sign-in: ${authLabel}`,
+    `  Sync: ${status.syncEnabled ? status.connectionState : 'stopped'}`,
+    `  Mesh worker: ${status.meshWorker.enabled ? `enabled (${status.meshWorker.maxPermissionMode})` : 'off'}`,
+    `  Pending changes: ${status.pendingCount}`,
+    `  Conflicts: ${status.conflictCount}`,
+  ];
+  if (status.sessionExpired) lines.push('  Session: expired; sign in again.');
+  if (status.auth.state === 'signed-out') {
+    lines.push('', 'Next: sign in with `anvil-daemon sign-in --api-url <url>`.');
+  } else if (!status.syncEnabled) {
+    lines.push('', 'Next: run `anvil-daemon run` to start syncing.');
+  }
+  return lines.join('\n');
+}
+
+function cmdStatus(args: readonly string[]): void {
   boot();
   const status = getRuntimeStatus();
-  console.log(JSON.stringify(status, null, 2));
+  if (args.length === 1 && args[0] === '--json') {
+    console.log(JSON.stringify(status, null, 2));
+    return;
+  }
+  if (args.length !== 0) {
+    throw new Error('usage: anvil-daemon status [--json]');
+  }
+  console.log(formatRuntimeStatus(status));
 }
 
 /**
@@ -268,41 +317,76 @@ async function cmdSecurity(args: readonly string[]): Promise<void> {
   const command: SecurityCommand = parseSecurityCommand(args);
   boot();
   try {
+    if (getRuntimeStatus().auth.state !== 'signed-in') {
+      throw new Error('sign in first with `anvil-daemon sign-in --api-url <url>`.');
+    }
     if (command.kind === 'devices' || command.kind === 'verify' || command.kind === 'approve') {
       await refreshDeviceIdentitiesForOneShot();
     }
     switch (command.kind) {
-      case 'status':
-        console.log(JSON.stringify(await getDeviceSecurityStatus(), null, 2));
-        return;
-      case 'devices':
-        console.log(JSON.stringify(await listDevices(), null, 2));
-        return;
-      case 'verify': {
-        const result = deviceVerificationCode(command.enrollmentId);
-        console.log(formatVerificationCode(result.code));
+      case 'status': {
+        const status = await getDeviceSecurityStatus();
+        console.log(
+          command.json ? JSON.stringify(status, null, 2) : formatDeviceSecurityStatus(status),
+        );
         return;
       }
-      case 'approve':
-        await approveDeviceTrust(command.enrollmentId, command.verificationCode);
-        console.log(`[anvil-daemon] device ${command.enrollmentId} approved`);
+      case 'devices': {
+        const result = await listDevices();
+        console.log(
+          command.json ? JSON.stringify(result, null, 2) : formatDeviceList(result.devices),
+        );
         return;
+      }
+      case 'verify': {
+        const devices = await listDevices();
+        const selected = selectDevice(command.target, devices.devices);
+        const result = deviceVerificationCode(selected.enrollmentId);
+        console.log(formatVerificationInstructions(selected, result.code));
+        return;
+      }
+      case 'approve': {
+        const devices = await listDevices();
+        const selected = selectDevice(command.target, devices.devices);
+        await approveDeviceTrust(selected.enrollmentId, command.verificationCode);
+        console.log(
+          `[anvil-daemon] approved ${selected.name} (#${selected.number}) on this device.`,
+        );
+        return;
+      }
       case 'setup': {
         const result = await setupDeviceRecovery(command.policy);
-        console.log(result.recoveryCode);
+        console.log(
+          [
+            'Recovery code (shown once):',
+            result.recoveryCode,
+            '',
+            'Save this code in a secure place. It unlocks encrypted account data on a new device.',
+            `New-device access: ${command.policy === 'auto-trust-authenticated' ? 'automatic connection for authenticated devices' : 'manual device verification and approval'}.`,
+          ].join('\n'),
+        );
         return;
       }
       case 'unlock': {
         const code = readRecoveryCode(command.source);
-        console.log(JSON.stringify(await unlockDeviceRecovery(code), null, 2));
+        console.log(formatDeviceSecurityStatus(await unlockDeviceRecovery(code)));
         return;
       }
-      case 'policy':
-        console.log(JSON.stringify(await setNewDeviceTrustPolicy(command.policy), null, 2));
+      case 'policy': {
+        const status = await setNewDeviceTrustPolicy(command.policy);
+        console.log(formatDeviceSecurityStatus(status));
         return;
+      }
       case 'recovery-replace': {
         const result = await replaceDeviceRecovery();
-        console.log(result.recoveryCode);
+        console.log(
+          [
+            'Replacement recovery code (shown once):',
+            result.recoveryCode,
+            '',
+            'Save this code in a secure place. Older recovery codes will no longer unlock newly rotated keys.',
+          ].join('\n'),
+        );
         return;
       }
     }
@@ -532,7 +616,7 @@ async function main(): Promise<void> {
       await cmdSignIn(process.argv.slice(3));
       break;
     case 'status':
-      cmdStatus();
+      cmdStatus(process.argv.slice(3));
       break;
     case 'security':
       await cmdSecurity(process.argv.slice(3));
