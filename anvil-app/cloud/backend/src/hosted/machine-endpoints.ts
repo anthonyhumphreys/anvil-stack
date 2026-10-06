@@ -724,10 +724,11 @@ export class MachineEndpointCoordinator extends DurableObject<Env> {
   private async reconcileRow(row: AllocationRow, now: number, provider: CloudflareTunnelProvider): Promise<void> {
     if (row.lock_until > now) return;
     const lockId = crypto.randomUUID();
-    const claimed = this.ctx.storage.sql.exec(
+    const claimed = this.ctx.storage.sql.exec<{ allocation_generation: number }>(
       `UPDATE machine_endpoint_allocations SET lock_id = ?, lock_until = ?, updated_at = ?
        WHERE account_id = ? AND machine_id = ? AND allocation_generation = ?
-         AND state IN ('allocating', 'retiring') AND lock_until <= ?`,
+         AND state IN ('allocating', 'retiring') AND lock_until <= ?
+       RETURNING allocation_generation`,
       lockId,
       now + ALLOCATION_LOCK_MS,
       now,
@@ -736,7 +737,7 @@ export class MachineEndpointCoordinator extends DurableObject<Env> {
       row.allocation_generation,
       now,
     );
-    if (claimed.rowsWritten !== 1) return;
+    if (claimed.toArray().length !== 1) return;
     const current = this.get(row.account_id, row.machine_id);
     if (current === null) return;
     if (current.state === 'retiring') {

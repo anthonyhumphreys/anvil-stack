@@ -112,6 +112,7 @@ async function machineRequest(path: string, body: unknown, stub = machineStub())
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   env.ANVIL_MESH_MANAGED_ENDPOINTS = 'false';
   env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = '';
   env.CLOUDFLARE_TUNNEL_ZONE_ID = '';
@@ -309,6 +310,97 @@ describe('managed machine endpoint broker', () => {
     const view = (await list.json()) as { allocations: MachineEndpointAllocationView[] };
     expect(view.allocations[0]).toMatchObject({ state: 'retiring' });
     expect(JSON.stringify(view)).not.toContain('connectorToken');
+  });
+
+  it('releases a ready allocation through the real SQLite claim and Cloudflare cleanup', async () => {
+    env.ANVIL_MESH_MANAGED_ENDPOINTS = 'false';
+    env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = 'test-cloudflare-account';
+    env.CLOUDFLARE_TUNNEL_ZONE_ID = 'test-cloudflare-zone';
+    env.CLOUDFLARE_TUNNEL_API_TOKEN = 'test-cloudflare-token-value';
+    env.MACHINE_ENDPOINT_DOMAIN = 'mesh.example.test';
+    const tunnelId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const dnsRecordId = '023e105f4ecef8ad9ca31a8372d0c353';
+    const hostname = 'host-0123456789abcdef01234567.mesh.example.test';
+    const tunnelName = 'anvil-host-0123456789abcdef01234567-g1';
+    const providerRequests: string[] = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString());
+      const method = init?.method ?? 'GET';
+      providerRequests.push(`${method} ${url.pathname}`);
+      if (method === 'GET' && url.pathname.endsWith('/cfd_tunnel')) {
+        return Response.json({
+          success: true,
+          result: [{ id: tunnelId, name: tunnelName, deleted_at: null }],
+        });
+      }
+      if (method === 'GET' && url.pathname.endsWith('/dns_records')) {
+        return Response.json({
+          success: true,
+          result: [{
+            id: dnsRecordId,
+            type: 'CNAME',
+            name: hostname,
+            content: `${tunnelId}.cfargotunnel.com`,
+          }],
+        });
+      }
+      if (method === 'DELETE' && url.pathname.endsWith(`/dns_records/${dnsRecordId}`)) {
+        return Response.json({ success: true, result: { id: dnsRecordId } });
+      }
+      if (method === 'DELETE' && url.pathname.endsWith(`/cfd_tunnel/${tunnelId}`)) {
+        return Response.json({ success: true, result: { id: tunnelId } });
+      }
+      throw new Error(`unexpected Cloudflare request: ${method} ${url.pathname}`);
+    });
+    const isolatedStub = machineStub(randomId('machine-endpoint-test'));
+    const accountId = randomId('acct');
+    const hostMachineId = machineId();
+    const endpointGeneration = generation();
+    const enrollmentId = randomId('enrollment');
+    const requestId = randomId('allocation-request');
+
+    await runInDurableObject(isolatedStub, (_instance: MachineEndpointCoordinator, state) => {
+      const now = Date.now();
+      state.storage.sql.exec(
+        `INSERT INTO machine_endpoint_allocations
+         (account_id, machine_id, host_enrollment_id, endpoint_generation, allocation_generation, state,
+          stable_host_label, stable_tunnel_name, hostname, provider_operation_id, provider_tunnel_id,
+          provider_dns_record_id, request_id, created_at, updated_at, last_reachable_at, retry_at,
+          attempts, lock_id, lock_until, error_code)
+         VALUES (?, ?, ?, ?, 1, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 0, NULL)`,
+        accountId,
+        hostMachineId,
+        enrollmentId,
+        endpointGeneration,
+        'host-0123456789abcdef01234567',
+        tunnelName,
+        hostname,
+        crypto.randomUUID(),
+        tunnelId,
+        dnsRecordId,
+        requestId,
+        now,
+        now,
+        now,
+        now,
+      );
+    });
+
+    const released = await machineRequest('/internal/release', {
+      accountId,
+      machineId: hostMachineId,
+      endpointGeneration,
+      allocationGeneration: 1,
+    }, isolatedStub);
+
+    expect(released.status).toBe(200);
+    expect(await released.json()).toMatchObject({ allocation: { state: 'unallocated', allocationGeneration: 1 } });
+    expect(providerRequests).toEqual([
+      'GET /client/v4/accounts/test-cloudflare-account/cfd_tunnel',
+      'GET /client/v4/zones/test-cloudflare-zone/dns_records',
+      `DELETE /client/v4/zones/test-cloudflare-zone/dns_records/${dnsRecordId}`,
+      `DELETE /client/v4/accounts/test-cloudflare-account/cfd_tunnel/${tunnelId}`,
+    ]);
   });
 
   it('reports missing and invalid provider configuration without logging its values', async () => {
