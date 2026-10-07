@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCredentialStorage, type CredentialStorageController } from './useCredentialStorage';
+import { presentSetupError } from '../utils/setup-error';
 import type { SyncDeviceSecurityStatus } from '../../shared/sync-device-security';
 import type {
   SyncBackendConnectionMode,
@@ -21,6 +23,7 @@ export type SyncSetupBusy =
   | 'pinning'
   | 'reviewing'
   | 'signing-in'
+  | 'cancelling'
   | 'enrolling'
   | 'enabling'
   | 'mesh'
@@ -30,6 +33,7 @@ const RUNTIME_POLL_INTERVAL_MS = 5_000;
 const SECURITY_REFRESH_INTERVAL_MS = 60_000;
 
 export interface SyncMeshSetupController {
+  credentialStorage: CredentialStorageController;
   mode: SyncSetupMode;
   setMode: (mode: SyncSetupMode) => void;
   endpoint: string;
@@ -60,6 +64,7 @@ export interface SyncMeshSetupController {
   handleResolveIdentityReview: () => Promise<void>;
   handleSignIn: () => Promise<void>;
   handleConnectHosted: () => Promise<void>;
+  handleCancelSignIn: () => Promise<void>;
   handleEnrollWithCode: () => Promise<void>;
   handleEnableSync: () => Promise<void>;
   handleMeshChange: () => Promise<void>;
@@ -67,7 +72,7 @@ export interface SyncMeshSetupController {
 }
 
 function toErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+  return presentSetupError(error, fallback);
 }
 
 /**
@@ -79,6 +84,8 @@ export function useSyncMeshSetup({
   preview = false,
   initialMode = 'local',
 }: { preview?: boolean; initialMode?: SyncSetupMode } = {}): SyncMeshSetupController {
+  const credentialStorage = useCredentialStorage({ preview });
+  const refreshCredentialStorage = credentialStorage.refresh;
   const [mode, setModeState] = useState<SyncSetupMode>(initialMode);
   const [endpoint, setEndpointState] = useState('');
   const [enrollmentCode, setEnrollmentCode] = useState('');
@@ -98,6 +105,7 @@ export function useSyncMeshSetup({
   const fullRefreshSequence = useRef(0);
   const securityReady = useRef(false);
   const lastSecurityRefresh = useRef(0);
+  const signInSequence = useRef(0);
 
   const refresh = useCallback(async (): Promise<void> => {
     if (preview) return;
@@ -112,6 +120,7 @@ export function useSyncMeshSetup({
         window.anvil.syncRuntime.status(),
         window.anvil.syncRuntime.preview().catch(() => null),
         window.anvil.syncRuntime.conflicts().catch(() => []),
+        refreshCredentialStorage(),
       ]);
       const hosted =
         runtimeNext.auth.state === 'signed-in'
@@ -156,7 +165,7 @@ export function useSyncMeshSetup({
         setBusy((current) => (current === 'loading' ? null : current));
       }
     }
-  }, [preview]);
+  }, [preview, refreshCredentialStorage]);
 
   const setMode = useCallback((next: SyncSetupMode): void => {
     setModeState(next);
@@ -292,34 +301,56 @@ export function useSyncMeshSetup({
   }, [refresh, status?.backendId]);
 
   const handleSignIn = useCallback(async (): Promise<void> => {
+    const attempt = ++signInSequence.current;
     setBusy('signing-in');
     setError(null);
     try {
       await window.anvil.syncRuntime.signIn();
+      if (attempt !== signInSequence.current) return;
       await refresh();
     } catch (err) {
+      if (attempt !== signInSequence.current) return;
+      await refreshCredentialStorage();
       setError(toErrorMessage(err, 'Sign-in did not complete.'));
     } finally {
-      setBusy(null);
+      if (attempt === signInSequence.current) setBusy(null);
     }
-  }, [refresh]);
+  }, [refresh, refreshCredentialStorage]);
 
   const handleConnectHosted = useCallback(async (): Promise<void> => {
     if (preview) return;
+    const attempt = ++signInSequence.current;
     setBusy('signing-in');
     setError(null);
     try {
       await window.anvil.syncRuntime.connectHosted();
+      if (attempt !== signInSequence.current) return;
       await refresh();
     } catch (err) {
+      if (attempt !== signInSequence.current) return;
       setError(toErrorMessage(err, 'Sign-in did not complete. Try again.'));
       // A changed service identity must be visible even when sign-in stops.
       await refresh().catch(() => undefined);
+      if (attempt !== signInSequence.current) return;
       setError(toErrorMessage(err, 'Sign-in did not complete. Try again.'));
+    } finally {
+      if (attempt === signInSequence.current) setBusy(null);
+    }
+  }, [preview, refresh]);
+
+  const handleCancelSignIn = useCallback(async (): Promise<void> => {
+    signInSequence.current += 1;
+    setBusy('cancelling');
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.cancelSignIn();
+      await refresh();
+    } catch (failure) {
+      setError(toErrorMessage(failure, 'Could not cancel sign-in. Try again.'));
     } finally {
       setBusy(null);
     }
-  }, [preview, refresh]);
+  }, [refresh]);
 
   const handleEnrollWithCode = useCallback(async (): Promise<void> => {
     if (enrollmentCode.trim() === '') return;
@@ -379,6 +410,7 @@ export function useSyncMeshSetup({
   const signedIn = runtime?.auth.state === 'signed-in';
   const authModes = status?.authModes ?? discovery?.descriptor.authModes ?? [];
   const canEnableSync =
+    credentialStorage.isReady &&
     backendPinned === true &&
     signedIn &&
     adoptionPreviewAvailable &&
@@ -386,6 +418,7 @@ export function useSyncMeshSetup({
     runtime?.sessionExpired !== true;
 
   return {
+    credentialStorage,
     mode,
     setMode,
     endpoint,
@@ -405,7 +438,7 @@ export function useSyncMeshSetup({
     discovery,
     busy,
     error,
-    isBusy: busy !== null && busy !== 'loading',
+    isBusy: credentialStorage.busy || (busy !== null && busy !== 'loading'),
     backendPinned,
     signedIn,
     authModes,
@@ -416,6 +449,7 @@ export function useSyncMeshSetup({
     handleResolveIdentityReview,
     handleSignIn,
     handleConnectHosted,
+    handleCancelSignIn,
     handleEnrollWithCode,
     handleEnableSync,
     handleMeshChange,

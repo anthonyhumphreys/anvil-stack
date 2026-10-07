@@ -111,6 +111,9 @@ Follow [staging acceptance](staging-acceptance.md) in order. The required result
       and confirm the local-item preview before enabling Sync. Automatic connection
       waits clearly for an online trusted device. A device becomes a Mesh worker
       only after its separate opt-in.
+- [ ] On a Linux machine without an OS keyring, create a passphrase vault in the
+      onboarding screen. Restart and unlock it there, confirm the same device
+      resumes, and test cancelling browser sign-in before continuing locally.
 - [ ] A harmless job completes on the second machine. Approval, denial,
       cancellation and the worker's maximum permission mode behave as shown.
 - [ ] With a trusted `cloudflared` installation on each test host, confirm

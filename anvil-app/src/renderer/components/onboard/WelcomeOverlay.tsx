@@ -61,6 +61,7 @@ export function WelcomeOverlay({
   const brand = useBrand();
   const [step, setStep] = useState<WelcomeStep>('role');
   const [recoveryCodePending, setRecoveryCodePending] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
   const move = (current: WelcomeStep, action: 'back' | 'continue'): void => {
     const next = transitionWelcomeStep(current, action);
     if (next !== 'complete') setStep(next);
@@ -98,13 +99,13 @@ export function WelcomeOverlay({
     <>
       {step === 'role' ? (
         <div
-          className={`flex h-screen items-start justify-center overflow-y-auto bg-bg-primary sm:items-center ${
+          className={`flex h-screen flex-col overflow-y-auto bg-bg-primary ${
             preview ? 'py-24' : 'py-14'
           }`}
         >
           <div className="titlebar-drag fixed inset-x-0 top-0 h-10" />
           {preview && onExitPreview && <OnboardingPreviewBar onExit={onExitPreview} />}
-          <div className="w-full max-w-md space-y-6 px-6">
+          <div className="mx-auto my-auto w-full max-w-md shrink-0 space-y-6 px-6">
             <div className="text-center">
               <h1 className="text-2xl font-bold text-accent">Welcome to {brand.appName}</h1>
               <p className="mt-1 text-eyebrow font-semibold uppercase tracking-wider text-text-tertiary">
@@ -136,22 +137,21 @@ export function WelcomeOverlay({
 
       {step === 'sync' && (
         <div
-          className={`flex h-screen items-start justify-center overflow-y-auto bg-bg-primary sm:items-center ${
+          className={`flex h-screen flex-col overflow-y-auto bg-bg-primary ${
             preview ? 'py-24' : 'py-14'
           }`}
         >
           <div className="titlebar-drag fixed inset-x-0 top-0 h-10" />
           {preview && onExitPreview && <OnboardingPreviewBar onExit={onExitPreview} />}
-          <div className="w-full max-w-xl space-y-5 px-6">
+          <div className="mx-auto my-auto w-full max-w-xl shrink-0 space-y-5 px-6">
             <div className="text-center">
               <p className="text-eyebrow font-semibold uppercase tracking-wider text-text-tertiary">
                 Step 3 of 3
               </p>
               <h1 className="mt-1 text-2xl font-bold text-text-primary">Sync across devices</h1>
               <p className="mt-2 text-sm leading-relaxed text-text-secondary">
-                Sign in to keep selected Anvil settings and workspace definitions available on your
-                other devices. Repository checkouts stay on this computer. You choose which
-                workspaces to sync, and this device only runs Mesh jobs if you allow it.
+                Connect your Anvil account to bring your workspaces to your other devices. Each
+                workspace starts local; you choose what to sync.
               </p>
             </div>
 
@@ -160,13 +160,14 @@ export function WelcomeOverlay({
               onUseOnDevice={() => completeSyncStep('use-on-this-device', 'local')}
               onContinue={() => completeSyncStep('continue', 'sync')}
               onRecoveryCodePendingChange={setRecoveryCodePending}
+              onBusyChange={setSyncBusy}
             />
 
             <div className="flex justify-start">
               <button
                 type="button"
                 onClick={() => move('sync', 'back')}
-                disabled={recoveryCodePending}
+                disabled={recoveryCodePending || syncBusy}
                 className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-primary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Back to agent setup

@@ -43,6 +43,15 @@ Record each path separately:
 
 - First-run role → agent → Sync, including the visible local-only completion path.
 - One hosted sign-in action, cancellation/retry, and blocked changed-service identity.
+- On Linux without an OS keyring, create an encrypted vault directly in onboarding
+  and continue sign-in. A mismatched confirmation stays on the form with a useful
+  error. Restart and unlock the same vault without another enrollment or new
+  account key. A wrong passphrase leaves saved credentials intact.
+- Cancel browser sign-in and continue without Sync. A late callback must not sign
+  the device in after cancellation.
+- API-key setup uses the same storage prompt. A failed save keeps entered values
+  and does not proceed to testing or the next step. Working OS keychain and CLI
+  agent paths require no extra storage setup.
 - First-device automatic connection by default, optional stricter verification,
   once-only recovery-code acknowledgement,
   explicit Sync adoption, and a new workspace remaining Local by default.

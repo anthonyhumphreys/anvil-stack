@@ -21,7 +21,11 @@ import type {
 import { OnboardingPreviewBar } from './OnboardingPreviewBar';
 import { SettingsLink } from '../shared/SettingsLink';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
+import { runAfterSuccessfulSave } from '../../utils/run-after-successful-save';
+import { presentSetupError } from '../../utils/setup-error';
+import { useCredentialStorage } from '../../hooks/useCredentialStorage';
 import { CodexRuntimeSetup } from '../settings/CodexRuntimeSetup';
+import { CredentialStorageSetup } from './CredentialStorageSetup';
 import { SyncMeshSetupCard } from './SyncMeshSetupCard';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
@@ -65,9 +69,14 @@ export function ConnectorSetupOverlay({
   const showSection = (id: ConnectorSection) => !sections || sections.includes(id);
   const brand = useBrand();
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
+  const llmProvider = settings.llmProvider ?? 'codex';
+  const llmProviderRef = useRef<AgentProvider>(llmProvider);
+  llmProviderRef.current = llmProvider;
+  const credentialStorage = useCredentialStorage({ preview });
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [llmStatus, setLlmStatus] = useState<TestStatus>('idle');
   const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
+  const gatewayConnectIntent = useRef(false);
   const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
   const [devinStatus, setDevinStatus] = useState<DevinCliStatus | null>(null);
   const [devinSigningIn, setDevinSigningIn] = useState(false);
@@ -80,6 +89,15 @@ export function ConnectorSetupOverlay({
   const [gitProvider, setGitProvider] = useState<'github' | 'ado'>('github');
   const [ghUsername, setGhUsername] = useState<string | null>(null);
   const [ghError, setGhError] = useState<string | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const inputsDisabled =
+    savingSettings ||
+    llmGatewayConnecting ||
+    credentialStorage.busy ||
+    llmStatus === 'testing' ||
+    wiStatus === 'testing' ||
+    gitStatus === 'testing' ||
+    confluenceStatus === 'testing';
 
   useEffect(() => {
     window.anvil.repo.ghAuthStatus().then((status) => {
@@ -95,34 +113,76 @@ export function ConnectorSetupOverlay({
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
+  const requiresCredentialStorage = (provider: AgentProvider) =>
+    provider === 'azure' || provider === 'openai' || provider === 'llmgateway';
+  const hasUnmaskedApiKey = (value: string | undefined) =>
+    Boolean(value?.trim()) && !value?.startsWith('••');
+
+  const requireCredentialStorage = async (
+    actionLabel: string,
+    provider: AgentProvider = llmProviderRef.current,
+  ): Promise<boolean> => {
+    if (preview) return true;
+    try {
+      const status = await credentialStorage.refresh();
+      if (llmProviderRef.current !== provider) return false;
+      if (status?.state === 'ready') return true;
+      setTestError(`Set up or unlock credential storage above before ${actionLabel}.`);
+      return false;
+    } catch (error) {
+      if (llmProviderRef.current === provider) {
+        setTestError(presentSetupError(error, 'Could not check credential storage.'));
+      }
+      return false;
+    }
+  };
+
   const selectLlmProvider = (provider: AgentProvider) => {
     gatewayRequestId.current += 1;
+    llmProviderRef.current = provider;
     setSettings((current) => selectPrimaryAgentProvider(current, provider));
     setLlmStatus('idle');
-    if (provider === 'llmgateway' && !preview) {
-      const requestId = gatewayRequestId.current;
-      void window.anvil.settings
-        .getLlmGatewayStatus()
-        .then((status) => {
-          if (requestId !== gatewayRequestId.current) return;
-          setLlmGatewayStatus(status);
-          if (status.models.length > 0) {
-            setSettings((current) => ({
-              ...current,
-              openaiModel:
-                current.openaiModel &&
-                status.models.some((model) => model.id === current.openaiModel)
-                  ? current.openaiModel
-                  : status.models[0].id,
-            }));
-          }
-        })
-        .catch(() => undefined);
-    }
     if (provider === 'devin' && !preview) {
       void refreshDevinStatus();
     }
   };
+
+  useEffect(() => {
+    if (
+      preview ||
+      !credentialStorage.isReady ||
+      llmProvider !== 'llmgateway' ||
+      gatewayConnectIntent.current
+    ) {
+      return;
+    }
+    const requestId = ++gatewayRequestId.current;
+    void window.anvil.settings
+      .getLlmGatewayStatus()
+      .then((status) => {
+        if (requestId !== gatewayRequestId.current || llmProviderRef.current !== 'llmgateway') {
+          return;
+        }
+        setLlmGatewayStatus(status);
+        if (status.models.length > 0) {
+          setSettings((current) => ({
+            ...current,
+            openaiModel:
+              current.openaiModel && status.models.some((model) => model.id === current.openaiModel)
+                ? current.openaiModel
+                : status.models[0].id,
+          }));
+        }
+      })
+      .catch((error) => {
+        if (requestId === gatewayRequestId.current && llmProviderRef.current === 'llmgateway') {
+          setTestError(presentSetupError(error, 'Could not load LLMGateway models.'));
+        }
+      });
+    return () => {
+      if (gatewayRequestId.current === requestId) gatewayRequestId.current += 1;
+    };
+  }, [credentialStorage.isReady, llmProvider, preview]);
 
   const refreshDevinStatus = () =>
     window.anvil.settings
@@ -146,13 +206,31 @@ export function ConnectorSetupOverlay({
       .finally(() => setDevinSigningIn(false));
   };
 
-  const saveSettings = async () => {
-    if (preview) return;
+  const saveSettings = async (requireApiStorage = false): Promise<boolean> => {
+    if (preview) return true;
+    setSavingSettings(true);
+    const provider = llmProviderRef.current;
+    const hasPendingApiKey =
+      hasUnmaskedApiKey(settings.openaiApiKey) || hasUnmaskedApiKey(settings.llmGatewayApiKey);
     try {
+      if (
+        (hasPendingApiKey || (requireApiStorage && requiresCredentialStorage(provider))) &&
+        !(await requireCredentialStorage(
+          requireApiStorage && requiresCredentialStorage(provider)
+            ? 'testing this API provider'
+            : 'saving this API key',
+          provider,
+        ))
+      ) {
+        return false;
+      }
       await window.anvil.settings.update(settings);
+      return true;
     } catch (err) {
-      // Persisting must not block connection tests.
-      console.warn('[Connectors] save before test failed, continuing with test', err);
+      setTestError(presentSetupError(err, 'Could not save connector settings.'));
+      return false;
+    } finally {
+      setSavingSettings(false);
     }
   };
 
@@ -165,9 +243,8 @@ export function ConnectorSetupOverlay({
   };
 
   // --- LLM ---
-  const llmProvider = settings.llmProvider ?? 'codex';
   const selectGatewayBillingMode = (billingMode: AppSettings['llmGatewayBillingMode']) => {
-    if (!billingMode || preview || llmGatewayConnecting) return;
+    if (!billingMode || preview || llmGatewayConnecting || !credentialStorage.isReady) return;
     const requestId = ++gatewayRequestId.current;
     setSettings((current) => ({
       ...current,
@@ -192,11 +269,14 @@ export function ConnectorSetupOverlay({
   };
 
   const connectLlmGateway = async () => {
-    if (preview) return;
-    const requestId = ++gatewayRequestId.current;
+    if (preview || llmProviderRef.current !== 'llmgateway' || gatewayConnectIntent.current) return;
+    gatewayConnectIntent.current = true;
     setLlmGatewayConnecting(true);
-    setTestError(null);
+    const requestId = ++gatewayRequestId.current;
     try {
+      if (!(await requireCredentialStorage('connecting LLMGateway', 'llmgateway'))) return;
+      if (llmProviderRef.current !== 'llmgateway') return;
+      setTestError(null);
       const billingMode = settings.llmGatewayBillingMode ?? 'devpass';
       await window.anvil.settings.update({
         ...settings,
@@ -233,20 +313,38 @@ export function ConnectorSetupOverlay({
     } catch (error) {
       if (requestId !== gatewayRequestId.current) return;
       setLlmStatus('error');
-      setTestError(error instanceof Error ? error.message : 'Failed to connect LLMGateway');
+      setTestError(presentSetupError(error, 'Failed to connect LLMGateway.'));
     } finally {
-      if (requestId === gatewayRequestId.current) setLlmGatewayConnecting(false);
+      gatewayConnectIntent.current = false;
+      setLlmGatewayConnecting(false);
     }
+  };
+  const handleCredentialStorageReady = async () => {
+    setTestError(null);
+    if (llmProviderRef.current === 'llmgateway') await connectLlmGateway();
   };
   const testLlm = async () => {
     if (llmProvider === 'llmgateway') return connectLlmGateway();
+    const provider = llmProviderRef.current;
     setLlmStatus('testing');
     setTestError(null);
-    await saveSettings();
-    const result = await window.anvil.settings.testFoundryConnection();
-    setLlmStatus(result.ok ? 'ok' : 'error');
-    if (result.ok) markConfigured('llm');
-    if (result.error) setTestError(result.error);
+    try {
+      const attempt = await runAfterSuccessfulSave(
+        () => saveSettings(requiresCredentialStorage(provider)),
+        () => window.anvil.settings.testFoundryConnection(),
+      );
+      if (!attempt.saved) {
+        setLlmStatus('error');
+        return;
+      }
+      const result = attempt.value;
+      setLlmStatus(result.ok ? 'ok' : 'error');
+      if (result.ok) markConfigured('llm');
+      if (result.error) setTestError(result.error);
+    } catch (error) {
+      setLlmStatus('error');
+      setTestError(presentSetupError(error, 'Connection test failed.'));
+    }
   };
 
   // --- Work Items ---
@@ -255,14 +353,20 @@ export function ConnectorSetupOverlay({
     setWiStatus('testing');
     setTestError(null);
     try {
-      await saveSettings();
-      const result = await window.anvil.settings.testWorkItemProviderConnection();
+      const attempt = await runAfterSuccessfulSave(saveSettings, () =>
+        window.anvil.settings.testWorkItemProviderConnection(),
+      );
+      if (!attempt.saved) {
+        setWiStatus('error');
+        return;
+      }
+      const result = attempt.value;
       setWiStatus(result.ok ? 'ok' : 'error');
       if (result.ok) markConfigured('workitems');
       if (result.error) setTestError(result.error);
     } catch (err) {
       setWiStatus('error');
-      setTestError(err instanceof Error ? err.message : 'Connection test failed');
+      setTestError(presentSetupError(err, 'Connection test failed.'));
     }
   };
 
@@ -270,15 +374,21 @@ export function ConnectorSetupOverlay({
   const testConfluence = async () => {
     setConfluenceStatus('testing');
     setTestError(null);
-    await saveSettings();
     try {
-      const result = await window.anvil.settings.testConfluenceConnection();
+      const attempt = await runAfterSuccessfulSave(saveSettings, () =>
+        window.anvil.settings.testConfluenceConnection(),
+      );
+      if (!attempt.saved) {
+        setConfluenceStatus('error');
+        return;
+      }
+      const result = attempt.value;
       setConfluenceStatus(result.ok ? 'ok' : 'error');
       if (result.ok) markConfigured('confluence');
       if (result.error) setTestError(result.error);
     } catch (err) {
       setConfluenceStatus('error');
-      setTestError(err instanceof Error ? err.message : 'Connection test failed');
+      setTestError(presentSetupError(err, 'Connection test failed.'));
     }
   };
 
@@ -286,7 +396,10 @@ export function ConnectorSetupOverlay({
   const saveGit = async () => {
     setGitStatus('testing');
     setTestError(null);
-    await saveSettings();
+    if (!(await saveSettings())) {
+      setGitStatus('error');
+      return;
+    }
 
     if (gitProvider === 'github') {
       const status = await window.anvil.repo.ghAuthStatus();
@@ -356,31 +469,37 @@ export function ConnectorSetupOverlay({
                   <ProviderButton
                     label="Codex CLI"
                     active={llmProvider === 'codex'}
+                    disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('codex')}
                   />
                   <ProviderButton
                     label="Cursor CLI"
                     active={llmProvider === 'cursor'}
+                    disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('cursor')}
                   />
                   <ProviderButton
                     label="Devin CLI"
                     active={llmProvider === 'devin'}
+                    disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('devin')}
                   />
                   <ProviderButton
                     label="OpenAI"
                     active={llmProvider === 'openai'}
+                    disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('openai')}
                   />
                   <ProviderButton
                     label="Azure Foundry"
                     active={llmProvider === 'azure'}
+                    disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('azure')}
                   />
                   <ProviderButton
                     label="LLMGateway"
                     active={llmProvider === 'llmgateway'}
+                    disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('llmgateway')}
                   />
                 </div>
@@ -453,40 +572,58 @@ export function ConnectorSetupOverlay({
                 )}
                 {llmProvider === 'openai' && (
                   <>
+                    {!preview && (
+                      <CredentialStorageSetup
+                        storage={credentialStorage}
+                        actionLabel="continue"
+                        onReady={handleCredentialStorageReady}
+                        disabled={inputsDisabled}
+                      />
+                    )}
                     <Field
                       label="API Key"
                       value={settings.openaiApiKey ?? ''}
                       onChange={(v) => update('openaiApiKey', v)}
                       type="password"
                       placeholder="sk-..."
+                      disabled={inputsDisabled}
                     />
                     <Field
                       label="Model"
                       value={settings.openaiModel ?? 'gpt-5.6-sol'}
                       onChange={(v) => update('openaiModel', v)}
                       placeholder="gpt-5.6-sol"
+                      disabled={inputsDisabled}
                     />
                   </>
                 )}
                 {llmProvider === 'llmgateway' && (
                   <div className="space-y-3">
+                    {!preview && (
+                      <CredentialStorageSetup
+                        storage={credentialStorage}
+                        actionLabel="connect to LLMGateway"
+                        onReady={handleCredentialStorageReady}
+                        disabled={inputsDisabled}
+                      />
+                    )}
                     <div className="grid grid-cols-2 gap-2">
                       <ProviderButton
                         label="DevPass"
                         active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
-                        disabled={llmGatewayConnecting}
+                        disabled={!credentialStorage.isReady || inputsDisabled}
                         onClick={() => selectGatewayBillingMode('devpass')}
                       />
                       <ProviderButton
                         label="Pay as you go"
                         active={settings.llmGatewayBillingMode === 'payg'}
-                        disabled={llmGatewayConnecting}
+                        disabled={!credentialStorage.isReady || inputsDisabled}
                         onClick={() => selectGatewayBillingMode('payg')}
                       />
                     </div>
                     <button
                       type="button"
-                      disabled={preview || llmGatewayConnecting}
+                      disabled={preview || !credentialStorage.isReady || inputsDisabled}
                       onClick={() => void connectLlmGateway()}
                       className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-accent-foreground disabled:opacity-50"
                     >
@@ -502,6 +639,7 @@ export function ConnectorSetupOverlay({
                       onChange={(value) => update('llmGatewayApiKey', value)}
                       type="password"
                       placeholder="llmgtwy_..."
+                      disabled={inputsDisabled}
                     />
                     <div className="space-y-1">
                       <label
@@ -514,7 +652,7 @@ export function ConnectorSetupOverlay({
                         id="onboarding-llmgateway-model"
                         value={settings.openaiModel ?? ''}
                         onChange={(event) => update('openaiModel', event.target.value)}
-                        disabled={preview || !llmGatewayStatus?.models.length}
+                        disabled={preview || !llmGatewayStatus?.models.length || inputsDisabled}
                         className="w-full rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
                       >
                         {!llmGatewayStatus?.models.length && (
@@ -534,6 +672,14 @@ export function ConnectorSetupOverlay({
                 )}
                 {llmProvider === 'azure' && (
                   <div className="rounded-md border border-border bg-bg-primary p-3 space-y-2">
+                    {!preview && (
+                      <CredentialStorageSetup
+                        storage={credentialStorage}
+                        actionLabel="continue"
+                        onReady={handleCredentialStorageReady}
+                        disabled={inputsDisabled}
+                      />
+                    )}
                     <p className="text-xs text-text-primary">
                       Configure via{' '}
                       <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono text-text-primary">
@@ -583,7 +729,11 @@ export function ConnectorSetupOverlay({
                     status={llmStatus}
                     onClick={testLlm}
                     label="Test Connection"
-                    disabled={preview}
+                    disabled={
+                      preview ||
+                      inputsDisabled ||
+                      (requiresCredentialStorage(llmProvider) && !credentialStorage.isReady)
+                    }
                   />
                 )}
               </div>
@@ -614,16 +764,19 @@ export function ConnectorSetupOverlay({
                   <ProviderButton
                     label="Azure DevOps"
                     active={wiProvider === 'ado'}
+                    disabled={inputsDisabled}
                     onClick={() => update('workItemProvider', 'ado')}
                   />
                   <ProviderButton
                     label="Linear"
                     active={wiProvider === 'linear'}
+                    disabled={inputsDisabled}
                     onClick={() => update('workItemProvider', 'linear')}
                   />
                   <ProviderButton
                     label="Jira"
                     active={wiProvider === 'jira'}
+                    disabled={inputsDisabled}
                     onClick={() => update('workItemProvider', 'jira')}
                   />
                 </div>
@@ -634,17 +787,20 @@ export function ConnectorSetupOverlay({
                       value={settings.adoOrganizationUrl ?? ''}
                       onChange={(v) => update('adoOrganizationUrl', v)}
                       placeholder="https://dev.azure.com/your-org"
+                      disabled={inputsDisabled}
                     />
                     <Field
                       label="Project"
                       value={settings.adoProject ?? ''}
                       onChange={(v) => update('adoProject', v)}
+                      disabled={inputsDisabled}
                     />
                     <Field
                       label="PAT"
                       value={settings.adoPat ?? ''}
                       onChange={(v) => update('adoPat', v)}
                       type="password"
+                      disabled={inputsDisabled}
                     />
                   </>
                 )}
@@ -656,6 +812,7 @@ export function ConnectorSetupOverlay({
                       onChange={(v) => update('linearApiKey', v)}
                       type="password"
                       placeholder="lin_api_..."
+                      disabled={inputsDisabled}
                     />
                   </>
                 )}
@@ -666,23 +823,27 @@ export function ConnectorSetupOverlay({
                       value={settings.jiraHost ?? ''}
                       onChange={(v) => update('jiraHost', v)}
                       placeholder="mycompany.atlassian.net"
+                      disabled={inputsDisabled}
                     />
                     <Field
                       label="Project Key"
                       value={settings.jiraProject ?? ''}
                       onChange={(v) => update('jiraProject', v)}
                       placeholder="ENG"
+                      disabled={inputsDisabled}
                     />
                     <Field
                       label="Email"
                       value={settings.jiraEmail ?? ''}
                       onChange={(v) => update('jiraEmail', v)}
+                      disabled={inputsDisabled}
                     />
                     <Field
                       label="API Token"
                       value={settings.jiraApiToken ?? ''}
                       onChange={(v) => update('jiraApiToken', v)}
                       type="password"
+                      disabled={inputsDisabled}
                     />
                   </>
                 )}
@@ -690,7 +851,7 @@ export function ConnectorSetupOverlay({
                   status={wiStatus}
                   onClick={testWi}
                   label="Test Connection"
-                  disabled={preview}
+                  disabled={preview || inputsDisabled}
                 />
               </div>
             </ConnectorCard>
@@ -717,11 +878,13 @@ export function ConnectorSetupOverlay({
                   <ProviderButton
                     label="GitHub"
                     active={gitProvider === 'github'}
+                    disabled={inputsDisabled}
                     onClick={() => setGitProvider('github')}
                   />
                   <ProviderButton
                     label="Azure DevOps"
                     active={gitProvider === 'ado'}
+                    disabled={inputsDisabled}
                     onClick={() => setGitProvider('ado')}
                   />
                 </div>
@@ -768,24 +931,32 @@ export function ConnectorSetupOverlay({
                       value={settings.adoOrganizationUrl ?? ''}
                       onChange={(v) => update('adoOrganizationUrl', v)}
                       placeholder="https://dev.azure.com/your-org"
+                      disabled={inputsDisabled}
                     />
                     <Field
                       label="Project"
                       value={settings.adoProject ?? ''}
                       onChange={(v) => update('adoProject', v)}
+                      disabled={inputsDisabled}
                     />
                     <Field
                       label="PAT"
                       value={settings.adoPat ?? ''}
                       onChange={(v) => update('adoPat', v)}
                       type="password"
+                      disabled={inputsDisabled}
                     />
                     <p className="text-xs text-text-tertiary">
                       Uses the same ADO credentials as Work Items if already configured.
                     </p>
                   </>
                 )}
-                <TestButton status={gitStatus} onClick={saveGit} label="Save" disabled={preview} />
+                <TestButton
+                  status={gitStatus}
+                  onClick={saveGit}
+                  label="Save"
+                  disabled={preview || inputsDisabled}
+                />
               </div>
             </ConnectorCard>
           )}
@@ -812,23 +983,26 @@ export function ConnectorSetupOverlay({
                   value={settings.confluenceBaseUrl ?? ''}
                   onChange={(v) => update('confluenceBaseUrl', v)}
                   placeholder="https://confluence.internal.company.com"
+                  disabled={inputsDisabled}
                 />
                 <Field
                   label="Space Key"
                   value={settings.confluenceSpaceKey ?? ''}
                   onChange={(v) => update('confluenceSpaceKey', v)}
+                  disabled={inputsDisabled}
                 />
                 <Field
                   label="PAT"
                   value={settings.confluencePat ?? ''}
                   onChange={(v) => update('confluencePat', v)}
                   type="password"
+                  disabled={inputsDisabled}
                 />
                 <TestButton
                   status={confluenceStatus}
                   onClick={testConfluence}
                   label="Test Connection"
-                  disabled={preview}
+                  disabled={preview || inputsDisabled}
                 />
               </div>
             </ConnectorCard>
@@ -836,7 +1010,10 @@ export function ConnectorSetupOverlay({
         </div>
 
         {testError && (
-          <div className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+          <div
+            role="alert"
+            className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"
+          >
             {testError}
           </div>
         )}
@@ -846,18 +1023,20 @@ export function ConnectorSetupOverlay({
             <button
               type="button"
               onClick={onBack}
+              disabled={inputsDisabled}
               className="rounded-lg border border-border px-6 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
             >
               Back
             </button>
           )}
           <button
+            type="button"
+            disabled={inputsDisabled}
             onClick={async () => {
-              // Persist any settings the user entered before moving on
-              await saveSettings();
-              onContinue();
+              setTestError(null);
+              if (await saveSettings()) onContinue();
             }}
-            className="rounded-lg bg-accent px-8 py-2.5 text-sm font-semibold text-accent-foreground transition-colors hover:bg-accent/90"
+            className="rounded-lg bg-accent px-8 py-2.5 text-sm font-semibold text-accent-foreground transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Continue
           </button>
@@ -977,12 +1156,14 @@ function Field({
   onChange,
   placeholder,
   type = 'text',
+  disabled = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   type?: 'text' | 'password';
+  disabled?: boolean;
 }) {
   return (
     <div className="space-y-1">
@@ -992,7 +1173,8 @@ function Field({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+        disabled={disabled}
+        className="w-full rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
       />
     </div>
   );

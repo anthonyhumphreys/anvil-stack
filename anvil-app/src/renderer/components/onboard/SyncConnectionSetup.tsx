@@ -20,6 +20,8 @@ import type { SyncMeshSetupController } from '../../hooks/useSyncMeshSetup';
 import { SettingsLink } from '../shared/SettingsLink';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { DeviceSecurityPanel } from '../settings/DeviceSecurityPanel';
+import { CredentialStorageSetup } from './CredentialStorageSetup';
+import { presentSetupError } from '../../utils/setup-error';
 
 const ADVANCED_MODES: SyncBackendConnectionMode[] = ['local', 'cloudflare', 'compatible'];
 
@@ -325,7 +327,11 @@ function AdvancedConnectionSettings({
               <button
                 type="button"
                 onClick={() => void setup.handleEnrollWithCode()}
-                disabled={setup.isBusy || setup.enrollmentCode.trim() === ''}
+                disabled={
+                  setup.isBusy ||
+                  !setup.credentialStorage.isReady ||
+                  setup.enrollmentCode.trim() === ''
+                }
                 className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
               >
                 {enrolling ? 'Connecting…' : 'Use code'}
@@ -463,7 +469,7 @@ export function SyncConnectionSetup({
   const [securityError, setSecurityError] = useState<string | null>(null);
   const handleSecurityError = useCallback((error: unknown): void => {
     setSecurityError(
-      error === null ? null : error instanceof Error ? error.message : String(error),
+      error === null ? null : presentSetupError(error, 'Could not update device security.'),
     );
   }, []);
 
@@ -473,6 +479,7 @@ export function SyncConnectionSetup({
   const identityReviewRequired = isIdentityReviewRequired(setup);
   const hostedOrLocal = setup.mode === 'local' || setup.mode === 'hosted';
   const canStartSignIn =
+    setup.credentialStorage.isReady &&
     !identityReviewRequired &&
     !setup.statusLoading &&
     !setup.isBusy &&
@@ -485,9 +492,9 @@ export function SyncConnectionSetup({
         ? 'Sync is enabled. Anvil is connecting; local changes will queue safely.'
         : 'Sync is enabled. Live updates are unavailable, and Anvil will keep retrying.';
 
-  const startSignIn = (): void => {
-    if (hostedOrLocal) void setup.handleConnectHosted();
-    else void setup.handleSignIn();
+  const startSignIn = async (): Promise<void> => {
+    if (hostedOrLocal) await setup.handleConnectHosted();
+    else await setup.handleSignIn();
   };
 
   return (
@@ -501,9 +508,8 @@ export function SyncConnectionSetup({
             Sync &amp; Mesh
           </h2>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-text-secondary">
-            Sync and Mesh are free. Sync is optional and starts local for each workspace. Choose
-            which workspaces to share; repository files and local checkout paths stay on this
-            device.
+            Free Sync for selected settings and workspace definitions. Repository files stay on this
+            device. Mesh lets your connected machines run jobs when you allow it.
           </p>
         </div>
 
@@ -565,6 +571,13 @@ export function SyncConnectionSetup({
           <>
             <IdentityReview setup={setup} />
 
+            <CredentialStorageSetup
+              storage={setup.credentialStorage}
+              actionLabel={setup.signedIn ? 'continue' : 'sign in'}
+              onReady={setup.signedIn ? setup.refresh : startSignIn}
+              disabled={setup.statusLoading || identityReviewRequired || setup.busy !== null}
+            />
+
             {setup.error && (
               <p
                 className="flex items-start gap-2 rounded-md border border-error/30 bg-error/5 p-2 text-sm text-error"
@@ -575,7 +588,23 @@ export function SyncConnectionSetup({
               </p>
             )}
 
-            {!setup.signedIn ? (
+            {(setup.busy === 'signing-in' || setup.busy === 'cancelling') && (
+              <div className="flex flex-wrap items-center gap-2" role="status">
+                <p className="text-xs text-text-secondary">
+                  You can cancel sign-in and continue without Sync.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void setup.handleCancelSignIn()}
+                  disabled={setup.busy === 'cancelling'}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {setup.busy === 'cancelling' ? 'Cancelling…' : 'Cancel sign-in'}
+                </button>
+              </div>
+            )}
+
+            {!setup.credentialStorage.isReady ? null : !setup.signedIn ? (
               <div className="space-y-2 border-t border-border pt-3">
                 <p className="text-sm text-text-secondary">
                   {setup.status?.backendId && setup.mode !== 'local'
@@ -584,7 +613,7 @@ export function SyncConnectionSetup({
                 </p>
                 <button
                   type="button"
-                  onClick={startSignIn}
+                  onClick={() => void startSignIn()}
                   disabled={preview || !canStartSignIn}
                   className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -605,9 +634,7 @@ export function SyncConnectionSetup({
                         ? hostedOrLocal
                           ? 'Connecting to Anvil Sync…'
                           : 'Waiting for browser sign-in…'
-                        : setup.status?.backendId && setup.mode !== 'local'
-                          ? 'Sign in with browser'
-                          : 'Sign in to Anvil'}
+                        : 'Sign in to Anvil'}
                 </button>
                 {setup.status?.backendId && setup.status.state === 'active' && (
                   <p className="text-xs text-text-tertiary">
@@ -623,7 +650,7 @@ export function SyncConnectionSetup({
                 </p>
                 <button
                   type="button"
-                  onClick={startSignIn}
+                  onClick={() => void startSignIn()}
                   disabled={!canStartSignIn}
                   className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
                 >
@@ -788,7 +815,7 @@ export function SyncConnectionSetup({
           </>
         )}
       </section>
-      {setup.signedIn && (
+      {setup.signedIn && setup.credentialStorage.isReady && (
         <>
           {securityError && (
             <p

@@ -8,9 +8,17 @@ provider binding and remain readable without silently changing providers.
 
 ## Desktop
 
-Open Settings > Privacy > Credential storage. OS keychain storage remains the
-default. When it is unavailable, explicitly create and select an encrypted vault.
-Electron's Linux `basic_text` backend is treated as unavailable.
+OS keychain storage remains the default. Onboarding and Sync settings check
+credential storage before browser sign-in. When the keychain is unavailable,
+the same screen offers a passphrase vault and then continues sign-in. An existing
+vault can be unlocked there. Electron's Linux `basic_text` backend is treated
+as unavailable; credentials never fall back to plaintext.
+
+API-provider setup offers the same inline vault setup. A failed settings save
+stops connection tests and keeps onboarding on the current step, preserving the
+entered values. CLI agents use their own authentication and do not require a vault.
+Settings > Privacy > Credential storage retains the full provider, key-file and
+migration controls.
 
 - Passphrase vaults unlock once per app session. Use at least 12 characters.
   Anvil derives the encryption key with scrypt and never saves the passphrase
@@ -33,6 +41,9 @@ it does not revoke authenticated work that was already running. A refresh
 already in flight retains a short-lived encryption key copy only to persist
 its rotated session tokens, then clears it. A locked/unavailable saved refresh
 credential does not delete the session or contact the backend.
+After unlock, Anvil resumes a saved Sync session and its refresh timer without
+re-enrolling the device or replacing its account key. Damaged configuration and
+missing key files require restoration; onboarding never resets an existing vault.
 
 ## Headless daemon
 
@@ -93,12 +104,13 @@ Local coverage exercises keychain/vault coexistence, actual encrypted restart
 and unlock, wrong passphrases, competing setup, interrupted migration, protected
 file checks, locked settings preservation and saved-session retention.
 
-Verification passed 1,797 desktop tests, both desktop TypeScript projects,
-lint, desktop build and daemon build. Separate CLI-process checks passed vault
-setup, key-file restart, locked passphrase restart, stdin unlock and refusal of
-a wrong passphrase. The isolated desktop dev app launched; native UI automation
-could not operate its window, so interactive controls and physical integration
-acceptance remain unverified.
+First-run regression coverage includes unavailable-storage refusal before
+discovery, locking during discovery, inline vault/unlock/restore states, failed
+settings saves, and saved-session restart recovery with unchanged account key
+material. Separate CLI-process checks cover vault setup, key-file restart, locked
+passphrase restart, stdin unlock and refusal of a wrong passphrase. Physical
+Linux and multi-device acceptance remains on the
+[staging checklist](../../runbooks/hosted-sync/staging-acceptance.md).
 
 API references: [Node 22 crypto](https://nodejs.org/download/release/v22.12.0/docs/api/crypto.html),
 [Electron 39 safeStorage](https://github.com/electron/electron/blob/v39.8.10/docs/api/safe-storage.md).

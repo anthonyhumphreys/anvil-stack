@@ -35,6 +35,12 @@ acceptance limits.
 - First-run onboarding offers Sync after agent setup, with a visible local-only
   choice. Hosted setup is one sign-in action; custom service controls are advanced.
   Authentication is followed by security setup and explicit device Sync consent.
+- Check encrypted credential storage before authentication or an API-key save.
+  A machine without a usable OS keyring gets inline passphrase-vault setup;
+  a saved vault gets inline unlock. No Settings detour or plaintext fallback.
+  Unlock resumes the existing backend-bound session without re-enrollment or
+  account-key replacement. Invalid configuration requires restoration.
+  Browser sign-in can be cancelled so the user can continue locally.
 - From 7 October 2026, WorkOS sign-in and automatic own-account connection
   are the defaults for new hosted accounts. Keep mutual device verification
   as an optional stricter policy; preserve existing configured policies.
