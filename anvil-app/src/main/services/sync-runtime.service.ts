@@ -194,12 +194,17 @@ import {
   resetMeshArtifactForTests,
 } from './mesh-artifact.service.js';
 import { configureArtifactShareContext } from './artifact-share.service.js';
-import { decodePairingPayload, isPairingPayloadString } from '../../../cloud/contract/sealed.js';
+import {
+  CRYPTO_ENTITY_DEVICE_IDENTITY,
+  decodePairingPayload,
+  isPairingPayloadString,
+} from '../../../cloud/contract/sealed.js';
 import { clearCompanionAuthCaches } from './companion-auth-cache.service.js';
 import {
   taskKeyFor,
   unsealTaskResult,
   deriveSas,
+  createDeviceIdentityBindingProof,
   deviceTrustState,
   ensureDeviceIdentity,
   listDeviceIdentities,
@@ -219,6 +224,7 @@ import {
   provisionAccountKey,
   setAccountKeyBootstrapEligibility,
   setDeviceTrust,
+  trustAuthenticatedDeviceIdentity,
   wrapAccountKeyFor,
   type DeviceTrustState,
 } from './sync-keyring.service.js';
@@ -319,6 +325,9 @@ const SPIKE_ACCESS_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 /** Refresh this far before the access token's stated expiry. */
 const REFRESH_AHEAD_MS = 60_000;
 const REFRESH_MIN_DELAY_MS = 5_000;
+/** Slow, bounded retry while an authenticated device is waiting for its ADK. */
+const KEYRING_ONBOARDING_MIN_MS = 45_000;
+const KEYRING_ONBOARDING_MAX_MS = 5 * 60_000;
 
 /**
  * BILL-05: the hosted account page origin is fixed — never derived from user
@@ -377,6 +386,10 @@ export type SyncConnectionState = 'offline' | 'connecting' | 'live';
 
 let auth: SyncAuthService | null = null;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let keyringOnboardingTimer: ReturnType<typeof setTimeout> | null = null;
+let keyringOnboardingAttempt = 0;
+let keyringOnboardingRunning = false;
+let lastKeyringOnboardingAttemptAt = 0;
 let dashboardCommandPumpTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let lastError: string | null = null;
@@ -426,6 +439,7 @@ let runtimeGeneration = 0;
 let keyRotationBlockedScopeKey: string | null = null;
 /** Timestamp of the last attempted session.describe entitlement refresh. */
 let lastHostedRefreshAt = 0;
+const deviceIdentityBindings = new Set<string>();
 let lastFairUseStatus: {
   backendId: string;
   accountId: string;
@@ -849,6 +863,9 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     void requestSync().catch(() => {
       // Last error is stored on the runtime snapshot.
     });
+  } else if (auth.getPublicSnapshot().state === 'signed-in') {
+    ensureCurrentEnrollment();
+    startKeyringOnboardingPoll();
   }
 }
 
@@ -1928,6 +1945,7 @@ function publishLocalMeshAttemptLifecycle(
 export function resetSyncRuntimeForTests(): void {
   runtimeGeneration += 1;
   stopPolling();
+  deviceIdentityBindings.clear();
   stopDashboardCommandPump();
   clearSessionRefresh();
   teardownLiveChannel();
@@ -2010,7 +2028,7 @@ function runtimeScopeKey(scope: SyncScope): string {
 
 /** A new sign-in may replace the enrollment while keeping the same sync scope. */
 function ensureCurrentEnrollment(): void {
-  const scope = currentScope();
+  const scope = currentScope() ?? reviewedSessionScope();
   const fields = auth?.getSessionScopeFields() ?? null;
   if (scope === null || fields === null) return;
   upsertEnrollment({
@@ -2023,8 +2041,12 @@ function ensureCurrentEnrollment(): void {
 }
 
 function resumeSyncAfterEnrollment(): void {
-  if (!isSyncEnabled()) return;
   ensureCurrentEnrollment();
+  if (!isSyncEnabled()) {
+    startKeyringOnboardingPoll();
+    return;
+  }
+  stopKeyringOnboardingPoll();
   meshHostPool?.start();
   connectLiveChannel();
   armFallbackPoll();
@@ -2037,6 +2059,21 @@ function resumeSyncAfterEnrollment(): void {
     console.warn('[Sync] Handoff recovery will retry on reconnect:', error);
   });
   void requestSync().catch(() => undefined);
+}
+
+/** Give a newly enrolled device one read-only key delivery/bootstrap pass. */
+async function prepareDeviceKeyBeforeConnect(): Promise<void> {
+  if (isSyncEnabled() || reviewedSessionScope() === null) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, 12_000);
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([runKeyringOnboardingCycle(), deadline]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 }
 
 function isSyncEnabled(): boolean {
@@ -2090,10 +2127,20 @@ function payloadLabel(json: string | null): string | null {
 }
 
 export function previewAdoption(): SyncAdoptionPreviewItem[] {
+  const scope = currentScope() ?? reviewedSessionScope();
   const items: SyncAdoptionPreviewItem[] = [];
   for (const entityType of SYNC_ENTITY_TYPES) {
     for (const entityId of listLocalEntityIds(entityType)) {
+      if (!adoptionScopeAllowsEntity(scope, entityType, entityId)) continue;
       const payload = buildEntityPayload(entityType, entityId);
+      if (payload === null) continue;
+      if (
+        entityType === SYNC_ENTITY_WORKSPACE_DEFINITION &&
+        scope !== null &&
+        getBinding(scope, entityType, entityId)?.basePayloadJson === canonicalJson(payload)
+      ) {
+        continue;
+      }
       const name =
         payload !== null && typeof payload === 'object' && 'name' in payload
           ? ((payload as { name: unknown }).name as string | undefined)
@@ -2106,6 +2153,24 @@ export function previewAdoption(): SyncAdoptionPreviewItem[] {
     }
   }
   return items;
+}
+
+/** Mirrors the account-ownership and workspace-opt-in checks used by binding. */
+function adoptionScopeAllowsEntity(
+  scope: SyncScope | null,
+  entityType: string,
+  entityId: string,
+): boolean {
+  const boundScopes = listSyncScopesForEntity(entityType, entityId);
+  if (entityType === SYNC_ENTITY_WORKSPACE_DEFINITION) {
+    return (
+      !isWorkspaceSyncPaused(entityId) &&
+      (scope === null
+        ? boundScopes.length === 0
+        : boundScopes.every((boundScope) => sameSyncScope(boundScope, scope)))
+    );
+  }
+  return boundScopes.length === 0;
 }
 
 /**
@@ -2121,12 +2186,11 @@ export function bindLocalEntities(scope: SyncScope): number {
       const entityIds = listLocalEntityIds(entityType);
       for (const entityId of entityIds) {
         if (entityType === SYNC_ENTITY_WORKSPACE_DEFINITION) {
+          if (!adoptionScopeAllowsEntity(scope, entityType, entityId)) continue;
           if (bindWorkspaceDefinitionInScope(scope, entityId)) bound += 1;
           continue;
         }
-        if (listSyncScopesForEntity(entityType, entityId).length > 0) {
-          continue;
-        }
+        if (!adoptionScopeAllowsEntity(scope, entityType, entityId)) continue;
         const payload = buildEntityPayload(entityType, entityId);
         if (payload === null) continue;
         upsertBinding(scope, entityType, entityId);
@@ -2158,11 +2222,11 @@ function sameSyncScope(left: SyncScope, right: SyncScope): boolean {
 
 function bindWorkspaceDefinitionInScope(scope: SyncScope, workspaceId: string): boolean {
   if (isWorkspaceSyncPaused(workspaceId)) return false;
-  materializeRepoDefinitions(workspaceId);
   const otherScopes = listSyncScopesForEntity(SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId).filter(
     (boundScope) => !sameSyncScope(boundScope, scope),
   );
   if (otherScopes.length > 0) return false;
+  materializeRepoDefinitions(workspaceId);
 
   const wasBound = getBinding(scope, SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId) !== null;
   if (!wasBound) upsertBinding(scope, SYNC_ENTITY_WORKSPACE_DEFINITION, workspaceId);
@@ -2318,6 +2382,7 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
     // identity and receives the ADK via a keyring wrap from a device that
     // already holds it (or provisions v1 itself on a fresh account).
     initializeSyncCrypto();
+    await prepareDeviceKeyBeforeConnect();
     // BILL-05: pull hosted access now so a restricted account never gets one
     // free mutating cycle before the first describe lands.
     void refreshHostedEntitlement().catch(() => undefined);
@@ -2395,29 +2460,21 @@ export async function signInWithWorkOSDevice(
     scheduleSessionRefresh();
     ensureCurrentEnrollment();
     initializeSyncCrypto();
+    await prepareDeviceKeyBeforeConnect();
     void refreshHostedEntitlement().catch(() => undefined);
     resumeSyncAfterEnrollment();
   } else {
-    // The daemon's one-shot sign-in still performs the trust bootstrap needed
-    // for manual SAS approval. It deliberately leaves timers, sockets, and
-    // worker leases stopped; `anvil-daemon run` owns those long-lived pieces.
-    if (getActiveBackend()?.id !== backend.id) {
-      activateBackend(backend.id);
-    }
-    // Activation must precede the local crypto bootstrap: currentScope() is
-    // backend-bound, so publishing the identity while the reviewed backend
-    // is still paused would silently do nothing.
+    // The daemon's one-shot sign-in binds and publishes this device identity,
+    // then performs a read-only key-delivery pass. `run` owns Sync opt-in,
+    // recurring timers, sockets, and worker leases.
+    stopSyncRuntimeForOneShot();
     ensureCurrentEnrollment();
     initializeSyncCrypto();
-    // The one-shot command must publish/pull the initial identity before it
-    // reports success, while keeping the long-lived timer/socket machinery in
-    // `run`. The transport already has a bounded RPC timeout; retain that
-    // bound if a custom RPC seam hangs in a headless caller.
     try {
-      await requestSyncWithin(15_000);
+      await runKeyringOnboardingCycle({ scheduleRetry: false });
     } catch (error) {
       // Enrollment is already committed at this point. Keep sign-in success
-      // truthful and leave the retryable failure in runtime status for `run`.
+      // truthful and leave the retryable failure for the next `run`.
       lastError = error instanceof Error ? error.message : 'Initial sync failed.';
     }
   }
@@ -2551,6 +2608,7 @@ function initializeSyncCrypto(pairing?: { pairingNonce: string; pairingSecret: s
         pairingToRegister.pairingSecret,
       );
     }
+    ensureDeviceIdentity(scope, fields.enrollmentId);
     // Identity publication is a sync mutation and therefore waits for the
     // explicit Sync opt-in. Pairing redemption itself is safe to persist while
     // the reviewed backend remains paused because it never leaves this device.
@@ -2606,6 +2664,7 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
       ? undefined
       : { pairingNonce: pairing.pairingNonce, pairingSecret: pairing.pairingSecret },
   );
+  await prepareDeviceKeyBeforeConnect();
   void refreshHostedEntitlement().catch(() => undefined);
   resumeSyncAfterEnrollment();
   return snapshot;
@@ -2851,6 +2910,9 @@ async function accountRpc<R>(operation: string, params: unknown): Promise<R> {
 }
 
 interface SecurityView {
+  accountId?: unknown;
+  policy?: unknown;
+  newDeviceTrustPolicy?: unknown;
   canConfigure?: unknown;
   bootstrapEnrollmentId?: unknown;
   enrollments?: unknown;
@@ -2861,6 +2923,14 @@ interface SecurityEnrollmentView {
   trustState?: unknown;
   trustSource?: unknown;
   trustedAt?: unknown;
+  identityPub?: unknown;
+  identityBoundAt?: unknown;
+  proofMethod?: unknown;
+  enrollmentClass?: unknown;
+  provider?: unknown;
+  expiresAt?: unknown;
+  sessionExpiresAt?: unknown;
+  enrollmentExpiresAt?: unknown;
 }
 
 function securityEnrollment(
@@ -2931,7 +3001,7 @@ async function readOnlySyncPull(fence: {
   scope: SyncScope;
   enrollmentId: string;
   generation: number;
-}): Promise<void> {
+}, options: { identityOnlyWrite?: boolean } = {}): Promise<void> {
   const backend = getActiveBackend() ?? pinnedBackend();
   const service = requireAuth();
   const fields = service.getSessionScopeFields();
@@ -2960,22 +3030,37 @@ async function readOnlySyncPull(fence: {
     connection: { apiUrl: paths.apiUrl, limits: backend.descriptor.limits },
     accessToken: token,
     writeGate: () => ({ allowed: false }),
+    ...(options.identityOnlyWrite === true ? { writeMode: 'device-identity-only' as const } : {}),
     rpc: cycleRpc,
     guard: () => {
-      try {
-        assertSecurityScope(fence);
-        return true;
-      } catch {
-        return false;
-      }
+      return sessionFenceIsCurrent(fence);
     },
   });
-  assertSecurityScope(fence);
+  assertSessionFence(fence);
+}
+
+/** Queue only this enrollment's public identity before a paused-account pull. */
+function queueOwnDeviceIdentityForOnboarding(fence: {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+}): void {
+  assertSessionFence(fence);
+  ensureDeviceIdentity(fence.scope, fence.enrollmentId);
+  const binding = getBinding(fence.scope, CRYPTO_ENTITY_DEVICE_IDENTITY, fence.enrollmentId);
+  const hasOutstandingIdentity = listOutboxRows(fence.scope).some(
+    (row) =>
+      row.entityType === CRYPTO_ENTITY_DEVICE_IDENTITY &&
+      row.entityId === fence.enrollmentId &&
+      (row.state === 'pending' || row.state === 'dispatched'),
+  );
+  if (binding !== null && binding.baseRevision !== null) return;
+  if (!hasOutstandingIdentity) publishDeviceIdentity(fence.scope, fence.enrollmentId);
 }
 
 /** Returns security metadata only; recovery envelopes remain in the main process. */
 export async function getDeviceSecurityStatus(): Promise<SyncDeviceSecurityStatus> {
-  const scope = currentScope();
+  const scope = reviewedSessionScope();
   const fields = auth?.getSessionScopeFields() ?? null;
   if (scope === null || fields === null) return emptyDeviceSecurityStatus();
   const fence = {
@@ -3014,7 +3099,7 @@ function securityScope(): {
   enrollmentId: string;
   generation: number;
 } {
-  const scope = currentScope();
+  const scope = reviewedSessionScope();
   const fields = requireAuth().getSessionScopeFields();
   if (scope === null || fields === null) {
     throw new Error('Sign in before changing device security.');
@@ -3027,21 +3112,125 @@ function assertSecurityScope(fence: {
   enrollmentId: string;
   generation: number;
 }): void {
-  if (fence.generation !== runtimeGeneration) {
+  if (!sessionFenceIsCurrent(fence)) {
     throw new Error('The sign-in session changed while device security was updating.');
   }
-  const scope = currentScope();
-  const fields = requireAuth().getSessionScopeFields();
+}
+
+function sessionFenceIsCurrent(fence: {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+}): boolean {
+  if (fence.generation !== runtimeGeneration) return false;
+  const backend = getActiveBackend() ?? pinnedBackend();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  return (
+    backend !== null &&
+    !backend.identityReviewRequired &&
+    fields !== null &&
+    sessionBoundToBackend(backend, fields) &&
+    backend.id === fence.scope.backendId &&
+    fields.accountId === fence.scope.accountId &&
+    fields.datasetEpoch === fence.scope.datasetEpoch &&
+    fields.enrollmentId === fence.enrollmentId
+  );
+}
+
+function assertSessionFence(fence: {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+}): void {
+  if (!sessionFenceIsCurrent(fence)) {
+    throw new Error('The sign-in session changed while device key delivery was updating.');
+  }
+}
+
+function deviceIdentityBindingCacheKey(
+  scope: SyncScope,
+  enrollmentId: string,
+  identityPub: string,
+): string {
+  return `${runtimeScopeKey(scope)}\u0000${enrollmentId}\u0000${identityPub}`;
+}
+
+/** Binds the current session to its own stored X25519 key, never caller data. */
+async function bindCurrentDeviceIdentity(fence: {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+}): Promise<void> {
+  const identityPub = ensureDeviceIdentity(fence.scope, fence.enrollmentId).pub;
+  const cacheKey = deviceIdentityBindingCacheKey(fence.scope, fence.enrollmentId, identityPub);
+  if (deviceIdentityBindings.has(cacheKey)) return;
+
+  assertSessionFence(fence);
+  const existingRoster = await accountRpc<DeviceListResult>('device.list', {});
+  assertSessionFence(fence);
+  const existingOwn = existingRoster.devices.find(
+    (device) => device.enrollmentId === fence.enrollmentId,
+  );
+  if (existingOwn === undefined || existingOwn.revoked) {
+    throw new Error('The authenticated enrollment is missing or revoked in the device roster.');
+  }
+  if (existingOwn.identityPub !== undefined && existingOwn.identityPub !== null) {
+    if (existingOwn.identityPub !== identityPub) {
+      throw new Error('The backend identity binding does not match this local device key.');
+    }
+    if (
+      existingOwn.identityBoundAt === undefined ||
+      existingOwn.identityBoundAt === null ||
+      !Number.isFinite(Date.parse(existingOwn.identityBoundAt))
+    ) {
+      throw new Error('The backend returned an incomplete device identity binding.');
+    }
+    deviceIdentityBindings.add(cacheKey);
+    return;
+  }
+
+  const challenge = await accountRpc<unknown>('security.identityChallenge', { identityPub });
+  assertSessionFence(fence);
   if (
-    scope === null ||
-    fields === null ||
-    fields.enrollmentId !== fence.enrollmentId ||
-    scope.backendId !== fence.scope.backendId ||
-    scope.accountId !== fence.scope.accountId ||
-    scope.datasetEpoch !== fence.scope.datasetEpoch
+    !isRecord(challenge) ||
+    typeof challenge['challengeId'] !== 'string' ||
+    typeof challenge['challenge'] !== 'string' ||
+    challenge['accountId'] !== fence.scope.accountId ||
+    challenge['enrollmentId'] !== fence.enrollmentId ||
+    challenge['identityPub'] !== identityPub ||
+    typeof challenge['serverPublicKey'] !== 'string' ||
+    typeof challenge['expiresAt'] !== 'string' ||
+    !Number.isFinite(Date.parse(challenge['expiresAt'])) ||
+    Date.parse(challenge['expiresAt']) <= Date.now()
   ) {
-    throw new Error('The sign-in session changed while device security was updating.');
+    throw new Error('Backend returned an invalid device identity challenge.');
   }
+  const proof = createDeviceIdentityBindingProof(fence.scope, fence.enrollmentId, {
+    challengeId: challenge['challengeId'],
+    challenge: challenge['challenge'],
+    accountId: challenge['accountId'],
+    enrollmentId: challenge['enrollmentId'],
+    identityPub: challenge['identityPub'],
+    serverPublicKey: challenge['serverPublicKey'],
+  });
+  assertSessionFence(fence);
+  const bound = await accountRpc<unknown>('security.bindIdentity', {
+    challengeId: challenge['challengeId'],
+    identityPub,
+    proof,
+  });
+  assertSessionFence(fence);
+  if (
+    !isRecord(bound) ||
+    bound['accountId'] !== fence.scope.accountId ||
+    bound['enrollmentId'] !== fence.enrollmentId ||
+    bound['identityPub'] !== identityPub ||
+    typeof bound['identityBoundAt'] !== 'string' ||
+    !Number.isFinite(Date.parse(bound['identityBoundAt']))
+  ) {
+    throw new Error('Backend did not confirm this device identity binding.');
+  }
+  deviceIdentityBindings.add(cacheKey);
 }
 
 export async function unlockDeviceRecovery(code: string): Promise<SyncDeviceSecurityStatus> {
@@ -3347,12 +3536,20 @@ export async function approveDeviceTrust(
  * offline when the web revoked a sibling learns it here and rotates so
  * post-revocation writes are unreadable to the revoked device.
  */
+interface DeviceTrustReconciliationSnapshot {
+  roster: DeviceListResult;
+  security: SecurityView | null;
+}
+
 async function reconcileDeviceTrust(
   scope: SyncScope,
   guard: () => boolean = () => true,
-): Promise<void> {
-  const roster = await accountRpc<DeviceListResult>('device.list', {});
-  if (!guard()) return;
+): Promise<DeviceTrustReconciliationSnapshot | null> {
+  const [roster, security] = await Promise.all([
+    accountRpc<DeviceListResult>('device.list', {}),
+    accountRpc<SecurityView>('security.get', {}).catch(() => null),
+  ]);
+  if (!guard()) return null;
   const remoteRevoked = new Set(
     roster.devices.filter((device) => device.revoked).map((device) => device.enrollmentId),
   );
@@ -3389,6 +3586,218 @@ async function reconcileDeviceTrust(
       }
     }
     invalidateRecoverySecret(scope);
+  }
+  return { roster, security };
+}
+
+const TRUSTED_DEVICE_SOURCES = new Set([
+  'first-device',
+  'manual-approval',
+  'pairing',
+  'recovery',
+  'automatic-auth',
+  'recovery-code',
+]);
+
+function isProviderAuthenticatedDurableDevice(
+  enrollment: SecurityEnrollmentView | null,
+  rosterDevice: unknown,
+): enrollment is SecurityEnrollmentView & { identityPub: string } {
+  if (enrollment === null || !isRecord(rosterDevice)) return false;
+  const rosterPub = rosterDevice['identityPub'];
+  const rosterTrustSource = rosterDevice['trustSource'];
+  const expiry =
+    enrollment.enrollmentExpiresAt ?? enrollment.expiresAt ?? enrollment.sessionExpiresAt;
+  const rosterExpiry =
+    rosterDevice['enrollmentExpiresAt'] ??
+    rosterDevice['expiresAt'] ??
+    rosterDevice['sessionExpiresAt'];
+  const boundAt = enrollment.identityBoundAt;
+  const rosterBoundAt = rosterDevice['identityBoundAt'];
+  const proofMethod = enrollment.proofMethod;
+  const provider = enrollment.provider;
+  return (
+    enrollment.trustState === 'trusted' &&
+    typeof enrollment.trustSource === 'string' &&
+    TRUSTED_DEVICE_SOURCES.has(enrollment.trustSource) &&
+    rosterDevice['trustState'] === 'trusted' &&
+    rosterTrustSource === enrollment.trustSource &&
+    typeof rosterTrustSource === 'string' &&
+    TRUSTED_DEVICE_SOURCES.has(rosterTrustSource) &&
+    rosterDevice['revoked'] === false &&
+    (proofMethod === 'oidc-pkce' || proofMethod === 'workos-device') &&
+    rosterDevice['proofMethod'] === proofMethod &&
+    enrollment.enrollmentClass === 'device' &&
+    (rosterDevice['enrollmentClass'] === undefined ||
+      rosterDevice['enrollmentClass'] === 'device') &&
+    typeof boundAt === 'string' &&
+    Number.isFinite(Date.parse(boundAt)) &&
+    rosterBoundAt === boundAt &&
+    typeof enrollment.identityPub === 'string' &&
+    typeof rosterPub === 'string' &&
+    rosterPub === enrollment.identityPub &&
+    (expiry === undefined || expiry === null) &&
+    (rosterExpiry === undefined || rosterExpiry === null) &&
+    (provider === undefined ||
+      provider === null ||
+      (typeof provider === 'string' && provider.length > 0)) &&
+    (rosterDevice['provider'] === undefined ||
+      rosterDevice['provider'] === null ||
+      rosterDevice['provider'] === provider)
+  );
+}
+
+/**
+ * Applies the explicit account opt-in only after a provider-authenticated,
+ * durable enrollment's backend-bound identity matches the independently
+ * synced X25519 identity. This grants local keyring membership, not backend
+ * access to the ADK.
+ */
+function applyAutomaticAuthenticatedTrust(
+  scope: SyncScope,
+  ownEnrollmentId: string,
+  snapshot: DeviceTrustReconciliationSnapshot | null,
+  guard: () => boolean,
+): boolean {
+  const security = snapshot?.security;
+  if (
+    snapshot === null ||
+    security == null ||
+    !guard() ||
+    security.accountId !== scope.accountId ||
+    (security.newDeviceTrustPolicy ?? security.policy) !== 'auto-trust-authenticated'
+  ) {
+    return false;
+  }
+  let changed = false;
+  for (const remoteDevice of snapshot.roster.devices) {
+    if (!guard()) return changed;
+    if (remoteDevice.enrollmentId === ownEnrollmentId || remoteDevice.revoked) continue;
+    const enrollment = securityEnrollment(security, remoteDevice.enrollmentId);
+    if (!isProviderAuthenticatedDurableDevice(enrollment, remoteDevice)) continue;
+    const localTrustBefore = deviceTrustState(scope, remoteDevice.enrollmentId);
+    const keyBeforeDevice = hasAccountKey(scope);
+    const matched = trustAuthenticatedDeviceIdentity(
+      scope,
+      remoteDevice.enrollmentId,
+      enrollment.identityPub,
+    );
+    if (!matched) continue;
+
+    if (!keyBeforeDevice) retryPendingKeyringWraps(scope);
+    let wrapped = false;
+    if (hasAccountKey(scope)) {
+      wrapped = wrapAccountKeyFor(scope, remoteDevice.enrollmentId, enrollment.identityPub);
+    }
+    changed =
+      changed ||
+      localTrustBefore !== 'trusted' ||
+      (!keyBeforeDevice && hasAccountKey(scope)) ||
+      wrapped;
+  }
+  return changed;
+}
+
+function keyringOnboardingPolicyEnabled(security: SecurityView | null | undefined): boolean | null {
+  if (security === null || security === undefined) return null;
+  const policy = security.newDeviceTrustPolicy ?? security.policy;
+  if (policy === 'auto-trust-authenticated') return true;
+  if (policy === 'require-approval' || policy === 'require-code') return false;
+  return null;
+}
+
+async function runKeyringOnboardingCycle(options: { scheduleRetry?: boolean } = {}): Promise<void> {
+  if (keyringOnboardingRunning) return;
+  keyringOnboardingRunning = true;
+  const attemptAt = Date.now();
+  let shouldRetry = false;
+  let fence: { scope: SyncScope; enrollmentId: string; generation: number } | null = null;
+  try {
+    if (isSyncEnabled()) return;
+    const backend = pinnedBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
+    const scope = reviewedSessionScope();
+    if (
+      backend === null ||
+      backend.identityReviewRequired ||
+      fields === null ||
+      scope === null ||
+      auth?.getPublicSnapshot().state !== 'signed-in'
+    ) {
+      shouldRetry = false;
+      return;
+    }
+    const onboardingFence = {
+      scope,
+      enrollmentId: fields.enrollmentId,
+      generation: runtimeGeneration,
+    };
+    fence = onboardingFence;
+    shouldRetry = true;
+    ensureCurrentEnrollment();
+    ensureDeviceIdentity(scope, fields.enrollmentId);
+
+    let ownIdentityBound = false;
+    try {
+      await bindCurrentDeviceIdentity(onboardingFence);
+      ownIdentityBound = sessionFenceIsCurrent(onboardingFence);
+    } catch {
+      // Automatic delivery stays closed until the server confirms this exact
+      // local key. First-device bootstrap uses its separate authority gate.
+    }
+
+    const current = (): boolean => sessionFenceIsCurrent(onboardingFence);
+    const initial = await reconcileDeviceTrust(scope, current);
+    if (!current()) return;
+    const initialSecurity = initial?.security ?? null;
+    setAccountKeyBootstrapEligibility(
+      scope,
+      fields.enrollmentId,
+      initialSecurity?.canConfigure === true &&
+        initialSecurity.bootstrapEnrollmentId === fields.enrollmentId,
+    );
+
+    // This pull is read-only at the wire boundary. It can receive an ADK
+    // wrap while Sync is paused, but cannot upload application changes.
+    queueOwnDeviceIdentityForOnboarding(onboardingFence);
+    await readOnlySyncPull(onboardingFence, { identityOnlyWrite: true });
+    assertSessionFence(onboardingFence);
+
+    const refreshed = await reconcileDeviceTrust(scope, current);
+    if (!current()) return;
+    const security = refreshed?.security ?? initialSecurity;
+    const policyEnabled = keyringOnboardingPolicyEnabled(security);
+    if (ownIdentityBound) {
+      applyAutomaticAuthenticatedTrust(scope, fields.enrollmentId, refreshed, current);
+    }
+
+    if (!hasAccountKey(scope) && security?.canConfigure === true) {
+      const bootstrapAuthorized = security.bootstrapEnrollmentId === fields.enrollmentId;
+      setAccountKeyBootstrapEligibility(scope, fields.enrollmentId, bootstrapAuthorized);
+      if (bootstrapAuthorized && canProvisionAccountKey(scope, fields.enrollmentId)) {
+        // Only the server-selected first enrollment may mint, and the keyring
+        // repeats its pull/peer/quarantine gates before creating ADK v1.
+        provisionAccountKey(scope);
+      }
+    }
+    shouldRetry = !hasAccountKey(scope) && (policyEnabled === true || policyEnabled === null);
+  } catch {
+    shouldRetry =
+      fence !== null && !isSyncEnabled() && !hasAccountKey(fence.scope);
+  } finally {
+    keyringOnboardingRunning = false;
+    lastKeyringOnboardingAttemptAt = attemptAt;
+    if (
+      options.scheduleRetry !== false &&
+      shouldRetry &&
+      fence !== null &&
+      !isSyncEnabled() &&
+      sessionFenceIsCurrent(fence)
+    ) {
+      scheduleKeyringOnboardingPoll();
+    } else if (!shouldRetry || (fence !== null && hasAccountKey(fence.scope))) {
+      stopKeyringOnboardingPoll();
+    }
   }
 }
 
@@ -3870,6 +4279,7 @@ export function enableSync(): SyncRuntimeStatus {
     throw new Error('This device session belongs to a different backend. Sign out first.');
   }
   runtimeGeneration += 1;
+  stopKeyringOnboardingPoll();
   activateBackend(backend.id);
   const scope: SyncScope = {
     backendId: backend.id,
@@ -3904,6 +4314,7 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   // Fence first: any in-flight engine work from the old session fails its
   // generation check at the next durable write.
   runtimeGeneration += 1;
+  deviceIdentityBindings.clear();
   clearCompanionAuthCaches();
   stopPolling();
   clearSessionRefresh();
@@ -4251,6 +4662,7 @@ function maybeRefreshHostedEntitlement(): void {
  */
 export function onAppFocus(): void {
   maybeRefreshHostedEntitlement();
+  kickKeyringOnboardingPoll();
 }
 
 /** Opens the fixed hosted account page in the system browser. */
@@ -4405,10 +4817,19 @@ export async function requestSync(): Promise<void> {
     );
   };
   try {
+    const fence = { scope, enrollmentId: fields.enrollmentId, generation };
+    let ownIdentityBound = false;
+    try {
+      await bindCurrentDeviceIdentity(fence);
+      ownIdentityBound = guard();
+    } catch {
+      // Manual verification remains available if automatic identity binding
+      // cannot complete, including during a transient connection failure.
+    }
     // Reconcile the authoritative device roster before pushing anything. A
     // remote revoke must rotate the local account key first; a roster failure
     // therefore fails closed instead of allowing another encrypted write.
-    await reconcileDeviceTrust(scope, guard);
+    const trustSnapshot = await reconcileDeviceTrust(scope, guard);
     if (!guard()) return;
     // A first device may choose to continue without setting up recovery yet.
     // Refresh the server-authorized bootstrap decision before the engine can
@@ -4438,6 +4859,9 @@ export async function requestSync(): Promise<void> {
       guard,
     });
     if (!guard()) return;
+    const automaticTrustChanged = ownIdentityBound
+      ? applyAutomaticAuthenticatedTrust(scope, fields.enrollmentId, trustSnapshot, guard)
+      : false;
     lastError = null;
     if (guard()) {
       // Rotation reports ride the same cadence — a finished rotation is
@@ -4448,6 +4872,16 @@ export async function requestSync(): Promise<void> {
       // the local invalidation fence after a revocation.
       await refreshDeviceRecovery().catch(() => undefined);
       await serviceDashboardGrants(scope, guard).catch(() => undefined);
+    }
+    if (automaticTrustChanged && guard()) {
+      // Trust was recorded after this cycle's push phase. Kick one bounded
+      // follow-up so a newly-created recipient wrap reaches the backend now.
+      const followupGeneration = generation;
+      setTimeout(() => {
+        if (followupGeneration === runtimeGeneration && isSyncEnabled()) {
+          void requestSync().catch(() => undefined);
+        }
+      }, 0).unref?.();
     }
   } catch (error) {
     if (!guard()) return;
@@ -4481,9 +4915,60 @@ export function onBackendDisconnected(): void {
  * catch-up cycle. Generation-fenced inside like any other trigger.
  */
 export function onSystemResume(): void {
-  if (!isSyncEnabled()) return;
-  connectLiveChannel();
-  void requestSync().catch(() => undefined);
+  if (isSyncEnabled()) {
+    connectLiveChannel();
+    void requestSync().catch(() => undefined);
+  } else {
+    kickKeyringOnboardingPoll();
+  }
+}
+
+function startKeyringOnboardingPoll(): void {
+  if (isSyncEnabled()) {
+    stopKeyringOnboardingPoll();
+    return;
+  }
+  if (keyringOnboardingTimer !== null || keyringOnboardingRunning) return;
+  keyringOnboardingAttempt = 0;
+  void runKeyringOnboardingCycle();
+}
+
+function kickKeyringOnboardingPoll(): void {
+  if (isSyncEnabled() || keyringOnboardingRunning) return;
+  if (Date.now() - lastKeyringOnboardingAttemptAt < 30_000) return;
+  if (keyringOnboardingTimer !== null) {
+    clearTimeout(keyringOnboardingTimer);
+    keyringOnboardingTimer = null;
+  }
+  void runKeyringOnboardingCycle();
+}
+
+function scheduleKeyringOnboardingPoll(): void {
+  if (
+    isSyncEnabled() ||
+    keyringOnboardingTimer !== null ||
+    auth?.getPublicSnapshot().state !== 'signed-in'
+  ) {
+    return;
+  }
+  const delay = Math.min(
+    KEYRING_ONBOARDING_MAX_MS,
+    KEYRING_ONBOARDING_MIN_MS * 2 ** Math.min(keyringOnboardingAttempt, 4),
+  );
+  keyringOnboardingAttempt += 1;
+  keyringOnboardingTimer = setTimeout(() => {
+    keyringOnboardingTimer = null;
+    void runKeyringOnboardingCycle();
+  }, delay);
+  keyringOnboardingTimer.unref?.();
+}
+
+function stopKeyringOnboardingPoll(): void {
+  if (keyringOnboardingTimer !== null) {
+    clearTimeout(keyringOnboardingTimer);
+    keyringOnboardingTimer = null;
+  }
+  keyringOnboardingAttempt = 0;
 }
 
 /**
@@ -4548,6 +5033,7 @@ function stopPolling(): void {
     pollTimer = null;
   }
   stopDashboardCommandPump();
+  stopKeyringOnboardingPoll();
 }
 
 /**

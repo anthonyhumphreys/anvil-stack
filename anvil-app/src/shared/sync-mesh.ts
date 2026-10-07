@@ -166,6 +166,11 @@ export interface NextBatchOptions {
   /** Runtime gate for entity-level choices such as a locally paused workspace. */
   shouldDispatch?: (entityType: string, entityId: string) => boolean;
   /**
+   * Narrow metadata publication for account onboarding while Sync is paused.
+   * When set, batch selection must leave every other outbox row untouched.
+   */
+  onlyEntity?: { entityType: string; entityId: string };
+  /**
    * E2E seal hook: converts a domain payload into its wire form at
    * dispatch. Returning `undefined` defers the change (e.g. no account
    * data key yet); it is neither dispatched nor rejected.

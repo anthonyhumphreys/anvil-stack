@@ -106,6 +106,7 @@ const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex
 const KEYRING_WRAP_MAC_INFO = Buffer.from('anvil/keyring-wrap-auth/v1', 'utf8');
 const MAX_PENDING_KEYRING_WRAP_BYTES = 512 * 1024;
 const MAX_PENDING_KEYRING_WRAPS = 64;
+const DEVICE_IDENTITY_BINDING_INFO = Buffer.from('anvil-device-identity-binding-v1', 'utf8');
 
 export type UnsealFailure =
   | 'malformed-envelope'
@@ -737,6 +738,69 @@ export function ensureDeviceIdentity(scope: SyncScope, enrollmentId: string): { 
   return { pub };
 }
 
+/**
+ * Proves possession of this enrollment's immutable X25519 identity to the
+ * authenticated backend. The server challenge is bound to one account,
+ * enrollment, and public key; only the proof leaves this process.
+ */
+export function createDeviceIdentityBindingProof(
+  scope: SyncScope,
+  enrollmentId: string,
+  challenge: {
+    challengeId: string;
+    challenge: string;
+    accountId: string;
+    enrollmentId: string;
+    identityPub: string;
+    serverPublicKey: string;
+  },
+): string {
+  if (
+    challenge.accountId !== scope.accountId ||
+    challenge.enrollmentId !== enrollmentId ||
+    challenge.challengeId.length === 0
+  ) {
+    throw new Error('Device identity challenge is bound to a different account or enrollment.');
+  }
+  const identityPubRaw = strictBase64Bytes(challenge.identityPub, 32);
+  const serverPubRaw = strictBase64UrlBytes(challenge.serverPublicKey, 32);
+  const challengeBytes = strictBase64UrlBytes(challenge.challenge, 32);
+  const ownPub = ownPubRaw(scope, enrollmentId);
+  const ownPrivate = ownDevicePrivateKey(scope, enrollmentId);
+  if (
+    identityPubRaw === null ||
+    serverPubRaw === null ||
+    challengeBytes === null ||
+    ownPub === null ||
+    ownPrivate === null ||
+    !ownPub.equals(identityPubRaw)
+  ) {
+    throw new Error('Device identity challenge does not match this local X25519 identity.');
+  }
+
+  const sharedSecret = diffieHellman({
+    privateKey: x25519PrivateFromRaw(ownPrivate),
+    publicKey: x25519PublicFromRaw(serverPubRaw),
+  });
+  const proofKey = Buffer.from(
+    hkdfSync('sha256', sharedSecret, challengeBytes, DEVICE_IDENTITY_BINDING_INFO, 32),
+  );
+  sharedSecret.fill(0);
+  const message = canonicalJson({
+    action: 'bind-device-identity',
+    accountId: scope.accountId,
+    challenge: challenge.challenge,
+    challengeId: challenge.challengeId,
+    enrollmentId,
+    identityPub: challenge.identityPub,
+    serverPublicKey: challenge.serverPublicKey,
+    v: 1,
+  });
+  const proof = createHmac('sha256', proofKey).update(message, 'utf8').digest('base64url');
+  proofKey.fill(0);
+  return proof;
+}
+
 function ownDevicePrivateKey(scope: SyncScope, enrollmentId: string): Buffer | null {
   const row = getDb()
     .prepare(
@@ -831,6 +895,29 @@ export function setDeviceTrust(
      ON CONFLICT (backend_id, account_id, enrollment_id)
      DO UPDATE SET state = excluded.state, decided_at = excluded.decided_at`,
   ).run(scope.backendId, scope.accountId, enrollmentId, state, nowIso());
+}
+
+/**
+ * Locally promotes only an identity already observed through sync whose
+ * public key exactly matches an authenticated backend binding. The caller
+ * must validate account policy, provider proof, and revocation first.
+ */
+export function trustAuthenticatedDeviceIdentity(
+  scope: SyncScope,
+  enrollmentId: string,
+  boundIdentityPub: string,
+): boolean {
+  if (
+    enrollmentId.length === 0 ||
+    strictBase64Bytes(boundIdentityPub, 32) === null ||
+    deviceTrustState(scope, enrollmentId) === 'revoked'
+  ) {
+    return false;
+  }
+  const observed = listDeviceIdentities(scope).find((device) => device.enrollmentId === enrollmentId);
+  if (observed?.pub !== boundIdentityPub) return false;
+  setDeviceTrust(scope, enrollmentId, 'trusted');
+  return deviceTrustState(scope, enrollmentId) === 'trusted';
 }
 
 /** True when the enrollment may receive ADK key material. */
@@ -1415,16 +1502,17 @@ export function wrapAccountKeyFor(
   scope: SyncScope,
   targetEnrollmentId: string,
   recipientPubB64: string,
-): void {
+): boolean {
   if (!isKeyDeliverable(scope, targetEnrollmentId)) {
-    return; // pending/revoked devices receive no key material
+    return false; // pending/revoked devices receive no key material
   }
   const bundle = accountKeyBundle(scope);
   if (bundle === null) throw new AccountKeyUnavailableError();
   const maxVersion = bundle[bundle.length - 1].keyVersion;
+  if (bundle.every((entry) => hasDelivery(scope, targetEnrollmentId, entry.keyVersion))) return false;
   const issuerEnrollmentId = getActiveEnrollmentId(scope);
   if (issuerEnrollmentId === null || deviceTrustState(scope, issuerEnrollmentId) === 'revoked') {
-    return;
+    return false;
   }
   const issuerPub = ensureDeviceIdentity(scope, issuerEnrollmentId).pub;
   const issuerPubRaw = strictBase64Bytes(issuerPub, 32);
@@ -1473,6 +1561,7 @@ export function wrapAccountKeyFor(
   for (const entry of bundle) {
     markDelivery(scope, targetEnrollmentId, entry.keyVersion);
   }
+  return true;
 }
 
 // ---- Per-attempt credential grants (ENV-06) --------------------------------------

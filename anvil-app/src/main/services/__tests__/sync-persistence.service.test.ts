@@ -5,9 +5,10 @@ import { DEFAULT_ORCHESTRATION } from '../../../shared/workflow-orchestration';
 import type { WorkflowNode } from '../../../shared/types';
 import {
   SYNC_ENTITY_WORKFLOW_TEMPLATE,
-  type RecordLocalChangeInput,
   type SyncScope,
+  type RecordLocalChangeInput,
 } from '../../../shared/sync-mesh';
+import { CRYPTO_ENTITY_DEVICE_IDENTITY } from '../../../../cloud/contract/sealed';
 
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
@@ -441,6 +442,35 @@ describe('nextBatch', () => {
     applyPushResults(SCOPE, [{ changeId: limited[0].changeId, revision: 1, status: 'accepted' }]);
     const remainder = nextBatch(SCOPE, 'enrollment-1');
     expect(remainder.map((item) => item.entityId)).toEqual(['b']);
+  });
+
+  it('defers identity-only dispatch without mutating an earlier dispatched row', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'local-template');
+    change({
+      entityId: 'local-template',
+      entityType: ET,
+      operation: 'create',
+      payload: { id: 'local-template' },
+      schemaVersion: 1,
+    });
+    const [withheld] = nextBatch(SCOPE, 'enrollment-1');
+    change({
+      entityId: 'enrollment-1',
+      entityType: CRYPTO_ENTITY_DEVICE_IDENTITY,
+      operation: 'create',
+      payload: { v: 1, enrollmentId: 'enrollment-1', pub: 'identity' },
+      schemaVersion: 1,
+    });
+    const before = listOutboxRows(SCOPE);
+
+    expect(
+      nextBatch(SCOPE, 'enrollment-1', {
+        onlyEntity: { entityType: CRYPTO_ENTITY_DEVICE_IDENTITY, entityId: 'enrollment-1' },
+      }),
+    ).toEqual([]);
+    expect(listOutboxRows(SCOPE)).toEqual(before);
+    expect(before.find((row) => row.changeId === withheld.changeId)?.state).toBe('dispatched');
   });
 
   it('rejects an entity that can never fit the negotiated limits without blocking others', () => {

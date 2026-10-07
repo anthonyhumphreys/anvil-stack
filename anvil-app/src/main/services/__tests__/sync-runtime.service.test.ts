@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
 import { DEFAULT_ORCHESTRATION } from '../../../shared/workflow-orchestration';
@@ -15,8 +16,12 @@ import {
   type SyncScope,
 } from '../../../shared/sync-mesh';
 import type { SyncBackendDescriptor } from '../../../shared/sync-backend';
+import {
+  CRYPTO_ENTITY_DEVICE_IDENTITY,
+  CRYPTO_ENTITY_KEYRING_WRAP,
+} from '../../../../cloud/contract/sealed';
 
-const db = new Database(':memory:');
+let db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
 
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
@@ -57,6 +62,7 @@ import {
   initSyncRuntime,
   issueEnrollmentCode,
   onAppFocus,
+  onSystemResume,
   openHostedAccountPage,
   resolveHostedAccountUrl,
   previewAdoption,
@@ -65,6 +71,7 @@ import {
   resetSyncRuntimeForTests,
   requestSync,
   resetEncryptedSyncAccount,
+  setupDeviceRecovery,
   setSyncRuntimeRpcForTests,
   signInWithWorkOSDevice,
   signInWithOidc,
@@ -77,6 +84,7 @@ import {
 } from '../sync-runtime.service';
 import {
   deriveSas,
+  deviceTrustState,
   ensureDeviceIdentity,
   hasAccountKey,
   provisionAccountKey,
@@ -505,6 +513,9 @@ interface FakeSession {
   accessToken: string;
   generation: number;
   accessExpiresAt: string;
+  proofMethod?: 'oidc-pkce' | 'workos-device' | 'enrollment-code';
+  enrollmentClass?: 'device' | 'ephemeral';
+  enrollmentExpiresAt?: string;
 }
 
 function fakeBackend(
@@ -519,8 +530,18 @@ function fakeBackend(
     denyReset?: string;
     /** Security rows that another device has already trusted. */
     trustedEnrollmentIds?: string[];
+    /** Explicit account opt-in for provider-authenticated device trust. */
+    autoTrustPolicy?: 'auto-trust-authenticated' | 'require-approval';
     /** WorkOS device code accepted by the fake backend enrollment exchange. */
     workosDeviceCode?: string;
+    /** Overrides the account's first durable enrollment for bootstrap tests. */
+    bootstrapEnrollmentId?: string;
+    /** Simulate an authoritative remote revoke. */
+    revokedEnrollmentIds?: string[];
+    /** Existing authenticated enrollment which has not been approved yet. */
+    pendingEnrollmentIds?: string[];
+    /** Back a focused two-profile sync test with a shared in-memory journal. */
+    remoteSync?: boolean;
   } = {},
 ) {
   const accessTtlMs = options.accessTtlMs ?? 15 * 60 * 1000;
@@ -528,7 +549,51 @@ function fakeBackend(
   const sessions = new Map<string, FakeSession>();
   const refreshIndex = new Map<string, string>();
   const accessIndex = new Map<string, string>();
-  const calls: { path: string; operation: string | null; authorization: string | null }[] = [];
+  const identityBindings = new Map<string, string>();
+  const identityBoundTimes = new Map<string, string>();
+  const bootstrapByAccount = new Map<string, string>();
+  const remoteChanges: Array<{ accountId: string; change: Record<string, unknown> }> = [];
+  const remoteEntityRevisions = new Map<string, number>();
+  let activeTrustPolicy = options.autoTrustPolicy ?? 'require-approval';
+  let remoteSequence = 0;
+  const identityChallenges = new Map<
+    string,
+    { enrollmentId: string; accountId: string; identityPub: string; expiresAt: string }
+  >();
+  const calls: {
+    path: string;
+    operation: string | null;
+    authorization: string | null;
+    params: unknown;
+  }[] = [];
+  let recoveryEnvelope: Record<string, unknown> | null = null;
+  const trustInfo = (
+    candidate: FakeSession,
+  ): { trustState: 'pending' | 'trusted' | 'revoked'; trustSource: string } => {
+    if ((options.revokedEnrollmentIds ?? []).includes(candidate.enrollmentId)) {
+      return { trustState: 'revoked', trustSource: 'unknown' };
+    }
+    const bootstrapEnrollmentId =
+      options.bootstrapEnrollmentId ?? bootstrapByAccount.get(candidate.accountId);
+    if (candidate.enrollmentId === bootstrapEnrollmentId) {
+      return { trustState: 'trusted', trustSource: 'first-device' };
+    }
+    if ((options.trustedEnrollmentIds ?? []).includes(candidate.enrollmentId)) {
+      return { trustState: 'trusted', trustSource: 'manual-approval' };
+    }
+    if ((options.pendingEnrollmentIds ?? []).includes(candidate.enrollmentId)) {
+      return { trustState: 'pending', trustSource: 'unknown' };
+    }
+    if (
+      activeTrustPolicy === 'auto-trust-authenticated' &&
+      candidate.enrollmentClass !== 'ephemeral' &&
+      candidate.enrollmentExpiresAt === undefined &&
+      (candidate.proofMethod === 'oidc-pkce' || candidate.proofMethod === 'workos-device')
+    ) {
+      return { trustState: 'trusted', trustSource: 'automatic-auth' };
+    }
+    return { trustState: 'pending', trustSource: 'unknown' };
+  };
 
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -536,7 +601,12 @@ function fakeBackend(
     const headers = new Headers(init?.headers);
     const authorization = headers.get('Authorization');
     const body = JSON.parse((init?.body as string) ?? '{}') as Record<string, unknown>;
-    calls.push({ path, operation: (body['operation'] as string) ?? null, authorization });
+    calls.push({
+      path,
+      operation: (body['operation'] as string) ?? null,
+      authorization,
+      params: body['params'],
+    });
     const err = (code: string, status = 401) =>
       Response.json({ error: { code, retryable: false } }, { status });
 
@@ -576,8 +646,11 @@ function fakeBackend(
           accessToken: `at-${crypto.randomUUID()}`,
           generation: 1,
           accessExpiresAt: new Date(Date.now() + accessTtlMs).toISOString(),
+          proofMethod: 'enrollment-code',
+          enrollmentClass: 'device',
         };
         sessions.set(session.enrollmentId, session);
+        if (!bootstrapByAccount.has(accountId)) bootstrapByAccount.set(accountId, session.enrollmentId);
         refreshIndex.set(session.refreshToken, session.enrollmentId);
         accessIndex.set(session.accessToken, session.enrollmentId);
         return Response.json({
@@ -601,8 +674,13 @@ function fakeBackend(
           accessToken: `at-${crypto.randomUUID()}`,
           generation: 1,
           accessExpiresAt: new Date(Date.now() + accessTtlMs).toISOString(),
+          proofMethod: 'oidc-pkce',
+          enrollmentClass: 'device',
         };
         sessions.set(session.enrollmentId, session);
+        if (!bootstrapByAccount.has(session.accountId)) {
+          bootstrapByAccount.set(session.accountId, session.enrollmentId);
+        }
         refreshIndex.set(session.refreshToken, session.enrollmentId);
         accessIndex.set(session.accessToken, session.enrollmentId);
         return Response.json({
@@ -629,8 +707,13 @@ function fakeBackend(
           accessToken: `at-${crypto.randomUUID()}`,
           generation: 1,
           accessExpiresAt: new Date(Date.now() + accessTtlMs).toISOString(),
+          proofMethod: 'workos-device',
+          enrollmentClass: 'device',
         };
         sessions.set(session.enrollmentId, session);
+        if (!bootstrapByAccount.has(session.accountId)) {
+          bootstrapByAccount.set(session.accountId, session.enrollmentId);
+        }
         refreshIndex.set(session.refreshToken, session.enrollmentId);
         accessIndex.set(session.accessToken, session.enrollmentId);
         return Response.json({
@@ -725,38 +808,196 @@ function fakeBackend(
           result: {
             devices: [...sessions.values()]
               .filter((candidate) => candidate.accountId === session.accountId)
-              .map((candidate) => ({
-                enrollmentId: candidate.enrollmentId,
-                installationId: `installation-${candidate.enrollmentId}`,
-                credentialGeneration: candidate.generation,
-                revoked: false,
-                createdAt: new Date().toISOString(),
-                self: candidate.enrollmentId === session.enrollmentId,
-              })),
+              .map((candidate) => {
+                const trust = trustInfo(candidate);
+                return {
+                  enrollmentId: candidate.enrollmentId,
+                  installationId: `installation-${candidate.enrollmentId}`,
+                  credentialGeneration: candidate.generation,
+                  revoked: trust.trustState === 'revoked',
+                  createdAt: new Date().toISOString(),
+                  self: candidate.enrollmentId === session.enrollmentId,
+                  trustState: trust.trustState,
+                  trustSource: trust.trustSource,
+                  proofMethod: candidate.proofMethod,
+                  enrollmentClass: candidate.enrollmentClass ?? 'device',
+                  ...(candidate.enrollmentExpiresAt === undefined
+                    ? {}
+                    : { enrollmentExpiresAt: candidate.enrollmentExpiresAt }),
+                  ...(identityBindings.has(candidate.enrollmentId)
+                    ? {
+                        identityPub: identityBindings.get(candidate.enrollmentId),
+                        identityBoundAt: identityBoundTimes.get(candidate.enrollmentId),
+                      }
+                    : { identityPub: null, identityBoundAt: null }),
+                };
+              }),
           },
         });
       }
-      if (operation === 'security.get') {
+      if (operation === 'security.identityChallenge') {
+        const params = body['params'] as { identityPub?: unknown } | undefined;
+        const identityPub = params?.identityPub;
+        if (typeof identityPub !== 'string') {
+          return Response.json(
+            { requestId, error: { code: 'bad-request', retryable: false } },
+            { status: 400 },
+          );
+        }
+        const challengeId = crypto.randomUUID();
+        const expiresAt = new Date(Date.now() + 60_000).toISOString();
+        const server = generateKeyPairSync('x25519');
+        const serverPublicKey = server.publicKey
+          .export({ format: 'der', type: 'spki' })
+          .subarray(-32)
+          .toString('base64url');
+        const challenge = randomBytes(32).toString('base64url');
+        identityChallenges.set(challengeId, {
+          enrollmentId: session.enrollmentId,
+          accountId: session.accountId,
+          identityPub,
+          expiresAt,
+        });
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: {
+            challengeId,
+            challenge,
+            accountId: session.accountId,
+            enrollmentId: session.enrollmentId,
+            identityPub,
+            serverPublicKey,
+            expiresAt,
+          },
+        });
+      }
+      if (operation === 'security.bindIdentity') {
+        const params = body['params'] as {
+          challengeId?: unknown;
+          identityPub?: unknown;
+          proof?: unknown;
+        } | undefined;
+        const challengeId = params?.challengeId;
+        const identityPub = params?.identityPub;
+        const challenge =
+          typeof challengeId === 'string' ? identityChallenges.get(challengeId) : undefined;
+        if (
+          challenge === undefined ||
+          challenge.accountId !== session.accountId ||
+          challenge.enrollmentId !== session.enrollmentId ||
+          challenge.identityPub !== identityPub ||
+          Date.parse(challenge.expiresAt) <= Date.now() ||
+          typeof params?.proof !== 'string' ||
+          !/^[A-Za-z0-9_-]{43}$/.test(params.proof)
+        ) {
+          return Response.json(
+            { requestId, error: { code: 'conflict', retryable: false } },
+            { status: 409 },
+          );
+        }
+        identityChallenges.delete(challengeId as string);
+        identityBindings.set(session.enrollmentId, challenge.identityPub);
+        identityBoundTimes.set(session.enrollmentId, new Date().toISOString());
         return Response.json({
           requestId,
           serverTime: new Date().toISOString(),
           result: {
             accountId: session.accountId,
-            policy: 'require-approval',
+            enrollmentId: session.enrollmentId,
+            identityPub: challenge.identityPub,
+            identityBoundAt: identityBoundTimes.get(session.enrollmentId),
+          },
+        });
+      }
+      if (operation === 'security.get') {
+        const trustPolicy = activeTrustPolicy;
+        const bootstrapEnrollmentId =
+          options.bootstrapEnrollmentId ?? bootstrapByAccount.get(session.accountId);
+        const currentTrust = trustInfo(session);
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: {
+            accountId: session.accountId,
+            policy: trustPolicy,
+            newDeviceTrustPolicy: trustPolicy,
             revision: 1,
-            configured: false,
-            recovery: null,
-            trustState: 'trusted',
-            trustSource: 'first-device',
-            canConfigure: true,
-            bootstrapEnrollmentId: session.enrollmentId,
+            configured: recoveryEnvelope !== null,
+            recovery:
+              recoveryEnvelope === null
+                ? null
+                : {
+                    envelope: recoveryEnvelope,
+                    verifierPublicKey: recoveryEnvelope['publicKey'],
+                    revision: 1,
+                    recoveryId: recoveryEnvelope['recoveryId'],
+                  },
+            trustState: currentTrust.trustState,
+            trustSource: currentTrust.trustSource,
+            canConfigure:
+              recoveryEnvelope === null && bootstrapEnrollmentId === session.enrollmentId,
+            bootstrapEnrollmentId,
             requiresRecovery: false,
             recentEvents: [],
-            enrollments: (options.trustedEnrollmentIds ?? []).map((enrollmentId) => ({
-              enrollmentId,
-              trustState: 'trusted',
-              trustSource: 'manual-approval',
-            })),
+            enrollments: [...sessions.values()]
+              .filter((candidate) => candidate.accountId === session.accountId)
+              .map((candidate) => {
+                const identityPub = identityBindings.get(candidate.enrollmentId);
+                const trust = trustInfo(candidate);
+                return {
+                  enrollmentId: candidate.enrollmentId,
+                  trustState: trust.trustState,
+                  trustSource: trust.trustSource,
+                  proofMethod: candidate.proofMethod,
+                  enrollmentClass: candidate.enrollmentClass ?? 'device',
+                  ...(candidate.enrollmentExpiresAt === undefined
+                    ? {}
+                    : { enrollmentExpiresAt: candidate.enrollmentExpiresAt }),
+                  ...(identityPub === undefined
+                    ? {}
+                    : {
+                        identityPub,
+                        identityBoundAt: identityBoundTimes.get(candidate.enrollmentId) ?? null,
+                      }),
+                };
+              }),
+          },
+        });
+      }
+      if (operation === 'security.configure') {
+        const params = body['params'] as {
+          policy?: unknown;
+          recovery?: { envelope?: unknown };
+        };
+        if (
+          params.policy === 'auto-trust-authenticated' ||
+          params.policy === 'require-approval'
+        ) {
+          activeTrustPolicy = params.policy;
+        }
+        const envelope = params.recovery?.envelope;
+        if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) {
+          return Response.json(
+            { requestId, error: { code: 'bad-request', retryable: false } },
+            { status: 400 },
+          );
+        }
+        recoveryEnvelope = envelope as Record<string, unknown>;
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: {
+            accountId: session.accountId,
+            policy: params.policy,
+            revision: 1,
+            configured: true,
+            recovery: {
+              envelope: recoveryEnvelope,
+              verifierPublicKey: recoveryEnvelope['publicKey'],
+              revision: 1,
+              recoveryId: recoveryEnvelope['recoveryId'],
+            },
           },
         });
       }
@@ -791,6 +1032,30 @@ function fakeBackend(
         });
       }
       if (operation === 'sync.pull') {
+        if (options.remoteSync === true) {
+          const params = body['params'] as { cursor?: unknown };
+          const cursor =
+            typeof params?.cursor === 'string' && /^\d+$/.test(params.cursor)
+              ? Number(params.cursor)
+              : 0;
+          const changes = remoteChanges
+            .filter(
+              (entry) =>
+                entry.accountId === session.accountId &&
+                typeof entry.change['sequence'] === 'number' &&
+                entry.change['sequence'] > cursor,
+            )
+            .map((entry) => entry.change);
+          const nextCursor =
+            changes.length === 0
+              ? String(cursor)
+              : String(changes[changes.length - 1]['sequence']);
+          return Response.json({
+            requestId,
+            serverTime: new Date().toISOString(),
+            result: { changes, nextCursor, hasMore: false, recoveryFloor: 0 },
+          });
+        }
         return Response.json({
           requestId,
           serverTime: new Date().toISOString(),
@@ -825,6 +1090,43 @@ function fakeBackend(
             { status: 403 },
           );
         }
+        if (options.remoteSync === true) {
+          const params = body['params'] as { changes?: unknown };
+          const pushed = Array.isArray(params?.changes) ? params.changes : [];
+          const results: Array<{ changeId: string; revision: number; status: string }> = [];
+          for (const item of pushed) {
+            if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+            const change = item as Record<string, unknown>;
+            if (
+              typeof change['changeId'] !== 'string' ||
+              typeof change['entityType'] !== 'string' ||
+              typeof change['entityId'] !== 'string' ||
+              typeof change['operation'] !== 'string' ||
+              typeof change['schemaVersion'] !== 'number'
+            ) {
+              continue;
+            }
+            const entityKey = `${session.accountId}\u0000${change['entityType']}\u0000${change['entityId']}`;
+            const revision = (remoteEntityRevisions.get(entityKey) ?? 0) + 1;
+            remoteEntityRevisions.set(entityKey, revision);
+            const remoteChange: Record<string, unknown> = {
+              entityType: change['entityType'],
+              entityId: change['entityId'],
+              operation: change['operation'],
+              revision,
+              schemaVersion: change['schemaVersion'],
+              sequence: ++remoteSequence,
+              ...(change['operation'] === 'delete' ? {} : { payload: change['payload'] }),
+            };
+            remoteChanges.push({ accountId: session.accountId, change: remoteChange });
+            results.push({ changeId: change['changeId'], revision, status: 'accepted' });
+          }
+          return Response.json({
+            requestId,
+            serverTime: new Date().toISOString(),
+            result: { results },
+          });
+        }
         return Response.json({
           requestId,
           serverTime: new Date().toISOString(),
@@ -839,7 +1141,38 @@ function fakeBackend(
     return new Response('not found', { status: 404 });
   }) as typeof fetch;
 
-  return { fetchFn, codes, sessions, calls };
+  const seedRemoteIdentity = (candidate: FakeSession, identityPub: string): void => {
+    sessions.set(candidate.enrollmentId, candidate);
+    identityBindings.set(candidate.enrollmentId, identityPub);
+    const identityBoundAt = new Date().toISOString();
+    identityBoundTimes.set(candidate.enrollmentId, identityBoundAt);
+    remoteChanges.push({
+      accountId: candidate.accountId,
+      change: {
+        entityType: CRYPTO_ENTITY_DEVICE_IDENTITY,
+        entityId: candidate.enrollmentId,
+        operation: 'create',
+        revision: 1,
+        schemaVersion: 1,
+        sequence: ++remoteSequence,
+        payload: { v: 1, enrollmentId: candidate.enrollmentId, pub: identityPub },
+      },
+    });
+  };
+
+  return {
+    fetchFn,
+    codes,
+    sessions,
+    identityBindings,
+    identityBoundTimes,
+    remoteChanges,
+    calls,
+    seedRemoteIdentity,
+    setTrustPolicy: (policy: 'auto-trust-authenticated' | 'require-approval') => {
+      activeTrustPolicy = policy;
+    },
+  };
 }
 
 function oidcDescriptorFixture(deploymentId = 'backend-1'): SyncBackendDescriptor {
@@ -857,6 +1190,22 @@ function workosDescriptorFixture(): SyncBackendDescriptor {
       publicClientId: 'client_test',
       scopes: ['openid'],
     },
+  };
+}
+
+function workosFetch(backend: ReturnType<typeof fakeBackend>): typeof fetch {
+  return async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url === WORKOS_DEVICE_AUTHORIZATION_URL) {
+      return Response.json({
+        device_code: 'private-device-code',
+        user_code: 'RRGQ-BJVS',
+        verification_uri: 'https://authkit.example/device',
+        expires_in: 300,
+        interval: 1,
+      });
+    }
+    return backend.fetchFn(input, init);
   };
 }
 
@@ -954,6 +1303,16 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     };
     initSyncRuntime(dir, { fetchFn, createSocket: factory.createSocket });
     pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+    const selectedWorkspace = createWorkspace({ name: 'Selected workspace', syncSelected: true });
+    const pausedWorkspace = createWorkspace({ name: 'Local workspace' });
+    const otherAccountTemplate = saveWorkflowTemplate({
+      name: 'Other account template',
+      description: '',
+      orchestration: { ...DEFAULT_ORCHESTRATION },
+      nodes: [node('step-1')],
+      edges: [],
+    });
+    upsertBinding(OTHER_SCOPE, ET, otherAccountTemplate.id);
     let challenge: { userCode: string; verificationUri: string } | null = null;
 
     const snapshot = await signInWithWorkOSDevice({
@@ -969,11 +1328,257 @@ describe('real auth transport (contract routes over injected fetch)', () => {
       userCode: 'RRGQ-BJVS',
       verificationUri: 'https://authkit.example/device',
     });
-    expect(getRuntimeStatus().syncEnabled).toBe(true);
+    expect(getRuntimeStatus().syncEnabled).toBe(false);
+    expect(activeSyncScope()).toBeNull();
     expect(factory.sockets).toHaveLength(0);
     expect(backend.calls.some((call) => call.operation === 'sync.pull')).toBe(true);
-    expect(backend.calls.some((call) => call.operation === 'sync.push')).toBe(true);
+    expect(backend.calls.some((call) => call.operation === 'sync.scan.begin')).toBe(false);
+    const identityOnlyChanges = backend.calls
+      .filter((call) => call.operation === 'sync.push')
+      .flatMap((call) => {
+        const params = call.params as { changes?: Array<{ entityType: string }> } | undefined;
+        return params?.changes ?? [];
+      });
+    expect(identityOnlyChanges).toHaveLength(1);
+    expect(identityOnlyChanges[0].entityType).toBe(CRYPTO_ENTITY_DEVICE_IDENTITY);
+    expect(
+      previewAdoption()
+        .filter((item) => item.entityType === SYNC_ENTITY_WORKSPACE_DEFINITION)
+        .map((item) => item.entityId),
+    ).toEqual([selectedWorkspace.id]);
+    expect(previewAdoption().some((item) => item.entityId === otherAccountTemplate.id)).toBe(false);
+    expect(previewAdoption().some((item) => item.entityId === pausedWorkspace.id)).toBe(false);
+
+    const security = await getDeviceSecurityStatus();
+    expect(security.canConfigure).toBe(true);
+    const recovery = await setupDeviceRecovery('auto-trust-authenticated');
+    expect(recovery.recoveryCode).toMatch(/-/);
+    expect((await getDeviceSecurityStatus()).configured).toBe(true);
+    expect(getRuntimeStatus().syncEnabled).toBe(false);
     expect(JSON.stringify(challenge)).not.toContain('private-device-code');
+    expect(enableSync().syncEnabled).toBe(true);
+  });
+
+  it('delivers an account key to a second paused profile without uploading its app data', async () => {
+    const backend = fakeBackend({
+      remoteSync: true,
+      workosDeviceCode: 'private-device-code',
+      pendingEnrollmentIds: ['enr-existing-pending'],
+      revokedEnrollmentIds: ['enr-revoked'],
+    });
+    const sourceDb = db;
+    const recipientDb = new Database(':memory:');
+    recipientDb.exec(SCHEMA_SQL);
+    const sourceDir = mkdtempSync(join(tmpdir(), 'sync-runtime-source-'));
+    const recipientDir = mkdtempSync(join(tmpdir(), 'sync-runtime-recipient-'));
+    const fetchFn = workosFetch(backend);
+    const newPublicIdentity = () =>
+      generateKeyPairSync('x25519')
+        .publicKey.export({ format: 'der', type: 'spki' })
+        .subarray(-32)
+        .toString('base64');
+    const candidate = (
+      enrollmentId: string,
+      enrollmentClass: 'device' | 'ephemeral' = 'device',
+      enrollmentExpiresAt?: string,
+    ): FakeSession => ({
+      accountId: 'workos-account-1',
+      enrollmentId,
+      refreshToken: `refresh-${enrollmentId}`,
+      accessToken: `access-${enrollmentId}`,
+      generation: 1,
+      accessExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      proofMethod: 'workos-device',
+      enrollmentClass,
+      ...(enrollmentExpiresAt === undefined ? {} : { enrollmentExpiresAt }),
+    });
+    const recipientWorkflow = {
+      name: 'Recipient local-only workflow',
+      description: '',
+      orchestration: { ...DEFAULT_ORCHESTRATION },
+      nodes: [node('recipient-step')],
+      edges: [],
+    };
+
+    try {
+      initSyncRuntime(sourceDir, { fetchFn });
+      pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+      const source = await signInWithWorkOSDevice({ startRuntime: false, timeoutMs: 10_000 });
+      expect(source.state).toBe('signed-in');
+      const sourceEnrollmentId = source.enrollmentId!;
+      const sourceScope: SyncScope = {
+        backendId: 'backend-1',
+        accountId: 'workos-account-1',
+        datasetEpoch: SPIKE_DATASET_EPOCH,
+      };
+      await setupDeviceRecovery('auto-trust-authenticated');
+      saveWorkflowTemplate({
+        name: 'Source private workflow',
+        description: '',
+        orchestration: { ...DEFAULT_ORCHESTRATION },
+        nodes: [node('source-step')],
+        edges: [],
+      });
+
+      backend.seedRemoteIdentity(candidate('enr-existing-pending'), newPublicIdentity());
+      backend.seedRemoteIdentity(
+        candidate('enr-ephemeral', 'ephemeral', new Date(Date.now() + 60_000).toISOString()),
+        newPublicIdentity(),
+      );
+      backend.seedRemoteIdentity(candidate('enr-revoked'), newPublicIdentity());
+      enableSync();
+      await requestSync();
+      expect(
+        backend.remoteChanges.some(
+          (entry) => entry.change['entityType'] === SYNC_ENTITY_WORKFLOW_TEMPLATE,
+        ),
+      ).toBe(true);
+
+      resetSyncRuntimeForTests();
+      resetSyncEngineForTests();
+      db = recipientDb;
+      initSyncRuntime(recipientDir, { fetchFn });
+      pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+      const recipientTemplate = saveWorkflowTemplate(recipientWorkflow);
+      const recipient = await signInWithWorkOSDevice({ startRuntime: false, timeoutMs: 10_000 });
+      const recipientEnrollmentId = recipient.enrollmentId!;
+      const recipientScope: SyncScope = { ...sourceScope };
+      expect(getRuntimeStatus().syncEnabled).toBe(false);
+      expect(hasAccountKey(recipientScope)).toBe(false);
+
+      const recipientSession = backend.sessions.get(recipientEnrollmentId)!;
+      const recipientPushes = backend.calls.filter(
+        (call) =>
+          call.operation === 'sync.push' &&
+          call.authorization === `Bearer ${recipientSession.accessToken}`,
+      );
+      const recipientChanges = recipientPushes.flatMap((call) => {
+        const params = call.params as { changes?: Array<Record<string, unknown>> } | undefined;
+        return params?.changes ?? [];
+      });
+      expect(recipientChanges).toHaveLength(1);
+      expect(recipientChanges[0]).toMatchObject({
+        entityType: CRYPTO_ENTITY_DEVICE_IDENTITY,
+        entityId: recipientEnrollmentId,
+      });
+      expect(
+        backend.remoteChanges.some(
+          (entry) =>
+            entry.change['entityType'] === SYNC_ENTITY_WORKFLOW_TEMPLATE &&
+            entry.change['entityId'] === recipientTemplate.id,
+        ),
+      ).toBe(false);
+      expect(getBinding(recipientScope, ET, recipientTemplate.id)).toBeNull();
+
+      resetSyncRuntimeForTests();
+      resetSyncEngineForTests();
+      db = sourceDb;
+      initSyncRuntime(sourceDir, { fetchFn });
+      await requestSync();
+      await vi.waitFor(() => {
+        expect(
+          backend.remoteChanges.some(
+            (entry) =>
+              entry.change['entityType'] === CRYPTO_ENTITY_KEYRING_WRAP &&
+              entry.change['entityId'] === recipientEnrollmentId &&
+              (entry.change['payload'] as Record<string, unknown> | undefined)?.[
+                'senderEnrollmentId'
+              ] === sourceEnrollmentId,
+          ),
+        ).toBe(true);
+      });
+      expect(deviceTrustState(sourceScope, recipientEnrollmentId)).toBe('trusted');
+      expect(deviceTrustState(sourceScope, 'enr-existing-pending')).toBe('pending');
+      expect(deviceTrustState(sourceScope, 'enr-ephemeral')).toBe('pending');
+      expect(deviceTrustState(sourceScope, 'enr-revoked')).toBe('revoked');
+      expect(
+        backend.remoteChanges.some(
+          (entry) =>
+            entry.change['entityType'] === CRYPTO_ENTITY_KEYRING_WRAP &&
+            ['enr-existing-pending', 'enr-ephemeral', 'enr-revoked'].includes(
+              entry.change['entityId'] as string,
+            ),
+        ),
+      ).toBe(false);
+
+      const challengeCount = backend.calls.filter(
+        (call) => call.operation === 'security.identityChallenge',
+      ).length;
+      resetSyncRuntimeForTests();
+      resetSyncEngineForTests();
+      db = recipientDb;
+      initSyncRuntime(recipientDir, { fetchFn });
+      const realNow = Date.now;
+      const offsetClock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 31_000);
+      try {
+        onSystemResume();
+        await vi.waitFor(() => expect(hasAccountKey(recipientScope)).toBe(true), {
+          timeout: 5_000,
+        });
+      } finally {
+        offsetClock.mockRestore();
+      }
+      expect(getRuntimeStatus().syncEnabled).toBe(false);
+      expect(
+        backend.calls.filter((call) => call.operation === 'security.identityChallenge'),
+      ).toHaveLength(challengeCount);
+      expect(
+        backend.calls
+          .filter((call) => call.operation === 'sync.push')
+          .flatMap((call) => {
+            const params = call.params as { changes?: Array<Record<string, unknown>> } | undefined;
+            return params?.changes ?? [];
+          })
+          .filter((change) => change['entityId'] === recipientTemplate.id),
+      ).toHaveLength(0);
+    } finally {
+      resetSyncRuntimeForTests();
+      resetSyncEngineForTests();
+      db = sourceDb;
+      recipientDb.close();
+    }
+  });
+
+  it('keeps provider-authenticated peers pending when account policy requires approval', async () => {
+    const backend = fakeBackend({
+      remoteSync: true,
+      workosDeviceCode: 'private-device-code',
+      trustedEnrollmentIds: ['enr-manually-trusted-peer'],
+    });
+    const fetchFn = workosFetch(backend);
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-opt-out-'));
+    const peer = {
+      accountId: 'workos-account-1',
+      enrollmentId: 'enr-manually-trusted-peer',
+      refreshToken: 'peer-refresh',
+      accessToken: 'peer-access',
+      generation: 1,
+      accessExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      proofMethod: 'workos-device' as const,
+      enrollmentClass: 'device' as const,
+    };
+    backend.seedRemoteIdentity(
+      peer,
+      generateKeyPairSync('x25519')
+        .publicKey.export({ format: 'der', type: 'spki' })
+        .subarray(-32)
+        .toString('base64'),
+    );
+    initSyncRuntime(dir, { fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+    await signInWithWorkOSDevice({ startRuntime: false, timeoutMs: 10_000 });
+
+    expect(
+      deviceTrustState({ ...SCOPE, accountId: 'workos-account-1' }, 'enr-manually-trusted-peer'),
+    ).toBe('pending');
+    expect(
+      backend.remoteChanges.some(
+        (entry) =>
+          entry.change['entityType'] === CRYPTO_ENTITY_KEYRING_WRAP &&
+          entry.change['entityId'] === 'enr-manually-trusted-peer',
+      ),
+    ).toBe(false);
+    expect(getRuntimeStatus().syncEnabled).toBe(false);
   });
 
   it('registers a replacement enrollment before resuming pending changes', async () => {
@@ -1076,9 +1681,13 @@ describe('real auth transport (contract routes over injected fetch)', () => {
 
     const issued = await issueEnrollmentCode();
     expect(issued.accountId).toBe('account-1');
-    const last = backend.calls[backend.calls.length - 1];
-    expect(last.path).toBe('/v1/enrollment-codes');
-    expect(last.authorization?.startsWith('Bearer at-')).toBe(true);
+    expect(
+      backend.calls.some(
+        (call) =>
+          call.path === '/v1/enrollment-codes' &&
+          call.authorization?.startsWith('Bearer at-') === true,
+      ),
+    ).toBe(true);
   });
 
   it('persists an E2E pairing secret while the backend is paused', async () => {
@@ -1216,7 +1825,8 @@ describe('real auth transport (contract routes over injected fetch)', () => {
       edges: [],
     });
     bindLocalEntities(SCOPE);
-    expect(listOutboxRows(SCOPE).length).toBe(2);
+    // Enrollment publishes its immutable device identity before app entities.
+    expect(listOutboxRows(SCOPE).length).toBe(3);
 
     const bundle = await exportSyncDiagnostics();
     expect(bundle.protocol).toBe(PROTOCOL);
@@ -1655,6 +2265,7 @@ describe('hosted entitlement (BILL-05)', () => {
       resolveDeviceListStarted = resolve;
     });
     let rejectDeviceList!: (reason: Error) => void;
+    let shouldHoldDeviceList = false;
     let heldDeviceList = false;
     const fetchFn: typeof fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -1662,6 +2273,7 @@ describe('hosted entitlement (BILL-05)', () => {
       if (
         new URL(url).pathname === '/v1/rpc' &&
         body.operation === 'device.list' &&
+        shouldHoldDeviceList &&
         !heldDeviceList
       ) {
         heldDeviceList = true;
@@ -1682,6 +2294,7 @@ describe('hosted entitlement (BILL-05)', () => {
 
     // enableSync starts a background cycle; hold its first account RPC while the
     // runtime is reset, then make the old request fail.
+    shouldHoldDeviceList = true;
     enableSync();
     await deviceListStarted;
     resetSyncRuntimeForTests();

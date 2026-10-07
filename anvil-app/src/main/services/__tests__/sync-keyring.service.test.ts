@@ -1,8 +1,16 @@
 import Database from 'better-sqlite3';
-import { randomBytes } from 'node:crypto';
+import {
+  createPublicKey,
+  createHmac,
+  diffieHellman,
+  generateKeyPairSync,
+  hkdfSync,
+  randomBytes,
+} from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
 import type { SyncScope } from '../../../shared/sync-mesh';
+import { canonicalizeJson } from '../../../../cloud/contract/sync';
 import {
   CRYPTO_ENTITY_DEVICE_IDENTITY,
   CRYPTO_ENTITY_KEYRING_PAIRING,
@@ -47,6 +55,7 @@ import {
   accountKeyFor,
   canProvisionAccountKey,
   clearAccountCrypto,
+  createDeviceIdentityBindingProof,
   currentAccountKey,
   deriveSas,
   ensureDeviceIdentity,
@@ -70,6 +79,7 @@ import {
   sealScopedJson,
   setDeviceTrust,
   setAccountKeyBootstrapEligibility,
+  trustAuthenticatedDeviceIdentity,
   UnsealError,
   unsealAccountBytes,
   unsealBytesWithKey,
@@ -349,6 +359,69 @@ describe('provisioning gate', () => {
 });
 
 describe('device identity + key wrap', () => {
+  it('proves the bound device identity with the challenge-specific X25519 key', () => {
+    activateEnrollment();
+    const identity = ensureDeviceIdentity(SCOPE, ENROLLMENT);
+    const server = generateKeyPairSync('x25519');
+    const serverPublicKey = server.publicKey
+      .export({ format: 'der', type: 'spki' })
+      .subarray(-32)
+      .toString('base64url');
+    const challenge = {
+      challengeId: 'challenge-1',
+      challenge: randomBytes(32).toString('base64url'),
+      accountId: SCOPE.accountId,
+      enrollmentId: ENROLLMENT,
+      identityPub: identity.pub,
+      serverPublicKey,
+    };
+
+    const proof = createDeviceIdentityBindingProof(SCOPE, ENROLLMENT, challenge);
+    const shared = diffieHellman({
+      privateKey: server.privateKey,
+      publicKey: createPublicKey({
+        key: Buffer.concat([
+          Buffer.from('302a300506032b656e032100', 'hex'),
+          Buffer.from(identity.pub, 'base64'),
+        ]),
+        format: 'der',
+        type: 'spki',
+      }),
+    });
+    const proofKey = Buffer.from(
+      hkdfSync(
+        'sha256',
+        shared,
+        Buffer.from(challenge.challenge, 'base64url'),
+        Buffer.from('anvil-device-identity-binding-v1', 'utf8'),
+        32,
+      ),
+    );
+    const canonicalMessage = canonicalizeJson({
+      action: 'bind-device-identity',
+      accountId: challenge.accountId,
+      challenge: challenge.challenge,
+      challengeId: challenge.challengeId,
+      enrollmentId: challenge.enrollmentId,
+      identityPub: challenge.identityPub,
+      serverPublicKey: challenge.serverPublicKey,
+      v: 1,
+    });
+    expect(proof).toBe(
+      createHmac('sha256', proofKey).update(canonicalMessage, 'utf8').digest('base64url'),
+    );
+    expect(proof).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(() =>
+      createDeviceIdentityBindingProof(SCOPE, ENROLLMENT, {
+        ...challenge,
+        identityPub: randomBytes(32).toString('base64'),
+      }),
+    ).toThrow(/does not match/);
+    expect(() =>
+      createDeviceIdentityBindingProof({ ...SCOPE, accountId: 'other-account' }, ENROLLMENT, challenge),
+    ).toThrow(/different account/);
+  });
+
   it('publishes a plaintext device-identity entity', () => {
     activateEnrollment();
     publishDeviceIdentity(SCOPE, ENROLLMENT);
@@ -423,6 +496,48 @@ describe('device identity + key wrap', () => {
     );
     expect(consumed).toBe(true);
     expect(accountKeyFor(SCOPE, adk!.version)).toEqual(adk!.key);
+  });
+
+  it('delivers between two profiles only after exact authenticated identity promotion', () => {
+    activateEnrollment('enr-issuer');
+    const issuer = ensureDeviceIdentity(SCOPE, 'enr-issuer');
+    provisionAccountKey(SCOPE);
+    setDeviceTrust(SCOPE, 'enr-issuer', 'trusted');
+
+    const recipient = ensureDeviceIdentity(SCOPE, 'enr-recipient');
+    setDeviceTrust(SCOPE, 'enr-recipient', 'pending');
+    expect(trustAuthenticatedDeviceIdentity(SCOPE, 'enr-recipient', randomBytes(32).toString('base64')))
+      .toBe(false);
+    expect(trustAuthenticatedDeviceIdentity(SCOPE, 'enr-recipient', recipient.pub)).toBe(true);
+    expect(wrapAccountKeyFor(SCOPE, 'enr-recipient', recipient.pub)).toBe(true);
+    const wrap = outboxPayloads(CRYPTO_ENTITY_KEYRING_WRAP).at(-1) as KeyringWrapPayload;
+
+    // The second profile has only its own private identity and the issuer's
+    // authenticated synced public key. Its pending wrap opens after the exact
+    // server-bound key is promoted locally.
+    db.prepare('DELETE FROM sync_keyring').run();
+    setDeviceTrust(SCOPE, 'enr-issuer', 'pending');
+    db.prepare("UPDATE device_enrollments SET state = 'revoked' WHERE id = 'enr-issuer'").run();
+    activateEnrollment('enr-recipient');
+    expect(trustAuthenticatedDeviceIdentity(SCOPE, 'enr-issuer', issuer.pub)).toBe(true);
+    handleCryptoBoundaryEntity(
+      SCOPE,
+      'enr-recipient',
+      CRYPTO_ENTITY_KEYRING_WRAP,
+      'enr-recipient',
+      wrap,
+    );
+    expect(hasAccountKey(SCOPE)).toBe(true);
+    expect(accountKeyFor(SCOPE, 1)).not.toBeNull();
+  });
+
+  it('never reopens a revoked authenticated binding', () => {
+    activateEnrollment();
+    const peer = ensureDeviceIdentity(SCOPE, 'enr-revoked');
+    setDeviceTrust(SCOPE, 'enr-revoked', 'revoked');
+    expect(trustAuthenticatedDeviceIdentity(SCOPE, 'enr-revoked', peer.pub)).toBe(false);
+    expect(db.prepare('SELECT state FROM sync_device_trust WHERE enrollment_id = ?').get('enr-revoked'))
+      .toEqual({ state: 'revoked' });
   });
 
   it('ignores a wrap addressed to a different enrollment', () => {

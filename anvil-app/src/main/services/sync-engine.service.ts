@@ -86,6 +86,7 @@ import {
 import {
   isCryptoBoundaryEntityType,
   isSealedEntityPayload,
+  CRYPTO_ENTITY_DEVICE_IDENTITY,
 } from '../../../cloud/contract/sealed.js';
 import {
   AccountKeyUnavailableError,
@@ -143,6 +144,11 @@ export interface RunSyncCycleInput {
    * Absent means writes are unrestricted (self-host backends).
    */
   writeGate?: () => { allowed: boolean };
+  /**
+   * Onboarding-only publication: may push this enrollment's device-identity
+   * record, while pulls remain available. It never runs scans or snapshots.
+   */
+  writeMode?: 'device-identity-only';
 }
 
 export interface SyncEngineSnapshot {
@@ -379,7 +385,9 @@ async function executeOneCycle(input: RunSyncCycleInput): Promise<void> {
   }
 
   const rpcFn = input.rpc ?? defaultRpc;
-  const writesAllowed = (): boolean => input.writeGate === undefined || input.writeGate().allowed;
+  const metadataOnly = input.writeMode === 'device-identity-only';
+  const writesAllowed = (): boolean =>
+    metadataOnly || input.writeGate === undefined || input.writeGate().allowed;
   try {
     // Fence before any durable write: a superseded cycle must not even mark
     // outbox rows dispatched under the dead scope.
@@ -415,7 +423,7 @@ async function executeOneCycle(input: RunSyncCycleInput): Promise<void> {
     }
     // sync.scan.begin is a mutating op: gated out while restricted so
     // reset_required stays set and the rescan runs once access resumes.
-    if (getSyncState(input.scope)?.resetRequired === true) {
+    if (!metadataOnly && getSyncState(input.scope)?.resetRequired === true) {
       const restored = await restorePublishedSnapshot(input, rpcFn);
       if (!restored && writesAllowed()) await scanCycle(input, rpcFn);
     }
@@ -425,6 +433,7 @@ async function executeOneCycle(input: RunSyncCycleInput): Promise<void> {
       const mapped = toSyncEngineError(error);
       if (mapped.code !== 'reset-required') throw mapped;
       updateSyncState(input.scope, { resetRequired: true });
+      if (metadataOnly) throw mapped;
       const restored = await restorePublishedSnapshot(input, rpcFn);
       if (!restored) {
         if (!writesAllowed()) throw mapped;
@@ -432,7 +441,7 @@ async function executeOneCycle(input: RunSyncCycleInput): Promise<void> {
       }
       await pullCycle(input, rpcFn);
     }
-    if (writesAllowed()) {
+    if (!metadataOnly && writesAllowed()) {
       await maybePublishPortableSnapshot(input, rpcFn);
     }
     backoffUntil.delete(key);
@@ -594,7 +603,13 @@ async function pushCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
     maxChanges: limits.batchChanges,
     seal: (sealInput) => sealWirePayload(input.scope, sealInput),
     shouldDispatch: (entityType, entityId) =>
-      entityType !== SYNC_ENTITY_WORKSPACE_DEFINITION || !isWorkspaceSyncPaused(entityId),
+      (entityType !== SYNC_ENTITY_WORKSPACE_DEFINITION || !isWorkspaceSyncPaused(entityId)) &&
+      (input.writeMode !== 'device-identity-only' ||
+        (entityType === CRYPTO_ENTITY_DEVICE_IDENTITY && entityId === input.enrollmentId)),
+    onlyEntity:
+      input.writeMode === 'device-identity-only'
+        ? { entityType: CRYPTO_ENTITY_DEVICE_IDENTITY, entityId: input.enrollmentId }
+        : undefined,
   });
   if (batch.length === 0) return;
   const { result } = await rpcFn<SyncPushResult>(

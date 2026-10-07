@@ -717,7 +717,7 @@ export function nextBatch(
     const params = scopeParams(scope);
     const now = nowIso();
 
-    fenceOrphanedDispatches(scope, enrollmentId);
+    if (options?.onlyEntity === undefined) fenceOrphanedDispatches(scope, enrollmentId);
 
     const dispatched = db
       .prepare(
@@ -725,8 +725,30 @@ export function nextBatch(
          ORDER BY enrollment_sequence ASC`,
       )
       .all(...params, enrollmentId) as OutboxRow[];
-    if (dispatched.length > 0) {
-      return dispatched.map(toPendingChange);
+    if (
+      options?.onlyEntity !== undefined &&
+      dispatched.some(
+        (row) =>
+          row.entity_type !== options.onlyEntity?.entityType ||
+          row.entity_id !== options.onlyEntity?.entityId,
+      )
+    ) {
+      // A normal push may already have reserved earlier enrollment sequence
+      // numbers. Advancing the backend high-water mark with only the identity
+      // row would make those withheld records unreplayable; leave all rows
+      // untouched until the normal Sync path resumes.
+      return [];
+    }
+    const eligibleDispatched =
+      options?.onlyEntity === undefined
+        ? dispatched
+        : dispatched.filter(
+            (row) =>
+              row.entity_type === options.onlyEntity?.entityType &&
+              row.entity_id === options.onlyEntity?.entityId,
+          );
+    if (eligibleDispatched.length > 0) {
+      return eligibleDispatched.map(toPendingChange);
     }
 
     const conflictedEntities = new Set(
@@ -748,6 +770,9 @@ export function nextBatch(
     ).filter(
       (row) =>
         !conflictedEntities.has(`${row.entity_type}\0${row.entity_id}`) &&
+        (options?.onlyEntity === undefined ||
+          (row.entity_type === options.onlyEntity.entityType &&
+            row.entity_id === options.onlyEntity.entityId)) &&
         (options?.shouldDispatch?.(row.entity_type, row.entity_id) ?? true),
     );
 
