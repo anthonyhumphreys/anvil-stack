@@ -18,6 +18,7 @@ import {
 } from '../../../shared/workitem-intent';
 import { SprintSelector } from './SprintSelector';
 import { TagFilter } from './TagFilter';
+import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import { WorkItemCard } from './WorkItemCard';
 import { repoIsMapped, useWorkspace } from '../../contexts/WorkspaceContext';
 import { useChatContext } from '../../contexts/ChatContext';
@@ -421,10 +422,14 @@ export function WorkItemsView() {
                 <div className="space-y-6 p-5">
                   <section>
                     <h3 className="mb-2 text-sm font-semibold">Acceptance criteria</h3>
-                    <p className="max-w-prose whitespace-pre-wrap break-words text-sm leading-6 text-text-secondary">
-                      {extractAcceptanceCriteria(selected) ||
-                        'No explicit acceptance criteria in this item. Confirm the expectations when planning; inferred criteria are not approved requirements.'}
-                    </p>
+                    <div className="min-w-0 max-w-prose">
+                      <MarkdownRenderer
+                        content={
+                          extractAcceptanceCriteria(selected) ||
+                          'No explicit acceptance criteria in this item. Confirm the expectations when planning; inferred criteria are not approved requirements.'
+                        }
+                      />
+                    </div>
                     <p className="mt-2 text-xs text-text-tertiary">
                       Maintained in {connection?.name ?? selected.provider}. Refreshed before
                       starting work or accepting a review.
@@ -432,9 +437,11 @@ export function WorkItemsView() {
                   </section>
                   <section>
                     <h3 className="mb-2 text-sm font-semibold">Description</h3>
-                    <p className="max-w-prose whitespace-pre-wrap break-words text-sm leading-6 text-text-secondary">
-                      {workItemText(selected.description) || 'No description provided.'}
-                    </p>
+                    <div className="min-w-0 max-w-prose">
+                      <MarkdownRenderer
+                        content={workItemText(selected.description) || 'No description provided.'}
+                      />
+                    </div>
                   </section>
                   {selected.tags?.length ? (
                     <p className="text-xs text-text-tertiary">Tags: {selected.tags.join(', ')}</p>
