@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
@@ -29,11 +29,12 @@ vi.mock('../persona.service.js', () => ({
   getPersonaById: (id: string) => (id === 'coder' ? { id } : null),
   buildSystemPrompt: () => '',
 }));
-const { openExternalCalls } = vi.hoisted(() => ({
+const { openExternalCalls, secretStorageEnvironment } = vi.hoisted(() => ({
   openExternalCalls: [] as string[],
+  secretStorageEnvironment: { dataDir: '/tmp' },
 }));
 vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  app: { getPath: () => secretStorageEnvironment.dataDir, getVersion: () => 'test' },
   shell: {
     openExternal: async (url: string) => {
       openExternalCalls.push(url);
@@ -67,6 +68,7 @@ import {
   openHostedAccountPage,
   resolveHostedAccountUrl,
   previewAdoption,
+  resumeSyncAfterCredentialStorageReady,
   refreshHostedEntitlement,
   refreshDeviceIdentitiesForOneShot,
   resetSyncRuntimeForTests,
@@ -84,10 +86,19 @@ import {
   resumeCloudEnvironment,
 } from '../sync-runtime.service';
 import {
+  configureSecretVault,
+  lockSecretVault,
+  resetSecretStorageForTests,
+  selectSecretStorageProvider,
+  unlockSecretVault,
+} from '../auth.service';
+import {
   deriveSas,
+  currentAccountKey,
   deviceTrustState,
   ensureDeviceIdentity,
   hasAccountKey,
+  installAccountKey,
   provisionAccountKey,
   setDeviceTrust,
 } from '../sync-keyring.service';
@@ -1279,6 +1290,85 @@ describe('session backend isolation', () => {
     expect((await exportSyncDiagnostics()).remote).toBeNull();
 
     expect(backend.calls).toEqual([]);
+  });
+});
+
+describe('credential storage becoming ready', () => {
+  it('resumes an active saved session after vault unlock without re-enrolling or changing its account key', async () => {
+    const previousStorageDir = secretStorageEnvironment.dataDir;
+    const storageDir = mkdtempSync(join(tmpdir(), 'sync-runtime-vault-'));
+    const runtimeDir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    secretStorageEnvironment.dataDir = storageDir;
+    resetSecretStorageForTests();
+
+    try {
+      const passphrase = 'test vault passphrase';
+      await configureSecretVault({ mode: 'passphrase', passphrase });
+      selectSecretStorageProvider('vault');
+
+      const backend = fakeBackend({ accessTtlMs: 0 });
+      const sockets = fakeSocketFactory();
+      initSyncRuntime(runtimeDir, {
+        fetchFn: backend.fetchFn,
+        createSocket: sockets.createSocket,
+      });
+      const pinned = pinBackend({
+        baseUrl: 'https://backend.example.test/',
+        descriptor: descriptorFixture(),
+      });
+      const minted = (await (
+        await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+          body: JSON.stringify({ accountId: 'account-1' }),
+        })
+      ).json()) as { code: string };
+      const enrolled = await enrollWithEnrollmentCode(minted.code);
+
+      // Model a previously established account key from another device.
+      // Startup recovery must reuse this material after the session unlocks.
+      resetSyncRuntimeForTests();
+      const originalAccountKey = randomBytes(32);
+      installAccountKey(SCOPE, 1, originalAccountKey, 'wrap');
+      const savedAccountKey = currentAccountKey(SCOPE);
+      activateBackend(pinned.id);
+      const enrollmentCount = backend.calls.filter((call) => call.path === '/v1/enroll').length;
+      const serverSession = backend.sessions.get(enrolled.enrollmentId!)!;
+      const generationBeforeUnlock = serverSession.generation;
+
+      lockSecretVault();
+      initSyncRuntime(runtimeDir, {
+        fetchFn: backend.fetchFn,
+        createSocket: sockets.createSocket,
+      });
+      expect(getRuntimeStatus().auth).toMatchObject({
+        state: 'signed-in',
+        accountId: enrolled.accountId,
+        enrollmentId: enrolled.enrollmentId,
+      });
+      expect(sockets.connections).toHaveLength(0);
+
+      await unlockSecretVault(passphrase);
+      await resumeSyncAfterCredentialStorageReady();
+
+      expect(getRuntimeStatus().auth).toMatchObject({
+        state: 'signed-in',
+        accountId: enrolled.accountId,
+        enrollmentId: enrolled.enrollmentId,
+      });
+      expect(backend.calls.filter((call) => call.path === '/v1/enroll')).toHaveLength(
+        enrollmentCount,
+      );
+      expect(serverSession.generation).toBeGreaterThan(generationBeforeUnlock);
+      expect(sockets.connections.length).toBeGreaterThan(0);
+      expect(currentAccountKey(SCOPE)).toEqual(savedAccountKey);
+      expect(hasAccountKey(SCOPE)).toBe(true);
+    } finally {
+      resetSyncRuntimeForTests();
+      resetSecretStorageForTests();
+      secretStorageEnvironment.dataDir = previousStorageDir;
+      rmSync(storageDir, { recursive: true, force: true });
+    }
   });
 });
 

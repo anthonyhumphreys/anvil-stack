@@ -89,6 +89,19 @@ export function isSecretStorageAvailable(): boolean {
   return getSecretStorageStatus().state === 'ready';
 }
 
+/** Fail before starting an auth flow that would eventually persist credentials. */
+export function assertSecretStorageReady(): void {
+  const state = getSecretStorageStatus().state;
+  if (state === 'ready') return;
+  if (state === 'locked')
+    throw new Error('Unlock your encrypted credential vault before signing in.');
+  if (state === 'invalid')
+    throw new Error(
+      'Anvil could not read the saved credential storage configuration. Existing credentials were kept.',
+    );
+  throw new Error('Set up encrypted credential storage on this device before signing in.');
+}
+
 export async function configureSecretVault(input: SecretVaultSetup): Promise<SecretStorageStatus> {
   const store = vaultStore();
   if (store === null) throw new Error('Credential storage is unavailable in this process.');

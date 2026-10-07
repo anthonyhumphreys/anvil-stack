@@ -47,12 +47,15 @@ import {
   startNotionOAuthFlow,
   exchangeNotionOAuthCode,
 } from '../services/notion.service.js';
+import { resumeSyncAfterCredentialStorageReady } from '../services/sync-runtime.service.js';
 
 export function registerSettingsHandlers(): void {
   const storageChanged = (): ReturnType<typeof getCredentialStorageStatus> => {
     resetLlmClient();
     emitCompanionEvent('settings');
-    return getCredentialStorageStatus();
+    const status = getCredentialStorageStatus();
+    if (status.state === 'ready') void resumeSyncAfterCredentialStorageReady();
+    return status;
   };
   ipcMain.handle('settings:secret-storage-status', () => getCredentialStorageStatus());
   ipcMain.handle('settings:secret-vault-setup', async (_event, input: SecretVaultSetup) => {

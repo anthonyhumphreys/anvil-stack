@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   pin: vi.fn(),
   runtime: vi.fn(),
   signIn: vi.fn(),
+  assertSecretStorageReady: vi.fn(),
 }));
 vi.mock('../sync-backend-client.service.js', () => ({
   discover: mocks.discover,
@@ -19,6 +20,7 @@ vi.mock('../sync-runtime.service.js', () => ({
   getRuntimeStatus: mocks.runtime,
   signInWithOidc: mocks.signIn,
 }));
+vi.mock('../auth.service.js', () => ({ assertSecretStorageReady: mocks.assertSecretStorageReady }));
 import { connectHostedSync } from '../sync-setup.service';
 
 const signedOut = { state: 'signed-out', accountId: null, enrollmentId: null };
@@ -58,6 +60,33 @@ describe('one-action hosted sign-in', () => {
     expect(mocks.pin.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.signIn.mock.invocationCallOrder[0]!,
     );
+    expect(mocks.assertSecretStorageReady).toHaveBeenCalledTimes(2);
+  });
+
+  it('checks secure storage before discovery or backend persistence', async () => {
+    mocks.assertSecretStorageReady.mockImplementation(() => {
+      throw new Error('Configure an encrypted vault');
+    });
+
+    await expect(connectHostedSync()).rejects.toThrow('Configure an encrypted vault');
+
+    expect(mocks.discover).not.toHaveBeenCalled();
+    expect(mocks.pin).not.toHaveBeenCalled();
+    expect(mocks.signIn).not.toHaveBeenCalled();
+  });
+
+  it('rechecks secure storage after discovery before persisting the backend pin', async () => {
+    mocks.assertSecretStorageReady
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error('Unlock credential storage');
+      });
+
+    await expect(connectHostedSync()).rejects.toThrow('Unlock credential storage');
+
+    expect(mocks.discover).toHaveBeenCalledTimes(1);
+    expect(mocks.pin).not.toHaveBeenCalled();
+    expect(mocks.signIn).not.toHaveBeenCalled();
   });
 
   it('deduplicates browser sign-in and allows retry after failure', async () => {

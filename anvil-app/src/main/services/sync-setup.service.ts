@@ -1,6 +1,7 @@
 import { discover, normalizeBaseUrl } from './sync-backend-client.service.js';
 import { getBackendStatus, pinBackend } from './sync-backend.service.js';
 import { getRuntimeStatus, signInWithOidc } from './sync-runtime.service.js';
+import { assertSecretStorageReady } from './auth.service.js';
 import type { SyncAuthPublicSnapshot } from '../../shared/sync-runtime.js';
 
 let hostedConnection: Promise<SyncAuthPublicSnapshot> | null = null;
@@ -28,6 +29,9 @@ async function connect(): Promise<SyncAuthPublicSnapshot> {
     throw new Error('Disconnect your current service in settings before signing in to Anvil.');
   }
 
+  // Do not make a discovery request or persist a backend pin unless the
+  // eventual session can be encrypted on this device.
+  assertSecretStorageReady();
   const discovered = await discover(endpoint);
   // Discovery can await a network response. Reject a concurrent account or
   // service change instead of overwriting it with the result of an old action.
@@ -43,6 +47,9 @@ async function connect(): Promise<SyncAuthPublicSnapshot> {
   ) {
     throw new Error('Your connection changed during setup. Try signing in again.');
   }
+  // Storage can be locked while discovery is in flight. Recheck immediately
+  // before pinBackend writes the discovered service.
+  assertSecretStorageReady();
   const pinned = pinBackend({
     baseUrl: discovered.baseUrl,
     descriptor: discovered.descriptor,

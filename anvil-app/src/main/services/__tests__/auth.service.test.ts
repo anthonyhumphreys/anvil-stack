@@ -19,6 +19,7 @@ vi.mock('electron', () => ({
 
 import {
   configureSecretVault,
+  assertSecretStorageReady,
   decryptSecret,
   decryptSecretStrict,
   encryptSecret,
@@ -96,6 +97,27 @@ describe('decryptSecret', () => {
     const result = decryptSecret(Buffer.from([0, 159, 146, 150]), 'settings.openaiApiKey');
 
     expect(result).toBeUndefined();
+  });
+});
+
+describe('assertSecretStorageReady', () => {
+  it('fails with vault setup guidance when the OS keychain is unavailable', () => {
+    safeStorageMock.isEncryptionAvailable.mockReturnValue(false);
+
+    expect(() => assertSecretStorageReady()).toThrow(
+      'Set up encrypted credential storage on this device before signing in.',
+    );
+  });
+
+  it('asks to unlock a configured vault before sign-in', async () => {
+    safeStorageMock.isEncryptionAvailable.mockReturnValue(false);
+    await configureSecretVault({ mode: 'passphrase', passphrase: 'test vault passphrase' });
+    selectSecretStorageProvider('vault');
+    lockSecretVault();
+
+    expect(() => assertSecretStorageReady()).toThrow(
+      'Unlock your encrypted credential vault before signing in.',
+    );
   });
 });
 

@@ -9,6 +9,7 @@ import {
 } from './remote-chat.service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
+import { assertSecretStorageReady, isSecretStorageAvailable } from './auth.service.js';
 import { resolveBackendPaths } from '../../../cloud/contract/discovery.js';
 import type {
   DeviceListResult,
@@ -2048,6 +2049,11 @@ function resumeSyncAfterEnrollment(): void {
     startKeyringOnboardingPoll();
     return;
   }
+  void resumeEnabledSyncRuntime();
+}
+
+/** Resume an already-enabled account without touching enrollment or key state. */
+function resumeEnabledSyncRuntime(): Promise<void> {
   stopKeyringOnboardingPoll();
   meshHostPool?.start();
   connectLiveChannel();
@@ -2060,7 +2066,42 @@ function resumeSyncAfterEnrollment(): void {
   void reconcileHandoffsWhenReady().catch((error: unknown) => {
     console.warn('[Sync] Handoff recovery will retry on reconnect:', error);
   });
-  void requestSync().catch(() => undefined);
+  return requestSync().catch(() => undefined);
+}
+
+/**
+ * Credential storage can become ready after startup, when a saved session was
+ * loaded but its encrypted tokens could not be read. Re-arm refresh and the
+ * existing runtime from that session; never enroll or create account keys here.
+ */
+export async function resumeSyncAfterCredentialStorageReady(): Promise<void> {
+  try {
+    if (!isSecretStorageAvailable() || sessionExpired) return;
+    const service = auth;
+    const snapshot = service?.getPublicSnapshot() ?? null;
+    const backend = pinnedBackend();
+    const fields = service?.getSessionScopeFields() ?? null;
+    if (
+      snapshot?.state !== 'signed-in' ||
+      backend === null ||
+      !sessionBoundToBackend(backend, fields) ||
+      service?.getAccessToken() === null
+    ) {
+      return;
+    }
+
+    // A failed pre-unlock refresh deliberately retained the cached ciphertext.
+    // Clear only that stale local-storage error once the same session decrypts.
+    if (lastError?.includes('Saved sync credentials are locked or unavailable')) lastError = null;
+    scheduleSessionRefresh();
+    if (isSyncEnabled()) {
+      await resumeEnabledSyncRuntime();
+    } else {
+      kickKeyringOnboardingPoll();
+    }
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+  }
 }
 
 /** Give a newly enrolled device one read-only key delivery/bootstrap pass. */
@@ -2357,6 +2398,7 @@ function revokeAgainst(
  * out. Secrets stay in the main process; only the public snapshot returns.
  */
 export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
+  assertSecretStorageReady();
   const backend = requireReviewedBackend();
   if (!backend.descriptor.authModes.includes('oidc-pkce')) {
     throw new Error('This backend does not advertise oidc-pkce sign-in.');
