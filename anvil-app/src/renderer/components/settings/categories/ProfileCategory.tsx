@@ -1,3 +1,4 @@
+import { KeyboardShortcutsPanel } from '../KeyboardShortcutsPanel';
 import { Compass } from 'lucide-react';
 import type { AppTheme, UserRole } from '../../../../shared/types';
 import { useBrand } from '../../../contexts/BrandContext';
@@ -122,6 +123,7 @@ export function ProfileCategory() {
 
   return (
     <>
+      <KeyboardShortcutsPanel />
       <SettingsPanel
         panelId="role"
         title="Role"

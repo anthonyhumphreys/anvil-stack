@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useShortcuts } from '../../hooks/useShortcuts';
+import { formatShortcut, shortcutFor } from '../../utils/shortcuts';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
@@ -121,6 +123,7 @@ export function CommandPalette({
   onCreateWorkspace,
 }: CommandPaletteProps) {
   const navigate = useNavigate();
+  const { overrides: shortcuts } = useShortcuts();
   const { activeWorkspace, workspaces, switchWorkspace, removeRepos } = useWorkspace();
   const { startNewSession, threads } = useChatContext();
   const [query, setQuery] = useState('');
@@ -461,7 +464,10 @@ export function CommandPalette({
         label: 'Go to Settings',
         section: 'Navigation',
         icon: <Settings size={16} />,
-        shortcut: 'Cmd/Ctrl+,',
+        shortcut: formatShortcut(
+          shortcutFor('settings', shortcuts),
+          navigator.platform.includes('Mac'),
+        ),
         keywords: ['settings', 'config', 'preferences'],
         action: () => go('/settings'),
       },
@@ -473,7 +479,10 @@ export function CommandPalette({
         description: 'Open the built-in terminal panel.',
         section: 'Actions',
         icon: <Terminal size={16} />,
-        shortcut: 'Cmd/Ctrl+`',
+        shortcut: formatShortcut(
+          shortcutFor('terminal', shortcuts),
+          navigator.platform.includes('Mac'),
+        ),
         keywords: ['terminal', 'console', 'shell'],
         action: () => {
           onToggleTerminal();
@@ -482,6 +491,10 @@ export function CommandPalette({
       },
       {
         id: 'act-workspace',
+        shortcut: formatShortcut(
+          shortcutFor('newWorkspace', shortcuts),
+          navigator.platform.includes('Mac'),
+        ),
         label: 'Create Workspace',
         description: 'Group repositories into a focused working set.',
         section: 'Actions',
@@ -702,6 +715,7 @@ export function CommandPalette({
       navigate,
       onClose,
       onCreateWorkspace,
+      shortcuts,
       onToggleTerminal,
       promptChat,
       startNewSession,

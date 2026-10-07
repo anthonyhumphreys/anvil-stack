@@ -1,3 +1,5 @@
+import { useShortcuts } from '../../hooks/useShortcuts';
+import { formatShortcut, shortcutFor } from '../../utils/shortcuts';
 import { pollWhileVisible } from '../../utils/visible-polling';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -40,6 +42,7 @@ const SERVICES: Array<{
 
 export function StatusBar({ connectionStatus, onToggleTerminal, terminalOpen }: StatusBarProps) {
   const brand = useBrand();
+  const { overrides: shortcuts } = useShortcuts();
   const navigate = useNavigate();
   const { repos } = useWorkspace();
   const { activeThread } = useChatContext();
@@ -207,7 +210,7 @@ export function StatusBar({ connectionStatus, onToggleTerminal, terminalOpen }: 
           className={`flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-bg-elevated hover:text-text-primary ${
             terminalOpen ? 'text-text-primary' : ''
           }`}
-          title={`Toggle Terminal (${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+\`)`}
+          title={`Toggle terminal (${formatShortcut(shortcutFor('terminal', shortcuts), navigator.platform.includes('Mac'))})`}
         >
           <TerminalSquare size={14} />
           <span>Terminal</span>

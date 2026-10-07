@@ -1,5 +1,8 @@
-import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useShortcuts } from '../../hooks/useShortcuts';
+import { SHORTCUTS, shortcutFor, shortcutMatches } from '../../utils/shortcuts';
+import { useChatContext } from '../../contexts/ChatContext';
 import { Sidebar } from './Sidebar';
 import { StatusBar } from './StatusBar';
 import { CommandPalette } from './CommandPalette';
@@ -37,6 +40,9 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
     undoWorkspaceSwitch,
     dismissWorkspaceSwitchNotice,
   } = useWorkspace();
+  const { overrides: shortcuts } = useShortcuts();
+  const { startNewSession } = useChatContext();
+  const handledThreadRequest = useRef<string | null>(null);
   const [showCreator, setShowCreator] = useState(false);
   const [editorMounted, setEditorMounted] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -63,25 +69,47 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
   }, [workspaceSwitchNotice, dismissWorkspaceSwitchNotice]);
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (shouldIgnoreShellShortcut(e.target)) return;
+    const request = (location.state as { newThreadRequest?: string } | null)?.newThreadRequest;
+    if (location.pathname !== '/chat' || !request || handledThreadRequest.current === request)
+      return;
+    handledThreadRequest.current = request;
+    void startNewSession();
+  }, [location.pathname, location.state, startNewSession]);
 
-      if (e.key === '`' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        toggleTerminal();
-      }
-      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        setCommandPaletteOpen((prev) => !prev);
-      }
-      if (e.key === ',' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        navigate('/settings');
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      if (
+        document.querySelector('[aria-modal="true"]') ||
+        (event.target as HTMLElement | null)?.closest?.('[data-shortcut-recorder]')
+      )
+        return;
+      const shortcut = SHORTCUTS.find((item) =>
+        shortcutMatches(event, shortcutFor(item.id, shortcuts), navigator.platform.includes('Mac')),
+      );
+      if (!shortcut) return;
+      event.preventDefault();
+      switch (shortcut.id) {
+        case 'terminal':
+          toggleTerminal();
+          break;
+        case 'commandPalette':
+          setCommandPaletteOpen((open) => !open);
+          break;
+        case 'settings':
+          navigate('/settings');
+          break;
+        case 'newWorkspace':
+          setShowCreator(true);
+          break;
+        case 'newThread':
+          navigate('/chat', { state: { newThreadRequest: crypto.randomUUID() } });
+          break;
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigate, toggleTerminal]);
+  }, [navigate, toggleTerminal, shortcuts]);
 
   // Q4: scaffold route locks lift as soon as any repo reaches the `mapped`
   // tier — enrichment keeps running in the background and Chat/Settings stay
