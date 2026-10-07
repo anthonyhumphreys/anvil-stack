@@ -40,7 +40,7 @@ let onboardingStartedTracked = false;
 
 interface WelcomeOverlayProps {
   onRoleSelected: (role: UserRole) => void;
-  /** Called when the agent step finishes (Continue) — onboarding proceeds to the workspace creator. */
+  /** Called after connecting Sync or choosing local use; proceeds to the workspace creator. */
   onComplete: () => void;
   preview?: boolean;
   onExitPreview?: () => void;

@@ -33,7 +33,7 @@ export function SyncMeshSetupCard({
     <div className="space-y-3">
       <SyncConnectionSetup setup={setup} preview={preview} />
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        {onUseOnDevice && (
+        {onUseOnDevice && setup.runtime?.syncEnabled !== true && (
           <button
             type="button"
             onClick={onUseOnDevice}
