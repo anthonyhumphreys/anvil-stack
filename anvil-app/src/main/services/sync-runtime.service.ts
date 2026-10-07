@@ -146,10 +146,12 @@ import {
   activateBackend,
   disconnectBackend,
   getActiveBackend,
+  getBackendStatus,
   listBackends,
   resolveBackendIdentityReview,
   type SyncBackendRecord,
 } from './sync-backend.service.js';
+import { requiresDeviceProviderSignIn } from '../../shared/sync-backend.js';
 import {
   BackendRpcError,
   computeReconnectDelayMs,
@@ -2632,9 +2634,31 @@ function initializeSyncCrypto(pairing?: { pairingNonce: string; pairingSecret: s
 /** Redeems a short-lived single-use enrollment code at the pinned backend. */
 export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPublicSnapshot> {
   const backend = requireReviewedBackend();
+  if (requiresDeviceProviderSignIn({ ...getBackendStatus(), ...backend })) {
+    throw new Error(
+      'Sign in with WorkOS to connect this device. Enrollment codes are only for self-hosted services.',
+    );
+  }
   if (!backend.descriptor.authModes.includes('enrollment-code')) {
     throw new Error('This backend does not advertise enrollment-code sign-in.');
   }
+  return redeemEnrollmentCode(backend, code, false);
+}
+
+/** Internal worker bootstrap; never exposed through the desktop IPC bridge. */
+export async function enrollEphemeralEnvironment(code: string): Promise<SyncAuthPublicSnapshot> {
+  const backend = requireReviewedBackend();
+  if (isPairingPayloadString(code)) {
+    throw new Error('Temporary environments require a plain, class-bound bootstrap code.');
+  }
+  return redeemEnrollmentCode(backend, code, true);
+}
+
+async function redeemEnrollmentCode(
+  backend: SyncBackendRecord,
+  code: string,
+  ephemeral: boolean,
+): Promise<SyncAuthPublicSnapshot> {
   // A pairing payload carries the enrollment code plus the out-of-band
   // keyring secret; the server only ever sees the code portion.
   const pairing = isPairingPayloadString(code) ? decodePairingPayload(code) : null;
@@ -2643,7 +2667,18 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
   runtimeGeneration += 1;
   const snapshot = await requireAuth().enrollWithCode(
     redeemCode,
-    enrollAgainst(backend),
+    async (params) => {
+      const result = await enrollAgainst(backend)(params);
+      const expectedClass = ephemeral ? 'ephemeral' : 'device';
+      if ((result.enrollmentClass ?? 'device') !== expectedClass) {
+        throw new Error(
+          ephemeral
+            ? 'The bootstrap code did not enroll a temporary environment.'
+            : 'Temporary environment codes cannot connect a user device.',
+        );
+      }
+      return result;
+    },
     backend.id,
   );
   sessionExpired = false;
@@ -2659,14 +2694,16 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
       pairing: { pairingNonce: pairing.pairingNonce, pairingSecret: pairing.pairingSecret },
     };
   }
-  initializeSyncCrypto(
-    pairing === null
-      ? undefined
-      : { pairingNonce: pairing.pairingNonce, pairingSecret: pairing.pairingSecret },
-  );
-  await prepareDeviceKeyBeforeConnect();
-  void refreshHostedEntitlement().catch(() => undefined);
-  resumeSyncAfterEnrollment();
+  if (!ephemeral) {
+    initializeSyncCrypto(
+      pairing === null
+        ? undefined
+        : { pairingNonce: pairing.pairingNonce, pairingSecret: pairing.pairingSecret },
+    );
+    await prepareDeviceKeyBeforeConnect();
+    void refreshHostedEntitlement().catch(() => undefined);
+    resumeSyncAfterEnrollment();
+  }
   return snapshot;
 }
 
@@ -2690,6 +2727,16 @@ export async function issueEnrollmentCode(options?: {
   const backend = getActiveBackend() ?? pinnedBackend();
   if (!backend) {
     throw new Error('Pin a backend first.');
+  }
+  if (options?.enrollmentClass !== 'ephemeral') {
+    if (requiresDeviceProviderSignIn({ ...getBackendStatus(), ...backend })) {
+      throw new Error(
+        'Sign in with WorkOS on the other device. Anvil-hosted devices do not use pairing codes.',
+      );
+    }
+    if (!backend.descriptor.authModes.includes('enrollment-code')) {
+      throw new Error('This backend does not support device enrollment codes.');
+    }
   }
   const fields = requireAuth().getSessionScopeFields();
   if (!sessionBoundToBackend(backend, fields)) {
@@ -2997,11 +3044,14 @@ function emptyDeviceSecurityStatus(): SyncDeviceSecurityStatus {
  * disabled. This is used before first-device key provisioning so an OIDC
  * enrolment cannot mint a divergent key for an already populated account.
  */
-async function readOnlySyncPull(fence: {
-  scope: SyncScope;
-  enrollmentId: string;
-  generation: number;
-}, options: { identityOnlyWrite?: boolean } = {}): Promise<void> {
+async function readOnlySyncPull(
+  fence: {
+    scope: SyncScope;
+    enrollmentId: string;
+    generation: number;
+  },
+  options: { identityOnlyWrite?: boolean } = {},
+): Promise<void> {
   const backend = getActiveBackend() ?? pinnedBackend();
   const service = requireAuth();
   const fields = service.getSessionScopeFields();
@@ -3782,8 +3832,7 @@ async function runKeyringOnboardingCycle(options: { scheduleRetry?: boolean } = 
     }
     shouldRetry = !hasAccountKey(scope) && (policyEnabled === true || policyEnabled === null);
   } catch {
-    shouldRetry =
-      fence !== null && !isSyncEnabled() && !hasAccountKey(fence.scope);
+    shouldRetry = fence !== null && !isSyncEnabled() && !hasAccountKey(fence.scope);
   } finally {
     keyringOnboardingRunning = false;
     lastKeyringOnboardingAttemptAt = attemptAt;

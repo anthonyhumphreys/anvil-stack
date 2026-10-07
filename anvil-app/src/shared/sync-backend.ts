@@ -68,6 +68,29 @@ export interface SyncBackendStatus {
   hostedBackendUrl: string | null;
 }
 
+/** Human devices on Anvil-hosted or WorkOS services connect through their provider. */
+export function requiresDeviceProviderSignIn(connection: {
+  connectionMode: SyncBackendConnectionMode;
+  authModes: readonly string[];
+  baseUrl: string | null;
+  hostedBackendUrl?: string | null;
+}): boolean {
+  if (connection.connectionMode === 'hosted' || connection.authModes.includes('workos-device')) {
+    return true;
+  }
+  if (connection.baseUrl === null || !connection.hostedBackendUrl) return false;
+  try {
+    const normalize = (value: string): string => {
+      const url = new URL(value);
+      url.pathname = `${url.pathname.replace(/\/+$/, '')}/`;
+      return url.href;
+    };
+    return normalize(connection.baseUrl) === normalize(connection.hostedBackendUrl);
+  } catch {
+    return false;
+  }
+}
+
 /** Exhaustive label helper so new connection modes fail closed at compile time. */
 export function syncBackendModeLabel(mode: SyncBackendConnectionMode): string {
   switch (mode) {

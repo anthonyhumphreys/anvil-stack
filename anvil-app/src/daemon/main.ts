@@ -7,17 +7,23 @@ import {
  * anvil-daemon — headless Anvil host (DAEMON-01).
  *
  * Runs the sync runtime, mesh worker, and companion server as a plain
- * Node process on always-on machines. Enrollment is code-only; policy
- * grants are CLI-managed; state lives under ANVIL_DATA_DIR (default
- * ~/.anvil-daemon). See docs/runbooks/hosted-sync/headless-daemon.md.
+ * Node process on always-on machines. Hosted accounts use WorkOS sign-in;
+ * compatible self-hosted backends can use enrollment codes. State lives
+ * under ANVIL_DATA_DIR (default ~/.anvil-daemon). See
+ * docs/runbooks/hosted-sync/headless-daemon.md.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { initDatabase } from '../main/db/database.js';
 import { discover } from '../main/services/sync-backend-client.service.js';
-import { pinBackend } from '../main/services/sync-backend.service.js';
+import {
+  getBackendStatus,
+  listBackends,
+  pinBackend,
+} from '../main/services/sync-backend.service.js';
 import {
   activeSyncScope,
+  enrollEphemeralEnvironment,
   enrollWithEnrollmentCode,
   enableSync,
   getRuntimeStatus,
@@ -36,6 +42,7 @@ import {
   removeProviderConnection,
 } from '../main/services/cloud-environment.service.js';
 import { isEnvironmentProviderId } from '../../cloud/contract/environment.js';
+import { requiresDeviceProviderSignIn } from '../shared/sync-backend.js';
 import {
   listCompanionEnrollmentPolicies,
   removeCompanionEnrollmentPolicy,
@@ -62,10 +69,12 @@ import {
   formatSignInNextSteps,
   parseSecurityCommand,
   readRecoveryCode,
+  resolveSetupPolicy,
   selectDevice,
   type SecurityCommand,
 } from './security-cli.js';
 import { parseSignInCommand, runSignIn } from './signin-cli.js';
+import { parseEphemeralEnvironmentEnrollmentCommand } from './enroll-cli.js';
 import { parseVaultCommand, readVaultPassphraseFromStdin } from './vault-cli.js';
 import {
   configureSecretVault,
@@ -119,6 +128,7 @@ function usage(): never {
   console.log(`anvil-daemon — headless Anvil host
 
   anvil-daemon enroll --api-url <url> (--code <code> | --pair <payload>) [--worker]
+  anvil-daemon enroll-environment --api-url <url> --code <ephemeral-code> --worker
   anvil-daemon sign-in --api-url <url> [--worker]
   anvil-daemon run
   anvil-daemon run --vault-passphrase-stdin
@@ -133,6 +143,7 @@ function usage(): never {
   anvil-daemon security verify <device-number|enrollmentId>
   anvil-daemon security approve <device-number|enrollmentId> --verification-code <NNN-NNN-NNN>
   anvil-daemon security setup [--policy <require-approval|auto-trust-authenticated>]
+    WorkOS default: automatic connection. Use --policy require-approval for manual approval.
   anvil-daemon security unlock (--stdin | --file <protected-file>)
   anvil-daemon security policy <require-approval|auto-trust-authenticated>
   anvil-daemon security recovery-replace
@@ -151,8 +162,10 @@ function usage(): never {
   anvil-daemon policy forget <enrollmentId>
   anvil-daemon policy default-tier <observe|approve|steer|denied|pending>
 
---pair accepts an anvil-pair-… payload for user-device pairing. Environment
-enrollments use a plain code and remain task-key-only.
+Hosted WorkOS backends require sign-in; the CLI enroll --code/--pair
+path is for compatible self-hosted backends. Internal ephemeral environment
+enrollment uses enroll-environment; the backend verifies that the single-use
+code is class-bound to an ephemeral environment.
 Provider connections hold cloud environment credentials (AWS region/keys,
 imageIdentifier in --config; keys in --secret, encrypted at rest) so this
 host can claim provision-environment jobs.
@@ -174,10 +187,8 @@ function boot(): void {
 
 async function cmdEnroll(): Promise<void> {
   const apiUrl = arg('--api-url');
-  // --pair redeems an anvil-pair-… payload for a user-device pairing;
-  // --code stays the plain enrollment-code path used by ordinary and
-  // environment enrollments. Environment enrollments remain task-key-only
-  // and never receive account ADKs through this command.
+  // Human device enrollment on hosted WorkOS backends goes through `sign-in`.
+  // Runtime-only ephemeral environment enrollment stays outside this CLI.
   const code = arg('--pair') ?? arg('--code');
   if (!apiUrl || !code) {
     console.error('enroll requires --api-url <url> and (--code <code> | --pair <payload>)');
@@ -187,6 +198,20 @@ async function cmdEnroll(): Promise<void> {
   const conn = await discover(apiUrl, {
     allowLoopbackHttp: apiUrl.includes('127.0.0.1') || apiUrl.includes('localhost'),
   });
+  const matchingBackend = listBackends().find(
+    (backend) => backend.deploymentId === conn.descriptor.deploymentId,
+  );
+  const isHostedBackend = requiresDeviceProviderSignIn({
+    connectionMode: matchingBackend?.connectionMode ?? 'compatible',
+    authModes: conn.descriptor.authModes,
+    baseUrl: conn.baseUrl,
+    hostedBackendUrl: getBackendStatus().hostedBackendUrl,
+  });
+  if (isHostedBackend) {
+    throw new Error(
+      'This backend uses hosted sign-in. Run `anvil-daemon sign-in --api-url <backend-url>`; enrollment codes and pairing payloads are not accepted here.',
+    );
+  }
   pinBackend({ baseUrl: conn.baseUrl, descriptor: conn.descriptor });
   await enrollWithEnrollmentCode(code);
   enableSync();
@@ -201,6 +226,22 @@ async function cmdEnroll(): Promise<void> {
       : 'Mesh worker: off. Use `anvil-daemon worker on` only if this host should run jobs.',
   );
   console.log('Run `anvil-daemon run` to keep syncing and serve the companion app.');
+}
+
+/** Internal image bootstrap for server-issued ephemeral environment codes. */
+async function cmdEnrollEnvironment(args: readonly string[]): Promise<void> {
+  const command = parseEphemeralEnvironmentEnrollmentCommand(args);
+  boot();
+  const apiUrl = new URL(command.apiUrl);
+  const conn = await discover(command.apiUrl, {
+    allowLoopbackHttp: apiUrl.protocol === 'http:',
+  });
+  pinBackend({ baseUrl: conn.baseUrl, descriptor: conn.descriptor });
+  await enrollEphemeralEnvironment(command.enrollmentCode);
+  enableSync();
+  writeConfig({ worker: true, companion: false });
+  await setMeshWorkerOptIn(true);
+  console.log('[anvil-daemon] ephemeral environment enrolled; mesh worker enabled.');
 }
 
 /**
@@ -233,6 +274,7 @@ async function cmdSignIn(args: readonly string[]): Promise<void> {
       formatSignInNextSteps(
         await getDeviceSecurityStatus(),
         command.worker || readConfig().worker === true,
+        conn.descriptor.authModes.includes('workos-device'),
       ),
   });
   process.exitCode = result.exitCode;
@@ -327,7 +369,12 @@ async function cmdSecurity(args: readonly string[]): Promise<void> {
       case 'status': {
         const status = await getDeviceSecurityStatus();
         console.log(
-          command.json ? JSON.stringify(status, null, 2) : formatDeviceSecurityStatus(status),
+          command.json
+            ? JSON.stringify(status, null, 2)
+            : formatDeviceSecurityStatus(
+                status,
+                getBackendStatus().authModes.includes('workos-device'),
+              ),
         );
         return;
       }
@@ -355,26 +402,42 @@ async function cmdSecurity(args: readonly string[]): Promise<void> {
         return;
       }
       case 'setup': {
-        const result = await setupDeviceRecovery(command.policy);
+        const securityStatus = await getDeviceSecurityStatus();
+        const policy = resolveSetupPolicy(
+          command.policy,
+          securityStatus,
+          getBackendStatus().authModes,
+        );
+        const result = await setupDeviceRecovery(policy);
         console.log(
           [
             'Recovery code (shown once):',
             result.recoveryCode,
             '',
             'Save this code in a secure place. It unlocks encrypted account data on a new device.',
-            `New-device access: ${command.policy === 'auto-trust-authenticated' ? 'automatic connection for authenticated devices' : 'manual device verification and approval'}.`,
+            `New-device access: ${policy === 'auto-trust-authenticated' ? 'automatic connection for authenticated devices' : 'manual device verification and approval'}.`,
           ].join('\n'),
         );
         return;
       }
       case 'unlock': {
         const code = readRecoveryCode(command.source);
-        console.log(formatDeviceSecurityStatus(await unlockDeviceRecovery(code)));
+        console.log(
+          formatDeviceSecurityStatus(
+            await unlockDeviceRecovery(code),
+            getBackendStatus().authModes.includes('workos-device'),
+          ),
+        );
         return;
       }
       case 'policy': {
         const status = await setNewDeviceTrustPolicy(command.policy);
-        console.log(formatDeviceSecurityStatus(status));
+        console.log(
+          formatDeviceSecurityStatus(
+            status,
+            getBackendStatus().authModes.includes('workos-device'),
+          ),
+        );
         return;
       }
       case 'recovery-replace': {
@@ -608,6 +671,9 @@ async function main(): Promise<void> {
     }
     case 'enroll':
       await cmdEnroll();
+      break;
+    case 'enroll-environment':
+      await cmdEnrollEnvironment(process.argv.slice(3));
       break;
     case 'run':
       await cmdRun();

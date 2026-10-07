@@ -12,16 +12,22 @@ import {
   formatVerificationCode,
   parseSecurityCommand,
   readRecoveryCodeFromProtectedFile,
+  resolveSetupPolicy,
   selectDevice,
 } from '../security-cli.js';
 
 const RECOVERY_CODE = 'anvil-recovery-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi';
 
 describe('headless security command parsing', () => {
-  it('defaults setup to manual approval', () => {
-    expect(parseSecurityCommand(['setup'])).toEqual({
+  it('leaves setup policy to the current backend default unless explicitly selected', () => {
+    expect(parseSecurityCommand(['setup'])).toEqual({ kind: 'setup' });
+    expect(parseSecurityCommand(['setup', '--policy', 'require-approval'])).toEqual({
       kind: 'setup',
       policy: 'require-approval',
+    });
+    expect(parseSecurityCommand(['setup', '--policy', 'auto-trust-authenticated'])).toEqual({
+      kind: 'setup',
+      policy: 'auto-trust-authenticated',
     });
   });
 
@@ -191,17 +197,18 @@ describe('headless security command parsing', () => {
       requiresRecovery: false,
       recentEvents: [],
     };
-    const firstSteps = formatSignInNextSteps(firstDevice, false).join('\n');
-    expect(firstSteps).toContain('security setup --policy auto-trust-authenticated');
-    expect(firstSteps.indexOf('Automatic connection (recommended)')).toBeLessThan(
-      firstSteps.indexOf('Manual device verification'),
-    );
+    const firstSteps = formatSignInNextSteps(firstDevice, false, true).join('\n');
+    expect(firstSteps).toContain('Run `anvil-daemon security setup`');
+    expect(firstSteps).toContain('automatic connection for WorkOS-authenticated devices');
+    expect(firstSteps).toContain('security setup --policy require-approval');
     expect(firstSteps).toContain('Mesh worker: off');
 
-    const firstStatus = formatDeviceSecurityStatus(firstDevice);
-    expect(firstStatus.indexOf('Automatic connection (recommended)')).toBeLessThan(
-      firstStatus.indexOf('Manual approval'),
+    const firstStatus = formatDeviceSecurityStatus(firstDevice, true);
+    expect(firstStatus).toContain('security setup');
+    expect(firstStatus).toContain(
+      'New-device access: automatic connection for authenticated devices',
     );
+    expect(firstStatus).toContain('security setup --policy require-approval');
 
     const automaticSteps = formatSignInNextSteps(
       {
@@ -220,8 +227,40 @@ describe('headless security command parsing', () => {
     expect(automaticSteps).toContain('Mesh worker: off');
     expect(automaticSteps).not.toContain('worker enabled');
 
-    const optedInSteps = formatSignInNextSteps(firstDevice, true).join('\n');
+    const optedInSteps = formatSignInNextSteps(firstDevice, true, true).join('\n');
     expect(optedInSteps).toContain('Mesh worker: enabled for this host by explicit opt-in');
+  });
+
+  it('defaults only unconfigured WorkOS accounts to automatic connection', () => {
+    const firstDevice: SyncDeviceSecurityStatus = {
+      accountId: null,
+      configured: false,
+      policy: 'require-approval',
+      revision: 1,
+      trustState: 'trusted',
+      trustSource: 'first-device',
+      hasAccountKey: false,
+      hasRecoverySecret: false,
+      canConfigure: true,
+      requiresRecovery: false,
+      recentEvents: [],
+    };
+    expect(resolveSetupPolicy(undefined, firstDevice, ['workos-device'])).toBe(
+      'auto-trust-authenticated',
+    );
+    expect(resolveSetupPolicy(undefined, firstDevice, ['enrollment-code'])).toBe(
+      'require-approval',
+    );
+    expect(resolveSetupPolicy('require-approval', firstDevice, ['workos-device'])).toBe(
+      'require-approval',
+    );
+    expect(
+      resolveSetupPolicy(
+        undefined,
+        { ...firstDevice, configured: true, canConfigure: false, policy: 'require-approval' },
+        ['workos-device'],
+      ),
+    ).toBe('require-approval');
   });
 });
 

@@ -13,7 +13,7 @@ export type SecurityCommand =
   | { kind: 'devices'; json: boolean }
   | { kind: 'verify'; target: string }
   | { kind: 'approve'; target: string; verificationCode: string }
-  | { kind: 'setup'; policy: DeviceTrustPolicy }
+  | { kind: 'setup'; policy?: DeviceTrustPolicy }
   | { kind: 'unlock'; source: RecoveryCodeSource }
   | { kind: 'policy'; policy: DeviceTrustPolicy }
   | { kind: 'recovery-replace' };
@@ -85,7 +85,7 @@ export function parseSecurityCommand(args: readonly string[]): SecurityCommand {
   }
 
   if (subcommand === 'setup') {
-    let policy: DeviceTrustPolicy = 'require-approval';
+    let policy: DeviceTrustPolicy | undefined;
     let policySeen = false;
     for (let index = 0; index < rest.length; index += 1) {
       const flag = rest[index];
@@ -96,7 +96,7 @@ export function parseSecurityCommand(args: readonly string[]): SecurityCommand {
       policySeen = true;
       index += 1;
     }
-    return { kind: 'setup', policy };
+    return policy === undefined ? { kind: 'setup' } : { kind: 'setup', policy };
   }
 
   if (subcommand === 'policy') {
@@ -256,7 +256,10 @@ function trustLabel(status: SyncDeviceSecurityStatus): string {
 }
 
 /** Compact status with actionable next steps and no account/device identifiers. */
-export function formatDeviceSecurityStatus(status: SyncDeviceSecurityStatus): string {
+export function formatDeviceSecurityStatus(
+  status: SyncDeviceSecurityStatus,
+  workosDeviceAuthAvailable = false,
+): string {
   const recovery = status.requiresRecoveryReplacement
     ? 'needs replacement after device revocation'
     : status.configured
@@ -266,7 +269,9 @@ export function formatDeviceSecurityStatus(status: SyncDeviceSecurityStatus): st
       : 'not configured';
   const lines = [
     'Device security',
-    `  New-device access: ${policyLabel(status.policy)}`,
+    `  New-device access: ${policyLabel(
+      resolveSetupPolicy(undefined, status, workosDeviceAuthAvailable ? ['workos-device'] : []),
+    )}`,
     `  This device: ${trustLabel(status)}`,
     `  Encrypted account key: ${status.hasAccountKey ? 'available' : 'not available yet'}`,
     `  Recovery code: ${recovery}`,
@@ -275,13 +280,7 @@ export function formatDeviceSecurityStatus(status: SyncDeviceSecurityStatus): st
   if (status.requiresRecoveryReplacement) {
     lines.push('', 'Next: on a trusted device, run `anvil-daemon security recovery-replace`.');
   } else if (status.canConfigure && !status.configured) {
-    lines.push(
-      '',
-      'This is the first device for this account. Set up recovery and choose how future devices connect:',
-      '  Automatic connection (recommended): anvil-daemon security setup --policy auto-trust-authenticated',
-      '  Manual approval: anvil-daemon security setup',
-      'The recovery code will be shown once; save it securely before continuing.',
-    );
+    lines.push('', ...firstDeviceSetupGuidance(workosDeviceAuthAvailable));
   } else if (status.trustState === 'revoked') {
     lines.push('', 'Next: sign out, then enroll this host again as a new device.');
   } else if (status.trustState === 'pending') {
@@ -327,15 +326,11 @@ export function formatVerificationInstructions(selected: SelectedDevice, code: s
 export function formatSignInNextSteps(
   status: SyncDeviceSecurityStatus,
   workerEnabled: boolean,
+  workosDeviceAuthAvailable = false,
 ): string[] {
   const lines: string[] = [];
   if (status.canConfigure && !status.configured) {
-    lines.push(
-      'This is the first device on the account. Choose an access policy and set up recovery:',
-      '  Automatic connection (recommended): anvil-daemon security setup --policy auto-trust-authenticated',
-      '  Manual device verification: anvil-daemon security setup',
-      'Save the recovery code; it is displayed only once.',
-    );
+    lines.push(...firstDeviceSetupGuidance(workosDeviceAuthAvailable));
   } else if (status.trustState === 'pending') {
     lines.push(
       'This device is waiting for approval. On this daemon, run `anvil-daemon security devices`, then `anvil-daemon security verify <existing-device-number>` and compare the device-verification code.',
@@ -362,6 +357,33 @@ export function formatSignInNextSteps(
     'Run `anvil-daemon run` to start syncing and the companion server.',
   );
   return lines;
+}
+
+function firstDeviceSetupGuidance(workosDeviceAuthAvailable: boolean): string[] {
+  return workosDeviceAuthAvailable
+    ? [
+        'This is the first device on the account. Run `anvil-daemon security setup` to set up recovery with automatic connection for WorkOS-authenticated devices.',
+        'To choose manual device verification, run `anvil-daemon security setup --policy require-approval`.',
+        'Save the recovery code; it is displayed only once.',
+      ]
+    : [
+        'This is the first device on the account. Run `anvil-daemon security setup` to set up recovery using this backend’s default policy.',
+        'To choose manual device verification explicitly, run `anvil-daemon security setup --policy require-approval`.',
+        'Save the recovery code; it is displayed only once.',
+      ];
+}
+
+/** Resolve the initial policy without changing an account that is already configured. */
+export function resolveSetupPolicy(
+  requestedPolicy: DeviceTrustPolicy | undefined,
+  status: SyncDeviceSecurityStatus,
+  authModes: readonly string[],
+): DeviceTrustPolicy {
+  if (requestedPolicy !== undefined) return requestedPolicy;
+  if (status.canConfigure && !status.configured && authModes.includes('workos-device')) {
+    return 'auto-trust-authenticated';
+  }
+  return status.policy;
 }
 
 function readBoundedSecret(fd: number): string {

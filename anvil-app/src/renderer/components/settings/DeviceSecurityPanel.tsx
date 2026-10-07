@@ -236,9 +236,7 @@ export function DeviceSecurityPanel({
   return (
     <Panel
       title={isUnconfigured ? 'Connect your devices' : 'Device access'}
-      description={
-        isUnconfigured ? 'Choose how devices signed into your account connect.' : undefined
-      }
+      description={isUnconfigured ? 'Set up encrypted access for your other devices.' : undefined}
       compact={compact}
     >
       <div className="space-y-4">
@@ -251,15 +249,22 @@ export function DeviceSecurityPanel({
         {isUnconfigured ? (
           <div className="space-y-3">
             <div>
-              <p className="text-sm font-medium text-text-primary">
-                How should new devices connect?
-              </p>
+              <p className="text-sm font-medium text-text-primary">{policyLabel(policyChoice)}</p>
               <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-                Automatic connection works when a trusted device is online. Choose code verification
-                if you want to approve every new device yourself.
+                {policyChoice === 'auto-trust-authenticated'
+                  ? 'Sign in on each device. Keep a connected device online to share encrypted access, or use your saved recovery code.'
+                  : 'Compare a verification code on both devices before sharing encrypted access.'}
               </p>
             </div>
-            <PolicyChoice value={policyChoice} onChange={setPolicyChoice} />
+            <details className="space-y-2">
+              <summary className="cursor-pointer text-xs font-medium text-text-secondary">
+                Change how devices connect
+              </summary>
+              <p className="text-xs leading-relaxed text-text-tertiary">
+                Choose code verification if you want to approve each new device yourself.
+              </p>
+              <PolicyChoice value={policyChoice} onChange={setPolicyChoice} />
+            </details>
             {policyChoice === 'auto-trust-authenticated' && (
               <p className="text-xs leading-relaxed text-text-secondary">
                 {AUTO_TRUST_CONFIRMATION}

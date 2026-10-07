@@ -16,8 +16,8 @@ or interactive login state.
 | `Dockerfile`            | Generic OCI image (Vercel VCR, AWS microVM rootfs base, local dev)                                                     |
 | `Dockerfile.cloudflare` | `cloudflare/sandbox:next` variant for the Cloudflare provisioner                                                       |
 | `install-codex-cli.sh`  | Installs the pinned Codex CLI version and checks its reported version                                                  |
-| `install-cursor-cli.sh` | Installs pinned Cursor Agent CLI for the image architecture and checks its version and ACP help                         |
-| `install-devin-cli.sh`  | Installs pinned Devin CLI through its versioned installer and checks its version and ACP help                           |
+| `install-cursor-cli.sh` | Installs pinned Cursor Agent CLI for the image architecture and checks its version and ACP help                        |
+| `install-devin-cli.sh`  | Installs pinned Devin CLI through its versioned installer and checks its version and ACP help                          |
 | `package.json`          | Daemon externals (`better-sqlite3`, `node-pty`) — keep versions in step with `anvil-app/package.json`                  |
 | `prepare.sh`            | Copies `dist-daemon/anvil-daemon.mjs` into the build context                                                           |
 
@@ -123,7 +123,10 @@ credentials are not automatically transferred.
 
 - Writes `{worker: true, companion: false}` to `$ANVIL_DATA_DIR/daemon.json` —
   environments never run the companion server.
-- Runs `anvil-daemon enroll --api-url <backendUrl> --code <enrollmentCode> --worker`.
+- Runs `anvil-daemon enroll-environment --api-url <backendUrl> --code <enrollmentCode> --worker`.
+- The command is a bootstrap route, not an authorization flag: the backend binds
+  the single-use code to an ephemeral environment, and the daemon rejects a
+  response unless its enrolled class is `ephemeral`.
 - Runs `anvil-daemon run` with `ANVIL_ENVIRONMENT_ID` and
   `ANVIL_ENVIRONMENT_PROVIDER` set, advertising `ephemeral-env` and reporting
   environment enrollment on connect.

@@ -54,6 +54,7 @@ import {
   deviceVerificationCode,
   enableSync,
   enrollWithEnrollmentCode,
+  enrollEphemeralEnvironment,
   exportSyncDiagnostics,
   approveDeviceTrust,
   activeSyncScope,
@@ -650,7 +651,8 @@ function fakeBackend(
           enrollmentClass: 'device',
         };
         sessions.set(session.enrollmentId, session);
-        if (!bootstrapByAccount.has(accountId)) bootstrapByAccount.set(accountId, session.enrollmentId);
+        if (!bootstrapByAccount.has(accountId))
+          bootstrapByAccount.set(accountId, session.enrollmentId);
         refreshIndex.set(session.refreshToken, session.enrollmentId);
         accessIndex.set(session.accessToken, session.enrollmentId);
         return Response.json({
@@ -873,11 +875,13 @@ function fakeBackend(
         });
       }
       if (operation === 'security.bindIdentity') {
-        const params = body['params'] as {
-          challengeId?: unknown;
-          identityPub?: unknown;
-          proof?: unknown;
-        } | undefined;
+        const params = body['params'] as
+          | {
+              challengeId?: unknown;
+              identityPub?: unknown;
+              proof?: unknown;
+            }
+          | undefined;
         const challengeId = params?.challengeId;
         const identityPub = params?.identityPub;
         const challenge =
@@ -970,10 +974,7 @@ function fakeBackend(
           policy?: unknown;
           recovery?: { envelope?: unknown };
         };
-        if (
-          params.policy === 'auto-trust-authenticated' ||
-          params.policy === 'require-approval'
-        ) {
+        if (params.policy === 'auto-trust-authenticated' || params.policy === 'require-approval') {
           activeTrustPolicy = params.policy;
         }
         const envelope = params.recovery?.envelope;
@@ -1047,9 +1048,7 @@ function fakeBackend(
             )
             .map((entry) => entry.change);
           const nextCursor =
-            changes.length === 0
-              ? String(cursor)
-              : String(changes[changes.length - 1]['sequence']);
+            changes.length === 0 ? String(cursor) : String(changes[changes.length - 1]['sequence']);
           return Response.json({
             requestId,
             serverTime: new Date().toISOString(),
@@ -1284,6 +1283,127 @@ describe('session backend isolation', () => {
 });
 
 describe('real auth transport (contract routes over injected fetch)', () => {
+  it.each(['ephemeral', 'device', undefined] as const)(
+    'installs an internal bootstrap session only when the server returns ephemeral class (%s)',
+    async (enrollmentClass) => {
+      const backend = fakeBackend();
+      const minted = (await (
+        await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+          body: JSON.stringify({ accountId: 'account-1' }),
+        })
+      ).json()) as { code: string };
+      const fetchFn: typeof fetch = async (input, init) => {
+        const response = await backend.fetchFn(input, init);
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (new URL(url).pathname !== '/v1/enroll' || !response.ok) return response;
+        return Response.json({
+          ...((await response.json()) as Record<string, unknown>),
+          enrollmentClass,
+        });
+      };
+      initSyncRuntime(mkdtempSync(join(tmpdir(), 'sync-runtime-')), { fetchFn });
+      pinBackend({
+        baseUrl: 'https://backend.example.test/',
+        descriptor: workosDescriptorFixture(),
+        connectionMode: 'hosted',
+      });
+      if (enrollmentClass === 'ephemeral') {
+        await expect(enrollEphemeralEnvironment(minted.code)).resolves.toMatchObject({
+          state: 'signed-in',
+        });
+      } else {
+        await expect(enrollEphemeralEnvironment(minted.code)).rejects.toThrow(
+          'did not enroll a temporary environment',
+        );
+        expect(getRuntimeStatus().auth.state).toBe('signed-out');
+      }
+      expect(hasAccountKey(SCOPE)).toBe(false);
+      expect(getRuntimeStatus().syncEnabled).toBe(false);
+    },
+  );
+
+  it('rejects rich pairing payloads on the internal environment entry point', async () => {
+    const backend = fakeBackend();
+    initSyncRuntime(mkdtempSync(join(tmpdir(), 'sync-runtime-')), { fetchFn: backend.fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+    await expect(enrollEphemeralEnvironment('anvil-pair-invalid')).rejects.toThrow(
+      'plain, class-bound',
+    );
+    expect(backend.calls).toHaveLength(0);
+  });
+
+  it('rejects temporary sessions on the ordinary user-device code path before installing credentials', async () => {
+    const backend = fakeBackend();
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
+    const fetchFn: typeof fetch = async (input, init) => {
+      const response = await backend.fetchFn(input, init);
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (new URL(url).pathname !== '/v1/enroll' || !response.ok) return response;
+      return Response.json({
+        ...((await response.json()) as Record<string, unknown>),
+        enrollmentClass: 'ephemeral',
+      });
+    };
+    initSyncRuntime(mkdtempSync(join(tmpdir(), 'sync-runtime-')), { fetchFn });
+    pinTestBackend();
+    await expect(enrollWithEnrollmentCode(minted.code)).rejects.toThrow(
+      'cannot connect a user device',
+    );
+    expect(getRuntimeStatus().auth.state).toBe('signed-out');
+    expect(hasAccountKey(SCOPE)).toBe(false);
+    expect(backend.calls.some((call) => call.operation?.startsWith('security.'))).toBe(false);
+  });
+
+  it.each(['hosted', 'workos'] as const)(
+    'rejects human codes before transport on a %s service',
+    async (kind) => {
+      const backend = fakeBackend();
+      initSyncRuntime(mkdtempSync(join(tmpdir(), 'sync-runtime-')), { fetchFn: backend.fetchFn });
+      pinBackend({
+        baseUrl: 'https://backend.example.test/',
+        descriptor:
+          kind === 'workos'
+            ? { ...workosDescriptorFixture(), authModes: ['workos-device', 'enrollment-code'] }
+            : descriptorFixture(),
+        connectionMode: kind === 'hosted' ? 'hosted' : 'compatible',
+      });
+
+      await expect(enrollWithEnrollmentCode('unused-code')).rejects.toThrow('Sign in with WorkOS');
+      await expect(issueEnrollmentCode()).rejects.toThrow('Sign in with WorkOS');
+      expect(backend.calls).toHaveLength(0);
+      expect(getRuntimeStatus().auth.state).not.toBe('signed-in');
+    },
+  );
+
+  it('preserves authenticated ephemeral bootstrap without advertising human codes', async () => {
+    const backend = fakeBackend({ workosDeviceCode: 'private-device-code' });
+    initSyncRuntime(mkdtempSync(join(tmpdir(), 'sync-runtime-')), {
+      fetchFn: workosFetch(backend),
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+    await signInWithWorkOSDevice({ startRuntime: false, timeoutMs: 10_000 });
+
+    await expect(issueEnrollmentCode()).rejects.toThrow('Sign in with WorkOS');
+    const result = await issueEnrollmentCode({
+      enrollmentClass: 'ephemeral',
+      environmentId: 'env-test',
+      provider: 'test-provider',
+      sessionTtlSeconds: 600,
+    });
+    expect(result.accountId).toBe('workos-account-1');
+    expect(result.pairingPayload).toBeNull();
+    expect(backend.calls.filter((call) => call.path === '/v1/enrollment-codes')).toHaveLength(1);
+  });
+
   it('runs one-shot WorkOS bootstrap without starting runtime timers or sockets', async () => {
     const backend = fakeBackend({ workosDeviceCode: 'private-device-code' });
     const factory = fakeSocketFactory();
@@ -1402,7 +1522,10 @@ describe('real auth transport (contract routes over injected fetch)', () => {
 
     try {
       initSyncRuntime(sourceDir, { fetchFn });
-      pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+      pinBackend({
+        baseUrl: 'https://backend.example.test/',
+        descriptor: workosDescriptorFixture(),
+      });
       const source = await signInWithWorkOSDevice({ startRuntime: false, timeoutMs: 10_000 });
       expect(source.state).toBe('signed-in');
       const sourceEnrollmentId = source.enrollmentId!;
@@ -1438,7 +1561,10 @@ describe('real auth transport (contract routes over injected fetch)', () => {
       resetSyncEngineForTests();
       db = recipientDb;
       initSyncRuntime(recipientDir, { fetchFn });
-      pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+      pinBackend({
+        baseUrl: 'https://backend.example.test/',
+        descriptor: workosDescriptorFixture(),
+      });
       const recipientTemplate = saveWorkflowTemplate(recipientWorkflow);
       const recipient = await signInWithWorkOSDevice({ startRuntime: false, timeoutMs: 10_000 });
       const recipientEnrollmentId = recipient.enrollmentId!;
@@ -1914,24 +2040,24 @@ function cannedSyncRpc(onCall: () => void) {
                 currentCursor: '0',
                 recoveryFloor: 0,
               }
-          : operation === 'sync.scan.begin'
-            ? {
-                scanId: 'scan-1',
-                watermarkStart: 0,
-                resumeCursor: '0',
-                epoch: SPIKE_DATASET_EPOCH,
-              }
-            : operation === 'sync.scan.page'
-              ? { entities: [], nextCursor: null, done: true }
-              : operation === 'sync.scan.finish'
-                ? {
-                    scanId: 'scan-1',
-                    complete: true,
-                    watermarkEnd: 0,
-                    nextCursor: '0',
-                    epoch: SPIKE_DATASET_EPOCH,
-                  }
-                : {};
+            : operation === 'sync.scan.begin'
+              ? {
+                  scanId: 'scan-1',
+                  watermarkStart: 0,
+                  resumeCursor: '0',
+                  epoch: SPIKE_DATASET_EPOCH,
+                }
+              : operation === 'sync.scan.page'
+                ? { entities: [], nextCursor: null, done: true }
+                : operation === 'sync.scan.finish'
+                  ? {
+                      scanId: 'scan-1',
+                      complete: true,
+                      watermarkEnd: 0,
+                      nextCursor: '0',
+                      epoch: SPIKE_DATASET_EPOCH,
+                    }
+                  : {};
     return { result, serverTime: new Date().toISOString() };
   }) as never;
 }

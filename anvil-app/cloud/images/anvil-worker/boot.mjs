@@ -161,8 +161,8 @@ export function prepareWorkerStorage(dataDir, keyFilePath, run = spawnSync) {
 
 async function main() {
   const boot = readBootstrap();
-  // The enrollment code is consumed once by enroll — don't carry it in this
-  // process's env for the worker's whole lifetime.
+  // The enrollment code is consumed once by enroll-environment — don't carry
+  // it in this process's env for the worker's whole lifetime.
   delete process.env.ANVIL_BOOTSTRAP_JSON;
   mkdirSync(DATA_DIR, { recursive: true });
   if (boot.resumeFromSnapshot === true) resetVolatileWorkerCredentials(DATA_DIR);
@@ -190,11 +190,11 @@ async function main() {
   );
 
   const enroll = daemon(
-    ['enroll', '--api-url', boot.backendUrl, '--code', boot.enrollmentCode, '--worker'],
+    ['enroll-environment', '--api-url', boot.backendUrl, '--code', boot.enrollmentCode, '--worker'],
     env,
   );
   const enrollCode = await new Promise((resolve) => enroll.on('exit', resolve));
-  if (enrollCode !== 0) fail(`enroll exited ${enrollCode}`);
+  if (enrollCode !== 0) fail(`enroll-environment exited ${enrollCode}`);
   log('enrolled — starting worker');
 
   const ttlMs = Math.min(boot.ttlSeconds, 24 * 3600) * 1000;

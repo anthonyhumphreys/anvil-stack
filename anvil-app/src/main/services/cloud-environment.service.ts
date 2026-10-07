@@ -596,7 +596,7 @@ function providerResourceMissing(error: unknown): boolean {
  * AWS Lambda MicroVMs — mirrors the lifecycle calls of anvil-cloud's
  * AwsLambdaMicroVmSandboxProvider (PATCH.md C2) against the same SDK. The
  * enrollment code rides `runHookPayload`; the anvil-worker image's /run
- * hook redeems it (`anvil-daemon enroll --code`).
+ * hook redeems it (`anvil-daemon enroll-environment --code`).
  */
 function awsLambdaMicrovmProvider(connection: ResolvedConnection): CloudEnvironmentProvider {
   const secret = connection.secret;

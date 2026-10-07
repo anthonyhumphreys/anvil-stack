@@ -11,7 +11,10 @@ import {
   Server,
 } from 'lucide-react';
 import type { SyncDeviceSecurityStatus } from '../../../shared/sync-device-security';
-import type { SyncBackendConnectionMode } from '../../../shared/sync-backend';
+import {
+  requiresDeviceProviderSignIn,
+  type SyncBackendConnectionMode,
+} from '../../../shared/sync-backend';
 import type { SyncIssuedEnrollmentCode } from '../../../shared/sync-runtime';
 import type { SyncMeshSetupController } from '../../hooks/useSyncMeshSetup';
 import { SettingsLink } from '../shared/SettingsLink';
@@ -135,6 +138,11 @@ function AdvancedConnectionSettings({
   const signingIn = setup.busy === 'signing-in';
   const enrolling = setup.busy === 'enrolling';
   const hosted = setup.mode === 'local' || setup.mode === 'hosted';
+  const supportsDeviceCodes =
+    setup.backendPinned &&
+    setup.status !== null &&
+    setup.authModes.includes('enrollment-code') &&
+    !requiresDeviceProviderSignIn(setup.status);
 
   const selectMode = async (mode: SyncBackendConnectionMode): Promise<void> => {
     setup.setMode(mode);
@@ -201,7 +209,7 @@ function AdvancedConnectionSettings({
       </summary>
       <div className="mt-3 space-y-3">
         <p className="text-xs leading-relaxed text-text-tertiary">
-          Connect a service you run, review its identity, or use an enrollment code.
+          Connect a service you run, review its identity, or disconnect this device.
         </p>
         {advancedError && (
           <p className="text-xs text-error" role="alert">
@@ -300,7 +308,7 @@ function AdvancedConnectionSettings({
           </div>
         )}
 
-        {setup.authModes.includes('enrollment-code') && !setup.signedIn && (
+        {supportsDeviceCodes && !setup.signedIn && (
           <div className="space-y-2 border-t border-border pt-3">
             <label htmlFor="sync-enrollment-code" className="block text-xs text-text-secondary">
               Enrollment code
@@ -326,7 +334,7 @@ function AdvancedConnectionSettings({
           </div>
         )}
 
-        {setup.signedIn && (
+        {supportsDeviceCodes && setup.signedIn && (
           <div className="space-y-2 border-t border-border pt-3">
             <p className="text-xs text-text-tertiary">
               Add another device with a one-time pairing code.
