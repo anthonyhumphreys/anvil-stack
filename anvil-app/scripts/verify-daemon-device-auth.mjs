@@ -26,6 +26,7 @@ const providerRefreshToken = 'provider-refresh-token-must-not-reach-client';
 const grants = new Map();
 const authorizationCodes = new Map();
 const subject = 'user_device_auth_integration';
+let enrollmentSubject = subject;
 let nextOutcomes = [];
 let lastDeviceCode;
 const privateCodes = [];
@@ -134,7 +135,7 @@ try {
     assert.equal(params.has('client_secret'), false);
     lastDeviceCode = randomBytes(32).toString('base64url');
     privateCodes.push(lastDeviceCode);
-    grants.set(lastDeviceCode, { subject, outcomes: [...nextOutcomes] });
+    grants.set(lastDeviceCode, { subject: enrollmentSubject, outcomes: [...nextOutcomes] });
     return providerResponse({
       device_code: lastDeviceCode,
       user_code: 'ABCD-EFGH',
@@ -144,7 +145,8 @@ try {
       interval: 5,
     });
   };
-  const flow = (installationId, outcomes = []) => {
+  const flow = (installationId, outcomes = [], accountSubject = subject) => {
+    enrollmentSubject = accountSubject;
     nextOutcomes = outcomes;
     return runWorkOSDeviceFlow({
       clientId,
@@ -206,9 +208,12 @@ try {
     { code: 'invalid-proof' },
   );
 
-  const pending = await flow('manual-second-device');
-  assert.equal(pending.accountId, first.accountId);
-  assert.equal((await rpc(pending, 'security.get')).trustState, 'pending');
+  const defaultConnected = await flow('default-second-device');
+  assert.equal(defaultConnected.accountId, first.accountId);
+  const defaultView = await rpc(defaultConnected, 'security.get');
+  assert.equal(defaultView.policy, 'auto-trust-authenticated');
+  assert.equal(defaultView.trustState, 'trusted');
+  assert.equal(defaultView.trustSource, 'automatic-auth');
   const pkceCode = randomUUID();
   authorizationCodes.set(pkceCode, subject);
   const desktop = await postAuthRoute(
@@ -247,7 +252,27 @@ try {
   assert.equal(automaticView.trustState, 'trusted');
   assert.equal(automaticView.trustSource, 'automatic-auth');
   assert.equal(automaticView.requiresRecovery, true);
-  assert.equal((await rpc(pending, 'security.get')).trustState, 'pending');
+  assert.equal((await rpc(defaultConnected, 'security.get')).trustState, 'trusted');
+
+  const manualSubject = subject + '_manual';
+  const manualFirst = await flow('manual-first-device', [], manualSubject);
+  await rpc(manualFirst, 'security.configure', {
+    policy: 'require-approval',
+    backendId: 'device-auth-integration',
+    envelope: {
+      v: 1,
+      algorithm: 'aes-256-gcm',
+      recoveryId: randomUUID(),
+      publicKey: randomBytes(32).toString('base64url'),
+      nonce: randomBytes(12).toString('base64'),
+      ct: randomBytes(32).toString('base64'),
+    },
+  });
+  const manualSecond = await flow('manual-second-device', [], manualSubject);
+  const manualView = await rpc(manualSecond, 'security.get');
+  assert.equal(manualView.policy, 'require-approval');
+  assert.equal(manualView.trustState, 'pending');
+  assert.equal((await rpc(manualFirst, 'security.get')).policy, 'require-approval');
   await rpc(first, 'device.revoke', { enrollmentId: automatic.enrollmentId });
   await assert.rejects(() =>
     postAuthRoute(
