@@ -6,30 +6,34 @@ import { canonicalizeJson } from '../../contract/sync';
 import { recoveryRequestBindingBytes } from '../../contract/device-security';
 import { isRpcError, type RpcResponse } from '../../contract/envelope';
 import { encodeBase64Url } from '../src/device-security';
-import { expectSuccess, postRpc } from './helpers';
+import { expectSuccess, postRpc, withSelfHostedBackend } from './helpers';
 
 const ADMIN_TOKEN = 'security-test-admin';
 
 async function issueCode(accountId: string, options: Record<string, unknown> = {}) {
   env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
-  const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ accountId, ...options }),
-  });
+  const response = await withSelfHostedBackend(() =>
+    SELF.fetch('https://spike.test/v1/enrollment-codes', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId, ...options }),
+    }),
+  );
   expect(response.status).toBe(200);
   return (await response.json()) as EnrollmentCodeIssueResult;
 }
 
 async function enroll(code: string, installationId: string): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enroll', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      proof: { method: 'enrollment-code', code },
-      installationId,
+  const response = await withSelfHostedBackend(() =>
+    SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'enrollment-code', code },
+        installationId,
+      }),
     }),
-  });
+  );
   expect(response.status).toBe(200);
   return (await response.json()) as DeviceSession;
 }

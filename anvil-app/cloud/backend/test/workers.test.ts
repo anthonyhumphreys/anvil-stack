@@ -11,7 +11,14 @@ import type {
   WorkerDescribeResult,
 } from '../../contract/workers';
 import type { AccountCoordinator } from '../src/account-coordinator';
-import { expectSuccess, nextFrameOfType, postRpc, spikeBearer, uniqueIds } from './helpers';
+import {
+  expectSuccess,
+  nextFrameOfType,
+  postRpc,
+  spikeBearer,
+  uniqueIds,
+  withSelfHostedBackend,
+} from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
 const WORKER_AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -84,17 +91,17 @@ function workerRow(accountId: string, enrollmentId: string) {
 }
 
 async function issueCode(accountId: string): Promise<EnrollmentCodeIssueResult> {
-  const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+  const response = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enrollment-codes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ADMIN_TOKEN}` },
     body: JSON.stringify({ accountId }),
-  });
+  }));
   expect(response.status).toBe(200);
   return (await response.json()) as EnrollmentCodeIssueResult;
 }
 
 async function enroll(code: string): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enroll', {
+  const response = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enroll', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -102,7 +109,7 @@ async function enroll(code: string): Promise<DeviceSession> {
       installationId: 'install-worker-test',
       displayName: 'Worker device',
     }),
-  });
+  }));
   expect(response.status).toBe(200);
   return (await response.json()) as DeviceSession;
 }
@@ -110,11 +117,11 @@ async function enroll(code: string): Promise<DeviceSession> {
 describe('worker policy gate', () => {
   it('issues a bootstrap code through the supported admin HTTP route', async () => {
     env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
-    const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+    const response = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enrollment-codes', {
       method: 'POST',
       headers: { 'content-type': 'application/json', Authorization: `Bearer ${ADMIN_TOKEN}` },
       body: JSON.stringify({ accountId: uniqueIds('page-bootstrap').accountId }),
-    });
+    }));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(expect.objectContaining({
       code: expect.any(String),

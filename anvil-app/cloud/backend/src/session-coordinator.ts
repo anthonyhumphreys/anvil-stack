@@ -238,7 +238,7 @@ interface SharedArtifactRow {
 }
 
 function authError(
-  code: AuthErrorCode | 'unauthenticated' | 'throttled' | 'malformed-request',
+  code: AuthErrorCode | 'unauthenticated' | 'throttled' | 'malformed-request' | 'forbidden',
   details?: Record<string, unknown>,
 ) {
   const status =
@@ -246,7 +246,9 @@ function authError(
       ? authErrorHttpStatus('invalid-proof')
       : code === 'throttled'
         ? 429
-        : authErrorHttpStatus(code);
+        : code === 'forbidden'
+          ? 403
+          : authErrorHttpStatus(code);
   const retryable =
     code === 'throttled' ||
     code === 'device-authorization-pending' ||
@@ -542,13 +544,12 @@ export class SessionCoordinator extends DurableObject<Env> {
     return row ?? null;
   }
 
-  /**
-   * Creates the durable policy lazily. This is the compatibility migration
-   * for accounts created before security policy existed: it chooses the
-   * earliest enrollment as the only legacy bootstrap authority, never an
-   * arbitrary pending session, and leaves policy at require-approval.
-   */
-  private ensureAccountSecurity(accountId: string, now = Date.now()): AccountSecurityRow {
+  /** Creates the durable policy lazily without changing an existing policy. */
+  private ensureAccountSecurity(
+    accountId: string,
+    now = Date.now(),
+    defaultPolicy: (typeof SECURITY_POLICIES)[number] = SECURITY_POLICY_DEFAULT,
+  ): AccountSecurityRow {
     this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO account_security
        (account_id, policy, revision, generation, recovery_revision,
@@ -557,7 +558,7 @@ export class SessionCoordinator extends DurableObject<Env> {
         created_at, updated_at)
        VALUES (?, ?, 1, 1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
       accountId,
-      SECURITY_POLICY_DEFAULT,
+      defaultPolicy,
       now,
       now,
     );
@@ -736,8 +737,6 @@ export class SessionCoordinator extends DurableObject<Env> {
         }
         case 'POST /internal/validate':
           return await this.handleValidate(request);
-        case 'POST /internal/resolve-device':
-          return await this.handleResolveDevice(request);
         case 'POST /internal/issue-enrollment-code': {
           const response = await this.ctx.blockConcurrencyWhile(() =>
             this.handleInternalIssueCode(request),
@@ -1248,6 +1247,12 @@ export class SessionCoordinator extends DurableObject<Env> {
       codeIssuedBy = consumed.issued_by as string | null;
       codeEnvironmentId = consumed.environment_id as string | null;
       codeTrustMode = consumed.trust_mode === 'pairing' ? 'pairing' : 'pending';
+      // Hosted user devices must authenticate through WorkOS. This also
+      // fences codes minted before the policy was enabled. Internal
+      // ephemeral provider-agent codes remain class-bound below.
+      if (codeClass === 'device' && this.humanEnrollmentCodesDisabled()) {
+        return authError('forbidden', { reason: 'provider-sign-in-required' });
+      }
     } else if (proof.method === 'oidc-pkce') {
       const issuer = this.env.OIDC_ISSUER;
       const clientId = this.env.OIDC_CLIENT_ID;
@@ -1341,7 +1346,15 @@ export class SessionCoordinator extends DurableObject<Env> {
     const deviceLimitFailure = this.hostedDeviceLimitFailure(accountId, codeClass);
     if (deviceLimitFailure !== null) return deviceLimitFailure;
 
-    const security = this.ensureAccountSecurity(accountId, now);
+    const workosAuthenticated =
+      (proof.method === 'oidc-pkce' || proof.method === 'workos-device') &&
+      typeof this.env.OIDC_ISSUER === 'string' &&
+      isWorkosAuthKitIssuer(this.env.OIDC_ISSUER);
+    const security = this.ensureAccountSecurity(
+      accountId,
+      now,
+      workosAuthenticated ? 'auto-trust-authenticated' : SECURITY_POLICY_DEFAULT,
+    );
     const existing = this.ctx.storage.sql
       .exec(
         `SELECT COUNT(*) AS n FROM device_sessions
@@ -1419,6 +1432,14 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (enrollmentClass !== 'device' || !hostedEnforcementEnabled(this.env)) return null;
     const { limit, activeCount } = this.readHostedDeviceCount(accountId);
     return activeCount >= limit ? authError('device-limit', { limit, used: activeCount }) : null;
+  }
+
+  private humanEnrollmentCodesDisabled(): boolean {
+    return (
+      this.env.HOSTED_DB !== undefined ||
+      (typeof this.env.OIDC_ISSUER === 'string' &&
+        isWorkosAuthKitIssuer(this.env.OIDC_ISSUER))
+    );
   }
 
   private readHostedDeviceCount(accountId: string): { limit: number; activeCount: number } {
@@ -1678,6 +1699,9 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (options === null) {
       return authError('malformed-request');
     }
+    if (options.enrollmentClass === 'device' && this.humanEnrollmentCodesDisabled()) {
+      return authError('forbidden', { reason: 'provider-sign-in-required' });
+    }
     const displayName = typeof body['displayName'] === 'string' ? body['displayName'] : null;
     return this.issueCodeForAccount(accountId, displayName, issuedBy, options);
   }
@@ -1782,12 +1806,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     return Response.json(result, { status: 200 });
   }
 
-  /**
-   * BILL-01 hosted pairing: the worker's `/internal/hosted/*` channel has
-   * already verified the service signature, so this handler trusts the
-   * body-supplied accountId and never sees a device credential. Reachable
-   * only through `stub.fetch` — index.ts routes no public traffic here.
-   */
+  /** Internal provider-agent bootstrap; only the worker may issue these codes. */
   private async handleInternalIssueCode(request: Request): Promise<Response> {
     const body = await readJson(request);
     if (
@@ -1816,38 +1835,6 @@ export class SessionCoordinator extends DurableObject<Env> {
       return authError('malformed-request');
     }
     return Response.json({ tombstoned: this.deletionRow(accountId) !== null });
-  }
-
-  /**
-   * Worker-internal bearer → {accountId, enrollmentId} for the hosted link
-   * route — same lookup as /internal/validate, reading the Authorization
-   * header instead of a JSON body so the caller need not re-wrap the token.
-   */
-  private async handleResolveDevice(request: Request): Promise<Response> {
-    const bearer = parseDeviceBearer(request.headers.get('Authorization'));
-    if (bearer === null) {
-      return authError('unauthenticated');
-    }
-    const row = this.sessionByAccessHash(await sha256Hex(bearer));
-    if (
-      row === null ||
-      row.revoked_at !== null ||
-      row.access_expires_at <= Date.now() ||
-      enrollmentExpired(row, Date.now())
-    ) {
-      return authError('unauthenticated');
-    }
-    return Response.json(
-      {
-        accountId: row.account_id,
-        enrollmentId: row.enrollment_id,
-        enrollmentClass: row.enrollment_class ?? 'device',
-        proofMethod: row.proof_method ?? 'enrollment-code',
-        trustState: this.trustState(row),
-        ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
-      },
-      { status: 200 },
-    );
   }
 
   /** Worker-internal: bearer → verified identity for routing. */

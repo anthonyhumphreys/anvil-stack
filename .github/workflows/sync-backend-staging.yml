@@ -159,6 +159,7 @@ jobs:
             (.profiles | index("sync/2")) and
             (.profiles | index("mesh/2")) and
             (.authModes | index("workos-device")) and
+            (.authModes | index("enrollment-code") | not) and
             .auth.publicClientId == "client_01M2XPX4PF98H2P7HCNRBZATTE"
           ' .wrangler/staging-descriptor.json
       - name: Record staging deployment

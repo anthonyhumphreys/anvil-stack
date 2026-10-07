@@ -1,8 +1,8 @@
 import { env, SELF } from 'cloudflare:test';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { DeviceSession, EnrollmentCodeIssueResult } from '../../contract/auth';
-import { sha256Hex } from '../src/hash';
+import { WORKOS_AUTHKIT_ISSUER } from '../../contract/auth';
 import type { HostedIdentity } from '../src/hosted/identity';
 import { handleHostedRequest } from '../src/hosted/routes';
 import { signHostedServiceRequest } from '../src/hosted/service-auth';
@@ -15,12 +15,13 @@ import {
   setSyncAccountLink,
 } from '../src/hosted/store';
 import migrationSql from '../migrations/hosted-billing/0001_init.sql?raw';
-import { postRpc } from './helpers';
+import { postRpc, withSelfHostedBackend } from './helpers';
 
 const ADMIN_TOKEN = 'dev-admin-token';
 const SERVICE_KEY_ID = 'test';
 const SERVICE_SECRET = 'a'.repeat(32);
 const SERVICE_AUDIENCE = 'anvil-hosted';
+const WORKOS_API = 'https://api.workos.com';
 
 function hostedDb(): D1Database {
   const db = env.HOSTED_DB;
@@ -29,6 +30,11 @@ function hostedDb(): D1Database {
 }
 
 beforeEach(async () => {
+  env.OIDC_ISSUER = undefined;
+  env.OIDC_CLIENT_ID = undefined;
+  env.HOSTED_WORKOS_CLIENT_ID = undefined;
+  env.ENROLLMENT_ADMIN_TOKEN = undefined;
+  await fetch(`${WORKOS_API}/__workos-stub/reset`, { method: 'POST' });
   // workerd's D1 exec treats each LINE as a statement, so the file is
   // applied statement-by-statement instead. The migration deliberately
   // keeps semicolons out of strings/comments, making the `;` split safe.
@@ -43,8 +49,49 @@ beforeEach(async () => {
   await db.batch(statements.map((statement) => db.prepare(statement)));
 });
 
+afterEach(async () => {
+  const pending = (await (await fetch(`${WORKOS_API}/__workos-stub/pending`)).json()) as {
+    pending: unknown[];
+  };
+  expect(pending.pending).toEqual([]);
+});
+
 function makeIdentity(tag: string): HostedIdentity {
   return { workosClientId: 'client_hosted_test', workosUserId: `user_${tag}` };
+}
+
+async function enrollWithWorkOS(identity: HostedIdentity, installationId: string): Promise<DeviceSession> {
+  env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
+  env.OIDC_CLIENT_ID = identity.workosClientId;
+  env.HOSTED_WORKOS_CLIENT_ID = identity.workosClientId;
+  const deviceCode = `device-${crypto.randomUUID()}`;
+  const queued = await fetch(`${WORKOS_API}/__workos-stub/enqueue`, {
+    method: 'POST',
+    body: JSON.stringify({
+      method: 'POST',
+      path: '/user_management/authenticate',
+      body: { user: { object: 'user', id: identity.workosUserId } },
+    }),
+  });
+  expect(queued.status).toBe(200);
+
+  const request = () =>
+    SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'workos-device', issuer: WORKOS_AUTHKIT_ISSUER, deviceCode },
+        installationId,
+      }),
+    });
+  let response = await request();
+  if (response.status === 429) {
+    await response.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 1_010));
+    response = await request();
+  }
+  expect(response.status).toBe(200);
+  return (await response.json()) as DeviceSession;
 }
 
 /** Signs and POSTs a service request to an /internal/hosted/* route. */
@@ -70,82 +117,38 @@ async function signedHostedPost(
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
-async function enrollWithCode(
-  code: string,
-  installationId = 'install-hosted',
-): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enroll', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      proof: { method: 'enrollment-code', code },
-      installationId,
-      displayName: 'Hosted test device',
-    }),
-  });
-  expect(response.status).toBe(200);
-  return (await response.json()) as DeviceSession;
-}
-
 /** Enrolls a fresh device on an arbitrary account via the admin code path. */
 async function deviceOnAccount(accountId: string): Promise<DeviceSession> {
-  env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
-  const issued = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${ADMIN_TOKEN}`,
-    },
-    body: JSON.stringify({ accountId }),
+  return withSelfHostedBackend(async () => {
+    env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+    const issued = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ADMIN_TOKEN}`,
+      },
+      body: JSON.stringify({ accountId }),
+    });
+    expect(issued.status).toBe(200);
+    const { code } = (await issued.json()) as EnrollmentCodeIssueResult;
+    const response = await SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'enrollment-code', code },
+        installationId: `device-on-account-${crypto.randomUUID()}`,
+      }),
+    });
+    expect(response.status).toBe(200);
+    return (await response.json()) as DeviceSession;
   });
-  expect(issued.status).toBe(200);
-  const { code } = (await issued.json()) as EnrollmentCodeIssueResult;
-  return enrollWithCode(code);
-}
-
-async function postHostedLink(
-  linkCode: string,
-  accessToken?: string,
-): Promise<{ status: number; body: Record<string, unknown> }> {
-  const response = await SELF.fetch('https://spike.test/v1/hosted/link', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(accessToken === undefined ? {} : { Authorization: `Bearer ${accessToken}` }),
-    },
-    body: JSON.stringify({ linkCode }),
-  });
-  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
-}
-
-async function addActiveSubscription(billingAccountId: string): Promise<void> {
-  const now = Date.now();
-  await hostedDb()
-    .prepare(
-      `INSERT INTO stripe_subscriptions
-         (stripe_subscription_id, stripe_customer_id, billing_account_id, status,
-          plan_key, interval, current_period_end, paid_through, paid_seat_quantity, cancel_at_period_end,
-          has_paid_invoice, first_failed_renewal_at, verified_at, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', 'sync_personal', 'month', ?, ?, 1, 0, 1, NULL, ?, ?, ?)`,
-    )
-    .bind(
-      `sub_${crypto.randomUUID().replaceAll('-', '')}`,
-      `cus_${crypto.randomUUID().replaceAll('-', '')}`,
-      billingAccountId,
-      now + 30 * 86_400_000,
-      now + 30 * 86_400_000,
-      now,
-      now,
-      now,
-    )
-    .run();
 }
 
 describe('hosted service auth gate', () => {
   const identity = makeIdentity('gate');
 
   it('rejects unsigned and wrongly-signed requests with 401', async () => {
-    const unsigned = await SELF.fetch('https://spike.test/internal/hosted/pair-device', {
+    const unsigned = await SELF.fetch('https://spike.test/internal/hosted/account', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(identity),
@@ -155,7 +158,7 @@ describe('hosted service auth gate', () => {
       'unauthenticated',
     );
 
-    const wrongKey = await signedHostedPost('/internal/hosted/pair-device', identity, {
+    const wrongKey = await signedHostedPost('/internal/hosted/account', identity, {
       secret: 'b'.repeat(32),
     });
     expect(wrongKey.status).toBe(401);
@@ -164,7 +167,7 @@ describe('hosted service auth gate', () => {
   it('rejects a replayed signature via the D1 nonce store', async () => {
     await getOrCreateBillingAccount(hostedDb(), identity);
     const payload = new TextEncoder().encode(JSON.stringify(identity));
-    const url = 'https://spike.test/internal/hosted/pair-device';
+    const url = 'https://spike.test/internal/hosted/account';
     const headers = await signHostedServiceRequest(
       new Request(url, { method: 'POST' }),
       payload,
@@ -179,110 +182,144 @@ describe('hosted service auth gate', () => {
   });
 });
 
-describe('hosted pair-device', () => {
-  it('denies a signed pairing request from a verified user without waitlist approval', async () => {
-    const identity = makeIdentity(`unapproved-${crypto.randomUUID()}`);
-    const email = 'not-approved@example.test';
-    const query = new URLSearchParams({ state: 'approved', email, limit: '10' });
-    for (const [path, body] of [
-      [
-        `/user_management/users/${identity.workosUserId}`,
-        { id: identity.workosUserId, email, email_verified: true },
-      ],
-      [`/user_management/waitlists/default/entries?${query.toString()}`, { data: [] }],
-    ] as const) {
-      const queued = await fetch('https://api.workos.com/__workos-stub/enqueue', {
-        method: 'POST',
-        body: JSON.stringify({ method: 'GET', path, body }),
-      });
-      expect(queued.status).toBe(200);
+describe('hosted enrollment policy', () => {
+  it('removes the hosted pair and account-link routes', async () => {
+    for (const path of ['/internal/hosted/pair-device', '/internal/hosted/link-code']) {
+      expect((await signedHostedPost(path, makeIdentity(`removed-${crypto.randomUUID()}`))).status)
+        .toBe(404);
     }
-    const denied = await signedHostedPost('/internal/hosted/pair-device', identity);
-    expect(denied.status).toBe(403);
-    expect(denied.body['error']).toMatchObject({
-      details: { reason: 'waitlist-approval-required' },
+    const publicLink = await SELF.fetch('https://spike.test/v1/hosted/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ linkCode: 'anvil-lc-AAAAA-BBBBB-CCCCC-DDDDD' }),
     });
-    expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
+    expect(publicLink.status).toBe(404);
   });
 
-  it('enrolls devices onto one derived account per WorkOS identity', async () => {
-    const identityA = makeIdentity(`a-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identityA);
-    const pair1 = await signedHostedPost('/internal/hosted/pair-device', {
-      ...identityA,
-      displayName: 'Work laptop',
+  it('rejects durable code issuance and redemption on a hosted worker, including old codes', async () => {
+    const accountId = `acct-hosted-code-${crypto.randomUUID()}`;
+    env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+    const issued = await withSelfHostedBackend(async () =>
+      SELF.fetch('https://spike.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ADMIN_TOKEN}`,
+        },
+        body: JSON.stringify({ accountId }),
+      }),
+    );
+    expect(issued.status).toBe(200);
+    const { code } = (await issued.json()) as EnrollmentCodeIssueResult;
+
+    const mintBlocked = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ADMIN_TOKEN}`,
+      },
+      body: JSON.stringify({ accountId: `acct-unmapped-${crypto.randomUUID()}` }),
     });
-    expect(pair1.status).toBe(200);
-    const accountId1 = pair1.body['accountId'] as string;
-    expect(accountId1).toMatch(/^workos_[a-f0-9]{64}$/);
-    expect(pair1.body['code'] as string).toMatch(/^anvil-ec-/);
-
-    const session1 = await enrollWithCode(pair1.body['code'] as string, 'inst-1');
-    expect(session1.accountId).toBe(accountId1);
-
-    // Pairing again mints another code for the SAME sync account.
-    const pair2 = await signedHostedPost('/internal/hosted/pair-device', identityA);
-    expect(pair2.status).toBe(200);
-    expect(pair2.body['accountId']).toBe(accountId1);
-    const session2 = await enrollWithCode(pair2.body['code'] as string, 'inst-2');
-    expect(session2.accountId).toBe(accountId1);
-    expect(session2.enrollmentId).not.toBe(session1.enrollmentId);
-
-    // A different admitted user resolves to a different account.
-    const identityB = makeIdentity(`b-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identityB);
-    const pairB = await signedHostedPost('/internal/hosted/pair-device', identityB);
-    expect(pairB.status).toBe(200);
-    expect(pairB.body['accountId']).not.toBe(accountId1);
-
-    const pairOtherClient = await signedHostedPost('/internal/hosted/pair-device', {
-      workosClientId: `client_other-${crypto.randomUUID()}`,
-      workosUserId: identityA.workosUserId,
+    expect(mintBlocked.status).toBe(403);
+    expect(await mintBlocked.json()).toMatchObject({
+      error: { code: 'forbidden', details: { reason: 'provider-sign-in-required' } },
     });
-    // A client from another environment cannot create an admitted account.
-    expect(pairOtherClient.status).toBe(403);
+
+    const redeemBlocked = await SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'enrollment-code', code },
+        installationId: 'legacy-hosted-code',
+      }),
+    });
+    expect(redeemBlocked.status).toBe(403);
+    expect(await redeemBlocked.json()).toMatchObject({
+      error: { code: 'forbidden', details: { reason: 'provider-sign-in-required' } },
+    });
   });
 
-  it('rolls to the next generation when the mapped sync account is tombstoned', async () => {
-    const identity = makeIdentity(`del-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identity);
-    const pair1 = await signedHostedPost('/internal/hosted/pair-device', identity);
-    const session = await enrollWithCode(pair1.body['code'] as string);
+  it('keeps internal ephemeral enrollment available and prevents it from minting codes', async () => {
+    const sessions = env.SESSIONS.get(env.SESSIONS.idFromName('sessions'));
+    const issued = await sessions.fetch('https://internal.anvil/internal/issue-enrollment-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: `acct-ephemeral-${crypto.randomUUID()}`,
+        enrollmentClass: 'ephemeral',
+        provider: 'codex',
+        sessionTtlSeconds: 300,
+        environmentId: 'env-hosted-test',
+      }),
+    });
+    expect(issued.status).toBe(200);
+    const { code } = (await issued.json()) as EnrollmentCodeIssueResult;
 
-    // Deleting the device account tombstones workos_<hash>.
-    const deleted = await SELF.fetch('https://spike.test/v1/rpc', {
+    const enrolled = await SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'enrollment-code', code },
+        installationId: 'internal-agent-hosted-test',
+      }),
+    });
+    expect(enrolled.status).toBe(200);
+    const session = (await enrolled.json()) as DeviceSession;
+    expect(session.enrollmentClass).toBe('ephemeral');
+    expect(session.environmentId).toBe('env-hosted-test');
+
+    const mint = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${session.accessToken}`,
       },
-      body: JSON.stringify({
-        protocol: 'anvil-backend/1',
-        requestId: crypto.randomUUID(),
-        operation: 'account.delete',
-        params: {},
-      }),
+      body: JSON.stringify({ enrollmentClass: 'ephemeral', provider: 'codex' }),
     });
-    expect(deleted.status).toBe(200);
+    expect(mint.status).toBe(403);
+  });
 
-    const pair2 = await signedHostedPost('/internal/hosted/pair-device', identity);
-    expect(pair2.status).toBe(200);
-    const nextAccount = `${pair1.body['accountId']}~2`;
-    expect(pair2.body['accountId']).toBe(nextAccount);
+  it('advances a reset hosted account without letting data-status lock its billing row', async () => {
+    const identity = makeIdentity(`reset-${crypto.randomUUID()}`);
+    const billingBefore = await getOrCreateBillingAccount(hostedDb(), identity);
+    const first = await enrollWithWorkOS(identity, 'reset-first-device');
+    const oldAccountId = first.accountId;
+    expect((await getBillingAccountByIdentity(hostedDb(), identity))?.sync_account_id).toBe(
+      oldAccountId,
+    );
 
-    const session2 = await enrollWithCode(pair2.body['code'] as string, 'inst-gen2');
-    expect(session2.accountId).toBe(nextAccount);
+    const reset = await postRpc(
+      'security.reset',
+      { accountId: oldAccountId, confirmation: 'RESET ENCRYPTED DATA' },
+      `Bearer ${first.accessToken}`,
+    );
+    expect(reset.status).toBe(200);
+    expect((reset.body as { result?: { reauthRequired?: boolean } }).result?.reauthRequired).toBe(
+      true,
+    );
+    expect((await postRpc('device.list', {}, `Bearer ${first.accessToken}`)).status).toBe(401);
 
-    const status = await signedHostedPost('/internal/hosted/data-status', identity);
-    expect(status.status).toBe(200);
-    expect(status.body['syncAccountId']).toBe(nextAccount);
-    expect(status.body['tombstoned']).toBe(false);
-    expect(status.body['deletion']).toEqual({ state: 'none' });
+    const newAccountId = `${oldAccountId}~2`;
+    const statusAfterReset = await signedHostedPost('/internal/hosted/data-status', identity);
+    expect(statusAfterReset.status).toBe(200);
+    expect(statusAfterReset.body).toEqual({
+      syncAccountId: newAccountId,
+      tombstoned: false,
+      deletion: { state: 'none' },
+    });
+    const billingAfterStatus = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(billingAfterStatus?.id).toBe(billingBefore.id);
+    expect(billingAfterStatus?.lifecycle).toBe('active');
+    expect(billingAfterStatus?.generation).toBe(2);
+    expect(billingAfterStatus?.sync_account_id).toBe(newAccountId);
 
-    const account = await signedHostedPost('/internal/hosted/account', identity);
-    expect(account.status).toBe(200);
-    expect(account.body['syncAccountId']).toBe(nextAccount);
-    expect(account.body['generation']).toBe(2);
+    const second = await enrollWithWorkOS(identity, 'reset-second-device');
+    expect(second.accountId).toBe(newAccountId);
+    const billingAfterSignIn = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(billingAfterSignIn?.id).toBe(billingBefore.id);
+    expect(billingAfterSignIn?.lifecycle).toBe('active');
+    expect(billingAfterSignIn?.generation).toBe(2);
+    expect(billingAfterSignIn?.sync_account_id).toBe(newAccountId);
   });
 
   it('does not apply a stale deletion probe to a newer hosted generation', async () => {
@@ -295,214 +332,15 @@ describe('hosted pair-device', () => {
     expect(await markBillingLifecycle(hostedDb(), billing.id, 'deleted', oldAccountId)).toBe(false);
     expect((await getBillingAccountByIdentity(hostedDb(), identity))?.lifecycle).toBe('active');
   });
-
-  it('resets through security, preserves hosted billing, and pairs on a fresh generation', async () => {
-    const identity = makeIdentity(`reset-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identity);
-    const firstPair = await signedHostedPost('/internal/hosted/pair-device', identity);
-    expect(firstPair.status).toBe(200);
-    const oldAccountId = firstPair.body['accountId'] as string;
-    const first = await enrollWithCode(firstPair.body['code'] as string, 'inst-reset-old');
-
-    // Keep an unconsumed code from the old generation to prove the tombstone
-    // fences both existing sessions and outstanding enrollment proofs.
-    const oldPending = await signedHostedPost('/internal/hosted/pair-device', identity);
-    expect(oldPending.status).toBe(200);
-
-    const billingBefore = await getBillingAccountByIdentity(hostedDb(), identity);
-    expect(billingBefore).not.toBeNull();
-    await addActiveSubscription(billingBefore!.id);
-    const entitlementBefore = await signedHostedPost('/internal/hosted/entitlement', identity);
-    expect(entitlementBefore.status).toBe(200);
-    expect(entitlementBefore.body['state']).toBe('active');
-    expect(entitlementBefore.body['source']).toBe('none');
-    expect(entitlementBefore.body['reason']).toBe('free');
-
-    const reset = await postRpc(
-      'security.reset',
-      {
-        confirmAccountId: oldAccountId,
-        confirmation: 'RESET ENCRYPTED DATA',
-      },
-      `Bearer ${first.accessToken}`,
-    );
-    expect(reset.status).toBe(200);
-    expect((reset.body as { result?: { reauthRequired?: boolean } }).result?.reauthRequired).toBe(
-      true,
-    );
-
-    // Reset immediately moves the billing link off the old generation, so
-    // opening the website data-status page before signing in again cannot
-    // turn this recoverable reset into permanent hosted account deletion.
-    const statusAfterReset = await signedHostedPost('/internal/hosted/data-status', identity);
-    expect(statusAfterReset.status).toBe(200);
-    const newAccountId = `${oldAccountId}~2`;
-    expect(statusAfterReset.body).toEqual({
-      syncAccountId: newAccountId,
-      tombstoned: false,
-      deletion: { state: 'none' },
-    });
-    const billingAfterStatus = await getBillingAccountByIdentity(hostedDb(), identity);
-    expect(billingAfterStatus?.lifecycle).toBe('active');
-    expect(billingAfterStatus?.generation).toBe(2);
-    expect(billingAfterStatus?.sync_account_id).toBe(newAccountId);
-
-    const oldToken = await postRpc('device.list', {}, `Bearer ${first.accessToken}`);
-    expect(oldToken.status).toBe(401);
-    const oldCode = await SELF.fetch('https://spike.test/v1/enroll', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        proof: { method: 'enrollment-code', code: oldPending.body['code'] },
-        installationId: 'inst-reset-stale',
-      }),
-    });
-    expect(oldCode.status).toBe(403);
-
-    const secondPair = await signedHostedPost('/internal/hosted/pair-device', identity);
-    expect(secondPair.status).toBe(200);
-    expect(secondPair.body['accountId']).toBe(newAccountId);
-    const second = await enrollWithCode(secondPair.body['code'] as string, 'inst-reset-new');
-    expect(second.accountId).toBe(newAccountId);
-
-    const billingAfter = await getBillingAccountByIdentity(hostedDb(), identity);
-    expect(billingAfter?.id).toBe(billingBefore!.id);
-    expect(billingAfter?.lifecycle).toBe('active');
-    expect(billingAfter?.generation).toBe(2);
-    expect(billingAfter?.sync_account_id).toBe(newAccountId);
-    const entitlementAfter = await signedHostedPost('/internal/hosted/entitlement', identity);
-    expect(entitlementAfter.status).toBe(200);
-    expect(entitlementAfter.body['state']).toBe('active');
-    expect(entitlementAfter.body['source']).toBe(entitlementBefore.body['source']);
-  });
-});
-
-describe('hosted device link flow', () => {
-  it('links an existing device account to a billing identity', async () => {
-    const device = await deviceOnAccount(`acct-${crypto.randomUUID()}`);
-    const identity = makeIdentity(`link-${crypto.randomUUID()}`);
-    const billing = await getOrCreateBillingAccount(hostedDb(), identity);
-
-    const minted = await signedHostedPost('/internal/hosted/link-code', identity);
-    expect(minted.status).toBe(200);
-    const linkCode = minted.body['linkCode'] as string;
-    expect(linkCode).toMatch(/^anvil-lc-/);
-
-    const linked = await postHostedLink(linkCode, device.accessToken);
-    expect(linked.status).toBe(200);
-    expect(linked.body['linked']).toBe(true);
-    expect(linked.body['billingAccountId']).toBe(billing.id);
-
-    const account = await signedHostedPost('/internal/hosted/account', identity);
-    expect(account.body['syncAccountId']).toBe(device.accountId);
-    expect(account.body['lifecycle']).toBe('active');
-  });
-
-  it('rejects a second billing identity claiming the same sync account', async () => {
-    const device = await deviceOnAccount(`acct-${crypto.randomUUID()}`);
-    const identityC = makeIdentity(`c-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identityC);
-    const codeC = await signedHostedPost('/internal/hosted/link-code', identityC);
-    expect(
-      (await postHostedLink(codeC.body['linkCode'] as string, device.accessToken)).status,
-    ).toBe(200);
-
-    const identityD = makeIdentity(`d-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identityD);
-    const codeD = await signedHostedPost('/internal/hosted/link-code', identityD);
-    const denied = await postHostedLink(codeD.body['linkCode'] as string, device.accessToken);
-    expect(denied.status).toBe(409);
-    const error = denied.body['error'] as {
-      code: string;
-      retryable: boolean;
-      details: { reason: string };
-    };
-    expect(error.code).toBe('conflict');
-    expect(error.retryable).toBe(false);
-    expect(error.details.reason).toBe('sync-account-claimed');
-  });
-
-  it('rejects relinking a billing account to a different sync account', async () => {
-    const deviceX = await deviceOnAccount(`acct-x-${crypto.randomUUID()}`);
-    const deviceY = await deviceOnAccount(`acct-y-${crypto.randomUUID()}`);
-    const identity = makeIdentity(`reloc-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identity);
-
-    const first = await signedHostedPost('/internal/hosted/link-code', identity);
-    expect(
-      (await postHostedLink(first.body['linkCode'] as string, deviceX.accessToken)).status,
-    ).toBe(200);
-
-    const second = await signedHostedPost('/internal/hosted/link-code', identity);
-    const denied = await postHostedLink(second.body['linkCode'] as string, deviceY.accessToken);
-    expect(denied.status).toBe(409);
-    expect((denied.body['error'] as { details: { reason: string } }).details.reason).toBe(
-      'already-linked',
-    );
-  });
-
-  it('rejects consumed, wrong, and expired link codes with 401', async () => {
-    const device = await deviceOnAccount(`acct-${crypto.randomUUID()}`);
-    const identity = makeIdentity(`reuse-${crypto.randomUUID()}`);
-    const billing = await getOrCreateBillingAccount(hostedDb(), identity);
-
-    const minted = await signedHostedPost('/internal/hosted/link-code', identity);
-    const linkCode = minted.body['linkCode'] as string;
-    expect((await postHostedLink(linkCode, device.accessToken)).status).toBe(200);
-    // Replay of the consumed code is an authentication failure.
-    const replay = await postHostedLink(linkCode, device.accessToken);
-    expect(replay.status).toBe(401);
-    expect((replay.body['error'] as { code: string }).code).toBe('unauthenticated');
-
-    const wrong = await postHostedLink('anvil-lc-AAAAA-BBBBB-CCCCC-DDDDD', device.accessToken);
-    expect(wrong.status).toBe(401);
-
-    // Force-expire a fresh code in D1 rather than waiting out the TTL.
-    const expired = await signedHostedPost('/internal/hosted/link-code', identity);
-    await hostedDb()
-      .prepare('UPDATE hosted_link_codes SET expires_at = ? WHERE billing_account_id = ?')
-      .bind(Date.now() - 1, billing.id)
-      .run();
-    const stale = await postHostedLink(expired.body['linkCode'] as string, device.accessToken);
-    expect(stale.status).toBe(401);
-  });
-
-  it('requires a device bearer and a well-formed body', async () => {
-    const noBearer = await postHostedLink('anvil-lc-AAAAA-BBBBB-CCCCC-DDDDD');
-    expect(noBearer.status).toBe(401);
-
-    const malformed = await SELF.fetch('https://spike.test/v1/hosted/link', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    expect(malformed.status).toBe(400);
-  });
-
-  it('throttles the sixth concurrent live link code for one account', async () => {
-    const identity = makeIdentity(`cap-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identity);
-    for (let i = 0; i < 5; i += 1) {
-      expect((await signedHostedPost('/internal/hosted/link-code', identity)).status).toBe(200);
-    }
-    const sixth = await signedHostedPost('/internal/hosted/link-code', identity);
-    expect(sixth.status).toBe(429);
-    expect((sixth.body['error'] as { code: string }).code).toBe('throttled');
-  });
-
-  it('returns not-found for link-code and account lookups of unknown identities', async () => {
-    const unknown = makeIdentity(`ghost-${crypto.randomUUID()}`);
-    expect((await signedHostedPost('/internal/hosted/link-code', unknown)).status).toBe(404);
-    expect((await signedHostedPost('/internal/hosted/account', unknown)).status).toBe(404);
-  });
 });
 
 describe('hosted dashboard contract relay', () => {
   it('unwraps request, status, and snapshot results from the account coordinator', async () => {
     const identity = makeIdentity(`dashboard-${crypto.randomUUID()}`);
-    await getOrCreateBillingAccount(hostedDb(), identity);
-    const pair = await signedHostedPost('/internal/hosted/pair-device', identity);
-    const device = await enrollWithCode(pair.body['code'] as string, 'dashboard-device');
+    const billing = await getOrCreateBillingAccount(hostedDb(), identity);
+    const accountId = `acct-dashboard-${crypto.randomUUID()}`;
+    await setSyncAccountLink(hostedDb(), billing.id, accountId);
+    const device = await deviceOnAccount(accountId);
     const requestId = crypto.randomUUID();
     const browserPub = btoa('b'.repeat(32));
     const request = await signedHostedPost('/internal/hosted/dashboard-request', {

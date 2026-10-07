@@ -1,9 +1,10 @@
-import { SELF } from 'cloudflare:test';
+import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 import { validateDescriptor } from '../../contract/discovery';
 import { httpStatusForErrorCode, isRpcError, type RpcResponse } from '../../contract/envelope';
 import { PROTOCOL } from '../../contract/version';
+import { WORKOS_AUTHKIT_ISSUER } from '../../contract/auth';
 import {
   buildDescriptor,
   SPIKE_DEPLOYMENT_ID,
@@ -32,12 +33,21 @@ describe('discovery', () => {
   });
 
   it('serves a descriptor that validates against the contract', async () => {
-    const response = await SELF.fetch('https://spike.test/.well-known/anvil-backend');
-    expect(response.status).toBe(200);
-    const body: unknown = await response.json();
-    const validated = validateDescriptor(body);
-    expect(validated.ok).toBe(true);
-    expect(body).toEqual(buildDescriptor());
+    const previousIssuer = env.OIDC_ISSUER;
+    const previousClientId = env.OIDC_CLIENT_ID;
+    env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
+    env.OIDC_CLIENT_ID = 'client_hosted_test';
+    try {
+      const response = await SELF.fetch('https://spike.test/.well-known/anvil-backend');
+      expect(response.status).toBe(200);
+      const body: unknown = await response.json();
+      const validated = validateDescriptor(body);
+      expect(validated.ok).toBe(true);
+      expect(body).toEqual(buildDescriptor(env));
+    } finally {
+      env.OIDC_ISSUER = previousIssuer;
+      env.OIDC_CLIENT_ID = previousClientId;
+    }
   });
 });
 

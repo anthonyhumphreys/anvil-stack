@@ -237,10 +237,22 @@ describe('WorkOS Device Authorization proof verification', () => {
     expect(replay.status).toBe(401);
     expect((replay.body as { error: { code: string } }).error.code).toBe('invalid-proof');
 
-    const security = expectSuccess<{ enrollments: unknown[] }>(
+    const security = expectSuccess<{
+      newDeviceTrustPolicy: string;
+      enrollments: {
+        enrollmentId: string;
+        trustState: string;
+        trustSource: string;
+      }[];
+    }>(
       await postRpc('security.get', {}, `Bearer ${first.body.accessToken}`),
     );
+    expect(security.newDeviceTrustPolicy).toBe('auto-trust-authenticated');
     expect(security.enrollments).toHaveLength(2);
+    expect(security.enrollments.find((enrollment) => enrollment.enrollmentId === first.body.enrollmentId))
+      .toMatchObject({ trustState: 'trusted', trustSource: 'first-device' });
+    expect(security.enrollments.find((enrollment) => enrollment.enrollmentId === second.body.enrollmentId))
+      .toMatchObject({ trustState: 'trusted', trustSource: 'automatic-auth' });
   });
 
   it('rejects a WorkOS user who is not approved on the hosted waitlist', async () => {

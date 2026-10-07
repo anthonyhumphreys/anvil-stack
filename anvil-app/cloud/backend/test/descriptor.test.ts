@@ -10,7 +10,6 @@ describe('backend discovery descriptor', () => {
       OIDC_CLIENT_ID: 'client_anvil_public',
     });
     expect(descriptor.authModes).toEqual([
-      'enrollment-code',
       'oidc-pkce',
       'workos-device',
     ]);
@@ -30,5 +29,21 @@ describe('backend discovery descriptor', () => {
       OIDC_CLIENT_ID: 'client_anvil_public',
     });
     expect(descriptor.authModes).toEqual(['enrollment-code', 'oidc-pkce']);
+  });
+
+  it('omits human enrollment codes for hosted deployments', () => {
+    const descriptor = buildDescriptor({
+      HOSTED_DB: {},
+      OIDC_ISSUER: 'https://issuer.example',
+      OIDC_CLIENT_ID: 'client_anvil_public',
+    });
+    expect(descriptor.authModes).toEqual(['oidc-pkce']);
+  });
+
+  it('does not advertise human codes for a partial WorkOS configuration', () => {
+    const descriptor = buildDescriptor({
+      OIDC_ISSUER: 'https://API.WORKOS.COM/user_management',
+    });
+    expect(descriptor.authModes).toEqual([]);
   });
 });

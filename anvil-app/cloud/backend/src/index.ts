@@ -195,8 +195,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return Response.json(buildDescriptor(env));
   }
 
-  // BILL-01 hosted surface: /v1/hosted/link is the public link-code
-  // redemption route and /v1/hosted/stripe-webhook (BILL-02) is the
+  // BILL-01 hosted surface: /v1/hosted/stripe-webhook (BILL-02) is the
   // signature-verified Stripe inbox; /internal/hosted/* is the HMAC-signed
   // website service channel. Every hosted path 404s when HOSTED_DB is
   // unbound, so self-host deployments expose nothing here.

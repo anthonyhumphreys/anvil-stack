@@ -8,17 +8,11 @@
 // identity can never be resurrected as a fresh row; callers get the dead
 // row back and must deny on lifecycle.
 //
-// `hosted_link_codes` are the website→device link secret: only SHA-256
-// hashes of the normalized code are stored, exactly like enrollment codes.
 // `service_nonces` backs the HMAC service channel's replay protection.
 
 import { sha256Hex } from '../hash';
 import { initialHostedSyncAccountId, type HostedIdentity } from './identity';
 
-const LINK_CODE_TTL_MS = 10 * 60 * 1000;
-const MAX_ACTIVE_LINK_CODES_PER_ACCOUNT = 5;
-/** Same unambiguous alphabet as SessionCoordinator enrollment codes. */
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const BILLING_ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 export interface BillingAccountRow {
@@ -50,29 +44,6 @@ function newBillingAccountId(): string {
     id += BILLING_ID_ALPHABET[byte % BILLING_ID_ALPHABET.length];
   }
   return id;
-}
-
-/** `anvil-lc-XXXXX-…` — enrollment-code format, distinct hosted prefix. */
-function generateLinkCode(): { code: string; normalized: string } {
-  const bytes = new Uint8Array(20);
-  crypto.getRandomValues(bytes);
-  let raw = '';
-  for (const byte of bytes) {
-    raw += CODE_ALPHABET[byte % CODE_ALPHABET.length];
-  }
-  return {
-    code: `anvil-lc-${raw.slice(0, 5)}-${raw.slice(5, 10)}-${raw.slice(10, 15)}-${raw.slice(15, 20)}`,
-    normalized: raw,
-  };
-}
-
-/** Mirrors enrollment-code normalization: prefix, separators and case go. */
-function normalizeLinkCode(code: string): string {
-  return code
-    .trim()
-    .replace(/^anvil-lc-/i, '')
-    .replace(/[^A-Za-z0-9]/g, '')
-    .toUpperCase();
 }
 
 export async function getBillingAccountByIdentity(
@@ -268,59 +239,4 @@ export async function consumeServiceNonce(
     .run();
   await db.prepare('DELETE FROM service_nonces WHERE expires_at < ?').bind(now).run();
   return inserted.meta.changes > 0;
-}
-
-/**
- * Mints a single-use link code (10-minute TTL, hashed at rest). Returns
- * null when the account already has 5 live codes — the caller maps that
- * to 429 throttled.
- */
-export async function issueHostedLinkCode(
-  db: D1Database,
-  billingAccountId: string,
-): Promise<{ code: string; expiresAt: string } | null> {
-  const now = Date.now();
-  const active = await db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM hosted_link_codes
-       WHERE billing_account_id = ? AND consumed_at IS NULL AND expires_at > ?`,
-    )
-    .bind(billingAccountId, now)
-    .first<{ n: number }>();
-  if ((active?.n ?? 0) >= MAX_ACTIVE_LINK_CODES_PER_ACCOUNT) return null;
-  const { code, normalized } = generateLinkCode();
-  const codeHash = await sha256Hex(normalized);
-  await db
-    .prepare(
-      `INSERT INTO hosted_link_codes (code_hash, billing_account_id, expires_at, consumed_at, created_at)
-       VALUES (?, ?, ?, NULL, ?)`,
-    )
-    .bind(codeHash, billingAccountId, now + LINK_CODE_TTL_MS, now)
-    .run();
-  return { code, expiresAt: new Date(now + LINK_CODE_TTL_MS).toISOString() };
-}
-
-/**
- * Single atomic consume: the UPDATE lands only for an unconsumed,
- * unexpired code, so a replayed code can never win the race twice.
- * Returns the owning billing_account_id, or null for wrong/spent/expired.
- */
-export async function consumeHostedLinkCode(db: D1Database, code: string): Promise<string | null> {
-  const normalized = normalizeLinkCode(code);
-  if (normalized.length === 0) return null;
-  const codeHash = await sha256Hex(normalized);
-  const now = Date.now();
-  const updated = await db
-    .prepare(
-      `UPDATE hosted_link_codes SET consumed_at = ?
-       WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ?`,
-    )
-    .bind(now, codeHash, now)
-    .run();
-  if (updated.meta.changes === 0) return null;
-  const row = await db
-    .prepare('SELECT billing_account_id FROM hosted_link_codes WHERE code_hash = ?')
-    .bind(codeHash)
-    .first<{ billing_account_id: string }>();
-  return row?.billing_account_id ?? null;
 }

@@ -10,7 +10,7 @@ import type {
 import { MESH_MACHINE_OPERATIONS, MESH_MACHINE_PROTOCOL_VERSION } from '../../contract/machine';
 import { isRpcError } from '../../contract/envelope';
 import type { AccountCoordinator } from '../src/account-coordinator';
-import { expectSuccess, postRpc, spikeBearer, uniqueIds } from './helpers';
+import { expectSuccess, postRpc, spikeBearer, uniqueIds, withSelfHostedBackend } from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
 
@@ -20,25 +20,29 @@ function accountStub(accountId: string) {
 
 async function issueCode(accountId: string): Promise<EnrollmentCodeIssueResult> {
   env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
-  const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ADMIN_TOKEN}` },
-    body: JSON.stringify({ accountId }),
-  });
+  const response = await withSelfHostedBackend(() =>
+    SELF.fetch('https://spike.test/v1/enrollment-codes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ADMIN_TOKEN}` },
+      body: JSON.stringify({ accountId }),
+    }),
+  );
   expect(response.status).toBe(200);
   return (await response.json()) as EnrollmentCodeIssueResult;
 }
 
 async function enroll(code: string, installationId: string): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enroll', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      proof: { method: 'enrollment-code', code },
-      installationId,
-      displayName: 'Presence test device',
+  const response = await withSelfHostedBackend(() =>
+    SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'enrollment-code', code },
+        installationId,
+        displayName: 'Presence test device',
+      }),
     }),
-  });
+  );
   expect(response.status).toBe(200);
   return (await response.json()) as DeviceSession;
 }

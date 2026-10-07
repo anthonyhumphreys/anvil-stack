@@ -11,7 +11,14 @@ import type { SyncPullResult, SyncPushResult } from '../../contract/sync';
 import type { AccountCoordinator } from '../src/account-coordinator';
 import type { SessionCoordinator } from '../src/session-coordinator';
 import { sha256Hex } from '../src/hash';
-import { expectSuccess, hashedChange, postRpc, spikeBearer, uniqueIds } from './helpers';
+import {
+  expectSuccess,
+  hashedChange,
+  postRpc,
+  spikeBearer,
+  uniqueIds,
+  withSelfHostedBackend,
+} from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
 const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
@@ -37,17 +44,17 @@ async function sweepAccount(accountId: string) {
 }
 
 async function issueCode(accountId: string): Promise<EnrollmentCodeIssueResult> {
-  const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+  const response = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enrollment-codes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ADMIN_TOKEN}` },
     body: JSON.stringify({ accountId }),
-  });
+  }));
   expect(response.status).toBe(200);
   return (await response.json()) as EnrollmentCodeIssueResult;
 }
 
 async function enroll(code: string): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enroll', {
+  const response = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enroll', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -55,7 +62,7 @@ async function enroll(code: string): Promise<DeviceSession> {
       installationId: 'install-retention',
       displayName: 'Retention device',
     }),
-  });
+  }));
   expect(response.status).toBe(200);
   return (await response.json()) as DeviceSession;
 }
@@ -209,14 +216,14 @@ describe('session retention sweep', () => {
     expect(result.deletedCodes).toBeGreaterThanOrEqual(1);
 
     // The swept code can no longer be redeemed.
-    const enrollResponse = await SELF.fetch('https://spike.test/v1/enroll', {
+    const enrollResponse = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enroll', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         proof: { method: 'enrollment-code', code: issued.code },
         installationId: 'install-x',
       }),
-    });
+    }));
     expect(enrollResponse.status).toBe(401);
   });
 

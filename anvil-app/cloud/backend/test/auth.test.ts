@@ -9,6 +9,7 @@ import type {
   EnrollmentCodeIssueResult,
   SessionDescribeResult,
 } from '../../contract/auth';
+import { WORKOS_AUTHKIT_ISSUER } from '../../contract/auth';
 import type { DataExportBeginResult } from '../../contract/data';
 import { httpStatusForErrorCode, isRpcError } from '../../contract/envelope';
 import type { SyncPullResult } from '../../contract/sync';
@@ -16,9 +17,14 @@ import { PREVIEW_END_MS } from '../src/hosted/policy';
 import { sha256Hex } from '../src/hash';
 import { verifyOidcPkceProof } from '../src/oidc';
 import { legacyOidcAccountId } from '../src/session-coordinator';
-import { expectSuccess, hashedChange, postRpc } from './helpers';
+import { getOrCreateBillingAccount } from '../src/hosted/store';
+import { expectSuccess, hashedChange, postRpc, withSelfHostedBackend } from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
+const WORKOS_API = 'https://api.workos.com';
+const HOSTED_WORKOS_CLIENT_ID = 'client_hosted_test';
+
+type WorkosIdentity = { workosClientId: string; workosUserId: string };
 
 function adminHeaders(): Record<string, string> {
   return { Authorization: `Bearer ${ADMIN_TOKEN}` };
@@ -28,15 +34,21 @@ async function postAuthRoute(
   path: string,
   body: unknown,
   authorization?: string,
+  selfHosted = true,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  const response = await SELF.fetch(`https://spike.test${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(authorization === undefined ? {} : { Authorization: authorization }),
-    },
-    body: JSON.stringify(body),
-  });
+  const send = () =>
+    SELF.fetch(`https://spike.test${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authorization === undefined ? {} : { Authorization: authorization }),
+      },
+      body: JSON.stringify(body),
+    });
+  const response =
+    selfHosted && (path === '/v1/enrollment-codes' || path === '/v1/enroll')
+      ? await withSelfHostedBackend(send)
+      : await send();
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
@@ -63,9 +75,17 @@ async function enrollWithCode(code: string, installationId = 'install-1'): Promi
   return body as unknown as DeviceSession;
 }
 
-async function linkPaidBillingAccount(accountId: string): Promise<void> {
+function hostedDb(): D1Database {
   const db = env.HOSTED_DB;
   if (db === undefined) throw new Error('HOSTED_DB binding missing in test environment');
+  return db;
+}
+
+async function linkPaidBillingAccount(
+  accountId: string,
+  identity: WorkosIdentity,
+): Promise<void> {
+  const db = hostedDb();
   const now = Date.now();
   const billingAccountId = `ba_${crypto.randomUUID().replaceAll('-', '')}`;
   await db
@@ -77,8 +97,8 @@ async function linkPaidBillingAccount(accountId: string): Promise<void> {
     )
     .bind(
       billingAccountId,
-      `client_${billingAccountId}`,
-      `user_${billingAccountId}`,
+      identity.workosClientId,
+      identity.workosUserId,
       accountId,
       now,
       now,
@@ -103,6 +123,81 @@ async function linkPaidBillingAccount(accountId: string): Promise<void> {
       now,
     )
     .run();
+}
+
+function newWorkosIdentity(): WorkosIdentity {
+  return {
+    workosClientId: HOSTED_WORKOS_CLIENT_ID,
+    workosUserId: `user_${crypto.randomUUID().replaceAll('-', '')}`,
+  };
+}
+
+async function withWorkosIdentity<T>(identity: WorkosIdentity, run: () => Promise<T>): Promise<T> {
+  const previousIssuer = env.OIDC_ISSUER;
+  const previousClientId = env.OIDC_CLIENT_ID;
+  const previousHostedClientId = env.HOSTED_WORKOS_CLIENT_ID;
+  env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
+  env.OIDC_CLIENT_ID = identity.workosClientId;
+  env.HOSTED_WORKOS_CLIENT_ID = identity.workosClientId;
+  await fetch(`${WORKOS_API}/__workos-stub/reset`, { method: 'POST' });
+  try {
+    return await run();
+  } finally {
+    await fetch(`${WORKOS_API}/__workos-stub/reset`, { method: 'POST' });
+    env.OIDC_ISSUER = previousIssuer;
+    env.OIDC_CLIENT_ID = previousClientId;
+    env.HOSTED_WORKOS_CLIENT_ID = previousHostedClientId;
+  }
+}
+
+async function beginWorkosEnrollment(
+  identity: WorkosIdentity,
+  installationId: string,
+): Promise<() => Promise<{ status: number; body: Record<string, unknown> }>> {
+  const deviceCode = `test-device-${crypto.randomUUID()}`;
+  const queued = await fetch(`${WORKOS_API}/__workos-stub/enqueue`, {
+    method: 'POST',
+    body: JSON.stringify({
+      method: 'POST',
+      path: '/user_management/authenticate',
+      body: { user: { object: 'user', id: identity.workosUserId } },
+    }),
+  });
+  expect(queued.status).toBe(200);
+
+  const request = () =>
+    SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'workos-device', issuer: WORKOS_AUTHKIT_ISSUER, deviceCode },
+        installationId,
+      }),
+    });
+  return async () => {
+    const response = await request();
+    return {
+      status: response.status,
+      body: (await response.json()) as Record<string, unknown>,
+    };
+  };
+}
+
+async function enrollWithWorkos(
+  identity: WorkosIdentity,
+  installationId: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const request = await beginWorkosEnrollment(identity, installationId);
+  let attempt = await request();
+  if (attempt.status === 429) {
+    if (vi.isFakeTimers()) {
+      await vi.advanceTimersByTimeAsync(1_010);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 1_010));
+    }
+    attempt = await request();
+  }
+  return attempt;
 }
 
 async function refresh(
@@ -163,74 +258,65 @@ describe('enrollment-code authentication', () => {
   it('caps hosted durable devices without revoking existing sessions and frees a slot on revoke', async () => {
     const previousLimits = env.HOSTED_SYNC_LIMITS;
     env.HOSTED_SYNC_LIMITS = JSON.stringify({ devices: 5 });
+    vi.useFakeTimers();
     try {
-      env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
-      const accountId = `acct-${crypto.randomUUID()}`;
-      const sessions: DeviceSession[] = [
-        await enrollWithCode((await issueCode(accountId)).code, 'install-1'),
-      ];
-      for (let index = 2; index <= 4; index += 1) {
-        const pairing = await issueCode('', bearer(sessions[0]));
-        sessions.push(await enrollWithCode(pairing.code, `install-${index}`));
-      }
+      const identity = newWorkosIdentity();
+      await withWorkosIdentity(identity, async () => {
+        await getOrCreateBillingAccount(hostedDb(), identity);
+        const first = await enrollWithWorkos(identity, 'install-1');
+        expect(first.status).toBe(200);
+        const sessions: DeviceSession[] = [first.body as unknown as DeviceSession];
+        for (let index = 2; index <= 4; index += 1) {
+          const attempt = await enrollWithWorkos(identity, `install-${index}`);
+          expect(attempt.status).toBe(200);
+          sessions.push(attempt.body as unknown as DeviceSession);
+        }
 
-      const concurrentProofs = await Promise.all([
-        issueCode('', bearer(sessions[0])),
-        issueCode('', bearer(sessions[0])),
-      ]);
-      const concurrentAttempts = await Promise.all(
-        concurrentProofs.map(async (proof, index) => ({
-          installationId: `install-concurrent-${index}`,
-          ...(await postAuthRoute('/v1/enroll', {
-            proof: { method: 'enrollment-code', code: proof.code },
-            installationId: `install-concurrent-${index}`,
-          })),
-        })),
-      );
-      const accepted = concurrentAttempts.filter((attempt) => attempt.status === 200);
-      const deniedConcurrently = concurrentAttempts.filter((attempt) => attempt.status === 403);
-      expect(accepted).toHaveLength(1);
-      expect(deniedConcurrently).toHaveLength(1);
-      sessions.push(accepted[0]!.body as unknown as DeviceSession);
-      expect(deniedConcurrently[0]!.body['error']).toMatchObject({
-        code: 'device-limit',
-        retryable: false,
-        details: { limit: 5, used: 5 },
+        await vi.advanceTimersByTimeAsync(1_010);
+        const concurrentRequests = await Promise.all([
+          beginWorkosEnrollment(identity, 'install-concurrent-1'),
+          beginWorkosEnrollment(identity, 'install-concurrent-2'),
+        ]);
+        const concurrentAttempts = await Promise.all(concurrentRequests.map((request) => request()));
+        const accepted = concurrentAttempts.filter((attempt) => attempt.status === 200);
+        const rateLimitedIndex = concurrentAttempts.findIndex((attempt) => attempt.status === 429);
+        expect(accepted).toHaveLength(1);
+        expect(rateLimitedIndex).not.toBe(-1);
+        sessions.push(accepted[0]!.body as unknown as DeviceSession);
+        await vi.advanceTimersByTimeAsync(1_010);
+        const gatedRetry = await concurrentRequests[rateLimitedIndex]!();
+        expect(gatedRetry.status).toBe(403);
+        expect(gatedRetry.body['error']).toMatchObject({
+          code: 'device-limit',
+          retryable: false,
+          details: { limit: 5, used: 5 },
+        });
+
+        const listed = expectSuccess<DeviceListResult>(
+          await postRpc('device.list', {}, bearer(sessions[0]!)),
+        ).devices;
+        expect(listed).toHaveLength(5);
+        expect(listed.every((device) => !device.revoked)).toBe(true);
+        for (const session of sessions) {
+          expect(
+            (await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(session))).status,
+          ).toBe(200);
+        }
+
+        const revoke = await postRpc(
+          'device.revoke',
+          { enrollmentId: sessions[1]!.enrollmentId },
+          bearer(sessions[0]!),
+        );
+        expectSuccess<DeviceRevokeResult>(revoke);
+        const replacement = await enrollWithWorkos(identity, 'install-6');
+        expect(replacement.status).toBe(200);
+        expect((replacement.body as unknown as DeviceSession).accountId).toBe(
+          sessions[0]!.accountId,
+        );
       });
-
-      const pairing = await issueCode('', bearer(sessions[0]));
-      const denied = await postAuthRoute('/v1/enroll', {
-        proof: { method: 'enrollment-code', code: pairing.code },
-        installationId: 'install-6',
-      });
-      expect(denied.status).toBe(403);
-      expect(denied.body['error']).toMatchObject({
-        code: 'device-limit',
-        retryable: false,
-        details: { limit: 5, used: 5 },
-      });
-
-      const listed = expectSuccess<DeviceListResult>(
-        await postRpc('device.list', {}, bearer(sessions[0])),
-      ).devices;
-      expect(listed).toHaveLength(5);
-      expect(listed.every((device) => !device.revoked)).toBe(true);
-      for (const session of sessions) {
-        expect(
-          (await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(session))).status,
-        ).toBe(200);
-      }
-
-      const revoke = await postRpc(
-        'device.revoke',
-        { enrollmentId: sessions[1].enrollmentId },
-        bearer(sessions[0]),
-      );
-      expectSuccess<DeviceRevokeResult>(revoke);
-      const replacementCode = await issueCode('', bearer(sessions[0]));
-      const replacement = await enrollWithCode(replacementCode.code, 'install-6');
-      expect(replacement.accountId).toBe(accountId);
     } finally {
+      vi.useRealTimers();
       env.HOSTED_SYNC_LIMITS = previousLimits ?? '';
     }
   });
@@ -241,71 +327,72 @@ describe('enrollment-code authentication', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(PREVIEW_END_MS + 1));
     try {
-      env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
       const accountId = `acct-${crypto.randomUUID()}`;
-      await linkPaidBillingAccount(accountId);
+      const identity = newWorkosIdentity();
+      await withWorkosIdentity(identity, async () => {
+        await linkPaidBillingAccount(accountId, identity);
 
-      const sessions: DeviceSession[] = [
-        await enrollWithCode((await issueCode(accountId)).code, 'paid-install-1'),
-      ];
-      for (let index = 2; index <= 6; index += 1) {
-        const pairing = await issueCode('', bearer(sessions[0]));
-        sessions.push(await enrollWithCode(pairing.code, `paid-install-${index}`));
-      }
+        const sessions: DeviceSession[] = [];
+        for (let index = 1; index <= 6; index += 1) {
+          const attempt = await enrollWithWorkos(identity, `paid-install-${index}`);
+          expect(attempt.status).toBe(200);
+          sessions.push(attempt.body as unknown as DeviceSession);
+        }
 
-      env.HOSTED_SYNC_LIMITS = JSON.stringify({ devices: 5 });
-      const descriptor = expectSuccess<SessionDescribeResult>(
-        await postRpc('session.describe', {}, bearer(sessions[0])),
-      );
-      expect(descriptor.entitlement).toMatchObject({
-        state: 'restricted',
-        reason: 'device-limit-exceeded',
+        env.HOSTED_SYNC_LIMITS = JSON.stringify({ devices: 5 });
+        const descriptor = expectSuccess<SessionDescribeResult>(
+          await postRpc('session.describe', {}, bearer(sessions[0]!)),
+        );
+        expect(descriptor.entitlement).toMatchObject({
+          state: 'restricted',
+          reason: 'device-limit-exceeded',
+        });
+        expect(descriptor.entitlement?.capabilities).toEqual({ syncWrite: false, meshSubmit: false });
+
+        const attemptedWrite = await postRpc(
+          'sync.push',
+          { changes: [await hashedChange({ enrollmentSequence: 1, entityId: 'paid-write' })] },
+          bearer(sessions[0]!),
+        );
+        expect(attemptedWrite.status).toBe(403);
+        expect(attemptedWrite.body).toMatchObject({
+          error: {
+            code: 'forbidden',
+            details: { reason: 'device-limit-exceeded', limit: 5, activeCount: 6 },
+          },
+        });
+
+        expect(
+          (await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(sessions[0]!))).status,
+        ).toBe(200);
+        const exported = await postRpc('data.export.begin', {}, bearer(sessions[0]!));
+        expectSuccess<DataExportBeginResult>(exported);
+        expect(exported.status).toBe(200);
+        const listed = expectSuccess<DeviceListResult>(
+          await postRpc('device.list', {}, bearer(sessions[0]!)),
+        );
+        expect(listed.devices.filter((device) => !device.revoked)).toHaveLength(6);
+
+        expectSuccess<DeviceRevokeResult>(
+          await postRpc(
+            'device.revoke',
+            { enrollmentId: sessions[5]!.enrollmentId },
+            bearer(sessions[0]!),
+          ),
+        );
+        const resumed = expectSuccess<SessionDescribeResult>(
+          await postRpc('session.describe', {}, bearer(sessions[0]!)),
+        );
+        expect(resumed.entitlement).toMatchObject({ state: 'active', reason: 'free' });
+        const admittedWrite = await postRpc(
+          'sync.push',
+          {
+            changes: [await hashedChange({ enrollmentSequence: 1, entityId: 'paid-write-resumed' })],
+          },
+          bearer(sessions[0]!),
+        );
+        expect(admittedWrite.status).toBe(200);
       });
-      expect(descriptor.entitlement?.capabilities).toEqual({ syncWrite: false, meshSubmit: false });
-
-      const attemptedWrite = await postRpc(
-        'sync.push',
-        { changes: [await hashedChange({ enrollmentSequence: 1, entityId: 'paid-write' })] },
-        bearer(sessions[0]),
-      );
-      expect(attemptedWrite.status).toBe(403);
-      expect(attemptedWrite.body).toMatchObject({
-        error: {
-          code: 'forbidden',
-          details: { reason: 'device-limit-exceeded', limit: 5, activeCount: 6 },
-        },
-      });
-
-      expect(
-        (await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(sessions[0]))).status,
-      ).toBe(200);
-      const exported = await postRpc('data.export.begin', {}, bearer(sessions[0]));
-      expectSuccess<DataExportBeginResult>(exported);
-      expect(exported.status).toBe(200);
-      const listed = expectSuccess<DeviceListResult>(
-        await postRpc('device.list', {}, bearer(sessions[0])),
-      );
-      expect(listed.devices.filter((device) => !device.revoked)).toHaveLength(6);
-
-      expectSuccess<DeviceRevokeResult>(
-        await postRpc(
-          'device.revoke',
-          { enrollmentId: sessions[5]!.enrollmentId },
-          bearer(sessions[0]),
-        ),
-      );
-      const resumed = expectSuccess<SessionDescribeResult>(
-        await postRpc('session.describe', {}, bearer(sessions[0])),
-      );
-      expect(resumed.entitlement).toMatchObject({ state: 'active', reason: 'free' });
-      const admittedWrite = await postRpc(
-        'sync.push',
-        {
-          changes: [await hashedChange({ enrollmentSequence: 1, entityId: 'paid-write-resumed' })],
-        },
-        bearer(sessions[0]),
-      );
-      expect(admittedWrite.status).toBe(200);
     } finally {
       vi.useRealTimers();
       env.HOSTED_SYNC_LIMITS = previousLimits ?? '';

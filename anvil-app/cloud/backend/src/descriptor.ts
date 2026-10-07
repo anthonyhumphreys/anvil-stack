@@ -1,6 +1,6 @@
 import type { BackendDescriptor } from '../../contract/discovery';
-import { WORKOS_AUTHKIT_ISSUER } from '../../contract/auth';
 import { DEFAULT_LIMITS, DESCRIPTOR_VERSION, PROTOCOL } from '../../contract/version';
+import { isWorkosAuthKitIssuer } from './oidc';
 
 /** Legacy staging identity. Keep until the staging deployment is intentionally migrated. */
 export const SPIKE_DEPLOYMENT_ID = 'spike-0000-0000-0000-backend01demo';
@@ -9,6 +9,7 @@ export const SPIKE_DEPLOYMENT_NAME = 'Anvil Backend Spike (BACKEND-01)';
 type DescriptorEnvironment = {
   ANVIL_DEPLOYMENT_ID?: string;
   ANVIL_DEPLOYMENT_NAME?: string;
+  HOSTED_DB?: unknown;
   OIDC_ISSUER?: string;
   OIDC_CLIENT_ID?: string;
   OIDC_SCOPES?: string;
@@ -19,11 +20,9 @@ type DescriptorEnvironment = {
  * `../contract/discovery.ts`. sync/2 requires encrypted snapshot recovery;
  * mesh/2 adds the compact history and batched cancellation contract.
  *
- * authModes advertise only what the deployment actually supports:
- * `enrollment-code` always works (admin- or device-issued), and `oidc-pkce`
- * is advertised only when OIDC_ISSUER/OIDC_CLIENT_ID are configured.
- * `workos-device` is advertised only for the fixed public WorkOS AuthKit
- * authority; the daemon starts that flow against WorkOS directly.
+ * authModes advertise only what the deployment actually supports. Hosted
+ * accounts and WorkOS deployments use provider sign-in; human enrollment
+ * codes remain available to non-hosted, non-WorkOS deployments.
  */
 export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor {
   const issuer = env?.OIDC_ISSUER?.trim();
@@ -33,7 +32,9 @@ export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor 
     issuer.length > 0 &&
     typeof clientId === 'string' &&
     clientId.length > 0;
-  const workosConfigured = oidcConfigured && issuer === WORKOS_AUTHKIT_ISSUER;
+  const workosIssuer = typeof issuer === 'string' && isWorkosAuthKitIssuer(issuer);
+  const workosConfigured = oidcConfigured && workosIssuer;
+  const canUseEnrollmentCodes = env?.HOSTED_DB === undefined && !workosIssuer;
   const scopes = (env?.OIDC_SCOPES ?? 'openid profile')
     .split(/\s+/)
     .filter((scope) => scope.length > 0);
@@ -46,11 +47,11 @@ export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor 
     features: ['browser-workspace/1'],
     apiPath: 'v1',
     socketPath: 'v1/connect',
-    authModes: workosConfigured
-      ? ['enrollment-code', 'oidc-pkce', 'workos-device']
-      : oidcConfigured
-        ? ['enrollment-code', 'oidc-pkce']
-        : ['enrollment-code'],
+    authModes: [
+      ...(canUseEnrollmentCodes ? (['enrollment-code'] as const) : []),
+      ...(oidcConfigured ? (['oidc-pkce'] as const) : []),
+      ...(workosConfigured ? (['workos-device'] as const) : []),
+    ],
     auth: {
       issuer: oidcConfigured ? (issuer as string) : 'https://enrollment.invalid',
       publicClientId: oidcConfigured ? (clientId as string) : 'anvil-desktop',

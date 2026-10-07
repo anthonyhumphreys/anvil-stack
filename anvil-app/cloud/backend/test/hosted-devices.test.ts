@@ -5,7 +5,12 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
-import type { DeviceSession, DeviceSummary, EnrollmentCodeIssueResult } from '../../contract/auth';
+import {
+  WORKOS_AUTHKIT_ISSUER,
+  type DeviceSession,
+  type DeviceSummary,
+  type WorkosDeviceProof,
+} from '../../contract/auth';
 import { isRpcError } from '../../contract/envelope';
 import type { HostedIdentity } from '../src/hosted/identity';
 import { signHostedServiceRequest } from '../src/hosted/service-auth';
@@ -15,6 +20,8 @@ import { postRpc } from './helpers';
 const SERVICE_KEY_ID = 'test';
 const SERVICE_SECRET = 'a'.repeat(32);
 const SERVICE_AUDIENCE = 'anvil-hosted';
+const WORKOS_API = 'https://api.workos.com';
+const WORKOS_CLIENT_ID = 'client_hosted_test';
 
 function hostedDb(): D1Database {
   const db = env.HOSTED_DB;
@@ -43,34 +50,63 @@ async function signedHostedPost(
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
-async function enrollWithCode(code: string, installationId: string): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enroll', {
+async function enrollWithWorkOS(
+  identity: HostedIdentity,
+  installationId: string,
+): Promise<DeviceSession> {
+  env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
+  env.OIDC_CLIENT_ID = WORKOS_CLIENT_ID;
+  env.HOSTED_WORKOS_CLIENT_ID = WORKOS_CLIENT_ID;
+
+  const deviceCode = `hosted-device-${crypto.randomUUID()}`;
+  const queued = await fetch(`${WORKOS_API}/__workos-stub/enqueue`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      proof: { method: 'enrollment-code', code },
-      installationId,
-      displayName: 'Hosted test device',
+      method: 'POST',
+      path: '/user_management/authenticate',
+      body: { user: { object: 'user', id: identity.workosUserId } },
     }),
   });
+  expect(queued.status).toBe(200);
+
+  const proof: WorkosDeviceProof = {
+    method: 'workos-device',
+    issuer: WORKOS_AUTHKIT_ISSUER,
+    deviceCode,
+  };
+  const request = () =>
+    SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof,
+        installationId,
+        displayName: 'Hosted test device',
+      }),
+    });
+  let response = await request();
+  // The provider verifier has a DO-wide one-second gate. Tests that enroll
+  // several devices back-to-back retry only that local rate-limit response.
+  if (response.status === 429) {
+    await response.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 1_010));
+    response = await request();
+  }
   expect(response.status).toBe(200);
   return (await response.json()) as DeviceSession;
 }
 
-/**
- * The hosted pairing flow: mints an enrollment code for the identity's
- * mapped sync account (linking it on first use), then enrolls a device.
- */
-async function pairAndEnroll(
+/** A hosted WorkOS sign-in for an identity with an existing admitted account. */
+async function signInAndEnroll(
   identity: HostedIdentity,
   installationId: string,
 ): Promise<{ session: DeviceSession; accountId: string }> {
   // This suite exercises devices for an already admitted preview user.
   await getOrCreateBillingAccount(hostedDb(), identity);
-  const pair = await signedHostedPost('/internal/hosted/pair-device', identity);
-  expect(pair.status).toBe(200);
-  const session = await enrollWithCode(pair.body['code'] as string, installationId);
-  return { session, accountId: pair.body['accountId'] as string };
+  const session = await enrollWithWorkOS(identity, installationId);
+  const account = await getBillingAccountByIdentity(hostedDb(), identity);
+  expect(account?.sync_account_id).toBe(session.accountId);
+  return { session, accountId: session.accountId };
 }
 
 function errorOf(body: Record<string, unknown>): { code: string; details?: { reason?: string } } {
@@ -80,8 +116,8 @@ function errorOf(body: Record<string, unknown>): { code: string; details?: { rea
 describe('hosted devices', () => {
   it('lists every enrolled device on the mapped account with self:false', async () => {
     const identity = makeIdentity(`dev-${crypto.randomUUID()}`);
-    const first = await pairAndEnroll(identity, 'inst-web-a');
-    const second = await pairAndEnroll(identity, 'inst-web-b');
+    const first = await signInAndEnroll(identity, 'inst-web-a');
+    const second = await signInAndEnroll(identity, 'inst-web-b');
 
     const listed = await signedHostedPost('/internal/hosted/devices', identity);
     expect(listed.status).toBe(200);
@@ -97,7 +133,7 @@ describe('hosted devices', () => {
       expect(row).toBeDefined();
       expect(row?.self).toBe(false);
       expect(row?.revoked).toBe(false);
-      expect(['pending', 'trusted']).toContain(row?.trustState);
+      expect(row?.trustState).toBe('trusted');
       expect(row?.installationId).toBe(installationId);
       expect(row?.displayName).toBe('Hosted test device');
     }
@@ -105,7 +141,7 @@ describe('hosted devices', () => {
 
   it('marks only active trusted person-owned enrollments as dashboard targets', async () => {
     const identity = makeIdentity(`dashboard-target-${crypto.randomUUID()}`);
-    const { session, accountId } = await pairAndEnroll(identity, 'inst-dashboard-target');
+    const { session, accountId } = await signInAndEnroll(identity, 'inst-dashboard-target');
     const sessions = env.SESSIONS.get(env.SESSIONS.idFromName('sessions'));
     const check = (targetAccountId: string, enrollmentId: string) =>
       sessions.fetch(
@@ -163,7 +199,7 @@ describe('hosted devices', () => {
 
   it('lets the signed account owner revoke a session-only dashboard grant by request id', async () => {
     const identity = makeIdentity(`dashboard-revoke-${crypto.randomUUID()}`);
-    const { session, accountId } = await pairAndEnroll(identity, 'inst-dashboard-revoke');
+    const { session, accountId } = await signInAndEnroll(identity, 'inst-dashboard-revoke');
     const requestId = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 600_000).toISOString();
     const requested = await signedHostedPost('/internal/hosted/dashboard-request', {
@@ -224,8 +260,8 @@ describe('hosted devices', () => {
 
   it('renames a device by enrollmentId and persists it to the list', async () => {
     const identity = makeIdentity(`ren-${crypto.randomUUID()}`);
-    const { session: keeper } = await pairAndEnroll(identity, 'inst-keep');
-    const { session: renamed, accountId } = await pairAndEnroll(identity, 'inst-rename');
+    const { session: keeper } = await signInAndEnroll(identity, 'inst-keep');
+    const { session: renamed, accountId } = await signInAndEnroll(identity, 'inst-rename');
 
     const result = await signedHostedPost('/internal/hosted/device-rename', {
       ...identity,
@@ -252,7 +288,7 @@ describe('hosted devices', () => {
       displayName: 'Nope',
     });
     expect(foreign.status).toBe(404);
-    const stranger = await pairAndEnroll(
+    const stranger = await signInAndEnroll(
       makeIdentity(`stranger-${crypto.randomUUID()}`),
       'inst-stranger',
     );
@@ -268,7 +304,7 @@ describe('hosted devices', () => {
 
   it('rejects malformed rename and revoke bodies', async () => {
     const identity = makeIdentity(`bad-${crypto.randomUUID()}`);
-    await pairAndEnroll(identity, 'inst-bad');
+    await signInAndEnroll(identity, 'inst-bad');
     const cases: [string, unknown][] = [
       ['/internal/hosted/device-rename', { ...identity, enrollmentId: '', displayName: 'x' }],
       [
@@ -288,8 +324,8 @@ describe('hosted devices', () => {
 
   it('revokes a device so its session no longer validates', async () => {
     const identity = makeIdentity(`rev-${crypto.randomUUID()}`);
-    const { session: keeper } = await pairAndEnroll(identity, 'inst-keep');
-    const { session: revoked } = await pairAndEnroll(identity, 'inst-revoke');
+    const { session: keeper } = await signInAndEnroll(identity, 'inst-keep');
+    const { session: revoked } = await signInAndEnroll(identity, 'inst-revoke');
 
     const result = await signedHostedPost('/internal/hosted/device-revoke', {
       ...identity,
@@ -329,7 +365,7 @@ describe('hosted devices', () => {
 describe('hosted data-status', () => {
   it('reports a clean state for a linked account', async () => {
     const identity = makeIdentity(`ds-${crypto.randomUUID()}`);
-    const { accountId } = await pairAndEnroll(identity, 'inst-ds');
+    const { accountId } = await signInAndEnroll(identity, 'inst-ds');
     const status = await signedHostedPost('/internal/hosted/data-status', identity);
     expect(status.status).toBe(200);
     expect(status.body['syncAccountId']).toBe(accountId);
@@ -351,7 +387,7 @@ describe('hosted data-status', () => {
 
   it('surfaces a device-initiated deletion on the mapped account', async () => {
     const identity = makeIdentity(`dsdel-${crypto.randomUUID()}`);
-    const { session, accountId } = await pairAndEnroll(identity, 'inst-dsdel');
+    const { session, accountId } = await signInAndEnroll(identity, 'inst-dsdel');
     const deleted = await postRpc('account.delete', {}, `Bearer ${session.accessToken}`);
     expect(isRpcError(deleted.body)).toBe(false);
 
@@ -369,7 +405,7 @@ describe('hosted data-status', () => {
 describe('hosted delete-account', () => {
   it('tombstones the sync account, revokes sessions, reconciles billing state, and is idempotent', async () => {
     const identity = makeIdentity(`del-${crypto.randomUUID()}`);
-    const { session, accountId } = await pairAndEnroll(identity, 'inst-del');
+    const { session, accountId } = await signInAndEnroll(identity, 'inst-del');
 
     const first = await signedHostedPost('/internal/hosted/delete-account', identity);
     expect(first.status).toBe(200);
@@ -393,9 +429,8 @@ describe('hosted delete-account', () => {
     expect(auditRow).not.toBeNull();
     expect(JSON.parse(auditRow!.detail)['syncAccountId']).toBe(accountId);
 
-    // Device management and pairing are denied while deletion is in flight
-    // or after it completes.
-    for (const path of ['/internal/hosted/devices', '/internal/hosted/pair-device']) {
+    // Device management is denied while deletion is in flight or after it completes.
+    for (const path of ['/internal/hosted/devices']) {
       const denied = await signedHostedPost(path, identity);
       expect(denied.status).toBe(403);
       expect(errorOf(denied.body).code).toBe('forbidden');

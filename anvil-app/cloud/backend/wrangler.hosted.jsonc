@@ -4,7 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   // BILL-01 hosted deployment: same Worker + Durable Objects + R2 surface as
-  // wrangler.jsonc, plus the D1 billing store that unlocks /v1/hosted/link
+  // wrangler.jsonc, plus the D1 billing store used by hosted identity
   // and the /internal/hosted/* service channel. Self-host deploys keep using
   // wrangler.jsonc and never provision D1.
   //

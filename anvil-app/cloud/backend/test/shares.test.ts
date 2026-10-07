@@ -13,7 +13,7 @@ import { PREVIEW_END_MS } from '../src/hosted/policy';
 import { signHostedServiceRequest } from '../src/hosted/service-auth';
 import type { SessionCoordinator } from '../src/session-coordinator';
 import type { DeviceSession, EnrollmentCodeIssueResult } from '../../contract/auth';
-import { expectSuccess, postRpc } from './helpers';
+import { expectSuccess, postRpc, withSelfHostedBackend } from './helpers';
 
 const SERVICE_KEY_ID = 'test';
 const SERVICE_SECRET = 'a'.repeat(32);
@@ -27,16 +27,16 @@ const ADMIN_TOKEN = 'dev-admin-token';
 async function fixture(label: string) {
   env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
   const accountId = `acct-${label}-${crypto.randomUUID()}`;
-  const issued = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+  const issued = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enrollment-codes', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${ADMIN_TOKEN}`,
     },
     body: JSON.stringify({ accountId }),
-  });
+  }));
   const { code } = (await issued.json()) as EnrollmentCodeIssueResult;
-  const enrolled = await SELF.fetch('https://spike.test/v1/enroll', {
+  const enrolled = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enroll', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -44,7 +44,7 @@ async function fixture(label: string) {
       installationId: `install-${label}`,
       displayName: 'Share test device',
     }),
-  });
+  }));
   const session = (await enrolled.json()) as DeviceSession;
   return {
     accountId,

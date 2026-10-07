@@ -21,6 +21,7 @@ import {
   handleHostedOrganizationRequest,
   prepareHostedAccountDeletion,
 } from '../src/hosted/organizations';
+import { withSelfHostedBackend } from './helpers';
 
 const WORKOS_API = 'https://api.workos.com';
 const WORKOS_API_KEY = 'sk_test_workos_fake';
@@ -187,14 +188,14 @@ async function addAssignedMember(
 async function enrollDeviceOnAccount(accountId: string): Promise<DeviceSession> {
   const adminToken = id('admin');
   env.ENROLLMENT_ADMIN_TOKEN = adminToken;
-  const issue = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+  const issue = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enrollment-codes', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${adminToken}` },
     body: JSON.stringify({ accountId }),
-  });
+  }));
   expect(issue.status).toBe(200);
   const { code } = (await issue.json()) as EnrollmentCodeIssueResult;
-  const enrollment = await SELF.fetch('https://spike.test/v1/enroll', {
+  const enrollment = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enroll', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -202,7 +203,7 @@ async function enrollDeviceOnAccount(accountId: string): Promise<DeviceSession> 
       installationId: id('installation'),
       displayName: 'Organization privacy fixture',
     }),
-  });
+  }));
   expect(enrollment.status).toBe(200);
   return (await enrollment.json()) as DeviceSession;
 }

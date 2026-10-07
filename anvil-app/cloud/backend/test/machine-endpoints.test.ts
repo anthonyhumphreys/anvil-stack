@@ -9,7 +9,7 @@ import {
   type MachineEndpointAllocationView,
 } from '../src/hosted/machine-endpoints';
 import type { MachineEndpointCoordinator } from '../src/hosted/machine-endpoints';
-import { expectSuccess, postRpc } from './helpers';
+import { expectSuccess, postRpc, withSelfHostedBackend } from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
 const generation = () => `listener-${crypto.randomUUID()}`;
@@ -18,11 +18,13 @@ const randomId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
 async function issueCode(accountId: string): Promise<EnrollmentCodeIssueResult> {
   env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
-  const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
-    body: JSON.stringify({ accountId }),
-  });
+  const response = await withSelfHostedBackend(() =>
+    SELF.fetch('https://spike.test/v1/enrollment-codes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN_TOKEN}` },
+      body: JSON.stringify({ accountId }),
+    }),
+  );
   expect(response.status).toBe(200);
   return (await response.json()) as EnrollmentCodeIssueResult;
 }
@@ -33,25 +35,27 @@ async function enroll(accountId: string, displayName: string): Promise<DeviceSes
 }
 
 async function enrollWithCode(code: string, displayName: string): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enroll', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      proof: { method: 'enrollment-code', code },
-      installationId: randomId('install'),
-      displayName,
+  const response = await withSelfHostedBackend(() =>
+    SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'enrollment-code', code },
+        installationId: randomId('install'),
+        displayName,
+      }),
     }),
-  });
+  );
   expect(response.status).toBe(200);
   return (await response.json()) as DeviceSession;
 }
 
 async function pairEnrollment(source: DeviceSession, displayName: string): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+  const response = await withSelfHostedBackend(() => SELF.fetch('https://spike.test/v1/enrollment-codes', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${source.accessToken}` },
     body: JSON.stringify({ accountId: '' }),
-  });
+  }));
   expect(response.status).toBe(200);
   const code = (await response.json()) as EnrollmentCodeIssueResult;
   const paired = await enrollWithCode(code.code, displayName);
@@ -64,11 +68,14 @@ async function pairEnrollment(source: DeviceSession, displayName: string): Promi
 }
 
 async function publicPost(path: string, authorization: string, body: unknown): Promise<Response> {
-  return SELF.fetch(`https://spike.test${path}`, {
+  const send = () => SELF.fetch(`https://spike.test${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization },
     body: JSON.stringify(body),
   });
+  return path === '/v1/enrollment-codes' || path === '/v1/enroll'
+    ? withSelfHostedBackend(send)
+    : send();
 }
 
 function standardBase64(bytes: ArrayBuffer): string {

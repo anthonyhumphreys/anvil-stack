@@ -1,4 +1,4 @@
-import { SELF } from 'cloudflare:test';
+import { env, SELF } from 'cloudflare:test';
 
 import { canonicalChangeHashInput, type PendingChange, type SyncOperation } from '../../contract/sync';
 import { PROTOCOL } from '../../contract/version';
@@ -12,6 +12,17 @@ export function spikeBearer(accountId: string, enrollmentId: string): string {
 export function uniqueIds(label: string): { accountId: string; enrollmentId: string } {
   const token = `${label}-${crypto.randomUUID()}`;
   return { accountId: `acct-${token}`, enrollmentId: `enr-${token}` };
+}
+
+/** Runs self-host fixtures with the hosted-only D1 binding absent, as in Wrangler's self-host config. */
+export async function withSelfHostedBackend<T>(run: () => Promise<T>): Promise<T> {
+  const hostedDb = env.HOSTED_DB;
+  env.HOSTED_DB = undefined;
+  try {
+    return await run();
+  } finally {
+    env.HOSTED_DB = hostedDb;
+  }
 }
 
 export async function hashedChange(input: {

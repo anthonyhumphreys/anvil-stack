@@ -7,7 +7,7 @@ import { canonicalizeJson } from '../../contract/sync';
 import { encodeBase64Url } from '../src/device-security';
 import { sha256Hex } from '../src/hash';
 import type { SessionCoordinator } from '../src/session-coordinator';
-import { expectSuccess, postRpc } from './helpers';
+import { expectSuccess, postRpc, withSelfHostedBackend } from './helpers';
 
 const ISSUER = 'https://issuer.test';
 const CLIENT_ID = 'anvil-test-client';
@@ -294,24 +294,28 @@ async function issueEnrollmentCode(
   options: Record<string, unknown> = {},
 ): Promise<EnrollmentCodeIssueResult> {
   env.ENROLLMENT_ADMIN_TOKEN = 'identity-binding-test-admin';
-  const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
-    method: 'POST',
-    headers: {
-      Authorization: 'Bearer identity-binding-test-admin',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ accountId, ...options }),
-  });
+  const response = await withSelfHostedBackend(() =>
+    SELF.fetch('https://spike.test/v1/enrollment-codes', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer identity-binding-test-admin',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ accountId, ...options }),
+    }),
+  );
   expect(response.status).toBe(200);
   return (await response.json()) as EnrollmentCodeIssueResult;
 }
 
 async function enrollCode(code: string, installationId: string): Promise<DeviceSession> {
-  const response = await SELF.fetch('https://spike.test/v1/enroll', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ proof: { method: 'enrollment-code', code }, installationId }),
-  });
+  const response = await withSelfHostedBackend(() =>
+    SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proof: { method: 'enrollment-code', code }, installationId }),
+    }),
+  );
   expect(response.status).toBe(200);
   return (await response.json()) as DeviceSession;
 }
