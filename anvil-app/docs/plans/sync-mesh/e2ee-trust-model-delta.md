@@ -10,6 +10,10 @@ This record preserves the security findings and design resolutions from that rev
 
 ## 1. Verified findings at the reviewed head
 
+The worker bootstrap command described below is historical. Since 7 October
+2026, the image uses `anvil-daemon enroll-environment --code`, which accepts
+only a server-attested ephemeral session. Hosted human devices use WorkOS.
+
 | ID | Evidence at `49a79a2` | Resolution in this delta |
 | --- | --- | --- |
 | **A** — env bootstrap carries ADK material | `issueEnrollmentCode({enrollmentClass:'ephemeral'})` calls `mintPairingPayload`, which seals the current ADK under a pairing secret and embeds that secret in the `anvil-pair-…` string. For `anvil-managed`, the full payload is staged through `environment.bootstrap` (`environment_bootstrap` table), which the backend's internal claimer reads — i.e. the coordinator can unwrap the account data key from the `keyring-pairing` entity it already stores. BYO provisioners also mint full pairings on the claiming device. | Environments enroll with an **ephemeral-class enrollment code only**. `environment.bootstrap` carries `{ enrollmentCode }`; `anvil-pair-…` payloads are rejected there. The bootstrap document is `{ kind:'anvil.mesh-environment', schemaVersion:'0.2', enrollmentCode, … }`; `boot.mjs` runs `anvil-daemon enroll --code`. Envs get task-scoped keys via `taskkey.*` wraps, never ADKs. |

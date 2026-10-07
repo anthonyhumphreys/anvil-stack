@@ -16,7 +16,7 @@ A cloud environment is a remote machine that runs Anvil work on the
 account's behalf: an AWS microVM, a Cloudflare Sandbox, a Vercel Sandbox,
 or an Anvil-operated Cloudflare environment (`anvil-managed`). It is not a
 new execution model — an environment boots the **anvil-worker** image,
-redeems an ephemeral-class pairing payload, and then claims jobs through
+redeems an ephemeral-class enrollment code, and then claims jobs through
 the exact same `worker.connect` → `job.claim` → fenced attempt → artifact
 path a desktop or daemon worker uses. Observation and control from any
 device are free: the mesh journal, durable events, approvals, and activity
@@ -30,15 +30,15 @@ source device (desktop app)
   │  requestedTarget: { kind:'auto', requirements:{ capabilities:['provision:aws-lambda-microvm'] } }
   ▼
 provisioner device (desktop or anvil-daemon holding provider credentials)
-  │  claims the job → mints ephemeral pairing (code + sealed ADK,
-  │  bound to environmentId) → provider.create(pairing, backendUrl, ttl)
+  │  claims the job → mints a class-bound ephemeral enrollment code
+  │  → provider.create(code, backendUrl, ttl)
   │  reports lifecycle via environment.report
   ▼
 provider (AWS Lambda MicroVMs · Cloudflare Sandbox · Vercel Sandbox · Anvil-managed)
-  │  boots anvil-worker image with the pairing payload
+  │  boots anvil-worker image with the bootstrap payload
   ▼
 environment (ephemeral enrollment)
-  │  anvil-daemon enroll --pair → device.policy.publish → worker.connect
+  │  anvil-daemon enroll-environment --code → device.policy.publish → worker.connect
   │  environment.report { state:'enrolled', enrollmentId:<self> }
   │  claims environment-targeted + auto jobs; pulls credential grants
   │  per attempt; terminates on TTL or reap intent
@@ -94,10 +94,13 @@ session:
   and prevents it from claiming other environments' records;
 - has its own live-session quota separate from the device cap.
 
-The pairing payload minted for an environment is an ordinary
-`anvil-pair-…` string (enrollment code + sealed ADK delivery), produced
-by `issueEnrollmentCode({ enrollmentClass:'ephemeral', provider,
-sessionTtlSeconds, environmentId })`.
+Environment bootstrap carries a plain, one-time enrollment code with no
+account-key material. `issueEnrollmentCode({ enrollmentClass:'ephemeral',
+provider, sessionTtlSeconds, environmentId })` binds the code to the
+environment. The image redeems it through the internal
+`anvil-daemon enroll-environment` command; the runtime requires the backend's
+enrollment response to identify the new session as `ephemeral` before it
+installs the session. The command name does not grant ephemeral authority.
 
 ## The anvil-worker image contract
 
@@ -115,7 +118,7 @@ and it is still a contract, not a per-provider fork:
      "environmentId": "env_…",
      "provider": "vercel-sandbox",
      "backendUrl": "https://sync.anvil.example",
-     "pairing": "anvil-pair-…",
+     "enrollmentCode": "anvil-ec-…",
      "ttlSeconds": 1800,
      "networkPolicy": ["api.github.com"]
    }
@@ -129,9 +132,9 @@ and it is still a contract, not a per-provider fork:
    parses the payload, scrubs `ANVIL_BOOTSTRAP_JSON` from its own
    environment, writes `ANVIL_ENVIRONMENT_ID` /
    `ANVIL_ENVIRONMENT_PROVIDER` for the daemon, redeems
-   `anvil-daemon enroll --api-url $backendUrl --pair $pairing`, and runs
+   `anvil-daemon enroll-environment --api-url $backendUrl --code $enrollmentCode --worker`, and runs
    `anvil-daemon run --worker` with the companion server disabled. The
-   pairing code is consume-once so the payload is spent within seconds of
+   enrollment code is consume-once so the payload is spent within seconds of
    enrollment.
 
 3. On boot the worker publishes `device.policy { worker.allowJobs: true }`
@@ -180,8 +183,8 @@ anvil-daemon env list
 anvil-daemon env terminate <environmentId>
 ```
 
-`env request` mints the environment id, stages the source-side pairing
-payload via `environment.bootstrap` for `anvil-managed`, and creates the
+`env request` mints the environment id, stages the source-side ephemeral
+enrollment code via `environment.bootstrap` for `anvil-managed`, and creates the
 `provision-environment` job. `env terminate` records durable reap intent
 — teardown lands wherever the provider lives.
 
@@ -200,7 +203,7 @@ Each adapter's `config`/`secret` surface:
 - `cloudflare-sandbox` — config: `url` (required, the deployed
   provisioner Worker); secret: `{token?}` sent as a bearer token. Calls
   a customer-deployed provisioner Worker over `POST/GET/DELETE
-  /v1/environments[/:ref]`; the bootstrap payload rides in the create
+/v1/environments[/:ref]`; the bootstrap payload rides in the create
   request body. The reference provisioner is `cloud/provisioner/`.
 - `vercel-sandbox` — config: `image` (default image ref), `region?`,
   `teamId`, `projectId`; secret: `{token}`. Creates non-persistent
@@ -229,11 +232,11 @@ Anvil-operated Cloudflare infrastructure. The backend owns the whole
 lifecycle — no device-side provider connection is involved:
 
 1. The source device calls `requestCloudEnvironment({ provider:
-   'anvil-managed' })`, which mints an ephemeral pairing (code + sealed
-   ADK, bound to the environment id) and stages it through
-   `environment.bootstrap` — a consume-once, TTL'd channel keyed by
-   `environment_id`. The backend never holds the sealed ADK; it only
-   brokers the opaque payload.
+'anvil-managed' })`, which mints an ephemeral enrollment code bound to
+   the environment id and stages it through `environment.bootstrap` — a
+   consume-once, TTL'd channel keyed by `environment_id`. The code carries
+   authentication only; task content keys arrive through task-key wraps
+   after the environment claims work.
 2. `job.create { kind:'provision-environment', provider:'anvil-managed' }`
    is gated at the authoritative handler: the `MANAGED_PROVISIONER`
    service binding must exist (fail closed), hosted entitlement access
@@ -251,11 +254,11 @@ lifecycle — no device-side provider connection is involved:
 
 Caps land through `hosted/enforcement.ts`:
 
-| Tier | Cap |
-| --- | --- |
-| Free | hard `maxTtlSeconds` 30 min, concurrency 1, monthly minute quota |
-| Paid | `maxTtlSeconds` 8 h, concurrency 4, Stripe metering |
-| BYO provider | no Anvil cap — provider limits + `ttlSeconds` govern |
+| Tier         | Cap                                                              |
+| ------------ | ---------------------------------------------------------------- |
+| Free         | hard `maxTtlSeconds` 30 min, concurrency 1, monthly minute quota |
+| Paid         | `maxTtlSeconds` 8 h, concurrency 4, Stripe metering              |
+| BYO provider | no Anvil cap — provider limits + `ttlSeconds` govern             |
 
 `null`/`active`/`grace` entitlements get paid caps; everything else gets
 free caps. The reap sweep terminates managed environments through the

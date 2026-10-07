@@ -35,8 +35,12 @@ acceptance limits.
 - First-run onboarding offers Sync after agent setup, with a visible local-only
   choice. Hosted setup is one sign-in action; custom service controls are advanced.
   Authentication is followed by security setup and explicit device Sync consent.
-- Offer automatic own-account connection as the recommended, explicit account
-  choice; keep mutual device-code verification as the stricter alternative.
+- From 7 October 2026, WorkOS sign-in and automatic own-account connection
+  are the defaults for new hosted accounts. Keep mutual device verification
+  as an optional stricter policy; preserve existing configured policies.
+  Remove hosted human enrollment/pairing codes and the obsolete existing-install
+  account-link flow. Self-hosted non-WorkOS codes and internal ephemeral
+  environment bootstrap remain separate protocol uses.
   Initial setup creates a separately saved recovery code. A new automatic device
   waits for an online trusted device to deliver its account key, or uses recovery.
 - Automatic admission requires an immutable authenticated X25519 enrollment

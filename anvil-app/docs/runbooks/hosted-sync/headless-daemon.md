@@ -131,29 +131,37 @@ without another device being online:
 anvil-daemon security unlock --stdin
 ```
 
-Recovery is an offline fallback, not the automatic connection policy. For
-most personal accounts, choose automatic connection on the first device with
-`anvil-daemon security setup --policy auto-trust-authenticated`; it trusts
-future devices authenticated to that account and sends their encrypted key
-when an existing trusted device is online. Choose
-`anvil-daemon security setup` to keep the stricter manual-approval policy.
-Both modes configure a recovery code, which is printed once and should be
-stored securely. The CLI still defaults to manual approval when `setup` is
-invoked without a policy.
+Recovery is an offline fallback, not the automatic connection policy. On a
+WorkOS backend, `anvil-daemon security setup` configures recovery with
+automatic connection for future WorkOS-authenticated devices. They can receive
+their encrypted key when an existing trusted device is online. To choose
+manual approval during initial setup, pass `--policy require-approval`. Other
+backends keep their current default policy unless a policy is selected
+explicitly. Both modes configure a recovery code, which is printed once and
+should be stored securely. Setup only applies before recovery has been
+configured; use `security policy` to change an existing account's future-device
+policy.
 
 ## Enrollment-code bootstrap
 
-Enrollment codes are minted on the website (`/account/devices` → Connect a device) or any signed-in desktop:
+The CLI code path is for compatible self-hosted backends that advertise
+`enrollment-code` and do not require WorkOS Device Authorization. Hosted
+WorkOS backends use the `sign-in` flow above; `enroll --code` and `enroll
+--pair` reject those backends and direct operators to WorkOS sign-in.
 
 ```sh
 export ANVIL_DATA_DIR=~/.anvil-daemon   # optional; this is the default
-node dist-daemon/anvil-daemon.mjs enroll --api-url https://<backend> --code <CODE>
+node dist-daemon/anvil-daemon.mjs enroll --api-url https://<self-hosted-backend> --code <CODE>
 ```
 
 This discovers `<base>/.well-known/anvil-backend`, pins the backend, redeems the
 code, enables sync, and stores the device session. Add `--worker` to also opt
-the host in as a mesh worker. This remains the bootstrap path for compatible
-self-hosted backends that do not advertise `workos-device`.
+the host in as a mesh worker. `--pair` accepts a user-device pairing payload on
+compatible self-hosted backends. Internal ephemeral environment enrollment
+uses `anvil-daemon enroll-environment --api-url <backend> --code <code> --worker`
+from the worker image. The command is not an authorization flag: the runtime
+accepts it only when the backend confirms the redeemed code created an
+ephemeral enrollment. This is not a human device sign-in flow.
 
 ## Run
 
@@ -193,8 +201,8 @@ anvil-daemon security devices                    # numbered device list
 anvil-daemon security devices --json             # include enrollment IDs for scripts
 anvil-daemon security verify <device-number>     # show the 9-digit device-verification code
 anvil-daemon security approve <device-number> --verification-code <NNN-NNN-NNN>
-anvil-daemon security setup                      # configure recovery; prints the new code once
-anvil-daemon security setup --policy auto-trust-authenticated
+anvil-daemon security setup                      # WorkOS default: automatic connection; prints recovery once
+anvil-daemon security setup --policy require-approval
 anvil-daemon security unlock --stdin             # read the saved recovery code from stdin
 anvil-daemon security unlock --file <path>       # read an owner-only (0600) code file
 anvil-daemon security policy require-approval    # change future-device trust policy
@@ -208,15 +216,15 @@ anvil-daemon companion on|off
 anvil-daemon sign-out
 ```
 
-`security setup` defaults to `require-approval`; selecting
-`auto-trust-authenticated` is an explicit account-level choice for future
-WorkOS-authenticated devices. It also allows those devices to receive an
-encrypted key wrap from an existing trusted device when that device is online.
-The setting does not retroactively change enrollments that were already
-pending. Under automatic connection, account sign-in is sufficient to join a
-new device, so protecting the account login is essential. Under manual
-approval, compare the same device-verification code on both devices before
-approving.
+On a WorkOS backend, `security setup` defaults to automatic connection for
+future WorkOS-authenticated devices. They can receive an encrypted key wrap
+from an existing trusted device when that device is online. The setting does
+not retroactively change enrollments that were already pending. Under automatic
+connection, account sign-in is sufficient to join a new device, so protect the
+account login. To select manual approval during initial setup, use
+`security setup --policy require-approval`; compare the same device-verification
+code on both devices before approving. Existing configured accounts keep their
+current policy until an operator runs `security policy` explicitly.
 
 A recovery code is accepted only through stdin or a regular owner-only file;
 do not put it in a command argument or environment variable. Setup and
@@ -225,11 +233,11 @@ exits. `security status` reports whether this device has an encrypted account
 key and whether recovery is available locally.
 
 Device trust does not enable the mesh worker or grant companion observe,
-approve, or steer permissions. The enrollment-code command still enables sync
-and the companion server immediately. WorkOS `sign-in` stores authentication
-and returns to the shell; `run` enables sync and starts the companion server,
-while `--worker` or the saved worker setting is required to opt this host into
-mesh execution.
+approve, or steer permissions. Self-hosted enrollment-code bootstrap enables
+sync and the companion server immediately. WorkOS `sign-in` stores
+authentication and returns to the shell; `run` enables sync and starts the
+companion server, while `--worker` or the saved worker setting is required to
+opt this host into mesh execution.
 
 The destructive encrypted-account reset is deliberately not a daemon command.
 Use the desktop/account security flow with its exact confirmation and account

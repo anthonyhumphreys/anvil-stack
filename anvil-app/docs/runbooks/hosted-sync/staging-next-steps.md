@@ -107,7 +107,7 @@ Follow [staging acceptance](staging-acceptance.md) in order. The required result
       checkout; repository files, Git history and uncommitted changes are not
       uploaded by workspace Sync. Opt-out leaves local work intact.
 - [ ] Onboarding offers one hosted sign-in action and a local-only choice. Save
-      recovery, choose automatic connection or mutual device-code verification,
+      recovery, use the default automatic connection (or optionally enable mutual verification),
       and confirm the local-item preview before enabling Sync. Automatic connection
       waits clearly for an online trusted device. A device becomes a Mesh worker
       only after its separate opt-in.
@@ -147,28 +147,13 @@ checks, cleanup fix and limits. No additional synthetic allocation is needed.
 Your next step is the physical-device rehearsal above: sign-in, application
 session authentication and separate-WAN recovery remain open.
 
-For a future transport smoke, `scripts/managed-endpoint-smoke.mjs` creates one
-disposable synthetic account and host, starts the trusted Homebrew `cloudflared`,
-and verifies a marker through public HTTPS. It then stops the connector, releases
-the endpoint, checks provider cleanup, clears the advertisement and revokes the
-enrollment. The synthetic account namespace retains its revoked enrollment.
-
-Run it only after the managed staging deployment succeeds. Supply an
-owner-only JSON file with mode `0600` containing `enrollmentAdminToken`,
-`cloudflareApiToken`, `cloudflareAccountId`, `cloudflareZoneId` and `domain`.
-These values must target the staging account, zone and `anvilstack.dev` domain.
-The script rejects other targets and never prints credentials or host URLs:
-
-```sh
-cd /Users/anthonyhumphreys/Code/anvil/anvil-app
-node scripts/managed-endpoint-smoke.mjs --credentials-file /protected/path/staging-smoke.json
-```
-
-Use a temporary `ENROLLMENT_ADMIN_TOKEN` on the staging Worker. Preserve any
-existing admin secret, remove the temporary secret afterwards and verify its
-removal. Delete the local credential file. Save the sanitized JSON result with
-the candidate's acceptance record. Confirm provider cleanup before another
-allocation; a rate-limited audit is not proof of deletion.
+The former synthetic transport-smoke helper used admin-issued durable enrollment
+codes. It was removed on 7 October when hosted devices became WorkOS-only. Do
+not restore an admin enrollment bypass to repeat that test. Repeat transport
+checks through a disposable WorkOS account and the physical-device acceptance
+steps above. Release active managed endpoints and confirm provider cleanup
+before deleting the disposable account; a rate-limited audit is not proof of
+deletion.
 
 To disable staging managed allocation, save the rollout flag as `false` and
 deploy. Release active hosts first and verify provider cleanup. Production

@@ -1,6 +1,6 @@
 # Device connection and encryption access
 
-Current implementation on `feature/sync-mesh--foundations`, 6 October 2026.
+Current implementation on `feature/sync-mesh--foundations`, 7 October 2026.
 Both the backend and clients must contain this change. Local checks do not
 establish hosted or physical-device acceptance.
 
@@ -11,14 +11,28 @@ device** completes onboarding locally. **Sign in to Anvil** discovers the
 build's configured hosted service, validates and pins its identity, then opens
 browser sign-in. Pinning and authentication do not enable uploads or job
 execution. A changed service address or issuer requires visible review.
-Custom services and enrollment codes remain in advanced settings.
+Custom services remain in advanced settings. Human devices on the hosted
+service use WorkOS sign-in; the desktop, daemon, website and backend do not
+offer hosted enrollment or pairing codes. A self-hosted service without
+WorkOS can still advertise code enrollment. Temporary execution environments
+retain their internal, class-bound bootstrap codes, which never carry an
+account key. Their image uses `enroll-environment`; the runtime checks the
+server-returned ephemeral class before saving credentials. Ordinary device
+enrollment rejects ephemeral responses. This internal entry point has no
+desktop IPC exposure.
 
-The first device chooses how future devices connect:
+New hosted accounts use automatic connection by default. Initial setup shows
+that behavior directly; changing it is optional:
 
 - **Automatic connection (recommended):** an eligible device signed into the
   same account receives encrypted access from an online trusted device.
 - **Verify each device with a code:** compare the device-verification code on
   both devices and approve the matching code on both ends.
+
+Existing configured account policies remain unchanged. Device-verification
+codes prove the two devices' identities; they do not replace WorkOS sign-in.
+The obsolete existing-install account-link code flow is removed. WorkOS
+sign-in establishes hosted account membership directly.
 
 Initial security setup creates a recovery code, shown once and saved
 separately. Navigation and the Connect action remain blocked while that code

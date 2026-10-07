@@ -43,11 +43,15 @@ Record each path separately:
 
 - First-run role → agent → Sync, including the visible local-only completion path.
 - One hosted sign-in action, cancellation/retry, and blocked changed-service identity.
-- First-device automatic/code policy choice, once-only recovery-code acknowledgement,
+- First-device automatic connection by default, optional stricter verification,
+  once-only recovery-code acknowledgement,
   explicit Sync adoption, and a new workspace remaining Local by default.
 - A second same-account device connects automatically while a trusted device is online;
   it waits clearly when all trusted devices are offline, then connects when one returns.
   Before its user enables Sync, only its own device identity may be published.
+- Desktop and daemon use WorkOS sign-in. Hosted account pages and advanced desktop
+  settings offer no enrollment, pairing or existing-install link codes; the backend
+  rejects durable code issuance and redemption, including previously issued codes.
 - Code-verification mode shows the same device code on both ends. The daemon's browser
   sign-in code is clearly distinguished from that device code. Confirm the match
   on both devices. Recovery works without a peer.

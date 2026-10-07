@@ -86,12 +86,13 @@ If the backend advertises only `sync/2`, show Sync functionality and mark Mesh u
 
 ## 4. Fixed authentication methods
 
-The built client implements exactly two initial enrollment methods:
+The built client implements these fixed enrollment methods:
 
 - `oidc-pkce`: system-browser authorization code flow with PKCE S256, issuer/state/nonce/audience validation, and a provisioned public desktop client. The backend validates the resulting proof at enrollment. No client secret is embedded in the app. Freeze supported redirect forms and port rules in the contract bundle; a custom provider configures its identity provider to those forms instead of requesting client code changes.
-- `enrollment-code`: a backend-admin-issued, short-lived, single-use code entered into the app. It authorizes enrollment into a specific account and exchanges for renewable device-scoped credentials. The public endpoint cannot mint unrestricted codes. Codes are rate-limited, expire, and are never retained in sync data. This permits personal installations without a third-party OIDC dependency.
+- `workos-device`: WorkOS browser approval for the hosted daemon. The short browser sign-in code is an identity-provider challenge, not an Anvil enrollment code. Hosted human devices use WorkOS; new hosted accounts default to automatic connection.
+- `enrollment-code`: a backend-admin-issued, short-lived, single-use code entered into the app on a self-hosted, non-WorkOS service. It authorizes enrollment into a specific account and exchanges for renewable device-scoped credentials. The public endpoint cannot mint unrestricted codes. Codes are rate-limited, expire, and are never retained in sync data. Hosted durable device issuance and redemption are disabled. Internal ephemeral environment bootstrap remains class-bound and does not grant account keys.
 
-After either enrollment method, the backend issues a uniform short-lived access token plus rotating refresh credential bound to account, enrollment, and credential generation. OIDC credentials and enrollment codes are proofs used at the enrollment boundary, not generic cloud admin credentials. API authorization derives identity from the resulting device session; caller-supplied owner/device IDs never override it.
+After enrollment, the backend issues a uniform short-lived access token plus rotating refresh credential bound to account, enrollment, and credential generation. OIDC credentials and enrollment codes are proofs used at the enrollment boundary, not generic cloud admin credentials. API authorization derives identity from the resulting device session; caller-supplied owner/device IDs never override it.
 
 The normal API transport uses `Authorization: Bearer <device-access-token>`. Refresh is a fixed authenticated endpoint with rotation/reuse rules. Use a maintained auth/session implementation where possible. Access/refresh lifetime, lost-response recovery, retry grace, and reuse detection must be specified by AUTH-01 and covered by fixtures before v1 freezes. Do not improvise a new token format or cryptographic algorithm.
 
