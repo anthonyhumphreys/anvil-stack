@@ -11,7 +11,7 @@ import { SettingsPanel } from '../settings-ui';
 type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
 
 export function AgentsCategory() {
-  const { draft, reportError } = useSettingsContext();
+  const { draft } = useSettingsContext();
   const navigate = useNavigate();
 
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
@@ -75,14 +75,8 @@ export function AgentsCategory() {
   };
 
   const updateCloudFeatures = async (enabled: boolean) => {
-    try {
-      await window.anvil.settings.update({ cloudFeaturesEnabled: enabled });
-      // Instant action — merge into the draft without clearing unrelated
-      // pending edits (ST1).
-      draft.applyPersisted({ cloudFeaturesEnabled: enabled });
+    if (await draft.saveInstant({ cloudFeaturesEnabled: enabled })) {
       window.dispatchEvent(new CustomEvent('anvil:cloud-feature-changed', { detail: { enabled } }));
-    } catch (err) {
-      reportError(err instanceof Error ? err.message : 'Failed to update Anvil Cloud access');
     }
   };
 

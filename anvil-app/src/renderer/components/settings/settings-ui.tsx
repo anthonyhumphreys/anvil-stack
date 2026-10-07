@@ -206,7 +206,7 @@ export function Field({
 
 /**
  * Connection-test button. While the panel's own fields are being persisted
- * ahead of the test it announces "Saving these credentials to test…" (ST2).
+ * ahead of the test it announces "Saving connection settings…" (ST2).
  */
 export function TestButton({
   status,
@@ -235,8 +235,18 @@ export function TestButton({
         {!savingCredentials && status === 'error' && <XCircle size={12} className="text-error" />}
         {label}
       </button>
+      <span role="status" aria-live="polite" className="text-xs text-text-tertiary">
+        {!savingCredentials &&
+          (status === 'testing'
+            ? 'Testing connection…'
+            : status === 'ok'
+              ? 'Connected'
+              : status === 'error'
+                ? 'Connection failed'
+                : '')}
+      </span>
       {savingCredentials && (
-        <span className="text-xs text-text-tertiary">Saving these credentials to test…</span>
+        <span className="text-xs text-text-tertiary">Saving connection settings…</span>
       )}
     </div>
   );

@@ -33,7 +33,7 @@ export type SettingsDraftAction =
   | { type: 'hydrate'; settings: Partial<AppSettings> }
   | { type: 'change'; key: keyof AppSettings; value: AppSettings[keyof AppSettings] }
   | { type: 'save-start'; keys: ReadonlyArray<keyof AppSettings> }
-  | { type: 'save-success'; keys: ReadonlyArray<keyof AppSettings> }
+  | { type: 'save-success'; patch: Partial<AppSettings> }
   | { type: 'save-failure'; keys: ReadonlyArray<keyof AppSettings> }
   | { type: 'discard'; keys: ReadonlyArray<keyof AppSettings> }
   | { type: 'apply-external'; patch: Partial<AppSettings> }
@@ -73,7 +73,7 @@ export function settingsDraftReducer(
       const draft: Partial<AppSettings> = { ...state.draft };
       (draft as Record<string, unknown>)[action.key] = action.value;
       const dirty = new Set(state.dirty);
-      if (draft[action.key] === state.persisted[action.key]) {
+      if (settingsValuesEqual(draft[action.key], state.persisted[action.key])) {
         dirty.delete(action.key);
       } else {
         dirty.add(action.key);
@@ -89,18 +89,20 @@ export function settingsDraftReducer(
     }
 
     case 'save-success': {
-      const persisted: Partial<AppSettings> = { ...state.persisted };
-      const persistedRecord = persisted as Record<string, unknown>;
-      for (const key of action.keys) persistedRecord[key] = state.draft[key];
+      const keys = Object.keys(action.patch) as Array<keyof AppSettings>;
+      const persisted = { ...state.persisted, ...action.patch };
+      const dirty = new Set(state.dirty);
       const recentlySaved = new Set(state.recentlySaved);
-      for (const key of action.keys) recentlySaved.add(key);
-      return {
-        ...state,
-        persisted,
-        dirty: withoutKeys(state.dirty, action.keys),
-        saving: withoutKeys(state.saving, action.keys),
-        recentlySaved,
-      };
+      for (const key of keys) {
+        if (settingsValuesEqual(state.draft[key], persisted[key])) {
+          dirty.delete(key);
+          recentlySaved.add(key);
+        } else {
+          dirty.add(key);
+          recentlySaved.delete(key);
+        }
+      }
+      return { ...state, persisted, dirty, saving: withoutKeys(state.saving, keys), recentlySaved };
     }
 
     case 'save-failure':
@@ -134,7 +136,15 @@ export function settingsDraftReducer(
       for (const key of Object.keys(action.patch) as Array<keyof AppSettings>) {
         if (!state.dirty.has(key)) draftRecord[key] = action.patch[key];
       }
-      return { ...state, persisted, draft };
+      const dirty = new Set(state.dirty);
+      const recentlySaved = new Set(state.recentlySaved);
+      for (const key of Object.keys(action.patch) as Array<keyof AppSettings>) {
+        if (settingsValuesEqual(draft[key], persisted[key])) {
+          dirty.delete(key);
+          recentlySaved.add(key);
+        }
+      }
+      return { ...state, persisted, draft, dirty, recentlySaved };
     }
 
     case 'tick-expired':
@@ -153,4 +163,20 @@ export function pickSettingsKeys(
     if (key in source) outRecord[key] = source[key];
   }
   return out;
+}
+
+/** Settings are JSON values; compare nested connections by value, not object identity. */
+export function settingsValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const a = left as Record<string, unknown>;
+  const b = right as Record<string, unknown>;
+  const keys = Object.keys(a);
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every(
+      (key) => Object.prototype.hasOwnProperty.call(b, key) && settingsValuesEqual(a[key], b[key]),
+    )
+  );
 }

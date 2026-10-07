@@ -37,7 +37,10 @@ describe('settingsDraftReducer', () => {
     state = settingsDraftReducer(state, { type: 'change', key: 'adoPat', value: 'new-pat' });
     state = settingsDraftReducer(state, { type: 'change', key: 'reasoningLevel', value: 'high' });
     state = settingsDraftReducer(state, { type: 'save-start', keys: ['reasoningLevel'] });
-    state = settingsDraftReducer(state, { type: 'save-success', keys: ['reasoningLevel'] });
+    state = settingsDraftReducer(state, {
+      type: 'save-success',
+      patch: { reasoningLevel: 'high' },
+    });
 
     expect(state.dirty.has('reasoningLevel')).toBe(false);
     expect(state.dirty.has('adoPat')).toBe(true); // unrelated pending edit survives
@@ -91,10 +94,36 @@ describe('settingsDraftReducer', () => {
     expect(state.dirty.size).toBe(0);
   });
 
+  it('keeps edits made during a save dirty and records only the submitted snapshot', () => {
+    let state = hydrated({ adoPat: 'old' });
+    state = settingsDraftReducer(state, { type: 'change', key: 'adoPat', value: 'submitted' });
+    state = settingsDraftReducer(state, { type: 'save-start', keys: ['adoPat'] });
+    state = settingsDraftReducer(state, { type: 'change', key: 'adoPat', value: 'newer edit' });
+    state = settingsDraftReducer(state, { type: 'save-success', patch: { adoPat: 'submitted' } });
+    expect(state.persisted.adoPat).toBe('submitted');
+    expect(state.draft.adoPat).toBe('newer edit');
+    expect(state.dirty.has('adoPat')).toBe(true);
+    expect(state.recentlySaved.has('adoPat')).toBe(false);
+  });
+
+  it('recognises reverted nested connection edits and preserves an explicit clear', () => {
+    const connections = [{ id: 'linear', name: 'Linear', provider: 'linear' as const }];
+    let state = hydrated({ workItemConnections: connections, adoPat: 'masked' });
+    state = settingsDraftReducer(state, {
+      type: 'change',
+      key: 'workItemConnections',
+      value: [{ ...connections[0] }],
+    });
+    expect(state.dirty.size).toBe(0);
+    state = settingsDraftReducer(state, { type: 'change', key: 'adoPat', value: undefined });
+    expect(pickSettingsKeys(state.draft, ['adoPat'])).toEqual({ adoPat: undefined });
+    expect(Object.keys(pickSettingsKeys(state.draft, ['adoPat']))).toEqual(['adoPat']);
+  });
+
   it('tick-expired clears the inline saved indicator only', () => {
     let state = hydrated({});
     state = settingsDraftReducer(state, { type: 'change', key: 'theme', value: 'dark' });
-    state = settingsDraftReducer(state, { type: 'save-success', keys: ['theme'] });
+    state = settingsDraftReducer(state, { type: 'save-success', patch: { theme: 'dark' } });
     expect(state.recentlySaved.has('theme')).toBe(true);
     state = settingsDraftReducer(state, { type: 'tick-expired', keys: ['theme'] });
     expect(state.recentlySaved.size).toBe(0);

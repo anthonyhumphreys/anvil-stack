@@ -74,6 +74,22 @@ export function DeliveryCategory() {
     gitProviderHydrated,
   ]);
 
+  const wiInputs = JSON.stringify(WORK_ITEM_KEYS.map((key) => settings[key]));
+  const docsInputs = JSON.stringify(DOCS_KEYS.map((key) => settings[key]));
+  const gitInputs = JSON.stringify(GIT_KEYS.map((key) => settings[key]));
+  useEffect(() => {
+    setWiStatus('idle');
+    setLinearTeams([]);
+  }, [wiInputs]);
+  useEffect(() => {
+    setDocsStatus('idle');
+    setConfluenceStatus('idle');
+  }, [docsInputs]);
+  useEffect(() => {
+    setGitStatus('idle');
+    setGhError(null);
+  }, [gitInputs, gitProvider]);
+
   const workItemConnections = settings.workItemConnections ?? [];
   const activeWorkItemConnection = workItemConnections.find(
     (connection) => connection.id === settings.activeWorkItemConnectionId,
@@ -173,9 +189,7 @@ export function DeliveryCategory() {
   const savePanelForTest = async (keys: ReadonlyArray<keyof AppSettings>, tag: TestStatus) => {
     setSavingForTest(tag);
     try {
-      await draft.flushAutosave();
-      const dirty = keys.filter((key) => draft.dirtyKeys.has(key));
-      if (dirty.length > 0) await draft.saveKeys(dirty);
+      return await draft.saveKeys(keys);
     } finally {
       setSavingForTest('none');
     }
@@ -185,7 +199,10 @@ export function DeliveryCategory() {
     setWiStatus('testing');
     reportError(null);
     try {
-      await savePanelForTest(WORK_ITEM_KEYS, 'testing');
+      if (!(await savePanelForTest(WORK_ITEM_KEYS, 'testing'))) {
+        setWiStatus('error');
+        return;
+      }
       const result = await window.anvil.settings.testWorkItemProviderConnection();
       setWiStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
@@ -198,7 +215,10 @@ export function DeliveryCategory() {
   const testConfluence = async () => {
     setConfluenceStatus('testing');
     reportError(null);
-    await savePanelForTest(DOCS_KEYS, 'testing');
+    if (!(await savePanelForTest(DOCS_KEYS, 'testing'))) {
+      setConfluenceStatus('error');
+      return;
+    }
     try {
       const result = await window.anvil.settings.testConfluenceConnection();
       setConfluenceStatus(result.ok ? 'ok' : 'error');
@@ -213,7 +233,10 @@ export function DeliveryCategory() {
     setGitStatus('testing');
     reportError(null);
     setGhError(null);
-    await savePanelForTest(GIT_KEYS, 'testing');
+    if (!(await savePanelForTest(GIT_KEYS, 'testing'))) {
+      setGitStatus('error');
+      return;
+    }
     try {
       if (gitProvider === 'github') {
         const status = await window.anvil.repo.ghAuthStatus();
@@ -239,7 +262,10 @@ export function DeliveryCategory() {
   const testDocs = async () => {
     setDocsStatus('testing');
     reportError(null);
-    await savePanelForTest(DOCS_KEYS, 'testing');
+    if (!(await savePanelForTest(DOCS_KEYS, 'testing'))) {
+      setDocsStatus('error');
+      return;
+    }
     try {
       const result = await window.anvil.settings.testDocsProviderConnection();
       setDocsStatus(result.ok ? 'ok' : 'error');
@@ -285,7 +311,10 @@ export function DeliveryCategory() {
   const fetchLinearTeams = async () => {
     setLoadingTeams(true);
     // Persist this panel's credentials first so the lookup uses them (ST2).
-    await savePanelForTest(WORK_ITEM_KEYS, 'testing');
+    if (!(await savePanelForTest(WORK_ITEM_KEYS, 'testing'))) {
+      setLoadingTeams(false);
+      return;
+    }
     try {
       const teams = await window.anvil.settings.listLinearTeams();
       setLinearTeams(teams);

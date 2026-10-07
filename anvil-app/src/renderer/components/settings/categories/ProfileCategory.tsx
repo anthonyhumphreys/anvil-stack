@@ -103,7 +103,7 @@ function ThemeButton({
 }
 
 export function ProfileCategory() {
-  const { draft, userRole, onRoleChange, onThemeChange, onPreviewOnboarding, reportError } =
+  const { draft, userRole, onRoleChange, onThemeChange, onPreviewOnboarding } =
     useSettingsContext();
   const brand = useBrand();
 
@@ -113,24 +113,11 @@ export function ProfileCategory() {
     : brand.defaultTheme;
 
   const selectRole = async (role: UserRole) => {
-    try {
-      await window.anvil.settings.update({ userRole: role });
-      draft.applyPersisted({ userRole: role });
-      onRoleChange?.(role);
-    } catch (err) {
-      console.error('[Settings] Failed to update role:', err);
-      reportError(err instanceof Error ? err.message : 'Failed to update role');
-    }
+    if (await draft.saveInstant({ userRole: role })) onRoleChange?.(role);
   };
 
   const updateTheme = async (theme: AppTheme) => {
-    onThemeChange?.(theme);
-    try {
-      await window.anvil.settings.update({ theme });
-      draft.applyPersisted({ theme });
-    } catch (err) {
-      reportError(err instanceof Error ? err.message : 'Failed to update theme');
-    }
+    if (await draft.saveInstant({ theme })) onThemeChange?.(theme);
   };
 
   return (
@@ -148,7 +135,7 @@ export function ProfileCategory() {
               key={role.id}
               label={role.label}
               description={role.description}
-              active={userRole === role.id}
+              active={(draft.settings.userRole ?? userRole) === role.id}
               onClick={() => void selectRole(role.id)}
             />
           ))}

@@ -250,6 +250,34 @@ export function ProvidersCategory() {
       .catch(console.warn);
   }, []);
 
+  const connectionInputs = JSON.stringify(
+    [
+      ...PROVIDER_CREDENTIAL_KEYS,
+      'llmProvider',
+      'foundryEndpoint',
+      'foundryDeploymentName',
+      'foundryApiVersion',
+      'foundryApiKey',
+      'openaiModel',
+    ].map((key) => settings[key as keyof AppSettings]),
+  );
+  const localInputs = JSON.stringify(
+    [
+      'localLlmMode',
+      'localLlmProvider',
+      'ollamaEndpoint',
+      'ollamaModel',
+      'lmStudioEndpoint',
+      'lmStudioModel',
+    ].map((key) => settings[key as keyof AppSettings]),
+  );
+  useEffect(() => {
+    setLlmStatus('idle');
+  }, [connectionInputs]);
+  useEffect(() => {
+    setLocalLlmStatus('idle');
+  }, [localInputs]);
+
   const provider = settings.llmProvider ?? 'codex';
   const enabledProviders = [
     ...new Set<AgentProvider>([provider, ...(settings.enabledLlmProviders ?? [])]),
@@ -355,9 +383,17 @@ export function ProvidersCategory() {
   const saveCredentialsForTest = async () => {
     setSavingCredentialsForTest(true);
     try {
-      await draft.flushAutosave();
-      const dirty = PROVIDER_CREDENTIAL_KEYS.filter((key) => draft.dirtyKeys.has(key));
-      if (dirty.length > 0) await draft.saveKeys(dirty);
+      return await draft.saveKeys([
+        'llmProvider',
+        'enabledLlmProviders',
+        'openaiModel',
+        'reasoningLevel',
+        'foundryEndpoint',
+        'foundryDeploymentName',
+        'foundryApiVersion',
+        'foundryApiKey',
+        ...PROVIDER_CREDENTIAL_KEYS,
+      ]);
     } finally {
       setSavingCredentialsForTest(false);
     }
@@ -366,24 +402,45 @@ export function ProvidersCategory() {
   const testLlm = async () => {
     setLlmStatus('testing');
     reportError(null);
-    await saveCredentialsForTest();
-    const result = await window.anvil.settings.testFoundryConnection();
-    setLlmStatus(result.ok ? 'ok' : 'error');
-    if (result.error) reportError(result.error);
+    try {
+      if (!(await saveCredentialsForTest())) {
+        setLlmStatus('error');
+        return;
+      }
+      const result = await window.anvil.settings.testFoundryConnection();
+      setLlmStatus(result.ok ? 'ok' : 'error');
+      if (result.error) reportError(result.error);
+    } catch (error) {
+      setLlmStatus('error');
+      reportError(error instanceof Error ? error.message : 'Connection test failed.');
+    }
   };
 
   const testLocalLlm = async () => {
     setLocalLlmStatus('testing');
     reportError(null);
-    await draft.flushAutosave();
-    const result = await window.anvil.settings.testLocalLlm();
-    setLocalLlmStatus(result.ok ? 'ok' : 'error');
-    if (result.error) reportError(result.error);
-    // Re-probe capabilities so backend/license state stays current after a test.
-    window.anvil.settings
-      .getLocalLlmCapabilities()
-      .then(setLocalLlmCapabilities)
-      .catch(console.warn);
+    try {
+      if (
+        !(await draft.saveKeys([
+          'localLlmMode',
+          'localLlmProvider',
+          'ollamaEndpoint',
+          'ollamaModel',
+          'lmStudioEndpoint',
+          'lmStudioModel',
+        ]))
+      ) {
+        setLocalLlmStatus('error');
+        return;
+      }
+      const result = await window.anvil.settings.testLocalLlm();
+      setLocalLlmStatus(result.ok ? 'ok' : 'error');
+      if (result.error) reportError(result.error);
+      setLocalLlmCapabilities(await window.anvil.settings.getLocalLlmCapabilities());
+    } catch (error) {
+      setLocalLlmStatus('error');
+      reportError(error instanceof Error ? error.message : 'Local connection test failed.');
+    }
   };
 
   const connectLlmGateway = async (billingMode: LlmGatewayBillingMode) => {
@@ -1144,7 +1201,11 @@ export function ProvidersCategory() {
           desktop platform. Repository work, tools, code edits, and long-context tasks stay on the
           configured backend.
         </p>
-        <TestButton status={localLlmStatus} onClick={testLocalLlm} label="Test Local Model" />
+        <TestButton
+          status={localLlmStatus}
+          onClick={testLocalLlm}
+          label="Save and test connection"
+        />
       </SettingsPanel>
 
       <SettingsPanel

@@ -4,6 +4,7 @@ import {
   initialSettingsDraftState,
   pickSettingsKeys,
   settingsDraftReducer,
+  type SettingsDraftAction,
 } from './settings-draft';
 
 /**
@@ -109,13 +110,20 @@ export interface SettingsDraft {
    */
   applyPersisted: (patch: Partial<AppSettings>) => void;
   /** Flush pending autosave writes immediately (e.g. before a connection test). */
-  flushAutosave: () => Promise<void>;
+  flushAutosave: () => Promise<boolean>;
+  saveInstant: (patch: Partial<AppSettings>) => Promise<boolean>;
 }
 
 export function useSettingsDraft(options?: UseSettingsDraftOptions): SettingsDraft {
-  const [state, dispatch] = useReducer(settingsDraftReducer, initialSettingsDraftState);
+  const [state, reactDispatch] = useReducer(settingsDraftReducer, initialSettingsDraftState);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const dispatch = useCallback((action: SettingsDraftAction) => {
+    stateRef.current = settingsDraftReducer(stateRef.current, action);
+    reactDispatch(action);
+  }, []);
+  const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
@@ -139,48 +147,77 @@ export function useSettingsDraft(options?: UseSettingsDraftOptions): SettingsDra
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [dispatch]);
 
-  const scheduleTickExpiry = useCallback((keys: ReadonlyArray<keyof AppSettings>) => {
+  const scheduleTickExpiry = useCallback(() => {
     if (tickTimerRef.current) clearTimeout(tickTimerRef.current);
     tickTimerRef.current = setTimeout(() => {
       tickTimerRef.current = null;
-      dispatch({ type: 'tick-expired', keys });
+      dispatch({
+        type: 'tick-expired',
+        keys: [...stateRef.current.recentlySaved] as Array<keyof AppSettings>,
+      });
     }, SETTINGS_SAVED_TICK_MS);
-  }, []);
+  }, [dispatch]);
 
-  const saveKeys = useCallback(
-    async (keys: Iterable<keyof AppSettings>): Promise<boolean> => {
-      const keyList = [...new Set(keys)].filter((key) =>
-        Object.prototype.hasOwnProperty.call(stateRef.current.draft, key),
-      );
-      if (keyList.length === 0) return true;
-      dispatch({ type: 'save-start', keys: keyList });
+  const persistPatch = useCallback(
+    async (patch: Partial<AppSettings>, instant: boolean) => {
+      const keys = Object.keys(patch) as Array<keyof AppSettings>;
+      if (keys.length === 0) return true;
+      dispatch({ type: 'save-start', keys });
       try {
-        await window.anvil.settings.update(pickSettingsKeys(stateRef.current.draft, keyList));
+        await window.anvil.settings.update(patch);
       } catch (error) {
-        dispatch({ type: 'save-failure', keys: keyList });
+        dispatch({ type: 'save-failure', keys });
         optionsRef.current?.onError?.(
-          error instanceof Error ? error.message : 'Failed to save settings',
+          error instanceof Error
+            ? error.message
+            : 'Failed to save settings. Your edits are retained; try again.',
         );
         return false;
       }
-      dispatch({ type: 'save-success', keys: keyList });
-      scheduleTickExpiry(keyList);
-      optionsRef.current?.onSaved?.(keyList);
+      if (instant) {
+        dispatch({ type: 'apply-external', patch });
+        dispatch({ type: 'save-failure', keys });
+      } else dispatch({ type: 'save-success', patch });
+      scheduleTickExpiry();
+      optionsRef.current?.onSaved?.(keys);
       return true;
     },
-    [scheduleTickExpiry],
+    [dispatch, scheduleTickExpiry],
   );
 
-  const flushAutosave = useCallback(async (): Promise<void> => {
+  const saveKeys = useCallback(
+    (keys: Iterable<keyof AppSettings>): Promise<boolean> => {
+      const requested = [...new Set(keys)];
+      for (const key of requested) pendingAutosaveRef.current.delete(key);
+      const task = saveQueueRef.current.then(() => {
+        const changed = requested.filter((key) => stateRef.current.dirty.has(key));
+        return persistPatch(pickSettingsKeys(stateRef.current.draft, changed), false);
+      });
+      saveQueueRef.current = task.catch(() => undefined);
+      return task;
+    },
+    [persistPatch],
+  );
+
+  const saveInstant = useCallback(
+    (patch: Partial<AppSettings>): Promise<boolean> => {
+      const task = saveQueueRef.current.then(() => persistPatch(patch, true));
+      saveQueueRef.current = task.catch(() => undefined);
+      return task;
+    },
+    [persistPatch],
+  );
+
+  const flushAutosave = useCallback(async (): Promise<boolean> => {
     if (autosaveTimerRef.current) {
       clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
     const pending = [...pendingAutosaveRef.current];
     pendingAutosaveRef.current.clear();
-    if (pending.length > 0) await saveKeys(pending);
+    return pending.length === 0 || (await saveKeys(pending));
   }, [saveKeys]);
 
   const update = useCallback(
@@ -197,7 +234,7 @@ export function useSettingsDraft(options?: UseSettingsDraftOptions): SettingsDra
         void saveKeys(pending);
       }, SETTINGS_AUTOSAVE_DELAY_MS);
     },
-    [saveKeys],
+    [saveKeys, dispatch],
   );
 
   const updateMany = useCallback(
@@ -209,15 +246,23 @@ export function useSettingsDraft(options?: UseSettingsDraftOptions): SettingsDra
     [update],
   );
 
-  const discardKeys = useCallback((keys: Iterable<keyof AppSettings>) => {
-    const keyList = [...keys];
-    for (const key of keyList) pendingAutosaveRef.current.delete(key);
-    dispatch({ type: 'discard', keys: keyList });
-  }, []);
+  const discardKeys = useCallback(
+    (keys: Iterable<keyof AppSettings>) => {
+      const keyList = [...keys];
+      for (const key of keyList) pendingAutosaveRef.current.delete(key);
+      dispatch({ type: 'discard', keys: keyList });
+    },
+    [dispatch],
+  );
 
-  const applyPersisted = useCallback((patch: Partial<AppSettings>) => {
-    dispatch({ type: 'apply-external', patch });
-  }, []);
+  const applyPersisted = useCallback(
+    (patch: Partial<AppSettings>) => {
+      dispatch({ type: 'apply-external', patch });
+      scheduleTickExpiry();
+      optionsRef.current?.onSaved?.(Object.keys(patch) as Array<keyof AppSettings>);
+    },
+    [dispatch, scheduleTickExpiry],
+  );
 
   const saveAllDirty = useCallback(
     async (keys?: Iterable<keyof AppSettings>) => {
@@ -227,23 +272,10 @@ export function useSettingsDraft(options?: UseSettingsDraftOptions): SettingsDra
     [saveKeys],
   );
 
-  // Flush any pending autosave on unmount so a quick navigation doesn't drop
-  // the last keystroke of a simple field (ST5).
   useEffect(
     () => () => {
       if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
       if (tickTimerRef.current) clearTimeout(tickTimerRef.current);
-      const pending = [...pendingAutosaveRef.current];
-      if (pending.length > 0) {
-        pendingAutosaveRef.current.clear();
-        void window.anvil.settings
-          .update(pickSettingsKeys(stateRef.current.draft, pending))
-          .catch((error) =>
-            optionsRef.current?.onError?.(
-              error instanceof Error ? error.message : 'Failed to save settings',
-            ),
-          );
-      }
     },
     [],
   );
@@ -266,5 +298,6 @@ export function useSettingsDraft(options?: UseSettingsDraftOptions): SettingsDra
     discardKeys,
     applyPersisted,
     flushAutosave,
+    saveInstant,
   };
 }
