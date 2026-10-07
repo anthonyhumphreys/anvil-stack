@@ -49,7 +49,8 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
   useEffect(() => {
     if (showingEditor) setEditorMounted(true);
   }, [showingEditor]);
-  const reserveTitlebarSpace = !windowChromeState.isFullScreen;
+  const reserveTitlebarSpace =
+    navigator.platform.includes('Mac') && !windowChromeState.isFullScreen;
   const isToolWindow = new URLSearchParams(location.search).get('toolWindow') === '1';
 
   const toggleTerminal = useCallback(() => setTerminalOpen((prev) => !prev), []);

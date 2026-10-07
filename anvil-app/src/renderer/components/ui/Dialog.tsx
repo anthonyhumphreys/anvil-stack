@@ -93,9 +93,26 @@ export function Dialog({
 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    const overlay = panel?.parentElement;
+    const background = Array.from(document.body.children).filter(
+      (element): element is HTMLElement => element instanceof HTMLElement && element !== overlay,
+    );
+    const previousInert = background.map((element) => element.inert);
+    background.forEach((element) => {
+      element.inert = true;
+    });
+    const containFocus = (event: FocusEvent) => {
+      if (panel && !panel.closest('[inert]') && !panel.contains(event.target as Node))
+        (focusableElements(panel)[0] ?? panel).focus();
+    };
+    document.addEventListener('focusin', containFocus);
 
     return () => {
       document.body.style.overflow = previousOverflow;
+      document.removeEventListener('focusin', containFocus);
+      background.forEach((element, index) => {
+        element.inert = previousInert[index];
+      });
       if (previouslyFocused && document.contains(previouslyFocused)) {
         previouslyFocused.focus();
       }

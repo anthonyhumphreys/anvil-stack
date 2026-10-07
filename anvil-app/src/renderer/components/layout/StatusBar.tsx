@@ -214,7 +214,7 @@ export function StatusBar({ connectionStatus, onToggleTerminal, terminalOpen }: 
         </button>
       </div>
       <div className="relative flex items-center gap-3">
-        {configuredServices.length > 0 && (
+        {configuredServices.some((service) => services[service.id] === false) && (
           <div className="relative">
             <button
               type="button"
@@ -230,7 +230,7 @@ export function StatusBar({ connectionStatus, onToggleTerminal, terminalOpen }: 
                 }`}
                 aria-hidden="true"
               />
-              {connectedCount}/{configuredServices.length} services connected
+              Connection needs attention
             </button>
             {servicesOpen && (
               <StatusPopover

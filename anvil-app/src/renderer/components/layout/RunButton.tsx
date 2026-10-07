@@ -76,8 +76,20 @@ export function RunButton({ compact = false }: RunButtonProps) {
         setShowFallback(false);
       }
     };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDropdownOpen(false);
+      setShowFallback(false);
+      buttonRef.current?.querySelector<HTMLButtonElement>('[data-run-trigger]')?.focus();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
   }, [dropdownOpen, showFallback]);
 
   const runningEntry = Object.values(statuses).find((s) => s?.running);
@@ -181,6 +193,7 @@ export function RunButton({ compact = false }: RunButtonProps) {
 
         {/* Main button */}
         <button
+          data-run-trigger
           onClick={handleMainClick}
           title={runningEntry ? `Stop ${runningEntry.command}` : buttonLabel}
           className={`flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors ${

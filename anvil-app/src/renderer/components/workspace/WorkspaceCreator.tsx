@@ -3,7 +3,7 @@ import { CheckCircle2, Loader2, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { RemoteRepo, WorkItemConnection } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
-import { Button, SegmentedControl } from '../ui';
+import { Button, Dialog, SegmentedControl } from '../ui';
 import {
   LocalRepoPicker,
   RemoteRepoPicker,
@@ -250,272 +250,264 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
   const hasFailures = statusEntries.some(([, s]) => s.startsWith('Error'));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-xl rounded-xl border border-border bg-bg-secondary p-6 shadow-2xl">
-        <h2 className="text-lg font-semibold text-text-primary">
-          {!onCancel ? 'Create your first workspace' : 'Create workspace'}
-        </h2>
-
-        {phase === 'done' ? (
-          <div className="mt-4 space-y-3">
-            <div className="flex items-center gap-2 text-sm text-text-primary">
-              <CheckCircle2 size={16} className="text-success" aria-hidden="true" />
-              Workspace “{createdWorkspace?.name}” is ready.
-            </div>
-            {statusEntries.length > 0 && (
-              <ul className="space-y-1 rounded-lg border border-border bg-bg-primary p-3 text-sm">
-                {statusEntries.map(([key, status]) => (
-                  <li key={key} className="flex items-center gap-2">
-                    {status.startsWith('Error') ? (
-                      <XCircle size={13} className="shrink-0 text-error" aria-hidden="true" />
-                    ) : status === 'Done — indexing in the background' ? (
-                      <CheckCircle2
-                        size={13}
-                        className="shrink-0 text-success"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <Loader2
-                        size={13}
-                        className="shrink-0 animate-spin text-info"
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span className="min-w-0 flex-1 truncate text-text-secondary">
-                      {remoteReposByUrl.get(key)?.name ?? baseName(key)}
-                    </span>
-                    <span
-                      className={status.startsWith('Error') ? 'text-error' : 'text-text-tertiary'}
-                    >
-                      {status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <p className="text-sm text-text-secondary">
-              Anvil indexes repositories in the background — you can chat while it works, and
-              repo-powered features unlock as the structural map finishes.
-            </p>
-            {error && <p className="text-sm text-error">{error}</p>}
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="primary" onClick={closeDone}>
-                Open workspace
-              </Button>
-            </div>
+    <Dialog
+      open
+      size="lg"
+      title={!onCancel ? 'Create your first workspace' : 'Create workspace'}
+      onClose={() => onCancel?.()}
+      closeOnEscape={Boolean(onCancel) && phase !== 'working'}
+      closeOnOverlayClick={Boolean(onCancel) && phase !== 'working'}
+    >
+      {phase === 'done' ? (
+        <div className="mt-4 space-y-3">
+          <div className="flex items-center gap-2 text-sm text-text-primary">
+            <CheckCircle2 size={16} className="text-success" aria-hidden="true" />
+            Workspace “{createdWorkspace?.name}” is ready.
           </div>
-        ) : (
-          <>
-            {/* Name field — auto-fills from the first selected repo */}
-            <div className="mt-4">
-              <label className="mb-1 block text-sm font-medium text-text-secondary">
-                Workspace name
-              </label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setNameDirty(true);
-                }}
-                placeholder="e.g. My Project"
-                autoFocus
-                className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-              />
-            </div>
-
-            <div className="mt-4 space-y-2">
-              <SegmentedControl<'local' | 'sync'>
-                label="Workspace Sync"
-                value={syncSelected ? 'sync' : 'local'}
-                onChange={(value) => setSyncSelected(value === 'sync')}
-                options={[
-                  { value: 'local', label: 'Local only' },
-                  { value: 'sync', label: 'Sync across devices' },
-                ]}
-              />
-              <p className="text-xs text-text-tertiary">
-                Local keeps this workspace here; Sync shares its definition and selected settings
-                across devices, while repository files and provider credentials stay on this
-                machine.
-              </p>
-            </div>
-
-            {workItemConnections.length > 1 && (
-              <div className="mt-4">
-                <label className="mb-1 block text-sm font-medium text-text-secondary">
-                  Work item connection
-                </label>
-                <select
-                  value={workItemConnectionId}
-                  onChange={(event) => setWorkItemConnectionId(event.target.value)}
-                  className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
-                >
-                  <option value="">Choose a connection…</option>
-                  {workItemConnections.map((connection) => (
-                    <option key={connection.id} value={connection.id}>
-                      {connection.name} · {connection.provider.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-xs text-text-tertiary">
-                  Work items and agent planning in this workspace will use this connection.
-                </p>
-              </div>
-            )}
-
-            {/* Primary path: add repositories now (Local first, Clone second) */}
-            {mode === 'repos' && (
-              <>
-                <div className="mt-5">
-                  <SegmentedControl<CreatorTab>
-                    label="Repository source"
-                    value={activeTab}
-                    onChange={setActiveTab}
-                    options={[
-                      { value: 'local', label: 'Local folder' },
-                      { value: 'clone', label: 'Clone from provider' },
-                    ]}
-                  />
-                </div>
-                <div className="mt-4">
-                  {activeTab === 'local' ? (
-                    <LocalRepoPicker onSelectionChange={setSelectedLocalPaths} />
+          {statusEntries.length > 0 && (
+            <ul className="space-y-1 rounded-lg border border-border bg-bg-primary p-3 text-sm">
+              {statusEntries.map(([key, status]) => (
+                <li key={key} className="flex items-center gap-2">
+                  {status.startsWith('Error') ? (
+                    <XCircle size={13} className="shrink-0 text-error" aria-hidden="true" />
+                  ) : status === 'Done — indexing in the background' ? (
+                    <CheckCircle2 size={13} className="shrink-0 text-success" aria-hidden="true" />
                   ) : (
-                    <RemoteRepoPicker
-                      selected={selectedRemoteRepos}
-                      onSelectionChange={setSelectedRemoteRepos}
-                      cloneStatuses={phase === 'working' ? repoStatuses : undefined}
-                      onReposLoaded={(repos) =>
-                        setRemoteReposByUrl(new Map(repos.map((r) => [r.cloneUrl, r])))
-                      }
+                    <Loader2
+                      size={13}
+                      className="shrink-0 animate-spin text-info"
+                      aria-hidden="true"
                     />
                   )}
-                </div>
-                <p className="mt-3 text-xs text-text-tertiary">
-                  Anvil indexes repositories in the background once they’re added — no manual step
-                  needed.
-                </p>
-              </>
-            )}
+                  <span className="min-w-0 flex-1 truncate text-text-secondary">
+                    {remoteReposByUrl.get(key)?.name ?? baseName(key)}
+                  </span>
+                  <span
+                    className={status.startsWith('Error') ? 'text-error' : 'text-text-tertiary'}
+                  >
+                    {status}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="text-sm text-text-secondary">
+            Anvil indexes repositories in the background — you can chat while it works, and
+            repo-powered features unlock as the structural map finishes.
+          </p>
+          {error && <p className="text-sm text-error">{error}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="primary" onClick={closeDone}>
+              Open workspace
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Name field — auto-fills from the first selected repo */}
+          <div className="mt-4">
+            <label className="mb-1 block text-sm font-medium text-text-secondary">
+              Workspace name
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameDirty(true);
+              }}
+              placeholder="e.g. My Project"
+              data-autofocus
+              className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            />
+          </div>
 
-            {mode === 'empty' && (
-              <div className="mt-4 rounded-lg border border-border bg-bg-primary p-4 text-sm text-text-secondary">
-                Create the workspace now and add repositories later. Repo-powered features stay
-                visible and unlock as soon as a repository finishes its structural index.
-              </div>
-            )}
+          <div className="mt-4 space-y-2">
+            <SegmentedControl<'local' | 'sync'>
+              label="Workspace Sync"
+              value={syncSelected ? 'sync' : 'local'}
+              onChange={(value) => setSyncSelected(value === 'sync')}
+              options={[
+                { value: 'local', label: 'Local only' },
+                { value: 'sync', label: 'Sync across devices' },
+              ]}
+            />
+            <p className="text-xs text-text-tertiary">
+              Local keeps this workspace here; Sync shares its definition and selected settings
+              across devices, while repository files and provider credentials stay on this machine.
+            </p>
+          </div>
 
-            {mode === 'scaffold' && (
-              <div className="mt-4">
-                <ScaffoldPanel
-                  parentPath={scaffoldParentPath}
-                  folderName={scaffoldFolderName}
-                  onParentPathChange={setScaffoldParentPath}
-                  onFolderNameChange={(value) => {
-                    setScaffoldFolderName(value);
-                    setScaffoldFolderNameDirty(true);
-                  }}
+          {workItemConnections.length > 1 && (
+            <div className="mt-4">
+              <label className="mb-1 block text-sm font-medium text-text-secondary">
+                Work item connection
+              </label>
+              <select
+                value={workItemConnectionId}
+                onChange={(event) => setWorkItemConnectionId(event.target.value)}
+                className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
+              >
+                <option value="">Choose a connection…</option>
+                {workItemConnections.map((connection) => (
+                  <option key={connection.id} value={connection.id}>
+                    {connection.name} · {connection.provider.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-text-tertiary">
+                Work items and agent planning in this workspace will use this connection.
+              </p>
+            </div>
+          )}
+
+          {/* Primary path: add repositories now (Local first, Clone second) */}
+          {mode === 'repos' && (
+            <>
+              <div className="mt-5">
+                <SegmentedControl<CreatorTab>
+                  label="Repository source"
+                  value={activeTab}
+                  onChange={setActiveTab}
+                  options={[
+                    { value: 'local', label: 'Local folder' },
+                    { value: 'clone', label: 'Clone from provider' },
+                  ]}
                 />
               </div>
-            )}
+              <div className="mt-4">
+                {activeTab === 'local' ? (
+                  <LocalRepoPicker onSelectionChange={setSelectedLocalPaths} />
+                ) : (
+                  <RemoteRepoPicker
+                    selected={selectedRemoteRepos}
+                    onSelectionChange={setSelectedRemoteRepos}
+                    cloneStatuses={phase === 'working' ? repoStatuses : undefined}
+                    onReposLoaded={(repos) =>
+                      setRemoteReposByUrl(new Map(repos.map((r) => [r.cloneUrl, r])))
+                    }
+                  />
+                )}
+              </div>
+              <p className="mt-3 text-xs text-text-tertiary">
+                Anvil indexes repositories in the background once they’re added — no manual step
+                needed.
+              </p>
+            </>
+          )}
 
-            {/* Secondary options — Empty / Scaffold stay out of the way */}
-            <div className="mt-4 flex items-center gap-3 text-xs text-text-tertiary">
-              {mode !== 'repos' && (
-                <button
-                  type="button"
-                  onClick={() => setMode('repos')}
-                  className="text-accent hover:underline"
-                >
-                  Add repositories instead
-                </button>
-              )}
-              {mode !== 'empty' && (
-                <button
-                  type="button"
-                  onClick={() => setMode('empty')}
-                  className="hover:text-text-primary"
-                >
-                  Start empty{isItsmRole ? ' (recommended)' : ''}
-                </button>
-              )}
-              {mode !== 'scaffold' && (
-                <button
-                  type="button"
-                  onClick={() => setMode('scaffold')}
-                  className="hover:text-text-primary"
-                >
-                  Scaffold a new project with the coder
-                </button>
-              )}
+          {mode === 'empty' && (
+            <div className="mt-4 rounded-lg border border-border bg-bg-primary p-4 text-sm text-text-secondary">
+              Create the workspace now and add repositories later. Repo-powered features stay
+              visible and unlock as soon as a repository finishes its structural index.
             </div>
+          )}
 
-            {/* Per-repo status while working */}
-            {statusEntries.length > 0 && (
-              <ul className="mt-3 space-y-1 rounded-lg border border-border bg-bg-primary p-3 text-sm">
-                {statusEntries.map(([key, status]) => (
-                  <li key={key} className="flex items-center gap-2">
-                    {status.startsWith('Error') ? (
-                      <XCircle size={13} className="shrink-0 text-error" aria-hidden="true" />
-                    ) : status === 'Done — indexing in the background' ? (
-                      <CheckCircle2
-                        size={13}
-                        className="shrink-0 text-success"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <Loader2
-                        size={13}
-                        className="shrink-0 animate-spin text-info"
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span className="min-w-0 flex-1 truncate text-text-secondary">
-                      {remoteReposByUrl.get(key)?.name ?? baseName(key)}
-                    </span>
-                    <span
-                      className={status.startsWith('Error') ? 'text-error' : 'text-text-tertiary'}
-                    >
-                      {status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {/* VS Code checkbox */}
-            <label className="mt-3 flex cursor-pointer items-center gap-2">
-              <input
-                type="checkbox"
-                checked={exportVSCode}
-                onChange={(e) => setExportVSCode(e.target.checked)}
-                className="accent-accent"
-                disabled={mode === 'scaffold'}
+          {mode === 'scaffold' && (
+            <div className="mt-4">
+              <ScaffoldPanel
+                parentPath={scaffoldParentPath}
+                folderName={scaffoldFolderName}
+                onParentPathChange={setScaffoldParentPath}
+                onFolderNameChange={(value) => {
+                  setScaffoldFolderName(value);
+                  setScaffoldFolderNameDirty(true);
+                }}
               />
-              <span className="text-sm text-text-secondary">
-                {mode === 'scaffold'
-                  ? 'VS Code workspace export unlocks after scaffolded repos are connected'
-                  : 'Also create VS Code workspace file'}
-              </span>
-            </label>
-
-            {error && <p className="mt-3 text-sm text-error">{error}</p>}
-
-            <div className="mt-6 flex justify-end gap-2">
-              {onCancel && (
-                <Button variant="secondary" onClick={onCancel} disabled={phase === 'working'}>
-                  Cancel
-                </Button>
-              )}
-              <Button variant="primary" onClick={() => void handleCreate()} disabled={!canCreate}>
-                {phase === 'working' ? 'Setting up…' : hasFailures ? 'Finish' : 'Create workspace'}
-              </Button>
             </div>
-          </>
-        )}
-      </div>
-    </div>
+          )}
+
+          {/* Secondary options — Empty / Scaffold stay out of the way */}
+          <div className="mt-4 flex items-center gap-3 text-xs text-text-tertiary">
+            {mode !== 'repos' && (
+              <button
+                type="button"
+                onClick={() => setMode('repos')}
+                className="text-accent hover:underline"
+              >
+                Add repositories instead
+              </button>
+            )}
+            {mode !== 'empty' && (
+              <button
+                type="button"
+                onClick={() => setMode('empty')}
+                className="hover:text-text-primary"
+              >
+                Start empty{isItsmRole ? ' (recommended)' : ''}
+              </button>
+            )}
+            {mode !== 'scaffold' && (
+              <button
+                type="button"
+                onClick={() => setMode('scaffold')}
+                className="hover:text-text-primary"
+              >
+                Scaffold a new project with the coder
+              </button>
+            )}
+          </div>
+
+          {/* Per-repo status while working */}
+          {statusEntries.length > 0 && (
+            <ul className="mt-3 space-y-1 rounded-lg border border-border bg-bg-primary p-3 text-sm">
+              {statusEntries.map(([key, status]) => (
+                <li key={key} className="flex items-center gap-2">
+                  {status.startsWith('Error') ? (
+                    <XCircle size={13} className="shrink-0 text-error" aria-hidden="true" />
+                  ) : status === 'Done — indexing in the background' ? (
+                    <CheckCircle2 size={13} className="shrink-0 text-success" aria-hidden="true" />
+                  ) : (
+                    <Loader2
+                      size={13}
+                      className="shrink-0 animate-spin text-info"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-text-secondary">
+                    {remoteReposByUrl.get(key)?.name ?? baseName(key)}
+                  </span>
+                  <span
+                    className={status.startsWith('Error') ? 'text-error' : 'text-text-tertiary'}
+                  >
+                    {status}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* VS Code checkbox */}
+          <label className="mt-3 flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={exportVSCode}
+              onChange={(e) => setExportVSCode(e.target.checked)}
+              className="accent-accent"
+              disabled={mode === 'scaffold'}
+            />
+            <span className="text-sm text-text-secondary">
+              {mode === 'scaffold'
+                ? 'VS Code workspace export unlocks after scaffolded repos are connected'
+                : 'Also create VS Code workspace file'}
+            </span>
+          </label>
+
+          {error && <p className="mt-3 text-sm text-error">{error}</p>}
+
+          <div className="mt-6 flex justify-end gap-2">
+            {onCancel && (
+              <Button variant="secondary" onClick={onCancel} disabled={phase === 'working'}>
+                Cancel
+              </Button>
+            )}
+            <Button variant="primary" onClick={() => void handleCreate()} disabled={!canCreate}>
+              {phase === 'working' ? 'Setting up…' : hasFailures ? 'Finish' : 'Create workspace'}
+            </Button>
+          </div>
+        </>
+      )}
+    </Dialog>
   );
 }
 

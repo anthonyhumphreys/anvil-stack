@@ -528,7 +528,6 @@ export function shouldSelectThreadFromKey(event: Pick<KeyboardEvent, 'key' | 'ta
 }
 
 export function getThreadActionVisibilityClass(): string {
-  // Reveal actions only while the row is hovered or keyboard-focused so titles
-  // keep their full width during scanning and never sit underneath the controls.
-  return 'pointer-events-none flex min-w-0 max-w-0 shrink-0 items-center gap-0.5 self-start overflow-hidden whitespace-nowrap p-0 opacity-0 transition-all group-hover:pointer-events-auto group-hover:max-w-[6.5rem] group-hover:rounded-lg group-hover:border group-hover:border-border/60 group-hover:bg-bg-secondary group-hover:p-0.5 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:max-w-[6.5rem] group-focus-within:rounded-lg group-focus-within:border group-focus-within:border-border/60 group-focus-within:bg-bg-secondary group-focus-within:p-0.5 group-focus-within:opacity-100';
+  // Keep the action width constant so hovering never rewraps thread content.
+  return 'pointer-events-none flex w-[6.5rem] shrink-0 items-center gap-0.5 self-start rounded-lg border border-border/60 bg-bg-secondary p-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100';
 }

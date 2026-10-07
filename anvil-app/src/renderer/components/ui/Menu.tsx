@@ -2,12 +2,14 @@ import {
   createContext,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
   type Ref,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { cx } from './cx';
 
 export interface MenuTriggerProps {
@@ -81,6 +83,44 @@ export function Menu({
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0, maxHeight: 0 });
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const positionPanel = () => {
+      const trigger = triggerRef.current;
+      const panel = panelRef.current;
+      if (!trigger || !panel) return;
+      const rect = trigger.getBoundingClientRect();
+      const margin = 8;
+      const below = window.innerHeight - rect.bottom - margin - 4;
+      const above = rect.top - margin - 4;
+      const openAbove =
+        side === 'top'
+          ? above >= panel.offsetHeight || above > below
+          : below < panel.offsetHeight && above > below;
+      const maxHeight = Math.max(0, openAbove ? above : below);
+      const height = Math.min(panel.scrollHeight, maxHeight);
+      setPosition({
+        left: Math.max(
+          margin,
+          Math.min(
+            align === 'end' ? rect.right - panel.offsetWidth : rect.left,
+            window.innerWidth - panel.offsetWidth - margin,
+          ),
+        ),
+        top: openAbove ? rect.top - height - 4 : rect.bottom + 4,
+        maxHeight,
+      });
+    };
+    positionPanel();
+    window.addEventListener('resize', positionPanel);
+    document.addEventListener('scroll', positionPanel, true);
+    return () => {
+      window.removeEventListener('resize', positionPanel);
+      document.removeEventListener('scroll', positionPanel, true);
+    };
+  }, [open, side, align]);
 
   const setOpenState = (next: boolean) => {
     setOpen(next);
@@ -99,7 +139,11 @@ export function Menu({
     if (panel) menuItems(panel)[0]?.focus();
 
     const closeOnOutsidePointer = (event: globalThis.MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpenState(false);
+      if (
+        !containerRef.current?.contains(event.target as Node) &&
+        !panelRef.current?.contains(event.target as Node)
+      )
+        setOpenState(false);
     };
     document.addEventListener('mousedown', closeOnOutsidePointer);
     return () => document.removeEventListener('mousedown', closeOnOutsidePointer);
@@ -152,22 +196,23 @@ export function Menu({
           'aria-haspopup': 'menu',
           'aria-expanded': open,
         })}
-        {open && (
-          <div
-            ref={panelRef}
-            role="menu"
-            aria-label={label}
-            className={cx(
-              'absolute z-50 w-56 overflow-hidden rounded-xl border border-border bg-bg-elevated p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.32)]',
-              side === 'top' ? 'bottom-[calc(100%+4px)]' : 'top-[calc(100%+4px)]',
-              align === 'end' ? 'right-0' : 'left-0',
-              menuClassName,
-            )}
-            onKeyDown={handlePanelKeyDown}
-          >
-            {children}
-          </div>
-        )}
+        {open &&
+          createPortal(
+            <div
+              ref={panelRef}
+              role="menu"
+              aria-label={label}
+              className={cx(
+                'fixed z-50 w-56 max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl border border-border bg-bg-elevated p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.32)]',
+                menuClassName,
+              )}
+              style={position}
+              onKeyDown={handlePanelKeyDown}
+            >
+              {children}
+            </div>,
+            document.body,
+          )}
       </div>
     </MenuContext.Provider>
   );
