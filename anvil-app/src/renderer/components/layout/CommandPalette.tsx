@@ -125,7 +125,7 @@ export function CommandPalette({
   const navigate = useNavigate();
   const { overrides: shortcuts } = useShortcuts();
   const { activeWorkspace, workspaces, switchWorkspace, removeRepos } = useWorkspace();
-  const { startNewSession, threads } = useChatContext();
+  const { threads } = useChatContext();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [chatLayout, setChatLayout] = useState<ChatLayout>('classic');
@@ -534,13 +534,16 @@ export function CommandPalette({
         : []),
       {
         ...buildNewChatThreadCommandMetadata(),
+        shortcut: formatShortcut(
+          shortcutFor('newThread', shortcuts),
+          navigator.platform.includes('Mac'),
+        ),
         section: 'Actions',
         icon: <MessageSquare size={16} />,
         feature: 'chat',
         action: () => {
-          navigate('/chat');
+          navigate('/chat', { state: { newThreadRequest: crypto.randomUUID() } });
           onClose();
-          void startNewSession();
         },
       },
       {
@@ -718,7 +721,6 @@ export function CommandPalette({
       shortcuts,
       onToggleTerminal,
       promptChat,
-      startNewSession,
       chatLayout,
       toggleChatLayout,
     ],

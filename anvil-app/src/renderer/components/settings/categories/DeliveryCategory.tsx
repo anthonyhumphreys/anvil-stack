@@ -203,14 +203,16 @@ export function DeliveryCategory() {
     reportError(null);
     try {
       if (!(await savePanelForTest(WORK_ITEM_KEYS, 'testing'))) {
-        setWiStatus('error');
+        if (inputs === testInputsRef.current.wiInputs) setWiStatus('error');
         return;
       }
+      if (inputs !== testInputsRef.current.wiInputs) return;
       const result = await window.anvil.settings.testWorkItemProviderConnection();
       if (inputs !== testInputsRef.current.wiInputs) return;
       setWiStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
     } catch (err) {
+      if (inputs !== testInputsRef.current.wiInputs) return;
       setWiStatus('error');
       reportError(err instanceof Error ? err.message : 'Connection test failed');
     }
@@ -221,15 +223,17 @@ export function DeliveryCategory() {
     setConfluenceStatus('testing');
     reportError(null);
     if (!(await savePanelForTest(DOCS_KEYS, 'testing'))) {
-      setConfluenceStatus('error');
+      if (inputs === testInputsRef.current.docsInputs) setConfluenceStatus('error');
       return;
     }
+    if (inputs !== testInputsRef.current.docsInputs) return;
     try {
       const result = await window.anvil.settings.testConfluenceConnection();
       if (inputs !== testInputsRef.current.docsInputs) return;
       setConfluenceStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
     } catch (err) {
+      if (inputs !== testInputsRef.current.docsInputs) return;
       setConfluenceStatus('error');
       reportError(err instanceof Error ? err.message : 'Connection test failed');
     }
@@ -241,9 +245,10 @@ export function DeliveryCategory() {
     reportError(null);
     setGhError(null);
     if (!(await savePanelForTest(GIT_KEYS, 'testing'))) {
-      setGitStatus('error');
+      if (inputs === testInputsRef.current.gitInputs) setGitStatus('error');
       return;
     }
+    if (inputs !== testInputsRef.current.gitInputs) return;
     try {
       if (gitProvider === 'github') {
         const status = await window.anvil.repo.ghAuthStatus();
@@ -263,6 +268,7 @@ export function DeliveryCategory() {
         if (result.error) reportError(result.error);
       }
     } catch (err) {
+      if (inputs !== testInputsRef.current.gitInputs) return;
       setGitStatus('error');
       reportError(err instanceof Error ? err.message : 'Connection test failed');
     }
@@ -273,15 +279,17 @@ export function DeliveryCategory() {
     setDocsStatus('testing');
     reportError(null);
     if (!(await savePanelForTest(DOCS_KEYS, 'testing'))) {
-      setDocsStatus('error');
+      if (inputs === testInputsRef.current.docsInputs) setDocsStatus('error');
       return;
     }
+    if (inputs !== testInputsRef.current.docsInputs) return;
     try {
       const result = await window.anvil.settings.testDocsProviderConnection();
       if (inputs !== testInputsRef.current.docsInputs) return;
       setDocsStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
     } catch (err) {
+      if (inputs !== testInputsRef.current.docsInputs) return;
       setDocsStatus('error');
       reportError(err instanceof Error ? err.message : 'Connection test failed');
     }

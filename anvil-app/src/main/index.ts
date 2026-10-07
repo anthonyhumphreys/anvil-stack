@@ -3,7 +3,7 @@ import { registerChangeReviewHandlers } from './ipc/change-review.ipc.js';
 import { fixPath } from './utils/fix-path.js';
 fixPath();
 
-import { app, BrowserWindow, ipcMain, powerMonitor, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session } from 'electron';
 import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from './db/database.js';
@@ -239,6 +239,21 @@ function createWindow(
 
   registerExternalLinkHandling(createdWindow.webContents);
 
+  createdWindow.webContents.on('will-prevent-unload', (event) => {
+    const response = dialog.showMessageBoxSync(createdWindow, {
+      type: 'warning',
+      title: 'Unsaved changes',
+      message: 'Leave without saving your changes?',
+      detail: 'Your pending settings edits will be discarded.',
+      buttons: ['Keep editing', 'Discard and leave'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    // Electron uses preventDefault here to allow the blocked unload to proceed.
+    if (response === 1) event.preventDefault();
+  });
+
   // BILL-05: returning from the hosted account page re-checks hosted access
   // via session.describe (throttled in the service). Nothing about billing
   // state is ever read from a URL — the backend remains the source of truth.
@@ -300,7 +315,11 @@ function createWindow(
     const loadOptions =
       options.workspaceId || options.route
         ? {
-            hash: getWindowHash(options.route ?? '/workspace', options.workspaceId, options.toolWindow),
+            hash: getWindowHash(
+              options.route ?? '/workspace',
+              options.workspaceId,
+              options.toolWindow,
+            ),
           }
         : undefined;
     createdWindow.loadFile(path.join(__dirname, '../renderer/index.html'), loadOptions);
@@ -474,7 +493,8 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('before-quit', () => {
+// Only tear down services after every window has accepted quitting.
+app.on('will-quit', () => {
   shutdownAutomationRuntime();
   cleanupChatSessions();
   cleanupBaSessions();

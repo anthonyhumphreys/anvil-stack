@@ -425,14 +425,16 @@ export function ProvidersCategory() {
     reportError(null);
     try {
       if (!(await saveCredentialsForTest())) {
-        setLlmStatus('error');
+        if (inputs === testInputsRef.current.connectionInputs) setLlmStatus('error');
         return;
       }
+      if (inputs !== testInputsRef.current.connectionInputs) return;
       const result = await window.anvil.settings.testFoundryConnection();
       if (inputs !== testInputsRef.current.connectionInputs) return;
       setLlmStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
     } catch (error) {
+      if (inputs !== testInputsRef.current.connectionInputs) return;
       setLlmStatus('error');
       reportError(error instanceof Error ? error.message : 'Connection test failed.');
     }
@@ -453,15 +455,17 @@ export function ProvidersCategory() {
           'lmStudioModel',
         ]))
       ) {
-        setLocalLlmStatus('error');
+        if (inputs === testInputsRef.current.localInputs) setLocalLlmStatus('error');
         return;
       }
+      if (inputs !== testInputsRef.current.localInputs) return;
       const result = await window.anvil.settings.testLocalLlm();
       if (inputs !== testInputsRef.current.localInputs) return;
       setLocalLlmStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
       setLocalLlmCapabilities(await window.anvil.settings.getLocalLlmCapabilities());
     } catch (error) {
+      if (inputs !== testInputsRef.current.localInputs) return;
       setLocalLlmStatus('error');
       reportError(error instanceof Error ? error.message : 'Local connection test failed.');
     }

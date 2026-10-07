@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import type { ReactNode } from 'react';
 import { CheckCircle, Loader2, XCircle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -200,13 +201,17 @@ export function Field({
   /** When set, renders a per-field saved/dirty tick (ST3). */
   saveKey?: keyof AppSettings;
 }) {
+  const inputId = useId();
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between gap-2">
-        <label className="block text-sm text-text-secondary">{label}</label>
+        <label htmlFor={inputId} className="block text-sm text-text-secondary">
+          {label}
+        </label>
         {saveKey && <PanelSaveStatus keys={[saveKey]} autosave />}
       </div>
       <input
+        id={inputId}
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -224,7 +229,7 @@ export function Field({
 export function TestButton({
   status,
   onClick,
-  label = 'Test Connection',
+  label = 'Save and test connection',
   savingCredentials = false,
 }: {
   status: TestStatus;
