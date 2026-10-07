@@ -11,11 +11,12 @@ import { SettingsPanel } from '../settings-ui';
 type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
 
 export function AgentsCategory() {
-  const { draft } = useSettingsContext();
+  const { draft, registerPendingEdit } = useSettingsContext();
   const navigate = useNavigate();
 
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
+  const [savedAgentsContent, setSavedAgentsContent] = useState('');
   const [codexAgentsContent, setCodexAgentsContent] = useState('');
   const [codexAgentsPath, setCodexAgentsPath] = useState('~/.codex/AGENTS.md');
   const [codexAgentsExists, setCodexAgentsExists] = useState(false);
@@ -39,6 +40,7 @@ export function AgentsCategory() {
     try {
       const file = await window.anvil.settings.getCodexAgentsFile();
       setCodexAgentsContent(file.content);
+      setSavedAgentsContent(file.content);
       setCodexAgentsPath(file.path);
       setCodexAgentsExists(file.exists);
       setCodexAgentsUpdatedAt(file.updatedAt ?? null);
@@ -52,11 +54,12 @@ export function AgentsCategory() {
     }
   }, []);
 
-  const saveCodexAgentsFile = async () => {
+  const saveCodexAgentsFile = useCallback(async () => {
     setCodexAgentsSaving(true);
     setCodexAgentsStatus(null);
     try {
       const result = await window.anvil.settings.saveCodexAgentsFile(codexAgentsContent);
+      setSavedAgentsContent(codexAgentsContent);
       setCodexAgentsPath(result.path);
       setCodexAgentsExists(true);
       setCodexAgentsUpdatedAt(result.savedAt);
@@ -64,15 +67,31 @@ export function AgentsCategory() {
         tone: 'success',
         message: `Saved ${new Intl.NumberFormat().format(result.bytes)} bytes.`,
       });
+      return true;
     } catch (err) {
       setCodexAgentsStatus({
         tone: 'error',
         message: err instanceof Error ? err.message : 'Failed to save Codex AGENTS.md',
       });
+      return false;
     } finally {
       setCodexAgentsSaving(false);
     }
-  };
+  }, [codexAgentsContent]);
+
+  const discardInstructions = useCallback(() => {
+    setCodexAgentsContent(savedAgentsContent);
+    setCodexAgentsStatus(null);
+  }, [savedAgentsContent]);
+  useEffect(() => {
+    registerPendingEdit(
+      'personal-instructions',
+      codexAgentsContent !== savedAgentsContent || codexAgentsSaving
+        ? { discard: discardInstructions, save: saveCodexAgentsFile, saving: codexAgentsSaving }
+        : null,
+    );
+    return () => registerPendingEdit('personal-instructions', null);
+  }, [codexAgentsContent, savedAgentsContent, discardInstructions, registerPendingEdit]);
 
   const updateCloudFeatures = async (enabled: boolean) => {
     if (await draft.saveInstant({ cloudFeaturesEnabled: enabled })) {
@@ -99,6 +118,7 @@ export function AgentsCategory() {
       </SettingsPanel>
 
       <SettingsPanel
+        expandable
         panelId="codex-usage"
         title="Codex usage"
         description="Live account usage and quota windows from Codex app-server when the local CLI exposes them."
@@ -111,6 +131,7 @@ export function AgentsCategory() {
       </SettingsPanel>
 
       <SettingsPanel
+        expandable
         panelId="codex-agents-md"
         title="Personal Codex instructions"
         description="Edit the global AGENTS.md that Codex reads from your home configuration."
@@ -135,7 +156,11 @@ export function AgentsCategory() {
                 variant="secondary"
                 size="sm"
                 onClick={refreshCodexAgentsFile}
-                disabled={codexAgentsLoading || codexAgentsSaving}
+                disabled={
+                  codexAgentsLoading ||
+                  codexAgentsSaving ||
+                  codexAgentsContent !== savedAgentsContent
+                }
               >
                 {codexAgentsLoading ? (
                   <Loader2 size={13} className="animate-spin" />
@@ -147,7 +172,11 @@ export function AgentsCategory() {
               <Button
                 size="sm"
                 onClick={saveCodexAgentsFile}
-                disabled={codexAgentsLoading || codexAgentsSaving}
+                disabled={
+                  codexAgentsLoading ||
+                  codexAgentsSaving ||
+                  codexAgentsContent === savedAgentsContent
+                }
               >
                 {codexAgentsSaving ? (
                   <Loader2 size={13} className="animate-spin" />

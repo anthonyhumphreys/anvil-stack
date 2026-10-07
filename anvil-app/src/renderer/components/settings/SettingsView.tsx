@@ -1,18 +1,14 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useBlocker, useLocation, useNavigate } from 'react-router-dom';
 import { CheckCircle, Loader2, Save, Search, Settings, X } from 'lucide-react';
 import type { AppSettings, AppTheme, UserRole } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
 import { InlineNotice } from '../layout/ViewScaffold';
 import { RoleHiddenNotice } from '../shared/RoleHiddenNotice';
 import { Button, ConfirmDialog, cx } from '../ui';
-import { SettingsContextProvider } from './SettingsContext';
-import { useSettingsDraft, CREDENTIAL_SETTING_KEYS } from './useSettingsDraft';
-import {
-  SETTINGS_CATEGORIES,
-  getSettingsCategory,
-  resolveSettingsCategoryId,
-} from './settings-registry';
+import { SettingsContextProvider, type PendingSettingsEdit } from './SettingsContext';
+import { useSettingsDraft } from './useSettingsDraft';
+import { SETTINGS_CATEGORIES, getSettingsCategory } from './settings-registry';
 import { parseSettingsLocation, settingsPanelDomId } from './settings-route';
 import { searchSettings } from './settings-search';
 
@@ -61,12 +57,25 @@ export function SettingsView({
     () => parseSettingsLocation(location.pathname, location.search, location.hash).panel ?? null,
   );
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [discardTarget, setDiscardTarget] = useState<string | null>(null);
+  const [previewPending, setPreviewPending] = useState(false);
+  const [pendingEdits, setPendingEdits] = useState<Record<string, PendingSettingsEdit>>({});
+  const registerPendingEdit = useCallback((id: string, edit: PendingSettingsEdit | null) => {
+    setPendingEdits((current) => {
+      if (current[id] === edit || (!current[id] && !edit)) return current;
+      const next = { ...current };
+      if (edit) next[id] = edit;
+      else delete next[id];
+      return next;
+    });
+  }, []);
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const draft = useSettingsDraft({
-    onSaved: () => onSettingsSaved?.(),
+    onSaved: () => {
+      setStatusError(null);
+      onSettingsSaved?.();
+    },
     onError: (message) => setStatusError(message),
   });
 
@@ -88,6 +97,11 @@ export function SettingsView({
     const tryScroll = () => {
       const element = document.getElementById(settingsPanelDomId(pendingPanel));
       if (element) {
+        let details = element.closest('details');
+        while (details) {
+          details.open = true;
+          details = details.parentElement?.closest('details') ?? null;
+        }
         element.scrollIntoView({ block: 'start' });
         setPendingPanel(null);
         return;
@@ -111,54 +125,47 @@ export function SettingsView({
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
-  // Warn before closing the window with unsaved credential edits (ST5).
-  const activeCredentialKeys = useMemo(
-    () => getSettingsCategory(activeCategory)?.credentialKeys ?? [],
-    [activeCategory],
-  );
-  const dirtyCredentials = useMemo(
-    () =>
-      [...draft.dirtyKeys].filter(
-        (key): key is keyof AppSettings =>
-          CREDENTIAL_SETTING_KEYS.has(key as keyof AppSettings) &&
-          activeCredentialKeys.includes(key as keyof AppSettings),
-      ),
-    [draft.dirtyKeys, activeCredentialKeys],
+  const settingsSaving = draft.saving || Object.values(pendingEdits).some((edit) => edit.saving);
+  const saveChanges = async () => {
+    if (settingsSaving || !(await draft.saveAllDirty())) return;
+    for (const edit of Object.values(pendingEdits)) if (!(await edit.save())) return;
+  };
+  const hasPendingChanges =
+    draft.dirtyKeys.size > 0 || Object.keys(pendingEdits).length > 0 || draft.saving;
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      hasPendingChanges &&
+      (currentLocation.pathname !== nextLocation.pathname ||
+        currentLocation.search !== nextLocation.search),
   );
   useEffect(() => {
-    if (draft.dirtyKeys.size === 0) return;
+    if (!hasPendingChanges) return;
     const handler = (event: BeforeUnloadEvent) => {
       event.preventDefault();
+      event.returnValue = '';
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [draft.dirtyKeys.size]);
+  }, [hasPendingChanges]);
 
-  const commitCategory = useCallback(
-    (id: string, panel?: string) => {
-      setActiveCategory(id);
-      if (panel) setPendingPanel(panel);
-      // Reflect the deep link in the URL — `/settings/:category?` is routed in
-      // App.tsx, so every category switch is addressable.
-      navigate(`/settings/${id}${panel ? `#${panel}` : ''}`);
-    },
-    [navigate],
-  );
+  const discardChanges = () => {
+    draft.discardKeys([...draft.dirtyKeys] as Array<keyof AppSettings>);
+    Object.values(pendingEdits).forEach((edit) => edit.discard());
+    setStatusError(null);
+  };
 
   const selectCategory = useCallback(
     (id: string, panel?: string) => {
-      if (id === activeCategory) {
-        if (panel) setPendingPanel(panel);
-        return;
-      }
-      if (dirtyCredentials.length > 0) {
-        setDiscardTarget(panel ? `${id}#${panel}` : id);
-        return;
-      }
-      commitCategory(id, panel);
+      navigate(`/settings/${id}${panel ? `#${panel}` : ''}`);
+      if (panel && id === activeCategory) setPendingPanel(panel);
     },
-    [activeCategory, dirtyCredentials.length, commitCategory],
+    [navigate, activeCategory],
   );
+
+  const previewOnboarding = () => {
+    if (hasPendingChanges) setPreviewPending(true);
+    else onPreviewOnboarding?.();
+  };
 
   const searchResults = useMemo(() => searchSettings(searchQuery), [searchQuery]);
 
@@ -171,9 +178,9 @@ export function SettingsView({
     activeMeta.feature !== undefined &&
     !draft.settings.showAllTools &&
     (!userRole || !ROLE_FEATURES[userRole].includes(activeMeta.feature));
-  const dirtyCount = draft.dirtyKeys.size;
+  const dirtyCount = draft.dirtyKeys.size + Object.keys(pendingEdits).length;
   const allSaved = draft.loaded && dirtyCount === 0;
-  const saveStateLabel = draft.saving
+  const saveStateLabel = settingsSaving
     ? 'Saving…'
     : !draft.loaded
       ? 'Loading…'
@@ -206,13 +213,14 @@ export function SettingsView({
         onSettingsSaved,
         onRoleChange,
         onThemeChange,
-        onPreviewOnboarding,
+        onPreviewOnboarding: onPreviewOnboarding ? previewOnboarding : undefined,
+        registerPendingEdit,
         reportError: setStatusError,
       }}
     >
-      <div className="h-full overflow-auto p-4 md:p-6">
-        <div className="mx-auto max-w-7xl space-y-5">
-          <header className="border-b border-border pb-5">
+      <div className="@container h-full overflow-auto px-4 md:px-6">
+        <div className="mx-auto max-w-7xl space-y-5 pb-6">
+          <header className="sticky top-0 z-20 border-b border-border bg-bg-primary py-4">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-3">
@@ -226,7 +234,7 @@ export function SettingsView({
                 </div>
               </div>
 
-              <div className="flex shrink-0 items-center gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-3">
                 <div className="relative">
                   <Search
                     size={13}
@@ -240,7 +248,7 @@ export function SettingsView({
                     onKeyDown={(event) => {
                       if (event.key === 'Escape') setSearchQuery('');
                     }}
-                    placeholder="Search settings (⌘F)"
+                    placeholder={`Search settings (${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'}F)`}
                     aria-label="Search settings"
                     className="w-56 rounded-md border border-border bg-bg-secondary py-1.5 pl-8 pr-7 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
                   />
@@ -263,7 +271,7 @@ export function SettingsView({
                       : 'border-border-subtle bg-bg-primary text-text-tertiary',
                   )}
                 >
-                  {draft.saving ? (
+                  {settingsSaving ? (
                     <Loader2 size={12} className="animate-spin" />
                   ) : allSaved ? (
                     <CheckCircle size={12} />
@@ -276,10 +284,20 @@ export function SettingsView({
                   <Button
                     variant="secondary"
                     size="sm"
-                    disabled={draft.saving}
-                    onClick={() => void draft.saveAllDirty()}
+                    disabled={settingsSaving}
+                    onClick={() => void saveChanges()}
                   >
-                    Save all
+                    Save changes
+                  </Button>
+                )}
+                {dirtyCount > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={settingsSaving}
+                    onClick={discardChanges}
+                  >
+                    Discard
                   </Button>
                 )}
               </div>
@@ -332,7 +350,10 @@ export function SettingsView({
             </div>
           )}
 
-          <nav className="flex gap-2 overflow-x-auto pb-1 lg:hidden" aria-label="Settings sections">
+          <nav
+            className="flex gap-2 overflow-x-auto pb-1 @min-[64rem]:hidden"
+            aria-label="Settings sections"
+          >
             {SETTINGS_CATEGORIES.map((category) => {
               const Icon = category.icon;
               return (
@@ -354,12 +375,9 @@ export function SettingsView({
             })}
           </nav>
 
-          <div className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
-            <aside className="hidden lg:block">
-              <nav
-                className="sticky top-6 space-y-1 rounded-lg border border-border bg-bg-secondary p-2"
-                aria-label="Settings sections"
-              >
+          <div className="grid gap-6 @min-[64rem]:grid-cols-[16rem_minmax(0,1fr)]">
+            <aside className="hidden @min-[64rem]:block">
+              <nav className="sticky top-28 space-y-1" aria-label="Settings sections">
                 {SETTINGS_CATEGORIES.map((category) => {
                   const Icon = category.icon;
                   return (
@@ -387,7 +405,7 @@ export function SettingsView({
               </nav>
             </aside>
 
-            <main className="space-y-6">
+            <main className="min-w-0 space-y-6">
               {draft.settings.credentialStorage &&
                 (draft.settings.credentialStorage.state !== 'ready' ||
                   Object.values(draft.settings.credentialStorage.credentials).some(
@@ -424,9 +442,9 @@ export function SettingsView({
                       <activeMeta.icon size={18} />
                     </div>
                     <div className="min-w-0">
-                      <h3 className="text-lg font-semibold text-text-primary">
+                      <h2 className="text-lg font-semibold text-text-primary">
                         {activeMeta.label}
-                      </h3>
+                      </h2>
                       <p className="text-sm text-text-secondary">
                         {categoryDescription(activeMeta.id)}
                       </p>
@@ -451,21 +469,25 @@ export function SettingsView({
       </div>
 
       <ConfirmDialog
-        open={discardTarget !== null}
+        open={blocker.state === 'blocked' || previewPending}
         title="Discard changes?"
-        description="You have unsaved credential changes. Discarding restores the last saved values."
-        confirmLabel="Discard changes"
+        description="Settings, personal instructions or agent limits have pending changes. Discard restores their last saved values."
+        confirmLabel="Discard and continue"
         cancelLabel="Keep editing"
         tone="danger"
+        loading={settingsSaving}
         onConfirm={() => {
-          if (!discardTarget) return;
-          draft.discardKeys(dirtyCredentials as Array<keyof AppSettings>);
-          const [id, panel] = discardTarget.split('#');
-          setDiscardTarget(null);
-          const resolved = resolveSettingsCategoryId(id);
-          if (resolved) commitCategory(resolved, panel);
+          discardChanges();
+          if (blocker.state === 'blocked') blocker.proceed();
+          if (previewPending) {
+            setPreviewPending(false);
+            onPreviewOnboarding?.();
+          }
         }}
-        onCancel={() => setDiscardTarget(null)}
+        onCancel={() => {
+          if (blocker.state === 'blocked') blocker.reset();
+          setPreviewPending(false);
+        }}
       />
     </SettingsContextProvider>
   );

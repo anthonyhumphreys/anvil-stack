@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CheckCircle, Loader2, Plus, Trash2, XCircle } from 'lucide-react';
 import type { AppSettings, DocsProvider, WorkItemConnection } from '../../../../shared/types';
 import { Button } from '../../ui';
@@ -77,6 +77,8 @@ export function DeliveryCategory() {
   const wiInputs = JSON.stringify(WORK_ITEM_KEYS.map((key) => settings[key]));
   const docsInputs = JSON.stringify(DOCS_KEYS.map((key) => settings[key]));
   const gitInputs = JSON.stringify(GIT_KEYS.map((key) => settings[key]));
+  const testInputsRef = useRef({ wiInputs, docsInputs, gitInputs, gitProvider });
+  testInputsRef.current = { wiInputs, docsInputs, gitInputs, gitProvider };
   useEffect(() => {
     setWiStatus('idle');
     setLinearTeams([]);
@@ -196,6 +198,7 @@ export function DeliveryCategory() {
   };
 
   const testWi = async () => {
+    const inputs = testInputsRef.current.wiInputs;
     setWiStatus('testing');
     reportError(null);
     try {
@@ -204,6 +207,7 @@ export function DeliveryCategory() {
         return;
       }
       const result = await window.anvil.settings.testWorkItemProviderConnection();
+      if (inputs !== testInputsRef.current.wiInputs) return;
       setWiStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
     } catch (err) {
@@ -213,6 +217,7 @@ export function DeliveryCategory() {
   };
 
   const testConfluence = async () => {
+    const inputs = testInputsRef.current.docsInputs;
     setConfluenceStatus('testing');
     reportError(null);
     if (!(await savePanelForTest(DOCS_KEYS, 'testing'))) {
@@ -221,6 +226,7 @@ export function DeliveryCategory() {
     }
     try {
       const result = await window.anvil.settings.testConfluenceConnection();
+      if (inputs !== testInputsRef.current.docsInputs) return;
       setConfluenceStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
     } catch (err) {
@@ -230,6 +236,7 @@ export function DeliveryCategory() {
   };
 
   const testGit = async () => {
+    const inputs = testInputsRef.current.gitInputs;
     setGitStatus('testing');
     reportError(null);
     setGhError(null);
@@ -240,6 +247,7 @@ export function DeliveryCategory() {
     try {
       if (gitProvider === 'github') {
         const status = await window.anvil.repo.ghAuthStatus();
+        if (inputs !== testInputsRef.current.gitInputs) return;
         if (status.authenticated) {
           setGitStatus('ok');
           setGhUsername(status.username ?? null);
@@ -250,6 +258,7 @@ export function DeliveryCategory() {
         }
       } else {
         const result = await window.anvil.settings.testGitConnection();
+        if (inputs !== testInputsRef.current.gitInputs) return;
         setGitStatus(result.ok ? 'ok' : 'error');
         if (result.error) reportError(result.error);
       }
@@ -260,6 +269,7 @@ export function DeliveryCategory() {
   };
 
   const testDocs = async () => {
+    const inputs = testInputsRef.current.docsInputs;
     setDocsStatus('testing');
     reportError(null);
     if (!(await savePanelForTest(DOCS_KEYS, 'testing'))) {
@@ -268,6 +278,7 @@ export function DeliveryCategory() {
     }
     try {
       const result = await window.anvil.settings.testDocsProviderConnection();
+      if (inputs !== testInputsRef.current.docsInputs) return;
       setDocsStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
     } catch (err) {

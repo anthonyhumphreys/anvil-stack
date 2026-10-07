@@ -8,6 +8,12 @@ import type { SettingsDraft } from './useSettingsDraft';
  * one `useSettingsDraft()` instance; category components read it here instead
  * of mounting their own state next to every other category's.
  */
+export interface PendingSettingsEdit {
+  discard: () => void;
+  save: () => Promise<boolean>;
+  saving: boolean;
+}
+
 export interface SettingsContextValue {
   draft: SettingsDraft;
   userRole?: UserRole;
@@ -16,6 +22,7 @@ export interface SettingsContextValue {
   onThemeChange?: (theme: AppTheme) => void;
   onPreviewOnboarding?: () => void;
   /** Surfaces an error string in the shared header notice. */
+  registerPendingEdit: (id: string, edit: PendingSettingsEdit | null) => void;
   reportError: (message: string | null) => void;
 }
 

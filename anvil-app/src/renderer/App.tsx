@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState, useCallback, type ReactNode } from 'react';
-import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { AppRouter } from './components/layout/AppRouter';
 import { Shell } from './components/layout/Shell';
 import { ErrorBoundary } from './components/layout/ErrorBoundary';
 import { SplashScreen } from './components/brand/SplashScreen';
@@ -213,6 +214,14 @@ function LaunchIntentRouter() {
 }
 
 export function App() {
+  return (
+    <AppRouter>
+      <AppContent />
+    </AppRouter>
+  );
+}
+
+function AppContent() {
   const fallbackBrand = getBrand(getBuildBrandId());
   const resolveSystemTheme = useCallback((): Exclude<AppTheme, 'system'> => {
     if (fallbackBrand.defaultTheme !== 'system') return fallbackBrand.defaultTheme;
@@ -407,7 +416,7 @@ export function App() {
       <RepoIndexProvider>
         <WorkspaceProvider>
           <ChatProvider>
-            <HashRouter>
+            <>
               <LaunchIntentRouter />
               <Suspense fallback={<SplashScreen label="Loading workspace" />}>
                 <Routes>
@@ -790,7 +799,7 @@ export function App() {
                   </Route>
                 </Routes>
               </Suspense>
-            </HashRouter>
+            </>
           </ChatProvider>
         </WorkspaceProvider>
       </RepoIndexProvider>

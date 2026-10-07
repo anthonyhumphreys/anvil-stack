@@ -90,6 +90,7 @@ export function SettingsPanel({
   panelId,
   saveKeys,
   autosave = false,
+  expandable = false,
   children,
 }: {
   title: string;
@@ -101,29 +102,41 @@ export function SettingsPanel({
   saveKeys?: ReadonlyArray<keyof AppSettings>;
   /** Show a "saves automatically" hint when nothing is dirty. */
   autosave?: boolean;
+  expandable?: boolean;
   children: ReactNode;
 }) {
+  const Container = expandable ? 'details' : 'section';
+  const Heading = expandable ? 'summary' : 'div';
   return (
-    <section
+    <Container
       id={panelId ? settingsPanelDomId(panelId) : undefined}
       className={cx(
-        'scroll-mt-6 space-y-4 rounded-lg border p-5',
-        tone === 'danger' ? 'border-error/30 bg-error/5' : 'border-border bg-bg-secondary',
+        'group scroll-mt-36 border-b py-5',
+        tone === 'danger' ? 'border-error/30 bg-error/5' : 'border-border-subtle',
       )}
     >
-      <div className="flex items-start justify-between gap-3">
+      <Heading
+        className={cx(
+          'flex flex-wrap items-start justify-between gap-3',
+          expandable &&
+            'cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+        )}
+      >
         <div className="min-w-0">
-          <h4 className="text-base font-semibold text-text-primary">{title}</h4>
+          <h3 className="text-base font-semibold text-text-primary">{title}</h3>
           {description && <p className="mt-1 text-sm text-text-secondary">{description}</p>}
         </div>
+        {expandable && (
+          <span className="text-xs text-text-tertiary group-open:hidden">Show options</span>
+        )}
         {saveKeys && (
           <div className="shrink-0 pt-0.5">
             <PanelSaveStatus keys={saveKeys} autosave={autosave} />
           </div>
         )}
-      </div>
-      {children}
-    </section>
+      </Heading>
+      <div className="mt-4 space-y-4">{children}</div>
+    </Container>
   );
 }
 

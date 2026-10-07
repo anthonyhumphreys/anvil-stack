@@ -109,10 +109,16 @@ const DangerCategory = lazy(() =>
 export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
   {
     id: 'profile',
-    label: 'Profile & appearance',
+    label: 'Appearance & tools',
     description: 'Role, visible tools, and theme.',
     icon: UserRound,
     panels: [
+      {
+        id: 'keyboard-shortcuts',
+        title: 'Keyboard shortcuts',
+        description: 'Customise app hotkeys on this device.',
+        keywords: ['hotkeys', 'keyboard', 'shortcuts', 'keys'],
+      },
       {
         id: 'role',
         title: 'Role',
@@ -130,7 +136,7 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
   },
   {
     id: 'providers',
-    label: 'Providers & models',
+    label: 'AI connections & models',
     description: 'Primary agent, model selection, reasoning, and local routing.',
     icon: SlidersHorizontal,
     keywords: ['ai', 'llm', 'model', 'codex', 'cursor', 'devin', 'openai', 'azure', 'llmgateway'],
@@ -242,7 +248,7 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
   },
   {
     id: 'delivery',
-    label: 'Delivery integrations',
+    label: 'Connections',
     description: 'Work items, docs, Git, and remote credentials.',
     icon: FolderGit2,
     keywords: ['integrations', 'credentials'],
@@ -271,7 +277,7 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
   },
   {
     id: 'review',
-    label: 'Review defaults',
+    label: 'Review preferences',
     description: 'Rubrics used by code review workflows.',
     icon: ClipboardCheck,
     feature: 'codereview',
@@ -287,7 +293,7 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
   },
   {
     id: 'devices',
-    label: 'Devices & system',
+    label: 'Devices & local setup',
     description: 'Repo defaults and mobile companion access.',
     icon: MonitorSmartphone,
     panels: [
@@ -352,8 +358,8 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
   },
   {
     id: 'danger',
-    label: 'Danger area',
-    description: 'Reset setup state and workspace selections.',
+    label: 'Setup & reset',
+    description: 'First-run setup and reset actions.',
     icon: ShieldAlert,
     panels: [
       {

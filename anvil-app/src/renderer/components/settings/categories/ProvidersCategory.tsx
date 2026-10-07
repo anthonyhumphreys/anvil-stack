@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Save } from 'lucide-react';
 import type {
   AgentProvider,
@@ -147,72 +147,60 @@ function AgentProviderManager({
   onToggle: (provider: AgentProvider) => void;
 }) {
   return (
-    <div
-      role="radiogroup"
-      aria-label="Primary agent provider"
-      className="overflow-hidden rounded-lg border border-border bg-bg-primary"
-    >
-      <div className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center border-b border-border-subtle bg-bg-secondary px-3 py-2 text-xs font-medium text-text-tertiary">
-        <span>Provider</span>
-        <span className="text-center">Primary</span>
-        <span className="text-center">Available</span>
-      </div>
-      {AGENT_PROVIDER_OPTIONS.map((option, index) => {
-        const isPrimary = primaryProvider === option.id;
-        const isEnabled = enabledProviders.includes(option.id);
-        return (
-          <div
-            key={option.id}
-            className={`grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center gap-2 px-3 py-3 ${
-              index > 0 ? 'border-t border-border-subtle' : ''
-            }`}
-          >
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-text-primary">{option.label}</div>
-              <div className="mt-0.5 text-xs text-text-tertiary">{option.description}</div>
-            </div>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={isPrimary}
-              onClick={() => onSetPrimary(option.id)}
-              className={`mx-auto inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors ${
-                isPrimary
-                  ? 'bg-accent/12 text-accent'
-                  : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-              }`}
-            >
-              <span
-                className={`h-3 w-3 rounded-full border ${
-                  isPrimary ? 'border-accent bg-accent' : 'border-text-tertiary'
-                }`}
-                aria-hidden="true"
+    <div className="space-y-4">
+      <label className="block space-y-1 text-sm text-text-secondary">
+        <span>Primary agent</span>
+        <select
+          value={primaryProvider}
+          onChange={(event) => onSetPrimary(event.target.value as AgentProvider)}
+          className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-text-primary focus:border-accent focus:outline-none"
+        >
+          {AGENT_PROVIDER_OPTIONS.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-sm text-text-secondary">
+        Applies to new conversations and app AI tasks. Existing conversations keep their provider
+        and model.
+      </p>
+      <details className="border-b border-border-subtle pb-3">
+        <summary className="cursor-pointer text-sm font-medium text-text-primary">
+          Additional workflow providers
+        </summary>
+        <p className="my-3 text-xs text-text-secondary">
+          Enabling a provider makes it available to workflows. It does not verify installation,
+          sign-in or connection. The primary provider stays enabled.
+        </p>
+        <div className="space-y-3">
+          {AGENT_PROVIDER_OPTIONS.map((option) => (
+            <label key={option.id} className="flex items-start gap-3 text-sm">
+              <input
+                type="checkbox"
+                checked={enabledProviders.includes(option.id)}
+                disabled={primaryProvider === option.id}
+                onChange={() => onToggle(option.id)}
+                className="mt-1 accent-accent"
               />
-              {isPrimary ? 'Primary' : 'Make primary'}
-            </button>
-            <button
-              type="button"
-              aria-pressed={isEnabled}
-              disabled={isPrimary}
-              onClick={() => onToggle(option.id)}
-              className={`mx-auto min-h-8 rounded-md px-2.5 text-xs font-medium transition-colors ${
-                isEnabled
-                  ? 'bg-success/10 text-success'
-                  : 'bg-bg-secondary text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-              } disabled:cursor-default`}
-              title={isPrimary ? 'The primary provider is always available.' : undefined}
-            >
-              {isPrimary ? 'Required' : isEnabled ? 'Active' : 'Inactive'}
-            </button>
-          </div>
-        );
-      })}
+              <span>
+                <span className="block text-text-primary">
+                  {option.label}
+                  {primaryProvider === option.id ? ' (primary)' : ''}
+                </span>
+                <span className="block text-xs text-text-secondary">{option.description}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </details>
     </div>
   );
 }
 
 export function ProvidersCategory() {
-  const { draft, reportError } = useSettingsContext();
+  const { draft, reportError, registerPendingEdit } = useSettingsContext();
   const brand = useBrand();
   const { settings } = draft;
 
@@ -228,6 +216,7 @@ export function ProvidersCategory() {
   const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
   const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
   const llmGatewayRequestId = useRef(0);
+  const [savedAgentMaxThreads, setSavedAgentMaxThreads] = useState(6);
   const [agentMaxThreads, setAgentMaxThreads] = useState(6);
   const [agentMaxThreadsSaving, setAgentMaxThreadsSaving] = useState(false);
   const [agentMaxThreadsError, setAgentMaxThreadsError] = useState<string | null>(null);
@@ -239,6 +228,7 @@ export function ProvidersCategory() {
       .then((status) => {
         setCodexStatus(status);
         setAgentMaxThreads(status.agentMaxThreads ?? 6);
+        setSavedAgentMaxThreads(status.agentMaxThreads ?? 6);
       })
       .catch(console.warn);
     window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
@@ -249,6 +239,11 @@ export function ProvidersCategory() {
       .then(setLocalLlmCapabilities)
       .catch(console.warn);
   }, []);
+
+  const discardAgentLimit = useCallback(() => {
+    setAgentMaxThreads(savedAgentMaxThreads);
+    setAgentMaxThreadsError(null);
+  }, [savedAgentMaxThreads]);
 
   const connectionInputs = JSON.stringify(
     [
@@ -271,6 +266,8 @@ export function ProvidersCategory() {
       'lmStudioModel',
     ].map((key) => settings[key as keyof AppSettings]),
   );
+  const testInputsRef = useRef({ connectionInputs, localInputs });
+  testInputsRef.current = { connectionInputs, localInputs };
   useEffect(() => {
     setLlmStatus('idle');
   }, [connectionInputs]);
@@ -363,21 +360,44 @@ export function ProvidersCategory() {
     draft.update('enabledLlmProviders', [...current]);
   };
 
-  const saveAgentMaxThreads = async () => {
+  const saveAgentMaxThreads = useCallback(async () => {
+    if (!Number.isInteger(agentMaxThreads) || agentMaxThreads < 1 || agentMaxThreads > 64) {
+      setAgentMaxThreadsError('Choose a whole number between 1 and 64.');
+      return false;
+    }
     setAgentMaxThreadsSaving(true);
     setAgentMaxThreadsError(null);
     try {
       const status = await window.anvil.settings.setCodexAgentMaxThreads(agentMaxThreads);
       setCodexStatus(status);
-      setAgentMaxThreads(status.agentMaxThreads ?? agentMaxThreads);
+      setSavedAgentMaxThreads(status.agentMaxThreads ?? agentMaxThreads);
+      return true;
     } catch (err) {
       setAgentMaxThreadsError(
         err instanceof Error ? err.message : 'Failed to update the Codex agent limit.',
       );
+      return false;
     } finally {
       setAgentMaxThreadsSaving(false);
     }
-  };
+  }, [agentMaxThreads]);
+
+  useEffect(() => {
+    registerPendingEdit(
+      'agent-limit',
+      agentMaxThreads !== savedAgentMaxThreads || agentMaxThreadsSaving
+        ? { discard: discardAgentLimit, save: saveAgentMaxThreads, saving: agentMaxThreadsSaving }
+        : null,
+    );
+    return () => registerPendingEdit('agent-limit', null);
+  }, [
+    agentMaxThreads,
+    savedAgentMaxThreads,
+    agentMaxThreadsSaving,
+    discardAgentLimit,
+    saveAgentMaxThreads,
+    registerPendingEdit,
+  ]);
 
   /** Save only this panel's credential fields before a connection test (ST2). */
   const saveCredentialsForTest = async () => {
@@ -400,6 +420,7 @@ export function ProvidersCategory() {
   };
 
   const testLlm = async () => {
+    const inputs = testInputsRef.current.connectionInputs;
     setLlmStatus('testing');
     reportError(null);
     try {
@@ -408,6 +429,7 @@ export function ProvidersCategory() {
         return;
       }
       const result = await window.anvil.settings.testFoundryConnection();
+      if (inputs !== testInputsRef.current.connectionInputs) return;
       setLlmStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
     } catch (error) {
@@ -417,6 +439,7 @@ export function ProvidersCategory() {
   };
 
   const testLocalLlm = async () => {
+    const inputs = testInputsRef.current.localInputs;
     setLocalLlmStatus('testing');
     reportError(null);
     try {
@@ -434,6 +457,7 @@ export function ProvidersCategory() {
         return;
       }
       const result = await window.anvil.settings.testLocalLlm();
+      if (inputs !== testInputsRef.current.localInputs) return;
       setLocalLlmStatus(result.ok ? 'ok' : 'error');
       if (result.error) reportError(result.error);
       setLocalLlmCapabilities(await window.anvil.settings.getLocalLlmCapabilities());
@@ -513,7 +537,7 @@ export function ProvidersCategory() {
     <>
       <SettingsPanel
         panelId="agent-providers"
-        title="Agent providers"
+        title="AI connections"
         description="Choose the primary agent for new chats, then activate any additional providers that workflows may use."
         saveKeys={['llmProvider', 'enabledLlmProviders', ...PROVIDER_CREDENTIAL_KEYS]}
       >
@@ -645,7 +669,11 @@ export function ProvidersCategory() {
                     : 'Not connected'}
               </span>
             </div>
-            <CodexRuntimeSetup />
+            <CodexRuntimeSetup
+              onStatusChanged={async () =>
+                setCodexStatus(await window.anvil.settings.getCodexStatus())
+              }
+            />
             <Field
               label="API key (alternative)"
               value={settings.llmGatewayApiKey ?? ''}
@@ -880,6 +908,7 @@ export function ProvidersCategory() {
                   onClick={saveAgentMaxThreads}
                   disabled={
                     agentMaxThreadsSaving ||
+                    agentMaxThreads === savedAgentMaxThreads ||
                     !Number.isInteger(agentMaxThreads) ||
                     agentMaxThreads < 1 ||
                     agentMaxThreads > 64
@@ -1028,6 +1057,7 @@ export function ProvidersCategory() {
       </SettingsPanel>
 
       <SettingsPanel
+        expandable
         panelId="local-model"
         title="Local model"
         description="Route simple, self-contained prompts through a local model, then fall back to the selected backend when the classifier decides tools or deeper reasoning are needed."
@@ -1209,6 +1239,7 @@ export function ProvidersCategory() {
       </SettingsPanel>
 
       <SettingsPanel
+        expandable
         panelId="thread-assist"
         title="Thread assistance"
         description="Generate a short title and a rolling one-line summary for each thread after a turn completes. Summaries appear under the thread title in the sidebar."

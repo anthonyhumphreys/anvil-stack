@@ -18,13 +18,18 @@ export function codexRuntimeStateLabel(
 interface CodexRuntimeSetupProps {
   compact?: boolean;
   disabled?: boolean;
+  onStatusChanged?: () => void | Promise<void>;
 }
 
 /**
  * Shows the local coding engine separately from the model provider.
  * LLMGateway can be connected even when Codex still needs to be installed.
  */
-export function CodexRuntimeSetup({ compact = false, disabled = false }: CodexRuntimeSetupProps) {
+export function CodexRuntimeSetup({
+  compact = false,
+  disabled = false,
+  onStatusChanged,
+}: CodexRuntimeSetupProps) {
   const [status, setStatus] = useState<CodexRuntimeStatus | null>(null);
   const [action, setAction] = useState<RuntimeAction>('checking');
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +63,7 @@ export function CodexRuntimeSetup({ compact = false, disabled = false }: CodexRu
       const next = await window.anvil.settings.installCodexRuntime();
       setStatus(next);
       if (next.error) setError(next.error);
+      await onStatusChanged?.();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not install the coding engine.');
     } finally {
@@ -106,8 +112,8 @@ export function CodexRuntimeSetup({ compact = false, disabled = false }: CodexRu
             </span>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-            Codex runs locally to edit files and run commands. Models and billing come through
-            LLMGateway. No ChatGPT account is required.
+            Codex runs locally to edit files and run commands. Model access, sign-in requirements
+            and billing depend on your selected provider.
           </p>
           {!ready && (
             <p className="mt-1 text-xs text-text-tertiary">
