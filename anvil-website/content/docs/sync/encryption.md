@@ -52,15 +52,16 @@ an envelope.
 The authorized first device creates ADK v1 locally during security setup or its first sealed write.
 New devices receive it through one of these paths:
 
-1. **Automatic connection (opt-in).** An eligible durable OIDC/WorkOS device
+1. **Automatic connection (default for new hosted accounts).** An eligible durable OIDC/WorkOS device
    proves possession of its immutable enrollment-bound X25519 key. An online
    trusted device checks the account policy and that exact binding, then
    encrypts the account-key bundle to the recipient. If all trusted devices
    are offline, the new device waits or uses recovery. This mode relies on
    account authentication and the pinned service's membership attestation;
    account/provider compromise or a malicious service can admit a recipient.
-   Choose code verification for an independent out-of-band identity check.
-2. **Pairing payload (in-app code).** A signed-in device seals the ADK inside
+   Choose code verification in Sync & Mesh settings for an independent
+   out-of-band identity check.
+2. **Pairing payload (compatible-backend code flow).** A signed-in device seals the ADK inside
    a pairing blob under a fresh one-time secret. The secret travels in the
    pairing payload itself —
    `anvil-pair-{code}.{nonce}.{secret}` — carried out-of-band (typed or
@@ -79,7 +80,7 @@ New devices receive it through one of these paths:
    recovery flow; a retained old bundle can open only the historical key
    versions it contains. Passkey-backed encryption unlock is not implemented.
 
-Walkthroughs for these flows are in [Devices and pairing](/docs/sync/devices).
+Walkthroughs for these flows are in [Devices and sign-in](/docs/sync/devices).
 
 ## Rotation on revoke — and the app/web difference
 

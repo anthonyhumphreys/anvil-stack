@@ -7,12 +7,10 @@ import { signOut } from "@/lib/workos-sdk";
 import { hostedIdentity } from "@/lib/auth";
 import { hostedFailureMessage } from "@/lib/account";
 import {
-  createLinkCode,
   createPortal,
   deleteAccount,
   getDataStatus,
   hostedConfigured,
-  pairDevice,
   reconcile,
   renameDevice,
   revokeDevice,
@@ -21,8 +19,6 @@ import {
 import type {
   HostedDataStatusResult,
   HostedDeleteAccountResult,
-  HostedLinkCodeResult,
-  HostedPairDeviceResult,
   HostedReconcileResult
 } from "@/lib/hosted/types";
 
@@ -75,35 +71,6 @@ function revalidateAccount() {
 
 const DISPLAY_NAME_MAX = 80;
 const ENROLLMENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-
-export async function pairDeviceAction(
-  displayName: string | undefined
-): Promise<ActionResult<HostedPairDeviceResult>> {
-  const identity = await requireIdentity();
-  if (!identity) return NOT_CONFIGURED;
-  const trimmed = displayName?.trim();
-  if (trimmed !== undefined && trimmed.length > DISPLAY_NAME_MAX) {
-    return { ok: false, message: `Device names are limited to ${DISPLAY_NAME_MAX} characters.` };
-  }
-  try {
-    const data = await pairDevice(identity, trimmed === "" ? undefined : trimmed);
-    revalidateAccount();
-    return { ok: true, data };
-  } catch (error) {
-    return fail(error);
-  }
-}
-
-export async function createLinkCodeAction(): Promise<ActionResult<HostedLinkCodeResult>> {
-  const identity = await requireIdentity();
-  if (!identity) return NOT_CONFIGURED;
-  try {
-    const data = await createLinkCode(identity);
-    return { ok: true, data };
-  } catch (error) {
-    return fail(error);
-  }
-}
 
 export async function renameDeviceAction(
   enrollmentId: string,

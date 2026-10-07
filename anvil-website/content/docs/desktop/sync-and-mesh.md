@@ -63,11 +63,12 @@ not make a sleeping host available.
 Set `ANVIL_HOSTED_BACKEND_URL` for the hosted tile, then sign in from the
 panel and enroll this device. Hosted website sign-in uses a WorkOS session;
 desktop sign-in uses the backend's advertised OIDC/PKCE flow with the public
-desktop client id and callback `http://127.0.0.1:<ephemeral-port>/callback`,
-then redeems a short-lived enrollment code. These are separate credentials and
-channels. The result is a device-scoped credential — not your account
-password — that can be revoked per device. Enrollment mechanics:
-[Devices](/docs/sync/devices).
+desktop client id and callback `http://127.0.0.1:<ephemeral-port>/callback`.
+These are separate credentials and channels. New hosted accounts use
+automatic connection by default; choose code verification in Sync & Mesh
+settings for a manual check. The result is a device-scoped credential — not
+your account password — that can be revoked per device. Enrollment mechanics:
+[Devices and sign-in](/docs/sync/devices).
 
 ## Devices
 

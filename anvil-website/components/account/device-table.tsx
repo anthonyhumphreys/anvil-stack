@@ -177,7 +177,8 @@ export function DeviceTable({ devices }: { devices: HostedDeviceSummary[] }) {
               </h2>
               <p className="text-sm text-muted-foreground">
                 The device loses hosted sync access immediately. Revoked sessions stay listed for
-                audit until the backend sweeps them. Re-pairing requires a fresh code.
+                audit until the backend sweeps them. Sign in to Anvil again to create a new
+                enrollment for this machine.
               </p>
             </div>
             {mutation?.kind === "revoke" && !mutation.pending && !mutation.ok ? (

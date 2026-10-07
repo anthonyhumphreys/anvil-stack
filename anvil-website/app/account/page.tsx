@@ -3,7 +3,7 @@ import { ArrowRight } from "lucide-react";
 
 import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
 import { EntitlementStateBadge, entitlementSummary } from "@/components/account/entitlement";
-import { PairDeviceCard } from "@/components/account/pair-device-card";
+import { DeviceSignInGuidance } from "@/components/account/device-sign-in-guidance";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -139,13 +139,13 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
           ) : (
             <p className="text-sm text-muted-foreground">
               {entitlement.code === "not-found"
-                ? "No hosted account exists yet — it is created when you pair your first device below."
+                ? "No hosted account exists yet — sign in to Anvil from a desktop or headless daemon to connect your first device."
                 : hostedFailureMessage(entitlement.code, entitlement.status)}
             </p>
           )}
           {noAccount && entitlement.ok ? (
             <p className="text-sm text-muted-foreground">
-              No hosted account exists yet — it is created when you pair your first device below.
+              No hosted account exists yet — sign in to Anvil from a desktop or headless daemon to connect your first device.
             </p>
           ) : !account.ok ? (
             <p className="text-sm text-muted-foreground">
@@ -162,7 +162,7 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
       <Card>
         <CardHeader>
           <CardTitle>Devices</CardTitle>
-          <CardDescription>Machines paired to this account.</CardDescription>
+          <CardDescription>Machines connected to this account.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
           {devices.ok ? (
@@ -176,7 +176,7 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
           ) : (
             <p className="text-sm text-muted-foreground">
               {devices.code === "not-found"
-                ? "No paired devices are available for this hosted account yet — use the pairing card below to connect one."
+                ? "No devices are connected yet. Sign in to Anvil on a desktop or headless daemon to add one."
                 : hostedFailureMessage(devices.code, devices.status)}
             </p>
           )}
@@ -191,7 +191,7 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
         </CardContent>
       </Card>
 
-      <PairDeviceCard />
+      <DeviceSignInGuidance />
     </>
   );
 }

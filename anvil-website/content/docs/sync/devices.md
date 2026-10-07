@@ -1,14 +1,14 @@
 ---
-title: Devices and pairing
-navTitle: Devices and pairing
-description: Enroll devices with single-use codes, pair a second device in-app or from the web, manage the roster, and understand exactly what revocation does.
+title: Devices and sign-in
+navTitle: Devices and sign-in
+description: Sign in to hosted Sync & Mesh on desktop or headless devices, manage the device roster, and understand exactly what revocation does.
 product: Anvil Sync & Mesh
 section: Guides
 journey: build
 order: 50
 ---
 
-# Devices and pairing
+# Devices and sign-in
 
 Every device on an account is an independent enrollment. There is no
 "logged-in account" shared between machines — each device holds its own
@@ -21,11 +21,10 @@ and each can be revoked without touching the others.
   public user code and verification URI; the daemon keeps the private device
   code for polling and never prints it. There is no loopback redirect in this
   flow.
-- An **enrollment code** is the compatible-backend bootstrap path. Codes are
-  single-use and stored hashed at rest — the server never keeps the code itself.
-- Codes come from two places: **in-app** (minted by a signed-in device,
-  carrying a pairing payload) or **the website** (a bare code minted on
-  `/account`, no key material inside).
+- An **enrollment code** is a bootstrap path offered by some compatible or
+  self-hosted backends. Codes are single-use and stored hashed at rest — the
+  server never keeps the code itself. The Anvil-hosted website does not mint
+  enrollment codes; hosted users sign in with WorkOS on each device.
 - Redeeming a code produces a device-scoped credential: an access token plus
   a refresh token bound to that enrollment. The refresh token rotates on use;
   revocation severs the session immediately.
@@ -39,13 +38,14 @@ Onboarding offers Sync after you set up your agent. Choose **Use on this
 device** to continue locally, or **Sign in to Anvil** to connect your account.
 You can also start from Settings → Sync & Mesh. Anvil checks the hosted
 service and opens browser sign-in in one action; custom services and
-enrollment codes are under **Advanced connection settings**.
+compatible-backend enrollment options are under **Advanced connection
+settings**.
 
 After signing in, choose how new devices connect:
 
-- **Automatic connection (recommended):** your signed-in devices receive
+- **Automatic connection (default for new hosted accounts):** your signed-in devices receive
   encrypted access from a connected trusted device.
-- **Verify each device with a code:** compare and approve the matching
+- **Verify each device with a code:** an optional manual check; compare and approve the matching
   device-verification code on both devices.
 
 Save the recovery code shown during setup. It is shown once and lets you
@@ -54,24 +54,27 @@ this device** after reviewing what Sync will upload. New workspaces remain
 Local unless you choose Sync; repository contents and local checkouts are
 not copied. Running Mesh jobs on this device needs its separate opt-in.
 
-For a hosted headless machine:
+For a hosted headless machine, run this on the host and complete WorkOS device
+authorization in a browser on another device:
 
 ```sh
 anvil-daemon sign-in --api-url https://<backend>
 anvil-daemon security status
 ```
 
-The browser address and code printed by `sign-in` are for account sign-in.
-They are not a device-verification code. The command reports whether the
-new device is ready or what to do next. Run the daemon to keep it connected
-while it waits for another device; one-shot sign-in exits after authentication.
-Add `--worker` only when you want that machine to execute Mesh jobs.
+The browser address and code printed by `sign-in` are for WorkOS account
+sign-in. They are not a device-verification code. The command reports whether
+the new device is ready or what to do next. Run the daemon to keep it connected
+while it waits for a trusted device to deliver the account key; one-shot
+sign-in exits after authentication. Add `--worker` only when you want that
+machine to execute Mesh jobs.
 See the [hosted setup guide](/docs/sync/hosted).
 
 ## Add another device
 
-With automatic connection selected, sign in to the same account on the new
-device and keep Anvil running on a connected trusted device. Access is
+For a new hosted account, automatic connection is selected by default. Sign in
+to the same account on the new device and keep Anvil running on a connected
+trusted device. Access is
 shared automatically after the enrollment's public key and account proof
 are checked. If every trusted device is offline, the new device shows that
 it is waiting. Bring one online or use your saved recovery code.
@@ -111,14 +114,15 @@ Save the new code before discarding the old one. A retained old bundle can
 open only the historical key versions it contains. Encryption passkeys are
 not implemented.
 
-### Enrollment and pairing codes
+### Code-based enrollment on compatible backends
 
-Advanced connection settings can create a one-use pairing code for another
-device. An in-app pairing payload includes a client-held secret used to
-open the recipient's encrypted account-key bundle. A bare code from the
-website starts enrollment but carries no decryption key. These code-based
-paths continue to use mutual device verification or recovery; automatic
-connection is reserved for eligible durable OIDC/WorkOS enrollments.
+Some compatible and self-hosted backends offer a one-use enrollment code in
+Advanced connection settings. An in-app pairing payload can also include a
+client-held secret used to open the recipient's encrypted account-key bundle.
+These are protocol options for deployments that support them; Anvil-hosted
+users connect devices by signing in with WorkOS. See
+[Self-deploy the backend](/docs/sync/self-deploy) for the self-hosted
+no-identity-provider path.
 
 Changing the account policy applies to future enrollments. It does not
 promote existing pending devices or remove access from devices already

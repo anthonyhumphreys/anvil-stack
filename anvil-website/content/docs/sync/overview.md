@@ -51,11 +51,13 @@ service choices remain in **Advanced connection settings**:
 | Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare service* in advanced settings). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
 | Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles — see [Backend conformance](/docs/sync/conformance). |
 
-Sign-in checks and pins the service without uploading configuration. Choose
-automatic connection or code verification, save recovery, and explicitly
-connect this device before uploading portable configuration. Choose Local or Sync separately for each
-workspace. If the backend's endpoint or issuer changes, the app requires
-re-review before sending credentials again.
+Sign-in checks and pins the service without uploading configuration. New
+hosted accounts use automatic connection by default; choose code verification
+in Sync & Mesh settings for a manual check. Save the recovery code and
+explicitly connect this device before uploading portable configuration.
+Choose Local or Sync separately for each workspace. If the backend's endpoint
+or issuer changes, the app requires re-review before sending credentials
+again.
 
 ## What syncs, what doesn't
 
@@ -102,7 +104,7 @@ claims, start there, then [How sync works](/docs/sync/sync-engine).
 | Understand the crypto and what the server sees | [Encryption and keys](/docs/sync/encryption) |
 | Follow a write from edit to peer apply | [How sync works](/docs/sync/sync-engine) |
 | Move a running session between machines | [Session handoff](/docs/sync/session-handoff) |
-| Add or remove a device | [Devices and pairing](/docs/sync/devices) |
+| Add or remove a device | [Devices and sign-in](/docs/sync/devices) |
 | Run jobs on my own hardware | [Mesh jobs and remote execution](/docs/sync/mesh-jobs) |
 | Share an artifact link | [Artifacts and share links](/docs/sync/artifacts-and-shares) |
 | Export, import, or delete my data | [Data portability and deletion](/docs/sync/data-portability) |

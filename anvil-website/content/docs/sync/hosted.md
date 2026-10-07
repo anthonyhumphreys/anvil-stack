@@ -27,8 +27,10 @@ production provisioning and its operational credentials remain pending.
 
 The website `/account` area uses a WorkOS browser session. It calls the
 backend through the separately configured, signed hosted service channel.
-Desktop enrollment is a backend protocol: the desktop follows the issuer and
-auth mode advertised by the validated backend, then completes browser sign-in. Hosted OIDC uses issuer
+Desktop enrollment follows the issuer and auth mode advertised by the
+validated backend, then completes browser sign-in. New hosted accounts use
+automatic connection by default; a trusted device must be online to deliver
+the account key. Hosted OIDC uses issuer
 `https://api.workos.com/user_management`, the desktop public `OIDC_CLIENT_ID`,
 and scopes `openid profile`. The website's `WORKOS_CLIENT_ID` is also supplied
 to the hosted Worker as `HOSTED_WORKOS_CLIENT_ID` when those clients differ.
@@ -44,9 +46,10 @@ Headless daemons use WorkOS Device Authorization when the backend advertises
 anvil-daemon sign-in --api-url https://<backend>
 ```
 
-The command prints WorkOS's public verification URI and user code, then polls
-until the user approves the code or the bounded authorization lifetime ends.
-It does not open a browser and does not use a loopback redirect. Configure the
+The command prints WorkOS's public verification URI and user code. Open the
+URI in a browser on another device, enter the user code, then let the daemon
+poll until approval or the bounded authorization lifetime ends. It does not
+open a browser and does not use a loopback redirect. Configure the
 descriptor's `auth.publicClientId` as a WorkOS public client with Device
 Authorization enabled. A client secret and WorkOS API key stay on the backend;
 the daemon receives neither. See the [WorkOS CLI Auth documentation](https://workos.com/docs/authkit/cli-auth).
@@ -57,8 +60,10 @@ To sign in:
   and choose **Sign in to Anvil**. Anvil discovers and validates the service
   before browser sign-in; a changed address or issuer needs review. The callback is
   `http://127.0.0.1:<ephemeral-port>/callback`; the desktop chooses an
-  ephemeral port in the documented loopback range. Enrollment follows the
-  normal device flow — see [Devices and pairing](/docs/sync/devices).
+  ephemeral port in the documented loopback range. Automatic connection is
+  the default for new hosted accounts. You can choose **Verify each device
+  with a code** in Sync & Mesh settings for a manual check — see
+  [Devices and sign-in](/docs/sync/devices).
 - **Headless daemon:** Run `anvil-daemon sign-in --api-url https://<backend>`
   on the host. Add `--worker` only for an explicit Mesh worker opt-in. After
   sign-in, run `anvil-daemon run` to start the long-running host services.
@@ -124,7 +129,7 @@ The website's account area (requires WorkOS env on the site deployment):
 | Surface | What it shows |
 | --- | --- |
 | `/account` | Current backend-reported access state and enforced fair-use limits. |
-| `/account` devices | Full device roster — rename, revoke, mint pair/link codes. |
+| `/account` devices | Full device roster — rename and revoke. |
 | `/account/billing` | Legacy subscription state, Stripe portal link, and reconcile status. |
 | `/account/organizations` | Membership, invitations, roles, and legacy billing records. It does not share workspaces, devices, or Sync & Mesh data; each person's access stays independent. |
 | `/account/data` | Export/deletion status — the deletion state machine's visible progress. |
@@ -135,7 +140,7 @@ number of allocated seats. Membership administration does not create a shared
 workspace or Sync & Mesh fleet.
 
 Web device revocation severs the session but does **not** rotate the ADK —
-the app does. See [Devices and pairing](/docs/sync/devices) for the table.
+the app does. See [Devices and sign-in](/docs/sync/devices) for the table.
 
 ## Provisioning status
 

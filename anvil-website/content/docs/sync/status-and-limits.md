@@ -131,7 +131,7 @@ Work that is known, named, and not yet done:
 | Crypto, ADK, what the server sees | [Encryption and keys](/docs/sync/encryption) |
 | The sync loop | [How sync works](/docs/sync/sync-engine) |
 | Handoff state machine | [Session handoff](/docs/sync/session-handoff) |
-| Enrollment, pairing, roster | [Devices and pairing](/docs/sync/devices) |
+| Enrollment, pairing, roster | [Devices and sign-in](/docs/sync/devices) |
 | Remote execution | [Mesh jobs](/docs/sync/mesh-jobs) |
 | Uploads, shares, browser decrypt | [Artifacts and share links](/docs/sync/artifacts-and-shares) |
 | Export, import, delete | [Data portability](/docs/sync/data-portability) |

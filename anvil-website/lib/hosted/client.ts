@@ -26,8 +26,6 @@ import type {
   HostedOrganizationInviteResult,
   HostedOrganizationListResult,
   HostedOrganizationRole,
-  HostedLinkCodeResult,
-  HostedPairDeviceResult,
   HostedPortalResult,
   HostedReconcileResult
 } from "./types";
@@ -330,22 +328,6 @@ export function revokeOrganizationInvitation(
     organizationId,
     invitationId
   });
-}
-
-/** POST /internal/hosted/pair-device — one-time enrollment code for a new device. */
-export function pairDevice(
-  identity: HostedIdentity,
-  displayName?: string
-): Promise<HostedPairDeviceResult> {
-  return hostedCall<HostedPairDeviceResult>("/internal/hosted/pair-device", {
-    ...identity,
-    ...(displayName ? { displayName } : {})
-  });
-}
-
-/** POST /internal/hosted/link-code — code to bind an existing sync account. */
-export function createLinkCode(identity: HostedIdentity): Promise<HostedLinkCodeResult> {
-  return hostedCall<HostedLinkCodeResult>("/internal/hosted/link-code", identity);
 }
 
 /** POST /internal/hosted/devices — account-scoped enrolled device list. */

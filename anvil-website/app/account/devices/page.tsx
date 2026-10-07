@@ -1,7 +1,6 @@
 import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
 import { DeviceTable } from "@/components/account/device-table";
-import { LinkCodeCard } from "@/components/account/link-code-card";
-import { PairDeviceCard } from "@/components/account/pair-device-card";
+import { DeviceSignInGuidance } from "@/components/account/device-sign-in-guidance";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { hostedFailureMessage, loadAccountContext, tryHosted } from "@/lib/account";
 import { listDevices } from "@/lib/hosted";
@@ -24,7 +23,7 @@ async function DevicesData({ identity }: { identity: HostedIdentity }) {
       <header className="grid gap-1">
         <h1 className="text-3xl font-semibold tracking-[-0.02em]">Devices</h1>
         <p className="text-sm text-muted-foreground">
-          Machines paired to your hosted sync account. Revoking signs a device out of hosted sync;
+          Machines connected to your hosted sync account. Revoking signs a device out of hosted sync;
           it keeps working local-only.
         </p>
       </header>
@@ -42,21 +41,21 @@ async function DevicesData({ identity }: { identity: HostedIdentity }) {
               <DeviceTable devices={devices.data.devices} />
             ) : (
               <p className="text-sm text-muted-foreground">
-                No devices paired yet — mint a pairing code below and enter it in Anvil.
+                No devices are connected yet. Sign in to Anvil on a desktop or headless daemon to
+                add one.
               </p>
             )
           ) : (
             <p className="text-sm text-muted-foreground">
               {devices.code === "not-found"
-                ? "The hosted API does not expose device management yet. Pair and revoke devices in Anvil → Settings → Sync & Mesh — the pairing and link codes below already work."
+                ? "The hosted API does not expose device management yet. View and manage devices in Anvil → Settings → Sync & Mesh."
                 : hostedFailureMessage(devices.code, devices.status)}
             </p>
           )}
         </CardContent>
       </Card>
 
-      <PairDeviceCard />
-      <LinkCodeCard />
+      <DeviceSignInGuidance />
     </div>
   );
 }

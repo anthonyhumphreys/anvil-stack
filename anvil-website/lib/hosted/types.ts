@@ -103,19 +103,6 @@ export interface HostedTeamSponsorship {
   seatCapacity: number;
 }
 
-/** POST /internal/hosted/pair-device */
-export interface HostedPairDeviceResult {
-  code: string;
-  expiresAt: string;
-  accountId: string;
-}
-
-/** POST /internal/hosted/link-code */
-export interface HostedLinkCodeResult {
-  linkCode: string;
-  expiresAt: string;
-}
-
 export type HostedBillingInterval = "month" | "year";
 
 /** POST /internal/hosted/checkout */

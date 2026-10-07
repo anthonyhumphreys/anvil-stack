@@ -1,6 +1,6 @@
 import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
 import { DashboardAccess } from "@/components/account/dashboard-access";
-import { PairDeviceCard } from "@/components/account/pair-device-card";
+import { DeviceSignInGuidance } from "@/components/account/device-sign-in-guidance";
 import { loadAccountContext } from "@/lib/account";
 
 export const metadata = { title: "Dashboard | Anvil" };
@@ -29,7 +29,7 @@ export default async function AccountDashboardPage() {
       ) : (
         <>
           <DashboardAccess />
-          <PairDeviceCard />
+          <DeviceSignInGuidance />
         </>
       )}
     </div>

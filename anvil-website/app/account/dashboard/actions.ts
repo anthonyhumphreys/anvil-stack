@@ -40,7 +40,7 @@ function fail(error: unknown): DashboardActionResult<never> {
       return {
         ok: false,
         code: error.code,
-        message: "No sync account is linked yet — use the pairing card below to connect a device."
+        message: "No sync account is linked yet — sign in to Anvil on a desktop or headless daemon to connect a device."
       };
     }
     return {
