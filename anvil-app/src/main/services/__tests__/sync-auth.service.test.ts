@@ -355,6 +355,38 @@ describe('PKCE login', () => {
     svc.cancelPendingLogin();
     await expect(waiting).rejects.toThrow();
   });
+
+  it('discards a late PKCE enrollment result after cancellation and retains the saved session', async () => {
+    const { svc } = serviceWithStubLoopback();
+    await svc.enrollWithCode('HELLO', fake.enroll, 'backend-1');
+    const savedSession = readFileSync(sessionFilePath(userDataDir));
+    const controller = new AbortController();
+    const created = await svc.createPkceLogin({ signal: controller.signal });
+    let resolveEnrollment: ((session: DeviceSession) => void) | undefined;
+    let enrollSignal: AbortSignal | undefined;
+    const completing = svc.completePkceLogin(
+      { state: created.state, authorizationCode: 'late-code' },
+      (_params, signal) => {
+        enrollSignal = signal;
+        return new Promise((resolve) => {
+          resolveEnrollment = resolve;
+        });
+      },
+      'backend-1',
+    );
+
+    expect(enrollSignal).toBe(controller.signal);
+    controller.abort();
+    expect(controller.signal.aborted).toBe(true);
+    resolveEnrollment?.(fakeSession('late'));
+
+    await expect(completing).rejects.toThrow('Sign-in cancelled.');
+    expect(svc.getPublicSnapshot()).toMatchObject({
+      state: 'signed-in',
+      enrollmentId: 'enr-1',
+    });
+    expect(readFileSync(sessionFilePath(userDataDir))).toEqual(savedSession);
+  });
 });
 
 describe('refreshSession', () => {

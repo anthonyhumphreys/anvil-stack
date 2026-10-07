@@ -829,6 +829,8 @@ export interface AnvilAPI {
     signIn: () => Promise<SyncAuthPublicSnapshot>;
     /** Discover the configured Anvil service and sign in; uploading stays off. */
     connectHosted: () => Promise<SyncAuthPublicSnapshot>;
+    /** Cancel hosted discovery or OIDC sign-in without signing out a saved session. */
+    cancelSignIn: () => Promise<void>;
     enrollWithCode: (code: string) => Promise<SyncAuthPublicSnapshot>;
     issueEnrollmentCode: () => Promise<SyncIssuedEnrollmentCode>;
     spikeEnroll: (input: SyncSpikeEnrollInput) => Promise<SyncAuthPublicSnapshot>;

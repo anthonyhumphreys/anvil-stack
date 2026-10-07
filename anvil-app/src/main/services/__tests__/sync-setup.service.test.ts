@@ -21,7 +21,7 @@ vi.mock('../sync-runtime.service.js', () => ({
   signInWithOidc: mocks.signIn,
 }));
 vi.mock('../auth.service.js', () => ({ assertSecretStorageReady: mocks.assertSecretStorageReady }));
-import { connectHostedSync } from '../sync-setup.service';
+import { cancelHostedSyncSignIn, connectHostedSync } from '../sync-setup.service';
 
 const signedOut = { state: 'signed-out', accountId: null, enrollmentId: null };
 const signedIn = { state: 'signed-in', accountId: 'account', enrollmentId: 'device' };
@@ -34,6 +34,7 @@ const initialStatus = {
 };
 
 beforeEach(() => {
+  cancelHostedSyncSignIn();
   vi.resetAllMocks();
   mocks.status.mockReturnValue(initialStatus);
   mocks.runtime.mockReturnValue({ auth: signedOut, sessionExpired: false });
@@ -51,7 +52,10 @@ beforeEach(() => {
 describe('one-action hosted sign-in', () => {
   it('uses the configured service and pins it before browser sign-in', async () => {
     expect(await connectHostedSync()).toEqual(signedIn);
-    expect(mocks.discover).toHaveBeenCalledWith('https://sync.example.com/');
+    expect(mocks.discover).toHaveBeenCalledWith(
+      'https://sync.example.com/',
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
     expect(mocks.pin).toHaveBeenCalledWith({
       baseUrl: 'https://sync.example.com/',
       descriptor: { deploymentId: 'hosted' },
@@ -96,6 +100,28 @@ describe('one-action hosted sign-in', () => {
     await expect(first).rejects.toThrow('cancelled');
     expect(await connectHostedSync()).toEqual(signedIn);
     expect(mocks.signIn).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels discovery and fences a late result before backend pinning', async () => {
+    let resolveDiscovery: ((value: { baseUrl: string; descriptor: object }) => void) | undefined;
+    let discoverySignal: AbortSignal | undefined;
+    mocks.discover.mockImplementation((_endpoint: string, options: { signal: AbortSignal }) => {
+      discoverySignal = options.signal;
+      return new Promise((resolve) => {
+        resolveDiscovery = resolve;
+      });
+    });
+    const connecting = connectHostedSync();
+    cancelHostedSyncSignIn();
+    expect(discoverySignal?.aborted).toBe(true);
+    resolveDiscovery?.({
+      baseUrl: 'https://sync.example.com/',
+      descriptor: { deploymentId: 'late' },
+    });
+
+    await expect(connecting).rejects.toThrow('Sign-in cancelled.');
+    expect(mocks.pin).not.toHaveBeenCalled();
+    expect(mocks.signIn).not.toHaveBeenCalled();
   });
 
   it('blocks a changed pinned identity before discovery', async () => {

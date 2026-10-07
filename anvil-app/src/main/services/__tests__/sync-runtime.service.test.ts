@@ -72,6 +72,7 @@ import {
   refreshHostedEntitlement,
   refreshDeviceIdentitiesForOneShot,
   resetSyncRuntimeForTests,
+  cancelSyncSignIn,
   requestSync,
   resetEncryptedSyncAccount,
   setupDeviceRecovery,
@@ -1294,6 +1295,36 @@ describe('session backend isolation', () => {
 });
 
 describe('credential storage becoming ready', () => {
+  it('rejects user enrollment-code redemption before backend transport when the vault is locked', async () => {
+    const previousStorageDir = secretStorageEnvironment.dataDir;
+    const storageDir = mkdtempSync(join(tmpdir(), 'sync-runtime-vault-'));
+    secretStorageEnvironment.dataDir = storageDir;
+    resetSecretStorageForTests();
+
+    try {
+      await configureSecretVault({ mode: 'passphrase', passphrase: 'test vault passphrase' });
+      selectSecretStorageProvider('vault');
+      lockSecretVault();
+
+      const backend = fakeBackend();
+      initSyncRuntime(mkdtempSync(join(tmpdir(), 'sync-runtime-')), {
+        fetchFn: backend.fetchFn,
+      });
+      pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: descriptorFixture() });
+
+      await expect(enrollWithEnrollmentCode('one-time-code')).rejects.toThrow(
+        'Unlock your encrypted credential vault before signing in.',
+      );
+      expect(backend.calls).toEqual([]);
+      expect(getRuntimeStatus().auth.state).toBe('signed-out');
+    } finally {
+      resetSyncRuntimeForTests();
+      resetSecretStorageForTests();
+      secretStorageEnvironment.dataDir = previousStorageDir;
+      rmSync(storageDir, { recursive: true, force: true });
+    }
+  });
+
   it('resumes an active saved session after vault unlock without re-enrolling or changing its account key', async () => {
     const previousStorageDir = secretStorageEnvironment.dataDir;
     const storageDir = mkdtempSync(join(tmpdir(), 'sync-runtime-vault-'));
@@ -1980,6 +2011,82 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     expect(snapshot.accountId).toBe('oidc-account-1');
     const enroll = backend.calls.find((c) => c.path === '/v1/enroll');
     expect(enroll).toBeTruthy();
+  });
+
+  it('fences a cancelled late enroll without initializing crypto or cancelling a retry', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    const callbackDeliveries: Array<
+      (callback: { state: string; authorizationCode: string }) => void
+    > = [];
+    let releaseFirstEnroll: ((response: Response) => void) | undefined;
+    let firstEnrollRequest: { input: RequestInfo | URL; init?: RequestInit } | undefined;
+    let notifyFirstEnrollStarted: (() => void) | undefined;
+    const firstEnrollStarted = new Promise<void>((resolve) => {
+      notifyFirstEnrollStarted = resolve;
+    });
+    const fetchFn: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const body = JSON.parse((init?.body as string) ?? '{}') as {
+        proof?: { method?: string; authorizationCode?: string };
+      };
+      if (
+        new URL(url).pathname === '/v1/enroll' &&
+        body.proof?.method === 'oidc-pkce' &&
+        body.proof.authorizationCode === 'first-code'
+      ) {
+        firstEnrollRequest = { input, init };
+        notifyFirstEnrollStarted?.();
+        return new Promise<Response>((resolve) => {
+          releaseFirstEnroll = resolve;
+        });
+      }
+      return backend.fetchFn(input, init);
+    };
+
+    initSyncRuntime(dir, {
+      fetchFn,
+      openExternal: async (url) => {
+        openExternalCalls.push(url);
+      },
+      listenLoopback: async () => ({
+        redirectUri: 'http://127.0.0.1:54321/callback',
+        waitForCallback: () =>
+          new Promise((resolve) => {
+            callbackDeliveries.push(resolve);
+          }),
+        close: () => undefined,
+      }),
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+
+    const firstSignIn = signInWithOidc();
+    await vi.waitFor(() => expect(callbackDeliveries).toHaveLength(1));
+    const firstState = new URL(openExternalCalls[0]!).searchParams.get('state') ?? '';
+    callbackDeliveries[0]!({ state: firstState, authorizationCode: 'first-code' });
+    await firstEnrollStarted;
+
+    cancelSyncSignIn();
+    const retrySignIn = signInWithOidc();
+    await vi.waitFor(() => expect(callbackDeliveries).toHaveLength(2));
+
+    const lateResponse = await backend.fetchFn(firstEnrollRequest!.input, firstEnrollRequest!.init);
+    releaseFirstEnroll?.(lateResponse);
+    await expect(firstSignIn).rejects.toThrow('Sign-in cancelled.');
+    expect(getRuntimeStatus().auth.state).toBe('enrolling');
+    expect(
+      hasAccountKey({
+        backendId: 'backend-1',
+        accountId: 'oidc-account-1',
+        datasetEpoch: SPIKE_DATASET_EPOCH,
+      }),
+    ).toBe(false);
+
+    const retryState = new URL(openExternalCalls[1]!).searchParams.get('state') ?? '';
+    callbackDeliveries[1]!({ state: retryState, authorizationCode: 'second-code' });
+    await expect(retrySignIn).resolves.toMatchObject({ state: 'signed-in' });
+    expect(backend.calls.filter((call) => call.path === '/v1/enroll')).toHaveLength(2);
+    expect(getRuntimeStatus().auth.state).toBe('signed-in');
   });
 
   it('revokes remotely on sign-out and never sends tokens to another backend', async () => {

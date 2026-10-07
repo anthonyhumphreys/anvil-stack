@@ -46,6 +46,7 @@ export interface DiscoverOptions {
   allowLoopbackHttp?: boolean;
   timeoutMs?: number;
   maxBytes?: number;
+  signal?: AbortSignal;
   /** Injected in tests; defaults to the global fetch. */
   fetchFn?: typeof fetch;
 }
@@ -239,8 +240,12 @@ export async function discover(
     allowLoopbackHttp = false,
     timeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS,
     maxBytes = DEFAULT_DISCOVERY_MAX_BYTES,
+    signal,
     fetchFn = fetch,
   } = options;
+  if (signal?.aborted) {
+    throw new Error('Sign-in cancelled.');
+  }
   const normalized = normalizeBaseUrl(baseUrl, { allowLoopbackHttp });
   const discoveryUrl = new URL('.well-known/anvil-backend', normalized).href;
   let response: Response;
@@ -249,15 +254,25 @@ export async function discover(
       method: 'GET',
       headers: { Accept: 'application/json' },
       redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal:
+        signal === undefined
+          ? AbortSignal.timeout(timeoutMs)
+          : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
     });
   } catch (error) {
+    if (signal?.aborted) throw new Error('Sign-in cancelled.');
     throw new Error(`backend discovery failed for ${normalized}: ${toMessage(error)}`);
+  }
+  if (signal?.aborted) {
+    throw new Error('Sign-in cancelled.');
   }
   if (!response.ok) {
     throw new Error(`backend discovery failed with HTTP ${response.status} for ${normalized}`);
   }
   const text = await readBoundedText(response, maxBytes);
+  if (signal?.aborted) {
+    throw new Error('Sign-in cancelled.');
+  }
   let payload: unknown;
   try {
     payload = JSON.parse(text) as unknown;

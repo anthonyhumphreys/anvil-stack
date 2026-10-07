@@ -53,7 +53,7 @@ export interface SyncAuthSnapshot {
 }
 
 /** Injected HTTP boundary (owned by BYOB-01): exchanges a proof for a session. */
-export type EnrollFn = (params: EnrollParams) => Promise<EnrollResult>;
+export type EnrollFn = (params: EnrollParams, signal?: AbortSignal) => Promise<EnrollResult>;
 
 /** Injected HTTP boundary: rotates the device session credentials. */
 export type RefreshFn = (params: SessionRefreshParams) => Promise<SessionRefreshResult>;
@@ -93,6 +93,7 @@ export interface CreatePkceLoginOptions {
   clientId?: string;
   scopes?: readonly string[];
   launchBrowser?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface CreatePkceLoginResult {
@@ -129,6 +130,7 @@ interface PersistedSyncSession {
 }
 
 interface PendingPkceLogin {
+  attemptId: number;
   state: string;
   nonce: string;
   codeVerifier: string;
@@ -137,6 +139,8 @@ interface PendingPkceLogin {
   clientId: string;
   waitForCallback: () => Promise<LoopbackCallback>;
   closeListener: () => void;
+  signal?: AbortSignal;
+  removeAbortListener: () => void;
 }
 
 function errorCodeOf(error: unknown): AuthErrorCode | null {
@@ -332,6 +336,7 @@ export class SyncAuthService {
   private readonly openExternal: OpenExternalFn;
   private readonly listenLoopback: ListenLoopbackFn;
   private pending: PendingPkceLogin | null = null;
+  private pkceAttemptId = 0;
   private pendingDeviceAbortController: AbortController | null = null;
   private cached: PersistedSyncSession | null = null;
   private cacheLoaded = false;
@@ -452,9 +457,14 @@ export class SyncAuthService {
   }
 
   async createPkceLogin(options?: CreatePkceLoginOptions): Promise<CreatePkceLoginResult> {
-    if (this.pending !== null) {
-      this.pending.closeListener();
+    const signal = options?.signal;
+    if (signal?.aborted) throw new Error('Sign-in cancelled.');
+    const attemptId = ++this.pkceAttemptId;
+    const previous = this.pending;
+    if (previous !== null) {
       this.pending = null;
+      previous.removeAbortListener();
+      previous.closeListener();
     }
     const issuer = options?.issuer ?? OIDC_PLACEHOLDER_ISSUER;
     const clientId = options?.clientId ?? OIDC_PLACEHOLDER_CLIENT_ID;
@@ -465,11 +475,16 @@ export class SyncAuthService {
     const state = base64UrlEncode(randomBytes(32));
     const nonce = base64UrlEncode(randomBytes(32));
     const { redirectUri, waitForCallback, close } = await this.listenLoopback();
+    if (signal?.aborted || attemptId !== this.pkceAttemptId) {
+      close();
+      throw new Error('Sign-in cancelled.');
+    }
     if (!isAllowedOidcRedirectUri(redirectUri)) {
       close();
       throw new Error('Loopback listener returned a redirect URI outside the frozen form.');
     }
-    this.pending = {
+    const pending: PendingPkceLogin = {
+      attemptId,
       state,
       nonce,
       codeVerifier: pair.verifier,
@@ -478,7 +493,21 @@ export class SyncAuthService {
       clientId,
       waitForCallback,
       closeListener: close,
+      signal,
+      removeAbortListener: () => undefined,
     };
+    this.pending = pending;
+    if (signal !== undefined) {
+      const onAbort = () => {
+        if (this.pending === pending) this.cancelPendingPkceLogin(pending);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      pending.removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+      if (signal.aborted) onAbort();
+    }
+    if (signal?.aborted || this.pending !== pending || attemptId !== this.pkceAttemptId) {
+      throw new Error('Sign-in cancelled.');
+    }
     const authorizationUrl = buildAuthorizationUrl({
       issuer,
       clientId,
@@ -490,6 +519,9 @@ export class SyncAuthService {
     });
     if (options?.launchBrowser === true) {
       await this.openExternal(authorizationUrl);
+      if (signal?.aborted || this.pending !== pending || attemptId !== this.pkceAttemptId) {
+        throw new Error('Sign-in cancelled.');
+      }
     }
     return { authorizationUrl, redirectUri, state };
   }
@@ -504,15 +536,19 @@ export class SyncAuthService {
     if (pending === null) {
       return Promise.reject(new Error('No PKCE sign-in is in progress.'));
     }
-    return Promise.race([
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const result = Promise.race([
       pending.waitForCallback(),
       new Promise<LoopbackCallback>((_resolve, reject) => {
-        setTimeout(
+        timeout = setTimeout(
           () => reject(new Error('Timed out waiting for the sign-in callback.')),
           timeoutMs,
         );
       }),
     ]);
+    return result.finally(() => {
+      if (timeout !== undefined) clearTimeout(timeout);
+    });
   }
 
   async completePkceLogin(
@@ -528,26 +564,57 @@ export class SyncAuthService {
       throw new Error('Missing authorization code. No session was written.');
     }
     const epoch = this.sessionEpoch;
-    const session = await enrollFn({
-      proof: {
-        method: 'oidc-pkce',
-        issuer: pending.issuer,
-        authorizationCode: input.authorizationCode,
-        codeVerifier: pending.codeVerifier,
-        redirectUri: pending.redirectUri,
-        nonce: pending.nonce,
-      },
-      installationId: this.installationId,
-    });
-    pending.closeListener();
-    this.pending = null;
-    if (this.sessionEpoch !== epoch) {
-      // Sign-out landed while the enrollment exchange was in flight: discard
-      // the result rather than resurrecting a session the user cancelled.
+    const attemptId = pending.attemptId;
+    try {
+      const session = await enrollFn(
+        {
+          proof: {
+            method: 'oidc-pkce',
+            issuer: pending.issuer,
+            authorizationCode: input.authorizationCode,
+            codeVerifier: pending.codeVerifier,
+            redirectUri: pending.redirectUri,
+            nonce: pending.nonce,
+          },
+          installationId: this.installationId,
+        },
+        pending.signal,
+      );
+      if (
+        pending.signal?.aborted === true ||
+        this.pkceAttemptId !== attemptId ||
+        this.pending !== pending ||
+        this.sessionEpoch !== epoch
+      ) {
+        throw new Error('Sign-in cancelled.');
+      }
+      this.persistSession(session, backendId);
       return this.getPublicSnapshot();
+    } catch (error) {
+      if (
+        pending.signal?.aborted === true ||
+        this.pkceAttemptId !== attemptId ||
+        this.pending !== pending ||
+        this.sessionEpoch !== epoch
+      ) {
+        throw new Error('Sign-in cancelled.');
+      }
+      throw error;
+    } finally {
+      pending.removeAbortListener();
+      pending.closeListener();
+      if (this.pending === pending) this.pending = null;
     }
-    this.persistSession(session, backendId);
-    return this.getPublicSnapshot();
+  }
+
+  private cancelPendingPkceLogin(expected?: PendingPkceLogin): void {
+    const pending = this.pending;
+    if (expected !== undefined && pending !== expected) return;
+    this.pkceAttemptId += 1;
+    if (pending === null) return;
+    this.pending = null;
+    pending.removeAbortListener();
+    pending.closeListener();
   }
 
   async enrollWithCode(
@@ -760,10 +827,7 @@ export class SyncAuthService {
   }
 
   cancelPendingLogin(): void {
-    if (this.pending !== null) {
-      this.pending.closeListener();
-      this.pending = null;
-    }
+    this.cancelPendingPkceLogin();
     this.pendingDeviceAbortController?.abort();
     this.pendingDeviceAbortController = null;
   }

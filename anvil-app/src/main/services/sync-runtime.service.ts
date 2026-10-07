@@ -438,6 +438,11 @@ let pendingPairingRedemption: PendingPairingRedemption | null = null;
  * callback from an old account/backend can never mutate new-scope state.
  */
 let runtimeGeneration = 0;
+interface OidcSignInAttempt {
+  controller: AbortController;
+  committed: boolean;
+}
+let activeOidcSignInAttempt: OidcSignInAttempt | null = null;
 /** Scope stays read-only until its post-revocation key rotation succeeds. */
 let keyRotationBlockedScopeKey: string | null = null;
 /** Timestamp of the last attempted session.describe entitlement refresh. */
@@ -2356,13 +2361,13 @@ function apiUrlFor(backend: SyncBackendRecord): string {
 /** Real enroll RPC against the pinned backend's contract auth route. */
 function enrollAgainst(
   backend: SyncBackendRecord,
-): (params: EnrollParams) => Promise<EnrollResult> {
-  return (params) =>
+): (params: EnrollParams, signal?: AbortSignal) => Promise<EnrollResult> {
+  return (params, signal) =>
     postAuthRoute<EnrollResult>(
       { apiUrl: apiUrlFor(backend) },
       'enroll',
       params as unknown as Record<string, unknown>,
-      { fetchFn: fetchOverride },
+      { fetchFn: fetchOverride, signal },
     );
 }
 
@@ -2399,25 +2404,41 @@ function revokeAgainst(
  */
 export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
   assertSecretStorageReady();
+  if (activeOidcSignInAttempt !== null) {
+    throw new Error('A sign-in attempt is already in progress.');
+  }
   const backend = requireReviewedBackend();
   if (!backend.descriptor.authModes.includes('oidc-pkce')) {
     throw new Error('This backend does not advertise oidc-pkce sign-in.');
   }
   const service = requireAuth();
-  await service.createPkceLogin({
-    issuer: backend.descriptor.auth.issuer,
-    clientId: backend.descriptor.auth.publicClientId,
-    scopes: backend.descriptor.auth.scopes,
-    launchBrowser: true,
-  });
+  const attempt: OidcSignInAttempt = { controller: new AbortController(), committed: false };
+  activeOidcSignInAttempt = attempt;
+  const assertAttemptActive = () => {
+    if (attempt.controller.signal.aborted || activeOidcSignInAttempt !== attempt) {
+      throw new Error('Sign-in cancelled.');
+    }
+  };
   try {
+    await service.createPkceLogin({
+      issuer: backend.descriptor.auth.issuer,
+      clientId: backend.descriptor.auth.publicClientId,
+      scopes: backend.descriptor.auth.scopes,
+      launchBrowser: true,
+      signal: attempt.controller.signal,
+    });
+    assertAttemptActive();
     const callback = await service.waitForPkceCallback();
-    runtimeGeneration += 1;
+    assertAttemptActive();
     const snapshot = await service.completePkceLogin(
       { state: callback.state, authorizationCode: callback.authorizationCode },
       enrollAgainst(backend),
       backend.id,
     );
+    assertAttemptActive();
+    if (snapshot.state !== 'signed-in') throw new Error('Sign-in cancelled.');
+    attempt.committed = true;
+    runtimeGeneration += 1;
     sessionExpired = false;
     scheduleSessionRefresh();
     ensureCurrentEnrollment();
@@ -2427,15 +2448,29 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
     // already holds it (or provisions v1 itself on a fresh account).
     initializeSyncCrypto();
     await prepareDeviceKeyBeforeConnect();
+    assertAttemptActive();
     // BILL-05: pull hosted access now so a restricted account never gets one
     // free mutating cycle before the first describe lands.
     void refreshHostedEntitlement().catch(() => undefined);
     resumeSyncAfterEnrollment();
     return snapshot;
   } catch (error) {
-    service.cancelPendingLogin();
+    const cancelled = attempt.controller.signal.aborted || activeOidcSignInAttempt !== attempt;
+    if (activeOidcSignInAttempt === attempt) service.cancelPendingLogin();
+    if (cancelled) throw new Error('Sign-in cancelled.');
     throw error;
+  } finally {
+    if (activeOidcSignInAttempt === attempt) activeOidcSignInAttempt = null;
   }
+}
+
+/** Cancel pending browser sign-in without signing out any saved session. */
+export function cancelSyncSignIn(): void {
+  const attempt = activeOidcSignInAttempt;
+  if (attempt === null || attempt.committed) return;
+  activeOidcSignInAttempt = null;
+  attempt.controller.abort();
+  auth?.cancelPendingLogin();
 }
 
 export interface SignInWithWorkOSDeviceOptions {
@@ -2675,6 +2710,7 @@ function initializeSyncCrypto(pairing?: { pairingNonce: string; pairingSecret: s
 
 /** Redeems a short-lived single-use enrollment code at the pinned backend. */
 export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPublicSnapshot> {
+  assertSecretStorageReady();
   const backend = requireReviewedBackend();
   if (requiresDeviceProviderSignIn({ ...getBackendStatus(), ...backend })) {
     throw new Error(

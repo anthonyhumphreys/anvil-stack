@@ -845,6 +845,7 @@ const api: AnvilAPI = {
     preview: () => ipcRenderer.invoke('sync-runtime:preview'),
     signIn: () => ipcRenderer.invoke('sync-runtime:sign-in'),
     connectHosted: () => ipcRenderer.invoke('sync-runtime:connect-hosted'),
+    cancelSignIn: () => ipcRenderer.invoke('sync-runtime:cancel-sign-in'),
     enrollWithCode: (code: string) => ipcRenderer.invoke('sync-runtime:enroll-with-code', { code }),
     issueEnrollmentCode: (): Promise<SyncIssuedEnrollmentCode> =>
       ipcRenderer.invoke('sync-runtime:issue-enrollment-code'),

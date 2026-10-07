@@ -4,9 +4,18 @@ import { getRuntimeStatus, signInWithOidc } from './sync-runtime.service.js';
 import { assertSecretStorageReady } from './auth.service.js';
 import type { SyncAuthPublicSnapshot } from '../../shared/sync-runtime.js';
 
-let hostedConnection: Promise<SyncAuthPublicSnapshot> | null = null;
+interface HostedConnectionAttempt {
+  controller: AbortController;
+  promise: Promise<SyncAuthPublicSnapshot>;
+}
 
-async function connect(): Promise<SyncAuthPublicSnapshot> {
+let hostedConnection: HostedConnectionAttempt | null = null;
+
+function assertAttemptActive(signal: AbortSignal): void {
+  if (signal.aborted) throw new Error('Sign-in cancelled.');
+}
+
+async function connect(signal: AbortSignal): Promise<SyncAuthPublicSnapshot> {
   const before = getBackendStatus();
   if (!before.hostedBackendUrl) {
     throw new Error(
@@ -32,7 +41,15 @@ async function connect(): Promise<SyncAuthPublicSnapshot> {
   // Do not make a discovery request or persist a backend pin unless the
   // eventual session can be encrypted on this device.
   assertSecretStorageReady();
-  const discovered = await discover(endpoint);
+  assertAttemptActive(signal);
+  let discovered: Awaited<ReturnType<typeof discover>>;
+  try {
+    discovered = await discover(endpoint, { signal });
+  } catch (error) {
+    if (signal.aborted) throw new Error('Sign-in cancelled.');
+    throw error;
+  }
+  assertAttemptActive(signal);
   // Discovery can await a network response. Reject a concurrent account or
   // service change instead of overwriting it with the result of an old action.
   const current = getBackendStatus();
@@ -61,15 +78,33 @@ async function connect(): Promise<SyncAuthPublicSnapshot> {
   if (getBackendStatus().backendId !== pinned.id) {
     throw new Error('Your connection changed during setup. Try signing in again.');
   }
+  assertAttemptActive(signal);
   // Pinning remains paused. Upload and worker permission need separate consent.
   return signInWithOidc();
 }
 
 /** Discover the build's hosted service and sign in with one user action. */
 export function connectHostedSync(): Promise<SyncAuthPublicSnapshot> {
-  if (hostedConnection !== null) return hostedConnection;
-  hostedConnection = connect().finally(() => {
-    hostedConnection = null;
-  });
-  return hostedConnection;
+  if (hostedConnection !== null) return hostedConnection.promise;
+  const controller = new AbortController();
+  let attempt: HostedConnectionAttempt;
+  const promise = connect(controller.signal)
+    .catch((error: unknown) => {
+      if (controller.signal.aborted) throw new Error('Sign-in cancelled.');
+      throw error;
+    })
+    .finally(() => {
+      if (hostedConnection === attempt) hostedConnection = null;
+    });
+  attempt = { controller, promise };
+  hostedConnection = attempt;
+  return promise;
+}
+
+/** Cancel hosted discovery and pinning while allowing a later retry. */
+export function cancelHostedSyncSignIn(): void {
+  const attempt = hostedConnection;
+  if (attempt === null) return;
+  hostedConnection = null;
+  attempt.controller.abort();
 }
