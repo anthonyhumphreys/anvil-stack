@@ -8,6 +8,7 @@ export {
   type AgentExecutionControlPlaneOptions,
   type AgentExecutionCursorBatch,
   type AgentExecutionLease,
+  type AgentExecutionProviderDescriptor,
   type AgentExecutionSourceBroker,
 } from "./execution.js";
 export {
@@ -50,6 +51,7 @@ export {
   type AgentExecutionHttpRequest,
   type AgentExecutionHttpResponse,
   type AgentExecutionHttpSecurity,
+  type AgentExecutionProviderHttpClient,
   type AgentExecutionSourceHttpClient,
 } from "./execution-http.js";
 export {
@@ -138,7 +140,11 @@ export function createHttpControlPlane(
   baseUrl: string,
   fetchImpl?: FetchLike,
 ): ControlPlaneApi {
-  const base = baseUrl.replace(/\/+$/, "");
+  let base = baseUrl;
+
+  while (base.endsWith("/")) {
+    base = base.slice(0, -1);
+  }
   const fetcher: FetchLike = fetchImpl ?? (fetch as unknown as FetchLike);
 
   async function request(

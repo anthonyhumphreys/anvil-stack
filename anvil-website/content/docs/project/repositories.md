@@ -3,9 +3,9 @@ title: Monorepo map
 navTitle: Monorepo map
 description: How the anvil-stack monorepo is laid out and where each product surface lives.
 product: Project
-section: Notes
+section: Reference
 journey: reference
-order: 890
+order: 30
 ---
 
 # Monorepo map
@@ -38,7 +38,7 @@ cd anvil-stack/anvil-registry
 pnpm install --ignore-scripts
 ```
 
-CI is path-filtered: changes under `anvil-app/` run the desktop workflows, changes under `anvil-registry/` run the registry and image workflows, and so on. A change in one project does not trigger the others.
+CI is path-filtered: changes under `anvil-app/` run the desktop workflows, changes under `anvil-registry/` run the registry and image workflows, and so on. Shared chat presentation and palette changes under `anvil-app/` also run website CI because both apps consume those sources. Other project changes stay scoped to their own workflows.
 
 ## Where to start in each project
 

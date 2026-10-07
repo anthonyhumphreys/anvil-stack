@@ -27,6 +27,7 @@ import type {
   SimulatorPreviewStatus,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 
 export type PreviewMode = 'browser' | 'simulator';
 
@@ -45,7 +46,7 @@ export function BrowserPanel({
 }: BrowserPanelProps = {}) {
   const routerNavigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { activeWorkspace } = useWorkspace();
+  const { activeWorkspace, featureAvailability } = useWorkspace();
   const [webviewEl, setWebviewEl] = useState<Electron.WebviewTag | null>(null);
   const [previewMode, setPreviewMode] = useState<PreviewMode>(initialMode);
 
@@ -343,6 +344,18 @@ export function BrowserPanel({
 
   const webviewSrc = previewMode === 'simulator' ? (simStatus.url ?? '') : currentUrl;
   const hasUrl = !!webviewSrc;
+
+  // The standalone /browser route is nav-gated on repo readiness; embedded
+  // presentations (chat pane, detached tool windows) stay ungated.
+  if (presentation === 'route' && !isDetachedWindow && !featureAvailability.repoFeaturesEnabled) {
+    return (
+      <RepoFeatureEmptyState
+        icon={Globe}
+        featureLabel="The preview browser"
+        description="Web and simulator previews attach to a workspace repository."
+      />
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -661,7 +674,7 @@ export function BrowserPanel({
               type="button"
               onClick={handleStartSimulator}
               disabled={simStarting}
-              className="mt-4 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="mt-4 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
             >
               {simStarting ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />}
               Start serve-sim

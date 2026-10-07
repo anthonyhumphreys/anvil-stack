@@ -83,32 +83,39 @@ export function RolePickerOverlay({
           <p className="mt-1 text-sm text-text-secondary">What best describes your role?</p>
         </div>
 
-        <div className="space-y-3">
-          {ROLES.map(({ role, label, description, strengths, icon: Icon }) => {
-            return (
-              <button
-                key={role}
-                onClick={() => handleSelect(role)}
-                className="group flex w-full items-center gap-4 rounded-lg border border-border bg-bg-secondary p-4 text-left transition-colors hover:border-accent hover:bg-accent/5"
-              >
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-bg-tertiary text-text-secondary group-hover:text-accent">
-                  <Icon size={18} aria-hidden="true" />
-                </span>
-                <div className="flex-1">
-                  <div className="text-base font-semibold text-text-primary">{label}</div>
-                  <div className="mt-0.5 text-sm text-text-tertiary">{description}</div>
-                  <div className="mt-1 text-xs text-text-muted">{strengths}</div>
-                </div>
-                <ArrowRight
-                  size={16}
-                  className="text-text-tertiary transition-transform group-hover:translate-x-0.5 group-hover:text-accent motion-reduce:transition-none"
-                  aria-hidden="true"
-                />
-              </button>
-            );
-          })}
-        </div>
+        <RoleOptionList onSelect={(role) => void handleSelect(role)} />
       </div>
+    </div>
+  );
+}
+
+/** Shared role card list — also rendered inside the merged Welcome step (O1). */
+export function RoleOptionList({ onSelect }: { onSelect: (role: UserRole) => void }) {
+  return (
+    <div className="space-y-3">
+      {ROLES.map(({ role, label, description, strengths, icon: Icon }) => {
+        return (
+          <button
+            key={role}
+            onClick={() => onSelect(role)}
+            className="group flex w-full items-center gap-4 rounded-lg border border-border bg-bg-secondary p-4 text-left transition-colors hover:border-accent hover:bg-accent/5"
+          >
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-bg-tertiary text-text-secondary group-hover:text-accent">
+              <Icon size={18} aria-hidden="true" />
+            </span>
+            <div className="flex-1">
+              <div className="text-base font-semibold text-text-primary">{label}</div>
+              <div className="mt-0.5 text-sm text-text-tertiary">{description}</div>
+              <div className="mt-1 text-xs text-text-muted">{strengths}</div>
+            </div>
+            <ArrowRight
+              size={16}
+              className="text-text-tertiary transition-transform group-hover:translate-x-0.5 group-hover:text-accent motion-reduce:transition-none"
+              aria-hidden="true"
+            />
+          </button>
+        );
+      })}
     </div>
   );
 }

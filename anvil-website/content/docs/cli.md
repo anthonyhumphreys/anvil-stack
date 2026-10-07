@@ -3,7 +3,7 @@ title: Anvil CLI
 navTitle: Anvil CLI
 description: Use the umbrella anvil command as the main entrypoint for Anvil Cloud and Anvil Registry.
 product: Start here
-section: Welcome
+section: Guides
 journey: build
 order: 20
 ---
@@ -70,6 +70,10 @@ anvil-cloud check --json
 anvil registry explain react@latest
 anvil-registry explain react@latest
 ```
+
+`anvil-cloud` also carries the `mesh` family — `anvil-cloud mesh
+plan|apply|connection|remove` deploys and manages the Sync & Mesh backend on
+your own Cloudflare account. See [Self-deploy](/docs/sync/self-deploy).
 
 ## Environment
 

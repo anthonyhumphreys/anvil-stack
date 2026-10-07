@@ -1,38 +1,52 @@
 @import 'tailwindcss';
+@import './chat-theme.css';
 
 @theme {
-  --color-bg-primary: #0b1020;
-  --color-bg-secondary: #111827;
-  --color-bg-tertiary: #172033;
-  --color-bg-elevated: #1f2a44;
-  --color-bg-hover: #24314f;
-  --color-border: #33415f;
-  --color-border-subtle: #25304a;
-  --color-text-primary: #f8fbff;
-  --color-text-secondary: #cbd6e6;
-  --color-text-tertiary: #95a3b8;
-  --color-text-muted: #8492a8;
-  --color-accent: #ff8a3d;
-  --color-accent-glow: rgba(255, 138, 61, 0.22);
-  --color-success: #48d597;
-  --color-warning: #ffd166;
-  --color-info: #5ec8ff;
-  --color-error: #ff6b8a;
-  --color-persona-coder: #48d597;
-  --color-persona-architect: #5ec8ff;
-  --color-persona-security: #ff6b8a;
-  --color-persona-reviewer: #ffd166;
-  --color-persona-docs: #a78bfa;
+  --color-bg-primary: var(--anvil-chat-bg-primary);
+  --color-bg-secondary: var(--anvil-chat-bg-secondary);
+  --color-bg-tertiary: var(--anvil-chat-bg-tertiary);
+  --color-bg-elevated: var(--anvil-chat-bg-elevated);
+  --color-bg-hover: var(--anvil-chat-bg-hover);
+  --color-border: var(--anvil-chat-border);
+  --color-border-subtle: var(--anvil-chat-border-subtle);
+  --color-text-primary: var(--anvil-chat-text-primary);
+  --color-text-secondary: var(--anvil-chat-text-secondary);
+  --color-text-tertiary: var(--anvil-chat-text-tertiary);
+  --color-text-muted: var(--anvil-chat-text-muted);
+  --color-accent: var(--anvil-chat-accent);
+  --color-accent-glow: var(--anvil-chat-accent-glow);
+  /* Text and icons rendered on top of --color-accent (primary buttons,
+     selected states). Always mirrors the theme's canvas colour; every
+     theme's accent/accent-foreground pair is asserted >= 4.5:1 (WCAG AA
+     normal text) in utils/__tests__/contrast.test.ts (DS1). */
+  --color-accent-foreground: var(--anvil-chat-accent-foreground);
+  /* Scrim behind dialogs and floating surfaces (Dialog, Menu). */
+  --color-scrim: var(--anvil-chat-scrim);
+  --color-success: var(--anvil-chat-success);
+  --color-warning: var(--anvil-chat-warning);
+  --color-info: var(--anvil-chat-info);
+  --color-error: var(--anvil-chat-error);
+  --color-persona-coder: var(--anvil-chat-persona-coder);
+  --color-persona-architect: var(--anvil-chat-persona-architect);
+  --color-persona-security: var(--anvil-chat-persona-security);
+  --color-persona-reviewer: var(--anvil-chat-persona-reviewer);
+  --color-persona-docs: var(--anvil-chat-persona-docs);
   --overlay-ring: rgba(0, 0, 0, 0.18);
-  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-sans: var(--anvil-chat-font-sans);
+  --font-mono: var(--anvil-chat-font-mono);
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
   --radius-xl: 12px;
   --radius-2xl: 16px;
+  /* DS4 type floor: readable text stays >= 12px. 11px is reserved for
+     uppercase eyebrows and counters; `text-eyebrow` bakes in line-height,
+     tracking, and weight — pair it with the `uppercase` utility. */
+  --text-eyebrow: 0.6875rem;
+  --text-eyebrow--line-height: 1.45;
+  --text-eyebrow--letter-spacing: 0.08em;
+  --text-eyebrow--font-weight: 600;
 }
-
 
 @theme inline {
   --color-overlay-ring: var(--overlay-ring);
@@ -55,6 +69,8 @@ html[data-theme='light'] {
   --color-text-muted: #9aa1ad;
   --color-accent: #4f46e5;
   --color-accent-glow: rgba(79, 70, 229, 0.14);
+  --color-accent-foreground: #fbfbfc;
+  --color-scrim: rgba(15, 23, 42, 0.32);
   --color-success: #15803d;
   --color-warning: #b45309;
   --color-info: #0369a1;
@@ -81,6 +97,7 @@ html[data-theme='prompt-whisperer'] {
   --color-text-muted: #76aaa5;
   --color-accent: #3ddbd9;
   --color-accent-glow: rgba(61, 219, 217, 0.22);
+  --color-accent-foreground: #071b1f;
   --color-success: #75e6a7;
   --color-warning: #ffe08a;
   --color-info: #8bd3ff;
@@ -102,6 +119,7 @@ html[data-theme='merge-conflict'] {
   --color-text-muted: #a67e99;
   --color-accent: #ff5c8a;
   --color-accent-glow: rgba(255, 92, 138, 0.24);
+  --color-accent-foreground: #120d18;
   --color-success: #61e2a1;
   --color-warning: #ffd166;
   --color-info: #64d8ff;
@@ -124,6 +142,7 @@ html[data-theme='token-bender'] {
   --color-text-muted: #968ec4;
   --color-accent: #9f7aea;
   --color-accent-glow: rgba(159, 122, 234, 0.24);
+  --color-accent-foreground: #100f2a;
   --color-success: #64e3a0;
   --color-warning: #ffe066;
   --color-info: #7dd3fc;
@@ -145,6 +164,7 @@ html[data-theme='agent-after-hours'] {
   --color-text-muted: #86aa93;
   --color-accent: #6ee7b7;
   --color-accent-glow: rgba(110, 231, 183, 0.22);
+  --color-accent-foreground: #07110d;
   --color-success: #8cf2bd;
   --color-warning: #facc15;
   --color-info: #93c5fd;
@@ -524,6 +544,20 @@ html[data-theme='light'] {
   --shiki-token-string-expression: #9ad0a8;
   --shiki-token-punctuation: #b1aaa2;
   --shiki-token-link: #99c4de;
+}
+
+html[data-theme='light'] {
+  --shiki-color-text: #24292f;
+  --shiki-color-background: #f3f4f6;
+  --shiki-token-constant: #6639ba;
+  --shiki-token-string: #116329;
+  --shiki-token-comment: #57606a;
+  --shiki-token-keyword: #cf222e;
+  --shiki-token-parameter: #953800;
+  --shiki-token-function: #0550ae;
+  --shiki-token-string-expression: #116329;
+  --shiki-token-punctuation: #57606a;
+  --shiki-token-link: #0550ae;
 }
 
 /* Diff viewer overrides */

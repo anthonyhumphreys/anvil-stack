@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildChatFileReference,
+  formatTurnWorkItemSummary,
   shouldCollapseUserMessage,
   shouldShowTurnWorkDetails,
 } from '../ChatMessage';
@@ -33,8 +34,8 @@ describe('shouldCollapseUserMessage', () => {
 });
 
 describe('shouldShowTurnWorkDetails', () => {
-  it('keeps live operational detail open while work is running', () => {
-    expect(shouldShowTurnWorkDetails(true, null)).toBe(true);
+  it('keeps live operational detail folded until requested', () => {
+    expect(shouldShowTurnWorkDetails(true, null)).toBe(false);
     expect(shouldShowTurnWorkDetails(true, false)).toBe(false);
     expect(shouldShowTurnWorkDetails(true, true)).toBe(true);
   });
@@ -43,5 +44,52 @@ describe('shouldShowTurnWorkDetails', () => {
     expect(shouldShowTurnWorkDetails(false, null)).toBe(false);
     expect(shouldShowTurnWorkDetails(false, false)).toBe(false);
     expect(shouldShowTurnWorkDetails(false, true)).toBe(true);
+  });
+});
+
+describe('formatTurnWorkItemSummary', () => {
+  it('keeps a useful progress excerpt visible in the compact work row', () => {
+    expect(
+      formatTurnWorkItemSummary({
+        kind: 'progress',
+        content: '**Updated parser** in `src/main/parser.ts`.',
+        sourceIndex: 3,
+      }),
+    ).toBe('Updated parser in src/main/parser.ts.');
+  });
+
+  it('summarizes the command that is running', () => {
+    expect(
+      formatTurnWorkItemSummary({
+        kind: 'event',
+        event: { type: 'command_exec', command: 'pnpm test -- src/renderer/components/chat' },
+        sourceIndex: 7,
+      }),
+    ).toBe('Running pnpm test -- src/renderer/components/chat');
+  });
+
+  it('labels a finished command as completed', () => {
+    expect(
+      formatTurnWorkItemSummary({
+        kind: 'event',
+        event: {
+          type: 'command_exec',
+          command: 'pnpm test',
+          exitCode: 0,
+        },
+        sourceIndex: 8,
+      }),
+    ).toBe('Completed pnpm test');
+  });
+
+  it('shortens long status text without clipping the last word', () => {
+    const summary = formatTurnWorkItemSummary({
+      kind: 'progress',
+      content: 'Updated ' + Array.from({ length: 24 }, (_, index) => `file-${index}`).join(' '),
+      sourceIndex: 5,
+    });
+
+    expect(summary.length).toBeLessThanOrEqual(110);
+    expect(summary.endsWith('…')).toBe(true);
   });
 });

@@ -1,0 +1,498 @@
+// BILL-04: website-facing device management + data/deletion routes under
+// /internal/hosted/* (HMAC service channel) backed by the new
+// SessionCoordinator *-for-account / delete-account-by-id internal routes.
+
+import { env, SELF } from 'cloudflare:test';
+import { describe, expect, it } from 'vitest';
+
+import {
+  WORKOS_AUTHKIT_ISSUER,
+  type DeviceSession,
+  type DeviceSummary,
+  type WorkosDeviceProof,
+} from '../../contract/auth';
+import { isRpcError } from '../../contract/envelope';
+import type { HostedIdentity } from '../src/hosted/identity';
+import { signHostedServiceRequest } from '../src/hosted/service-auth';
+import { getBillingAccountByIdentity, getOrCreateBillingAccount } from '../src/hosted/store';
+import { postRpc } from './helpers';
+
+const SERVICE_KEY_ID = 'test';
+const SERVICE_SECRET = 'a'.repeat(32);
+const SERVICE_AUDIENCE = 'anvil-hosted';
+const WORKOS_API = 'https://api.workos.com';
+const WORKOS_CLIENT_ID = 'client_hosted_test';
+
+function hostedDb(): D1Database {
+  const db = env.HOSTED_DB;
+  if (db === undefined) throw new Error('HOSTED_DB binding missing in test env');
+  return db;
+}
+
+function makeIdentity(tag: string): HostedIdentity {
+  return { workosClientId: 'client_hosted_test', workosUserId: `user_${tag}` };
+}
+
+/** Signs and POSTs a service request to an /internal/hosted/* route. */
+async function signedHostedPost(
+  path: string,
+  body: unknown,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const payload = new TextEncoder().encode(JSON.stringify(body));
+  const url = `https://spike.test${path}`;
+  const headers = await signHostedServiceRequest(
+    new Request(url, { method: 'POST' }),
+    payload,
+    { audience: SERVICE_AUDIENCE, keyId: SERVICE_KEY_ID, secret: SERVICE_SECRET },
+    Date.now(),
+  );
+  const response = await SELF.fetch(new Request(url, { method: 'POST', headers, body: payload }));
+  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+}
+
+async function enrollWithWorkOS(
+  identity: HostedIdentity,
+  installationId: string,
+): Promise<DeviceSession> {
+  env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
+  env.OIDC_CLIENT_ID = WORKOS_CLIENT_ID;
+  env.HOSTED_WORKOS_CLIENT_ID = WORKOS_CLIENT_ID;
+
+  const deviceCode = `hosted-device-${crypto.randomUUID()}`;
+  const queued = await fetch(`${WORKOS_API}/__workos-stub/enqueue`, {
+    method: 'POST',
+    body: JSON.stringify({
+      method: 'POST',
+      path: '/user_management/authenticate',
+      body: { user: { object: 'user', id: identity.workosUserId } },
+    }),
+  });
+  expect(queued.status).toBe(200);
+
+  const proof: WorkosDeviceProof = {
+    method: 'workos-device',
+    issuer: WORKOS_AUTHKIT_ISSUER,
+    deviceCode,
+  };
+  const request = () =>
+    SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof,
+        installationId,
+        displayName: 'Hosted test device',
+      }),
+    });
+  let response = await request();
+  // The provider verifier has a DO-wide one-second gate. Tests that enroll
+  // several devices back-to-back retry only that local rate-limit response.
+  if (response.status === 429) {
+    await response.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 1_010));
+    response = await request();
+  }
+  expect(response.status).toBe(200);
+  return (await response.json()) as DeviceSession;
+}
+
+/** A hosted WorkOS sign-in for an identity with an existing admitted account. */
+async function signInAndEnroll(
+  identity: HostedIdentity,
+  installationId: string,
+): Promise<{ session: DeviceSession; accountId: string }> {
+  // This suite exercises devices for an already admitted preview user.
+  await getOrCreateBillingAccount(hostedDb(), identity);
+  const session = await enrollWithWorkOS(identity, installationId);
+  const account = await getBillingAccountByIdentity(hostedDb(), identity);
+  expect(account?.sync_account_id).toBe(session.accountId);
+  return { session, accountId: session.accountId };
+}
+
+function errorOf(body: Record<string, unknown>): { code: string; details?: { reason?: string } } {
+  return body['error'] as { code: string; details?: { reason?: string } };
+}
+
+describe('hosted devices', () => {
+  it('lists every enrolled device on the mapped account with self:false', async () => {
+    const identity = makeIdentity(`dev-${crypto.randomUUID()}`);
+    const first = await signInAndEnroll(identity, 'inst-web-a');
+    const second = await signInAndEnroll(identity, 'inst-web-b');
+
+    const listed = await signedHostedPost('/internal/hosted/devices', identity);
+    expect(listed.status).toBe(200);
+    const devices = listed.body['devices'] as DeviceSummary[];
+    expect(devices).toHaveLength(2);
+    const byEnrollment = new Map(devices.map((d) => [d.enrollmentId, d]));
+    const expected = new Map([
+      [first.session.enrollmentId, 'inst-web-a'],
+      [second.session.enrollmentId, 'inst-web-b'],
+    ]);
+    for (const [enrollmentId, installationId] of expected) {
+      const row = byEnrollment.get(enrollmentId);
+      expect(row).toBeDefined();
+      expect(row?.self).toBe(false);
+      expect(row?.revoked).toBe(false);
+      expect(row?.trustState).toBe('trusted');
+      expect(row?.installationId).toBe(installationId);
+      expect(row?.displayName).toBe('Hosted test device');
+    }
+  });
+
+  it('marks only active trusted person-owned enrollments as dashboard targets', async () => {
+    const identity = makeIdentity(`dashboard-target-${crypto.randomUUID()}`);
+    const { session, accountId } = await signInAndEnroll(identity, 'inst-dashboard-target');
+    const sessions = env.SESSIONS.get(env.SESSIONS.idFromName('sessions'));
+    const check = (targetAccountId: string, enrollmentId: string) =>
+      sessions.fetch(
+        new Request('https://internal.anvil/internal/device-active-for-account', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ accountId: targetAccountId, enrollmentId }),
+        }),
+      );
+
+    const active = await check(accountId, session.enrollmentId);
+    expect(active.status).toBe(200);
+    expect(await active.json()).toEqual({ active: true });
+
+    const dashboardRequest = (enrollmentId: string) => ({
+      ...identity,
+      request: {
+        requestId: crypto.randomUUID(),
+        targetEnrollmentId: enrollmentId,
+        browserPub: btoa('0123456789abcdef0123456789abcdef'),
+        challenge: 'target-device-check',
+        scopes: [],
+        workspaceBindings: [],
+        origin: 'https://workspace.example',
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      },
+    });
+    const accepted = await signedHostedPost(
+      '/internal/hosted/dashboard-request',
+      dashboardRequest(session.enrollmentId),
+    );
+    expect(accepted.status).toBe(200);
+
+    const unknownTarget = await signedHostedPost(
+      '/internal/hosted/dashboard-request',
+      dashboardRequest(`enr_${crypto.randomUUID()}`),
+    );
+    expect(unknownTarget.status).toBe(403);
+
+    const crossAccount = await check(`acct_${crypto.randomUUID()}`, session.enrollmentId);
+    expect(await crossAccount.json()).toEqual({ active: false });
+
+    await signedHostedPost('/internal/hosted/device-revoke', {
+      ...identity,
+      enrollmentId: session.enrollmentId,
+    });
+    const revoked = await check(accountId, session.enrollmentId);
+    expect(await revoked.json()).toEqual({ active: false });
+    const revokedTarget = await signedHostedPost(
+      '/internal/hosted/dashboard-request',
+      dashboardRequest(session.enrollmentId),
+    );
+    expect(revokedTarget.status).toBe(403);
+  });
+
+  it('lets the signed account owner revoke a session-only dashboard grant by request id', async () => {
+    const identity = makeIdentity(`dashboard-revoke-${crypto.randomUUID()}`);
+    const { session, accountId } = await signInAndEnroll(identity, 'inst-dashboard-revoke');
+    const requestId = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 600_000).toISOString();
+    const requested = await signedHostedPost('/internal/hosted/dashboard-request', {
+      ...identity,
+      request: {
+        requestId,
+        browserPub: btoa('0123456789abcdef0123456789abcdef'),
+        challenge: 'session-only-dashboard-revoke',
+        scopes: ['read-dashboard'],
+        expiresAt,
+      },
+    });
+    expect(requested.status).toBe(200);
+
+    const approved = await postRpc(
+      'dashboard.decide',
+      {
+        requestId,
+        decision: 'approved',
+        grant: {
+          v: 1,
+          enc: 'x25519-aes-256-gcm',
+          requestId,
+          browserPub: btoa('0123456789abcdef0123456789abcdef'),
+          expiresAt,
+          ephPub: btoa('fedcba9876543210fedcba9876543210'),
+          nonce: btoa('0123456789ab'),
+          ct: btoa('sealed-dashboard-session-key'),
+        },
+        snapshot: {
+          enc: 'aes-256-gcm',
+          seq: 1,
+          nonce: btoa('0123456789ab'),
+          ct: btoa('sealed-dashboard-snapshot'),
+        },
+      },
+      `Bearer ${session.accessToken}`,
+    );
+    expect(approved.status).toBe(200);
+
+    const disconnected = await signedHostedPost('/internal/hosted/dashboard-revoke', {
+      ...identity,
+      requestId,
+    });
+    expect(disconnected.status).toBe(200);
+    expect(disconnected.body['revoked']).toBe(true);
+
+    const account = env.ACCOUNT.get(env.ACCOUNT.idFromName(accountId));
+    const statusResponse = await account.fetch(
+      new Request('https://internal.anvil/internal/dashboard-status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requestId }),
+      }),
+    );
+    expect(await statusResponse.json()).toMatchObject({ result: { state: 'revoked' } });
+  });
+
+  it('renames a device by enrollmentId and persists it to the list', async () => {
+    const identity = makeIdentity(`ren-${crypto.randomUUID()}`);
+    const { session: keeper } = await signInAndEnroll(identity, 'inst-keep');
+    const { session: renamed, accountId } = await signInAndEnroll(identity, 'inst-rename');
+
+    const result = await signedHostedPost('/internal/hosted/device-rename', {
+      ...identity,
+      enrollmentId: renamed.enrollmentId,
+      displayName: 'Office Mac',
+    });
+    expect(result.status).toBe(200);
+    expect(result.body['renamed']).toBe(true);
+    expect(result.body['enrollmentId']).toBe(renamed.enrollmentId);
+
+    const listed = await signedHostedPost('/internal/hosted/devices', identity);
+    const devices = listed.body['devices'] as DeviceSummary[];
+    expect(devices.find((d) => d.enrollmentId === renamed.enrollmentId)?.displayName).toBe(
+      'Office Mac',
+    );
+    expect(devices.find((d) => d.enrollmentId === keeper.enrollmentId)?.displayName).toBe(
+      'Hosted test device',
+    );
+
+    // An enrollment on somebody else's account is not-found, never renamed.
+    const foreign = await signedHostedPost('/internal/hosted/device-rename', {
+      ...makeIdentity(`other-${crypto.randomUUID()}`),
+      enrollmentId: renamed.enrollmentId,
+      displayName: 'Nope',
+    });
+    expect(foreign.status).toBe(404);
+    const stranger = await signInAndEnroll(
+      makeIdentity(`stranger-${crypto.randomUUID()}`),
+      'inst-stranger',
+    );
+    const crossAccount = await signedHostedPost('/internal/hosted/device-rename', {
+      ...identity,
+      enrollmentId: stranger.session.enrollmentId,
+      displayName: 'Nope',
+    });
+    expect(crossAccount.status).toBe(404);
+    expect(errorOf(crossAccount.body).code).toBe('not-found');
+    expect(accountId).not.toBe(stranger.accountId);
+  });
+
+  it('rejects malformed rename and revoke bodies', async () => {
+    const identity = makeIdentity(`bad-${crypto.randomUUID()}`);
+    await signInAndEnroll(identity, 'inst-bad');
+    const cases: [string, unknown][] = [
+      ['/internal/hosted/device-rename', { ...identity, enrollmentId: '', displayName: 'x' }],
+      [
+        '/internal/hosted/device-rename',
+        { ...identity, enrollmentId: 'enr_x', displayName: 'y'.repeat(81) },
+      ],
+      ['/internal/hosted/device-rename', { ...identity, enrollmentId: 'enr_x', displayName: 42 }],
+      ['/internal/hosted/device-revoke', { ...identity }],
+      ['/internal/hosted/device-revoke', { ...identity, enrollmentId: '' }],
+    ];
+    for (const [path, body] of cases) {
+      const response = await signedHostedPost(path, body);
+      expect(response.status).toBe(400);
+      expect(errorOf(response.body).code).toBe('malformed-request');
+    }
+  });
+
+  it('revokes a device so its session no longer validates', async () => {
+    const identity = makeIdentity(`rev-${crypto.randomUUID()}`);
+    const { session: keeper } = await signInAndEnroll(identity, 'inst-keep');
+    const { session: revoked } = await signInAndEnroll(identity, 'inst-revoke');
+
+    const result = await signedHostedPost('/internal/hosted/device-revoke', {
+      ...identity,
+      enrollmentId: revoked.enrollmentId,
+    });
+    expect(result.status).toBe(200);
+    expect(result.body['revoked']).toBe(true);
+
+    // The revoked device's bearer fails session validation outright.
+    const rpc = await postRpc('device.list', {}, `Bearer ${revoked.accessToken}`);
+    expect(isRpcError(rpc.body)).toBe(true);
+    expect((rpc.body as { error: { code: string } }).error.code).toBe('unauthenticated');
+
+    // The list still shows the row — flagged revoked — and the sibling is
+    // unaffected (its bearer still works).
+    const listed = await signedHostedPost('/internal/hosted/devices', identity);
+    const devices = listed.body['devices'] as DeviceSummary[];
+    expect(devices.find((d) => d.enrollmentId === revoked.enrollmentId)?.revoked).toBe(true);
+    expect(devices.find((d) => d.enrollmentId === keeper.enrollmentId)?.revoked).toBe(false);
+    const alive = await postRpc('device.list', {}, `Bearer ${keeper.accessToken}`);
+    expect(isRpcError(alive.body)).toBe(false);
+
+    // Revocation is idempotent and account-scoped.
+    const again = await signedHostedPost('/internal/hosted/device-revoke', {
+      ...identity,
+      enrollmentId: revoked.enrollmentId,
+    });
+    expect(again.status).toBe(200);
+    const missing = await signedHostedPost('/internal/hosted/device-revoke', {
+      ...identity,
+      enrollmentId: 'enr_nonexistent',
+    });
+    expect(missing.status).toBe(404);
+  });
+});
+
+describe('hosted data-status', () => {
+  it('reports a clean state for a linked account', async () => {
+    const identity = makeIdentity(`ds-${crypto.randomUUID()}`);
+    const { accountId } = await signInAndEnroll(identity, 'inst-ds');
+    const status = await signedHostedPost('/internal/hosted/data-status', identity);
+    expect(status.status).toBe(200);
+    expect(status.body['syncAccountId']).toBe(accountId);
+    expect(status.body['tombstoned']).toBe(false);
+    expect(status.body['deletion']).toEqual({ state: 'none' });
+  });
+
+  it('reports the null shape for an unlinked billing account', async () => {
+    const identity = makeIdentity(`unlinked-${crypto.randomUUID()}`);
+    await getOrCreateBillingAccount(hostedDb(), identity);
+    const status = await signedHostedPost('/internal/hosted/data-status', identity);
+    expect(status.status).toBe(200);
+    expect(status.body).toEqual({
+      syncAccountId: null,
+      tombstoned: false,
+      deletion: { state: 'none' },
+    });
+  });
+
+  it('surfaces a device-initiated deletion on the mapped account', async () => {
+    const identity = makeIdentity(`dsdel-${crypto.randomUUID()}`);
+    const { session, accountId } = await signInAndEnroll(identity, 'inst-dsdel');
+    const deleted = await postRpc('account.delete', {}, `Bearer ${session.accessToken}`);
+    expect(isRpcError(deleted.body)).toBe(false);
+
+    const status = await signedHostedPost('/internal/hosted/data-status', identity);
+    expect(status.status).toBe(200);
+    expect(status.body['syncAccountId']).toBe(accountId);
+    expect(status.body['tombstoned']).toBe(true);
+    const deletion = status.body['deletion'] as { state: string; purgedRows?: number };
+    expect(['deleting', 'deleted']).toContain(deletion.state);
+    const billing = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(billing?.lifecycle).toBe(deletion.state);
+  });
+});
+
+describe('hosted delete-account', () => {
+  it('tombstones the sync account, revokes sessions, reconciles billing state, and is idempotent', async () => {
+    const identity = makeIdentity(`del-${crypto.randomUUID()}`);
+    const { session, accountId } = await signInAndEnroll(identity, 'inst-del');
+
+    const first = await signedHostedPost('/internal/hosted/delete-account', identity);
+    expect(first.status).toBe(200);
+    expect(['deleting', 'deleted']).toContain(first.body['state']);
+
+    // Every session on the mapped account is revoked.
+    const revoked = await postRpc('device.list', {}, `Bearer ${session.accessToken}`);
+    expect(isRpcError(revoked.body)).toBe(true);
+    expect((revoked.body as { error: { code: string } }).error.code).toBe('unauthenticated');
+
+    // The billing lifecycle follows the account object's purge state, and
+    // the request was audited.
+    const billing = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(billing?.lifecycle).toBe(first.body['state']);
+    const auditRow = await hostedDb()
+      .prepare(
+        "SELECT kind, detail FROM billing_audit WHERE billing_account_id = ? AND kind = 'account.delete-requested'",
+      )
+      .bind(billing?.id)
+      .first<{ kind: string; detail: string }>();
+    expect(auditRow).not.toBeNull();
+    expect(JSON.parse(auditRow!.detail)['syncAccountId']).toBe(accountId);
+
+    // Device management is denied while deletion is in flight or after it completes.
+    for (const path of ['/internal/hosted/devices']) {
+      const denied = await signedHostedPost(path, identity);
+      expect(denied.status).toBe(403);
+      expect(errorOf(denied.body).code).toBe('forbidden');
+      expect(errorOf(denied.body).details?.reason).toBe('account-deleted');
+    }
+
+    // Data status stays available during the purge and reconciles a late
+    // transition to `deleted`; once terminal, the lifecycle denies it.
+    const currentBilling = await getBillingAccountByIdentity(hostedDb(), identity);
+    const status = await signedHostedPost('/internal/hosted/data-status', identity);
+    if (currentBilling?.lifecycle === 'deleted') {
+      expect(status.status).toBe(403);
+      expect(errorOf(status.body).details?.reason).toBe('account-deleted');
+    } else {
+      expect(status.status).toBe(200);
+      const deletion = status.body['deletion'] as { state: string };
+      expect(['deleting', 'deleted']).toContain(deletion.state);
+      const reconciled = await getBillingAccountByIdentity(hostedDb(), identity);
+      expect(reconciled?.lifecycle).toBe(deletion.state);
+    }
+
+    // Repeats drive an in-flight purge; a completed deletion is terminal.
+    const second = await signedHostedPost('/internal/hosted/delete-account', identity);
+    if ((await getBillingAccountByIdentity(hostedDb(), identity))?.lifecycle === 'deleted') {
+      expect(second.status).toBe(403);
+      expect(errorOf(second.body).details?.reason).toBe('account-deleted');
+    } else {
+      expect(second.status).toBe(200);
+      expect(['deleting', 'deleted']).toContain(second.body['state']);
+      const reconciled = await getBillingAccountByIdentity(hostedDb(), identity);
+      expect(reconciled?.lifecycle).toBe(second.body['state']);
+    }
+  });
+
+  it('returns not-found for unknown identities and unlinked accounts', async () => {
+    const unknown = makeIdentity(`ghost-${crypto.randomUUID()}`);
+    for (const path of [
+      '/internal/hosted/devices',
+      '/internal/hosted/device-rename',
+      '/internal/hosted/device-revoke',
+      '/internal/hosted/data-status',
+      '/internal/hosted/delete-account',
+    ]) {
+      const missing = await signedHostedPost(path, {
+        ...unknown,
+        enrollmentId: 'enr_x',
+        displayName: 'x',
+      });
+      expect(missing.status).toBe(404);
+      expect(errorOf(missing.body).code).toBe('not-found');
+    }
+
+    const unlinked = makeIdentity(`unlinked-${crypto.randomUUID()}`);
+    await getOrCreateBillingAccount(hostedDb(), unlinked);
+    for (const path of [
+      '/internal/hosted/devices',
+      '/internal/hosted/device-revoke',
+      '/internal/hosted/delete-account',
+    ]) {
+      const response = await signedHostedPost(path, { ...unlinked, enrollmentId: 'enr_x' });
+      expect(response.status).toBe(404);
+      expect(errorOf(response.body).details?.reason).toBe('unlinked');
+    }
+  });
+});

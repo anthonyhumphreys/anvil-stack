@@ -186,7 +186,7 @@ export function PlanIntentSurface({
             <span className="truncate text-sm font-semibold text-text-primary">
               {intent.payload.title}
             </span>
-            <span className="shrink-0 rounded-full bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info">
+            <span className="shrink-0 rounded-full bg-info/10 px-2 py-0.5 text-eyebrow font-medium text-info">
               {formatPlanLifecycle(intent.payload.lifecycle)}
             </span>
           </span>
@@ -316,9 +316,7 @@ export function PlanIntentSurface({
                             </p>
                           )}
                           {!editing && step.owner && (
-                            <p className="mt-0.5 text-[11px] text-text-tertiary">
-                              Owner: {step.owner}
-                            </p>
+                            <p className="mt-0.5 text-xs text-text-tertiary">Owner: {step.owner}</p>
                           )}
                           {!editing && step.notes && (
                             <p className="mt-0.5 text-xs leading-5 text-text-tertiary">
@@ -336,7 +334,7 @@ export function PlanIntentSurface({
                                     { type: 'set_step_status', stepId: step.id, status: 'done' },
                                   ])
                                 }
-                                className="rounded-md px-2 py-1 text-[11px] font-medium text-success hover:bg-success/10 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                                className="rounded-md px-2 py-1 text-xs font-medium text-success hover:bg-success/10 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
                               >
                                 Complete
                               </button>
@@ -344,7 +342,7 @@ export function PlanIntentSurface({
                             <button
                               type="button"
                               onClick={() => askAboutStep(step)}
-                              className="rounded-md px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-bg-tertiary focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                              className="rounded-md px-2 py-1 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
                             >
                               Ask agent
                             </button>
@@ -372,7 +370,7 @@ export function PlanIntentSurface({
                 type="button"
                 onClick={saveEdits}
                 disabled={submitting || !title.trim()}
-                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {submitting ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
                 Save plan
@@ -699,7 +697,7 @@ function QuestionField({
                   <span className="flex flex-wrap items-center gap-2 text-sm font-medium text-text-primary">
                     <span className="break-words">{option.label}</span>
                     {option.recommended && (
-                      <span className="rounded-full bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info">
+                      <span className="rounded-full bg-info/10 px-2 py-0.5 text-eyebrow font-medium text-info">
                         Recommended
                       </span>
                     )}

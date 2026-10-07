@@ -33,14 +33,14 @@ import type {
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
-import { EmptyState } from '../layout/ViewScaffold';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 
 type Tab = 'changes' | 'pull_requests' | 'log' | 'branches';
 
 export function GitView() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { repos } = useWorkspace();
+  const { repos, featureAvailability } = useWorkspace();
   const indexedRepos = useMemo(() => repos.filter((r) => r.status !== 'error'), [repos]);
 
   const [selectedRepoId, setSelectedRepoId] = useState('');
@@ -305,13 +305,12 @@ export function GitView() {
   const staged = useMemo(() => status?.files.filter((f) => f.staged) ?? [], [status]);
   const unstaged = useMemo(() => status?.files.filter((f) => !f.staged) ?? [], [status]);
 
-  if (indexedRepos.length === 0) {
+  if (!featureAvailability.repoFeaturesEnabled || indexedRepos.length === 0) {
     return (
-      <EmptyState
+      <RepoFeatureEmptyState
         icon={GitBranch}
-        title="Connect a repository for Git"
+        featureLabel="Git"
         description="Git changes, branches, commits, and pull requests are scoped to a workspace repository."
-        className="h-full"
       />
     );
   }
@@ -585,7 +584,7 @@ function PullRequestsTab({
             <button
               type="button"
               onClick={() => onVisualise(pullRequest)}
-              className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85"
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
             >
               <Sparkles size={13} /> Visualise PR
             </button>
@@ -769,13 +768,13 @@ function ChangesTab({
           <button
             onClick={onCommit}
             disabled={staged.length === 0 || committing || generatingMessage}
-            className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/80 disabled:opacity-40"
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/80 disabled:opacity-40"
           >
             {committing ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
             {commitMsg.trim() ? 'Commit' : 'Generate & commit'} ({staged.length} file
             {staged.length !== 1 ? 's' : ''})
           </button>
-          <div className="mt-1 text-center text-[10px] text-text-tertiary">
+          <div className="mt-1 text-center text-xs text-text-tertiary">
             {navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to commit
           </div>
         </div>
@@ -854,7 +853,7 @@ function FileRow({
         <FileIcon status={file.status} />
         <span className="truncate text-sm text-text-primary">{file.path}</span>
       </button>
-      <div className="flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
+      <div className="flex shrink-0 items-center gap-1 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
         {onDiscard && (
           <button
             onClick={(e) => {
@@ -954,7 +953,7 @@ function LogTab({ log }: { log: GitLogEntry[] }) {
                     {entry.message}
                   </span>
                   {entry.refs && (
-                    <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                    <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-eyebrow font-medium text-accent">
                       {entry.refs}
                     </span>
                   )}
@@ -1027,7 +1026,7 @@ function BranchesTab({
           <button
             onClick={onCreateBranch}
             disabled={!newBranchName.trim()}
-            className="rounded bg-accent px-2 py-1 text-xs text-white hover:bg-accent/80 disabled:opacity-40"
+            className="rounded bg-accent px-2 py-1 text-xs text-accent-foreground hover:bg-accent/80 disabled:opacity-40"
           >
             Create
           </button>
@@ -1057,7 +1056,7 @@ function BranchesTab({
                   {b.name}
                 </span>
                 {b.current && (
-                  <span className="rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                  <span className="rounded bg-accent/20 px-1.5 py-0.5 text-eyebrow font-medium text-accent">
                     current
                   </span>
                 )}
@@ -1065,7 +1064,7 @@ function BranchesTab({
               {b.tracking && <div className="text-xs text-text-tertiary">{b.tracking}</div>}
             </div>
             {!b.current && (
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+              <div className="flex items-center gap-1 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
                 <button
                   onClick={() => onSwitch(b.name)}
                   className="rounded px-2 py-0.5 text-xs text-text-secondary hover:bg-bg-primary hover:text-text-primary"

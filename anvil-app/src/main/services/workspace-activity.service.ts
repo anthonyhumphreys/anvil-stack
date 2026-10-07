@@ -70,8 +70,7 @@ function threadItem(row: AttentionThreadRow): WorkspaceActivityItem | null {
       return { ...base, detail: 'A turn is in progress.', status: 'running' };
     case 'complete': {
       const unseen =
-        !row.last_viewed_at ||
-        dateValue(row.attention_updated_at) > dateValue(row.last_viewed_at);
+        !row.last_viewed_at || dateValue(row.attention_updated_at) > dateValue(row.last_viewed_at);
       return unseen
         ? { ...base, detail: 'Completed work is ready to review.', status: 'ready' }
         : null;
@@ -81,10 +80,7 @@ function threadItem(row: AttentionThreadRow): WorkspaceActivityItem | null {
   }
 }
 
-function automationItem(
-  workspaceId: string,
-  item: AutomationTriageItem,
-): WorkspaceActivityItem {
+function automationItem(workspaceId: string, item: AutomationTriageItem): WorkspaceActivityItem {
   const detail =
     item.attention === 'blocked'
       ? (item.errorMessage ?? item.summary ?? 'Automation needs attention.')
@@ -131,7 +127,7 @@ function scaffoldItem(row: ScaffoldRow): WorkspaceActivityItem | null {
       id: `scaffold-${row.workspace_id}`,
       workspaceId: row.workspace_id,
       feature: row.status === 'indexing' ? 'repos' : 'chat',
-      route: row.status === 'indexing' ? '/repos' : '/chat',
+      route: row.status === 'indexing' ? '/workspace' : '/chat',
       title: row.status === 'indexing' ? 'Workspace indexing' : 'Workspace setup running',
       detail:
         row.status === 'indexing'
@@ -193,7 +189,7 @@ export function getWorkspaceActivityFeed(): WorkspaceActivitySummary[] {
         id: `repos-indexing-${workspaceId}`,
         workspaceId,
         feature: 'repos',
-        route: '/repos',
+        route: '/workspace',
         title: `${bucket.indexing.length} repo${bucket.indexing.length === 1 ? '' : 's'} indexing`,
         detail: bucket.indexing.join(', '),
         status: 'running',
@@ -204,7 +200,7 @@ export function getWorkspaceActivityFeed(): WorkspaceActivitySummary[] {
         id: `repos-error-${workspaceId}`,
         workspaceId,
         feature: 'repos',
-        route: '/repos',
+        route: '/workspace',
         title: `${bucket.errored.length} repo${bucket.errored.length === 1 ? ' needs' : 's need'} attention`,
         detail: bucket.errored.join(', '),
         status: 'error',

@@ -5,7 +5,7 @@ description: What Anvil Registry static analysis detects, how name-squatting che
 product: Anvil Registry
 section: Concepts
 journey: learn
-order: 6
+order: 120
 ---
 
 # Worker analysis

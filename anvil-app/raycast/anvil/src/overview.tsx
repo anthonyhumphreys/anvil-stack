@@ -1,12 +1,21 @@
 import { Action, ActionPanel, Icon, List, showToast, Toast } from '@raycast/api';
 import { useCachedPromise } from '@raycast/utils';
-import { fetchOverview, openDesktop, startWorkflow, type QuickAction } from './api';
+import { useEffect } from 'react';
+import {
+  fetchOverview,
+  openDesktop,
+  startWorkflow,
+  subscribeToMeshUpdates,
+  type QuickAction,
+} from './api';
 import { getExtensionBrand } from './brand';
 import { ApprovalListItem, SessionListItem } from './components';
 
 export default function OverviewCommand() {
   const { data, isLoading, revalidate, error } = useCachedPromise(fetchOverview);
   const brand = getExtensionBrand();
+
+  useEffect(() => subscribeToMeshUpdates(() => void revalidate()), [revalidate]);
 
   if (error) {
     void showToast({

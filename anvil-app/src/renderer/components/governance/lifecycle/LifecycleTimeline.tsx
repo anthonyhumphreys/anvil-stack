@@ -36,14 +36,14 @@ const DECISION_CONFIG: Record<
   GateDecisionOutcome,
   { icon: typeof Check; color: string; label: string }
 > = {
-  approved: { icon: Check, color: 'text-emerald-400', label: 'Approved' },
+  approved: { icon: Check, color: 'text-success', label: 'Approved' },
   approved_with_conditions: {
     icon: AlertTriangle,
-    color: 'text-amber-400',
+    color: 'text-warning',
     label: 'Approved w/ Conditions',
   },
   deferred: { icon: Clock, color: 'text-blue-400', label: 'Deferred' },
-  rejected: { icon: XCircle, color: 'text-red-400', label: 'Rejected' },
+  rejected: { icon: XCircle, color: 'text-error', label: 'Rejected' },
 };
 
 function formatDate(iso: string): string {
@@ -171,10 +171,10 @@ export function LifecycleTimeline({ item }: Props) {
         icon: FileSearch,
         color:
           a.riskRating === 'high'
-            ? 'text-red-400'
+            ? 'text-error'
             : a.riskRating === 'medium'
-              ? 'text-amber-400'
-              : 'text-emerald-400',
+              ? 'text-warning'
+              : 'text-success',
         title: `Impact Analysis — ${a.riskRating?.toUpperCase()} risk`,
         detail: a.executiveSummary?.slice(0, 120) ?? undefined,
       });
@@ -254,12 +254,12 @@ export function LifecycleTimeline({ item }: Props) {
                     isCurrent
                       ? 'border-accent bg-accent/20 shadow-[0_0_20px_rgba(181,18,27,0.3)]'
                       : isPast
-                        ? 'border-emerald-500/60 bg-emerald-500/10'
+                        ? 'border-success/60 bg-success/10'
                         : 'border-border bg-bg-secondary'
                   }`}
                 >
                   {isPast ? (
-                    <Check size={18} className="text-emerald-400" />
+                    <Check size={18} className="text-success" />
                   ) : isCurrent ? (
                     <div className="h-3 w-3 rounded-full bg-accent animate-pulse" />
                   ) : (
@@ -281,13 +281,13 @@ export function LifecycleTimeline({ item }: Props) {
                   <div className="mt-2 flex flex-col items-center gap-1">
                     {gateDecision ? (
                       <div
-                        className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                        className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-eyebrow font-medium ${
                           gateDecision.decision === 'approved'
-                            ? 'bg-emerald-500/10 text-emerald-400'
+                            ? 'bg-success/10 text-success'
                             : gateDecision.decision === 'approved_with_conditions'
-                              ? 'bg-amber-500/10 text-amber-400'
+                              ? 'bg-warning/10 text-warning'
                               : gateDecision.decision === 'rejected'
-                                ? 'bg-red-500/10 text-red-400'
+                                ? 'bg-error/10 text-error'
                                 : 'bg-blue-500/10 text-blue-400'
                         }`}
                       >
@@ -299,25 +299,23 @@ export function LifecycleTimeline({ item }: Props) {
                       </div>
                     ) : gateReadiness ? (
                       <div
-                        className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                        className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-eyebrow font-medium ${
                           gateReadiness.overall === 'green'
-                            ? 'bg-emerald-500/10 text-emerald-400'
+                            ? 'bg-success/10 text-success'
                             : gateReadiness.overall === 'amber'
-                              ? 'bg-amber-500/10 text-amber-400'
-                              : 'bg-red-500/10 text-red-400'
+                              ? 'bg-warning/10 text-warning'
+                              : 'bg-error/10 text-error'
                         }`}
                       >
                         <Shield size={9} />
                         {gateLabels[stage.gate]}
                       </div>
                     ) : (
-                      <div className="text-[10px] text-text-tertiary/50">
-                        {gateLabels[stage.gate]}
-                      </div>
+                      <div className="text-xs text-text-tertiary/50">{gateLabels[stage.gate]}</div>
                     )}
 
                     {gateDecision && (
-                      <div className="text-[10px] text-text-tertiary">
+                      <div className="text-xs text-text-tertiary">
                         {formatDate(gateDecision.decidedAt)}
                       </div>
                     )}
@@ -336,7 +334,7 @@ export function LifecycleTimeline({ item }: Props) {
         <StatCard
           label="Gates Passed"
           value={`${Object.values(latestDecisionPerGate).filter((d) => d?.decision === 'approved' || d?.decision === 'approved_with_conditions').length} / 4`}
-          color="text-emerald-400"
+          color="text-success"
         />
         <StatCard
           label="Impact Analyses"
@@ -353,11 +351,11 @@ export function LifecycleTimeline({ item }: Props) {
           }
           color={
             analyses.at(-1)?.riskRating === 'high'
-              ? 'text-red-400'
+              ? 'text-error'
               : analyses.at(-1)?.riskRating === 'medium'
-                ? 'text-amber-400'
+                ? 'text-warning'
                 : analyses.at(-1)?.riskRating === 'low'
-                  ? 'text-emerald-400'
+                  ? 'text-success'
                   : 'text-text-tertiary'
           }
         />
@@ -397,10 +395,10 @@ export function LifecycleTimeline({ item }: Props) {
                     <span
                       className={`text-xs font-semibold ${
                         gr.overall === 'green'
-                          ? 'text-emerald-400'
+                          ? 'text-success'
                           : gr.overall === 'amber'
-                            ? 'text-amber-400'
-                            : 'text-red-400'
+                            ? 'text-warning'
+                            : 'text-error'
                       }`}
                     >
                       {pct}%
@@ -411,15 +409,15 @@ export function LifecycleTimeline({ item }: Props) {
                     <div
                       className={`h-full rounded-full transition-all duration-500 ${
                         gr.overall === 'green'
-                          ? 'bg-emerald-500'
+                          ? 'bg-success'
                           : gr.overall === 'amber'
-                            ? 'bg-amber-500'
-                            : 'bg-red-500'
+                            ? 'bg-warning'
+                            : 'bg-error'
                       }`}
                       style={{ width: `${pct}%` }}
                     />
                   </div>
-                  <div className="mt-1.5 text-[10px] text-text-tertiary">
+                  <div className="mt-1.5 text-xs text-text-tertiary">
                     {reqMet} of {reqTotal} required criteria met
                   </div>
                 </div>
@@ -455,12 +453,12 @@ export function LifecycleTimeline({ item }: Props) {
                     <div className="min-w-0 flex-1 pt-0.5">
                       <div className="flex items-baseline gap-2">
                         <span className="text-xs font-medium text-text-primary">{evt.title}</span>
-                        <span className="shrink-0 text-[10px] text-text-tertiary">
+                        <span className="shrink-0 text-xs text-text-tertiary">
                           {formatDateTime(evt.date)}
                         </span>
                       </div>
                       {evt.detail && (
-                        <div className="mt-0.5 text-[11px] leading-relaxed text-text-tertiary line-clamp-2">
+                        <div className="mt-0.5 text-xs leading-relaxed text-text-tertiary line-clamp-2">
                           {evt.detail}
                         </div>
                       )}
@@ -483,7 +481,7 @@ export function LifecycleTimeline({ item }: Props) {
 function StatCard({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2.5">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">
+      <div className="text-eyebrow font-semibold uppercase tracking-wider text-text-tertiary">
         {label}
       </div>
       <div className={`mt-1 text-lg font-bold ${color}`}>{value}</div>

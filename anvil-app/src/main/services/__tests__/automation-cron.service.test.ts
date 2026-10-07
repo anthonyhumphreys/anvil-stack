@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  getNextAutomationRunAt,
-  validateAutomationCron,
-} from '../automation-cron.service.js';
+import { getNextAutomationRunAt, validateAutomationCron } from '../automation-cron.service.js';
 
 describe('automation cron service', () => {
   it('validates a simple weekday schedule', () => {
@@ -10,9 +7,7 @@ describe('automation cron service', () => {
   });
 
   it('rejects malformed cron expressions', () => {
-    expect(() => validateAutomationCron('0 9 * *', 'Europe/London')).toThrow(
-      /exactly 5 fields/i,
-    );
+    expect(() => validateAutomationCron('0 9 * *', 'Europe/London')).toThrow(/exactly 5 fields/i);
   });
 
   it('finds the next matching run time for a daily schedule', () => {
@@ -21,7 +16,11 @@ describe('automation cron service', () => {
   });
 
   it('supports stepped schedules', () => {
-    const next = getNextAutomationRunAt('*/30 * * * *', 'UTC', new Date('2026-04-29T08:15:00.000Z'));
+    const next = getNextAutomationRunAt(
+      '*/30 * * * *',
+      'UTC',
+      new Date('2026-04-29T08:15:00.000Z'),
+    );
     expect(next).toBe('2026-04-29T08:30:00.000Z');
   });
 });

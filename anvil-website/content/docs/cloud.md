@@ -1,7 +1,7 @@
 ---
 title: Anvil Cloud
 navTitle: Cloud overview
-description: A local-first TypeScript runtime for explicit Cells, contract-first Agents, generated manifests, and adapter-driven deployment.
+description: The open-source local-first runtime for Cells and Agents. Anvil Cloud Agents hosted compute is planned, unavailable, disabled by default, and will be paid when released.
 product: Anvil Cloud
 section: Overview
 journey: learn

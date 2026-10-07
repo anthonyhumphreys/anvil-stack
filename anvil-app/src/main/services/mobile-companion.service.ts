@@ -1,15 +1,41 @@
 import { cachedWorkItemRows } from './workitem-context.service.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants as fsConstants,
+  createReadStream,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { networkInterfaces } from 'node:os';
-import { BrowserWindow } from 'electron';
+import path from 'node:path';
+import { app, BrowserWindow } from 'electron';
 import QRCode from 'qrcode';
 import type {
   CarPlayApprovalRequest,
   CarPlayDriveSnapshot,
   CarPlayNoteRequest,
   CarPlaySessionSummary,
+  ChatAttachment,
+  ChatAttachmentInput,
+  Citation,
+  ChatFileMentionSearchResult,
+  ChatMessage,
+  CodexRegisteredSkill,
+  CompanionEnrollmentPolicy,
+  CompanionPolicyState,
+  CompanionPolicyTier,
   MobileChatThreadSummary,
   MobileCompanionAdvertisedAddress,
   MobileCompanionClientType,
@@ -37,6 +63,10 @@ import {
   isCarPlayApprovable,
 } from '../../shared/companion-policy.js';
 import { getDb } from '../db/database.js';
+import {
+  clearCompanionAuthCaches,
+  registerCompanionAuthCacheInvalidator,
+} from './companion-auth-cache.service.js';
 import { getSettings } from './settings.service.js';
 import { getWorkspace, listWorkspaces } from './workspace.service.js';
 import { emitCompanionEvent, onCompanionEvent } from './companion-events.service.js';
@@ -56,6 +86,7 @@ import {
   createChatThread,
   deleteChatThread,
   findChatAttachment,
+  findChatAttachmentThreadIds,
   getChatThread,
   loadChatHistory,
   saveChatEntry,
@@ -67,6 +98,57 @@ import {
   getItem as getLifecycleItem,
   listItems as listLifecycleItems,
 } from './lifecycle.service.js';
+import {
+  attestDeviceAccessToken,
+  activeSyncScope,
+  getRuntimeStatus,
+  publishCompanionAdvertisement,
+} from './sync-runtime.service.js';
+import {
+  getDashboardGrantMachineSessionContext,
+  isDashboardGrantMachineOriginApproved,
+  createDashboardMachineBootstrapHostProof,
+  refreshDashboardGrantMachineSession,
+  verifyDashboardMachineBootstrapProof,
+} from './dashboard-grant.service.js';
+import { isMeshMachineEndpointEnabled } from './mesh-machine-endpoint.service.js';
+import {
+  startManagedEndpointForHost,
+  stopManagedEndpointForHost,
+} from './mesh-managed-connector.service.js';
+import {
+  createMeshHostSessionService,
+  registerMeshHostSessionService,
+  type MeshHostDashboardContext,
+  type MeshHostSessionService,
+} from './mesh-host-session.service.js';
+import { MeshHostSessionServer } from './mesh-host-session-server.service.js';
+import { buildCompanionAdvertisementPayload } from './mobile-companion-advertisement.js';
+import { setMeshMachineHostStatus } from './mesh-host-status.service.js';
+import {
+  beginMeshCompanionAttachmentUpload,
+  claimMeshCompanionAttachmentReferences,
+  cleanupMeshCompanionAttachmentUploads,
+  expireMeshCompanionAttachmentUploads,
+  finishMeshCompanionAttachmentUpload,
+  registerMeshCompanionPreparedAttachments,
+  writeMeshCompanionAttachmentChunk,
+  MESH_COMPANION_ATTACHMENT_CHUNK_BYTES,
+  type MeshCompanionAttachmentContext,
+  type MeshCompanionAttachmentReference,
+} from './mesh-companion-attachment-upload.service.js';
+import type { CompanionEndpoint } from '../../../cloud/contract/companion.js';
+import {
+  MESH_MACHINE_CAPABILITIES,
+  MESH_MACHINE_OPERATIONS,
+  MESH_MACHINE_PROTOCOL_VERSION,
+  MESH_MACHINE_ROUTE_PATHS,
+  type MeshMachineAdvertisedEndpoint,
+  type MeshMachineSessionPrincipal,
+} from '../../../cloud/contract/machine.js';
+import type { SyncScope } from '../../shared/sync-mesh.js';
+
+export { MESH_COMPANION_ATTACHMENT_CHUNK_BYTES };
 
 interface MobileCompanionSettingsRow {
   enabled: number;
@@ -84,6 +166,63 @@ interface MobileCompanionDeviceRow {
   last_seen_at: string | null;
   revoked_at: string | null;
 }
+
+// ---- MOB-01 enrollment attestation + per-enrollment policy -------------
+// Two credential kinds reach this server: legacy paired-device bearer
+// tokens (mobile_companion_devices) and account device-session access
+// tokens. The latter are attested through the backend (`session.attest`)
+// and authorized by the per-enrollment policy table — enrollment proves
+// identity, the host decides authority (auto-authenticate ≠
+// auto-authorize).
+
+interface CompanionEnrollmentPolicyRow {
+  enrollment_id: string;
+  account_id: string;
+  display_name: string | null;
+  tier: CompanionPolicyState;
+  first_seen_at: string;
+  decided_at: string | null;
+  updated_at: string;
+}
+
+type CompanionRequestAuth =
+  | { kind: 'paired'; device: MobileCompanionDeviceRow }
+  | { kind: 'enrollment'; enrollmentId: string; accountId: string; tier: CompanionPolicyTier };
+
+type CompanionAuthResult =
+  | { ok: true; auth: CompanionRequestAuth }
+  | { ok: false; status: number; error: string; enrollmentId?: string };
+
+const TIER_RANK: Record<CompanionPolicyTier, number> = { observe: 1, approve: 2, steer: 3 };
+const ATTEST_POSITIVE_TTL_MS = 60_000;
+const ATTEST_NEGATIVE_TTL_MS = 15_000;
+const EVENT_STREAM_TICKET_TTL_MS = 15_000;
+const EVENT_STREAM_TICKET_MAX = 256;
+const MESH_ATTACHMENT_READ_CHUNK_MAX_BYTES = 256 * 1024;
+const MESH_ATTACHMENT_PREPARE_MAX_DATA_URL_CHARS = 350 * 1024;
+const MESH_ATTACHMENT_MAX_COUNT = 10;
+const MESH_FILE_MENTION_MAX_BYTES = 25 * 1024 * 1024;
+const MESH_FILE_MENTION_MAX_TOTAL_BYTES = 75 * 1024 * 1024;
+const MESH_FILE_MENTION_COPY_CHUNK_BYTES = 256 * 1024;
+const MESH_FILE_MENTION_DIRECTORY = '.mesh-file-mentions';
+const EXPO_WEB_PORT = '8081';
+const attestCache = new Map<
+  string,
+  {
+    enrollmentId: string | null;
+    accountId: string;
+    authExpiresAt: string | null;
+    expiresAt: number;
+  }
+>();
+const eventStreamTickets = new Map<
+  string,
+  { auth: CompanionRequestAuth; authExpiresAt: string | null; expiresAt: number }
+>();
+registerCompanionAuthCacheInvalidator(() => {
+  attestCache.clear();
+  eventStreamTickets.clear();
+});
 
 interface ChatThreadRow {
   id: string;
@@ -240,8 +379,321 @@ const QUICK_ACTIONS: MobileQuickAction[] = [
 let server: Server | null = null;
 let serverRunning = false;
 let serverError: string | null = null;
+let meshHostEndpointGeneration: string | null = null;
+let meshHostIdentityKey: string | null = null;
+let meshHostIdentity: {
+  hostEnrollmentId: string;
+  machineId: string;
+  endpointGeneration: string;
+} | null = null;
+let meshHostSessionService: MeshHostSessionService | null = null;
+let unregisterMeshHostSessionService: (() => void) | null = null;
+let meshHostPrivateServer: MeshHostSessionServer | null = null;
+let meshHostManagedServer: MeshHostSessionServer | null = null;
+let meshManagedIngressServer: Server | null = null;
+let meshManagedUpgradeHandler:
+  | ((req: IncomingMessage, socket: import('node:net').Socket, head: Buffer) => void)
+  | null = null;
+let meshManagedOrigin: string | null = null;
+let meshHostBindFailed = false;
+let meshHostLifecycleTimer: ReturnType<typeof setInterval> | null = null;
+let meshHostLifecyclePromise: Promise<void> | null = null;
+let meshAttachmentUploadCleanupComplete = false;
 const pairingTickets = new Map<string, PairingTicketState>();
 const recentNotifications: MobileCompanionNotification[] = [];
+
+interface MeshHostOwner {
+  scope: SyncScope;
+  hostEnrollmentId: string;
+  machineId: string;
+  identityKey: string;
+}
+
+function currentMeshHostOwner(): MeshHostOwner | null {
+  const scope = activeSyncScope();
+  const auth = getRuntimeStatus().auth;
+  if (
+    scope === null ||
+    auth.state !== 'signed-in' ||
+    auth.accountId === null ||
+    auth.enrollmentId === null ||
+    auth.accountId !== scope.accountId
+  )
+    return null;
+  const machineId = ensureMobileCompanionSettings().instance_id;
+  return {
+    scope,
+    hostEnrollmentId: auth.enrollmentId,
+    machineId,
+    identityKey: JSON.stringify({
+      backendId: scope.backendId,
+      accountId: scope.accountId,
+      datasetEpoch: scope.datasetEpoch,
+      hostEnrollmentId: auth.enrollmentId,
+      machineId,
+    }),
+  };
+}
+
+function activeMeshHostScope(identityKey: string): SyncScope | null {
+  const owner = currentMeshHostOwner();
+  return owner?.identityKey === identityKey ? owner.scope : null;
+}
+
+function dashboardSessionContext(
+  scope: SyncScope,
+  grantId: string,
+): MeshHostDashboardContext | null {
+  const grant = getDashboardGrantMachineSessionContext(scope, grantId);
+  if (grant === null) return null;
+  return {
+    accountId: grant.accountId,
+    sourceBrowserId: grant.sourceBrowserId,
+    grantId: grant.grantId,
+    ...(grant.trustId === undefined ? {} : { trustId: grant.trustId }),
+    origin: grant.origin,
+    workspaceIds: [...grant.workspaceIds],
+    repositoryIds: [...grant.repositoryIds],
+    scopes: [...grant.scopes],
+    sessionScope: {
+      workspaceIds: [...grant.sessionScope.workspaceIds],
+      repositoryIds: [...grant.sessionScope.repositoryIds],
+      scopes: [...grant.sessionScope.scopes],
+      operations: [...grant.sessionScope.operations],
+    },
+    expiresAt: grant.expiresAt,
+  };
+}
+
+function refreshMeshHostStatus(): void {
+  const settings = ensureMobileCompanionSettings();
+  const enabled = isMeshMachineEndpointEnabled();
+  const owner = currentMeshHostOwner();
+  const identityIsCurrent = owner !== null && owner.identityKey === meshHostIdentityKey;
+  const state = !enabled
+    ? 'disabled'
+    : owner === null
+      ? 'offline'
+      : meshHostBindFailed
+        ? 'bind-error'
+        : serverRunning && meshHostPrivateServer !== null && identityIsCurrent
+          ? 'listening'
+          : 'starting';
+  setMeshMachineHostStatus({
+    enabled,
+    running: state === 'listening',
+    state,
+    ...(meshHostBindFailed ? { lastErrorCode: 'listener-bind-failed' } : {}),
+    machineId: meshHostIdentity?.machineId ?? settings.instance_id,
+    endpointGeneration: meshHostIdentity?.endpointGeneration ?? null,
+    protocolVersion: MESH_MACHINE_PROTOCOL_VERSION,
+    capabilities: [...MESH_MACHINE_CAPABILITIES],
+    activeSessions: meshHostSessionService?.activeSessionCount() ?? 0,
+    managedOrigin: meshManagedOrigin,
+  });
+}
+
+function makeMeshHostSessionServer(
+  service: MeshHostSessionService,
+  ingress: { kind: 'private' } | { kind: 'managed'; allowedHost: string },
+): MeshHostSessionServer {
+  return new MeshHostSessionServer({
+    sessions: service,
+    enabled: isMeshMachineEndpointEnabled,
+    ingress,
+    isOriginApproved: (origin) => {
+      const owner = currentMeshHostOwner();
+      const scope = owner?.identityKey === meshHostIdentityKey ? owner.scope : null;
+      return scope !== null && isDashboardGrantMachineOriginApproved(scope, origin);
+    },
+  });
+}
+
+async function syncMeshHostEndpointRuntime(): Promise<void> {
+  if (meshHostLifecyclePromise !== null) {
+    await meshHostLifecyclePromise;
+    return;
+  }
+  const running = reconcileMeshHostEndpointRuntime();
+  meshHostLifecyclePromise = running;
+  try {
+    await running;
+  } finally {
+    if (meshHostLifecyclePromise === running) meshHostLifecyclePromise = null;
+  }
+}
+
+async function reconcileMeshHostEndpointRuntime(): Promise<void> {
+  if (!serverRunning || !isMeshMachineEndpointEnabled()) {
+    const hadMeshIdentity = meshHostIdentity !== null;
+    await stopMeshHostEndpointRuntime();
+    refreshMeshHostStatus();
+    if (hadMeshIdentity) void advertiseCompanionPresence();
+    return;
+  }
+  const owner = currentMeshHostOwner();
+  if (owner === null) {
+    const hadMeshIdentity = meshHostIdentity !== null;
+    await stopMeshHostEndpointRuntime();
+    refreshMeshHostStatus();
+    if (hadMeshIdentity) void advertiseCompanionPresence();
+    return;
+  }
+  let identityChanged = false;
+  if (meshHostIdentityKey !== owner.identityKey || meshHostSessionService === null) {
+    await stopMeshHostEndpointRuntime();
+    meshHostEndpointGeneration = randomUUID();
+    meshHostIdentityKey = owner.identityKey;
+    meshHostIdentity = {
+      hostEnrollmentId: owner.hostEnrollmentId,
+      machineId: owner.machineId,
+      endpointGeneration: meshHostEndpointGeneration,
+    };
+    identityChanged = true;
+    meshHostSessionService = createMeshHostSessionService({
+      identity: () => {
+        if (meshHostIdentity === null) throw new Error('Mesh host identity is unavailable.');
+        return meshHostIdentity;
+      },
+      activeScope: () => activeMeshHostScope(owner.identityKey),
+      getDashboardContext: dashboardSessionContext,
+      verifyDashboardProof: verifyDashboardMachineBootstrapProof,
+      createDashboardHostProof: createDashboardMachineBootstrapHostProof,
+      refreshDashboard: refreshDashboardGrantMachineSession,
+    });
+    unregisterMeshHostSessionService = registerMeshHostSessionService(meshHostSessionService);
+    meshHostPrivateServer = makeMeshHostSessionServer(meshHostSessionService, { kind: 'private' });
+  }
+
+  const previousManagedOrigin = meshManagedOrigin;
+  if (meshManagedIngressServer === null) await startManagedMeshIngress();
+  refreshMeshHostStatus();
+  if (identityChanged || previousManagedOrigin !== meshManagedOrigin)
+    void advertiseCompanionPresence();
+}
+
+async function startManagedMeshIngress(): Promise<void> {
+  const service = meshHostSessionService;
+  const identity = meshHostIdentity;
+  if (service === null || identity === null) return;
+  const loopbackServer = createServer((req, res) => {
+    const handler = meshHostManagedServer;
+    if (handler === null) {
+      sendJson(res, 404, { error: 'Machine endpoint not found.' });
+      return;
+    }
+    void handler.handleRequest(req, res).then((handled) => {
+      if (!handled && !res.headersSent)
+        sendJson(res, 404, { error: 'Machine endpoint not found.' });
+    });
+  });
+  try {
+    const port = await listenLoopback(loopbackServer);
+    meshManagedIngressServer = loopbackServer;
+    const assignment = await startManagedEndpointForHost({
+      machineId: identity.machineId,
+      endpointGeneration: identity.endpointGeneration,
+      localOrigin: `http://127.0.0.1:${port}`,
+    });
+    if (assignment.status.state !== 'running' || assignment.managedOrigin === null) {
+      await closeHttpServer(loopbackServer);
+      meshManagedIngressServer = null;
+      return;
+    }
+    const managed = new URL(assignment.managedOrigin);
+    if (managed.protocol !== 'https:' || managed.username !== '' || managed.password !== '') {
+      await stopManagedEndpointForHost(identity);
+      await closeHttpServer(loopbackServer);
+      meshManagedIngressServer = null;
+      return;
+    }
+    meshManagedOrigin = managed.origin;
+    meshHostManagedServer = makeMeshHostSessionServer(service, {
+      kind: 'managed',
+      allowedHost: managed.hostname,
+    });
+    meshManagedUpgradeHandler = (req, socket, head) => {
+      const handled = meshHostManagedServer?.handleUpgrade(req, socket, head) ?? false;
+      if (!handled) socket.destroy();
+    };
+    loopbackServer.on('upgrade', meshManagedUpgradeHandler);
+  } catch {
+    if (meshManagedIngressServer === loopbackServer) meshManagedIngressServer = null;
+    await closeHttpServer(loopbackServer).catch(() => undefined);
+    meshHostManagedServer?.dispose();
+    meshHostManagedServer = null;
+    meshManagedOrigin = null;
+  }
+}
+
+async function stopMeshHostEndpointRuntime(): Promise<void> {
+  const previousIdentity = meshHostIdentity;
+  if (previousIdentity !== null) {
+    await stopManagedEndpointForHost(previousIdentity).catch(() => undefined);
+  }
+  meshHostManagedServer?.dispose();
+  meshHostManagedServer = null;
+  const managedServer = meshManagedIngressServer;
+  if (managedServer !== null) {
+    if (meshManagedUpgradeHandler !== null) {
+      managedServer.removeListener('upgrade', meshManagedUpgradeHandler);
+    }
+    meshManagedUpgradeHandler = null;
+    meshManagedIngressServer = null;
+    await closeHttpServer(managedServer);
+  }
+  meshManagedOrigin = null;
+  meshHostPrivateServer?.dispose();
+  meshHostPrivateServer = null;
+  unregisterMeshHostSessionService?.();
+  unregisterMeshHostSessionService = null;
+  meshHostSessionService = null;
+  meshHostIdentity = null;
+  meshHostIdentityKey = null;
+  meshHostEndpointGeneration = null;
+}
+
+async function listenLoopback(listener: Server): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error): void => reject(error);
+    listener.once('error', onError);
+    listener.listen(0, '127.0.0.1', () => {
+      listener.removeListener('error', onError);
+      resolve();
+    });
+  });
+  const address = listener.address();
+  if (address === null || typeof address === 'string')
+    throw new Error('Loopback listener did not bind.');
+  return address.port;
+}
+
+async function closeHttpServer(listener: Server): Promise<void> {
+  if (!listener.listening) return;
+  await new Promise<void>((resolve) => {
+    listener.close(() => resolve());
+    listener.closeAllConnections();
+  });
+}
+
+function startMeshHostLifecycleLoop(): void {
+  if (!isMeshMachineEndpointEnabled() || meshHostLifecycleTimer !== null) return;
+  void syncMeshHostEndpointRuntime();
+  meshHostLifecycleTimer = setInterval(() => {
+    expireMeshCompanionAttachmentUploads();
+    void syncMeshHostEndpointRuntime();
+  }, 15_000);
+  meshHostLifecycleTimer.unref();
+}
+
+async function stopMeshHostLifecycleLoop(): Promise<void> {
+  if (meshHostLifecycleTimer !== null) {
+    clearInterval(meshHostLifecycleTimer);
+    meshHostLifecycleTimer = null;
+  }
+  await stopMeshHostEndpointRuntime();
+  refreshMeshHostStatus();
+}
 
 export async function getMobileCompanionStatus(): Promise<MobileCompanionStatus> {
   const settings = ensureMobileCompanionSettings();
@@ -260,17 +712,23 @@ export async function setMobileCompanionEnabled(enabled: boolean): Promise<Mobil
 
   if (enabled) {
     await startMobileCompanionServer();
+  } else if (isMeshMachineEndpointEnabled()) {
+    await startMobileCompanionServer();
   } else {
     await stopMobileCompanionServer();
   }
 
   emitCompanionEvent('settings');
+  void advertiseCompanionPresence();
   return getMobileCompanionStatus();
 }
 
 export async function syncMobileCompanionServer(): Promise<void> {
   const settings = ensureMobileCompanionSettings();
-  if (settings.enabled) {
+  if (
+    settings.enabled !== 0 ||
+    (isMeshMachineEndpointEnabled() && currentMeshHostOwner() !== null)
+  ) {
     await startMobileCompanionServer();
   } else {
     await stopMobileCompanionServer();
@@ -278,9 +736,31 @@ export async function syncMobileCompanionServer(): Promise<void> {
 }
 
 export async function startMobileCompanionServer(): Promise<void> {
+  if (!meshAttachmentUploadCleanupComplete) {
+    cleanupMeshCompanionAttachmentUploads();
+    meshAttachmentUploadCleanupComplete = true;
+  }
   const settings = ensureMobileCompanionSettings();
-  if (server) return;
+  if (
+    settings.enabled === 0 &&
+    (!isMeshMachineEndpointEnabled() || currentMeshHostOwner() === null)
+  ) {
+    if (server !== null) await stopMobileCompanionServer();
+    else {
+      await stopMeshHostLifecycleLoop();
+    }
+    return;
+  }
+  if (server) {
+    meshHostBindFailed = false;
+    startMeshHostLifecycleLoop();
+    await syncMeshHostEndpointRuntime();
+    void advertiseCompanionPresence();
+    return;
+  }
 
+  meshHostBindFailed = false;
+  refreshMeshHostStatus();
   serverError = null;
   server = createServer((req, res) => {
     void handleRequest(req, res).catch((err) => {
@@ -289,24 +769,42 @@ export async function startMobileCompanionServer(): Promise<void> {
       });
     });
   });
+  server.on('upgrade', (req, socket, head) => {
+    const handled = meshHostPrivateServer?.handleUpgrade(req, socket, head) ?? false;
+    if (!handled && req.url?.split('?')[0] === MESH_MACHINE_ROUTE_PATHS.socket) socket.destroy();
+  });
 
   await new Promise<void>((resolve, reject) => {
     server?.once('error', (err) => {
       serverError = err.message;
       server = null;
       serverRunning = false;
+      meshHostBindFailed = isMeshMachineEndpointEnabled();
+      refreshMeshHostStatus();
       reject(err);
     });
     server?.listen(settings.port, settings.host, () => {
       serverRunning = true;
+      meshHostBindFailed = false;
+      refreshMeshHostStatus();
       resolve();
     });
   });
+
+  startAdvertisementLoop();
+  startMeshHostLifecycleLoop();
 }
 
 export async function stopMobileCompanionServer(): Promise<void> {
+  await stopMeshHostLifecycleLoop();
+  if (advertiseTimer !== null) {
+    clearInterval(advertiseTimer);
+    advertiseTimer = null;
+  }
   if (!server) {
     serverRunning = false;
+    meshHostBindFailed = false;
+    refreshMeshHostStatus();
     return;
   }
 
@@ -316,6 +814,68 @@ export async function stopMobileCompanionServer(): Promise<void> {
     closing.close(() => resolve());
   });
   serverRunning = false;
+  meshHostBindFailed = false;
+  refreshMeshHostStatus();
+}
+
+// ---- MOB-01 endpoint advertisement -------------------------------------
+// While the companion server runs and this host is signed in, publish its
+// dialable endpoints (TS → LAN → loopback) to the account object so
+// enrolled companions can find it. Refreshed well inside the ad TTL;
+// unsigned/offline hosts simply stay unadvertised.
+
+const ADVERTISE_REFRESH_MS = 10 * 60 * 1000;
+let advertiseTimer: ReturnType<typeof setInterval> | null = null;
+
+function currentCompanionEndpoints(): CompanionEndpoint[] {
+  const settings = ensureMobileCompanionSettings();
+  return getAdvertisedAddresses(settings.port).map((address) => {
+    const parsed = new URL(address.url);
+    return {
+      kind: address.kind,
+      host: parsed.hostname,
+      port: Number(parsed.port) || settings.port,
+    };
+  });
+}
+
+async function advertiseCompanionPresence(): Promise<void> {
+  try {
+    const settings = ensureMobileCompanionSettings();
+    const owner = currentMeshHostOwner();
+    const machine: MeshMachineAdvertisedEndpoint | undefined =
+      isMeshMachineEndpointEnabled() &&
+      serverRunning &&
+      meshHostPrivateServer !== null &&
+      meshHostIdentity !== null &&
+      owner !== null &&
+      owner.identityKey === meshHostIdentityKey
+        ? {
+            ...meshHostIdentity,
+            protocolVersion: MESH_MACHINE_PROTOCOL_VERSION,
+            capabilities: [...MESH_MACHINE_CAPABILITIES],
+            operations: [...MESH_MACHINE_OPERATIONS],
+          }
+        : undefined;
+    await publishCompanionAdvertisement(
+      buildCompanionAdvertisementPayload({
+        companionEnabled: settings.enabled !== 0,
+        machine,
+        endpoints: currentCompanionEndpoints(),
+      }),
+    );
+  } catch {
+    // Signed out or unreachable — this host simply isn't advertised.
+  }
+}
+
+function startAdvertisementLoop(): void {
+  if (advertiseTimer !== null) return;
+  void advertiseCompanionPresence();
+  advertiseTimer = setInterval(() => {
+    void advertiseCompanionPresence();
+  }, ADVERTISE_REFRESH_MS);
+  advertiseTimer.unref();
 }
 
 export async function createMobilePairingTicket(): Promise<MobilePairingTicket> {
@@ -388,6 +948,7 @@ export function revokeMobileCompanionDevice(deviceId: string): void {
        WHERE id = ?`,
     )
     .run(new Date().toISOString(), deviceId);
+  clearCompanionAttestationCache();
 }
 
 export function listMobileQuickActions(): MobileQuickAction[] {
@@ -468,36 +1029,86 @@ function getAdvertisedAddresses(port: number): MobileCompanionAdvertisedAddress[
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  setCommonHeaders(res);
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+  if (isMeshSessionHttpPath(url.pathname)) {
+    if (meshHostPrivateServer !== null) {
+      const handled = await meshHostPrivateServer.handleRequest(req, res);
+      if (handled) return;
+    }
+    sendJson(res, 404, { error: 'Machine endpoint not found.' });
+    return;
+  }
+  setCommonHeaders(req, res);
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
     return;
   }
 
-  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
   const pathParts = url.pathname.split('/').filter(Boolean);
 
   if (req.method === 'GET' && url.pathname === '/health') {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      sendJson(res, 404, { error: 'Mobile companion endpoint not found.' });
+      return;
+    }
     sendJson(res, 200, { ok: true, status: await getMobileCompanionStatus(), error: serverError });
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/pair') {
+    if (!ensureMobileCompanionSettings().enabled) {
+      sendJson(res, 404, { error: 'Mobile companion endpoint not found.' });
+      return;
+    }
     const body = await readJsonBody<{ ticket?: string; deviceName?: string }>(req);
     pairDevice(res, body.ticket, body.deviceName);
     return;
   }
 
-  const allowQueryToken =
-    req.method === 'GET' && (url.pathname === '/api/events' || isChatAttachmentRoute(pathParts));
-  const device = authenticateRequest(req, allowQueryToken);
-  if (!device) {
-    sendJson(res, 401, { error: 'Missing or invalid mobile companion token.' });
+  if (!ensureMobileCompanionSettings().enabled) {
+    sendJson(res, 404, { error: 'Mobile companion endpoint not found.' });
     return;
   }
 
-  touchDevice(device.id);
+  const streamTicket =
+    req.method === 'GET' && url.pathname === '/api/events' ? url.searchParams.get('ticket') : null;
+  const authn =
+    streamTicket === null ? await authenticateRequest(req) : consumeEventStreamTicket(streamTicket);
+  if (!authn.ok) {
+    sendJson(res, authn.status, {
+      error: authn.error,
+      ...(authn.enrollmentId === undefined ? {} : { enrollmentId: authn.enrollmentId }),
+    });
+    return;
+  }
+
+  // Per-enrollment policy gates what an account credential may do; paired
+  // tokens keep their existing full-access semantics.
+  if (authn.auth.kind === 'enrollment') {
+    const required = requiredCompanionTier(req.method ?? 'GET', pathParts);
+    if (TIER_RANK[authn.auth.tier] < TIER_RANK[required]) {
+      sendJson(res, 403, {
+        error: `This device does not have '${required}' access on the host.`,
+        required,
+        granted: authn.auth.tier,
+      });
+      return;
+    }
+  } else {
+    touchDevice(authn.auth.device.id);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/events/ticket') {
+    const issued = issueEventStreamTicket(authn.auth);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    sendJson(res, 201, {
+      ticket: issued.ticket,
+      expiresAt: new Date(issued.expiresAt).toISOString(),
+    });
+    return;
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/overview') {
     sendJson(res, 200, getMobileOverview(url.searchParams.get('workspaceId') ?? undefined));
@@ -813,18 +1424,311 @@ function createCompanionDevice(
   };
 }
 
-function authenticateRequest(
-  req: IncomingMessage,
-  allowQueryToken = false,
-): MobileCompanionDeviceRow | null {
+/**
+ * MOB-01: verifies a bearer that is not a paired-device token by attesting
+ * it through the backend (`session.attest` via sync-runtime). A token is
+ * valid only when it resolves to a non-revoked enrollment on THIS host's
+ * signed-in account. Cache entries are bound to the current host session and
+ * positive attestations age out in 60s, bounding remote revoke propagation.
+ * Failures age out in 15s to keep bad tokens cheap.
+ */
+async function attestEnrollment(
+  token: string,
+): Promise<{ enrollmentId: string; accountId: string } | null> {
+  const tokenHash = hashToken(token);
+  const now = Date.now();
+  const snapshot = getRuntimeStatus().auth;
+  if (snapshot.state !== 'signed-in' || snapshot.accountId === null) {
+    // Signed out: attestation is impossible. P2P paired tokens still work.
+    return null;
+  }
+  const cached = attestCache.get(tokenHash);
+  if (cached !== undefined && cached.expiresAt > now) {
+    if (cached.accountId === snapshot.accountId && cached.authExpiresAt === snapshot.expiresAt) {
+      if (cached.enrollmentId === null) return null;
+      return { enrollmentId: cached.enrollmentId, accountId: cached.accountId };
+    }
+    attestCache.delete(tokenHash);
+  }
+  const claims = await attestDeviceAccessToken(token).catch(() => null);
+  const verified = claims !== null && claims.accountId === snapshot.accountId ? claims : null;
+  const currentAuth = getRuntimeStatus().auth;
+  if (
+    currentAuth.state !== 'signed-in' ||
+    currentAuth.accountId !== snapshot.accountId ||
+    currentAuth.expiresAt !== snapshot.expiresAt
+  ) {
+    return null;
+  }
+  attestCache.set(tokenHash, {
+    enrollmentId: verified === null ? null : verified.enrollmentId,
+    accountId: snapshot.accountId,
+    authExpiresAt: snapshot.expiresAt,
+    expiresAt: now + (verified === null ? ATTEST_NEGATIVE_TTL_MS : ATTEST_POSITIVE_TTL_MS),
+  });
+  return verified === null
+    ? null
+    : { enrollmentId: verified.enrollmentId, accountId: verified.accountId };
+}
+
+/** Drops all cached attestations (sign-in changes, revocation notices). */
+export function clearCompanionAttestationCache(): void {
+  clearCompanionAuthCaches();
+}
+
+function issueEventStreamTicket(auth: CompanionRequestAuth): { ticket: string; expiresAt: number } {
+  const now = Date.now();
+  for (const [key, ticket] of eventStreamTickets) {
+    if (ticket.expiresAt <= now) eventStreamTickets.delete(key);
+  }
+  while (eventStreamTickets.size >= EVENT_STREAM_TICKET_MAX) {
+    const oldest = eventStreamTickets.keys().next().value;
+    if (oldest === undefined) break;
+    eventStreamTickets.delete(oldest);
+  }
+
+  const ticket = randomToken(32);
+  const expiresAt = now + EVENT_STREAM_TICKET_TTL_MS;
+  const snapshot = getRuntimeStatus().auth;
+  eventStreamTickets.set(hashToken(ticket), {
+    auth,
+    authExpiresAt: snapshot.state === 'signed-in' ? snapshot.expiresAt : null,
+    expiresAt,
+  });
+  return { ticket, expiresAt };
+}
+
+function consumeEventStreamTicket(ticket: string): CompanionAuthResult {
+  const key = hashToken(ticket);
+  const state = eventStreamTickets.get(key);
+  eventStreamTickets.delete(key);
+  if (state === undefined || state.expiresAt <= Date.now()) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+
+  if (state.auth.kind === 'paired') {
+    const device = getDb()
+      .prepare(
+        `SELECT * FROM mobile_companion_devices
+         WHERE id = ? AND token_hash = ? AND revoked_at IS NULL`,
+      )
+      .get(state.auth.device.id, state.auth.device.token_hash) as
+      | MobileCompanionDeviceRow
+      | undefined;
+    return device === undefined
+      ? { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' }
+      : { ok: true, auth: { kind: 'paired', device } };
+  }
+
+  const snapshot = getRuntimeStatus().auth;
+  if (
+    snapshot.state !== 'signed-in' ||
+    snapshot.accountId !== state.auth.accountId ||
+    snapshot.expiresAt !== state.authExpiresAt
+  ) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+  const policy = readPolicyRow(state.auth.enrollmentId);
+  if (policy === undefined || policy.account_id !== state.auth.accountId) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+  if (policy.tier === 'pending') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device is waiting for approval on the host.',
+      enrollmentId: state.auth.enrollmentId,
+    };
+  }
+  if (policy.tier === 'denied') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device was denied access on the host.',
+      enrollmentId: state.auth.enrollmentId,
+    };
+  }
+  return {
+    ok: true,
+    auth: {
+      kind: 'enrollment',
+      enrollmentId: state.auth.enrollmentId,
+      accountId: state.auth.accountId,
+      tier: policy.tier,
+    },
+  };
+}
+
+function readPolicyRow(enrollmentId: string): CompanionEnrollmentPolicyRow | undefined {
+  return getDb()
+    .prepare('SELECT * FROM companion_enrollment_policies WHERE enrollment_id = ?')
+    .get(enrollmentId) as CompanionEnrollmentPolicyRow | undefined;
+}
+
+function mapPolicyRow(row: CompanionEnrollmentPolicyRow): CompanionEnrollmentPolicy {
+  return {
+    enrollmentId: row.enrollment_id,
+    accountId: row.account_id,
+    displayName: row.display_name,
+    tier: row.tier,
+    firstSeenAt: row.first_seen_at,
+    decidedAt: row.decided_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * First contact from a verified enrollment creates a `pending` policy row
+ * and surfaces it (settings event) — the host decides the tier; nothing is
+ * granted by account membership alone. Best-effort name enrichment runs
+ * in the background through `device.list`.
+ */
+// DAEMON-01: headless hosts have no first-contact approval UX, so a daemon
+// may set a default tier for first-seen enrollments. Desktops leave this
+// null — every new enrollment still lands as pending there.
+let defaultPolicyTier: 'observe' | 'approve' | 'steer' | 'denied' | null = null;
+
+export function setCompanionDefaultPolicyTier(
+  tier: 'observe' | 'approve' | 'steer' | 'denied' | null,
+): void {
+  defaultPolicyTier = tier;
+}
+
+function ensurePolicyRow(enrollmentId: string, accountId: string): CompanionEnrollmentPolicyRow {
+  const existing = readPolicyRow(enrollmentId);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const now = new Date().toISOString();
+  const tier = defaultPolicyTier ?? 'pending';
+  getDb()
+    .prepare(
+      `INSERT INTO companion_enrollment_policies
+       (enrollment_id, account_id, display_name, tier, first_seen_at, decided_at, updated_at)
+       VALUES (?, ?, NULL, ?, ?, ?, ?)`,
+    )
+    .run(enrollmentId, accountId, tier, now, tier === 'pending' ? null : now, now);
+  emitCompanionEvent('settings');
+  void enrichPendingPolicyName(enrollmentId);
+  return readPolicyRow(enrollmentId) as CompanionEnrollmentPolicyRow;
+}
+
+export type MeshCompanionEnrollmentPolicyStatus =
+  | { state: 'authorized'; tier: 'observe' | 'approve' | 'steer' }
+  | { state: 'approval-required' }
+  | { state: 'denied' }
+  | { state: 'unavailable' };
+
+/** First Mesh ticket contact creates the same local policy row as REST enrollment auth. */
+export function ensureMeshCompanionEnrollmentPolicy(
+  enrollmentId: string,
+  accountId: string,
+): MeshCompanionEnrollmentPolicyStatus {
+  const owner = currentMeshHostOwner();
+  if (
+    owner === null ||
+    owner.scope.accountId !== accountId ||
+    owner.hostEnrollmentId === enrollmentId
+  )
+    return { state: 'unavailable' };
+  const policy = ensurePolicyRow(enrollmentId, accountId);
+  if (policy.account_id !== accountId) return { state: 'unavailable' };
+  touchPolicy(enrollmentId);
+  if (policy.tier === 'pending') return { state: 'approval-required' };
+  if (policy.tier === 'denied') return { state: 'denied' };
+  if (policy.tier === 'observe' || policy.tier === 'approve' || policy.tier === 'steer') {
+    return { state: 'authorized', tier: policy.tier };
+  }
+  return { state: 'unavailable' };
+}
+
+async function enrichPendingPolicyName(enrollmentId: string): Promise<void> {
+  try {
+    const { listDevices } = await import('./sync-runtime.service.js');
+    const { devices } = await listDevices();
+    const match = devices.find((d) => d.enrollmentId === enrollmentId);
+    if (match?.displayName !== undefined && match.displayName !== null) {
+      getDb()
+        .prepare(
+          'UPDATE companion_enrollment_policies SET display_name = ? WHERE enrollment_id = ?',
+        )
+        .run(match.displayName, enrollmentId);
+    }
+  } catch {
+    // Name enrichment is cosmetic; a null displayName falls back to the id.
+  }
+}
+
+function touchPolicy(enrollmentId: string): void {
+  getDb()
+    .prepare('UPDATE companion_enrollment_policies SET updated_at = ? WHERE enrollment_id = ?')
+    .run(new Date().toISOString(), enrollmentId);
+}
+
+export function listCompanionEnrollmentPolicies(): CompanionEnrollmentPolicy[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM companion_enrollment_policies ORDER BY first_seen_at DESC')
+    .all() as CompanionEnrollmentPolicyRow[];
+  return rows.map(mapPolicyRow);
+}
+
+/**
+ * Host decision on an enrollment. `pending` resets to undecided; 'denied'
+ * blocks without deleting the audit row.
+ */
+export function setCompanionEnrollmentPolicy(
+  enrollmentId: string,
+  tier: CompanionPolicyState,
+): CompanionEnrollmentPolicy | null {
+  const row = readPolicyRow(enrollmentId);
+  if (row === undefined) return null;
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `UPDATE companion_enrollment_policies
+       SET tier = ?, decided_at = ?, updated_at = ? WHERE enrollment_id = ?`,
+    )
+    .run(tier, tier === 'pending' ? null : now, now, enrollmentId);
+  emitCompanionEvent('settings');
+  const updated = readPolicyRow(enrollmentId);
+  return updated === undefined ? null : mapPolicyRow(updated);
+}
+
+/** Forgets an enrollment row entirely; the next contact re-pends. */
+export function removeCompanionEnrollmentPolicy(enrollmentId: string): void {
+  getDb()
+    .prepare('DELETE FROM companion_enrollment_policies WHERE enrollment_id = ?')
+    .run(enrollmentId);
+  emitCompanionEvent('settings');
+}
+
+/** Minimum tier each request needs; paired tokens bypass tiering entirely. */
+function requiredCompanionTier(
+  method: string | undefined,
+  pathParts: string[],
+): CompanionPolicyTier {
+  if (method === 'POST' && pathParts[0] === 'api' && pathParts[1] === 'events') {
+    return 'observe';
+  }
+  if (method === 'GET' || method === 'HEAD') return 'observe';
+  if (pathParts[0] === 'api' && pathParts[1] === 'approvals') return 'approve';
+  if (
+    pathParts[0] === 'api' &&
+    pathParts[1] === 'chat' &&
+    pathParts[2] === 'file-mentions' &&
+    pathParts[3] === 'search'
+  ) {
+    return 'observe';
+  }
+  return 'steer';
+}
+
+async function authenticateRequest(req: IncomingMessage): Promise<CompanionAuthResult> {
   const header = req.headers.authorization;
-  const eventStreamToken = allowQueryToken
-    ? new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('access_token')
-    : null;
-  const token = header?.startsWith('Bearer ')
-    ? header.slice('Bearer '.length).trim()
-    : eventStreamToken?.trim();
-  if (!token) return null;
+  const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : null;
+  if (!token) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
   const tokenHash = hashToken(token);
   const row = getDb()
     .prepare(
@@ -832,7 +1736,41 @@ function authenticateRequest(
        WHERE token_hash = ? AND revoked_at IS NULL`,
     )
     .get(tokenHash) as MobileCompanionDeviceRow | undefined;
-  return row ?? null;
+  if (row !== undefined) {
+    return { ok: true, auth: { kind: 'paired', device: row } };
+  }
+  // Enrollment credential path: attest → same-account check → host policy.
+  const attested = await attestEnrollment(token);
+  if (attested === null) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+  const policy = ensurePolicyRow(attested.enrollmentId, attested.accountId);
+  touchPolicy(attested.enrollmentId);
+  if (policy.tier === 'pending') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device is waiting for approval on the host.',
+      enrollmentId: attested.enrollmentId,
+    };
+  }
+  if (policy.tier === 'denied') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device was denied access on the host.',
+      enrollmentId: attested.enrollmentId,
+    };
+  }
+  return {
+    ok: true,
+    auth: {
+      kind: 'enrollment',
+      enrollmentId: attested.enrollmentId,
+      accountId: attested.accountId,
+      tier: policy.tier,
+    },
+  };
 }
 
 function touchDevice(deviceId: string): void {
@@ -878,6 +1816,31 @@ export function getMobileOverview(requestedWorkspaceId?: string): MobileOverview
     quickActions: listMobileQuickActions(),
     companion: buildStatus(ensureMobileCompanionSettings()),
     notifications: listRecentCompanionNotifications(),
+  };
+}
+
+/** Mesh's encrypted snapshot omits this host's filesystem paths. */
+export function getMeshCompanionOverview(requestedWorkspaceId?: string) {
+  if (requestedWorkspaceId !== undefined && safeGetWorkspace(requestedWorkspaceId) === undefined) {
+    throw new Error('The requested Mesh workspace is unavailable.');
+  }
+  const overview = getMobileOverview(requestedWorkspaceId);
+  if (requestedWorkspaceId !== undefined && overview.activeWorkspace?.id !== requestedWorkspaceId) {
+    throw new Error('The requested Mesh workspace is unavailable.');
+  }
+  const activeWorkspace = overview.activeWorkspace;
+  return {
+    ...overview,
+    currentIterationPath: undefined,
+    pendingApprovals: overview.pendingApprovals.map(stripMeshApprovalPaths),
+    ...(activeWorkspace === undefined
+      ? { activeWorkspace: undefined }
+      : {
+          activeWorkspace: {
+            ...activeWorkspace,
+            repos: activeWorkspace.repos.map(({ path: _path, ...repo }) => repo),
+          },
+        }),
   };
 }
 
@@ -1019,6 +1982,115 @@ export function getCarPlayDriveSnapshot(): CarPlayDriveSnapshot {
   };
 }
 
+export function getMeshCarPlaySnapshot(): CarPlayDriveSnapshot {
+  const snapshot = getCarPlayDriveSnapshot();
+  return { ...snapshot, approvals: snapshot.approvals.map(stripMeshApprovalPaths) };
+}
+
+export function getMeshCarPlayApproval(approvalId: string): CarPlayApprovalRequest | null {
+  if (!approvalId.trim() || approvalId.length > 512)
+    throw new Error('A valid approval id is required.');
+  const approval = findCarPlayApproval(approvalId);
+  return approval === undefined ? null : stripMeshApprovalPaths(approval);
+}
+
+function stripMeshApprovalPaths<T extends { cwd?: string; grantRoot?: string }>(
+  approval: T,
+): Omit<T, 'cwd' | 'grantRoot'> {
+  const { cwd: _cwd, grantRoot: _grantRoot, ...safeApproval } = approval;
+  void _cwd;
+  void _grantRoot;
+  return safeApproval;
+}
+
+export function resolveMeshCarPlayApproval(input: {
+  approvalId: string;
+  decision: 'approve' | 'decline' | 'later';
+}): { ok: true } {
+  const approval = getMeshCarPlayApproval(input.approvalId);
+  if (approval === null) throw new Error('CarPlay approval is no longer active.');
+  if (input.decision === 'approve') approveCarPlayApproval(approval);
+  else if (input.decision === 'decline') {
+    resolveMobileApproval(approval.sessionId, approval.requestKey, 'decline');
+    pushCompanionNotification(
+      'approvals',
+      'Declined',
+      'The approval was declined from Anvil Drive.',
+      'carplay',
+    );
+  } else markCarPlayApprovalForLater(approval);
+  return { ok: true };
+}
+
+export function pauseMeshCarPlaySession(sessionId: string): { ok: true } {
+  if (!sessionId.trim() || sessionId.length > 256)
+    throw new Error('A valid session id is required.');
+  interruptTurn(sessionId);
+  pushCompanionNotification(
+    'sessions',
+    'Paused',
+    'The session was paused from Anvil Drive.',
+    'carplay',
+  );
+  emitCompanionEvent('sessions');
+  return { ok: true };
+}
+
+export function pauseAllMeshCarPlaySessions(): { ok: true } {
+  for (const session of listActiveCodexSessions()) interruptTurn(session.id);
+  pushCompanionNotification(
+    'sessions',
+    'Paused',
+    'All active sessions were paused from Anvil Drive.',
+    'carplay',
+  );
+  emitCompanionEvent('sessions');
+  return { ok: true };
+}
+
+export function createMeshCarPlayNote(input: CarPlayNoteRequest) {
+  if (
+    typeof input.body !== 'string' ||
+    input.body.trim().length === 0 ||
+    input.body.length > 8_000 ||
+    (input.source !== 'carplay' && input.source !== 'siri')
+  )
+    throw new Error('CarPlay note request is invalid.');
+  const note = createWorkspaceNote({
+    workspaceId: input.workspaceId ?? getSettings().activeWorkspaceId ?? undefined,
+    repo: input.repo,
+    body: input.body,
+    source: input.source,
+  });
+  pushCompanionNotification(
+    'notes',
+    'Captured note',
+    'A workspace note is ready for desktop review.',
+    note.source,
+  );
+  return note;
+}
+
+export async function startMeshCarPlayHandover(input: {
+  workspaceId?: string;
+}): Promise<MobileStartChatResult> {
+  if (input.workspaceId !== undefined && input.workspaceId.length > 128) {
+    throw new Error('Workspace id is invalid.');
+  }
+  const result = await startMobileWorkflow({
+    actionId: 'ship-handoff',
+    workspaceId: input.workspaceId ?? getSettings().activeWorkspaceId ?? undefined,
+  });
+  pushCompanionNotification(
+    'handover',
+    'Handover started',
+    'Anvil is preparing a desktop handover.',
+    'carplay',
+  );
+  emitCompanionEvent('handover');
+  return result;
+}
+
 export function listCarPlayApprovalRequests(): CarPlayApprovalRequest[] {
   const overview = getMobileOverview();
   const markedLater = new Set(
@@ -1044,7 +2116,12 @@ export function listCarPlayApprovalRequests(): CarPlayApprovalRequest[] {
     return {
       ...approval,
       id,
-      title: approval.kind === 'command' ? 'Command approval' : 'File change approval',
+      title:
+        approval.kind === 'command'
+          ? 'Command approval'
+          : approval.kind === 'file_change'
+            ? 'File change approval'
+            : 'Permission request',
       workspaceId: workspace?.id,
       workspaceName: workspace?.name,
       repo: repo?.name ?? repo?.path ?? approval.repoName,
@@ -1165,6 +2242,657 @@ function listMobileChatThreads(): MobileChatThreadSummary[] {
   return [...missingActiveThreads, ...threads]
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
     .slice(0, 40);
+}
+
+/** Mesh RPC projection; local policy and operation scope are enforced by the caller. */
+export function listMeshCompanionChatThreads(workspaceId?: string): MobileChatThreadSummary[] {
+  const threads = listMobileChatThreads();
+  return workspaceId === undefined
+    ? threads
+    : threads.filter((thread) => thread.workspaceId === workspaceId);
+}
+
+export type MeshCompanionChatMessage = Omit<
+  ChatMessage,
+  'attachments' | 'event' | 'repoContext'
+> & {
+  attachments?: Array<Omit<ChatAttachment, 'path'>>;
+  citations?: Citation[];
+};
+
+export function readMeshCompanionThreadHistory(threadId: string): MeshCompanionChatMessage[] {
+  if (!threadId.trim() || threadId.length > 256) throw new Error('A valid thread id is required.');
+  return loadChatHistory(threadId).map(
+    ({ attachments, event: _event, repoContext: _repoContext, citations, ...message }) => ({
+      ...message,
+      ...(citations === undefined
+        ? {}
+        : {
+            citations: citations.map((citation) => ({
+              ...citation,
+              filePath: safeMeshCitationLabel(citation.filePath),
+            })),
+          }),
+      ...(attachments === undefined
+        ? {}
+        : { attachments: attachments.map(({ path: _hostPath, ...attachment }) => attachment) }),
+    }),
+  );
+}
+
+/** Companion history may show a citation label, but never the host's directory structure. */
+function safeMeshCitationLabel(filePath: string): string {
+  const label = filePath.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '';
+  return Array.from(label)
+    .filter((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && codePoint >= 0x20 && codePoint !== 0x7f;
+    })
+    .join('')
+    .slice(0, 255);
+}
+
+export function readMeshCompanionWorkspaceSignal(
+  signalId: string,
+): MobileWorkspaceSignalDetail | null {
+  if (!signalId.trim() || signalId.length > 512) throw new Error('A valid signal id is required.');
+  const detail = getMobileWorkspaceSignalDetail(signalId);
+  return detail === null
+    ? null
+    : {
+        ...detail,
+        files: detail.files.map((file) => ({ ...file, path: safeMeshCitationLabel(file.path) })),
+      };
+}
+
+export async function getMeshCompanionChatSkills(query = '') {
+  if (query.length > 256) throw new Error('The skill search query is too long.');
+  const skills = await listMobileChatSkills(query);
+  return skills.map(
+    ({ path: _path, directory: _directory, ...skill }): CodexRegisteredSkill => ({
+      ...skill,
+      path: '',
+      directory: '',
+    }),
+  );
+}
+
+export async function searchMeshCompanionFileMentions(input: {
+  repoIds: string[];
+  query?: string;
+  limit?: number;
+}): Promise<Array<Omit<ChatFileMentionSearchResult, 'path'>>> {
+  if (
+    !Array.isArray(input.repoIds) ||
+    input.repoIds.length > 32 ||
+    input.repoIds.some((repoId) => typeof repoId !== 'string' || repoId.length > 128) ||
+    (input.query !== undefined && input.query.length > 256)
+  ) {
+    throw new Error('File mention search request is invalid.');
+  }
+  const mentions = await searchChatFileMentions(input);
+  return mentions.map(({ path: _path, ...mention }) => mention);
+}
+
+export function prepareMeshCompanionAttachments(
+  inputs: ChatAttachmentInput[],
+  context: MeshCompanionAttachmentContext,
+  batchId: string,
+): MeshCompanionAttachmentReference[] {
+  validateMeshInlineAttachments(inputs);
+  if (!isSafeMeshAttachmentBatchId(batchId)) throw new Error('Attachment batch id is invalid.');
+  const prepared: ChatAttachment[] = [];
+  try {
+    for (const input of inputs) {
+      const [attachment] = prepareChatAttachments([{ ...input, id: randomUUID() }]);
+      if (attachment === undefined) throw new Error('Inline attachment preparation failed.');
+      prepared.push(attachment);
+    }
+    return registerMeshCompanionPreparedAttachments(context, { batchId, attachments: prepared });
+  } finally {
+    for (const attachment of prepared) {
+      try {
+        unlinkSync(attachment.path);
+      } catch {
+        // The upload helper owns its staged copy; temporary source cleanup is best effort.
+      }
+    }
+  }
+}
+
+function validateMeshInlineAttachments(inputs: ChatAttachmentInput[]): void {
+  if (!Array.isArray(inputs) || inputs.length > MESH_ATTACHMENT_MAX_COUNT) {
+    throw new Error('Mesh attachment request is invalid or contains too many files.');
+  }
+  if (
+    inputs.some(
+      (input) =>
+        typeof input !== 'object' ||
+        input === null ||
+        input.path !== undefined ||
+        typeof input.dataUrl !== 'string' ||
+        input.dataUrl.length === 0 ||
+        input.dataUrl.length > MESH_ATTACHMENT_PREPARE_MAX_DATA_URL_CHARS ||
+        typeof input.name !== 'string' ||
+        input.name.length > 256 ||
+        (input.mimeType !== undefined &&
+          (typeof input.mimeType !== 'string' || input.mimeType.length > 128)),
+    )
+  ) {
+    throw new Error('Mesh attachments must contain bounded uploaded data, not host file paths.');
+  }
+  const dataUrlChars = inputs.reduce((total, input) => total + (input.dataUrl?.length ?? 0), 0);
+  if (dataUrlChars > MESH_ATTACHMENT_PREPARE_MAX_DATA_URL_CHARS) {
+    throw new Error('Mesh attachment upload exceeds the current encrypted-frame limit.');
+  }
+}
+
+export interface MeshCompanionAttachmentChunk {
+  attachmentId: string;
+  name: string;
+  mimeType: string;
+  totalBytes: number;
+  offset: number;
+  bytesBase64: string;
+  nextOffset: number;
+}
+
+/** Derive upload ownership from the live, authenticated session and current host identity. */
+export function getMeshCompanionAttachmentContext(
+  sessionId: string,
+  principal: MeshMachineSessionPrincipal,
+): MeshCompanionAttachmentContext {
+  if (!sessionId.trim() || sessionId.length > 256) throw new Error('Mesh session is invalid.');
+  const owner = currentMeshHostOwner();
+  const identity = meshHostIdentity;
+  if (
+    owner === null ||
+    identity === null ||
+    owner.identityKey !== meshHostIdentityKey ||
+    principal.accountId !== owner.scope.accountId ||
+    identity.hostEnrollmentId !== owner.hostEnrollmentId ||
+    identity.machineId !== owner.machineId
+  ) {
+    throw new Error('Mesh host session is no longer authorized.');
+  }
+  return {
+    sessionId,
+    principalId:
+      principal.kind === 'enrollment'
+        ? `enrollment:${principal.sourceEnrollmentId}`
+        : `dashboard:${principal.grantId}`,
+    accountId: owner.scope.accountId,
+    backendId: owner.scope.backendId,
+    datasetEpoch: owner.scope.datasetEpoch,
+    hostEnrollmentId: identity.hostEnrollmentId,
+    machineId: identity.machineId,
+    endpointGeneration: identity.endpointGeneration,
+  };
+}
+
+export function beginMeshCompanionAttachmentUploadForSession(
+  sessionId: string,
+  principal: MeshMachineSessionPrincipal,
+  input: { batchId: string; uploadId: string; name: string; mimeType: string; totalBytes: number },
+): { batchId: string; uploadId: string; nextOffset: number; chunkBytes: number } {
+  expireMeshCompanionAttachmentUploads();
+  if (!isSafeMeshAttachmentBatchId(input.batchId))
+    throw new Error('Attachment batch id is invalid.');
+  return beginMeshCompanionAttachmentUpload(
+    getMeshCompanionAttachmentContext(sessionId, principal),
+    input,
+  );
+}
+
+export function writeMeshCompanionAttachmentChunkForSession(
+  sessionId: string,
+  principal: MeshMachineSessionPrincipal,
+  input: { uploadId: string; offset: number; bytesBase64: string },
+): { uploadId: string; nextOffset: number } {
+  expireMeshCompanionAttachmentUploads();
+  return writeMeshCompanionAttachmentChunk(
+    getMeshCompanionAttachmentContext(sessionId, principal),
+    input,
+  );
+}
+
+export function finishMeshCompanionAttachmentUploadForSession(
+  sessionId: string,
+  principal: MeshMachineSessionPrincipal,
+  input: { uploadId: string; sha256: string },
+): MeshCompanionAttachmentReference {
+  expireMeshCompanionAttachmentUploads();
+  return finishMeshCompanionAttachmentUpload(
+    getMeshCompanionAttachmentContext(sessionId, principal),
+    input,
+  );
+}
+
+export function claimMeshCompanionAttachmentsForSession(
+  sessionId: string,
+  principal: MeshMachineSessionPrincipal,
+  input: { batchId: string; attachmentIds: string[] },
+): ChatAttachmentInput[] {
+  expireMeshCompanionAttachmentUploads();
+  if (!isSafeMeshAttachmentBatchId(input.batchId))
+    throw new Error('Attachment batch id is invalid.');
+  return claimMeshCompanionAttachmentReferences(
+    getMeshCompanionAttachmentContext(sessionId, principal),
+    input,
+  );
+}
+
+function isSafeMeshAttachmentBatchId(value: string): boolean {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(value);
+}
+
+/** Safe scope metadata for the dispatcher to authorize thread-history reads. */
+export function getMeshCompanionThreadAccess(threadId: string): {
+  workspaceId?: string;
+  repoIds: string[];
+} | null {
+  const thread = getChatThread(threadId);
+  if (thread === null) return null;
+  return {
+    ...(thread.workspaceId === undefined ? {} : { workspaceId: thread.workspaceId }),
+    repoIds: [...thread.repoIds],
+  };
+}
+
+export function getMeshCompanionAttachmentThreadAccess(attachmentId: string): Array<{
+  threadId: string;
+  workspaceId?: string;
+  repoIds: string[];
+}> {
+  if (!attachmentId.trim() || attachmentId.length > 256) {
+    throw new Error('A valid attachment id is required.');
+  }
+  return findChatAttachmentThreadIds(attachmentId).flatMap((threadId) => {
+    const access = getMeshCompanionThreadAccess(threadId);
+    return access === null ? [] : [{ threadId, ...access }];
+  });
+}
+
+export interface MeshCompanionFileMentionInput {
+  repoId: string;
+  relativePath: string;
+}
+
+/** Snapshot mobile @file mentions into app-owned storage after checking repo membership and containment. */
+export function resolveMeshCompanionFileMentions(
+  requestedWorkspaceId: string | undefined,
+  allowedRepoIds: string[],
+  fileMentions: MeshCompanionFileMentionInput[],
+): ChatAttachmentInput[] {
+  const workspaceId = requestedWorkspaceId ?? getSettings().activeWorkspaceId;
+  if (
+    typeof workspaceId !== 'string' ||
+    workspaceId.length < 1 ||
+    workspaceId.length > 128 ||
+    !Array.isArray(allowedRepoIds) ||
+    allowedRepoIds.length > 64 ||
+    !Array.isArray(fileMentions) ||
+    fileMentions.length > MESH_ATTACHMENT_MAX_COUNT
+  ) {
+    throw new Error('Mesh file mention request is invalid.');
+  }
+  const workspace = safeGetWorkspace(workspaceId);
+  if (workspace === undefined) throw new Error('The selected workspace is unavailable.');
+  const allowed = new Set(allowedRepoIds);
+  const restrictRepos = allowed.size > 0;
+  let totalBytes = 0;
+  const attachments: ChatAttachmentInput[] = [];
+  try {
+    if (fileMentions.length > 0) ensureMeshFileMentionStorageDirectory();
+    for (const mention of fileMentions) {
+      if (
+        typeof mention !== 'object' ||
+        mention === null ||
+        typeof mention.repoId !== 'string' ||
+        mention.repoId.length > 128 ||
+        typeof mention.relativePath !== 'string' ||
+        mention.relativePath.length < 1 ||
+        mention.relativePath.length > 2_048 ||
+        hasControlCharacters(mention.relativePath) ||
+        mention.relativePath.includes(':') ||
+        path.isAbsolute(mention.relativePath) ||
+        path.win32.isAbsolute(mention.relativePath) ||
+        /^[A-Za-z]:/.test(mention.relativePath) ||
+        mention.relativePath.split(/[\\/]/).some((part) => part === '..') ||
+        (restrictRepos && !allowed.has(mention.repoId))
+      ) {
+        throw new Error('Mesh file mention is outside the selected repository scope.');
+      }
+      const repo = workspace.repos.find((candidate) => candidate.id === mention.repoId);
+      if (repo === undefined) throw new Error('Mesh file mention repository is unavailable.');
+      const snapshot = snapshotMeshFileMention(repo.path, mention.relativePath, totalBytes);
+      totalBytes += snapshot.size;
+      attachments.push({ name: snapshot.name, path: snapshot.path, size: snapshot.size });
+    }
+    return attachments;
+  } catch (error) {
+    for (const attachment of attachments) {
+      if (attachment.path !== undefined) {
+        try {
+          unlinkSync(attachment.path);
+        } catch {
+          // Keep the original validation or snapshot error.
+        }
+      }
+    }
+    throw error;
+  }
+}
+
+function snapshotMeshFileMention(
+  repositoryPath: string,
+  relativePath: string,
+  totalBytes: number,
+): { name: string; path: string; size: number } {
+  let repositoryRoot: string;
+  let sourcePath: string;
+  try {
+    repositoryRoot = realpathSync(repositoryPath);
+    const rootInfo = statSync(repositoryRoot);
+    if (!rootInfo.isDirectory()) throw new Error('not a directory');
+    const lexicalPath = path.resolve(repositoryRoot, relativePath);
+    assertPathWithinRoot(repositoryRoot, lexicalPath);
+    sourcePath = realpathSync(lexicalPath);
+  } catch {
+    throw new Error('Mesh file mention is unavailable.');
+  }
+  if (!isPathWithinRoot(repositoryRoot, sourcePath)) {
+    throw new Error('Mesh file mention resolves outside its repository.');
+  }
+
+  let sourceFd: number | undefined;
+  let destinationFd: number | undefined;
+  let destinationPath: string | undefined;
+  try {
+    sourceFd = openSync(sourcePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const initialInfo = fstatSync(sourceFd, { bigint: true });
+    if (!initialInfo.isFile() || initialInfo.size > BigInt(MESH_FILE_MENTION_MAX_BYTES)) {
+      throw new Error('Mesh file mention must be a regular file no larger than 25 MiB.');
+    }
+    const size = Number(initialInfo.size);
+    if (totalBytes + size > MESH_FILE_MENTION_MAX_TOTAL_BYTES) {
+      throw new Error('Mesh file mentions exceed the 75 MiB batch limit.');
+    }
+    assertMeshMentionSourceIdentity(repositoryRoot, sourcePath, initialInfo);
+
+    const safeName = sanitizeMeshMentionFileName(path.basename(sourcePath));
+    destinationPath = path.join(
+      getMeshFileMentionStorageDirectory(),
+      `${randomUUID()}-${safeName}`,
+    );
+    destinationFd = openSync(
+      destinationPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    copyDescriptorBytes(sourceFd, destinationFd, size);
+    fsyncSync(destinationFd);
+
+    const finalInfo = fstatSync(sourceFd, { bigint: true });
+    if (!sameMeshMentionSnapshot(initialInfo, finalInfo)) {
+      throw new Error('Mesh file mention changed while it was being attached.');
+    }
+    assertMeshMentionSourceIdentity(repositoryRoot, sourcePath, finalInfo);
+    return { name: safeName, path: destinationPath, size };
+  } catch (error) {
+    if (destinationPath !== undefined) {
+      try {
+        unlinkSync(destinationPath);
+      } catch {
+        // Ignore cleanup errors and preserve the snapshot error.
+      }
+    }
+    if (isMeshFileMentionSizeError(error)) throw error;
+    if (error instanceof Error && error.message.includes('Mesh file mention')) throw error;
+    throw new Error('Mesh file mention is unavailable.');
+  } finally {
+    if (destinationFd !== undefined) closeSync(destinationFd);
+    if (sourceFd !== undefined) closeSync(sourceFd);
+  }
+}
+
+function assertPathWithinRoot(root: string, candidate: string): void {
+  if (!isPathWithinRoot(root, candidate)) {
+    throw new Error('outside repository');
+  }
+}
+
+function isPathWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function assertMeshMentionSourceIdentity(
+  repositoryRoot: string,
+  sourcePath: string,
+  descriptorInfo: BigIntStats,
+): void {
+  if (!isPathWithinRoot(repositoryRoot, realpathSync(sourcePath))) {
+    throw new Error('Mesh file mention resolves outside its repository.');
+  }
+  const pathInfo = lstatSync(sourcePath, { bigint: true });
+  if (
+    pathInfo.isSymbolicLink() ||
+    !pathInfo.isFile() ||
+    pathInfo.dev !== descriptorInfo.dev ||
+    pathInfo.ino !== descriptorInfo.ino
+  ) {
+    throw new Error('Mesh file mention changed while it was being attached.');
+  }
+}
+
+function sameMeshMentionSnapshot(initialInfo: BigIntStats, finalInfo: BigIntStats): boolean {
+  return (
+    initialInfo.dev === finalInfo.dev &&
+    initialInfo.ino === finalInfo.ino &&
+    initialInfo.size === finalInfo.size &&
+    initialInfo.mtimeNs === finalInfo.mtimeNs &&
+    initialInfo.ctimeNs === finalInfo.ctimeNs
+  );
+}
+
+function copyDescriptorBytes(sourceFd: number, destinationFd: number, size: number): void {
+  const buffer = Buffer.allocUnsafe(MESH_FILE_MENTION_COPY_CHUNK_BYTES);
+  let copied = 0;
+  while (copied < size) {
+    const bytesToRead = Math.min(buffer.length, size - copied);
+    const bytesRead = readSync(sourceFd, buffer, 0, bytesToRead, null);
+    if (bytesRead === 0) throw new Error('Mesh file mention changed while it was being attached.');
+    let written = 0;
+    while (written < bytesRead) {
+      const bytesWritten = writeSync(destinationFd, buffer, written, bytesRead - written);
+      if (bytesWritten === 0) throw new Error('Mesh file mention snapshot could not be written.');
+      written += bytesWritten;
+    }
+    copied += bytesRead;
+  }
+}
+
+function ensureMeshFileMentionStorageDirectory(): void {
+  const userDataPath = path.resolve(app.getPath('userData'));
+  const userDataInfo = lstatSync(userDataPath);
+  if (!userDataInfo.isDirectory() || userDataInfo.isSymbolicLink()) {
+    throw new Error('Mesh file mention storage is unavailable.');
+  }
+  const attachmentRoot = path.join(userDataPath, 'chat-attachments');
+  try {
+    mkdirSync(attachmentRoot, { mode: 0o700 });
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+  }
+  const attachmentRootInfo = lstatSync(attachmentRoot);
+  if (!attachmentRootInfo.isDirectory() || attachmentRootInfo.isSymbolicLink()) {
+    throw new Error('Mesh file mention storage is unavailable.');
+  }
+  const mentionDirectory = path.join(attachmentRoot, MESH_FILE_MENTION_DIRECTORY);
+  try {
+    mkdirSync(mentionDirectory, { mode: 0o700 });
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+  }
+  const mentionDirectoryInfo = lstatSync(mentionDirectory);
+  if (!mentionDirectoryInfo.isDirectory() || mentionDirectoryInfo.isSymbolicLink()) {
+    throw new Error('Mesh file mention storage is unavailable.');
+  }
+  return;
+}
+
+function getMeshFileMentionStorageDirectory(): string {
+  const userDataPath = path.resolve(app.getPath('userData'));
+  return path.join(userDataPath, 'chat-attachments', MESH_FILE_MENTION_DIRECTORY);
+}
+
+function sanitizeMeshMentionFileName(name: string): string {
+  const sanitized = Array.from(name, (character) => {
+    const codePoint = character.codePointAt(0);
+    return character === '/' ||
+      character === '\\' ||
+      character === ':' ||
+      codePoint === undefined ||
+      codePoint < 0x20 ||
+      codePoint === 0x7f
+      ? '-'
+      : character;
+  })
+    .join('')
+    .trim()
+    .slice(0, 160);
+  return sanitized || 'attachment';
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST';
+}
+
+function isMeshFileMentionSizeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes('25 MiB') || error.message.includes('75 MiB batch limit'))
+  );
+}
+
+function hasControlCharacters(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint < 0x20 || codePoint === 0x7f);
+  });
+}
+
+export async function readMeshCompanionAttachmentChunk(input: {
+  attachmentId: string;
+  offset: number;
+  byteLength: number;
+}): Promise<MeshCompanionAttachmentChunk> {
+  if (
+    !input.attachmentId.trim() ||
+    input.attachmentId.length > 256 ||
+    !Number.isSafeInteger(input.offset) ||
+    input.offset < 0 ||
+    !Number.isSafeInteger(input.byteLength) ||
+    input.byteLength < 1 ||
+    input.byteLength > MESH_ATTACHMENT_READ_CHUNK_MAX_BYTES
+  ) {
+    throw new Error('Attachment read request is invalid.');
+  }
+  const attachment = findChatAttachment(input.attachmentId);
+  if (attachment === null || !existsSync(attachment.path))
+    throw new Error('Chat attachment not found.');
+  const fileStat = statSync(attachment.path);
+  if (!fileStat.isFile() || fileStat.size > 25 * 1024 * 1024 || input.offset > fileStat.size) {
+    throw new Error('Chat attachment is unavailable.');
+  }
+  const byteLength = Math.min(input.byteLength, fileStat.size - input.offset);
+  const chunks: Buffer[] = [];
+  if (byteLength > 0) {
+    const stream = createReadStream(attachment.path, {
+      start: input.offset,
+      end: input.offset + byteLength - 1,
+    });
+    for await (const chunk of stream)
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const bytes = Buffer.concat(chunks);
+  return {
+    attachmentId: attachment.id,
+    name: attachment.name,
+    mimeType: attachment.mimeType || 'application/octet-stream',
+    totalBytes: fileStat.size,
+    offset: input.offset,
+    bytesBase64: bytes.toString('base64'),
+    nextOffset: input.offset + bytes.byteLength,
+  };
+}
+
+export async function startMeshCompanionWorkflow(
+  input: MobileStartChatInput,
+  claimedAttachments: ChatAttachmentInput[] = [],
+): Promise<MobileStartChatResult> {
+  if (input.attachments?.some((attachment) => attachment.path !== undefined)) {
+    throw new Error('Mesh workflow attachments must use encrypted upload references.');
+  }
+  validateMeshInlineAttachments(input.attachments ?? []);
+  return startMobileWorkflow({
+    ...input,
+    attachments: [...(input.attachments ?? []), ...claimedAttachments],
+  });
+}
+
+export async function sendMeshCompanionMessage(
+  sessionId: string,
+  input: MobileSendChatMessageInput,
+  claimedAttachments: ChatAttachmentInput[] = [],
+): Promise<{ accepted: true; sessionId: string }> {
+  if (!input.message?.trim() || input.message.length > 32_000) {
+    throw new Error('A bounded non-empty message is required.');
+  }
+  if (input.attachments?.some((attachment) => attachment.path !== undefined)) {
+    throw new Error('Mesh message attachments must use encrypted upload references.');
+  }
+  validateMeshInlineAttachments(input.attachments ?? []);
+  const thread = listMobileChatThreads().find(
+    (candidate) => candidate.activeSessionId === sessionId,
+  );
+  if (thread === undefined) throw new Error('This session has no active companion thread.');
+  await sendMobileMessage(thread.id, {
+    ...input,
+    sessionId,
+    attachments: [...(input.attachments ?? []), ...claimedAttachments],
+  });
+  return { accepted: true, sessionId };
+}
+
+export function resolveMeshCompanionApproval(
+  sessionId: string,
+  requestKey: string,
+  decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+  optionId?: string,
+): { ok: true } {
+  if (
+    sessionId.length > 256 ||
+    requestKey.length > 256 ||
+    (optionId !== undefined && optionId.length > 256)
+  ) {
+    throw new Error('Approval request is invalid.');
+  }
+  resolveMobileApproval(sessionId, requestKey, decision, optionId);
+  return { ok: true };
+}
+
+export function interruptMeshCompanionSession(sessionId: string): { ok: true } {
+  if (!sessionId.trim() || sessionId.length > 256)
+    throw new Error('A valid session id is required.');
+  interruptTurn(sessionId);
+  return { ok: true };
+}
+
+export function openMeshCompanionDesktop(): { opened: true } {
+  focusDesktop();
+  return { opened: true };
 }
 
 function mobileThreadSummaryFromSession(
@@ -2163,13 +3891,18 @@ function resolveMobileApproval(
   sessionId: string,
   requestKey: string,
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel' | undefined,
+  optionId?: string,
 ): void {
   if (!decision) throw new Error('Approval decision is required.');
   const approval = listPendingApprovalRequests().find(
     (candidate) => candidate.sessionId === sessionId && candidate.requestKey === requestKey,
   );
   if (!approval) throw new Error('Approval request is no longer active.');
-  resolveApproval(sessionId, approval.requestId, decision);
+  if (optionId === undefined) {
+    resolveApproval(sessionId, approval.requestId, decision);
+  } else {
+    resolveApproval(sessionId, approval.requestId, decision, optionId);
+  }
   pushCompanionNotification(
     'approvals',
     decision === 'decline' ? 'Approval declined' : 'Approval resolved',
@@ -2345,15 +4078,61 @@ async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 }
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
-  setCommonHeaders(res);
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
 }
 
-function setCommonHeaders(res: ServerResponse): void {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+function setCommonHeaders(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  res.setHeader('Vary', 'Origin');
+  if (!isSameHostOrigin(origin, req.socket.localAddress, req.socket.remoteAddress)) return;
+  res.setHeader('Access-Control-Allow-Origin', new URL(origin).origin);
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+}
+
+function isMeshSessionHttpPath(path: string): boolean {
+  return (
+    path === MESH_MACHINE_ROUTE_PATHS.info ||
+    path === MESH_MACHINE_ROUTE_PATHS.challenge ||
+    path === MESH_MACHINE_ROUTE_PATHS.bootstrap ||
+    path.startsWith('/api/machine/v1/sessions/')
+  );
+}
+
+function isSameHostOrigin(
+  origin: string,
+  localAddress: string | undefined,
+  remoteAddress: string | undefined,
+): boolean {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    const originHost = normalizeAddress(url.hostname);
+    const localHost = normalizeAddress(localAddress ?? '');
+    const remoteHost = normalizeAddress(remoteAddress ?? '');
+    const sameHost = originHost === localHost;
+    const localLoopbackOrigin =
+      isLoopbackAddress(originHost) &&
+      ((isLoopbackAddress(localHost) && isLoopbackAddress(remoteHost)) ||
+        (localHost !== '' && localHost === remoteHost));
+    return (sameHost || localLoopbackOrigin) && url.port === EXPO_WEB_PORT;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeAddress(address: string): string {
+  return address
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/^::ffff:/, '');
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  const normalized = normalizeAddress(address ?? '');
+  return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
 }
 
 function isChatAttachmentRoute(pathParts: string[]): boolean {
@@ -2382,7 +4161,6 @@ function sendChatAttachment(res: ServerResponse, attachmentId: string): void {
     return;
   }
 
-  setCommonHeaders(res);
   res.writeHead(200, {
     'Content-Type': attachment.mimeType || 'application/octet-stream',
     'Content-Length': fileStat.size,

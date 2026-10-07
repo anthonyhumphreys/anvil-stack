@@ -1,0 +1,36 @@
+{
+  "changes": [
+    {
+      "changeId": "11111111-1111-4111-8111-111111111111",
+      "enrollmentSequence": 41,
+      "entityType": "workspace",
+      "entityId": "ws-website",
+      "schemaVersion": 2,
+      "baseRevision": null,
+      "operation": "create",
+      "payload": { "name": "Website", "description": "Marketing site" },
+      "payloadHash": "c9188fb5f054e3574f38880ec9040c1aef0491733b1c4dd658797107708c5d5a"
+    },
+    {
+      "changeId": "22222222-2222-4222-8222-222222222222",
+      "enrollmentSequence": 42,
+      "entityType": "workitem",
+      "entityId": "wi-7",
+      "schemaVersion": 3,
+      "baseRevision": 7,
+      "operation": "update",
+      "payload": { "title": "Fix nav", "position": 3, "tags": ["web", "nav"] },
+      "payloadHash": "1427c37fbf9ec781c281a28b617c5f27d04eb983fcb90d8a159da12075bd6ab7"
+    },
+    {
+      "changeId": "33333333-3333-4333-8333-333333333333",
+      "enrollmentSequence": 43,
+      "entityType": "agent",
+      "entityId": "agent-old",
+      "schemaVersion": 1,
+      "baseRevision": 3,
+      "operation": "delete",
+      "payloadHash": "86d9a2ecfe97b60e51688f0eab0bd8aa653bffcedf24daadadec87b16173d057"
+    }
+  ]
+}

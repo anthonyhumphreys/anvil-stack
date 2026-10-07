@@ -79,10 +79,10 @@ describe('local LLM providers', () => {
         }),
       )
       .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ choices: [{ message: { content: 'local response' } }] }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
+        new Response(JSON.stringify({ choices: [{ message: { content: 'local response' } }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
       );
     vi.stubGlobal('fetch', fetchMock);
 

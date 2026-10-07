@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:child_process', () => ({
@@ -20,25 +21,71 @@ import {
   buildAcpClientCapabilities,
   buildApprovalResponse,
   buildCodexCollaborationMode,
+  buildCodexProcessEnvironment,
   buildInputResponse,
   buildTurnSteerParams,
+  providerProcessSpawnOptions,
   resolveAcpModelValue,
   resolveAcpSessionMode,
   resolveSessionModel,
   resolvePersonaCodexPolicy,
   resolvePlanFeedbackDelivery,
   resolveSessionCwd,
+  stopManagedProviderProcess,
 } from '../codex-session.service.js';
 
 const tempDirs: string[] = [];
 
+const gatewayRuntimeMocks = vi.hoisted(() => ({
+  syncGatewayCodexIntegrations: vi.fn(async () => undefined),
+  writeGatewayCodexCatalog: vi.fn(async () => []),
+}));
+
+vi.mock('../llm-gateway-runtime.service.js', () => gatewayRuntimeMocks);
+
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const tempDir of tempDirs.splice(0)) {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
 
 describe('codex session service', () => {
+  it('isolates provider children in a process group on POSIX', () => {
+    expect(providerProcessSpawnOptions()).toEqual(
+      process.platform === 'win32' ? {} : { detached: true },
+    );
+  });
+
+  it('waits for an isolated provider group to exit even after its parent has exited', async () => {
+    const groupId = 42_731;
+    const termAt = Date.now();
+    const observedSignals: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+    const kill = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      observedSignals.push({ pid, signal: signal ?? 0 });
+      if (pid !== -groupId) throw new Error('must only signal the provider process group');
+      if (signal === 0 && Date.now() - termAt >= 125) {
+        const error = new Error('group exited') as NodeJS.ErrnoException;
+        error.code = 'ESRCH';
+        throw error;
+      }
+      return true;
+    }) as never);
+
+    try {
+      const startedAt = Date.now();
+      await stopManagedProviderProcess({} as ChildProcess, groupId, 500);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(100);
+      expect(observedSignals).toContainEqual({ pid: -groupId, signal: 'SIGTERM' });
+      expect(observedSignals.every(({ pid }) => pid === -groupId)).toBe(true);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
   it('sends native Plan settings and explicitly resets Build turns to default mode', () => {
     expect(buildCodexCollaborationMode('plan', 'gpt-5.6-sol', 'high')).toEqual({
       mode: 'plan',
@@ -54,6 +101,38 @@ describe('codex session service', () => {
       mode: 'plan',
       settings: { model: 'gateway/model', reasoning_effort: null },
     });
+  });
+
+  it('strips ambient secrets from the provider spawn environment', async () => {
+    vi.stubEnv('GH_TOKEN', 'gh-secret');
+    vi.stubEnv('ANVIL_SYNC_TOKEN', 'anvil-secret');
+    vi.stubEnv('PATH', '/usr/bin:/bin');
+
+    const env = await buildCodexProcessEnvironment('openai', {
+      openaiApiKey: 'sk-from-settings',
+    } as Parameters<typeof buildCodexProcessEnvironment>[1]);
+
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.ANVIL_SYNC_TOKEN).toBeUndefined();
+    expect(env.PATH).toBe('/usr/bin:/bin');
+    expect(env.OPENAI_API_KEY).toBe('sk-from-settings');
+  });
+
+  it('uses a granted LLMGateway key on a fresh worker without a locally saved key', async () => {
+    vi.stubEnv('PATH', '/usr/bin:/bin');
+    const env = await buildCodexProcessEnvironment(
+      'llmgateway',
+      {
+        llmGatewayApiKey: undefined,
+        llmGatewayBillingMode: 'payg',
+      } as Parameters<typeof buildCodexProcessEnvironment>[1],
+      { LLMGATEWAY_API_KEY: 'source-granted-key', LLMGATEWAY_BILLING_MODE: 'devpass' },
+    );
+
+    expect(env.LLMGATEWAY_API_KEY).toBe('source-granted-key');
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.OPENAI_BASE_URL).toBeUndefined();
+    expect(env.CODEX_HOME).toBe('/tmp/anvil-test/codex/llmgateway');
   });
 
   it('keeps Cursor model ids instead of coercing them into the Codex catalog', () => {

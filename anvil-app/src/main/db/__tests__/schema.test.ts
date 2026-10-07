@@ -1,9 +1,15 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from '../schema';
+import { LEGACY_SCHEMA_REPAIR_SQL, MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from '../schema';
+import {
+  MAIN_V67_SCHEMA_SQL,
+  MERGE_BASE_V66_SCHEMA_SQL,
+  PRE_MERGE_BRANCH_MIGRATIONS,
+} from './schema-merge-fixtures';
 
 function applyMigration(db: Database.Database, migration: string): void {
   for (const statement of migration
+    .replace(/^[ \t]*--[^\r\n]*/gm, '')
     .split(';')
     .map((value) => value.trim())
     .filter(Boolean)) {
@@ -17,7 +23,158 @@ function applyMigration(db: Database.Database, migration: string): void {
   }
 }
 
+it('migrates existing worker nodes to approval mode without enabling them', () => {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE mesh_worker_state (id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL, updated_at TEXT);
+    INSERT INTO mesh_worker_state VALUES (1, 0, 'before');`);
+  db.exec(MIGRATIONS[100]!);
+  expect(db.prepare('SELECT enabled, max_permission_mode FROM mesh_worker_state').get()).toEqual({
+    enabled: 0,
+    max_permission_mode: 'on-request',
+  });
+  db.close();
+});
+
+it('defaults workspaces to Local and preserves existing workspace Sync bindings', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+      CREATE TABLE sync_bindings (entity_type TEXT NOT NULL, entity_id TEXT NOT NULL);
+      INSERT INTO workspaces (id, name) VALUES ('bound', 'Bound'), ('local', 'Local');
+      INSERT INTO sync_bindings (entity_type, entity_id)
+        VALUES ('workspace-definition', 'bound');
+    `);
+    applyMigration(db, MIGRATIONS[105]!);
+
+    expect(db.prepare('SELECT id, sync_selected FROM workspaces ORDER BY id').all()).toEqual([
+      { id: 'bound', sync_selected: 1 },
+      { id: 'local', sync_selected: 0 },
+    ]);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM sync_paused_changes').get()).toEqual({
+      count: 0,
+    });
+  } finally {
+    db.close();
+  }
+});
+
 describe('fresh database schema', () => {
+  it('migrates existing dashboard grants to add remembered browser trust storage', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE mesh_dashboard_grants (
+          backend_id TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          browser_pub TEXT NOT NULL,
+          dsk_wrapped BLOB,
+          scopes_json TEXT NOT NULL,
+          workspace_id TEXT,
+          repo_ids_json TEXT NOT NULL DEFAULT '[]',
+          enrollment_id TEXT,
+          expires_at TEXT NOT NULL,
+          seq INTEGER NOT NULL DEFAULT 0,
+          state TEXT NOT NULL DEFAULT 'pending',
+          request_json TEXT,
+          last_published_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (backend_id, account_id, request_id)
+        );
+        INSERT INTO mesh_dashboard_grants
+          (backend_id, account_id, request_id, browser_pub, scopes_json, expires_at,
+           created_at, updated_at)
+        VALUES ('backend', 'account', 'request', 'pub', '[]', 'later', 'now', 'now');
+      `);
+
+      applyMigration(db, MIGRATIONS[104]!);
+
+      const grantColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(mesh_dashboard_grants)').all() as Array<{ name: string }>
+        ).map((column) => column.name),
+      );
+      const trustColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(mesh_dashboard_browser_trusts)').all() as Array<{
+            name: string;
+          }>
+        ).map((column) => column.name),
+      );
+      expect(grantColumns.has('trust_id')).toBe(true);
+      expect(trustColumns).toEqual(
+        new Set([
+          'backend_id',
+          'account_id',
+          'trust_id',
+          'proof_key_wrapped',
+          'browser_pub',
+          'origin',
+          'target_enrollment_id',
+          'workspace_bindings_json',
+          'scopes_json',
+          'enrollment_id',
+          'expires_at',
+          'state',
+          'created_at',
+          'updated_at',
+        ]),
+      );
+      expect(db.prepare('SELECT request_id, trust_id FROM mesh_dashboard_grants').get()).toEqual({
+        request_id: 'request',
+        trust_id: null,
+      });
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+          .get('idx_mesh_dashboard_grants_trust'),
+      ).toEqual({ name: 'idx_mesh_dashboard_grants_trust' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates existing chat threads without losing read-only side-question purpose', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE chat_threads (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT,
+          persona_id TEXT NOT NULL,
+          title TEXT NOT NULL
+        );
+        INSERT INTO chat_threads (id, workspace_id, persona_id, title)
+        VALUES ('parent', 'workspace-1', 'coder', 'Original thread');
+      `);
+      applyMigration(db, MIGRATIONS[98]);
+
+      expect(
+        db
+          .prepare('SELECT purpose, side_question_of_thread_id FROM chat_threads WHERE id = ?')
+          .get('parent'),
+      ).toEqual({ purpose: 'normal', side_question_of_thread_id: null });
+
+      db.pragma('foreign_keys = ON');
+      db.prepare(
+        `INSERT INTO chat_threads (
+           id, workspace_id, persona_id, title, purpose, side_question_of_thread_id
+         ) VALUES ('side', 'workspace-1', 'coder', 'Question', 'side-question', 'parent')`,
+      ).run();
+      db.prepare('DELETE FROM chat_threads WHERE id = ?').run('parent');
+
+      expect(
+        db
+          .prepare('SELECT purpose, side_question_of_thread_id FROM chat_threads WHERE id = ?')
+          .get('side'),
+      ).toEqual({ purpose: 'side-question', side_question_of_thread_id: null });
+    } finally {
+      db.close();
+    }
+  });
+
   it('contains every settings column required by the settings service', () => {
     const db = new Database(':memory:');
     try {
@@ -78,6 +235,42 @@ describe('fresh database schema', () => {
     }
   });
 
+  it('includes the MOB-01 companion enrollment policy table', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      const columns = new Set(
+        (
+          db.prepare('PRAGMA table_info(companion_enrollment_policies)').all() as Array<{
+            name: string;
+          }>
+        ).map((column) => column.name),
+      );
+      for (const requiredColumn of [
+        'enrollment_id',
+        'account_id',
+        'display_name',
+        'tier',
+        'first_seen_at',
+        'decided_at',
+        'updated_at',
+      ]) {
+        expect(columns.has(requiredColumn), `Missing ${requiredColumn}`).toBe(true);
+      }
+      // Migration 80 is idempotent over a fresh schema.
+      applyMigration(db, MIGRATIONS[80]);
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'companion_enrollment_policies'",
+          )
+          .get(),
+      ).toEqual({ name: 'companion_enrollment_policies' });
+    } finally {
+      db.close();
+    }
+  });
+
   it.each([
     {
       name: 'cloud execution version 56',
@@ -126,7 +319,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(69);
+      expect(SCHEMA_VERSION).toBe(107);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -137,6 +330,292 @@ describe('fresh database schema', () => {
       }
       expect(cloudColumns.has('endpoint')).toBe(true);
       expect(cloudColumns.has('token')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('includes the sync mesh persistence tables', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      const tableColumns = (table: string) =>
+        new Set(
+          (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (column) => column.name,
+          ),
+        );
+
+      expect(tableColumns('device_enrollments').has('enrollment_generation')).toBe(true);
+      expect(tableColumns('device_enrollments').has('revoked_at')).toBe(true);
+      expect(tableColumns('sync_bindings').has('base_payload_json')).toBe(true);
+      expect(tableColumns('sync_bindings').has('local_edit_generation')).toBe(true);
+      expect(tableColumns('sync_bindings').has('acknowledged_generation')).toBe(true);
+      expect(tableColumns('sync_outbox').has('enrollment_sequence')).toBe(true);
+      expect(tableColumns('sync_outbox').has('payload_hash')).toBe(true);
+      expect(tableColumns('sync_outbox').has('result_json')).toBe(true);
+      expect(tableColumns('sync_state').has('consumed_sequence_high_water')).toBe(true);
+      expect(tableColumns('sync_state').has('reset_required')).toBe(true);
+      expect(tableColumns('sync_conflicts').has('remote_payload_json')).toBe(true);
+      expect(tableColumns('sync_conflicts').has('resolution')).toBe(true);
+      expect(tableColumns('sync_backends').has('base_url')).toBe(true);
+      expect(tableColumns('sync_backends').has('deployment_id')).toBe(true);
+      expect(tableColumns('sync_backends').has('display_name')).toBe(true);
+      expect(tableColumns('sync_backends').has('profiles_json')).toBe(true);
+      expect(tableColumns('sync_backends').has('auth_modes_json')).toBe(true);
+      expect(tableColumns('sync_backends').has('pinned_descriptor_json')).toBe(true);
+      expect(tableColumns('sync_backends').has('state')).toBe(true);
+      expect(tableColumns('sync_backends').has('created_at')).toBe(true);
+      expect(tableColumns('sync_backends').has('updated_at')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('backend_id')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('account_id')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('state')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('source')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('funded_by')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('organization_id')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('device_limit')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('checked_at')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('revision')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('reason')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('restricted')).toBe(true);
+
+      const indexes = new Set(
+        (
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      expect(indexes.has('uq_sync_bindings_scope_entity')).toBe(true);
+      expect(indexes.has('idx_sync_outbox_scope_state')).toBe(true);
+      expect(indexes.has('uq_sync_outbox_dispatched_entity')).toBe(true);
+      expect(indexes.has('idx_sync_conflicts_scope_entity')).toBe(true);
+      expect(indexes.has('uq_sync_backends_one_active')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('includes explicit browser workspace grant and receipt storage', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      const grantColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(mesh_dashboard_grants)').all() as Array<{ name: string }>
+        ).map((column) => column.name),
+      );
+      expect(grantColumns.has('workspace_id')).toBe(true);
+      expect(grantColumns.has('repo_ids_json')).toBe(true);
+      expect(grantColumns.has('enrollment_id')).toBe(true);
+      const receiptColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(mesh_browser_command_receipts)').all() as Array<{
+            name: string;
+          }>
+        ).map((column) => column.name),
+      );
+      expect(receiptColumns.has('payload_hash')).toBe(true);
+      expect(receiptColumns.has('command_envelope_json')).toBe(true);
+      expect(receiptColumns.has('claim_fence')).toBe(true);
+      expect(receiptColumns.has('result_wrapped')).toBe(true);
+      expect(receiptColumns.has('result_envelope_json')).toBe(true);
+      expect(receiptColumns.has('result_published')).toBe(true);
+      expect(receiptColumns.has('state')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates a v68 database to the backend association table', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
+      applyMigration(db, MIGRATIONS[69]);
+      const tables = new Set(
+        (
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      expect(tables.has('sync_backends'), 'Missing table sync_backends').toBe(true);
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(sync_backends)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      for (const column of [
+        'id',
+        'base_url',
+        'deployment_id',
+        'display_name',
+        'profiles_json',
+        'auth_modes_json',
+        'pinned_descriptor_json',
+        'state',
+        'created_at',
+        'updated_at',
+      ]) {
+        expect(columns.has(column), `Missing sync_backends.${column}`).toBe(true);
+      }
+      const indexes = new Set(
+        (
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      expect(indexes.has('uq_sync_backends_one_active')).toBe(true);
+
+      db.exec(`
+        INSERT INTO sync_backends (
+          id, base_url, deployment_id, display_name, profiles_json, auth_modes_json,
+          pinned_descriptor_json, state, created_at, updated_at
+        ) VALUES (
+          'one', 'https://one.example/', 'one', 'One', '[]', '[]', '{}', 'active',
+          '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+        )
+      `);
+      expect(() =>
+        db.exec(`
+          INSERT INTO sync_backends (
+            id, base_url, deployment_id, display_name, profiles_json, auth_modes_json,
+            pinned_descriptor_json, state, created_at, updated_at
+          ) VALUES (
+            'two', 'https://two.example/', 'two', 'Two', '[]', '[]', '{}', 'active',
+            '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+          )
+        `),
+      ).toThrow(/unique/i);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('repairs a v68 database missing device enrollments before v70 alters it', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '68');
+      `);
+
+      // This is the historical collision: v68 is stamped, but the table from
+      // the pre-merge v67 migration was never created.
+      db.exec(LEGACY_SCHEMA_REPAIR_SQL);
+      applyMigration(db, MIGRATIONS[69]);
+      applyMigration(db, MIGRATIONS[70]);
+
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(device_enrollments)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      expect(columns.has('next_sequence')).toBe(true);
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_backends'")
+          .get(),
+      ).toEqual({ name: 'sync_backends' });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates a v67 database to the sync mesh tables', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
+      applyMigration(db, MIGRATIONS[68]);
+      const tables = new Set(
+        (
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      for (const table of [
+        'device_enrollments',
+        'sync_bindings',
+        'sync_outbox',
+        'sync_state',
+        'sync_conflicts',
+      ]) {
+        expect(tables.has(table), `Missing table ${table}`).toBe(true);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates a v78 database to the hosted entitlement table', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigration(db, MIGRATIONS[79]);
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(sync_entitlement)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      for (const column of [
+        'backend_id',
+        'account_id',
+        'state',
+        'source',
+        'plan_key',
+        'preview_ends_at',
+        'access_until',
+        'grace_until',
+        'checked_at',
+        'revision',
+        'reason',
+        'restricted',
+        'updated_at',
+      ]) {
+        expect(columns.has(column), `Missing column ${column}`).toBe(true);
+      }
+      // Re-running must be a no-op for databases that already have the table.
+      applyMigration(db, MIGRATIONS[79]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates hosted entitlement funding and device-limit fields', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigration(db, MIGRATIONS[79]);
+      db.prepare(
+        `INSERT INTO sync_entitlement
+           (backend_id, account_id, state, source, plan_key, checked_at, reason, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run('backend', 'account', 'active', 'subscription', 'sync_personal', 'now', 'paid', 'now');
+      applyMigration(db, MIGRATIONS[99]);
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(sync_entitlement)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      expect(columns.has('funded_by')).toBe(true);
+      expect(columns.has('organization_id')).toBe(true);
+      expect(columns.has('device_limit')).toBe(true);
+      expect(
+        db
+          .prepare(
+            `SELECT state, source, plan_key, funded_by, organization_id, device_limit
+             FROM sync_entitlement WHERE backend_id = ? AND account_id = ?`,
+          )
+          .get('backend', 'account'),
+      ).toEqual({
+        state: 'active',
+        source: 'subscription',
+        plan_key: 'sync_personal',
+        funded_by: 'none',
+        organization_id: null,
+        device_limit: 5,
+      });
+      applyMigration(db, MIGRATIONS[99]);
     } finally {
       db.close();
     }
@@ -245,6 +724,19 @@ describe('fresh database schema', () => {
     }
   });
 
+  it('ignores semicolons inside standalone SQL comment lines', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigration(
+        db,
+        'CREATE TABLE retained (id INTEGER);\n-- a comment; not SQL\nINSERT INTO retained VALUES (1);',
+      );
+      expect(db.prepare('SELECT id FROM retained').all()).toEqual([{ id: 1 }]);
+    } finally {
+      db.close();
+    }
+  });
+
   it('adds opt-in telemetry disabled by default', () => {
     const db = new Database(':memory:');
     try {
@@ -307,5 +799,137 @@ describe('fresh database schema', () => {
     } finally {
       db.close();
     }
+  });
+
+  describe('post-merge migration convergence', () => {
+    const schemaShape = (db: Database.Database) => {
+      const objects = (
+        db
+          .prepare(
+            "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+          )
+          .all() as Array<{ type: string; name: string }>
+      ).map((row) => `${row.type}:${row.name}`);
+      const columns: Record<string, string[]> = {};
+      for (const row of db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        .all() as Array<{ name: string }>) {
+        columns[row.name] = (
+          db.prepare(`PRAGMA table_info(${row.name})`).all() as Array<{ name: string }>
+        )
+          .map((column) => column.name)
+          .sort();
+      }
+      return { objects, columns };
+    };
+
+    const freshShape = () => {
+      const db = new Database(':memory:');
+      try {
+        db.exec(SCHEMA_SQL);
+        return schemaShape(db);
+      } finally {
+        db.close();
+      }
+    };
+
+    const seedRows = (db: Database.Database, includeOutbox: boolean) => {
+      db.exec(`
+        INSERT INTO settings (id, llm_provider) VALUES (1, 'cursor');
+        INSERT INTO workspaces (id, name, created_at, updated_at)
+          VALUES ('ws-1', 'Seeded', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
+      `);
+      if (includeOutbox) {
+        db.exec(`
+          INSERT INTO sync_outbox (
+            change_id, backend_id, account_id, dataset_epoch, enrollment_id,
+            entity_type, entity_id, schema_version, operation, payload_hash,
+            local_edit_generation, created_at
+          ) VALUES (
+            'change-1', 'backend', 'account', 'epoch', 'enrollment',
+            'workspace', 'ws-1', 76, 'update', 'hash', 1,
+            '2026-09-11T00:00:00.000Z'
+          );
+        `);
+      }
+    };
+
+    const buildBranchSnapshot = (throughVersion: number) => {
+      const db = new Database(':memory:');
+      db.exec(MERGE_BASE_V66_SCHEMA_SQL);
+      for (let version = 67; version <= throughVersion; version += 1) {
+        applyMigration(db, PRE_MERGE_BRANCH_MIGRATIONS[version]);
+      }
+      return db;
+    };
+
+    it.each([
+      {
+        name: 'main v67 (released gateway migration)',
+        fromVersion: 67,
+        includeOutbox: false,
+        build: () => {
+          const db = new Database(':memory:');
+          db.exec(MAIN_V67_SCHEMA_SQL);
+          return db;
+        },
+      },
+      {
+        name: 'pre-merge branch v67',
+        fromVersion: 67,
+        includeOutbox: false,
+        build: () => buildBranchSnapshot(67),
+      },
+      {
+        name: 'pre-merge branch v69',
+        fromVersion: 69,
+        includeOutbox: false,
+        build: () => buildBranchSnapshot(69),
+      },
+      {
+        name: 'pre-merge branch v76',
+        fromVersion: 76,
+        includeOutbox: true,
+        build: () => buildBranchSnapshot(76),
+      },
+      {
+        name: 'fresh merged schema',
+        fromVersion: SCHEMA_VERSION,
+        includeOutbox: true,
+        build: () => {
+          const db = new Database(':memory:');
+          db.exec(SCHEMA_SQL);
+          return db;
+        },
+      },
+    ])('converges $name to the merged schema', ({ fromVersion, includeOutbox, build }) => {
+      const db = build();
+      try {
+        seedRows(db, includeOutbox);
+        for (let version = fromVersion + 1; version <= SCHEMA_VERSION; version += 1) {
+          const migration = MIGRATIONS[version];
+          if (migration) applyMigration(db, migration);
+        }
+
+        expect(schemaShape(db)).toEqual(freshShape());
+        expect(db.prepare('SELECT id, llm_provider FROM settings WHERE id = 1').get()).toEqual({
+          id: 1,
+          llm_provider: 'cursor',
+        });
+        expect(db.prepare('SELECT id, name FROM workspaces WHERE id = ?').get('ws-1')).toEqual({
+          id: 'ws-1',
+          name: 'Seeded',
+        });
+        if (includeOutbox) {
+          expect(
+            db
+              .prepare('SELECT change_id, entity_id, state FROM sync_outbox WHERE change_id = ?')
+              .get('change-1'),
+          ).toEqual({ change_id: 'change-1', entity_id: 'ws-1', state: 'pending' });
+        }
+      } finally {
+        db.close();
+      }
+    });
   });
 });

@@ -1,11 +1,18 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { configureWorkosEnvironment, validateDeploymentEnvironment } from "./lib/deployment-env.js";
 
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
+// Resolve scoped values before Next inlines the WorkOS redirect URI. Secrets
+// are assigned only to process.env; they are never added to Next's `env` config.
+validateDeploymentEnvironment();
+configureWorkosEnvironment();
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  outputFileTracingRoot: projectRoot,
+  outputFileTracingRoot: path.resolve(projectRoot, ".."),
+  turbopack: { root: path.resolve(projectRoot, "..") },
   reactStrictMode: true,
   async redirects() {
     const registryDocs = [

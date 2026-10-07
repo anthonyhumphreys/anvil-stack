@@ -503,6 +503,25 @@ describe("AgentExecutionControlPlane", () => {
     });
   });
 
+  it("describes registered providers without starting a sandbox", async () => {
+    const provider = new FakeAgentExecutionProvider();
+    const plane = new AgentExecutionControlPlane({
+      providers: [provider],
+      store: new InMemoryAgentExecutionStore(),
+    });
+
+    await expect(plane.listProviders()).resolves.toEqual([
+      {
+        id: "fake-execution",
+        capabilities: expect.objectContaining({
+          modes: ["read-only", "read-write"],
+          resumableEvents: true,
+        }),
+        availability: { configured: true, reasons: [] },
+      },
+    ]);
+  });
+
   it("serves the same execution contract through the hosted HTTP boundary", async () => {
     const plane = createPlane();
     const handler = createAgentExecutionHttpHandler(plane, {
@@ -511,9 +530,10 @@ describe("AgentExecutionControlPlane", () => {
           ? { subject: "user-1", roles: ["operator"] }
           : null,
       authorize: ({ action, execution, executionRequest }) =>
-        action !== "reap" &&
-        (execution?.request.workspace ?? executionRequest?.workspace) ===
-          "workspace-1",
+        action === "providers" ||
+        (action !== "reap" &&
+          (execution?.request.workspace ?? executionRequest?.workspace) ===
+            "workspace-1"),
     });
     const client = createHttpAgentExecutionControlPlane(
       "https://control.example.test/",
@@ -539,6 +559,12 @@ describe("AgentExecutionControlPlane", () => {
         },
       },
     );
+    await expect(client.listProviders()).resolves.toEqual([
+      expect.objectContaining({
+        id: "fake-execution",
+        availability: { configured: true, reasons: [] },
+      }),
+    ]);
     const created = await client.createExecution(createRequest());
     const first = await client.streamEvents(created.id);
     const approval = first.events.find(
@@ -575,6 +601,24 @@ describe("AgentExecutionControlPlane", () => {
       body: {
         error: { code: "EXECUTION_AUTHENTICATION_REQUIRED" },
       },
+    });
+  });
+
+  it("rejects a malformed successful provider catalog", async () => {
+    const client = createHttpAgentExecutionControlPlane(
+      "https://control.example.test",
+      {
+        fetch: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true }),
+        }),
+      },
+    );
+
+    await expect(client.listProviders()).rejects.toMatchObject({
+      code: "EXECUTION_CONTROL_PLANE_INVALID_RESPONSE",
+      status: 502,
     });
   });
 

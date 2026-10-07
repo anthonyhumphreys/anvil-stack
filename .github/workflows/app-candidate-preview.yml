@@ -1,4 +1,4 @@
-name: Anvil candidate macOS preview
+name: Anvil candidate preview
 
 on:
   workflow_dispatch:
@@ -18,7 +18,23 @@ permissions:
 
 jobs:
   preview:
-    runs-on: macos-15
+    name: Preview (${{ matrix.platform }} ${{ matrix.arch }})
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    environment: anvil-staging
+    env:
+      ANVIL_DEPLOYMENT_ENV: staging
+      ANVIL_STAGING_HOSTED_BACKEND_URL: ${{ vars.ANVIL_STAGING_HOSTED_BACKEND_URL }}
     steps:
       - name: Verify candidate
         id: candidate
@@ -43,6 +59,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install Linux packaging tools
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          test -s /etc/apt/sources.list.d/ubuntu.sources
+          packaging_apt_options=(
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources
+            -o Dir::Etc::sourceparts=-
+            -o APT::Get::List-Cleanup=0
+          )
+          sudo apt-get "${packaging_apt_options[@]}" update
+          sudo apt-get "${packaging_apt_options[@]}" install --yes libarchive-tools
       - name: Install dependencies
         working-directory: anvil-app
         run: pnpm install --frozen-lockfile
@@ -51,12 +79,54 @@ jobs:
         env:
           PR: ${{ inputs.pull_request }}
           HEAD_SHA: ${{ inputs.head_sha }}
-        run: node scripts/build-candidate-preview.mjs "$PR" "$HEAD_SHA" arm64
+          PREVIEW_PLATFORM: ${{ matrix.platform }}
+          PREVIEW_ARCH: ${{ matrix.arch }}
+        run: node scripts/build-candidate-preview.mjs "$PR" "$HEAD_SHA" "$PREVIEW_ARCH" "$PREVIEW_PLATFORM"
+      - name: Verify package identity and record checksums
+        working-directory: anvil-app
+        env:
+          PR: ${{ inputs.pull_request }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          PREVIEW_PLATFORM: ${{ matrix.platform }}
+          PREVIEW_ARCH: ${{ matrix.arch }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync, readdirSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { join } from 'node:path';
+          const directories = readdirSync('dist/previews');
+          assert.equal(directories.length, 1);
+          const directory = join('dist/previews', directories[0]);
+          const manifest = JSON.parse(readFileSync(join(directory, 'preview-manifest.json'), 'utf8'));
+          assert.equal(manifest.status, 'built');
+          assert.equal(manifest.headSha, process.env.HEAD_SHA);
+          assert.equal(manifest.pullRequestNumber, Number(process.env.PR));
+          assert.equal(manifest.platform, process.env.PREVIEW_PLATFORM);
+          assert.equal(manifest.arch, process.env.PREVIEW_ARCH);
+          if (manifest.platform === 'linux') {
+            const packageName = `anvil-preview-pr${process.env.PR}-h${manifest.headSha.slice(0, 8)}`;
+            const deb = manifest.artifacts.find(({ file }) => file.endsWith('.deb'));
+            const pacman = manifest.artifacts.find(({ file }) => file.endsWith('.pacman'));
+            assert.equal(execFileSync('dpkg-deb', ['--field', join(directory, deb.file), 'Package'], { encoding: 'utf8' }).trim(), packageName);
+            const metadata = execFileSync('bsdtar', ['-xOf', join(directory, pacman.file), '.PKGINFO'], { encoding: 'utf8' });
+            assert.ok(metadata.split('\n').includes(`pkgname = ${packageName}`));
+          }
+          const rows = manifest.artifacts.map(({ file, sha256 }) => `| ${file} | \`${sha256}\` |`).join('\n');
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## ${manifest.platform} ${manifest.arch} preview\n\nCommit: \`${manifest.headSha}\`\n\n| File | SHA-256 |\n| --- | --- |\n${rows}\n\nUnsigned preview. Installation and launch remain manual checks.\n`);
+          console.log(`PREVIEW_MANIFEST ${JSON.stringify(manifest)}`);
+          JS
       - name: Retain build evidence and installable preview
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: anvil-preview-pr-${{ inputs.pull_request }}-${{ inputs.head_sha }}-darwin-arm64
-          path: anvil-app/dist/previews/
+          name: anvil-preview-pr-${{ inputs.pull_request }}-${{ inputs.head_sha }}-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            anvil-app/dist/previews/**/*.dmg
+            anvil-app/dist/previews/**/*.zip
+            anvil-app/dist/previews/**/*.AppImage
+            anvil-app/dist/previews/**/*.deb
+            anvil-app/dist/previews/**/*.pacman
+            anvil-app/dist/previews/**/preview-manifest.json
           if-no-files-found: warn
           retention-days: 14

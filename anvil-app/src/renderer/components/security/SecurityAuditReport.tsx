@@ -154,7 +154,7 @@ export function SecurityAuditReport({ audit }: Props) {
               onClick={() => setSeverityFilter(severityFilter === sev ? null : sev)}
               className={`rounded-md px-2 py-0.5 text-xs font-medium capitalize transition-colors ${
                 severityFilter === sev
-                  ? 'bg-accent text-white'
+                  ? 'bg-accent text-accent-foreground'
                   : 'bg-bg-elevated text-text-secondary hover:bg-bg-tertiary'
               }`}
             >

@@ -10,12 +10,15 @@ import type {
 import { CodeReviewReport } from './CodeReviewReport';
 import { CodeReviewScopeSelector } from './CodeReviewScopeSelector';
 import { RepoSelector } from '../shared/RepoSelector';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { PullRequestCanvas } from './PullRequestCanvas';
 import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
+import { useWorkspace } from '../../contexts/WorkspaceContext';
 
 export function CodeReviewView() {
   const { repoId } = useParams<{ repoId: string }>();
   const navigate = useNavigate();
+  const { featureAvailability } = useWorkspace();
   const [searchParams, setSearchParams] = useSearchParams();
   const visualisePullRequestId = searchParams.get('pr');
   const initialCanvasMode = searchParams.get('view') === 'diff' ? 'diff' : 'map';
@@ -179,6 +182,18 @@ export function CodeReviewView() {
     );
   }
 
+  // Gated until at least one repo reaches the mapped index tier — nav items
+  // stay reachable (aria-disabled), so this view must explain the block.
+  if (!featureAvailability.repoFeaturesEnabled) {
+    return (
+      <RepoFeatureEmptyState
+        icon={GitPullRequest}
+        featureLabel="Code review"
+        description="Review a branch, commit range, working tree, or pull request with repository context."
+      />
+    );
+  }
+
   // Repo selection view
   if (!repoId) {
     return (
@@ -216,7 +231,7 @@ export function CodeReviewView() {
               disabled={running}
               className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors ${
                 mode === 'quick_glance'
-                  ? 'bg-accent text-white shadow-sm'
+                  ? 'bg-accent text-accent-foreground shadow-sm'
                   : 'text-text-secondary hover:text-text-primary'
               } disabled:opacity-50`}
             >
@@ -228,7 +243,7 @@ export function CodeReviewView() {
               disabled={running}
               className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-2 text-sm font-medium transition-colors ${
                 mode === 'senior_dev'
-                  ? 'bg-accent text-white shadow-sm'
+                  ? 'bg-accent text-accent-foreground shadow-sm'
                   : 'text-text-secondary hover:text-text-primary'
               } disabled:opacity-50`}
             >
@@ -256,7 +271,7 @@ export function CodeReviewView() {
           <div className="border-b border-border-subtle p-4">
             <button
               onClick={handleRunReview}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+              className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-accent-foreground transition-opacity hover:opacity-90"
             >
               <Play size={14} />
               Run {mode === 'quick_glance' ? 'Quick Glance' : 'Senior Dev Review'}
@@ -290,7 +305,7 @@ export function CodeReviewView() {
               onClick={() => setSelectedReview(review)}
               className={`mb-1 flex w-full flex-col rounded-md px-3 py-2 text-left text-sm transition-colors ${
                 selectedReview?.id === review.id
-                  ? 'bg-accent text-white'
+                  ? 'bg-accent text-accent-foreground'
                   : 'text-text-secondary hover:bg-bg-tertiary'
               }`}
             >
@@ -302,7 +317,7 @@ export function CodeReviewView() {
                 })}
               </span>
               <span
-                className={`mt-0.5 text-xs ${review.status === 'failed' ? 'text-error' : selectedReview?.id === review.id ? 'text-white/70' : 'text-text-secondary'}`}
+                className={`mt-0.5 text-xs ${review.status === 'failed' ? 'text-error' : selectedReview?.id === review.id ? 'text-accent-foreground/70' : 'text-text-secondary'}`}
               >
                 {review.status === 'completed'
                   ? `${review.mode === 'quick_glance' ? 'Quick' : 'Senior'} — ${formatScopeLabel(review.scopeType, review.scopeRef)}`

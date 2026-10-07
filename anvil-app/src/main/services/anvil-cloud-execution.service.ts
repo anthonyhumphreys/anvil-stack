@@ -6,6 +6,7 @@ import type {
   AnvilCloudExecutionConnectionTest,
   AnvilCloudExecutionEventBatch,
   AnvilCloudExecutionLease,
+  AnvilCloudExecutionProviderDescriptor,
   AnvilCloudExecutionStartInput,
   AnvilCloudExecutionStartResult,
 } from '../../shared/types.js';
@@ -15,6 +16,19 @@ import { decryptSecret, encryptSecret } from './auth.service.js';
 const DEFAULT_EXECUTION_ENDPOINT = 'http://127.0.0.1:4764';
 const MAX_ARCHIVE_BYTES = 192 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 60_000;
+
+const EXECUTION_STATUSES = new Set([
+  'queued',
+  'starting',
+  'running',
+  'waiting-for-approval',
+  'waiting-for-input',
+  'suspended',
+  'completed',
+  'failed',
+  'cancelled',
+  'expired',
+]);
 
 type ConnectionRow = {
   endpoint: string;
@@ -82,11 +96,15 @@ export async function testAnvilCloudExecutionConnection(): Promise<AnvilCloudExe
   const connection = getRequiredConnection();
 
   try {
-    const executions = await listAnvilCloudExecutions();
+    const [executions, providers] = await Promise.all([
+      listAnvilCloudExecutions(),
+      listAnvilCloudExecutionProviders(),
+    ]);
     return {
       ok: true,
       endpoint: connection.endpoint,
       executionCount: executions.length,
+      providers,
     };
   } catch (error) {
     return {
@@ -97,11 +115,24 @@ export async function testAnvilCloudExecutionConnection(): Promise<AnvilCloudExe
   }
 }
 
+export async function listAnvilCloudExecutionProviders(): Promise<
+  AnvilCloudExecutionProviderDescriptor[]
+> {
+  const payload = await executionRequest('/v1/execution-providers');
+  if (!Array.isArray(payload.providers)) {
+    throw new Error('Execution control plane returned no provider catalog.');
+  }
+
+  return payload.providers.map((provider) => readExecutionProvider(provider));
+}
+
 export async function listAnvilCloudExecutions(): Promise<AnvilCloudExecutionLease[]> {
   const payload = await executionRequest('/v1/executions');
-  return Array.isArray(payload.executions)
-    ? (payload.executions as AnvilCloudExecutionLease[])
-    : [];
+  if (!Array.isArray(payload.executions)) {
+    throw new Error('Execution control plane returned no execution list.');
+  }
+
+  return payload.executions.map((execution) => readExecution({ execution }));
 }
 
 export async function getAnvilCloudExecution(
@@ -115,11 +146,14 @@ export async function startAnvilCloudExecution(
 ): Promise<AnvilCloudExecutionStartResult> {
   validateStartInput(input);
   const repo = getWorkspaceRepo(input.workspaceId, input.repoId);
-  const [commit, branch, status, archive] = await Promise.all([
-    gitText(repo.path, ['rev-parse', 'HEAD']),
+  // Resolve the immutable base before archiving. HEAD can move while these
+  // commands run, and the control plane must never be told that a snapshot is
+  // from one commit when its bytes came from another.
+  const commit = await gitText(repo.path, ['rev-parse', 'HEAD']);
+  const [branch, status, archive] = await Promise.all([
     gitText(repo.path, ['branch', '--show-current']),
     gitText(repo.path, ['status', '--porcelain=v1']),
-    gitArchive(repo.path),
+    gitArchive(repo.path, commit),
   ]);
   const repository = credentialFreeHttpsUrl(repo.remote_url);
   const snapshotPayload = await executionRequest('/v1/source-snapshots', {
@@ -281,6 +315,8 @@ async function executionRequest(
         authorization: `Bearer ${connection.token}`,
         'content-type': 'application/json',
       },
+      // Never forward the bearer to a host selected by a redirect response.
+      redirect: 'error',
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       signal: AbortSignal.timeout(120_000),
     });
@@ -337,7 +373,7 @@ async function gitText(repoPath: string, args: string[]): Promise<string> {
   });
 }
 
-async function gitArchive(repoPath: string): Promise<Buffer> {
+async function gitArchive(repoPath: string, commit: string): Promise<Buffer> {
   const exclusions = [
     ':(exclude).env',
     ':(exclude)**/.env',
@@ -351,7 +387,7 @@ async function gitArchive(repoPath: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     execFile(
       'git',
-      ['-C', repoPath, 'archive', '--format=tar', 'HEAD', '--', '.', ...exclusions],
+      ['-C', repoPath, 'archive', '--format=tar', commit, '--', '.', ...exclusions],
       {
         encoding: 'buffer',
         timeout: GIT_TIMEOUT_MS,
@@ -495,10 +531,39 @@ function credentialFreeHttpsUrl(value: string | null): string | undefined {
 }
 
 function readExecution(payload: Record<string, unknown>): AnvilCloudExecutionLease {
-  if (!isObject(payload.execution) || typeof payload.execution.id !== 'string') {
+  const execution = payload.execution;
+  if (!isObject(execution)) {
     throw new Error('Execution control plane returned no execution lease.');
   }
-  return payload.execution as unknown as AnvilCloudExecutionLease;
+  if (
+    execution.schemaVersion !== '0.1' ||
+    typeof execution.id !== 'string' ||
+    execution.id.length === 0 ||
+    typeof execution.status !== 'string' ||
+    !EXECUTION_STATUSES.has(execution.status) ||
+    typeof execution.provider !== 'string' ||
+    execution.provider.length === 0 ||
+    !isObject(execution.request) ||
+    typeof execution.request.workspace !== 'string' ||
+    execution.request.workspace.length === 0 ||
+    typeof execution.request.task !== 'string' ||
+    typeof execution.request.cell !== 'string' ||
+    typeof execution.request.environment !== 'string' ||
+    !isObject(execution.request.policy) ||
+    (execution.request.policy.mode !== 'read-only' &&
+      execution.request.policy.mode !== 'read-write') ||
+    typeof execution.request.policy.ttlSeconds !== 'number' ||
+    !Number.isSafeInteger(execution.request.policy.ttlSeconds) ||
+    execution.request.policy.ttlSeconds <= 0 ||
+    !isObject(execution.request.source) ||
+    (execution.request.source.kind !== 'git' && execution.request.source.kind !== 'snapshot') ||
+    typeof execution.createdAt !== 'string' ||
+    typeof execution.updatedAt !== 'string' ||
+    typeof execution.expiresAt !== 'string'
+  ) {
+    throw new Error('Execution control plane returned a malformed execution lease.');
+  }
+  return execution as unknown as AnvilCloudExecutionLease;
 }
 
 function readSnapshotSource(payload: Record<string, unknown>): Record<string, unknown> {
@@ -506,6 +571,32 @@ function readSnapshotSource(payload: Record<string, unknown>): Record<string, un
     throw new Error('Execution control plane returned no immutable source snapshot.');
   }
   return payload.snapshot;
+}
+
+function readExecutionProvider(value: unknown): AnvilCloudExecutionProviderDescriptor {
+  if (
+    !isObject(value) ||
+    typeof value.id !== 'string' ||
+    value.id.length === 0 ||
+    !isObject(value.capabilities) ||
+    !Array.isArray(value.capabilities.modes) ||
+    !value.capabilities.modes.every((mode) => typeof mode === 'string') ||
+    !Array.isArray(value.capabilities.modelAuth) ||
+    !value.capabilities.modelAuth.every((kind) => typeof kind === 'string') ||
+    (value.capabilities.subscriptionProviders !== undefined &&
+      (!Array.isArray(value.capabilities.subscriptionProviders) ||
+        !value.capabilities.subscriptionProviders.every(
+          (provider) => typeof provider === 'string',
+        ))) ||
+    !isObject(value.availability) ||
+    typeof value.availability.configured !== 'boolean' ||
+    !Array.isArray(value.availability.reasons) ||
+    !value.availability.reasons.every((reason) => typeof reason === 'string')
+  ) {
+    throw new Error('Execution control plane returned a malformed provider descriptor.');
+  }
+
+  return value as unknown as AnvilCloudExecutionProviderDescriptor;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

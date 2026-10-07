@@ -114,9 +114,7 @@ function normaliseDebugModel(value: unknown): CodexDetectedModel | null {
               description: readString(item.description),
             };
           })
-          .filter((tier): tier is { id: string; name: string; description?: string } =>
-            Boolean(tier),
-          )
+          .filter((tier) => tier !== null)
       : [],
   };
 }

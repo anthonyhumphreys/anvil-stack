@@ -127,7 +127,7 @@ export function DevcontainerStep({ repoId, detection, onNext }: DevcontainerStep
             </button>
             <button
               onClick={onNext}
-              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90"
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent/90"
             >
               Skip
             </button>
@@ -164,7 +164,7 @@ export function DevcontainerStep({ repoId, detection, onNext }: DevcontainerStep
             <button
               onClick={handleWrite}
               disabled={!content || writing}
-              className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-40"
+              className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-40"
             >
               {writing ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               {written ? 'Write Again' : 'Write to Repo'}
@@ -173,7 +173,7 @@ export function DevcontainerStep({ repoId, detection, onNext }: DevcontainerStep
             <button
               onClick={handleWriteAndCommit}
               disabled={!content || committing || generating || committed}
-              className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-40"
+              className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-40"
             >
               {committing ? (
                 <Loader2 size={14} className="animate-spin" />

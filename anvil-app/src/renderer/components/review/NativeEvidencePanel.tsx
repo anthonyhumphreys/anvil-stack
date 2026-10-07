@@ -62,7 +62,7 @@ export function NativeEvidencePanel({
     <section className="space-y-3 border-t border-border py-4" aria-labelledby={`${id}-heading`}>
       <div>
         <h3 id={`${id}-heading`} className="text-sm font-semibold text-text-primary">
-          Native macOS checks
+          Native desktop checks
         </h3>
         <p className="mt-1 max-w-prose text-sm text-text-secondary">
           Record what you observed in the installed candidate. Browser runs do not verify Electron
@@ -94,7 +94,7 @@ export function NativeEvidencePanel({
                           : 'Unavailable'}
                   </span>
                   <span className="text-text-secondary">
-                    macOS {evidence.arch} ·{' '}
+                    {evidence.platform === 'darwin' ? 'macOS' : 'Linux'} {evidence.arch} ·{' '}
                     {evidence.signing === 'unavailable' ? 'Signing unavailable' : evidence.signing}
                   </span>
                 </div>
@@ -118,9 +118,9 @@ export function NativeEvidencePanel({
         </summary>
         <form onSubmit={(event) => void record(event)} className="mt-3 max-w-2xl space-y-3">
           <p className="text-sm text-text-secondary">
-            Run the Anvil candidate macOS preview workflow with the PR number and current full
-            commit SHA. Download the build artifact and paste its manifest below. Internal previews
-            are unsigned.
+            Run the Anvil candidate preview workflow with the PR number and current full commit SHA.
+            Download the build artifact and paste its manifest below. Internal previews are
+            unsigned.
           </p>
           <label className="block space-y-1 text-sm text-text-secondary">
             <span>Build manifest</span>
@@ -145,7 +145,7 @@ export function NativeEvidencePanel({
               disabled={busy}
             >
               <option value="unavailable">Unavailable</option>
-              <option value="unsupported">Unsupported on this Mac</option>
+              <option value="unsupported">Unsupported on this computer</option>
               <option value="failed">Failed</option>
               <option value="passed">Passed the checks described below</option>
             </select>
@@ -160,7 +160,7 @@ export function NativeEvidencePanel({
               required
               maxLength={8000}
               disabled={busy}
-              placeholder="macOS version, checks performed, recovery steps, failures and anything skipped"
+              placeholder="Operating-system version, checks performed, recovery steps, failures and anything skipped"
             />
           </label>
           {review.freshness !== 'current' && (

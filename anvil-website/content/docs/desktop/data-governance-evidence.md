@@ -3,9 +3,9 @@ title: Data, governance, and evidence
 navTitle: Data and evidence
 description: How Anvil Desktop treats SQLite persistence, lifecycle gates, governance notes, and handover evidence.
 product: Anvil Desktop
-section: Assurance
+section: Concepts
 journey: reference
-order: 119
+order: 260
 ---
 
 # Data, governance, and evidence

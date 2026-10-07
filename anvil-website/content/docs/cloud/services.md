@@ -3,9 +3,9 @@ title: Services
 navTitle: Services
 description: Long-running supervised service handlers in Anvil Cells, with restart policies, abort-signal stop semantics, and local status routes.
 product: Anvil Cloud
-section: Architecture
+section: Concepts
 journey: learn
-order: 120
+order: 110
 ---
 
 # Services

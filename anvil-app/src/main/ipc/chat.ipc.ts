@@ -30,12 +30,15 @@ import type {
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
   ChatFileMentionSearchResult,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatSendOptions,
   ChatStartOptions,
+  ChatSteerResult,
   ChatThread,
-  ChatTurnSummary,
+  ChatThreadPurpose,
   CodexEvent,
   CodexInputResponse,
   CodexSession,
@@ -47,6 +50,7 @@ import {
   startSession,
   sendMessage,
   steerTurn,
+  followUpTurn,
   stopSession,
   interruptTurn,
   emitLocalAssistantTurnStart,
@@ -95,14 +99,17 @@ import {
   prepareChatAttachments,
   selectChatAttachmentFiles,
 } from '../services/chat-attachment.service.js';
-import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
+import { saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
 import {
   discardChatArtifact,
   listChatArtifacts,
   readChatArtifactFile,
+  shareChatArtifact,
+  unshareChatArtifact,
   upsertChatArtifact,
 } from '../services/chat-artifact.service.js';
+import { isArtifactSharingAvailable } from '../services/artifact-share.service.js';
 import {
   createChatArtifactAnnotation,
   deleteChatArtifactAnnotation,
@@ -373,11 +380,7 @@ export function registerChatHandlers(): void {
       // Plain messages — and, on macOS 27+, image-only attachments — may be
       // answerable on-device.
       if (!parsed.command) {
-        const handledLocally = await tryLocalLlmChatReply(
-          sessionId,
-          enrichedMessage,
-          attachments,
-        );
+        const handledLocally = await tryLocalLlmChatReply(sessionId, enrichedMessage, attachments);
         if (handledLocally) return;
       }
 
@@ -395,8 +398,20 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle(
     'chat:steer',
-    (_event, sessionId: string, message: string, attachments?: ChatAttachment[]): Promise<void> => {
+    (
+      _event,
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+    ): Promise<ChatSteerResult> => {
       return steerTurn(sessionId, message, attachments);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:follow-up',
+    (_event, request: ChatFollowUpRequest): Promise<ChatFollowUpResult> => {
+      return followUpTurn(request);
     },
   );
 
@@ -545,6 +560,8 @@ export function registerChatHandlers(): void {
         workspaceId?: string | null;
         personaId: string;
         title?: string;
+        purpose?: ChatThreadPurpose;
+        sideQuestionOfThreadId?: string;
         workItemId?: string;
         workItemProvider?: WorkItemProvider;
         workItemTitle?: string;
@@ -607,10 +624,6 @@ export function registerChatHandlers(): void {
     return listActiveCodexSessions();
   });
 
-  ipcMain.handle('chat:list-turn-summaries', (_event, threadId: string): ChatTurnSummary[] => {
-    return listChatTurnSummaries(threadId);
-  });
-
   ipcMain.handle('chat:list-artifacts', (_event, threadId: string): ChatArtifact[] => {
     return listChatArtifacts(threadId);
   });
@@ -625,6 +638,18 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:read-artifact-file', (_event, id: string): ChatArtifactFile => {
     return readChatArtifactFile(id);
+  });
+
+  ipcMain.handle('chat:share-artifact', (_event, id: string): Promise<ChatArtifact> => {
+    return shareChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:unshare-artifact', (_event, id: string): Promise<ChatArtifact> => {
+    return unshareChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:artifact-sharing-available', (): boolean => {
+    return isArtifactSharingAvailable();
   });
 
   ipcMain.handle(

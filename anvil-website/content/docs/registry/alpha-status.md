@@ -3,9 +3,9 @@ title: Alpha status
 navTitle: Alpha status
 description: What the first Anvil alpha is meant for, what is working, and what to verify before broader rollout.
 product: Anvil Registry
-section: Getting started
+section: Reference
 journey: reference
-order: 2
+order: 180
 ---
 
 # Alpha status

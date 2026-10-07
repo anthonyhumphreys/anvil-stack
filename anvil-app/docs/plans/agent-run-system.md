@@ -23,7 +23,7 @@ The first useful version should prove one complete path:
 
 ## Market Signals
 
-Recent Claude Code, Codex app, T3 Code, Devin, GitHub Copilot app, Jules, Cursor, and adjacent coding-agent products are converging on the same shape:
+Recent Claude Code, Codex app, Devin, GitHub Copilot app, Jules, Cursor, and adjacent coding-agent products are converging on the same shape:
 
 - Agent command centers instead of isolated chat boxes.
 - Long-running or background work with notifications and resumability.

@@ -1,0 +1,1210 @@
+import { env, runInDurableObject } from 'cloudflare:test';
+import { describe, expect, it } from 'vitest';
+
+import { isRpcError, type RpcResponse } from '../../contract/envelope';
+import { PROTOCOL } from '../../contract/version';
+import type {
+  ExecutionManifest,
+  JobClaimResult,
+  JobCreateParams,
+  JobCreateResult,
+  JobGetResult,
+} from '../../contract/jobs';
+import type {
+  EnvironmentGetResult,
+  EnvironmentListResult,
+  EnvironmentLimitsResult,
+  EnvironmentReapResult,
+  EnvironmentResumeResult,
+  EnvironmentReportResult,
+  EnvironmentSuspendResult,
+} from '../../contract/environment';
+import type {
+  DevicePolicy,
+  DevicePolicyPublishResult,
+  WorkerConnectResult,
+} from '../../contract/workers';
+import type { AccountCoordinator } from '../src/account-coordinator';
+import { expectSuccess, postRpc, spikeBearer, uniqueIds } from './helpers';
+
+function accountStub(accountId: string) {
+  return env.ACCOUNT.get(env.ACCOUNT.idFromName(accountId));
+}
+
+/**
+ * Direct account-object RPC with worker-verified headers — the path the
+ * public Worker takes after session validation. Lets tests drive
+ * ephemeral-class enrollments and environment bindings that the spike
+ * bearer cannot express.
+ */
+async function stubRpc(
+  accountId: string,
+  auth: {
+    enrollmentId: string;
+    enrollmentClass?: 'device' | 'ephemeral';
+    environmentId?: string;
+  },
+  operation: string,
+  params: unknown,
+): Promise<{ status: number; body: RpcResponse }> {
+  const headers = new Headers({ 'content-type': 'application/json' });
+  headers.set('x-anvil-account', accountId);
+  headers.set('x-anvil-enrollment', auth.enrollmentId);
+  headers.set('x-anvil-enrollment-class', auth.enrollmentClass ?? 'device');
+  if (auth.environmentId !== undefined) {
+    headers.set('x-anvil-environment-id', auth.environmentId);
+  }
+  const response = await accountStub(accountId).fetch(
+    new Request('https://internal.anvil/v1/rpc', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        protocol: PROTOCOL,
+        requestId: crypto.randomUUID(),
+        operation,
+        params,
+      }),
+    }),
+  );
+  const body = (await response.json()) as RpcResponse;
+  return { status: response.status, body };
+}
+
+function fixture(label: string) {
+  const ids = uniqueIds(label);
+  const provisionerEnrollmentId = `${ids.enrollmentId}-prov`;
+  const envEnrollmentId = `${ids.enrollmentId}-env`;
+  return {
+    accountId: ids.accountId,
+    provisionerEnrollmentId,
+    envEnrollmentId,
+    provisionerAuth: spikeBearer(ids.accountId, provisionerEnrollmentId),
+    envAuth: {
+      enrollmentId: envEnrollmentId,
+      enrollmentClass: 'ephemeral' as const,
+      environmentId: `env_${label}`,
+    },
+    environmentId: `env_${label}`,
+  };
+}
+
+function allowJobsPolicy(): DevicePolicy {
+  return { worker: { allowJobs: true, allowedSources: ['same-account'], maxConcurrentJobs: 4 } };
+}
+
+async function publishPolicy(auth: string, policy: DevicePolicy = allowJobsPolicy()) {
+  return expectSuccess<DevicePolicyPublishResult>(
+    await postRpc('device.policy.publish', policy, auth),
+  );
+}
+
+async function connectWorker(auth: string) {
+  return expectSuccess<WorkerConnectResult>(await postRpc('worker.connect', {}, auth));
+}
+
+async function envConnect(fx: ReturnType<typeof fixture>) {
+  // The env's boot sequence: publish its own worker policy (ephemeral-
+  // allowed), connect, then report enrolled.
+  expectSuccess(
+    await stubRpc(fx.accountId, fx.envAuth, 'device.policy.publish', allowJobsPolicy()),
+  );
+  expectSuccess<WorkerConnectResult>(await stubRpc(fx.accountId, fx.envAuth, 'worker.connect', {}));
+}
+
+function manifest(): ExecutionManifest {
+  return {
+    workspaceDefinitionRevision: 'wsdef-rev-1',
+    repositories: [{ repositoryId: 'repo-1', commit: '0123456789abcdef' }],
+    bootstrapDigest: 'sha256:bootstrap-1',
+    provider: 'codex',
+    model: 'gpt-5',
+    configVersions: { 'agent-settings': 'v3' },
+    inputs: { workspaceId: 'ws-1' },
+  };
+}
+
+async function createJob(
+  auth: string,
+  overrides: Partial<JobCreateParams> = {},
+): Promise<JobCreateResult> {
+  return expectSuccess<JobCreateResult>(
+    await postRpc(
+      'job.create',
+      {
+        requestId: crypto.randomUUID(),
+        payloadHash: 'a'.repeat(64),
+        kind: 'diagnostic',
+        requestedTarget: { kind: 'auto' },
+        inputManifest: manifest(),
+        ...overrides,
+      } satisfies JobCreateParams,
+      auth,
+    ),
+  );
+}
+
+async function reportEnvironment(
+  auth: string,
+  params: Record<string, unknown>,
+): Promise<EnvironmentReportResult> {
+  return expectSuccess<EnvironmentReportResult>(await postRpc('environment.report', params, auth));
+}
+
+describe('environment lifecycle', () => {
+  it('creates, reads, and lists environment records', async () => {
+    const fx = fixture('lifecycle');
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+
+    const created = await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+      handle: { microvmId: 'mvm-1' },
+      expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+    });
+    expect(created.environment.environmentId).toBe(fx.environmentId);
+    expect(created.environment.state).toBe('provisioning');
+    expect(created.environment.createdBy).toBe(fx.provisionerEnrollmentId);
+
+    const got = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(got.environment.handle?.['microvmId']).toBe('mvm-1');
+    expect(got.environment.expiresAt).toBeDefined();
+
+    const listed = expectSuccess<EnvironmentListResult>(
+      await postRpc('environment.list', {}, fx.provisionerAuth),
+    );
+    expect(listed.environments.map((env) => env.environmentId)).toContain(fx.environmentId);
+  });
+
+  it('rejects reports from unrelated workers', async () => {
+    const fx = fixture('unrelated');
+    const stranger = `${fx.envEnrollmentId}-stranger`;
+    const strangerAuth = spikeBearer(fx.accountId, stranger);
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+    await publishPolicy(strangerAuth);
+    await connectWorker(strangerAuth);
+
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+    const denied = await postRpc(
+      'environment.report',
+      { environmentId: fx.environmentId, provider: 'aws-lambda-microvm', state: 'running' },
+      strangerAuth,
+    );
+    expect(isRpcError(denied.body)).toBe(true);
+  });
+
+  it('enroll resolves environment-targeted jobs onto the env enrollment', async () => {
+    const fx = fixture('resolve');
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+    await envConnect(fx);
+
+    // Record exists, still provisioning — the env-targeted job queues
+    // unresolved.
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+    const created = await createJob(fx.provisionerAuth, {
+      requestedTarget: { kind: 'environment', environmentId: fx.environmentId },
+    });
+    expect(created.job.targetEnrollmentId).toBeUndefined();
+
+    // An unresolved environment target cannot be claimed by the provisioner
+    // while the environment is still waiting to enroll.
+    const earlyClaim = await postRpc('job.claim', { jobId: created.job.id }, fx.provisionerAuth);
+    expect(earlyClaim.status).toBe(409);
+    if (isRpcError(earlyClaim.body)) {
+      expect(earlyClaim.body.error.details?.['reason']).toBe('target-not-resolved');
+    }
+
+    // The env self-reports enrolled (authorized by its bound
+    // environment_id); the queued job resolves onto it.
+    const enrolled = expectSuccess<EnvironmentReportResult>(
+      await stubRpc(fx.accountId, fx.envAuth, 'environment.report', {
+        environmentId: fx.environmentId,
+        provider: 'aws-lambda-microvm',
+        state: 'enrolled',
+        enrollmentId: fx.envEnrollmentId,
+      }),
+    );
+    expect(enrolled.environment.state).toBe('enrolled');
+    expect(enrolled.environment.enrollmentId).toBe(fx.envEnrollmentId);
+
+    // The env claims its job through the ordinary claim path.
+    const claim = expectSuccess<JobClaimResult>(
+      await stubRpc(fx.accountId, fx.envAuth, 'job.claim', { jobId: created.job.id }),
+    );
+    expect(claim.job.id).toBe(created.job.id);
+    expect(claim.attempt.jobId).toBe(created.job.id);
+  });
+
+  it('rejects an env report bound to a different environment', async () => {
+    const fx = fixture('bound');
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+    await envConnect(fx);
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+    const denied = await stubRpc(fx.accountId, fx.envAuth, 'environment.report', {
+      environmentId: 'env_someone_else',
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+    expect(isRpcError(denied.body)).toBe(true);
+  });
+
+  it('reap intent is durable and idempotent; terminate closes the record', async () => {
+    const fx = fixture('reap');
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+
+    const reaped = expectSuccess<EnvironmentReapResult>(
+      await postRpc('environment.reap', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(reaped.environment.state).toBe('reap-requested');
+    expect(reaped.environment.reapRequestedAt).toBeDefined();
+
+    const reapedAgain = expectSuccess<EnvironmentReapResult>(
+      await postRpc('environment.reap', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(reapedAgain.environment.state).toBe('reap-requested');
+
+    const terminated = await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'terminated',
+      reaped: true,
+    });
+    expect(terminated.environment.state).toBe('terminated');
+    expect(terminated.environment.reapedAt).toBeDefined();
+
+    // Terminal envs disappear from the default list but remain on
+    // includeTerminal for audit.
+    const defaultList = expectSuccess<EnvironmentListResult>(
+      await postRpc('environment.list', {}, fx.provisionerAuth),
+    );
+    expect(defaultList.environments).toHaveLength(0);
+    const all = expectSuccess<EnvironmentListResult>(
+      await postRpc('environment.list', { includeTerminal: true }, fx.provisionerAuth),
+    );
+    expect(all.environments.map((env) => env.environmentId)).toContain(fx.environmentId);
+  });
+
+  it('limits ephemeral list and reap to the worker’s bound environment', async () => {
+    const fx = fixture('ephemeral-environment-scope');
+    const otherEnvironmentId = `${fx.environmentId}-other`;
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+    await envConnect(fx);
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: otherEnvironmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+
+    const listed = await stubRpc(fx.accountId, fx.envAuth, 'environment.list', {
+      includeTerminal: true,
+    });
+    const listResult = expectSuccess<EnvironmentListResult>(listed);
+    expect(listResult.environments.map((environment) => environment.environmentId)).toEqual([
+      fx.environmentId,
+    ]);
+
+    const otherGet = await stubRpc(fx.accountId, fx.envAuth, 'environment.get', {
+      environmentId: otherEnvironmentId,
+    });
+    expect(isRpcError(otherGet.body)).toBe(true);
+    if (isRpcError(otherGet.body)) expect(otherGet.body.error.code).toBe('not-found');
+
+    const otherReap = await stubRpc(fx.accountId, fx.envAuth, 'environment.reap', {
+      environmentId: otherEnvironmentId,
+    });
+    expect(isRpcError(otherReap.body)).toBe(true);
+    if (isRpcError(otherReap.body)) expect(otherReap.body.error.code).toBe('not-found');
+
+    const ownReap = await stubRpc(fx.accountId, fx.envAuth, 'environment.reap', {
+      environmentId: fx.environmentId,
+    });
+    expect(expectSuccess<EnvironmentReapResult>(ownReap).environment.state).toBe('reap-requested');
+
+    // Ordinary account devices retain their account-wide environment view.
+    const accountList = expectSuccess<EnvironmentListResult>(
+      await postRpc('environment.list', { includeTerminal: true }, fx.provisionerAuth),
+    );
+    expect(accountList.environments.map((environment) => environment.environmentId)).toEqual(
+      expect.arrayContaining([fx.environmentId, otherEnvironmentId]),
+    );
+  });
+
+  it('environment target on a missing record is not-found', async () => {
+    const fx = fixture('missing');
+    const response = await postRpc(
+      'job.create',
+      {
+        requestId: crypto.randomUUID(),
+        payloadHash: 'b'.repeat(64),
+        kind: 'diagnostic',
+        requestedTarget: { kind: 'environment', environmentId: 'env_missing' },
+        inputManifest: manifest(),
+      } satisfies JobCreateParams,
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(response.body)).toBe(true);
+  });
+});
+
+describe('ephemeral enrollment restrictions', () => {
+  it('ephemeral sessions cannot create jobs or list devices', async () => {
+    const fx = fixture('restrict');
+    await envConnect(fx);
+    const createDenied = await stubRpc(fx.accountId, fx.envAuth, 'job.create', {
+      requestId: crypto.randomUUID(),
+      payloadHash: 'c'.repeat(64),
+      kind: 'diagnostic',
+      requestedTarget: { kind: 'auto' },
+      inputManifest: manifest(),
+    });
+    expect(isRpcError(createDenied.body)).toBe(true);
+    const listDenied = await stubRpc(fx.accountId, fx.envAuth, 'device.list', {});
+    expect(isRpcError(listDenied.body)).toBe(true);
+  });
+
+  it('ephemeral class pins on first sight — a dropped header cannot widen it', async () => {
+    const fx = fixture('pin');
+    await envConnect(fx);
+    // Same enrollment, but the class header now claims 'device' — the
+    // pinned enrollment row still says ephemeral.
+    const denied = await stubRpc(
+      fx.accountId,
+      { enrollmentId: fx.envEnrollmentId, enrollmentClass: 'device' },
+      'job.create',
+      {
+        requestId: crypto.randomUUID(),
+        payloadHash: 'd'.repeat(64),
+        kind: 'diagnostic',
+        requestedTarget: { kind: 'auto' },
+        inputManifest: manifest(),
+      },
+    );
+    expect(isRpcError(denied.body)).toBe(true);
+  });
+});
+
+describe('credential grants', () => {
+  function grantEnvelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      v: 1,
+      enc: 'x25519-aes-256-gcm',
+      jobId: 'job_x',
+      attemptId: 'att_x',
+      fence: 1,
+      targetEnrollmentId: 'enr_x',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      ephPub: Buffer.alloc(32, 1).toString('base64'),
+      nonce: Buffer.alloc(12, 2).toString('base64'),
+      ct: Buffer.from('sealed-test', 'utf8').toString('base64'),
+      ...overrides,
+    };
+  }
+
+  async function claimedAttempt(fx: ReturnType<typeof fixture>) {
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+    await envConnect(fx);
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+    const created = await createJob(fx.provisionerAuth, {
+      requestedTarget: { kind: 'environment', environmentId: fx.environmentId },
+    });
+    expectSuccess<EnvironmentReportResult>(
+      await stubRpc(fx.accountId, fx.envAuth, 'environment.report', {
+        environmentId: fx.environmentId,
+        provider: 'aws-lambda-microvm',
+        state: 'enrolled',
+        enrollmentId: fx.envEnrollmentId,
+      }),
+    );
+    const claim = expectSuccess<JobClaimResult>(
+      await stubRpc(fx.accountId, fx.envAuth, 'job.claim', { jobId: created.job.id }),
+    );
+    return { job: created.job, attempt: claim.attempt, fence: claim.fence };
+  }
+
+  it('deliver + pull round-trips a bound grant envelope', async () => {
+    const fx = fixture('grant');
+    const { job, attempt } = await claimedAttempt(fx);
+    const grant = grantEnvelope({
+      jobId: job.id,
+      attemptId: attempt.id,
+      fence: attempt.fence,
+      targetEnrollmentId: fx.envEnrollmentId,
+    });
+    const delivered = expectSuccess<{ delivered: boolean }>(
+      await postRpc('credential.deliver', { grant }, fx.provisionerAuth),
+    );
+    expect(delivered.delivered).toBe(true);
+
+    const pulled = expectSuccess<{ grants: Record<string, unknown>[] }>(
+      await stubRpc(fx.accountId, fx.envAuth, 'credential.pull', {
+        attemptId: attempt.id,
+        fence: attempt.fence,
+      }),
+    );
+    expect(pulled.grants).toHaveLength(1);
+    expect(pulled.grants[0]?.['attemptId']).toBe(attempt.id);
+  });
+
+  it('accepts a bounded host-auth envelope larger than the former 16 KiB cap', async () => {
+    const fx = fixture('large-host-auth-grant');
+    const { job, attempt } = await claimedAttempt(fx);
+    const grant = grantEnvelope({
+      jobId: job.id,
+      attemptId: attempt.id,
+      fence: attempt.fence,
+      targetEnrollmentId: fx.envEnrollmentId,
+      ct: Buffer.alloc(64 * 1024, 7).toString('base64'),
+    });
+    expect(JSON.stringify(grant).length).toBeGreaterThan(16 * 1024);
+    expect(JSON.stringify(grant).length).toBeLessThan(128 * 1024);
+
+    const delivered = expectSuccess<{ delivered: boolean }>(
+      await postRpc('credential.deliver', { grant }, fx.provisionerAuth),
+    );
+    expect(delivered.delivered).toBe(true);
+  });
+
+  it('rejects a credential envelope above the 128 KiB cap', async () => {
+    const fx = fixture('oversized-credential-grant');
+    const { job, attempt } = await claimedAttempt(fx);
+    const grant = grantEnvelope({
+      jobId: job.id,
+      attemptId: attempt.id,
+      fence: attempt.fence,
+      targetEnrollmentId: fx.envEnrollmentId,
+      ct: 'A'.repeat(128 * 1024 - 100),
+    });
+    expect(JSON.stringify(grant).length).toBeGreaterThan(128 * 1024);
+
+    const response = await postRpc('credential.deliver', { grant }, fx.provisionerAuth);
+    expect(response.status).toBe(413);
+    expect(isRpcError(response.body)).toBe(true);
+    if (isRpcError(response.body)) {
+      expect(response.body.error.code).toBe('payload-too-large');
+    }
+  });
+
+  it('rejects delivery on a stale fence and pulls by non-claimants', async () => {
+    const fx = fixture('grant-fence');
+    const { job, attempt } = await claimedAttempt(fx);
+    const stale = await postRpc(
+      'credential.deliver',
+      {
+        grant: grantEnvelope({
+          jobId: job.id,
+          attemptId: attempt.id,
+          fence: attempt.fence + 1,
+          targetEnrollmentId: fx.envEnrollmentId,
+        }),
+      },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(stale.body)).toBe(true);
+
+    const wrongTarget = await postRpc(
+      'credential.deliver',
+      {
+        grant: grantEnvelope({
+          jobId: job.id,
+          attemptId: attempt.id,
+          fence: attempt.fence,
+          targetEnrollmentId: 'enr_other',
+        }),
+      },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(wrongTarget.body)).toBe(true);
+
+    // The provisioner is not the attempt's claimant — it cannot pull.
+    const pullDenied = await postRpc(
+      'credential.pull',
+      { attemptId: attempt.id, fence: attempt.fence },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(pullDenied.body)).toBe(true);
+  });
+});
+
+describe('managed environments (ENV-09)', () => {
+  const MANAGED_ENROLLMENT_CODE = 'anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD';
+
+  function managedManifest(
+    environmentId: string,
+    ttlSeconds: number,
+    hostedRemoteChat = false,
+  ): ExecutionManifest {
+    return {
+      ...manifest(),
+      inputs: {
+        environmentId,
+        provider: 'anvil-managed',
+        ttlSeconds,
+        ...(hostedRemoteChat ? { hostedRemoteChat: true } : {}),
+      },
+    };
+  }
+
+  function createManagedJob(
+    auth: string,
+    environmentId: string,
+    ttlSeconds = 1800,
+    requestId = crypto.randomUUID(),
+    hostedRemoteChat = false,
+  ) {
+    return postRpc(
+      'job.create',
+      {
+        requestId,
+        payloadHash: 'e'.repeat(64),
+        kind: 'provision-environment',
+        requestedTarget: {
+          kind: 'auto',
+          requirements: { capabilities: ['provision:anvil-managed'] },
+        },
+        inputManifest: managedManifest(environmentId, ttlSeconds, hostedRemoteChat),
+      } satisfies JobCreateParams,
+      auth,
+    );
+  }
+
+  async function stageManagedJobForSweep(fx: ReturnType<typeof fixture>): Promise<string> {
+    const now = Date.now();
+    const jobId = crypto.randomUUID();
+    const requestId = crypto.randomUUID();
+    await runInDurableObject(
+      accountStub(fx.accountId),
+      (_instance: AccountCoordinator, state) => {
+        state.storage.sql.exec(
+          `INSERT INTO environment_bootstrap
+             (environment_id, account_id, payload, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          fx.environmentId,
+          fx.accountId,
+          MANAGED_ENROLLMENT_CODE,
+          now + 3_600_000,
+          now,
+        );
+        state.storage.sql.exec(
+          `INSERT INTO jobs (
+             job_id, account_id, source_enrollment_id, request_id, payload_hash, kind,
+             requested_target, target_enrollment_id, placement_explanation, input_manifest,
+             sealed_inputs, result_recipients, state, state_reason, queue_deadline,
+             retry_policy, retried, next_fence, active_attempt_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, 'provision-environment', ?, NULL, ?, ?, NULL, NULL,
+             'queued', NULL, ?, 'never', 0, 1, NULL, ?, ?)`,
+          jobId,
+          fx.accountId,
+          fx.provisionerEnrollmentId,
+          requestId,
+          'd'.repeat(64),
+          JSON.stringify({
+            kind: 'auto',
+            requirements: { capabilities: ['provision:anvil-managed'] },
+          }),
+          'managed provision awaiting internal claim',
+          JSON.stringify(managedManifest(fx.environmentId, 1800)),
+          now + 60_000,
+          now,
+          now,
+        );
+      },
+    );
+    return jobId;
+  }
+
+  async function sweepAccount(accountId: string) {
+    const response = await accountStub(accountId).fetch(
+      new Request('https://internal.anvil/internal/sweep', { method: 'POST' }),
+    );
+    return (await response.json()) as Record<string, number>;
+  }
+
+  it('returns the account tier managed TTL and concurrency caps to signed-in devices only', async () => {
+    const fx = fixture('environment-limits');
+    const limits = expectSuccess<EnvironmentLimitsResult>(
+      await postRpc('environment.limits', {}, fx.provisionerAuth),
+    );
+    expect(limits).toEqual({ maxTtlSeconds: 30 * 60, maxConcurrent: 1 });
+
+    const workerLimits = await stubRpc(fx.accountId, fx.envAuth, 'environment.limits', {});
+    expect(isRpcError(workerLimits.body)).toBe(true);
+  });
+
+  /** The stub binding is always injected by vitest.config.ts for this suite. */
+  function provisioner(): Fetcher {
+    if (!env.MANAGED_PROVISIONER) throw new Error('MANAGED_PROVISIONER stub missing');
+    return env.MANAGED_PROVISIONER;
+  }
+
+  async function provisionerEnqueue(rule: {
+    method: string;
+    path: string;
+    status?: number;
+    body?: unknown;
+  }) {
+    await provisioner().fetch(
+      new Request('https://provisioner.stub/__provisioner-stub/enqueue', {
+        method: 'POST',
+        body: JSON.stringify(rule),
+      }),
+    );
+  }
+
+  async function provisionerReset() {
+    await provisioner().fetch(
+      new Request('https://provisioner.stub/__provisioner-stub/reset', { method: 'POST' }),
+    );
+  }
+
+  async function provisionerLast(): Promise<{
+    method: string;
+    path: string;
+    body: { bootstrap?: Record<string, unknown>; environmentId?: string } | null;
+  } | null> {
+    const response = await provisioner().fetch(
+      new Request('https://provisioner.stub/__provisioner-stub/last'),
+    );
+    return (await response.json()) as never;
+  }
+
+  async function waitJobTerminal(auth: string, jobId: string): Promise<JobGetResult> {
+    for (let i = 0; i < 60; i++) {
+      const got = expectSuccess<JobGetResult>(await postRpc('job.get', { jobId }, auth));
+      if (got.job.state === 'completed' || got.job.state === 'failed') return got;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`job ${jobId} never reached a terminal state`);
+  }
+
+  async function provisionManagedEnvironment(
+    fx: ReturnType<typeof fixture>,
+    hostedRemoteChat = false,
+  ) {
+    await provisionerReset();
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(
+        fx.provisionerAuth,
+        fx.environmentId,
+        1800,
+        crypto.randomUUID(),
+        hostedRemoteChat,
+      ),
+    );
+    await sweepAccount(fx.accountId);
+    await waitJobTerminal(fx.provisionerAuth, created.job.id);
+    await envConnect(fx);
+    expectSuccess<EnvironmentReportResult>(
+      await stubRpc(fx.accountId, fx.envAuth, 'environment.report', {
+        environmentId: fx.environmentId,
+        provider: 'anvil-managed',
+        state: 'enrolled',
+        enrollmentId: fx.envEnrollmentId,
+      }),
+    );
+  }
+
+  it('stages a bootstrap payload and rejects malformed ones', async () => {
+    const fx = fixture('bootstrap');
+    const pairing = await postRpc(
+      'environment.bootstrap',
+      {
+        environmentId: fx.environmentId,
+        payload: 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF',
+      },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(pairing.body)).toBe(true);
+    const staged = expectSuccess<{ ok: true }>(
+      await postRpc(
+        'environment.bootstrap',
+        { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+        fx.provisionerAuth,
+      ),
+    );
+    expect(staged.ok).toBe(true);
+
+    const missing = await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(missing.body)).toBe(true);
+    const malformedCode = await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: 'anvil-ec-AAAAA-BBBBB' },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(malformedCode.body)).toBe(true);
+    const oversized = await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: 'x'.repeat(5000) },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(oversized.body)).toBe(true);
+  });
+
+  it('enforces free-tier caps: TTL bound and concurrency 1', async () => {
+    const fx = fixture('caps');
+    // Free entitlement (unlinked account): 30-minute TTL cap.
+    const overTtl = await createManagedJob(fx.provisionerAuth, 'env_c1', 1801);
+    expect(isRpcError(overTtl.body)).toBe(true);
+    const underMin = await createManagedJob(fx.provisionerAuth, 'env_c2', 30);
+    expect(isRpcError(underMin.body)).toBe(true);
+
+    // A first provision at the cap succeeds — the env record it leaves is
+    // live, so the next managed create trips the concurrency cap.
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: 'env_c3', payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    const firstRequestId = crypto.randomUUID();
+    const first = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, 'env_c3', 1800, firstRequestId),
+    );
+    await sweepAccount(fx.accountId);
+    await waitJobTerminal(fx.provisionerAuth, first.job.id);
+
+    const second = await createManagedJob(fx.provisionerAuth, 'env_c4', 1800);
+    expect(isRpcError(second.body)).toBe(true);
+
+    // Replaying the first request returns the stored job, not a cap
+    // rejection — the slot was already accounted when the job was born.
+    const replay = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, 'env_c3', 1800, firstRequestId),
+    );
+    expect(replay.job.id).toBe(first.job.id);
+  });
+
+  it('enforces the managed concurrency cap for overlapping creates', async () => {
+    const fx = fixture('concurrent-caps');
+    await Promise.all(
+      ['env_cc1', 'env_cc2'].map((environmentId) =>
+        postRpc(
+          'environment.bootstrap',
+          { environmentId, payload: MANAGED_ENROLLMENT_CODE },
+          fx.provisionerAuth,
+        ),
+      ),
+    );
+
+    const responses = await Promise.all([
+      createManagedJob(fx.provisionerAuth, 'env_cc1'),
+      createManagedJob(fx.provisionerAuth, 'env_cc2'),
+    ]);
+    const successes = responses.filter((response) => !isRpcError(response.body));
+    const failures = responses.filter((response) => isRpcError(response.body));
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(
+      (failures[0]?.body as { error?: { details?: { reason?: string } } }).error?.details?.reason,
+    ).toBe('managed-concurrency-cap');
+  });
+
+  it('keeps provider-native creates available when Anvil-owned Cloud Agents are disabled', async () => {
+    const fx = fixture('byo');
+    const bindings = env as unknown as Record<string, unknown>;
+    const previousFlag = bindings['ANVIL_CLOUD_AGENTS_ENABLED'];
+    bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = 'false';
+    try {
+      const managed = await createManagedJob(fx.provisionerAuth, 'env_anvil_disabled');
+      expect(isRpcError(managed.body)).toBe(true);
+      expect(managed.body).toMatchObject({
+        error: { code: 'forbidden', details: { reason: 'cloud-agents-disabled' } },
+      });
+
+      const response = await postRpc(
+        'job.create',
+        {
+          requestId: crypto.randomUUID(),
+          payloadHash: 'f'.repeat(64),
+          kind: 'provision-environment',
+          requestedTarget: {
+            kind: 'auto',
+            requirements: { capabilities: ['provision:aws-lambda-microvm'] },
+          },
+          inputManifest: {
+            ...manifest(),
+            inputs: {
+              environmentId: 'env_byo',
+              provider: 'aws-lambda-microvm',
+              ttlSeconds: 86_400,
+            },
+          },
+        } satisfies JobCreateParams,
+        fx.provisionerAuth,
+      );
+      expect(isRpcError(response.body)).toBe(false);
+    } finally {
+      bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = previousFlag;
+    }
+  });
+
+  it('does not provision a queued managed job after Anvil Cloud Agents are disabled', async () => {
+    const fx = fixture('managed-disabled-before-claim');
+    await provisionerReset();
+    const jobId = await stageManagedJobForSweep(fx);
+
+    const bindings = env as unknown as Record<string, unknown>;
+    const previousFlag = bindings['ANVIL_CLOUD_AGENTS_ENABLED'];
+    bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = 'false';
+    try {
+      await sweepAccount(fx.accountId);
+      const terminal = await waitJobTerminal(fx.provisionerAuth, jobId);
+      expect(terminal.job.state).toBe('failed');
+      expect(terminal.job.stateReason).toBe('cloud-agents-disabled');
+      expect(await provisionerLast()).toBeNull();
+    } finally {
+      bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = previousFlag;
+    }
+  });
+
+  it('fails a queued managed job after the fair-use restriction becomes effective', async () => {
+    const fx = fixture('managed-fair-use-before-claim');
+    await provisionerReset();
+    const jobId = await stageManagedJobForSweep(fx);
+
+    const now = Date.now();
+    await runInDurableObject(
+      accountStub(fx.accountId),
+      (_instance: AccountCoordinator, state) => {
+        state.storage.sql.exec(
+          `INSERT INTO sync_meta (key, value) VALUES ('fair_use_restriction', ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          JSON.stringify({
+            code: 'storage-usage',
+            message: 'Reduce retained data or contact support.',
+            noticeAt: new Date(now - 86_400_000).toISOString(),
+            restrictAt: new Date(now - 1_000).toISOString(),
+            emergency: false,
+          }),
+        );
+      },
+    );
+
+    await sweepAccount(fx.accountId);
+    const terminal = await waitJobTerminal(fx.provisionerAuth, jobId);
+    expect(terminal.job.state).toBe('failed');
+    expect(terminal.job.stateReason).toBe('fair-use-restricted');
+    expect(await provisionerLast()).toBeNull();
+  });
+
+  it('claims, consumes the bootstrap payload, calls the provisioner, records the env', async () => {
+    const fx = fixture('claim');
+    await provisionerReset();
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, fx.environmentId, 1800),
+    );
+    await sweepAccount(fx.accountId);
+    const terminal = await waitJobTerminal(fx.provisionerAuth, created.job.id);
+    expect(terminal.job.state).toBe('completed');
+
+    // The provisioner received only the staged enrollment code inside the
+    // schema 0.2 bootstrap doc — never journaled, never returned to a client.
+    const last = await provisionerLast();
+    expect(last?.method).toBe('POST');
+    expect(last?.path).toBe('/v1/environments');
+    expect(last?.body?.environmentId).toBe(fx.environmentId);
+    expect(last?.body?.bootstrap?.['enrollmentCode']).toBe(MANAGED_ENROLLMENT_CODE);
+    expect(last?.body?.bootstrap?.['pairing']).toBeUndefined();
+    expect(last?.body?.bootstrap?.['schemaVersion']).toBe('0.2');
+    expect(last?.body?.bootstrap?.['provider']).toBe('anvil-managed');
+    expect(last?.body?.bootstrap?.['backendUrl']).toBe('https://api.anvil.test');
+
+    const record = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(record.environment.provider).toBe('anvil-managed');
+    expect(record.environment.state).toBe('provisioning');
+    expect(record.environment.handle?.['providerRef']).toBe(`sb-${fx.environmentId}`);
+    expect(record.environment.jobId).toBe(created.job.id);
+  });
+
+  it('server-side idle sweep suspends only marked hosted chats without a desktop tick', async () => {
+    const base = fixture('idle-hosted-chat');
+    const environmentId = `remote-${crypto.randomUUID()}`;
+    const fx = {
+      ...base,
+      environmentId,
+      envAuth: { ...base.envAuth, environmentId },
+    };
+    await provisionManagedEnvironment(fx, true);
+    await runInDurableObject(accountStub(fx.accountId), (_instance: AccountCoordinator, state) => {
+      state.storage.sql.exec(
+        'UPDATE environments SET updated_at = ? WHERE environment_id = ?',
+        Date.now() - 6 * 60 * 1000,
+        environmentId,
+      );
+    });
+    await provisionerReset();
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${environmentId}/suspend`,
+      body: { ok: true, size: 123 },
+    });
+
+    await sweepAccount(fx.accountId);
+
+    const parked = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId }, fx.provisionerAuth),
+    );
+    expect(parked.environment.state).toBe('suspended');
+    expect(parked.environment.enrollmentId).toBeUndefined();
+    expect((await provisionerLast())?.path).toBe(`/v1/environments/sb-${environmentId}/suspend`);
+  });
+
+  it('fails the job honestly when no bootstrap payload was staged', async () => {
+    const fx = fixture('noboot');
+    await provisionerReset();
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, fx.environmentId, 1800),
+    );
+    await sweepAccount(fx.accountId);
+    const terminal = await waitJobTerminal(fx.provisionerAuth, created.job.id);
+    expect(terminal.job.state).toBe('failed');
+    // No provisioner call happened — nothing was staged to consume.
+    expect(await provisionerLast()).toBeNull();
+  });
+
+  it('fails the job when the provisioner rejects', async () => {
+    const fx = fixture('procfail');
+    await provisionerReset();
+    await provisionerEnqueue({
+      method: 'POST',
+      path: '/v1/environments',
+      status: 500,
+      body: { error: 'boom' },
+    });
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, fx.environmentId, 1800),
+    );
+    await sweepAccount(fx.accountId);
+    const terminal = await waitJobTerminal(fx.provisionerAuth, created.job.id);
+    expect(terminal.job.state).toBe('failed');
+  });
+
+  it('enacts provider teardown for managed envs holding reap intent', async () => {
+    const fx = fixture('mreap');
+    await provisionerReset();
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, fx.environmentId, 1800),
+    );
+    await sweepAccount(fx.accountId);
+    await waitJobTerminal(fx.provisionerAuth, created.job.id);
+
+    await provisionerReset();
+    const bindings = env as unknown as Record<string, unknown>;
+    const previousFlag = bindings['ANVIL_CLOUD_AGENTS_ENABLED'];
+    bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = 'false';
+    try {
+      const reaped = expectSuccess<EnvironmentReapResult>(
+        await postRpc(
+          'environment.reap',
+          { environmentId: fx.environmentId },
+          fx.provisionerAuth,
+        ),
+      );
+      expect(reaped.environment.state).toBe('reap-requested');
+
+      await sweepAccount(fx.accountId);
+    } finally {
+      bindings['ANVIL_CLOUD_AGENTS_ENABLED'] = previousFlag;
+    }
+    const last = await provisionerLast();
+    expect(last?.method).toBe('DELETE');
+    expect(last?.path).toBe(`/v1/environments/sb-${fx.environmentId}`);
+
+    const record = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(record.environment.reapedAt).toBeDefined();
+  });
+
+  it('keeps failed snapshots retryable and only marks suspended after provider confirmation', async () => {
+    const fx = fixture('suspend-retry');
+    await provisionManagedEnvironment(fx);
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/suspend`,
+      status: 502,
+      body: { error: 'snapshot-failed' },
+    });
+
+    const failed = await postRpc(
+      'environment.suspend',
+      { environmentId: fx.environmentId },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(failed.body)).toBe(true);
+    const pending = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(pending.environment.state).toBe('suspending');
+    expect(pending.environment.enrollmentId).toBeUndefined();
+
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/suspend`,
+      body: { ok: true, size: 123 },
+    });
+    await sweepAccount(fx.accountId);
+    const parked = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(parked.environment.state).toBe('suspended');
+  });
+
+  it('does not resume a parked snapshot when live compute is already at its cap', async () => {
+    const parked = fixture('resume-cap-parked');
+    await provisionManagedEnvironment(parked);
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${parked.environmentId}/suspend`,
+      body: { ok: true, size: 123 },
+    });
+    expectSuccess<EnvironmentSuspendResult>(
+      await postRpc(
+        'environment.suspend',
+        { environmentId: parked.environmentId },
+        parked.provisionerAuth,
+      ),
+    );
+
+    const live = {
+      ...parked,
+      environmentId: 'env_resume-cap-live',
+      envAuth: { ...parked.envAuth, environmentId: 'env_resume-cap-live' },
+    };
+    await provisionManagedEnvironment(live);
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: parked.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      parked.provisionerAuth,
+    );
+    const denied = await postRpc(
+      'environment.resume',
+      { environmentId: parked.environmentId, ttlSeconds: 1800 },
+      parked.provisionerAuth,
+    );
+    expect(isRpcError(denied.body)).toBe(true);
+    if (isRpcError(denied.body)) {
+      expect(denied.body.error.details?.['reason']).toBe('managed-concurrency-cap');
+    }
+  });
+
+  it('restores the stable environment with a fresh enrollment and keeps failed boots retryable', async () => {
+    const fx = fixture('resume-retry');
+    await provisionManagedEnvironment(fx);
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/suspend`,
+      body: { ok: true, size: 123 },
+    });
+    expectSuccess<EnvironmentSuspendResult>(
+      await postRpc('environment.suspend', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/boot`,
+      status: 502,
+      body: { error: 'restore-failed' },
+    });
+    const failed = await postRpc(
+      'environment.resume',
+      { environmentId: fx.environmentId, ttlSeconds: 1800 },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(failed.body)).toBe(true);
+    const parked = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(parked.environment.state).toBe('suspended');
+
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
+      fx.provisionerAuth,
+    );
+    await provisionerEnqueue({
+      method: 'POST',
+      path: `/v1/environments/sb-${fx.environmentId}/boot`,
+      body: { providerRef: `sb-${fx.environmentId}`, processId: 'restored-worker', reused: false },
+    });
+    const resumed = expectSuccess<EnvironmentResumeResult>(
+      await postRpc(
+        'environment.resume',
+        { environmentId: fx.environmentId, ttlSeconds: 1800 },
+        fx.provisionerAuth,
+      ),
+    );
+    expect(resumed.environment.state).toBe('provisioning');
+    expect(resumed.environment.enrollmentId).toBeUndefined();
+    const last = await provisionerLast();
+    expect(last?.method).toBe('POST');
+    expect(last?.path).toBe(`/v1/environments/sb-${fx.environmentId}/boot`);
+    expect(last?.body?.bootstrap?.['resumeFromSnapshot']).toBe(true);
+    expect(last?.body?.bootstrap?.['enrollmentCode']).toBe(MANAGED_ENROLLMENT_CODE);
+    expect(last?.body?.bootstrap?.['pairing']).toBeUndefined();
+  });
+});

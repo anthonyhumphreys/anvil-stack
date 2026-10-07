@@ -3,7 +3,9 @@ import { parseCsv } from '../ArtifactPreview';
 
 describe('parseCsv', () => {
   it('parses quoted commas, escaped quotes, and multiline cells', () => {
-    expect(parseCsv('name,notes\nAnvil,"Useful, mostly"\nCanvas,"Said ""hello""\non two lines"')).toEqual([
+    expect(
+      parseCsv('name,notes\nAnvil,"Useful, mostly"\nCanvas,"Said ""hello""\non two lines"'),
+    ).toEqual([
       ['name', 'notes'],
       ['Anvil', 'Useful, mostly'],
       ['Canvas', 'Said "hello"\non two lines'],

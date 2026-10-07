@@ -1,4 +1,16 @@
 import { ipcMain } from 'electron';
+import type { SecretStorageProvider, SecretVaultSetup } from '../../shared/secret-storage.js';
+import {
+  configureSecretVault,
+  unlockSecretVault,
+  lockSecretVault,
+  selectSecretStorageProvider,
+} from '../services/auth.service.js';
+import {
+  getCredentialStorageStatus,
+  maskSavedSettings,
+  migrateSavedCredentials,
+} from '../services/credential-storage.service.js';
 import type { AppSettings, LlmGatewayBillingMode } from '../../shared/types.js';
 import {
   getSettings,
@@ -35,8 +47,49 @@ import {
   startNotionOAuthFlow,
   exchangeNotionOAuthCode,
 } from '../services/notion.service.js';
+import { resumeSyncAfterCredentialStorageReady } from '../services/sync-runtime.service.js';
 
 export function registerSettingsHandlers(): void {
+  const storageChanged = (): ReturnType<typeof getCredentialStorageStatus> => {
+    resetLlmClient();
+    emitCompanionEvent('settings');
+    const status = getCredentialStorageStatus();
+    if (status.state === 'ready') void resumeSyncAfterCredentialStorageReady();
+    return status;
+  };
+  ipcMain.handle('settings:secret-storage-status', () => getCredentialStorageStatus());
+  ipcMain.handle('settings:secret-vault-setup', async (_event, input: SecretVaultSetup) => {
+    if (
+      input === null ||
+      typeof input !== 'object' ||
+      !['passphrase', 'key-file'].includes(input.mode)
+    )
+      throw new Error('Choose passphrase or key-file storage.');
+    await configureSecretVault(input);
+    migrateSavedCredentials();
+    return storageChanged();
+  });
+  ipcMain.handle('settings:secret-vault-unlock', async (_event, passphrase?: string) => {
+    if (passphrase !== undefined && typeof passphrase !== 'string')
+      throw new Error('Invalid vault passphrase.');
+    await unlockSecretVault(passphrase);
+    if (getCredentialStorageStatus().state === 'ready') migrateSavedCredentials();
+    return storageChanged();
+  });
+  ipcMain.handle('settings:secret-vault-lock', () => {
+    lockSecretVault();
+    return storageChanged();
+  });
+  ipcMain.handle('settings:secret-storage-select', (_event, provider: SecretStorageProvider) => {
+    selectSecretStorageProvider(provider);
+    if (getCredentialStorageStatus().state === 'ready') migrateSavedCredentials();
+    return storageChanged();
+  });
+  ipcMain.handle('settings:secret-storage-migrate', () => {
+    const result = migrateSavedCredentials();
+    storageChanged();
+    return result;
+  });
   ipcMain.handle('settings:codex-runtime-status', () => getCodexRuntimeStatus());
   ipcMain.handle('settings:codex-runtime-install', () => installCodexRuntime());
 
@@ -44,24 +97,7 @@ export function registerSettingsHandlers(): void {
     try {
       const settings = getSettings();
       // Strip secrets from the response — renderer gets masked values
-      return {
-        ...settings,
-        workItemConnections: settings.workItemConnections.map((connection) => ({
-          ...connection,
-          adoPat: connection.adoPat ? '••••••••' : undefined,
-          linearApiKey: connection.linearApiKey ? '••••••••' : undefined,
-          jiraApiToken: connection.jiraApiToken ? '••••••••' : undefined,
-        })),
-        foundryApiKey: settings.foundryApiKey ? '••••••••' : undefined,
-        openaiApiKey: settings.openaiApiKey ? '••••••••' : undefined,
-        llmGatewayApiKey: settings.llmGatewayApiKey ? '••••••••' : undefined,
-        adoPat: settings.adoPat ? '••••••••' : undefined,
-        linearApiKey: settings.linearApiKey ? '••••••••' : undefined,
-        jiraApiToken: settings.jiraApiToken ? '••••••••' : undefined,
-        confluencePat: settings.confluencePat ? '••••••••' : undefined,
-        githubPat: settings.githubPat ? '••••••••' : undefined,
-        notionOauthToken: settings.notionOauthToken ? '••••••••' : undefined,
-      };
+      return maskSavedSettings(settings);
     } catch (err) {
       console.error('[Settings IPC] Error getting settings:', err);
       throw err;

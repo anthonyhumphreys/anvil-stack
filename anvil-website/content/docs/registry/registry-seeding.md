@@ -3,9 +3,9 @@ title: Registry seeding
 navTitle: Seeding
 description: Warm Anvil Registry from representative org lockfiles before developers and CI switch their package traffic.
 product: Anvil Registry
-section: Operations
+section: Guides
 journey: build
-order: 11
+order: 80
 ---
 
 # Registry seeding

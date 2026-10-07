@@ -5,7 +5,7 @@
   "main": "out/main/index.js",
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.13.0"
   },
   "repository": {
     "type": "git",
@@ -18,6 +18,10 @@
     "dev": "electron-vite dev",
     "prebuild": "pnpm run rebuild:native:electron",
     "build": "electron-vite build",
+    "build:daemon": "node scripts/build-daemon.mjs",
+    "verify:daemon-device-auth": "node scripts/verify-daemon-device-auth.mjs",
+    "staging:status": "node scripts/staging-status.mjs",
+    "daemon": "node scripts/build-daemon.mjs && node dist-daemon/anvil-daemon.mjs",
     "dist:mac:arm64": "node scripts/dist.mjs --mac dmg zip --arm64 --publish never --brand=anvil",
     "dist:mac:arm64:anvil": "node scripts/dist.mjs --mac dmg zip --arm64 --publish never --brand=anvil",
     "dist:mac:arm64:anvil:notarized": "bash scripts/build-macos-arm64-anvil-notarized.sh",
@@ -43,9 +47,12 @@
   "license": "MIT",
   "private": true,
   "dependencies": {
+    "@cursor/sdk": "1.0.35",
     "@anvilstack/cloud-cli": "^0.1.1",
     "@anvilstack/registry-cli": "^0.1.1",
+    "@aws-sdk/client-lambda-microvms": "3.1077.0",
     "@sentry/electron": "^7.17.0",
+    "@vercel/sandbox": "3.2.2",
     "abort-controller": "^3.0.0",
     "ansi-regex": "^6.2.2",
     "balanced-match": "^1.0.2",
@@ -62,6 +69,7 @@
     "text-decoder": "^1.2.7",
     "typescript": "^5.9.3",
     "wrappy": "^1.0.2",
+    "ws": "^8.21.3",
     "yaml": "^2.9.0",
     "yazl": "^3.3.1"
   },

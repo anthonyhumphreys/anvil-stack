@@ -11,6 +11,7 @@ vi.mock('../settings.service.js', () => ({
 import {
   buildLlmGatewayLoginUrl,
   getLlmGatewayStatus,
+  listLlmGatewayModels,
   parseLlmGatewayModels,
   resolveLlmGatewayModelConfig,
   startLlmGatewayLogin,
@@ -305,5 +306,29 @@ describe('LLMGateway service', () => {
       model: 'model',
       effort: 'low',
     });
+  });
+
+  it('resolves a DevPass catalog for a cloud-granted session despite a PayG worker default', async () => {
+    settings.getSettings.mockReturnValue({ llmGatewayBillingMode: 'payg' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              llmgateway: { models: { devpassModel: { id: 'devpass/model', tool_call: true } } },
+              'llmgateway-providers': {
+                models: { paygModel: { id: 'payg/model', tool_call: true } },
+              },
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    await listLlmGatewayModels('payg', true);
+
+    await expect(
+      resolveLlmGatewayModelConfig('devpass/model', undefined, undefined, 'devpass'),
+    ).resolves.toMatchObject({ model: 'devpass/model' });
   });
 });

@@ -496,6 +496,9 @@ The current implementation gives execution clients and AWS-backed agents:
 - `anvil-cloud agents sandboxes --json` for CLI/agent inspection;
 - `anvil-cloud executions conformance --json` for the provider-neutral exit
   gate.
+- `anvil-cloud executions providers --json` and `GET /v1/execution-providers`
+  expose the registered provider capability and configuration matrix before a
+  client submits work. Configuration status is not a live provider probe.
 - an optional Desktop execution connection and read-only remote workbench with
   encrypted main-process bearer storage;
 - execution-scoped Codex/Cursor subscription auth intent, without model API
@@ -515,6 +518,15 @@ The hosted delivery loop still needs to:
    pushes, preview deploys, or production changes;
 7. return signed patch and artifact bundles to a disposable local worktree;
 8. verify real-account cleanup and orphan reaping under provider failures.
+
+The Desktop Mesh environment contract separately supports
+`aws-lambda-microvm`, `cloudflare-sandbox`, `vercel-sandbox`, and
+`anvil-managed`. Those are Mesh environment adapters, not registered
+`AgentExecutionProvider` implementations in this C2 control plane. Vercel
+Sandbox and Cloudflare Sandbox will appear in this execution matrix only after
+their worker lifecycle, source-grant handling, event cursor, approval, and
+cleanup tests pass. The Cloudflare Mesh backend is a separate sync/control
+service and does not by itself provide Agent Sandbox execution here.
 
 That is the product-shaped version of "agent sandboxing": not merely safer code
 execution, but inspectable agent workspaces with policy in front and receipts

@@ -1,11 +1,11 @@
 ---
 title: Anvil Agents
 navTitle: Agents
-description: Define contract-first agents, mount them in Cells, compile provider-neutral manifests, and run them locally through Anvil Runtime.
+description: Define contract-first agents, mount them in Cells, compile provider-neutral manifests, and run them locally. Anvil Cloud Agents hosted compute is planned, paid, unavailable, and disabled by default.
 product: Anvil Cloud
-section: Runtime
+section: Concepts
 journey: build
-order: 124
+order: 120
 ---
 
 # Anvil Agents
@@ -14,7 +14,7 @@ Anvil Agents are portable, inspectable, capability-bound runtime units.
 
 They can operate an Anvil workspace, power a Cell workflow, or become the primary interface of an Agent Cell. Every agent compiles to a provider-neutral manifest before it is run or deployed, so the contract can be reviewed, tested locally, and handed to runtime adapters without leaking provider infrastructure into Cell code.
 
-This is an MVP foundation, not a hosted agent platform. Useful. Refreshingly unglamorous. Keep the contract small enough to inspect.
+The open-source runtime and CLI are separate from Anvil Cloud Agents, the planned hosted compute service. Anvil Cloud Agents is unavailable and disabled by default; it will be paid when released. No price or release date has been set. Running agents through existing provider integrations uses your provider accounts, which bill you directly.
 
 The bigger runtime direction is [Agent Sandboxes](/docs/cloud/agent-sandboxes):
 isolated, sessionful, inspectable workspaces for agents that need to run tools,

@@ -1,45 +1,73 @@
+import { useEffect, useState } from 'react';
 import {
-  Loader2,
-  AlertCircle,
-  CheckCircle,
-  ExternalLink,
   AlertTriangle,
+  Copy,
+  ExternalLink,
+  GitBranch,
+  Loader2,
+  MoreHorizontal,
+  RefreshCw,
+  Square,
   SquareTerminal,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import type { RepoInfo } from '../../../shared/types';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import type { GitWorkspaceStatus, RepoInfo } from '../../../shared/types';
+import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
+import { useRepoIndex } from '../../contexts/RepoIndexContext';
 import { buildEditorUrl } from '../../utils/editor-link';
+import { IconButton, Menu, MenuItem, MenuSeparator, cx } from '../ui';
+import { RemoveRepoDialog } from './RemoveRepoDialog';
 
 interface RepoListProps {
   repos: RepoInfo[];
   selectedRepoId: string | null;
   onSelect: (repo: RepoInfo) => void;
-  onIndex: (repoId: string) => void;
-  onForceReindex: (repoId: string) => void;
-  indexingRepoIds: Set<string>;
-  indexProgressMap: Map<
-    string,
-    { message: string; percent: number; detail?: string; history: string[] }
-  >;
 }
 
-export function RepoList({
-  repos,
-  selectedRepoId,
-  onSelect,
-  onIndex,
-  onForceReindex,
-  indexingRepoIds,
-  indexProgressMap,
-}: RepoListProps) {
+/**
+ * Workspace repo list (RM7 decluttered): tier dot, name, branch + dirty
+ * state, path, metrics — actions live in a `…` overflow menu (X1) instead of
+ * per-row primary buttons.
+ */
+export function RepoList({ repos, selectedRepoId, onSelect }: RepoListProps) {
   const navigate = useNavigate();
   const { activeWorkspace } = useWorkspace();
+  const [removingRepo, setRemovingRepo] = useState<RepoInfo | null>(null);
+  const [gitStatus, setGitStatus] = useState<GitWorkspaceStatus | null>(null);
+
+  // RM6: one batched git status call for branch + dirty state per card.
+  useEffect(() => {
+    if (repos.length === 0) {
+      setGitStatus(null);
+      return;
+    }
+    let cancelled = false;
+    window.anvil.git
+      .workspaceStatus(repos.map((repo) => repo.id))
+      .then((status) => {
+        if (!cancelled) setGitStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setGitStatus(null);
+      });
+    const interval = window.setInterval(() => {
+      window.anvil.git
+        .workspaceStatus(repos.map((repo) => repo.id))
+        .then((status) => {
+          if (!cancelled) setGitStatus(status);
+        })
+        .catch(() => undefined);
+    }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [repos]);
 
   return (
     <div>
       <div className="flex items-center justify-between px-2 pb-2">
-        <h2 className="text-sm font-semibold text-text-primary">Connected</h2>
+        <h2 className="text-sm font-semibold text-text-primary">Repositories</h2>
         <span className="text-xs tabular-nums text-text-tertiary">{repos.length}</span>
       </div>
 
@@ -50,30 +78,38 @@ export function RepoList({
       )}
 
       <div className="space-y-1">
-        {repos.map((repo) => (
-          <RepoCard
-            key={repo.id}
-            repo={repo}
-            selected={repo.id === selectedRepoId}
-            onSelect={() => onSelect(repo)}
-            onIndex={() => onIndex(repo.id)}
-            onForceReindex={() => onForceReindex(repo.id)}
-            isIndexing={indexingRepoIds.has(repo.id)}
-            indexProgress={indexProgressMap.get(repo.id) ?? null}
-            onOpenEditor={() =>
-              navigate(
-                buildEditorUrl({
-                  workspaceId: activeWorkspace?.id,
-                  repoId: repo.id,
-                  repoName: repo.name,
-                  source: 'repos',
-                  title: `${repo.name} repository`,
-                }),
-              )
-            }
-          />
-        ))}
+        {repos.map((repo) => {
+          const git = gitStatus?.repos.find((entry) => entry.repoId === repo.id);
+          return (
+            <RepoCard
+              key={repo.id}
+              repo={repo}
+              selected={repo.id === selectedRepoId}
+              branch={git?.branch ?? null}
+              dirty={(git?.fileCount ?? 0) > 0}
+              onSelect={() => onSelect(repo)}
+              onOpenEditor={() =>
+                navigate(
+                  buildEditorUrl({
+                    workspaceId: activeWorkspace?.id,
+                    repoId: repo.id,
+                    repoName: repo.name,
+                    source: 'repos',
+                    title: `${repo.name} repository`,
+                  }),
+                )
+              }
+              onRemove={() => setRemovingRepo(repo)}
+            />
+          );
+        })}
       </div>
+
+      <RemoveRepoDialog
+        repo={removingRepo}
+        open={removingRepo !== null}
+        onClose={() => setRemovingRepo(null)}
+      />
     </div>
   );
 }
@@ -81,124 +117,147 @@ export function RepoList({
 function RepoCard({
   repo,
   selected,
+  branch,
+  dirty,
   onSelect,
-  onIndex,
-  onForceReindex,
-  isIndexing,
-  indexProgress,
   onOpenEditor,
+  onRemove,
 }: {
   repo: RepoInfo;
   selected: boolean;
+  branch: string | null;
+  dirty: boolean;
   onSelect: () => void;
-  onIndex: () => void;
-  onForceReindex: () => void;
-  isIndexing: boolean;
-  indexProgress: { message: string; percent: number; detail?: string } | null;
   onOpenEditor: () => void;
+  onRemove: () => void;
 }) {
-  const statusIcon = {
-    connected: <span className="h-2 w-2 rounded-full bg-text-secondary" />,
-    indexing: <Loader2 size={12} className="animate-spin text-info" />,
-    indexed: <CheckCircle size={12} className="text-success" />,
-    error: <AlertCircle size={12} className="text-error" />,
-  }[repo.status];
+  const repoIndex = useRepoIndex();
+  const activeJob = repoIndex.activeJobForRepo(repo.id);
+  const lastError = repoIndex.lastErrorForRepo(repo.id);
+  const progress = repoIndex.progressByRepoId.get(repo.id) ?? null;
+  const [copied, setCopied] = useState(false);
+
+  const mapped = repoIsMapped(repo);
+  const tierLabel = activeJob
+    ? activeJob.tier === 'enriched'
+      ? 'Summarising'
+      : 'Mapping'
+    : lastError
+      ? 'Index failed'
+      : mapped
+        ? repo.indexTier === 'enriched' || repo.status === 'indexed'
+          ? 'Enriched'
+          : 'Mapped'
+        : 'Connected';
 
   const topLanguages = repo.languages.slice(0, 3);
   const indexWarning = repo.indexWarnings?.[0];
-  const showDeepBadge = repo.indexMode === 'deep';
-  const showIndexWarning = Boolean(indexWarning);
+
+  const copyError = async () => {
+    if (!lastError) return;
+    const text = `Repo: ${repo.name} (${repo.path})\nJob: ${lastError.id} (${lastError.tier}, ${lastError.reason})\nError: ${lastError.error ?? 'unknown'}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
 
   return (
     <div
       onClick={onSelect}
-      className={`cursor-pointer rounded-lg border px-3 py-3 transition-colors ${
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      className={cx(
+        'group/repo cursor-pointer rounded-lg border px-3 py-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
         selected
           ? 'border-accent/35 bg-accent/10'
-          : 'border-transparent hover:border-border-subtle hover:bg-bg-tertiary/70'
-      }`}
+          : 'border-transparent hover:border-border-subtle hover:bg-bg-tertiary/70',
+      )}
     >
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            {statusIcon}
+            <TierDot repo={repo} running={activeJob !== null} failed={lastError !== null} />
             <span className="truncate text-sm font-semibold text-text-primary">{repo.name}</span>
-            {showDeepBadge && (
-              <span className="rounded-md bg-success/15 px-1.5 py-0.5 text-xs font-medium text-success">
-                deep
-              </span>
-            )}
+            <span className="text-eyebrow uppercase text-text-tertiary">{tierLabel}</span>
           </div>
-          {showIndexWarning && (
+          {indexWarning && (
             <div className="mt-2 flex items-start gap-1.5 text-sm text-warning">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
               <span className="line-clamp-2">{indexWarning}</span>
             </div>
           )}
         </div>
-        {repo.status === 'indexing' && !isIndexing && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onForceReindex();
-            }}
-            className="rounded-lg border border-warning/50 bg-warning/10 px-2.5 py-1.5 text-sm font-medium text-warning hover:bg-warning/20"
-            aria-label="Force re-index stuck repository"
-            title="This repo appears stuck. Click to reset and re-index."
+
+        {/* X1/J7: overflow menu — keyboard reachable, visible on row focus/hover */}
+        <span onClick={(event) => event.stopPropagation()}>
+          <Menu
+            label={`${repo.name} actions`}
+            trigger={(props) => (
+              <IconButton
+                {...props}
+                icon={MoreHorizontal}
+                label={`${repo.name} actions`}
+                className="opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/repo:opacity-100 group-hover/repo:opacity-100"
+              />
+            )}
           >
-            Force Re-index
-          </button>
-        )}
-        {(repo.status === 'connected' || repo.status === 'error') && !isIndexing && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onIndex();
-            }}
-            className="rounded-lg border border-accent bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
-            aria-label="Index repository"
-          >
-            Index
-          </button>
-        )}
-        {repo.status === 'indexed' && !isIndexing && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onIndex();
-            }}
-            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
-            aria-label="Re-index repository"
-          >
-            Re-index
-          </button>
-        )}
+            <MenuItem icon={<SquareTerminal size={14} />} onSelect={onOpenEditor}>
+              Open in editor
+            </MenuItem>
+            <MenuItem
+              icon={<ExternalLink size={14} />}
+              onSelect={() => void window.anvil.repo.openInVSCode(repo.path)}
+            >
+              Open in VS Code
+            </MenuItem>
+            <MenuItem
+              icon={<RefreshCw size={14} />}
+              disabled={activeJob !== null}
+              onSelect={() => void repoIndex.startIndex(repo.id)}
+            >
+              {mapped ? 'Re-index' : 'Index'}
+            </MenuItem>
+            {activeJob && (
+              <MenuItem
+                icon={<Square size={14} />}
+                onSelect={() => void repoIndex.cancelIndex(repo.id)}
+              >
+                Stop indexing
+              </MenuItem>
+            )}
+            <MenuSeparator />
+            <MenuItem destructive onSelect={onRemove}>
+              Remove from workspace…
+            </MenuItem>
+          </Menu>
+        </span>
       </div>
 
-      <div className="mt-2 flex items-center gap-2">
-        <p className="truncate text-sm text-text-secondary">{repo.path}</p>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenEditor();
-          }}
-          className="shrink-0 rounded-md p-1 text-text-secondary transition-colors hover:bg-info/10 hover:text-info"
-          title="Open in Editor"
-          aria-label="Open in Editor"
-        >
-          <SquareTerminal size={14} />
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            window.anvil.repo.openInVSCode(repo.path);
-          }}
-          className="shrink-0 rounded-md p-1 text-text-secondary transition-colors hover:bg-accent/10 hover:text-accent"
-          title="Open in VS Code"
-          aria-label="Open in VS Code"
-        >
-          <ExternalLink size={14} />
-        </button>
+      <div className="mt-1.5 flex items-center gap-2 text-xs text-text-tertiary">
+        {branch && (
+          <span className="flex items-center gap-1">
+            <GitBranch size={11} aria-hidden="true" />
+            <span className="max-w-32 truncate">{branch}</span>
+            {dirty && (
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-warning"
+                title="Uncommitted changes"
+                aria-label="Uncommitted changes"
+              />
+            )}
+          </span>
+        )}
+        <span className="truncate">{repo.path}</span>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
@@ -214,26 +273,71 @@ function RepoCard({
         ))}
       </div>
 
-      {isIndexing && indexProgress && (
+      {/* Active job progress (R8: kept compact; full history in the strip) */}
+      {activeJob && (
         <div className="mt-3 rounded-md border border-info/20 bg-info/5 p-2">
           <div className="flex items-center gap-2 text-sm text-info">
-            <Loader2 size={12} className="animate-spin" />
-            <span>{indexProgress.message}</span>
-            <span className="ml-auto text-sm tabular-nums text-text-secondary">
-              {indexProgress.percent}%
+            <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+            <span className="truncate">{progress?.message ?? activeJob.message}</span>
+            <span className="ml-auto shrink-0 text-sm tabular-nums text-text-secondary">
+              {progress?.percent ?? activeJob.progress}%
             </span>
           </div>
-          {indexProgress.detail && (
-            <p className="mt-1 text-sm text-text-secondary">{indexProgress.detail}</p>
-          )}
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-bg-elevated">
             <div
               className="h-full rounded-full bg-info transition-all duration-300"
-              style={{ width: `${Math.max(4, indexProgress.percent)}%` }}
+              style={{ width: `${Math.max(4, progress?.percent ?? activeJob.progress)}%` }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* RM5: persisted last-job error with Retry + Copy details */}
+      {lastError && !activeJob && (
+        <div className="mt-3 rounded-md border border-error/25 bg-error/5 p-2">
+          <div className="flex items-start gap-1.5 text-xs text-error">
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span className="line-clamp-2 min-w-0 flex-1">{lastError.error}</span>
+          </div>
+          <div className="mt-1.5 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void repoIndex.retryIndex(repo.id);
+              }}
+              className="rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                void copyError();
+              }}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-text-tertiary hover:text-text-primary"
+            >
+              <Copy size={11} aria-hidden="true" />
+              {copied ? 'Copied' : 'Copy details'}
+            </button>
           </div>
         </div>
       )}
     </div>
   );
+}
+
+function TierDot({ repo, running, failed }: { repo: RepoInfo; running: boolean; failed: boolean }) {
+  if (running) {
+    return <Loader2 size={12} className="shrink-0 animate-spin text-info" aria-hidden="true" />;
+  }
+  const colour = failed
+    ? 'bg-error'
+    : repo.indexTier === 'enriched' || repo.status === 'indexed'
+      ? 'bg-success'
+      : repo.indexTier === 'mapped'
+        ? 'bg-info'
+        : 'bg-text-tertiary/50';
+  return <span className={cx('h-2 w-2 shrink-0 rounded-full', colour)} aria-hidden="true" />;
 }
