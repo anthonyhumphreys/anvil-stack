@@ -190,6 +190,7 @@ try {
 
   const descriptor = await (await backendFetch(origin + '/.well-known/anvil-backend')).json();
   assert.ok(descriptor.authModes.includes('workos-device'));
+  assert.ok(!descriptor.authModes.includes('enrollment-code'));
   const first = await flow('first-device', ['authorization_pending', 'slow_down']);
   assert.ok(delays.includes(5_000));
   assert.ok(delays.includes(10_000));
@@ -214,6 +215,43 @@ try {
   assert.equal(defaultView.policy, 'auto-trust-authenticated');
   assert.equal(defaultView.trustState, 'trusted');
   assert.equal(defaultView.trustSource, 'automatic-auth');
+  await assert.rejects(
+    () =>
+      postAuthRoute(
+        connection,
+        'enrollment-codes',
+        {},
+        {
+          fetchFn: backendFetch,
+          accessToken: first.accessToken,
+        },
+      ),
+    { code: 'forbidden' },
+  );
+  const bootstrap = await postAuthRoute(
+    connection,
+    'enrollment-codes',
+    {
+      enrollmentClass: 'ephemeral',
+      provider: 'integration-fixture',
+      environmentId: 'integration-environment',
+      sessionTtlSeconds: 600,
+    },
+    { fetchFn: backendFetch, accessToken: first.accessToken },
+  );
+  const environment = await postAuthRoute(
+    connection,
+    'enroll',
+    {
+      installationId: 'temporary-environment',
+      proof: { method: 'enrollment-code', code: bootstrap.code },
+    },
+    { fetchFn: backendFetch },
+  );
+  assert.equal(environment.accountId, first.accountId);
+  assert.equal(environment.enrollmentClass, 'ephemeral');
+  assert.equal(environment.environmentId, 'integration-environment');
+  assert.ok(Date.parse(environment.enrollmentExpiresAt) > Date.now());
   const pkceCode = randomUUID();
   authorizationCodes.set(pkceCode, subject);
   const desktop = await postAuthRoute(
