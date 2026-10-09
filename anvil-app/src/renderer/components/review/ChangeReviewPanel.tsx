@@ -3,7 +3,15 @@ import { isFindingAccepted } from '../../../shared/change-review-types';
 import { stripAnsi } from '../../../shared/strip-ansi';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, Play, RefreshCw, CheckCheck, Download, MessageSquare } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Play,
+  RefreshCw,
+  CheckCheck,
+  Download,
+  MessageSquare,
+} from 'lucide-react';
 import type {
   ChangeReview,
   ReviewRun,
@@ -12,7 +20,11 @@ import type {
 } from '../../../shared/change-review-types';
 import type { WorkItem } from '../../../shared/types';
 import { useChatContext } from '../../contexts/ChatContext';
-import { matchesReviewContext } from '../../utils/change-review-context';
+import {
+  buildChangeReviewReturnPath,
+  matchesReviewContext,
+  type ChangeReviewEntrySource,
+} from '../../utils/change-review-context';
 import { NativeEvidencePanel } from './NativeEvidencePanel';
 import { copyTextToClipboard } from '../../utils/clipboard';
 
@@ -100,6 +112,8 @@ export function ChangeReviewPanel({
   initialScenarioVersion,
   initialBaseRef,
   origin,
+  entrySource,
+  entryThreadId,
 }: {
   workspaceId: string;
   repoId: string;
@@ -113,6 +127,8 @@ export function ChangeReviewPanel({
   initialScenarioVersion?: string;
   initialBaseRef?: string;
   origin?: ChangeReview['origin'];
+  entrySource?: ChangeReviewEntrySource;
+  entryThreadId?: string;
 }) {
   const navigate = useNavigate();
   const captureSection = useRef<HTMLElement>(null);
@@ -141,6 +157,22 @@ export function ChangeReviewPanel({
   const [copied, setCopied] = useState(false);
   const attentionRef = useReviewAttention(loading ? undefined : review?.id);
   const run = review?.runs.find((run) => run.id === runId) ?? review?.runs.at(-1);
+  const reviewOrigin = review?.origin ?? origin;
+  const returnSource =
+    entrySource ??
+    (reviewOrigin?.pullRequest
+      ? 'pull-request'
+      : reviewOrigin?.chat
+        ? 'chat'
+        : reviewOrigin?.git || (!reviewOrigin && !(review?.workItemRef ?? workItem))
+          ? 'git'
+          : undefined);
+  const returnPath = buildChangeReviewReturnPath({
+    repoId,
+    source: returnSource,
+    origin: reviewOrigin,
+    threadId: entryThreadId,
+  });
   const running = review?.runs.some((run) => run.outcome === 'running') ?? false;
   const criteria = review?.criteria.at(-1);
   const stale = Boolean(
@@ -373,11 +405,28 @@ export function ChangeReviewPanel({
       ) : null}
       {!review ? (
         <div className="max-w-xl space-y-4">
+          {returnPath ? (
+            <button className={button} onClick={() => navigate(returnPath)}>
+              <ArrowLeft size={14} />
+              {returnSource === 'pull-request'
+                ? 'Return to pull request'
+                : returnSource === 'git'
+                  ? 'Return to Git changes'
+                  : 'Return to chat'}
+            </button>
+          ) : null}
           <h3 className="text-lg font-semibold">Review the resulting change</h3>
           <p className="text-sm leading-6 text-text-secondary">
             Capture this checkout, compare it with a base revision, and attach verification to the
             exact candidate. Your staged and unstaged changes stay in place.
           </p>
+          {origin?.pullRequest ? (
+            <p className="text-xs leading-5 text-text-tertiary">
+              Linked to PR #{origin.pullRequest.number ?? origin.pullRequest.id} at head{' '}
+              <code>{origin.pullRequest.headSha.slice(0, 12)}</code>. The checkout HEAD must match;
+              staged and unstaged edits are included in the candidate.
+            </p>
+          ) : null}
           <label className="block space-y-1 text-sm">
             Base revision
             <input
@@ -412,6 +461,26 @@ export function ChangeReviewPanel({
         <>
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="mr-auto text-lg font-semibold">Change review</h3>
+            {returnPath ? (
+              <button
+                className={button}
+                onClick={() => navigate(returnPath)}
+                aria-label={
+                  returnSource === 'pull-request'
+                    ? 'Return to pull request'
+                    : returnSource === 'git'
+                      ? 'Return to Git changes'
+                      : 'Return to chat'
+                }
+              >
+                <ArrowLeft size={14} />
+                {returnSource === 'pull-request'
+                  ? 'Pull request'
+                  : returnSource === 'git'
+                    ? 'Git changes'
+                    : 'Chat'}
+              </button>
+            ) : null}
             {reviews.length > 1 ? (
               <select
                 aria-label="Review history"
@@ -458,6 +527,22 @@ export function ChangeReviewPanel({
               <p>
                 Workflow run <code>{review.origin.workflowRunId}</code>
               </p>
+            ) : null}
+            {review.origin?.chat ? (
+              <details>
+                <summary className="cursor-pointer">
+                  Chat turn <code>{review.origin.chat.turnId}</code> ·{' '}
+                  {review.origin.chat.changedFiles.length} changed file
+                  {review.origin.chat.changedFiles.length === 1 ? '' : 's'}
+                </summary>
+                <ul className="mt-1 space-y-1">
+                  {review.origin.chat.changedFiles.map((path) => (
+                    <li key={path} className="break-all font-mono">
+                      {path}
+                    </li>
+                  ))}
+                </ul>
+              </details>
             ) : null}
             <p>
               Base <code>{review.baseCommit.slice(0, 12)}</code> · Candidate{' '}

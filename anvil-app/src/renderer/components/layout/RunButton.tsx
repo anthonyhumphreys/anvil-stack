@@ -179,9 +179,9 @@ export function RunButton({ compact = false }: RunButtonProps) {
   return (
     <div
       ref={buttonRef}
-      className={`relative border-b border-border-subtle ${compact ? 'px-3 py-3' : 'px-5 py-3'}`}
+      className={`relative border-b border-border-subtle ${compact ? 'px-1 py-3' : 'px-5 py-3'}`}
     >
-      <div className={`flex items-center ${compact ? 'justify-center gap-2' : 'gap-1.5'}`}>
+      <div className="flex w-full min-w-0 items-center gap-1">
         {/* Status dot */}
         {dotColor && !runningEntry && (
           <button
@@ -196,14 +196,19 @@ export function RunButton({ compact = false }: RunButtonProps) {
           data-run-trigger
           onClick={handleMainClick}
           title={runningEntry ? `Stop ${runningEntry.command}` : buttonLabel}
-          className={`flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+          aria-label={runningEntry ? `Stop ${runningEntry.command}` : buttonLabel}
+          className={`flex min-w-0 flex-1 items-center rounded-md text-sm font-medium transition-colors ${
             runningEntry
               ? 'bg-error/15 text-error hover:bg-error/25'
               : 'bg-success/15 text-success hover:bg-success/25'
-          } ${compact ? 'justify-center' : 'flex-1 gap-2'}`}
+          } ${compact ? 'justify-center px-1 py-2' : 'gap-2 px-3 py-2'}`}
         >
-          {runningEntry ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-          {!compact && <span className="truncate">{buttonLabel}</span>}
+          {runningEntry ? (
+            <Loader2 size={14} className="shrink-0 animate-spin" />
+          ) : (
+            <Play size={14} className="shrink-0" />
+          )}
+          {!compact && <span className="min-w-0 truncate">{buttonLabel}</span>}
         </button>
 
         {/* Chevron — only if there are scripts to show */}
@@ -211,9 +216,11 @@ export function RunButton({ compact = false }: RunButtonProps) {
           <button
             onClick={() => setDropdownOpen((prev) => !prev)}
             title="Choose run command"
-            className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+            aria-label="Choose run command"
+            aria-expanded={dropdownOpen}
+            className={`shrink-0 rounded-md text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${compact ? 'p-1' : 'p-2'}`}
           >
-            <ChevronDown size={14} />
+            <ChevronDown size={14} className="shrink-0" />
           </button>
         )}
       </div>
@@ -225,6 +232,7 @@ export function RunButton({ compact = false }: RunButtonProps) {
           repos={repos}
           onRun={handleRun}
           onClose={() => setDropdownOpen(false)}
+          compact={compact}
         />
       )}
 

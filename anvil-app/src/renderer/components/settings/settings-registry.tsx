@@ -262,8 +262,8 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
       {
         id: 'docs',
         title: 'Documentation',
-        description: 'Confluence and Notion documentation providers.',
-        keywords: ['confluence', 'notion', 'docs'],
+        description: 'Confluence, Notion, and Linear documentation providers.',
+        keywords: ['confluence', 'notion', 'linear', 'docs'],
       },
       {
         id: 'git',

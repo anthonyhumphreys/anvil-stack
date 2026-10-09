@@ -8,12 +8,14 @@ Anvil is the brain; your coding agents are the hands.
 
 - **Repository Intelligence** — connect local repos or clone from GitHub/Azure DevOps, then index them for architecture diagrams, module summaries, and language breakdowns
 - **AI Chat**: converse with specialised personas for coding, design, analysis, and IT service management, each scoped with relevant context and guidance
+- **Temporary Chat**: start a text-only, workspace-free conversation from Cmd+K using a Codex-backed provider. Anvil keeps its transcript in memory until you end it or quit the app.
 - **Onboarding** — auto-generate `AGENTS.md`, `devcontainer.json`, and environment setup guides for any repo
 - **Work Items** — unified interface for Azure DevOps, Linear, and Jira — list, filter, plan, and estimate without leaving the app
 - **Security Audits** — LLM-driven vulnerability analysis with OWASP/CWE mapping, finding severity levels, and one-click work-item creation
+- **CI/CD Atlas** — map existing GitHub Actions and Azure Pipelines workflows, inspect validation findings, and create stack-aware starters from detected repository evidence
 - **Code Review** — quick-glance or senior-developer-depth reviews across commits, branches, or full codebases
 - **Business Analysis** — spike feasibility studies linked to work items, with branch management and drift detection
-- **Documentation** — Confluence integration with staleness detection and AI-generated updates
+- **Documentation** — Linear, Confluence, and Notion integration with staleness detection and explicit publishing of generated updates
 - **Diagrams** — draw.io integration with AI-powered generation and an embedded editor
 - **Terminal** — built-in xterm.js terminal with PTY support and powerline font rendering
 - **Workspaces** — group repos, configure integrations per workspace, and export to VS Code

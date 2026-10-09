@@ -34,6 +34,8 @@ export interface ChatStartOptions {
   threadId?: string;
   providerThreadId?: string;
   forkFromProviderThreadId?: string;
+  /** Runs in a fresh empty directory with read-only Codex access. */
+  temporaryChat?: boolean;
   designMode?: DesignMode;
   figmaContext?: string;
   workspace?: {

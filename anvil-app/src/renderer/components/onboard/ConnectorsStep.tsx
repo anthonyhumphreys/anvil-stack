@@ -59,14 +59,18 @@ export function ConnectorsStep({ onNext }: ConnectorsStepProps) {
                 ? 'Confluence'
                 : docsProvider === 'notion'
                   ? 'Notion'
-                  : 'No provider'}
+                  : docsProvider === 'linear'
+                    ? 'Linear'
+                    : 'No provider'}
             </h4>
             <p className="text-xs text-text-tertiary">
               {docsProvider === 'confluence'
                 ? 'Confluence Data Center'
                 : docsProvider === 'notion'
                   ? 'Notion via MCP'
-                  : null}
+                  : docsProvider === 'linear'
+                    ? 'Uses the active Linear work-item connection'
+                    : null}
               {docsProvider === 'none' && (
                 <SettingsLink to="delivery#docs">Configure in Settings</SettingsLink>
               )}

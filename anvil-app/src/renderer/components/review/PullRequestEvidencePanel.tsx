@@ -7,6 +7,7 @@ import type {
   ReviewEvidenceTarget,
 } from '../../../shared/change-review-types';
 import { reviewEvidenceLabel } from '../../utils/review-evidence-label';
+import { buildChangeReviewPath } from '../../utils/change-review-context';
 import type { PullRequestVisualisation } from '../../../shared/types';
 
 const control =
@@ -177,7 +178,13 @@ export function PullRequestEvidencePanel({
             <ul className="divide-y divide-border-subtle">
               {links.map(({ review: r, link }) => {
                 const fresh =
-                  link.source.headSha !== visualisation.headSha ? 'stale' : link.freshness;
+                  link.source.headSha !== visualisation.headSha ||
+                  r.freshness === 'stale' ||
+                  link.freshness === 'stale'
+                    ? 'stale'
+                    : link.freshness === 'unknown' || r.freshness === 'unknown'
+                      ? 'unknown'
+                      : 'current';
                 const label = reviewEvidenceLabel(r, link);
                 const params = new URLSearchParams({ repo: r.repoId, review: r.id });
                 if (link.runId) params.set('run', link.runId);
@@ -296,7 +303,18 @@ export function PullRequestEvidencePanel({
               className={action}
               onClick={() =>
                 navigate(
-                  `/review?${new URLSearchParams({ repo: visualisation.repoId, baseRef: visualisation.pullRequest.targetBranch, pullRequest: visualisation.pullRequest.id, provider: visualisation.pullRequest.provider, head: visualisation.headSha })}`,
+                  buildChangeReviewPath({
+                    repoId: visualisation.repoId,
+                    source: 'pull-request',
+                    baseRef: visualisation.pullRequest.targetBranch,
+                    origin: {
+                      pullRequest: {
+                        id: visualisation.pullRequest.id,
+                        provider: visualisation.pullRequest.provider,
+                        headSha: visualisation.headSha,
+                      },
+                    },
+                  }),
                 )
               }
             >
@@ -304,6 +322,13 @@ export function PullRequestEvidencePanel({
               <ArrowUpRight size={13} />
             </button>
           )}
+          {!review && visualisation.status === 'ready' ? (
+            <p className="text-xs leading-5 text-text-tertiary">
+              The checkout HEAD must match PR head {visualisation.headSha.slice(0, 12)}. Staged and
+              unstaged edits are included in the candidate. Evidence becomes stale if the PR head
+              advances.
+            </p>
+          ) : null}
         </>
       )}
     </section>

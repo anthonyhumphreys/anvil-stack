@@ -2,7 +2,7 @@ import { listDojoPrices, recordDojoExecutionEvent } from './dojo-analytics.servi
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -38,6 +38,7 @@ import {
   buildSystemPrompt,
   buildDesignSystemPrompt,
   buildScaffoldSystemPrompt,
+  buildTemporaryChatSystemPrompt,
   getPersonaById,
 } from './persona.service.js';
 import { getSettings } from './settings.service.js';
@@ -60,7 +61,11 @@ import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { resolveCodexRuntime } from './codex-runtime.service.js';
 import { saveChatEvent } from './chat-evidence.service.js';
-import { getChatThread, updateChatThreadAttention } from './chat-persistence.service.js';
+import {
+  getChatThread,
+  isTemporaryChatThread,
+  updateChatThreadAttention,
+} from './chat-persistence.service.js';
 import { scheduleThreadMetadataRefresh } from './thread-assist.service.js';
 import {
   dismissAgentUIIntent,
@@ -131,6 +136,8 @@ interface ManagedSession {
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
+  temporaryChatCwd?: string;
+  temporaryChat?: boolean;
   buffer: string;
   threadId: string | null;
   turnId: string | null;
@@ -351,9 +358,21 @@ export async function startSession(
   const id = randomUUID();
   const settings = getSettings();
   const agentProvider = runtime?.provider ?? options?.provider ?? settings.llmProvider;
+  const appThread = options?.threadId ? getChatThread(options.threadId) : null;
+  if ((options?.temporaryChat === true) !== Boolean(appThread?.temporary)) {
+    throw new Error('Temporary chat session state does not match its thread.');
+  }
+  if (options?.temporaryChat) {
+    if (repoIds.length > 0 || options.workspace || options.scaffold) {
+      throw new Error('Temporary chat cannot use a workspace, repository, or scaffold context.');
+    }
+    if (isAcpAgentProvider(agentProvider)) {
+      throw new Error('Temporary chat currently supports Codex providers only.');
+    }
+  }
   const isSideQuestion =
     options?.threadId !== undefined && getChatThread(options.threadId)?.purpose === 'side-question';
-  const modeOverride = isSideQuestion ? 'read-only' : options?.codexMode;
+  const modeOverride = options?.temporaryChat ? 'read-only' : isSideQuestion ? 'read-only' : options?.codexMode;
   if (modeOverride === 'read-only' && isAcpAgentProvider(agentProvider)) {
     throw new Error(
       `${acpProviderLabel(agentProvider)} cannot guarantee a provider-enforced read-only session.`,
@@ -367,7 +386,9 @@ export async function startSession(
       `${agentProvider} is not enabled. Activate it in Settings before starting a chat.`,
     );
   }
-  const mode = runtime?.codexMode ?? modeOverride ?? settings.codexMode ?? 'on-request';
+  const mode = options?.temporaryChat
+    ? 'read-only'
+    : (runtime?.codexMode ?? modeOverride ?? settings.codexMode ?? 'on-request');
   const configuredModel = resolveSessionModel(
     agentProvider,
     options?.model ?? runtime?.model ?? settings.openaiModel,
@@ -383,7 +404,9 @@ export async function startSession(
       : undefined;
   const model = gatewayConfig?.model ?? configuredModel;
   const codexPolicy = resolvePersonaCodexPolicy(mode, personaId);
-  const systemPrompt = options?.scaffold
+  const systemPrompt = options?.temporaryChat
+    ? buildTemporaryChatSystemPrompt(personaId)
+    : options?.scaffold
     ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
     : personaId === 'design'
       ? buildDesignSystemPrompt(repoIds, options?.designMode ?? 'design', options?.figmaContext)
@@ -412,6 +435,7 @@ export async function startSession(
         : agentProvider === 'llmgateway'
           ? getLlmGatewayCodexConfigArgs()
           : ['app-server'];
+  if (options?.temporaryChat) args.push('-c', 'mcp_servers={}');
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
@@ -428,6 +452,7 @@ export async function startSession(
       ...providerProcessSpawnOptions(),
     });
   } catch (err) {
+    if (options?.temporaryChat) rmSync(cwd, { recursive: true, force: true });
     throw new Error(
       `Failed to spawn ${acpProcessLabel(provider)}: ${err instanceof Error ? err.message : err}`,
     );
@@ -460,6 +485,8 @@ export async function startSession(
     status: 'starting',
     startedAt: new Date().toISOString(),
     cwd,
+    temporaryChatCwd: options?.temporaryChat ? cwd : undefined,
+    temporaryChat: options?.temporaryChat,
     buffer: '',
     threadId: null,
     turnId: null,
@@ -492,6 +519,7 @@ export async function startSession(
   proc.stderr?.on('data', () => undefined);
 
   proc.on('exit', (code, signal) => {
+    removeTemporaryChatDirectory(session);
     console.log(`[Codex:${id.slice(0, 8)}] exited with code=${code} signal=${signal}`);
     for (const intent of expireAgentUIIntentsForSession(id)) {
       broadcastAgentUIIntent(intent, id);
@@ -577,6 +605,7 @@ export async function startSession(
       developerInstructions: systemPrompt,
       approvalPolicy: codexPolicy.approvalPolicy,
       sandbox: codexPolicy.sandbox,
+      ...(options?.temporaryChat ? { ephemeral: true } : {}),
     };
     session.appliedMode = codexPolicy.sandbox;
     if (options?.forkFromProviderThreadId) {
@@ -626,6 +655,9 @@ export async function sendMessage(
 ): Promise<void> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
+  if (session.temporaryChat && attachments.length > 0) {
+    throw new Error('Temporary chat supports text messages only.');
+  }
   // SESSION-03: a session whose ownership moved to another device fails
   // closed — the durable relinquish marker outlives restarts.
   assertSessionTurnAllowed(sessionId);
@@ -657,12 +689,17 @@ export async function sendMessage(
   const isSideQuestion =
     session.appThreadId !== undefined &&
     getChatThread(session.appThreadId)?.purpose === 'side-question';
-  if (!isSideQuestion && options?.permissionMode !== undefined) {
+  if (!session.temporaryChat && !isSideQuestion && options?.permissionMode !== undefined) {
     session.modeOverride = options.permissionMode;
   }
-  const mode = isSideQuestion
-    ? 'read-only'
-    : (options?.permissionMode ?? session.modeOverride ?? settings.codexMode ?? session.mode);
+  const mode = resolveSessionTurnMode({
+    temporaryChat: session.temporaryChat,
+    sideQuestion: isSideQuestion,
+    permissionMode: options?.permissionMode,
+    sessionModeOverride: session.modeOverride,
+    configuredMode: settings.codexMode,
+    currentMode: session.mode,
+  });
 
   session.status = 'busy';
   setSessionThreadAttention(session, 'working');
@@ -860,6 +897,38 @@ function sendFollowUpAwareProviderRequest(
   }
 }
 
+export function isTemporaryChatSession(sessionId: string): boolean {
+  return sessions.get(sessionId)?.temporaryChat === true;
+}
+
+export function resolveSessionTurnMode(input: {
+  temporaryChat?: boolean;
+  sideQuestion?: boolean;
+  permissionMode?: CodexMode;
+  sessionModeOverride?: CodexMode;
+  configuredMode?: CodexMode;
+  currentMode: CodexMode;
+}): CodexMode {
+  if (input.temporaryChat || input.sideQuestion) return 'read-only';
+  return (
+    input.permissionMode ??
+    input.sessionModeOverride ??
+    input.configuredMode ??
+    input.currentMode
+  );
+}
+
+export function shouldPersistDojoExecutionEvent(
+  session: Pick<ManagedSession, 'temporaryChat' | 'appThreadId'> | undefined,
+  event: CodexEvent,
+): boolean {
+  return (
+    !session?.temporaryChat &&
+    Boolean(session?.appThreadId) &&
+    ['usage', 'usage_context', 'turn_outcome', 'context_compaction', 'status'].includes(event.type)
+  );
+}
+
 export function buildCodexCollaborationMode(
   mode: ChatSendOptions['collaborationMode'],
   model: string,
@@ -890,6 +959,9 @@ export async function steerTurn(
 ): Promise<ChatSteerResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
+  if (session.temporaryChat && attachments.length > 0) {
+    throw new Error('Temporary chat supports text messages only.');
+  }
   if (!session.process.stdin?.writable) throw new Error('Session stdin not writable');
 
   await session.threadReady;
@@ -935,6 +1007,9 @@ export async function followUpTurn(request: ChatFollowUpRequest): Promise<ChatFo
   const attachments = request.attachments ?? [];
   const session = sessions.get(sessionId);
   if (!session) return failedFollowUp(requestId, intent, 'Session not found.');
+  if (session.temporaryChat && attachments.length > 0) {
+    return failedFollowUp(requestId, intent, 'Temporary chat supports text messages only.');
+  }
   if (!requestId.trim() || requestId.length > 128) {
     return failedFollowUp(requestId, intent, 'A valid follow-up requestId is required.');
   }
@@ -1286,6 +1361,7 @@ export function stopSession(sessionId: string): void {
     }
   }
   sessions.delete(sessionId);
+  removeTemporaryChatDirectory(session);
   pendingPlanFeedback.delete(sessionId);
   pendingFollowUps.delete(sessionId);
   followUpReceipts.delete(sessionId);
@@ -1699,6 +1775,9 @@ export function resolveSessionCwd(
   options: ChatStartOptions | undefined,
   userDataPath: string,
 ): string {
+  if (options?.temporaryChat) {
+    return mkdtempSync(path.join(os.tmpdir(), 'anvil-temporary-chat-'));
+  }
   if (options?.scaffold?.rootPath) return options.scaffold.rootPath;
   if (options?.workspace?.cwd) return options.workspace.cwd;
   if (repoPaths.length > 0) return commonParentDir(repoPaths);
@@ -1712,6 +1791,16 @@ export function resolveSessionCwd(
     return workspaceCwd;
   }
   return process.cwd();
+}
+
+function removeTemporaryChatDirectory(session: Pick<ManagedSession, 'temporaryChatCwd'>): void {
+  if (!session.temporaryChatCwd) return;
+  try {
+    rmSync(session.temporaryChatCwd, { recursive: true, force: true });
+  } catch (err) {
+    console.warn('Failed to remove temporary chat directory:', err);
+  }
+  session.temporaryChatCwd = undefined;
 }
 
 /**
@@ -1848,7 +1937,7 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         }
       }
       let deliveredEvent = event;
-      if (session.appThreadId) {
+      if (session.appThreadId && !isTemporaryChatThread(session.appThreadId)) {
         const currentPlan = getAgentUIIntent(`plan:${session.appThreadId}`);
         const adapted = adaptProviderEventToAgentUIIntent(
           event,
@@ -2111,10 +2200,7 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
       ? { model: event.model ?? session?.model }
       : {}),
   };
-  if (
-    session?.appThreadId &&
-    ['usage', 'usage_context', 'turn_outcome', 'context_compaction', 'status'].includes(event.type)
-  ) {
+  if (session && session.appThreadId && shouldPersistDojoExecutionEvent(session, event)) {
     try {
       const model = event.model ?? session.model;
       const usagePrice =
@@ -2133,6 +2219,7 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
     }
   }
   if (
+    !session?.temporaryChat &&
     session?.appThreadId &&
     ((event.type === 'turn_outcome' && event.turnOutcome === 'completed') ||
       (event.type === 'status' && event.status === 'complete'))

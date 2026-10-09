@@ -13,6 +13,69 @@ import type {
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
 
+interface TemporaryChatRecord {
+  thread: ChatThread;
+  history: ChatMessage[];
+  sessionIds: Set<string>;
+}
+
+const temporaryChats = new Map<string, TemporaryChatRecord>();
+const temporaryChatThreadIds = new Set<string>();
+const temporaryChatSessionIds = new Set<string>();
+
+export function createTemporaryChatThread(personaId: string): ChatThread {
+  const now = new Date().toISOString();
+  const thread: ChatThread = {
+    id: randomUUID(),
+    temporary: true,
+    personaId,
+    title: 'Temporary chat',
+    repoIds: [],
+    createdAt: now,
+    updatedAt: now,
+    messageCount: 0,
+    attentionState: 'idle',
+  };
+  temporaryChats.set(thread.id, { thread, history: [], sessionIds: new Set() });
+  temporaryChatThreadIds.add(thread.id);
+  return thread;
+}
+
+export function isTemporaryChatThread(threadId: string | null | undefined): boolean {
+  return !!threadId && temporaryChatThreadIds.has(threadId);
+}
+
+export function appendTemporaryChatMessage(threadId: string, message: ChatMessage): boolean {
+  const record = temporaryChats.get(threadId);
+  if (!record) return temporaryChatThreadIds.has(threadId);
+  const existingIndex = record.history.findIndex((entry) => entry.id === message.id);
+  if (existingIndex >= 0) record.history[existingIndex] = message;
+  else record.history.push(message);
+  record.history.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const advancesConversation =
+    message.role === 'user' ||
+    (message.role === 'assistant' &&
+      (!message.event || message.event.type !== 'text' || message.event.assistantPhase !== 'progress'));
+  if (advancesConversation) {
+    record.thread.updatedAt = message.timestamp;
+    record.thread.lastMessageAt = message.timestamp;
+    record.thread.messageCount = record.history.filter(
+      (entry) => entry.role === 'user' || entry.role === 'assistant',
+    ).length;
+    record.thread.preview = message.content;
+  }
+  return true;
+}
+
+export function endTemporaryChatThread(threadId: string): boolean {
+  const record = temporaryChats.get(threadId);
+  if (!record) return false;
+  // Keep the session IDs as process-lifetime tombstones. Provider events can
+  // arrive after the user ends a chat, and must never fall through to SQLite.
+  temporaryChats.delete(threadId);
+  return true;
+}
+
 interface CreateChatThreadInput {
   workspaceId?: string | null;
   personaId: string;
@@ -387,6 +450,9 @@ export function listWorkItemChatThreads(workspaceId: string | null): ChatThread[
 }
 
 export function getChatThread(threadId: string): ChatThread | null {
+  const temporary = temporaryChats.get(threadId);
+  if (temporary) return { ...temporary.thread, repoIds: [] };
+  if (temporaryChatThreadIds.has(threadId)) return null;
   const db = getDb();
   const row = db
     .prepare(
@@ -592,6 +658,19 @@ export function updateChatThread(
   threadId: string,
   updates: UpdateChatThreadInput,
 ): ChatThread | null {
+  const temporary = temporaryChats.get(threadId);
+  if (temporary) {
+    const now = new Date().toISOString();
+    if (typeof updates.title === 'string') temporary.thread.title = updates.title.trim() || 'Temporary chat';
+    if (typeof updates.personaId === 'string') temporary.thread.personaId = updates.personaId.trim() || 'coder';
+    if (updates.settled === true) temporary.thread.settledAt = now;
+    if (updates.settled === false) temporary.thread.settledAt = undefined;
+    if (updates.viewed) temporary.thread.lastViewedAt = now;
+    if (updates.summary !== undefined) temporary.thread.summary = updates.summary ?? undefined;
+    temporary.thread.updatedAt = now;
+    return { ...temporary.thread, repoIds: [] };
+  }
+  if (temporaryChatThreadIds.has(threadId)) return null;
   const db = getDb();
   const assignments = ['updated_at = ?'];
   const values: Array<string | null> = [new Date().toISOString()];
@@ -661,6 +740,18 @@ export function updateChatThreadAttention(
   attentionState: ChatThreadAttentionState,
 ): ChatThread | null {
   const now = new Date().toISOString();
+  const temporary = temporaryChats.get(threadId);
+  if (temporary) {
+    temporary.thread.attentionState = attentionState;
+    temporary.thread.attentionUpdatedAt = now;
+    temporary.thread.activeTurnStartedAt =
+      attentionState === 'working'
+        ? (temporary.thread.activeTurnStartedAt ?? now)
+        : undefined;
+    temporary.thread.updatedAt = now;
+    return { ...temporary.thread, repoIds: [] };
+  }
+  if (temporaryChatThreadIds.has(threadId)) return null;
   const requiresAttention =
     attentionState === 'working' || attentionState === 'approval' || attentionState === 'input';
   getDb()
@@ -687,6 +778,10 @@ function buildWorkItemThreadTitle(workItemId: string, title: string): string {
 }
 
 export function deleteChatThread(threadId: string): void {
+  if (temporaryChatThreadIds.has(threadId)) {
+    endTemporaryChatThread(threadId);
+    return;
+  }
   const db = getDb();
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM chat_messages WHERE thread_id = ?').run(threadId);
@@ -697,6 +792,13 @@ export function deleteChatThread(threadId: string): void {
 }
 
 export function saveChatThreadPlan(threadId: string, plan: ChatPlanSnapshot): ChatThread | null {
+  const temporary = temporaryChats.get(threadId);
+  if (temporary) {
+    temporary.thread.activePlan = plan;
+    temporary.thread.updatedAt = plan.updatedAt || new Date().toISOString();
+    return { ...temporary.thread, repoIds: [] };
+  }
+  if (temporaryChatThreadIds.has(threadId)) return null;
   const db = getDb();
   const updatedAt = plan.updatedAt || new Date().toISOString();
   db.prepare(
@@ -712,6 +814,13 @@ export function saveChatThreadGoal(
   threadId: string,
   goal: ChatGoalSnapshot | null,
 ): ChatThread | null {
+  const temporary = temporaryChats.get(threadId);
+  if (temporary) {
+    temporary.thread.activeGoal = goal ?? undefined;
+    temporary.thread.updatedAt = new Date().toISOString();
+    return { ...temporary.thread, repoIds: [] };
+  }
+  if (temporaryChatThreadIds.has(threadId)) return null;
   const db = getDb();
   const updatedAt = new Date().toISOString();
   db.prepare(
@@ -731,8 +840,21 @@ export function createChatSession(
   providerThreadId?: string | null,
   provider?: AgentProvider,
 ): string {
-  const db = getDb();
   const id = sessionId ?? randomUUID();
+  const temporary = temporaryChats.get(threadId ?? '');
+  if (temporary) {
+    temporary.sessionIds.add(id);
+    temporaryChatSessionIds.add(id);
+    if (threadId && providerThreadId) {
+      temporary.thread.providerThreadId = providerThreadId;
+    }
+    return id;
+  }
+  if (isTemporaryChatThread(threadId)) {
+    temporaryChatSessionIds.add(id);
+    return id;
+  }
+  const db = getDb();
   db.prepare(
     `INSERT INTO chat_sessions
      (id, thread_id, repo_id, persona_id, provider_thread_id, provider, started_at)
@@ -754,6 +876,11 @@ export function getChatThreadProviderBinding(
   threadId: string | null | undefined,
 ): { providerThreadId: string; provider: AgentProvider } | null {
   if (!threadId) return null;
+  const temporary = temporaryChats.get(threadId);
+  if (temporary?.thread.providerThreadId) {
+    return { providerThreadId: temporary.thread.providerThreadId, provider: 'codex' };
+  }
+  if (temporaryChatThreadIds.has(threadId)) return null;
   const row = getDb()
     .prepare('SELECT provider_thread_id, provider_thread_provider FROM chat_threads WHERE id = ?')
     .get(threadId) as
@@ -780,6 +907,13 @@ export function setChatThreadProviderThreadId(
   providerThreadId: string,
   provider: AgentProvider = 'codex',
 ): void {
+  const temporary = temporaryChats.get(threadId);
+  if (temporary) {
+    temporary.thread.providerThreadId = providerThreadId;
+    temporary.thread.updatedAt = new Date().toISOString();
+    return;
+  }
+  if (temporaryChatThreadIds.has(threadId)) return;
   getDb()
     .prepare(
       `UPDATE chat_threads
@@ -793,12 +927,14 @@ export function setChatSessionProviderTurnId(
   sessionId: string,
   providerTurnId: string | null,
 ): void {
+  if (temporaryChatSessionIds.has(sessionId)) return;
   getDb()
     .prepare('UPDATE chat_sessions SET provider_turn_id = ? WHERE id = ?')
     .run(providerTurnId, sessionId);
 }
 
 export function endChatSession(sessionId: string): void {
+  if (temporaryChatSessionIds.has(sessionId)) return;
   const db = getDb();
   db.prepare(`UPDATE chat_sessions SET ended_at = datetime('now') WHERE id = ?`).run(sessionId);
 }
@@ -809,6 +945,7 @@ export function saveChatEntry(
   sessionId: string | null,
   entry: ChatMessage,
 ): void {
+  if (appendTemporaryChatMessage(threadId, entry)) return;
   const db = getDb();
   db.prepare(
     `INSERT OR REPLACE INTO chat_messages
@@ -871,6 +1008,9 @@ export function saveChatEntry(
 }
 
 export function loadChatHistory(threadId: string): ChatMessage[] {
+  const temporary = temporaryChats.get(threadId);
+  if (temporary) return [...temporary.history];
+  if (temporaryChatThreadIds.has(threadId)) return [];
   const db = getDb();
   const rows = db
     .prepare(
@@ -927,6 +1067,16 @@ function parseChatEvent(value: string | null): ChatMessage['event'] {
 }
 
 export function clearChatHistory(threadId: string): void {
+  const temporary = temporaryChats.get(threadId);
+  if (temporary) {
+    temporary.history = [];
+    temporary.thread.messageCount = 0;
+    temporary.thread.preview = undefined;
+    temporary.thread.lastMessageAt = undefined;
+    temporary.thread.updatedAt = new Date().toISOString();
+    return;
+  }
+  if (temporaryChatThreadIds.has(threadId)) return;
   const db = getDb();
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM chat_messages WHERE thread_id = ?').run(threadId);

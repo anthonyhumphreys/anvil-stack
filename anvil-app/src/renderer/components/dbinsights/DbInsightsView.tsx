@@ -35,6 +35,19 @@ const CATEGORY_LABELS: Record<DbInsightArtifactCategory, string> = {
   other: 'Other',
 };
 
+const TECHNOLOGY_LABELS: Record<NonNullable<DbInsightAnalysis['structure']>['technology'], string> =
+  {
+    'sql-server': 'SQL Server',
+    postgresql: 'PostgreSQL',
+    mysql: 'MySQL',
+    sqlite: 'SQLite',
+    sql: 'SQL, dialect unknown',
+    mongodb: 'MongoDB',
+    dynamodb: 'DynamoDB',
+    redis: 'Redis',
+    unknown: 'Unknown database',
+  };
+
 function formatTimestamp(value?: string): string {
   if (!value) return 'Not run yet';
   return new Date(value).toLocaleString();
@@ -135,14 +148,37 @@ export function DbInsightsView() {
     }
   }, [workspaceId]);
 
-  const stats = useMemo(
-    () => [
+  const stats = useMemo(() => {
+    const structure = analysis?.structure;
+    if (structure?.technology === 'mongodb' || structure?.technology === 'dynamodb') {
+      return [
+        {
+          label: structure.technology === 'mongodb' ? 'Collections' : 'Export files',
+          value: structure.entityCount,
+        },
+        { label: 'Exported records', value: structure.recordCount ?? 0 },
+        { label: 'Entities shown', value: structure.entities.length },
+        { label: 'Database', value: TECHNOLOGY_LABELS[structure.technology] },
+      ];
+    }
+    if (structure?.technology === 'redis') {
+      return [
+        { label: 'Key patterns', value: structure.entityCount },
+        { label: 'Observed keys', value: structure.keyCount ?? 0 },
+        { label: 'Patterns shown', value: structure.entities.length },
+        { label: 'Database', value: TECHNOLOGY_LABELS.redis },
+      ];
+    }
+    return [
       { label: 'Tables', value: analysis?.tableCount ?? 0 },
       { label: 'Stored Procs', value: analysis?.procedureCount ?? 0 },
       { label: 'Views', value: analysis?.viewCount ?? 0 },
       { label: 'Functions', value: analysis?.functionCount ?? 0 },
-    ],
-    [analysis],
+    ];
+  }, [analysis]);
+
+  const isDocumentOrKeyValue = ['mongodb', 'dynamodb', 'redis'].includes(
+    analysis?.structure?.technology ?? '',
   );
 
   if (!workspaceId) {
@@ -158,7 +194,7 @@ export function DbInsightsView() {
       <ViewHeader
         icon={Database}
         title="DB Insights"
-        description="Import database exports, analyse their structure, and bring the resulting context into Chat."
+        description="Import SQL, MongoDB, DynamoDB, or Redis exports, analyse their structure, and bring the resulting context into Chat."
         actions={
           <>
             <button
@@ -185,11 +221,15 @@ export function DbInsightsView() {
           <div className="border-b border-border-subtle pb-4">
             <h2 className="text-sm font-semibold text-text-primary">Getting started</h2>
             <ol className="mt-3 space-y-2 text-sm leading-relaxed text-text-secondary">
-              <li>1. Export schema and stored procedure scripts from SSMS as `.sql` files.</li>
+              <li>1. Add SQL DDL, MongoDB or DynamoDB JSON exports, or Redis key/type output.</li>
               <li>2. Add those exports here.</li>
-              <li>3. Run Analyse to build a workspace-level schema summary.</li>
+              <li>3. Run Analyse to build a workspace-level structure summary.</li>
               <li>4. Switch to Chat and choose the `DB Expert` persona.</li>
             </ol>
+            <p className="mt-3 text-xs leading-relaxed text-text-tertiary">
+              Files are limited to 5 MB each and 20 MB per analysis. JSON record values are not
+              shown in the analysis.
+            </p>
           </div>
 
           <div className="mt-4">
@@ -242,7 +282,7 @@ export function DbInsightsView() {
                   icon={FileUp}
                   compact
                   title="Add database exports"
-                  description="Import schema or stored procedure files to begin an analysis."
+                  description="Import a supported database export to begin an analysis."
                 />
               )}
 
@@ -282,9 +322,11 @@ export function DbInsightsView() {
                   Latest Analysis
                 </div>
                 <div className="mt-1 text-sm text-text-tertiary">
-                  {analysis?.databaseName
-                    ? `Database: ${analysis.databaseName}`
-                    : 'Database name not detected from the exports.'}
+                  {analysis?.structure
+                    ? `Technology: ${TECHNOLOGY_LABELS[analysis.structure.technology]}`
+                    : analysis?.databaseName
+                      ? `Database: ${analysis.databaseName}`
+                      : 'Database name not detected from the exports.'}
                 </div>
               </div>
               <div className="text-right text-xs text-text-tertiary">
@@ -296,7 +338,7 @@ export function DbInsightsView() {
             {running && (
               <div className="mt-4 flex items-center gap-2 rounded-xl border border-info/30 bg-info/10 px-3 py-2 text-sm text-text-primary">
                 <Loader2 size={16} className="animate-spin text-info" />
-                Analysing exported SQL artefacts. This can take a minute.
+                Analysing exported database structure. This can take a minute.
               </div>
             )}
 
@@ -304,85 +346,147 @@ export function DbInsightsView() {
               <>
                 <p className="mt-4 text-sm leading-7 text-text-secondary">{analysis.summary}</p>
 
-                <div className="mt-5 grid gap-4 xl:grid-cols-2">
-                  <section className="rounded-2xl border border-border bg-bg-primary/40 p-4">
-                    <h3 className="text-sm font-semibold text-text-primary">Key Tables</h3>
-                    <div className="mt-3 space-y-3">
-                      {analysis.tables.map((table) => (
-                        <div key={table.qualifiedName} className="rounded-xl bg-bg-elevated/70 p-3">
-                          <div className="font-mono text-sm text-text-primary">
-                            {table.qualifiedName}
-                          </div>
-                          <div className="mt-1 text-xs text-text-tertiary">
-                            {table.columnCount} columns
-                            {table.keyColumns.length > 0
-                              ? ` • Keys: ${table.keyColumns.join(', ')}`
-                              : ''}
-                          </div>
-                          {table.notes && (
-                            <div className="mt-2 text-sm text-text-secondary">{table.notes}</div>
-                          )}
-                        </div>
-                      ))}
-                      {analysis.tables.length === 0 && (
-                        <div className="text-sm text-text-tertiary">No table insights yet.</div>
-                      )}
-                    </div>
-                  </section>
-
-                  <section className="rounded-2xl border border-border bg-bg-primary/40 p-4">
-                    <h3 className="text-sm font-semibold text-text-primary">
-                      Key Stored Procedures
-                    </h3>
-                    <div className="mt-3 space-y-3">
-                      {analysis.storedProcedures.map((procedure) => (
-                        <div
-                          key={procedure.qualifiedName}
-                          className="rounded-xl bg-bg-elevated/70 p-3"
-                        >
-                          <div className="font-mono text-sm text-text-primary">
-                            {procedure.qualifiedName}
-                          </div>
-                          {procedure.purpose && (
-                            <div className="mt-1 text-sm text-text-secondary">
-                              {procedure.purpose}
+                {analysis.structure &&
+                  (isDocumentOrKeyValue || analysis.structure.entities.length > 0) && (
+                    <section className="mt-5 rounded-2xl border border-border bg-bg-primary/40 p-4">
+                      <h3 className="text-sm font-semibold text-text-primary">
+                        {isDocumentOrKeyValue ? 'Export structure' : 'Detected structure'}
+                      </h3>
+                      <div className="mt-3 space-y-3">
+                        {analysis.structure.entities.map((entity) => (
+                          <div
+                            key={`${entity.kind}:${entity.name}`}
+                            className="rounded-xl bg-bg-elevated/70 p-3"
+                          >
+                            <div className="flex flex-wrap items-baseline justify-between gap-2">
+                              <span className="font-mono text-sm text-text-primary">
+                                {entity.name}
+                              </span>
+                              <span className="text-xs text-text-tertiary">{entity.kind}</span>
                             </div>
-                          )}
-                          <div className="mt-2 text-xs text-text-tertiary">
-                            {procedure.referencedObjects.length > 0
-                              ? `Touches: ${procedure.referencedObjects.join(', ')}`
-                              : 'No referenced objects detected from the body.'}
+                            <div className="mt-1 text-xs text-text-tertiary">
+                              {entity.fieldCount} fields
+                              {entity.recordCount !== undefined
+                                ? ` · ${entity.recordCount} exported records`
+                                : ''}
+                              {entity.keyCount !== undefined
+                                ? ` · ${entity.keyCount} observed keys`
+                                : ''}
+                            </div>
+                            {entity.fields.length > 0 && (
+                              <div className="mt-2 break-words text-xs leading-relaxed text-text-secondary">
+                                {entity.fields.join(', ')}
+                              </div>
+                            )}
+                            {entity.notes && (
+                              <p className="mt-2 text-xs text-text-tertiary">{entity.notes}</p>
+                            )}
                           </div>
-                        </div>
-                      ))}
-                      {analysis.storedProcedures.length === 0 && (
-                        <div className="text-sm text-text-tertiary">
-                          No stored procedure insights yet.
-                        </div>
+                        ))}
+                        {analysis.structure.entities.length === 0 && (
+                          <p className="text-sm text-text-tertiary">
+                            No structure could be extracted.
+                          </p>
+                        )}
+                      </div>
+                      {analysis.structure.limitations.length > 0 && (
+                        <ul className="mt-4 space-y-1 text-xs leading-relaxed text-text-tertiary">
+                          {analysis.structure.limitations.map((limitation) => (
+                            <li key={limitation}>{limitation}</li>
+                          ))}
+                        </ul>
                       )}
-                    </div>
-                  </section>
-                </div>
+                    </section>
+                  )}
 
-                <div className="mt-5 grid gap-4 xl:grid-cols-3">
-                  <section className="rounded-2xl border border-border bg-bg-primary/40 p-4">
-                    <h3 className="text-sm font-semibold text-text-primary">Relationships</h3>
-                    <div className="mt-3 space-y-2 text-sm text-text-secondary">
-                      {analysis.relationships.map((relationship) => (
-                        <div
-                          key={relationship}
-                          className="rounded-lg bg-bg-elevated/70 px-3 py-2 font-mono text-xs"
-                        >
-                          {relationship}
-                        </div>
-                      ))}
-                      {analysis.relationships.length === 0 && (
-                        <div className="text-sm text-text-tertiary">
-                          No explicit foreign-key relationships were detected.
-                        </div>
-                      )}
-                    </div>
-                  </section>
+                {!isDocumentOrKeyValue && (
+                  <div className="mt-5 grid gap-4 xl:grid-cols-2">
+                    <section className="rounded-2xl border border-border bg-bg-primary/40 p-4">
+                      <h3 className="text-sm font-semibold text-text-primary">Key Tables</h3>
+                      <div className="mt-3 space-y-3">
+                        {analysis.tables.map((table) => (
+                          <div
+                            key={table.qualifiedName}
+                            className="rounded-xl bg-bg-elevated/70 p-3"
+                          >
+                            <div className="font-mono text-sm text-text-primary">
+                              {table.qualifiedName}
+                            </div>
+                            <div className="mt-1 text-xs text-text-tertiary">
+                              {table.columnCount} columns
+                              {table.keyColumns.length > 0
+                                ? ` • Keys: ${table.keyColumns.join(', ')}`
+                                : ''}
+                            </div>
+                            {table.notes && (
+                              <div className="mt-2 text-sm text-text-secondary">{table.notes}</div>
+                            )}
+                          </div>
+                        ))}
+                        {analysis.tables.length === 0 && (
+                          <div className="text-sm text-text-tertiary">No table insights yet.</div>
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl border border-border bg-bg-primary/40 p-4">
+                      <h3 className="text-sm font-semibold text-text-primary">
+                        Key Stored Procedures
+                      </h3>
+                      <div className="mt-3 space-y-3">
+                        {analysis.storedProcedures.map((procedure) => (
+                          <div
+                            key={procedure.qualifiedName}
+                            className="rounded-xl bg-bg-elevated/70 p-3"
+                          >
+                            <div className="font-mono text-sm text-text-primary">
+                              {procedure.qualifiedName}
+                            </div>
+                            {procedure.purpose && (
+                              <div className="mt-1 text-sm text-text-secondary">
+                                {procedure.purpose}
+                              </div>
+                            )}
+                            <div className="mt-2 text-xs text-text-tertiary">
+                              {procedure.referencedObjects.length > 0
+                                ? `Touches: ${procedure.referencedObjects.join(', ')}`
+                                : 'No referenced objects detected from the body.'}
+                            </div>
+                          </div>
+                        ))}
+                        {analysis.storedProcedures.length === 0 && (
+                          <div className="text-sm text-text-tertiary">
+                            No stored procedure insights yet.
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                <div
+                  className={`mt-5 grid gap-4 ${isDocumentOrKeyValue ? 'xl:grid-cols-2' : 'xl:grid-cols-3'}`}
+                >
+                  {!isDocumentOrKeyValue && (
+                    <section className="rounded-2xl border border-border bg-bg-primary/40 p-4">
+                      <h3 className="text-sm font-semibold text-text-primary">Relationships</h3>
+                      <div className="mt-3 space-y-2 text-sm text-text-secondary">
+                        {analysis.relationships.map((relationship) => (
+                          <div
+                            key={relationship}
+                            className="rounded-lg bg-bg-elevated/70 px-3 py-2 font-mono text-xs"
+                          >
+                            {relationship}
+                          </div>
+                        ))}
+                        {analysis.relationships.length === 0 && (
+                          <div className="text-sm text-text-tertiary">
+                            No explicit foreign-key relationships were detected.
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  )}
 
                   <section className="rounded-2xl border border-border bg-bg-primary/40 p-4">
                     <h3 className="text-sm font-semibold text-text-primary">Risks & Watchpoints</h3>
@@ -428,7 +532,7 @@ export function DbInsightsView() {
               <div className="mt-4 rounded-2xl border border-dashed border-border p-8 text-center">
                 <Database size={28} className="mx-auto text-text-tertiary" />
                 <p className="mt-3 text-sm text-text-secondary">
-                  Add exported SQL files and run Analyse to generate a schema summary for this
+                  Add database exports and run Analyse to generate a structure summary for this
                   workspace.
                 </p>
               </div>

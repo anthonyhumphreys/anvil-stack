@@ -4,6 +4,8 @@ import {
   buildCommandPaletteOptionId,
   buildNewChatThreadCommandMetadata,
   buildToggleChatLayoutCommandMetadata,
+  filterCommandPaletteCommands,
+  groupPaletteCommands,
   looksLikeChatPrompt,
 } from '../CommandPalette';
 
@@ -71,5 +73,50 @@ describe('buildCommandPaletteOptionId', () => {
     expect(buildCommandPaletteOptionId('prompt:review/current diff')).toBe(
       'command-palette-option-prompt-review-current-diff',
     );
+  });
+});
+
+describe('filterCommandPaletteCommands', () => {
+  const threads = Array.from({ length: 12 }, (_, index) => ({
+    id: `thread-${index}`,
+    label: `Jump to thread: Conversation ${index + 1}`,
+    section: 'Threads',
+    recent: index < 10,
+  }));
+
+  it('searches matching threads beyond the recent empty-query list', () => {
+    expect(filterCommandPaletteCommands(threads, 'Conversation 12').map((item) => item.id)).toEqual(
+      ['thread-11'],
+    );
+  });
+
+  it('shows only the eight most recent active threads when the query is empty', () => {
+    expect(filterCommandPaletteCommands(threads, '').map((item) => item.id)).toEqual(
+      threads.slice(0, 8).map((item) => item.id),
+    );
+  });
+});
+
+describe('groupPaletteCommands', () => {
+  it('returns one keyboard order that matches section rendering for repeated sections', () => {
+    const commands = [
+      { id: 'workspace-open', section: 'Workspace' },
+      { id: 'thread-recent', section: 'Threads' },
+      { id: 'workspace-activity', section: 'Workspace' },
+    ];
+
+    const groups = groupPaletteCommands(commands);
+    expect(groups).toEqual([
+      {
+        section: 'Workspace',
+        items: [commands[0], commands[2]],
+      },
+      { section: 'Threads', items: [commands[1]] },
+    ]);
+    expect(groups.flatMap((group) => group.items).map((item) => item.id)).toEqual([
+      'workspace-open',
+      'workspace-activity',
+      'thread-recent',
+    ]);
   });
 });

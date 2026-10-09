@@ -154,6 +154,7 @@ interface ChatInputProps {
   leadingControls?: ReactNode;
   prefill?: { id: string; text: string; attachments?: ChatAttachment[] } | null;
   draftKey?: string;
+  allowAttachments?: boolean;
   mentionRepoIds?: string[];
   quickPrompts?: ChatQuickPrompt[];
   slashCommands?: ChatSlashCommand[];
@@ -206,6 +207,7 @@ export function ChatInput({
   leadingControls,
   prefill,
   draftKey,
+  allowAttachments = true,
   mentionRepoIds = [],
   quickPrompts = [],
   slashCommands = [],
@@ -645,6 +647,10 @@ export function ChatInput({
   const addFiles = useCallback(
     async (files: File[]) => {
       if (disabled || files.length === 0) return;
+      if (!allowAttachments) {
+        setAttachmentError('Files are not available in temporary chats.');
+        return;
+      }
 
       const remainingSlots = MAX_ATTACHMENT_COUNT - attachments.length;
       if (remainingSlots <= 0) {
@@ -675,7 +681,7 @@ export function ChatInput({
         setPreparingAttachments(false);
       }
     },
-    [attachments.length, disabled, markDraftChanged],
+    [allowAttachments, attachments.length, disabled, markDraftChanged],
   );
 
   const handlePaste = useCallback(
@@ -690,6 +696,10 @@ export function ChatInput({
 
   const handleSelectAttachments = useCallback(async () => {
     if (disabled) return;
+    if (!allowAttachments) {
+      setAttachmentError('Files are not available in temporary chats.');
+      return;
+    }
     const remainingSlots = MAX_ATTACHMENT_COUNT - attachments.length;
     if (remainingSlots <= 0) {
       setAttachmentError(`Attach up to ${MAX_ATTACHMENT_COUNT} files at a time.`);
@@ -710,7 +720,7 @@ export function ChatInput({
     } finally {
       setPreparingAttachments(false);
     }
-  }, [attachments.length, disabled, markDraftChanged]);
+  }, [allowAttachments, attachments.length, disabled, markDraftChanged]);
 
   const removeAttachment = useCallback(
     (attachmentId: string) => {
@@ -727,7 +737,7 @@ export function ChatInput({
 
   const handleSelectFileMention = useCallback(
     async (result: ChatFileMentionSearchResult) => {
-      if (disabled || preparingAttachments || !fileMention) return;
+      if (!allowAttachments || disabled || preparingAttachments || !fileMention) return;
       if (attachments.length >= MAX_ATTACHMENT_COUNT) {
         setAttachmentError(`Attach up to ${MAX_ATTACHMENT_COUNT} files at a time.`);
         return;
@@ -770,6 +780,7 @@ export function ChatInput({
     },
     [
       attachments.length,
+      allowAttachments,
       disabled,
       fileMention,
       mentionRepoIds.length,
@@ -964,20 +975,21 @@ export function ChatInput({
 
   const handleDragEnter = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (disabled || !event.dataTransfer.types.includes('Files')) return;
+      if (!event.dataTransfer.types.includes('Files')) return;
       event.preventDefault();
+      if (!allowAttachments || disabled) return;
       setDragDepth((prev) => prev + 1);
     },
-    [disabled],
+    [allowAttachments, disabled],
   );
 
   const handleDragOver = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (disabled || !event.dataTransfer.types.includes('Files')) return;
+      if (!event.dataTransfer.types.includes('Files')) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = 'copy';
+      event.dataTransfer.dropEffect = allowAttachments && !disabled ? 'copy' : 'none';
     },
-    [disabled],
+    [allowAttachments, disabled],
   );
 
   const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
@@ -987,12 +999,17 @@ export function ChatInput({
 
   const handleDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (disabled || !event.dataTransfer.types.includes('Files')) return;
+      if (!event.dataTransfer.types.includes('Files')) return;
       event.preventDefault();
       setDragDepth(0);
+      if (!allowAttachments) {
+        setAttachmentError('Files are not available in temporary chats.');
+        return;
+      }
+      if (disabled) return;
       void addFiles(Array.from(event.dataTransfer.files));
     },
-    [addFiles, disabled],
+    [addFiles, allowAttachments, disabled],
   );
 
   useEffect(() => {
@@ -1042,7 +1059,7 @@ export function ChatInput({
     markDraftChanged();
     setStandardFeedback(null);
     setValue((prev) => appendComposerPrefill(prev, prefill.text));
-    if (prefill.attachments?.length) {
+    if (allowAttachments && prefill.attachments?.length) {
       const current = attachmentsRef.current;
       const next = mergeAttachments(current, prefill.attachments);
       const uniqueIncoming = prefill.attachments.filter(
@@ -1064,7 +1081,14 @@ export function ChatInput({
       resizeTextarea();
       el.setSelectionRange(el.value.length, el.value.length);
     }, 0);
-  }, [markDraftChanged, prefill, resizeTextarea]);
+  }, [allowAttachments, markDraftChanged, prefill, resizeTextarea]);
+
+  useEffect(() => {
+    if (allowAttachments) return;
+    attachmentsRef.current = [];
+    setAttachments([]);
+    setAttachmentPreviews({});
+  }, [allowAttachments]);
 
   useEffect(() => {
     if (disabled || !fileMention || mentionRepoIds.length === 0) {
@@ -1332,7 +1356,9 @@ export function ChatInput({
                     : 'Follow-up sending is unavailable for this session...'
               : disabled
                 ? 'Chat is not ready yet...'
-                : mentionRepoIds.length > 0
+                : !allowAttachments
+                  ? 'Ask anything in this text-only temporary chat...'
+                  : mentionRepoIds.length > 0
                   ? 'Ask anything, or type /, @, or $...'
                   : 'Ask anything, paste images, or drop files here...'
           }
@@ -1342,7 +1368,7 @@ export function ChatInput({
         <ChatComposerFooter compact={compactFooter}>
           <div className="flex min-w-0 flex-wrap items-center gap-1">
             {leadingControls}
-            <button
+            {allowAttachments && <button
               type="button"
               onClick={() => void handleSelectAttachments()}
               disabled={disabled || preparingAttachments}
@@ -1356,7 +1382,7 @@ export function ChatInput({
               ) : (
                 <Paperclip size={15} />
               )}
-            </button>
+            </button>}
 
             {contextControls && (
               <div ref={contextMenuRef} className="relative">

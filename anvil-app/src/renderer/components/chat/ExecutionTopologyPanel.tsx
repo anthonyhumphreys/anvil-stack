@@ -15,6 +15,8 @@ import type {
   ExecutionTopologyNode,
   ExecutionTopologyNodeStatus,
 } from '../../utils/execution-topology';
+import { summarizeAgentWork } from '../../utils/execution-topology';
+import { summarizePromptTitle } from '../../utils/thread-display-title';
 
 interface ExecutionTopologyPanelProps {
   topology: ExecutionTopology;
@@ -56,7 +58,7 @@ export function ExecutionTopologyPanel({
   if (!root || !coordinator) return null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="shrink-0 border-b border-border-subtle">
         <div className="flex items-center justify-between gap-3 px-3 py-2.5">
           <div>
@@ -113,13 +115,18 @@ export function ExecutionTopologyPanel({
         )}
         <div className="flex items-start gap-2 border-t border-border-subtle/70 px-3 py-2.5">
           <span className="shrink-0 pt-0.5 text-xs font-medium text-text-muted">Task</span>
-          <p className="line-clamp-2 text-xs leading-relaxed text-text-primary">
-            {root.prompt ?? root.label}
+          <p
+            className="line-clamp-2 break-words text-xs leading-relaxed text-text-primary"
+            title={root.prompt ?? root.label}
+          >
+            {root.appThreadId
+              ? root.threadSummary || root.prompt || root.label
+              : root.prompt || root.label}
           </p>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         <FanoutMap
           coordinator={coordinator}
           delegates={topLevelDelegates}
@@ -187,7 +194,7 @@ function FanoutMap({
   const canvasWidth = Math.max(300, delegates.length * 74);
 
   return (
-    <div className="overflow-x-auto px-2" aria-label="Agent topology">
+    <div className="min-w-0 overflow-x-auto px-2" aria-label="Agent topology">
       <div
         className="relative h-[142px] w-full"
         style={{ minWidth: `${canvasWidth}px` }}
@@ -225,7 +232,10 @@ function FanoutMap({
           <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-primary text-text-secondary">
             <StatusIcon status={coordinator.status} kind={coordinator.kind} />
           </div>
-          <span className="mt-1 max-w-24 truncate text-xs font-medium text-text-secondary">
+          <span
+            className="mt-1 max-w-24 truncate text-center text-xs font-medium text-text-secondary"
+            title={coordinator.label}
+          >
             {coordinator.label}
           </span>
         </div>
@@ -253,9 +263,10 @@ function FanoutMap({
                 <StatusIcon status={node.status} kind={node.kind} />
               </span>
               <span
-                className={`mt-1 w-full truncate text-xs ${
+                className={`mt-1 w-full truncate text-center text-xs ${
                   selected ? 'font-medium text-text-primary' : 'text-text-tertiary'
                 }`}
+                title={node.label}
               >
                 {node.label}
               </span>
@@ -287,25 +298,24 @@ function AgentRow({
       <button
         type="button"
         onClick={onSelect}
-        className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
+        className={`flex w-full min-w-0 items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
           selected ? 'bg-bg-tertiary/65' : ''
         }`}
         aria-expanded={selected}
       >
-        <StatusIcon status={node.status} kind={node.kind} />
+        <span className="shrink-0 pt-0.5">
+          <StatusIcon status={node.status} kind={node.kind} />
+        </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-medium text-text-primary">{node.label}</span>
-          <span className="mt-0.5 block line-clamp-2 text-xs leading-5 text-text-secondary">
-            <span className="text-text-muted">Assignment:</span>{' '}
-            {node.prompt ?? 'No assignment details reported'}
+          <span className="block break-words text-xs font-medium text-text-primary">
+            {summarizePromptTitle(node.prompt ?? '') ?? node.label}
           </span>
-          <span className="mt-1 block line-clamp-2 text-xs leading-5 text-text-secondary">
-            <span className="text-text-muted">Latest update:</span>{' '}
-            {node.latestMessage ?? 'No progress message reported'}
+          <span className="mt-0.5 block line-clamp-2 break-words text-xs leading-5 text-text-secondary">
+            {summarizeAgentWork(node.latestMessage ?? node.prompt)}
           </span>
           {delegatorLabel && (
-            <span className="mt-1 block truncate text-xs text-text-tertiary">
-              Delegated by {delegatorLabel}
+            <span className="mt-1 block text-xs text-text-tertiary">
+              <span className="break-words">Delegated by {delegatorLabel}</span>
             </span>
           )}
         </span>
@@ -315,28 +325,32 @@ function AgentRow({
       </button>
 
       {selected && (
-        <div className="bg-bg-primary/35 px-8 pb-3 pt-1">
+        <div className="min-w-0 bg-bg-primary/35 px-8 pb-3 pt-1">
           <div>
             <p className="text-xs font-medium text-text-muted">Assignment</p>
-            <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+            <p className="mt-1 break-words text-xs leading-relaxed text-text-secondary">
               {node.prompt ?? 'No assignment details were reported.'}
             </p>
           </div>
           <div className="mt-2.5">
             <p className="text-xs font-medium text-text-muted">Latest update</p>
-            <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+            <p className="mt-1 break-words text-xs leading-relaxed text-text-secondary">
               {node.latestMessage ?? 'No progress message has been reported.'}
             </p>
           </div>
           <div className="mt-2.5">
             <p className="text-xs font-medium text-text-muted">Last observed activity</p>
-            <p className="mt-1 text-xs leading-relaxed text-text-secondary">{node.detail}</p>
+            <p className="mt-1 break-words text-xs leading-relaxed text-text-secondary">
+              {node.detail}
+            </p>
           </div>
           {delegatorLabel && (
-            <p className="mt-2.5 text-xs text-text-tertiary">Delegated by {delegatorLabel}</p>
+            <p className="mt-2.5 break-words text-xs text-text-tertiary">
+              Delegated by {delegatorLabel}
+            </p>
           )}
           {(node.model || node.reasoningEffort) && (
-            <p className="mt-2.5 font-mono text-xs text-text-muted">
+            <p className="mt-2.5 break-all font-mono text-xs text-text-muted">
               {[node.model, node.reasoningEffort].filter(Boolean).join(' · ')}
             </p>
           )}

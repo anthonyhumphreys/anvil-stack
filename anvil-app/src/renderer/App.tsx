@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useState, useCallback, type ReactNode } from 'react';
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { AppRouter } from './components/layout/AppRouter';
 import { Shell } from './components/layout/Shell';
 import { ErrorBoundary } from './components/layout/ErrorBoundary';
 import { SplashScreen } from './components/brand/SplashScreen';
-import { ChatProvider } from './contexts/ChatContext';
+import { ChatProvider, useChatContext } from './contexts/ChatContext';
 import { BrandProvider } from './contexts/BrandContext';
 import { getBrand, getBuildBrandId } from '../shared/branding';
 import { WorkspaceProvider, useWorkspace } from './contexts/WorkspaceContext';
@@ -181,6 +181,27 @@ function DefaultRedirect() {
     (summary) => summary.count > 0 && (summary.status === 'warning' || summary.status === 'error'),
   );
   return <Navigate to={!isNewUser && hasPendingAttention ? '/inbox' : '/chat'} replace />;
+}
+
+function ChatRoute({ userRole }: { userRole: UserRole }) {
+  const [searchParams] = useSearchParams();
+  const temporary = searchParams.get('temporary') === '1';
+  const { isTemporaryChat, resumeTemporaryChat, showWorkspaceChat } = useChatContext();
+
+  useEffect(() => {
+    if (temporary) {
+      if (!isTemporaryChat) void resumeTemporaryChat();
+    } else if (isTemporaryChat) {
+      showWorkspaceChat();
+    }
+  }, [isTemporaryChat, resumeTemporaryChat, showWorkspaceChat, temporary]);
+
+  const view = (
+    <ErrorBoundary>
+      <ChatView userRole={userRole} />
+    </ErrorBoundary>
+  );
+  return temporary ? view : <WorkspaceGate>{view}</WorkspaceGate>;
 }
 
 function LaunchIntentRouter() {
@@ -495,14 +516,7 @@ function AppContent() {
                     />
                     <Route
                       path="/chat"
-                      element={guard(
-                        'chat',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <ChatView userRole={userRole} />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
+                      element={guard('chat', <ChatRoute userRole={userRole} />)}
                     />
                     <Route
                       path="/db-insights"

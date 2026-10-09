@@ -64,6 +64,7 @@ import {
   MAX_PINNED_NAV_TOOLS,
   navItemGateReason,
   readPinnedNavTools,
+  SIDEBAR_FOOTER_NAV_ITEMS,
   togglePinnedNavTool,
   writePinnedNavTools,
   type SidebarNavItemDefinition,
@@ -96,6 +97,8 @@ const NAV_ICONS: Record<string, ReactNode> = {
   '/argent': <MonitorSmartphone size={18} />,
   '/git': <GitBranch size={18} />,
   '/compliance': <Scale size={18} />,
+  '/settings': <Settings size={18} />,
+  '/diagnostics': <Activity size={18} />,
 };
 
 interface NavContextMenuState {
@@ -341,7 +344,11 @@ export function Sidebar({
                   compact={compact}
                   featureAvailability={featureAvailability}
                   indicator={
-                    item.path === '/inbox' ? inboxIndicator : activityIndicators[item.feature]
+                    item.path === '/inbox'
+                      ? inboxIndicator
+                      : item.feature
+                        ? activityIndicators[item.feature]
+                        : undefined
                   }
                   onNavigate={navigate}
                   onOpenInNewWindow={openToolWindow}
@@ -359,7 +366,7 @@ export function Sidebar({
                       active={isSidebarNavItemActive(location.pathname, item)}
                       compact={compact}
                       featureAvailability={featureAvailability}
-                      indicator={activityIndicators[item.feature]}
+                      indicator={item.feature ? activityIndicators[item.feature] : undefined}
                       onNavigate={navigate}
                       onOpenInNewWindow={openToolWindow}
                       onContextMenu={openNavContextMenu}
@@ -423,7 +430,7 @@ export function Sidebar({
                           active={isSidebarNavItemActive(location.pathname, item)}
                           compact={false}
                           featureAvailability={featureAvailability}
-                          indicator={activityIndicators[item.feature]}
+                          indicator={item.feature ? activityIndicators[item.feature] : undefined}
                           onNavigate={navigate}
                           onOpenInNewWindow={openToolWindow}
                           onContextMenu={openNavContextMenu}
@@ -482,7 +489,9 @@ export function Sidebar({
                                 active={isSidebarNavItemActive(location.pathname, item)}
                                 compact={false}
                                 featureAvailability={featureAvailability}
-                                indicator={activityIndicators[item.feature]}
+                                indicator={
+                                  item.feature ? activityIndicators[item.feature] : undefined
+                                }
                                 onNavigate={navigate}
                                 onOpenInNewWindow={openToolWindow}
                                 onContextMenu={openNavContextMenu}
@@ -515,26 +524,19 @@ export function Sidebar({
             {compact ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
             {!compact && <span>Collapse</span>}
           </button>
-          <SidebarFooterButton
-            path="/settings"
-            label="Settings"
-            icon={<Settings size={16} />}
-            compact={compact}
-            active={location.pathname.startsWith('/settings')}
-            onNavigate={navigate}
-            onOpenInNewWindow={openToolWindow}
-            className="mt-2"
-          />
-          <SidebarFooterButton
-            path="/diagnostics"
-            label="Diagnostics"
-            icon={<Activity size={16} />}
-            compact={compact}
-            active={location.pathname.startsWith('/diagnostics')}
-            onNavigate={navigate}
-            onOpenInNewWindow={openToolWindow}
-            className="mt-1"
-          />
+          {SIDEBAR_FOOTER_NAV_ITEMS.map((item) => (
+            <SidebarFooterButton
+              key={item.path}
+              path={item.path}
+              label={item.label}
+              icon={NAV_ICONS[item.path]}
+              compact={compact}
+              active={location.pathname.startsWith(item.path)}
+              onNavigate={navigate}
+              onOpenInNewWindow={openToolWindow}
+              className={item.path === '/settings' ? 'mt-2' : 'mt-1'}
+            />
+          ))}
         </div>
       </div>
       {/* end border wrapper */}

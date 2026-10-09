@@ -1,9 +1,11 @@
-import type { DocPage } from '../../shared/types.js';
+import type { DocPage, LinearDocProject } from '../../shared/types.js';
 import { getSettings } from './settings.service.js';
 import { confluenceProvider } from './confluence.service.js';
 import { notionProvider } from './notion.service.js';
+import { linearDocsProvider } from './linear-docs.service.js';
 
 export interface DocsProviderService {
+  listProjects?(): Promise<LinearDocProject[]>;
   listPages(spaceKeyOrParent?: string): Promise<DocPage[]>;
   listChildren(pageId: string): Promise<DocPage[]>;
   getPageContent(pageId: string): Promise<string>;
@@ -22,6 +24,8 @@ export function getActiveDocsProvider(): DocsProviderService | null {
       return confluenceProvider;
     case 'notion':
       return notionProvider;
+    case 'linear':
+      return linearDocsProvider;
     case 'none':
       return null;
     default:
