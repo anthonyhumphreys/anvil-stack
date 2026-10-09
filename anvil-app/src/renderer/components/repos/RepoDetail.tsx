@@ -111,7 +111,9 @@ export function RepoDetail({
           Map its structure, symbols, and dependencies. Summaries run afterwards in the background.
         </p>
         {lastError && (
-          <p className="mt-3 max-w-sm text-sm text-error">Last attempt failed: {lastError.error}</p>
+          <p className="mt-3 max-w-sm break-words text-sm text-error">
+            Last attempt failed: {lastError.error?.trim() || 'No error details are available.'}
+          </p>
         )}
         <div className="mt-4 flex items-center gap-2">
           <Button variant="primary" size="sm" onClick={onRefreshMap}>
@@ -145,7 +147,9 @@ export function RepoDetail({
                 <h3 className="text-sm font-semibold text-text-primary">
                   Last indexing attempt failed
                 </h3>
-                <p className="mt-1 text-sm text-text-secondary">{lastError.error}</p>
+                <p className="mt-1 break-words text-sm text-text-secondary">
+                  {lastError.error?.trim() || 'No error details are available.'}
+                </p>
               </div>
             </div>
             <Button

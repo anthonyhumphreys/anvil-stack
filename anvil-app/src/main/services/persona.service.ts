@@ -242,6 +242,22 @@ export function buildScaffoldSystemPrompt(personaId: string, rootPath: string): 
   ].join('\n');
 }
 
+export function buildTemporaryChatSystemPrompt(personaId: string): string {
+  const persona = getPersonaById(personaId);
+  if (!persona) throw new Error(`Unknown persona: ${personaId}`);
+  return renderPersonaPrompt(persona, {
+    repoName: 'No repository is attached',
+    primaryLanguage: 'Unknown',
+    architectureDescription:
+      'This is a workspace-less temporary conversation. No repository or workspace files are attached.',
+    conventions:
+      'Do not infer a repository, workspace, project, or local file context. Work from the user conversation and files they explicitly attach.',
+    moduleSummaries: 'No modules are available.',
+    workItems: 'No active work items are linked.',
+    dbInsightsSummary: 'No DB Insights context is attached.',
+  });
+}
+
 /**
  * Build the enriched system prompt for the BA persona, injecting work item context.
  */

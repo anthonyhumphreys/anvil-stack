@@ -57,6 +57,7 @@ import { buildChatModelOptions, type ChatModelOption } from '../utils/chat-model
 import { resolveChatFastModeTarget } from '../utils/chat-fast-mode';
 import { isAcpAgentProvider } from '../../shared/agent-providers';
 import { agentEventLabel } from '../utils/agent-display';
+import { buildEmptyThreadLabel, buildThreadTitle } from '../utils/thread-display-title';
 
 export type ChatEntry =
   | {
@@ -105,6 +106,11 @@ interface ChatContextValue {
   reasoningOptions: ReasoningEffort[];
   threads: ChatThread[];
   activeThread: ChatThread | null;
+  isTemporaryChat: boolean;
+  startTemporaryChat: () => Promise<void>;
+  resumeTemporaryChat: () => Promise<void>;
+  showWorkspaceChat: () => void;
+  endTemporaryChat: () => Promise<void>;
   activeThreadId: string | null;
   /** False only while the selected thread's history is being hydrated. */
   historyReady: boolean;
@@ -230,6 +236,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [activeReposState, setActiveReposState] = useState<RepoInfo[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [temporaryThread, setTemporaryThread] = useState<ChatThread | null>(null);
+  const [isTemporaryChat, setIsTemporaryChat] = useState(false);
   const [historyReady, setHistoryReady] = useState(true);
   const [threadViewSnapshot, setThreadViewSnapshot] = useState<{
     threadId: string;
@@ -275,6 +283,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   chatListScopeRef.current = chatListScope;
 
   const scaffoldModeActive =
+    !isTemporaryChat &&
     !!activeScaffoldSession &&
     activeScaffoldSession.status !== 'completed' &&
     activeScaffoldSession.status !== 'cancelled';
@@ -291,8 +300,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [chatListScope, threads],
   );
   const activeThread = useMemo(
-    () => scopedThreads.find((thread) => thread.id === activeThreadId) ?? null,
-    [scopedThreads, activeThreadId],
+    () =>
+      isTemporaryChat
+        ? temporaryThread
+        : (scopedThreads.find((thread) => thread.id === activeThreadId) ?? null),
+    [isTemporaryChat, temporaryThread, scopedThreads, activeThreadId],
   );
   const activePlanIntent = agentUIIntents.find(
     (intent): intent is AgentUIPlanIntent =>
@@ -441,6 +453,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [discardPendingStreamEntry]);
 
   const applyThreadState = useCallback((thread: ChatThread) => {
+    if (thread.temporary) {
+      setTemporaryThread(thread);
+      return;
+    }
     setThreads((prev) => upsertThreadForChatList(prev, thread, chatListScopeRef.current));
   }, []);
 
@@ -564,7 +580,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const thread = (availableThreads ?? threadsRef.current).find(
         (candidate) => candidate.id === threadId,
       );
-      if (!thread || !threadBelongsToWorkspace(thread, activeWorkspace?.id ?? null)) {
+      if (
+        !thread ||
+        (!thread.temporary && !threadBelongsToWorkspace(thread, activeWorkspace?.id ?? null))
+      ) {
         setHistoryReady(true);
         return;
       }
@@ -579,11 +598,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       let artifacts: ChatArtifact[];
       let intents: AgentUIIntent[];
       try {
-        [history, artifacts, intents] = await Promise.all([
-          window.anvil.chat.loadHistory(threadId),
-          window.anvil.chat.listArtifacts(threadId),
-          window.anvil.chat.listAgentUIIntents(threadId, true),
-        ]);
+        history = await window.anvil.chat.loadHistory(threadId);
+        if (thread.temporary) {
+          artifacts = [];
+          intents = [];
+        } else {
+          [artifacts, intents] = await Promise.all([
+            window.anvil.chat.listArtifacts(threadId),
+            window.anvil.chat.listAgentUIIntents(threadId, true),
+          ]);
+        }
       } catch (err) {
         if (loadVersion === threadLoadVersionRef.current) {
           setError(err instanceof Error ? err.message : 'Could not load this conversation.');
@@ -761,6 +785,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const bumpThreadSummary = useCallback(
     (threadId: string, content: string, timestamp: string, incrementMessageCount = true) => {
+      if (temporaryThread?.id === threadId) {
+        setTemporaryThread((thread) =>
+          thread
+            ? {
+                ...thread,
+                updatedAt: timestamp,
+                lastMessageAt: timestamp,
+                preview: content,
+                messageCount: thread.messageCount + (incrementMessageCount ? 1 : 0),
+              }
+            : null,
+        );
+        return;
+      }
       setThreads((prev) =>
         sortThreads(
           prev.map((thread) =>
@@ -779,11 +817,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ),
       );
     },
-    [],
+    [temporaryThread?.id],
   );
 
   const persistArtifactsForAssistantMessage = useCallback(
     async (threadId: string, repoId: string | null, sourceMessageId: string, content: string) => {
+      if (isTemporaryChat) return;
       const settings = await window.anvil.settings.get().catch(() => null);
       const artifactInputs = extractChatArtifactInputs(content, {
         threadId,
@@ -803,7 +842,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         return sortArtifactsByUpdatedAt(upsertArtifacts(prev, saved));
       });
     },
-    [],
+    [isTemporaryChat],
   );
 
   const persistAssistantForSession = useCallback(
@@ -1237,7 +1276,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [session, activeScaffoldSession?.status]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || isTemporaryChat) return;
 
     const sessionStillMatchesWorkspace =
       session.kind === 'scaffold'
@@ -1249,9 +1288,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (sessionStillMatchesWorkspace) return;
 
     detachLiveSession();
-  }, [activeWorkspace, detachLiveSession, repos, session]);
+  }, [activeWorkspace, detachLiveSession, isTemporaryChat, repos, session]);
 
   useEffect(() => {
+    if (isTemporaryChat) return;
     const knownRepoIds = new Set(repos.map((repo) => repo.id));
     for (const [threadId, liveSession] of Object.entries(liveSessionsByThreadIdRef.current)) {
       const workspaceMatches =
@@ -1268,10 +1308,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       setLiveThreadStatus(threadId, liveSession.status);
     }
-  }, [activeWorkspace, detachLiveSession, repos, setLiveThreadStatus]);
+  }, [activeWorkspace, detachLiveSession, isTemporaryChat, repos, setLiveThreadStatus]);
 
   useEffect(() => {
-    if (personas.length === 0 || scaffoldModeActive) return;
+    if (personas.length === 0 || scaffoldModeActive || isTemporaryChat) return;
     if (chatLayout !== 'classic') return;
 
     let cancelled = false;
@@ -1346,6 +1386,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [
     activeWorkspace?.id,
     chatLayout,
+    isTemporaryChat,
     scaffoldModeActive,
     detachLiveSession,
     loadThreadIntoState,
@@ -1353,7 +1394,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   ]);
 
   useEffect(() => {
-    if (personas.length === 0 || scaffoldModeActive || chatLayout !== 'workitems') return;
+    if (
+      personas.length === 0 ||
+      scaffoldModeActive ||
+      isTemporaryChat ||
+      chatLayout !== 'workitems'
+    )
+      return;
 
     let cancelled = false;
     const requestedWorkspaceId = activeWorkspace?.id ?? null;
@@ -1431,6 +1478,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [
     activeWorkspace?.id,
     chatLayout,
+    isTemporaryChat,
     scaffoldModeActive,
     detachLiveSession,
     loadThreadIntoState,
@@ -1955,10 +2003,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const modelMessage = modelContext
         ? `${modelContext}\n\n${attachmentPrompt}`
         : attachmentPrompt;
-      let nextArtifacts = dbInsightArtifacts;
-      let nextAnalysis = dbInsightAnalysis;
+      let nextArtifacts = isTemporaryChat ? [] : dbInsightArtifacts;
+      let nextAnalysis = isTemporaryChat ? null : dbInsightAnalysis;
 
-      if (activePersona?.id === 'db-expert' && activeWorkspace) {
+      if (activePersona?.id === 'db-expert' && activeWorkspace && !isTemporaryChat) {
         try {
           const [latestArtifacts, latestAnalysis] = await Promise.all([
             window.anvil.dbInsights.listArtifacts(activeWorkspace.id),
@@ -1975,10 +2023,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       if (!activePersona) return false;
 
-      const enriched = buildEnrichedMessage(modelMessage, {
-        artifacts: nextArtifacts,
-        analysis: nextAnalysis,
-      });
+      const enriched = isTemporaryChat
+        ? modelMessage
+        : buildEnrichedMessage(modelMessage, {
+            artifacts: nextArtifacts,
+            analysis: nextAnalysis,
+          });
       const fastModeTarget = resolveChatFastModeTarget(modelProvider, model, modelOptions);
       const turnModel = fastMode && fastModeTarget.available ? fastModeTarget.model : model;
       const serviceTier = fastModeTarget.available
@@ -1989,17 +2039,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       let thread = activeThreadRef.current;
       if (!thread) {
-        thread = await createThreadRecord({
-          title: buildThreadTitle(displayMessage, activePersona.name),
-        });
+        thread = isTemporaryChat
+          ? temporaryThread
+          : await createThreadRecord({
+              title: buildThreadTitle(displayMessage, activePersona.name),
+            });
       }
       if (!thread) return false;
 
       const primaryRepo = activeRepoState ?? activeReposState[0] ?? null;
       const selectedRepoIds = activeReposState.map((repo) => repo.id);
       if (
-        thread.activeRepoId !== (primaryRepo?.id ?? undefined) ||
-        !sameIdList(thread.repoIds, selectedRepoIds)
+        !isTemporaryChat &&
+        (thread.activeRepoId !== (primaryRepo?.id ?? undefined) ||
+          !sameIdList(thread.repoIds, selectedRepoIds))
       ) {
         const updatedThread = await window.anvil.chat.updateThread(thread.id, {
           repoIds: selectedRepoIds,
@@ -2011,7 +2064,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      if (thread.messageCount === 0) {
+      if (!isTemporaryChat && thread.messageCount === 0) {
         const title = buildThreadTitle(displayMessage, activePersona.name);
         if (thread.title !== title) {
           const renamedThread = await window.anvil.chat.updateThread(thread.id, { title });
@@ -2039,26 +2092,40 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         liveOrRenderedSessionForThread?.personaId === activePersona.id
           ? liveOrRenderedSessionForThread
           : null;
+      const providerMessage =
+        isTemporaryChat && !currentSessionForThread
+          ? buildTemporaryHistoryPrompt(entriesRef.current, enriched)
+          : enriched;
 
       if (!currentSessionForThread) {
         let startedSession: CodexSession | null;
         try {
-          const designOptions = buildDesignChatStartOptions(activePersona.id, modelMessage);
-          const workspaceOptions = activeWorkspace
+          const designOptions = isTemporaryChat
+            ? {}
+            : buildDesignChatStartOptions(activePersona.id, modelMessage);
+          const workspaceOptions = isTemporaryChat
             ? {
-                workspace: {
-                  workspaceId: activeWorkspace.id,
-                  ...(activeReposState.length === 0 && workspaceChatCwd
-                    ? { cwd: workspaceChatCwd }
-                    : {}),
-                },
                 threadId: thread.id,
                 provider: modelProvider,
-                ...designOptions,
+                codexMode: 'read-only' as const,
+                temporaryChat: true,
               }
-            : { threadId: thread.id, provider: modelProvider, ...designOptions };
-          startedSession =
-            scaffoldModeActive && activeWorkspace && activeScaffoldSession
+            : activeWorkspace
+              ? {
+                  workspace: {
+                    workspaceId: activeWorkspace.id,
+                    ...(activeReposState.length === 0 && workspaceChatCwd
+                      ? { cwd: workspaceChatCwd }
+                      : {}),
+                  },
+                  threadId: thread.id,
+                  provider: modelProvider,
+                  ...designOptions,
+                }
+              : { threadId: thread.id, provider: modelProvider, ...designOptions };
+          startedSession = isTemporaryChat
+            ? await window.anvil.chat.startSession([], activePersona.id, workspaceOptions)
+            : scaffoldModeActive && activeWorkspace && activeScaffoldSession
               ? await window.anvil.chat.startScaffoldSession(
                   activeWorkspace.id,
                   activeScaffoldSession.rootPath,
@@ -2100,7 +2167,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         // H2 — the provider must accept the message before it is persisted;
         // on rejection the entry stays visible but marked as not sent.
         try {
-          await window.anvil.chat.send(startedSession.id, enriched, attachments, {
+          await window.anvil.chat.send(startedSession.id, providerMessage, attachments, {
             collaborationMode,
             model: turnModel,
             reasoningEffort: reasoningLevel,
@@ -2149,7 +2216,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       // H2 — persist only after the provider accepts the message; on
       // rejection keep the entry rendered but marked as not sent.
       try {
-        await window.anvil.chat.send(currentSessionForThread.id, enriched, attachments, {
+        await window.anvil.chat.send(currentSessionForThread.id, providerMessage, attachments, {
           collaborationMode,
           model: turnModel,
           reasoningEffort: reasoningLevel,
@@ -2193,12 +2260,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       activeReposState,
       activeScaffoldSession,
       activeWorkspace,
+      isTemporaryChat,
       applyThreadState,
       buildEnrichedMessage,
       bumpThreadSummary,
       canStartWorkspaceChat,
       collaborationMode,
       createThreadRecord,
+      temporaryThread,
       dbInsightArtifacts,
       dbInsightAnalysis,
       findThreadIdForSession,
@@ -2224,7 +2293,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       const displayMessage = normaliseOutgoingMessage(message, attachments);
       const modelMessage = buildAttachmentPrompt(displayMessage, attachments);
-      const enriched = buildEnrichedMessage(modelMessage);
+      const enriched = isTemporaryChat ? modelMessage : buildEnrichedMessage(modelMessage);
       const threadId = findThreadIdForSession(currentSession.id) ?? currentSession.appThreadId;
 
       let result: ChatSteerResult;
@@ -2282,7 +2351,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       return result;
     },
-    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession],
+    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession, isTemporaryChat],
   );
 
   const followUp = useCallback(
@@ -2340,7 +2409,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             sessionId: currentSession.id,
             requestId,
             intent,
-            message: buildEnrichedMessage(buildAttachmentPrompt(displayMessage, attachments)),
+            message: isTemporaryChat
+              ? buildAttachmentPrompt(displayMessage, attachments)
+              : buildEnrichedMessage(buildAttachmentPrompt(displayMessage, attachments)),
             attachments: [...attachments],
           },
           threadId,
@@ -2505,7 +2576,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       return result;
     },
-    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession],
+    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession, isTemporaryChat],
   );
 
   const startSideQuestion = useCallback(
@@ -2521,6 +2592,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         .map((entry) => ({ ...entry }));
       if (
         !parentThread ||
+        isTemporaryChat ||
         !parentPersona ||
         !parentSession ||
         parentSession.capabilities?.readOnlySession !== true ||
@@ -2541,9 +2613,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const displayMessage = normaliseOutgoingMessage(message, attachments);
       const prompt = buildSideQuestionContext(parentThread.title, sourceEntries);
       const question = buildAttachmentPrompt(displayMessage, attachments);
-      const enriched = buildEnrichedMessage(`${prompt}\n\n[Side question]\n${question}`, {
-        personaId: parentPersona.id,
-      });
+      const sideQuestionPrompt = `${prompt}\n\n[Side question]\n${question}`;
+      const enriched = isTemporaryChat
+        ? sideQuestionPrompt
+        : buildEnrichedMessage(sideQuestionPrompt, { personaId: parentPersona.id });
       const title = buildSideQuestionTitle(displayMessage);
       const repoSelection = parentThread.repoIds
         .map((repoId) => repos.find((repo) => repo.id === repoId))
@@ -2986,6 +3059,97 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       title: buildEmptyThreadLabel(activePersona.name),
     });
   }, [activePersona, chatLayout, createThreadRecord, detachLiveSession, scaffoldModeActive]);
+
+  const startTemporaryChat = useCallback(async () => {
+    if (temporaryThread) {
+      threadLoadVersionRef.current += 1;
+      setIsTemporaryChat(true);
+      setActiveThreadId(temporaryThread.id);
+      setActivePersona(personas.find((persona) => persona.id === temporaryThread.personaId) ?? null);
+      setActiveReposState([]);
+      setActiveRepoState(null);
+      setSelectedGovernanceDocs([]);
+      setHistoryReady(false);
+      await loadThreadIntoState(temporaryThread.id, [temporaryThread]);
+      return;
+    }
+    const persona =
+      activePersona ?? personas.find((candidate) => candidate.id === 'coder') ?? personas[0];
+    if (!persona) throw new Error('No chat persona is available.');
+
+    detachLiveSession();
+    const created = await window.anvil.chat.createTemporaryThread(persona.id);
+    threadLoadVersionRef.current += 1;
+    setIsTemporaryChat(true);
+    setTemporaryThread(created);
+    setActiveThreadId(created.id);
+    setActivePersona(persona);
+    setEntries([]);
+    setAgentUIIntents([]);
+    setActiveArtifacts([]);
+    setActiveReposState([]);
+    setActiveRepoState(null);
+    setSelectedGovernanceDocs([]);
+    setSideQuestion(null);
+    setThreadViewSnapshot({ threadId: created.id, lastViewedAt: null });
+    setHistoryReady(true);
+    setBusy(false);
+    setError(null);
+  }, [activePersona, detachLiveSession, loadThreadIntoState, personas, temporaryThread]);
+
+  const resumeTemporaryChat = useCallback(async () => {
+    if (!temporaryThread) {
+      if (!activePersona && personas.length === 0) return;
+      await startTemporaryChat();
+      return;
+    }
+    threadLoadVersionRef.current += 1;
+    setIsTemporaryChat(true);
+    setActiveThreadId(temporaryThread.id);
+    setActivePersona(personas.find((persona) => persona.id === temporaryThread.personaId) ?? null);
+    setActiveReposState([]);
+    setActiveRepoState(null);
+    setSelectedGovernanceDocs([]);
+    setHistoryReady(false);
+    setError(null);
+    await loadThreadIntoState(temporaryThread.id, [temporaryThread]);
+  }, [activePersona, loadThreadIntoState, personas, startTemporaryChat, temporaryThread]);
+
+  const showWorkspaceChat = useCallback(() => {
+    if (!isTemporaryChat) return;
+    threadLoadVersionRef.current += 1;
+    setIsTemporaryChat(false);
+    setActiveThreadId(null);
+    setEntries([]);
+    setActiveArtifacts([]);
+    setAgentUIIntents([]);
+    setSideQuestion(null);
+    setThreadViewSnapshot(null);
+    setSession(null);
+    setBusy(false);
+    setError(null);
+  }, [isTemporaryChat]);
+
+  const endTemporaryChat = useCallback(async () => {
+    if (!temporaryThread) return;
+    await stopThreadLiveSession(temporaryThread.id);
+    await window.anvil.chat.endTemporaryThread(temporaryThread.id).catch(() => false);
+    delete liveSessionsByThreadIdRef.current[temporaryThread.id];
+    setTemporaryThread(null);
+    setIsTemporaryChat(false);
+    setActiveThreadId(null);
+    setEntries([]);
+    setActiveArtifacts([]);
+    setAgentUIIntents([]);
+    setActiveReposState([]);
+    setActiveRepoState(null);
+    setSelectedGovernanceDocs([]);
+    setSideQuestion(null);
+    setThreadViewSnapshot(null);
+    setSession(null);
+    setBusy(false);
+    setError(null);
+  }, [stopThreadLiveSession, temporaryThread]);
 
   const selectThread = useCallback(
     async (threadId: string) => {
@@ -3441,6 +3605,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         reasoningOptions,
         threads: scopedThreads,
         activeThread,
+        isTemporaryChat,
+        startTemporaryChat,
+        resumeTemporaryChat,
+        showWorkspaceChat,
+        endTemporaryChat,
         activeThreadId: activeThread?.id ?? null,
         historyReady,
         threadViewSnapshot,
@@ -4284,17 +4453,17 @@ function formatAttachmentBytes(bytes: number): string {
   return `${(kilobytes / 1024).toFixed(1)} MB`;
 }
 
-function buildThreadTitle(message: string, personaName: string): string {
-  const firstLine = message
-    .split('\n')
-    .map((line) => line.trim())
-    .find(Boolean);
-  if (!firstLine) return buildEmptyThreadLabel(personaName);
-  return truncate(firstLine, 56);
-}
-
-function buildEmptyThreadLabel(personaName: string): string {
-  return `New ${personaName} Thread`;
+function buildTemporaryHistoryPrompt(entries: ChatEntry[], message: string): string {
+  const transcript = entries
+    .filter((entry): entry is Extract<ChatEntry, { kind: 'user' | 'assistant' }> =>
+      entry.kind === 'user' || entry.kind === 'assistant',
+    )
+    .slice(-20)
+    .map((entry) => `${entry.kind === 'user' ? 'User' : 'Assistant'}: ${entry.content.trim()}`)
+    .filter((entry) => entry !== 'User: ' && entry !== 'Assistant: ');
+  if (transcript.length === 0) return message;
+  const history = transcript.join('\n\n').slice(-20_000);
+  return `Earlier conversation in this temporary chat:\n${history}\n\nCurrent request:\n${message}`;
 }
 
 function buildForkThreadTitle(

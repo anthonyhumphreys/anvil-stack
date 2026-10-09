@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { CodexEvent, TurnEvidenceItem } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
+import { appendTemporaryChatMessage, isTemporaryChatThread } from './chat-persistence.service.js';
 
 interface PersistedEventRow {
   id: string;
@@ -16,6 +17,18 @@ export function saveChatEvent(
   event: CodexEvent,
   timestamp: string,
 ): void {
+  if (isTemporaryChatThread(threadId)) {
+    appendTemporaryChatMessage(threadId, {
+      id: randomUUID(),
+      role: 'system',
+      content: event.type,
+      timestamp,
+      event,
+      threadId,
+      repoContext: undefined,
+    });
+    return;
+  }
   const db = getDb();
   const existingCommand = findCommandEventToUpdate(threadId, sessionId, event);
   if (existingCommand) {

@@ -587,6 +587,12 @@ export function DeliveryCategory() {
               active={selectedDocsProvider === 'notion'}
               onClick={() => draft.update('docsProvider', 'notion')}
             />
+            <ProviderButton
+              label="Linear"
+              description="Linear documents using the active Linear connection"
+              active={selectedDocsProvider === 'linear'}
+              onClick={() => draft.update('docsProvider', 'linear')}
+            />
           </ButtonGrid>
         </div>
 
@@ -674,6 +680,15 @@ export function DeliveryCategory() {
               onChange={(v) => draft.update('notionDatabaseId', v)}
               placeholder="Used as default parent for new pages"
             />
+          </div>
+        )}
+
+        {selectedDocsProvider === 'linear' && (
+          <div>
+            <p className="text-xs text-text-tertiary">
+              Uses the API key from the active Linear work-item connection. Select that connection
+              in Work Items settings before testing or browsing documents.
+            </p>
           </div>
         )}
 

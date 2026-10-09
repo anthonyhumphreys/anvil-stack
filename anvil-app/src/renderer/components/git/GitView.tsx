@@ -22,6 +22,7 @@ import {
   GitPullRequest,
   Sparkles,
   ExternalLink,
+  CheckCheck,
 } from 'lucide-react';
 import type {
   GitStatusResult,
@@ -34,12 +35,14 @@ import type {
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
 import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
+import { buildChangeReviewPath } from '../../utils/change-review-context';
+import { readGitRoute, writeGitRoute, type GitViewTab } from '../../utils/git-route';
 
-type Tab = 'changes' | 'pull_requests' | 'log' | 'branches';
+type Tab = GitViewTab;
 
 export function GitView() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { repos, featureAvailability } = useWorkspace();
   const indexedRepos = useMemo(() => repos.filter((r) => r.status !== 'error'), [repos]);
 
@@ -73,16 +76,29 @@ export function GitView() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const requestedTab = searchParams.get('tab');
-    if (requestedTab === 'pull_requests') setTab('pull_requests');
+    const { repoId: requestedRepo } = readGitRoute(searchParams);
+    if (requestedRepo && indexedRepos.some((repo) => repo.id === requestedRepo))
+      setSelectedRepoId(requestedRepo);
+  }, [indexedRepos, searchParams]);
+
+  useEffect(() => {
+    const { tab: requestedTab } = readGitRoute(searchParams);
+    if (requestedTab) setTab(requestedTab);
   }, [searchParams]);
+
+  const updateGitLocation = (repoId: string, nextTab: Tab) => {
+    setSearchParams(writeGitRoute(searchParams, repoId, nextTab));
+  };
 
   // Auto-select first repo
   useEffect(() => {
     if (!selectedRepoId && indexedRepos.length > 0) {
-      setSelectedRepoId(indexedRepos[0].id);
+      const { repoId: requestedRepo } = readGitRoute(searchParams);
+      setSelectedRepoId(
+        indexedRepos.find((repo) => repo.id === requestedRepo)?.id ?? indexedRepos[0].id,
+      );
     }
-  }, [indexedRepos, selectedRepoId]);
+  }, [indexedRepos, searchParams, selectedRepoId]);
 
   const refresh = useCallback(async () => {
     if (!selectedRepoId) return;
@@ -322,7 +338,11 @@ export function GitView() {
         <select
           aria-label="Git repository"
           value={selectedRepoId}
-          onChange={(e) => setSelectedRepoId(e.target.value)}
+          onChange={(e) => {
+            const repoId = e.target.value;
+            setSelectedRepoId(repoId);
+            updateGitLocation(repoId, tab);
+          }}
           className="rounded-lg border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary"
         >
           {indexedRepos.map((r) => (
@@ -358,6 +378,25 @@ export function GitView() {
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() =>
+              navigate(
+                buildChangeReviewPath({
+                  repoId: selectedRepoId,
+                  source: 'git',
+                  baseRef: status?.tracking ?? 'HEAD',
+                  origin: { git: { baseRef: status?.tracking ?? 'HEAD' } },
+                }),
+              )
+            }
+            disabled={!selectedRepoId}
+            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-40"
+            title="Compare and verify this checkout"
+          >
+            <CheckCheck size={13} />
+            Review changes
+          </button>
           <WorkspaceGitActions
             repos={indexedRepos}
             selectedRepoId={selectedRepoId}
@@ -444,7 +483,10 @@ export function GitView() {
         {(['changes', 'pull_requests', 'log', 'branches'] as Tab[]).map((t) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t);
+              if (selectedRepoId) updateGitLocation(selectedRepoId, t);
+            }}
             className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${
               tab === t
                 ? 'border-b-2 border-accent text-text-primary'
@@ -497,6 +539,23 @@ export function GitView() {
             onViewDiff={(pullRequest) =>
               navigate(`/codereview/${selectedRepoId}?pr=${pullRequest.id}&view=diff`)
             }
+            onChangeReview={(pullRequest) => {
+              if (!pullRequest.sourceCommitSha) return;
+              navigate(
+                buildChangeReviewPath({
+                  repoId: selectedRepoId,
+                  source: 'pull-request',
+                  baseRef: pullRequest.targetBranch,
+                  origin: {
+                    pullRequest: {
+                      id: pullRequest.id,
+                      provider: pullRequest.provider,
+                      headSha: pullRequest.sourceCommitSha,
+                    },
+                  },
+                }),
+              );
+            }}
           />
         )}
         {tab === 'branches' && (
@@ -522,12 +581,14 @@ function PullRequestsTab({
   error,
   onVisualise,
   onViewDiff,
+  onChangeReview,
 }: {
   pullRequests: CodeReviewPullRequest[];
   loading: boolean;
   error: string | null;
   onVisualise: (pullRequest: CodeReviewPullRequest) => void;
   onViewDiff: (pullRequest: CodeReviewPullRequest) => void;
+  onChangeReview: (pullRequest: CodeReviewPullRequest) => void;
 }) {
   if (loading) {
     return (
@@ -587,6 +648,19 @@ function PullRequestsTab({
               className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
             >
               <Sparkles size={13} /> Visualise PR
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeReview(pullRequest)}
+              disabled={!pullRequest.sourceCommitSha}
+              title={
+                pullRequest.sourceCommitSha
+                  ? 'Link this checkout to the PR head; staged and unstaged edits remain part of the candidate'
+                  : 'The PR provider did not return a head commit'
+              }
+              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <CheckCheck size={13} /> Change review
             </button>
             {pullRequest.url && (
               <button

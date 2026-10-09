@@ -11,6 +11,7 @@ import {
   resolveChangesRepoId,
   summarizeTurnChanges,
 } from './chat-turn-changes';
+import { buildChangeReviewPath } from '../../utils/change-review-context';
 
 /**
  * Shared file/diff review grid — the same layout `ActivityGroupMessage` uses
@@ -82,11 +83,15 @@ export function TurnChangesFooter({
   workItems,
   repos,
   preferredRepoId,
+  threadId,
+  turnId,
   reviewRequest,
 }: {
   workItems: ChatTurnWorkItem[];
   repos: RepoInfo[];
   preferredRepoId?: string | null;
+  threadId?: string;
+  turnId: string;
   reviewRequest?: { requestId: number; filePath: string };
 }) {
   const navigate = useNavigate();
@@ -249,9 +254,20 @@ export function TurnChangesFooter({
             </Button>
             <Button
               variant="ghost"
+              disabled={!repoId || !threadId}
               size="sm"
               onClick={() =>
-                navigate(repoId ? `/review?repo=${encodeURIComponent(repoId)}` : '/review')
+                repoId &&
+                threadId &&
+                navigate(
+                  buildChangeReviewPath({
+                    repoId,
+                    source: 'chat',
+                    threadId,
+                    turnId,
+                    changedFiles: summary.files.map((file) => file.filePath),
+                  }),
+                )
               }
             >
               Open in Change Review

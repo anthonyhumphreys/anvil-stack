@@ -168,6 +168,8 @@ export interface CicdPipelineAnalysis {
   nodes: CicdFlowNode[];
   edges: CicdFlowEdge[];
   findings: CicdValidationFinding[];
+  stack: CicdStackProfile;
+  recommendations: CicdPipelineRecommendation[];
   summary: {
     providers: CicdProvider[];
     workflowCount: number;
@@ -179,9 +181,52 @@ export interface CicdPipelineAnalysis {
   };
 }
 
+export type CicdPackageManager =
+  | 'pnpm'
+  | 'npm'
+  | 'yarn'
+  | 'bun'
+  | 'pip'
+  | 'go'
+  | 'cargo'
+  | 'dotnet';
+
+export interface CicdStackProfile {
+  language: 'node' | 'python' | 'go' | 'rust' | 'dotnet' | 'unknown';
+  framework?: string;
+  packageManager?: CicdPackageManager;
+  packageManagerVersion?: string;
+  projectFile?: string;
+  sdkVersion?: string;
+  workspace: boolean;
+  scripts: string[];
+  workspaceScripts?: string[];
+  workspaceScriptTargets?: Array<{ name: string; scripts: string[] }>;
+  evidence: string[];
+}
+
+export interface CicdPipelineRecommendation {
+  rank: number;
+  template: CicdCreatePipelineInput['template'];
+  provider: CicdProvider;
+  title: string;
+  reason: string;
+  evidence: string[];
+  commands: string[];
+  recommended: boolean;
+}
+
 export interface CicdCreatePipelineInput {
   provider: CicdProvider;
-  template: 'node-ci' | 'dotnet-azure' | 'gated-release';
+  template:
+    | 'node-ci'
+    | 'python-ci'
+    | 'go-ci'
+    | 'rust-ci'
+    | 'dotnet-ci'
+    | 'dotnet-azure'
+    | 'gated-release'
+    | 'generic-ci';
   name: string;
   filePath?: string;
 }
@@ -322,7 +367,14 @@ export interface WorkItemConnection {
   jiraEmail?: string;
   jiraApiToken?: string;
 }
-export type DocsProvider = 'confluence' | 'notion';
+export type DocsProvider = 'confluence' | 'notion' | 'linear';
+
+/** Identifies the workspace and provider account a docs request was opened against. */
+export interface DocsRequestContext {
+  provider: DocsProvider;
+  workspaceId?: string;
+  connectionId?: string;
+}
 
 export interface WorkItem {
   id: string;
@@ -943,6 +995,8 @@ export interface ChatThreadPullRequestLink {
 export type ChatThreadPurpose = 'normal' | 'side-question';
 
 export interface ChatThread {
+  /** True for a workspace-less chat that exists only in the current app process. */
+  temporary?: boolean;
   pullRequestLinks?: ChatThreadPullRequestLink[];
   purpose?: ChatThreadPurpose;
   sideQuestionOfThreadId?: string;
@@ -1808,7 +1862,26 @@ export interface NotionPage {
   provider: 'notion';
 }
 
-export type DocPage = ConfluencePage | NotionPage;
+export interface LinearDocPage {
+  id: string;
+  title: string;
+  url: string;
+  lastUpdated: string;
+  lastUpdatedBy: string;
+  staleness?: 'current' | 'stale' | 'unknown';
+  labels?: string[];
+  parentId?: string;
+  projectId?: string;
+  projectName?: string;
+  provider: 'linear';
+}
+
+export interface LinearDocProject {
+  id: string;
+  name: string;
+}
+
+export type DocPage = ConfluencePage | NotionPage | LinearDocPage;
 
 export type SecurityAuditStatus = 'running' | 'completed' | 'failed';
 export type SecurityFindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -2340,6 +2413,7 @@ export interface WorkspaceActivityItem {
   route: string;
   title: string;
   detail: string;
+  nextAction?: string;
   status: WorkspaceActivityStatus;
   startedAt?: string;
 }
@@ -2595,6 +2669,36 @@ export interface DojoReport {
 export type DbInsightFileType = 'sql' | 'txt' | 'json' | 'other';
 export type DbInsightArtifactCategory = 'schema' | 'stored-procedure' | 'mixed' | 'other';
 export type DbInsightAnalysisStatus = 'running' | 'completed' | 'failed';
+export type DbInsightTechnology =
+  | 'sql-server'
+  | 'postgresql'
+  | 'mysql'
+  | 'sqlite'
+  | 'sql'
+  | 'mongodb'
+  | 'dynamodb'
+  | 'redis'
+  | 'unknown';
+
+export interface DbInsightEntity {
+  name: string;
+  kind: 'table' | 'item-export' | 'collection' | 'key-pattern';
+  fieldCount: number;
+  fields: string[];
+  recordCount?: number;
+  keyCount?: number;
+  notes?: string;
+}
+
+export interface DbInsightStructure {
+  technology: DbInsightTechnology;
+  entityCount: number;
+  recordCount?: number;
+  keyCount?: number;
+  entities: DbInsightEntity[];
+  evidence: string[];
+  limitations: string[];
+}
 
 export interface DbInsightArtifact {
   id: string;
@@ -2614,6 +2718,7 @@ export interface DbInsightTable {
   qualifiedName: string;
   columnCount: number;
   keyColumns: string[];
+  fields?: string[];
   notes?: string;
 }
 
@@ -2641,6 +2746,7 @@ export interface DbInsightAnalysis {
   relationships: string[];
   risks: string[];
   recommendedQuestions: string[];
+  structure?: DbInsightStructure;
   startedAt: string;
   completedAt?: string;
 }

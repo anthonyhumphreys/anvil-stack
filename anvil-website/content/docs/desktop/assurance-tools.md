@@ -42,15 +42,19 @@ This is local evidence. Use [Anvil Registry](/docs/registry/introduction) when a
 
 ## DB Insights
 
-DB Insights imports database export files into the active workspace and analyses them together. The result covers:
+DB Insights analyses local exports in the active workspace. It detects SQL Server, PostgreSQL, MySQL, and SQLite DDL, MongoDB JSON documents, DynamoDB typed JSON items, and Redis key/type exports. Add exports from one technology per analysis. Each file is limited to 5 MB and an analysis to 20 MB.
 
-- tables and notable columns
+The result reports the structure present in those files:
+
+- SQL tables, columns, procedures, views, functions, and declared relationships
+- MongoDB collection fields found in exported documents
+- DynamoDB attribute names found in exported items
+- Redis key patterns and types present in the export
 - stored procedures and referenced objects
-- explicit relationships
 - risks and watchpoints
 - follow-up questions that can be opened in Chat
 
-The analyser works from the exports you add. Missing schema, routines, or production-only behavior will remain missing from its answer. Remove an imported artifact when it should no longer be part of the workspace evidence.
+DB Insights reads files only. It does not connect to a live database. JSON record values are omitted from the analysis context; MongoDB and DynamoDB counts describe records in the added exports, and Redis counts describe observed keys. None of these counts establish the full live database size. Add schema or key/type exports with the structure you want to discuss. Remove an imported artifact when it should no longer be part of the workspace evidence.
 
 ## Data and Compliance
 

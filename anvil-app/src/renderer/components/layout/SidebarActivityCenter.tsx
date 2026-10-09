@@ -11,6 +11,7 @@ import type {
 import type { RunStatus } from '../../../shared/run-types';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { useRepoIndex } from '../../contexts/RepoIndexContext';
 
 export type SidebarActivityStatus = 'running' | 'queued' | 'ready' | 'warning' | 'error';
 
@@ -20,6 +21,7 @@ export interface SidebarActivityItem {
   route: string;
   title: string;
   detail: string;
+  nextAction?: string;
   status: SidebarActivityStatus;
   startedAt?: string;
 }
@@ -60,6 +62,7 @@ function useSidebarActivityData(): SidebarActivityValue {
   const location = useLocation();
   const { activeWorkspace, activeScaffoldSession, repos, featureAvailability } = useWorkspace();
   const { busy, liveThreadStatuses, activeThread, threads } = useChatContext();
+  const repoIndex = useRepoIndex();
   const [agentRuns, setAgentRuns] = useState<AgentRunSummary[]>([]);
   const [automationTriage, setAutomationTriage] = useState<AutomationTriageItem[]>([]);
   const [runStatuses, setRunStatuses] = useState<RunStatus[]>([]);
@@ -230,14 +233,15 @@ function useSidebarActivityData(): SidebarActivityValue {
       });
     }
 
-    const erroredRepos = repos.filter((repo) => repo.status === 'error');
-    if (erroredRepos.length > 0) {
+    for (const repo of repos.filter((item) => item.status === 'error')) {
+      const reason = conciseRepoError(repoIndex.lastErrorForRepo(repo.id)?.error);
       nextItems.push({
-        id: 'repos-error',
+        id: `repo-error-${repo.id}`,
         feature: 'repos',
-        route: '/workspace',
-        title: `${erroredRepos.length} repo${erroredRepos.length === 1 ? '' : 's'} need attention`,
-        detail: erroredRepos.map((repo) => repo.name).join(', '),
+        route: `/workspace?repo=${encodeURIComponent(repo.id)}`,
+        title: `${repo.name} needs attention`,
+        detail: reason,
+        nextAction: 'Open Workspace to inspect and retry indexing.',
         status: 'error',
       });
     }
@@ -338,6 +342,7 @@ function useSidebarActivityData(): SidebarActivityValue {
     liveThreadStatuses,
     location.pathname,
     repos,
+    repoIndex,
     runStatuses,
     simulatorStatus.running,
     simulatorStatus.startedAt,
@@ -530,6 +535,12 @@ function automationTriageDetail(item: AutomationTriageItem): string {
     return item.summary ?? `${item.changedFileCount} changed files are ready to review.`;
   }
   return item.status === 'queued' ? 'Automation is queued.' : 'Automation is running.';
+}
+
+function conciseRepoError(value?: string): string {
+  const message = value?.replace(/\s+/g, ' ').trim();
+  if (!message) return 'No error details are available.';
+  return message.length > 180 ? `${message.slice(0, 177).trimEnd()}...` : message;
 }
 
 function dateValue(value?: string): number {

@@ -95,6 +95,7 @@ vi.mock('../dojo-analytics.service.js', () => ({
 vi.mock('../companion-events.service.js', () => ({ emitCompanionEvent: () => undefined }));
 vi.mock('../chat-persistence.service.js', () => ({
   getChatThread: () => null,
+  isTemporaryChatThread: () => false,
   updateChatThreadAttention: () => undefined,
 }));
 vi.mock('../chat-evidence.service.js', () => ({

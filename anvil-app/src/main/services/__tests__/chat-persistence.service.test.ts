@@ -16,7 +16,10 @@ import {
   clearChatHistory,
   createChatSession,
   createChatThread,
+  createTemporaryChatThread,
   deleteChatThread,
+  endChatSession,
+  endTemporaryChatThread,
   ensureWorkItemChatThread,
   findChatAttachment,
   findChatAttachmentThreadIds,
@@ -28,6 +31,7 @@ import {
   saveChatEntry,
   saveChatThreadGoal,
   saveChatThreadPlan,
+  setChatSessionProviderTurnId,
   updateChatThread,
   updateChatThreadAttention,
 } from '../chat-persistence.service.js';
@@ -74,6 +78,56 @@ beforeEach(() => {
 });
 
 describe('chat thread persistence', () => {
+  it('keeps temporary chat threads, transcripts, and sessions in memory only', () => {
+    const thread = createTemporaryChatThread('coder');
+    const timestamp = new Date().toISOString();
+
+    createChatSession(thread.id, null, 'coder', 'temporary-session');
+    saveChatEntry(thread.id, null, 'temporary-session', {
+      id: 'temporary-message',
+      role: 'user',
+      content: 'Explain this error.',
+      timestamp,
+      threadId: thread.id,
+    });
+    saveChatEvent(thread.id, null, 'temporary-session', { type: 'status', status: 'complete' }, timestamp);
+
+    expect(thread.temporary).toBe(true);
+    expect(listChatThreads(null).some((listed) => listed.id === thread.id)).toBe(false);
+    expect(loadChatHistory(thread.id)).toMatchObject([
+      { id: 'temporary-message', content: 'Explain this error.', threadId: thread.id },
+      { role: 'system', event: { type: 'status', status: 'complete' } },
+    ]);
+    expect(
+      inMemoryDb.prepare('SELECT id FROM chat_threads WHERE id = ?').get(thread.id),
+    ).toBeUndefined();
+    expect(
+      inMemoryDb.prepare('SELECT id FROM chat_messages WHERE thread_id = ?').all(thread.id),
+    ).toEqual([]);
+    expect(
+      inMemoryDb.prepare('SELECT id FROM chat_sessions WHERE id = ?').get('temporary-session'),
+    ).toBeUndefined();
+
+    expect(endTemporaryChatThread(thread.id)).toBe(true);
+    endChatSession('temporary-session');
+    setChatSessionProviderTurnId('temporary-session', 'late-turn');
+    saveChatEntry(thread.id, null, 'temporary-session', {
+      id: 'late-temporary-message',
+      role: 'assistant',
+      content: 'A late provider event.',
+      timestamp,
+      threadId: thread.id,
+    });
+    expect(loadChatHistory(thread.id)).toEqual([]);
+    expect(
+      inMemoryDb.prepare('SELECT id FROM chat_sessions WHERE id = ?').get('temporary-session'),
+    ).toBeUndefined();
+    expect(
+      inMemoryDb.prepare('SELECT id FROM chat_messages WHERE id = ?').get('late-temporary-message'),
+    ).toBeUndefined();
+    expect(endTemporaryChatThread(thread.id)).toBe(false);
+  });
+
   it('keeps the provider with its resumable thread id', () => {
     const thread = createChatThread({
       workspaceId: 'ws-1',

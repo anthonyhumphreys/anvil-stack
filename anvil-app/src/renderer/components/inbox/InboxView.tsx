@@ -164,7 +164,12 @@ function ActivityItemRow({ item, onOpen }: ActivityRow) {
       <SidebarActivityIcon status={item.status} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium text-text-primary">{item.title}</span>
-        <span className="mt-0.5 block truncate text-xs text-text-tertiary">{item.detail}</span>
+        <span className="mt-0.5 block line-clamp-2 break-words text-xs text-text-tertiary">
+          {item.detail}
+        </span>
+        {item.nextAction && (
+          <span className="mt-1 block truncate text-xs text-text-secondary">{item.nextAction}</span>
+        )}
       </span>
       {item.startedAt && (
         <span className="shrink-0 pt-0.5 text-xs text-text-tertiary">

@@ -14,11 +14,11 @@ Knowledge tools keep project explanations close to the repositories they describ
 
 ## Documentation provider
 
-The Documentation view currently works with the configured Confluence connection. It can list pages for a space, expand child pages, preview a page, and open it in Confluence.
+The Documentation view supports Confluence, Notion, and Linear. Confluence pages can be browsed by space and parent page. Notion pages can be searched and opened in Notion. Linear documents can be listed across the workspace or filtered by project, then opened in Linear.
 
-With a repository selected, Anvil can compare a page with current repository evidence, report its staleness state, draft an update, or create a new page in the configured space. Review generated content before publishing because the model sees the selected repository context, not every operational fact held by the team.
+With a repository selected, Anvil can compare a document with current repository evidence, report its staleness, draft an update, and save the reviewed content back to the provider. It can also create pages in Confluence spaces, add Notion pages under the configured parent, or create Linear documents with an optional project association. Review generated content before saving because the model sees repository summaries, not every operational fact held by the team.
 
-Settings also exposes Notion as an MCP-backed documentation provider. It can install the Notion MCP server and complete its OAuth flow. That connector is available to agent work through MCP; it does not make the Confluence-specific Documentation view a Notion browser.
+Linear documentation uses the API key from the active Linear work-item connection. Configure that connection in Work Items settings, then select Linear in Documentation settings. Confluence and Notion keep their own credentials and setup flows.
 
 ## Architecture decision records
 

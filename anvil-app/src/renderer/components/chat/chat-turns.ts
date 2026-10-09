@@ -82,6 +82,75 @@ export function composeChatTurns(
   );
 }
 
+export type ApprovalAwareWorkSegment =
+  | {
+      kind: 'routine';
+      key: string;
+      items: ChatTurnWorkItem[];
+      expandedByDefault: boolean;
+    }
+  | {
+      kind: 'approval';
+      key: string;
+      item: Extract<ChatTurnWorkItem, { kind: 'event' }>;
+    };
+
+/** Split routine activity around pending approvals without losing source order. */
+export function buildApprovalAwareWorkSegments(
+  items: readonly ChatTurnWorkItem[],
+): ApprovalAwareWorkSegment[] {
+  const resolvedRequests = new Set(
+    items.flatMap((item) => {
+      if (item.kind !== 'event' || item.event.type !== 'request_resolved') return [];
+      if (item.event.resolvedRequestId === undefined) return [];
+      return [requestKey(item.event, item.event.resolvedRequestId)];
+    }),
+  );
+
+  const segments: ApprovalAwareWorkSegment[] = [];
+  let routineItems: ChatTurnWorkItem[] = [];
+  const flushRoutine = (expandedByDefault: boolean) => {
+    if (routineItems.length === 0) return;
+    const firstIndex = routineItems[0].sourceIndex;
+    segments.push({
+      kind: 'routine',
+      key: `work-${firstIndex}`,
+      items: routineItems,
+      expandedByDefault,
+    });
+    routineItems = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === 'event' && item.event.type === 'request_resolved') continue;
+    if (item.kind === 'event' && item.event.type === 'approval_request') {
+      const requestId = item.event.approvalRequestId;
+      if (requestId !== undefined && resolvedRequests.has(requestKey(item.event, requestId))) {
+        continue;
+      }
+
+      flushRoutine(true);
+      segments.push({
+        kind: 'approval',
+        key:
+          requestId === undefined
+            ? `approval-${item.event.sessionId ?? item.event.appThreadId ?? 'thread'}-index-${item.sourceIndex}`
+            : `approval-${requestKey(item.event, requestId)}`,
+        item,
+      });
+      continue;
+    }
+
+    routineItems.push(item);
+  }
+  flushRoutine(false);
+  return segments;
+}
+
+function requestKey(event: CodexEvent, requestId: string | number): string {
+  return `${event.sessionId ?? event.appThreadId ?? 'thread'}:${typeof requestId}:${String(requestId)}`;
+}
+
 function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): ComposedChatTurn {
   const userEntry = entries.find((entry) => entry.kind === 'user') as
     | IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>>
