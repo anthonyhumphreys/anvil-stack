@@ -225,6 +225,9 @@ export function activateBackend(id: string): SyncBackendRecord {
         `backend ${id} changed endpoint or issuer and must be re-reviewed before connecting`,
       );
     }
+    resolveBackendPaths(existing.base_url, JSON.parse(existing.pinned_descriptor_json), {
+      allowLoopbackHttp: isLoopbackHost(existing.base_url),
+    });
     db.prepare(
       "UPDATE sync_backends SET state = 'paused', updated_at = ? WHERE state = 'active'",
     ).run(nowIso());

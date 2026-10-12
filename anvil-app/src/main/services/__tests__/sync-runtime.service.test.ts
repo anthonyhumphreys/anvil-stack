@@ -1238,6 +1238,44 @@ async function enrollTestSession(
 }
 
 describe('session backend isolation', () => {
+  it('pauses saved legacy profiles before startup consumers run and preserves the session', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    try {
+      await enrollTestSession(dir, backend);
+      resetSyncRuntimeForTests();
+      activateBackend('backend-1');
+      const legacy = { ...descriptorFixture(), profiles: ['sync/1', 'mesh/1'] };
+      db.prepare('UPDATE sync_backends SET pinned_descriptor_json = ?, profiles_json = ?').run(
+        JSON.stringify(legacy),
+        JSON.stringify(legacy.profiles),
+      );
+      const sessionPath = join(dir, 'sync-mesh-session.json');
+      const savedSession = readFileSync(sessionPath, 'utf-8');
+      backend.calls.length = 0;
+
+      expect(() => initSyncRuntime(dir, { fetchFn: backend.fetchFn })).not.toThrow();
+      expect(getRuntimeStatus()).toMatchObject({
+        auth: { state: 'signed-in', accountId: 'account-1' },
+        syncEnabled: false,
+        lastError: expect.stringMatching(/incompatible.*unknown profile: sync\/1.*reconnect/),
+      });
+      expect(activeSyncScope()).toBeNull();
+      expect(db.prepare('SELECT state FROM sync_backends').get()).toEqual({ state: 'paused' });
+      expect(() => activateBackend('backend-1')).toThrow(/unknown profile/);
+      expect(readFileSync(sessionPath, 'utf-8')).toBe(savedSession);
+      expect(backend.calls).toEqual([]);
+
+      // Fresh discovery repairs metadata without resetting the account.
+      pinTestBackend();
+      expect(() => activateBackend('backend-1')).not.toThrow();
+      expect(readFileSync(sessionPath, 'utf-8')).toBe(savedSession);
+    } finally {
+      resetSyncRuntimeForTests();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps an unbound legacy session local and never sends its credentials to the selected backend', async () => {
     const backend = fakeBackend();
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));

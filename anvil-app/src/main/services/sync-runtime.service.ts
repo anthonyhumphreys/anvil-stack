@@ -503,6 +503,18 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   devSpikeEnabled = options.devSpikeEnabled === true;
   fetchOverride = options.fetchFn;
   createSocketOverride = options.createSocket;
+  // Saved descriptors can predate this build's capability profiles. Validate
+  // before configuring consumers that synchronously request backend paths.
+  const savedBackend = getActiveBackend();
+  if (savedBackend !== null) {
+    try {
+      apiUrlFor(savedBackend);
+    } catch (error) {
+      disconnectBackend();
+      const reason = error instanceof Error ? error.message : String(error);
+      lastError = `Saved sync connection is incompatible with this build: ${reason}. Rediscover the backend and reconnect in Settings.`;
+    }
+  }
   meshHostPool?.stop();
   meshHostPool = new MeshHostRuntimePool(getMeshHostRuntimeContext);
   configureMeshHostSessionRuntimeBindings();
