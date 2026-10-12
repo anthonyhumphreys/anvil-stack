@@ -11,6 +11,7 @@ Complete the welcome flow with **Continue without Sync** if prompted. The app
 opens `/_dev/processing` inside its normal shell with the real preload, styles,
 and transcript components. The preview flag requires an isolated development
 profile. The fixture route and its content are excluded from production builds.
+Isolated startup also skips shared Codex MCP and application protocol registration.
 
 Use the provider and state selectors to inspect live work, approval waits,
 completion, failures, interruption, sparse history, and initial activity. All

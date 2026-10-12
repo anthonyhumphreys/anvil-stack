@@ -456,8 +456,8 @@ app.whenReady().then(() => {
   handleOrphanedBaSessions();
   handleStaleIndexingRepos();
 
-  if (!previewBuild) {
-    // Preview startup must not change the user's normal Codex or protocol registrations.
+  if (!previewBuild && !isolatedDevProfileActive) {
+    // Isolated startup must not change the user's normal Codex or protocol registrations.
     ensureRepobaseMcp().catch(() => {});
     app.setAsDefaultProtocolClient(PRIMARY_PROTOCOL);
     app.setAsDefaultProtocolClient(LEGACY_PROTOCOL);

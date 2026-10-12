@@ -94,6 +94,12 @@ async function registerChromeMcp(): Promise<{ success: boolean; error?: string }
       error: 'Shared Codex MCP registration is disabled in candidate previews.',
     };
   }
+  if (process.env.ANVIL_DEV_USER_DATA_PATH?.trim()) {
+    return {
+      success: false,
+      error: 'Shared Codex MCP registration is disabled in isolated development profiles.',
+    };
+  }
   const scriptPath = resolveChromeMcpScriptPath();
 
   if (!scriptPath) {
@@ -203,7 +209,7 @@ export function registerBrowserHandlers(): void {
 }
 
 async function repairChromeMcpRegistration(): Promise<void> {
-  if (previewBuild) return;
+  if (previewBuild || process.env.ANVIL_DEV_USER_DATA_PATH?.trim()) return;
   const registrations = await Promise.all(
     getBrowserMcpNames().map((name) => getChromeMcpRegistration(name)),
   );
