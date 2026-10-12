@@ -76,7 +76,7 @@ describe('chatMessagesToEntries', () => {
           },
         },
       ]),
-    ).toEqual([
+    ).toMatchObject([
       {
         kind: 'assistant',
         content: 'Checking the tests.',
@@ -127,7 +127,7 @@ describe('chatMessagesToEntries', () => {
           event: { type: 'request_resolved', resolvedRequestId: 'question-1' },
         },
       ]),
-    ).toEqual([]);
+    ).toMatchObject([]);
   });
 
   it('resolves approval and input requests only within the originating session', () => {
@@ -158,7 +158,7 @@ describe('chatMessagesToEntries', () => {
       },
     ]);
 
-    expect(entries).toEqual([
+    expect(entries).toMatchObject([
       {
         kind: 'event',
         event: { type: 'approval_request', approvalRequestId: 7, sessionId: 'session-b' },
@@ -206,7 +206,7 @@ describe('chatMessagesToEntries', () => {
       },
     ]);
 
-    expect(entries).toEqual([
+    expect(entries).toMatchObject([
       {
         kind: 'user',
         id: 'request-1',
@@ -239,7 +239,7 @@ describe('chatMessagesToEntries', () => {
           },
         },
       ]),
-    ).toEqual([
+    ).toMatchObject([
       {
         kind: 'user',
         id: 'request-local-failure',
@@ -278,7 +278,7 @@ describe('chatMessagesToEntries', () => {
           event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 },
         },
       ]),
-    ).toEqual([
+    ).toMatchObject([
       { kind: 'thinking', content: 'First, check the config. It points at staging.' },
       { kind: 'event', event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 } },
     ]);
@@ -294,7 +294,7 @@ describe('chatMessagesToEntries', () => {
           timestamp: '2026-07-14T10:00:00.000Z',
         },
       ]),
-    ).toEqual([{ kind: 'assistant', content: 'Existing flattened output', id: 'legacy-1' }]);
+    ).toMatchObject([{ kind: 'assistant', content: 'Existing flattened output', id: 'legacy-1' }]);
   });
 
   it('restores the latest intent revision and removes resolved questions', () => {
@@ -352,7 +352,7 @@ describe('chatMessagesToEntries', () => {
       },
     ]);
 
-    expect(entries).toEqual([]);
+    expect(entries).toMatchObject([]);
   });
 
   it('keeps subagent work at its original chronological position while updating its lifecycle', () => {

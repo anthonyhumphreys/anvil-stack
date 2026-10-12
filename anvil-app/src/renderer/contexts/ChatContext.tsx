@@ -59,7 +59,7 @@ import { isAcpAgentProvider } from '../../shared/agent-providers';
 import { agentEventLabel } from '../utils/agent-display';
 import { buildEmptyThreadLabel, buildThreadTitle } from '../utils/thread-display-title';
 
-export type ChatEntry =
+export type ChatEntry = (
   | {
       kind: 'user';
       content: string;
@@ -83,7 +83,8 @@ export type ChatEntry =
       phase?: ChatAssistantPhase;
     }
   | { kind: 'thinking'; content: string; id?: string }
-  | { kind: 'event'; event: CodexEvent };
+  | { kind: 'event'; event: CodexEvent }
+) & { timestamp?: string };
 
 interface ChatContextValue {
   personas: Persona[];
@@ -1755,49 +1756,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const targetThreadId = eventThreadId ?? activeThreadRef.current?.id;
         if (targetThreadId && !mainPersistsEvent) persistThreadGoal(targetThreadId, null);
         setEntries((prev) => [...prev, { kind: 'event', event }]);
-      } else if (event.type === 'command_exec' && event.command) {
+      } else if (event.type === 'command_exec') {
         flushPendingStreamEntry();
-        setEntries((prev) => {
-          const last = prev[prev.length - 1];
-          if (
-            last?.kind === 'event' &&
-            last.event.type === 'command_exec' &&
-            last.event.command === event.command
-          ) {
-            const updated = [...prev];
-            updated[updated.length - 1] = {
-              kind: 'event',
-              event: {
-                ...last.event,
-                ...event,
-                output: event.output || last.event.output,
-              },
-            };
-            return updated;
-          }
-          return [...prev, { kind: 'event', event }];
-        });
+        setEntries((prev) => upsertCommandEntry(prev, event));
       } else if (event.type === 'tool_call') {
         flushPendingStreamEntry();
         setEntries((prev) => upsertToolCallEntry(prev, event));
-      } else if (event.type === 'command_exec' && event.output && !event.command) {
-        const output = event.output;
-        flushPendingStreamEntry();
-        setEntries((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.kind === 'event' && last.event.type === 'command_exec') {
-            const updated = [...prev];
-            updated[updated.length - 1] = {
-              kind: 'event',
-              event: {
-                ...last.event,
-                output: appendBoundedTail(last.event.output ?? '', output),
-              },
-            };
-            return updated;
-          }
-          return [...prev, { kind: 'event', event }];
-        });
       } else if (event.type === 'file_edit') {
         flushPendingStreamEntry();
         setEntries((prev) => {
@@ -1853,7 +1817,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setEntries((prev) => [...prev, { kind: 'event', event }]);
       } else {
         flushPendingStreamEntry();
-        setEntries((prev) => [...prev, { kind: 'event', event }]);
+        setEntries((prev) => [
+          ...prev,
+          { kind: 'event', event, timestamp: new Date().toISOString() },
+        ]);
       }
     });
     return cleanup;
@@ -2078,6 +2045,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const timestamp = new Date().toISOString();
       const userEntry: ChatEntry = {
         kind: 'user',
+        timestamp,
         content: displayMessage,
         attachments,
         id: generateId(),
@@ -3065,7 +3033,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       threadLoadVersionRef.current += 1;
       setIsTemporaryChat(true);
       setActiveThreadId(temporaryThread.id);
-      setActivePersona(personas.find((persona) => persona.id === temporaryThread.personaId) ?? null);
+      setActivePersona(
+        personas.find((persona) => persona.id === temporaryThread.personaId) ?? null,
+      );
       setActiveReposState([]);
       setActiveRepoState(null);
       setSelectedGovernanceDocs([]);
@@ -3735,11 +3705,52 @@ function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
   );
 }
 
-/**
- * ACP tool calls stream lifecycle updates (`tool_call` then repeated
- * `tool_call_update`s with the same toolCallId). Merge them into one entry so
- * a single tool renders one row whose status/output evolves in place.
- */
+/** Merge command snapshots and output deltas by provider item id and session. */
+export function upsertCommandEntry(
+  entries: ChatEntry[],
+  event: CodexEvent,
+  timestamp?: string,
+): ChatEntry[] {
+  const sameScope = (candidate: CodexEvent) =>
+    (candidate.sessionId ?? candidate.appThreadId) === (event.sessionId ?? event.appThreadId);
+  const index = event.itemId
+    ? entries.findIndex(
+        (entry) =>
+          entry.kind === 'event' &&
+          entry.event.type === 'command_exec' &&
+          entry.event.itemId === event.itemId &&
+          sameScope(entry.event),
+      )
+    : entries.length - 1;
+  const existing = entries[index];
+  if (
+    existing?.kind !== 'event' ||
+    existing.event.type !== 'command_exec' ||
+    !sameScope(existing.event) ||
+    (!event.itemId &&
+      (existing.event.itemId || (event.command && existing.event.command !== event.command)))
+  ) {
+    return [...entries, { kind: 'event', event, timestamp }];
+  }
+  const updated = [...entries];
+  updated[index] = {
+    ...existing,
+    timestamp: timestamp ?? existing.timestamp,
+    event: {
+      ...existing.event,
+      ...event,
+      command: event.command || existing.event.command,
+      output: event.command
+        ? event.output || existing.event.output
+        : appendBoundedTail(existing.event.output ?? '', event.output ?? ''),
+      toolStatus: event.toolStatus ?? existing.event.toolStatus,
+      exitCode: event.exitCode ?? existing.event.exitCode,
+    },
+  };
+  return updated;
+}
+
+/** Merge tool lifecycle snapshots so each operation keeps one row as it updates. */
 function upsertToolCallEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
   const itemId = event.itemId;
   if (!itemId) {
@@ -3758,7 +3769,10 @@ function upsertToolCallEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry
   }
   const existingIndex = entries.findIndex(
     (entry) =>
-      entry.kind === 'event' && entry.event.type === 'tool_call' && entry.event.itemId === itemId,
+      entry.kind === 'event' &&
+      entry.event.type === 'tool_call' &&
+      entry.event.itemId === itemId &&
+      (entry.event.sessionId ?? entry.event.appThreadId) === (event.sessionId ?? event.appThreadId),
   );
   if (existingIndex < 0) return [...entries, { kind: 'event', event }];
   const existing = entries[existingIndex];
@@ -3968,6 +3982,7 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
         content: message.content,
         attachments: message.attachments,
         id: message.id,
+        timestamp: message.timestamp,
       });
       continue;
     }
@@ -3977,6 +3992,7 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
         kind: 'assistant',
         content: event.text ?? message.content,
         id: message.id,
+        timestamp: message.timestamp,
         itemId: event.itemId,
         phase: event.assistantPhase,
       });
@@ -3985,7 +4001,12 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
 
     if (message.role === 'assistant') {
       // Legacy history was persisted as one flattened assistant row without metadata.
-      entries.push({ kind: 'assistant', content: message.content, id: message.id });
+      entries.push({
+        kind: 'assistant',
+        content: message.content,
+        id: message.id,
+        timestamp: message.timestamp,
+      });
       continue;
     }
 
@@ -3993,6 +4014,12 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
       // Persisted reasoning reloads as the same coalescing 'thinking' entry
       // kind the live stream produces.
       const next = appendLiveStreamEntry(entries, 'thinking', event.text);
+      entries.splice(0, entries.length, ...next);
+      continue;
+    }
+
+    if (event?.type === 'command_exec') {
+      const next = upsertCommandEntry(entries, event, message.timestamp);
       entries.splice(0, entries.length, ...next);
       continue;
     }
@@ -4015,7 +4042,7 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
       continue;
     }
 
-    if (event) entries.push({ kind: 'event', event });
+    if (event) entries.push({ kind: 'event', event, timestamp: message.timestamp });
   }
 
   return entries.map((entry) => {
@@ -4456,8 +4483,9 @@ function formatAttachmentBytes(bytes: number): string {
 
 function buildTemporaryHistoryPrompt(entries: ChatEntry[], message: string): string {
   const transcript = entries
-    .filter((entry): entry is Extract<ChatEntry, { kind: 'user' | 'assistant' }> =>
-      entry.kind === 'user' || entry.kind === 'assistant',
+    .filter(
+      (entry): entry is Extract<ChatEntry, { kind: 'user' | 'assistant' }> =>
+        entry.kind === 'user' || entry.kind === 'assistant',
     )
     .slice(-20)
     .map((entry) => `${entry.kind === 'user' ? 'User' : 'Assistant'}: ${entry.content.trim()}`)

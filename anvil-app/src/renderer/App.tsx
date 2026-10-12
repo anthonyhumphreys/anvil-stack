@@ -26,6 +26,10 @@ const WorkspaceView = lazy(() =>
 const ChatView = lazy(() =>
   import('./components/chat/ChatView').then((module) => ({ default: module.ChatView })),
 );
+// Native fixture route is stripped from release builds.
+const ProcessingPreview = import.meta.env.DEV
+  ? lazy(() => import('./components/chat/replay/ProcessingPreview'))
+  : null;
 const OnboardView = lazy(() =>
   import('./components/onboard/OnboardView').then((module) => ({ default: module.OnboardView })),
 );
@@ -518,6 +522,16 @@ function AppContent() {
                       path="/chat"
                       element={guard('chat', <ChatRoute userRole={userRole} />)}
                     />
+                    {ProcessingPreview && (
+                      <Route
+                        path="/_dev/processing"
+                        element={
+                          <ErrorBoundary>
+                            <ProcessingPreview />
+                          </ErrorBoundary>
+                        }
+                      />
+                    )}
                     <Route
                       path="/db-insights"
                       element={guard(

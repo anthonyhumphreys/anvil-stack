@@ -2,11 +2,11 @@ import { useRef, useState, type RefObject } from 'react';
 import { AlertTriangle, ArrowDown } from 'lucide-react';
 import type { AgentProvider, RepoInfo } from '../../../shared/types';
 import type { ComposedChatTurn } from './chat-turns';
-import { AssistantMessage, TurnActivityStatus, TurnWorkMessage, UserMessage } from './ChatMessage';
+import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
 import { ChatErrorNotice, type ChatErrorProviderOption } from './ChatErrorNotice';
 import { ChatPaneState, type ChatPaneKind } from './ChatPaneState';
 import { TurnChangesFooter, TurnUsageFooter } from './TurnChangesFooter';
-import { getChatTurnLiveState, shouldShowTurnActivityStatus } from './chat-view-utils';
+import { getChatTurnLiveState } from './chat-view-utils';
 import { ChatRunOutcomeFooter } from './ChatRunOutcomeFooter';
 import { getPendingQuestionTarget, summarizeChatTurnRun } from './chat-run-outcome';
 import { stripFindingMarkers } from '../../utils/finding-parser';
@@ -175,8 +175,15 @@ export function ChatTranscript({
                         onBranch={onBranch ? () => onBranch(turn.user!.sourceIndex) : undefined}
                       />
                     )}
-                    {turn.work.length > 0 && (
-                      <TurnWorkMessage items={turn.work} active={liveState === 'working'} />
+                    {(turn.work.length > 0 || turn.trailingWork.length > 0 || liveState) && (
+                      <TurnWorkMessage
+                        items={[...turn.work, ...turn.trailingWork]}
+                        active={liveState !== null}
+                        outcome={turn.runOutcome}
+                        waiting={runSummary?.state === 'awaiting-user'}
+                        startedAt={turn.startedAt}
+                        endedAt={turn.endedAt}
+                      />
                     )}
                     {turn.answer && (
                       <AssistantMessage
@@ -187,9 +194,6 @@ export function ChatTranscript({
                         active={liveState === 'responding'}
                         onBranch={onBranch ? () => onBranch(turn.answer!.sourceIndex) : undefined}
                       />
-                    )}
-                    {turn.trailingWork.length > 0 && (
-                      <TurnWorkMessage items={turn.trailingWork} active={liveState === 'working'} />
                     )}
                     {/* H5 — usage/context/cost rollup for the turn. */}
                     {turn.usage && <TurnUsageFooter usage={turn.usage} />}
@@ -218,15 +222,6 @@ export function ChatTranscript({
                           reviewRequest.turnKey === turn.key
                             ? reviewRequest
                             : undefined
-                        }
-                      />
-                    )}
-                    {liveState && shouldShowTurnActivityStatus(liveState) && (
-                      <TurnActivityStatus
-                        state={liveState}
-                        latestItem={
-                          turn.trailingWork[turn.trailingWork.length - 1] ??
-                          turn.work[turn.work.length - 1]
                         }
                       />
                     )}

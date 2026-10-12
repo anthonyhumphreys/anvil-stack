@@ -552,17 +552,17 @@ export function handleCodexServerLine(
           itemId: getItemId(params, item),
           command: (item?.command as string) ?? '',
           output: '',
+          toolStatus: 'running',
         });
       } else if (itemType === 'fileChange') {
         recordFileChanges(state, buildItemKey(state, params, item), getChanges(item), 'replace');
-      } else if (itemType === 'tool_call') {
+      } else if (isCodexToolItem(itemType)) {
+        emitCodexToolItem(state, callbacks, params, item, false);
+      } else if (itemType === 'contextCompaction') {
         emitEvent(state, callbacks, {
-          type: 'tool_call',
-          toolName: (params?.toolName as string) ?? (item?.tool as string) ?? '',
-          toolInput:
-            (params?.input as Record<string, unknown>) ??
-            (item?.arguments as Record<string, unknown>) ??
-            {},
+          type: 'context_compaction',
+          itemId: getItemId(params, item),
+          toolStatus: 'running',
         });
       } else if (itemType === 'collabAgentToolCall' || itemType === 'subAgentActivity') {
         const subagent = parseSubagentUpdate(item);
@@ -585,10 +585,19 @@ export function handleCodexServerLine(
             MAX_RENDERED_COMMAND_OUTPUT_CHARS,
           ),
           exitCode: (item?.exitCode as number) ?? undefined,
+          toolStatus: item?.status === 'failed' ? 'failed' : 'completed',
         });
       } else if (itemType === 'fileChange') {
         const itemKey = buildItemKey(state, params, item);
         emitCompletedFileChanges(state, itemKey, getChanges(item), callbacks);
+      } else if (isCodexToolItem(itemType)) {
+        emitCodexToolItem(state, callbacks, params, item, true);
+      } else if (itemType === 'contextCompaction') {
+        emitEvent(state, callbacks, {
+          type: 'context_compaction',
+          itemId: getItemId(params, item),
+          toolStatus: 'completed',
+        });
       } else if (itemType === 'collabAgentToolCall' || itemType === 'subAgentActivity') {
         const subagent = parseSubagentUpdate(item);
         if (subagent) emitEvent(state, callbacks, { type: 'subagent_update', subagent });
@@ -855,6 +864,54 @@ function extractAcpToolOutput(update: Record<string, unknown> | undefined): stri
 
   if (parts.length === 0) return undefined;
   return limitTail(parts.join('\n'), MAX_RENDERED_COMMAND_OUTPUT_CHARS);
+}
+
+function isCodexToolItem(type: string): boolean {
+  return ['tool_call', 'mcpToolCall', 'dynamicToolCall', 'webSearch', 'imageView'].includes(type);
+}
+
+function emitCodexToolItem(
+  state: CodexProtocolState,
+  callbacks: CodexProtocolCallbacks,
+  params: Record<string, unknown>,
+  item: Record<string, unknown> | undefined,
+  completed: boolean,
+): void {
+  const failed = item?.status === 'failed' || item?.success === false || item?.error != null;
+  const output = item?.error ?? item?.result ?? item?.contentItems;
+  const input = params.input ?? item?.arguments ?? item?.action;
+  const toolName = typeof item?.tool === 'string' ? item.tool : undefined;
+  emitEvent(state, callbacks, {
+    type: 'tool_call',
+    itemId: getItemId(params, item),
+    toolStatus: failed ? 'failed' : completed ? 'completed' : 'running',
+    toolName:
+      typeof params.toolName === 'string'
+        ? params.toolName
+        : toolName
+          ? typeof item?.server === 'string'
+            ? `${item.server}.${toolName}`
+            : toolName
+          : item?.type === 'webSearch'
+            ? 'Web search'
+            : item?.type === 'imageView'
+              ? 'View image'
+              : undefined,
+    toolInput: isRecord(input)
+      ? input
+      : item?.type === 'webSearch'
+        ? { query: item.query }
+        : item?.type === 'imageView'
+          ? { path: item.path }
+          : undefined,
+    toolOutput:
+      output == null
+        ? undefined
+        : limitTail(
+            typeof output === 'string' ? output : JSON.stringify(output),
+            MAX_RENDERED_COMMAND_OUTPUT_CHARS,
+          ),
+  });
 }
 
 /**

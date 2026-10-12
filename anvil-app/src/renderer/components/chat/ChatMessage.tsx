@@ -43,6 +43,8 @@ import { buildApprovalAwareWorkSegments, type ChatTurnWorkItem } from './chat-tu
 import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
 import { FileEditReviewGrid } from './TurnChangesFooter';
+import { ProcessingCard, useProcessingActive } from './ProcessingCard';
+import { countProcessingActions, getOperationStatus, getProcessingState } from './processing-state';
 import { buildChatRequestTargetDomId, getChatQuestionTargetId } from './chat-run-outcome';
 import {
   ChatAssistantMessageActions,
@@ -94,6 +96,7 @@ function ChatEventContent({ event }: ChatEventProps) {
           command={event.command ?? ''}
           output={event.output ?? ''}
           exitCode={event.exitCode}
+          toolStatus={event.toolStatus}
         />
       );
     case 'tool_call':
@@ -120,6 +123,12 @@ function ChatEventContent({ event }: ChatEventProps) {
       return <ErrorEvent message={event.errorMessage ?? 'Unknown error'} />;
     case 'status':
       return <StatusEvent status={event.status ?? 'executing'} />;
+    case 'context_compaction':
+      return (
+        <p className="text-xs text-text-secondary">
+          {event.toolStatus === 'completed' ? 'Context compacted' : 'Context compaction'}
+        </p>
+      );
     default:
       return null;
   }
@@ -151,7 +160,10 @@ function RoutineWorkSegment({
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
   const expanded = expandedOverride ?? segment.expandedByDefault;
   const detailsId = useId();
-  const summary = segment.items.map(formatTurnWorkItemSummary).filter(Boolean).join(' · ');
+  const summary = segment.items
+    .map((item) => formatTurnWorkItemSummary(item))
+    .filter(Boolean)
+    .join(' · ');
 
   return (
     <div className="border-y border-border-subtle/70">
@@ -194,7 +206,7 @@ function TurnWorkItemDetail({ item, index }: { item: ChatTurnWorkItem; index: nu
 
   if (item.kind === 'thinking') {
     return (
-      <div className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary">
+      <div className="border-l border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary">
         <p className="mb-1 text-xs font-medium not-italic text-text-muted">Reasoning</p>
         <p className="whitespace-pre-wrap break-words">{item.content}</p>
       </div>
@@ -347,143 +359,74 @@ export function ActivityGroupMessage({
 export function TurnWorkMessage({
   items,
   active = false,
+  outcome,
+  waiting = false,
+  startedAt,
+  endedAt,
 }: {
   items: ChatTurnWorkItem[];
   active?: boolean;
+  outcome?: CodexEvent['turnOutcome'];
+  waiting?: boolean;
+  startedAt?: string;
+  endedAt?: string;
 }) {
-  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
-  const showDetails = shouldShowTurnWorkDetails(active, expandedOverride);
-  const detailsId = useId();
-  const progressCount = items.filter((item) => item.kind === 'progress').length;
-  const activityEvents = items
-    .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
-    .map((item) => item.event);
-  const surfaceItems = items.filter(
-    (item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> =>
-      item.kind === 'event' &&
-      (item.event.type === 'input_request' || item.event.type === 'agent_ui_intent'),
+  const [expanded, setExpanded] = useState(false);
+  const resolvedTargets = new Set(
+    items.flatMap((item) => {
+      if (item.kind !== 'event' || item.event.type !== 'request_resolved') return [];
+      const id = item.event.resolvedRequestId;
+      if (id === undefined) return [];
+      return [
+        getChatQuestionTargetId({ ...item.event, type: 'approval_request', approvalRequestId: id }),
+        getChatQuestionTargetId({ ...item.event, type: 'input_request', inputRequestId: id }),
+      ];
+    }),
   );
-  const surfaceSourceIndexes = new Set(surfaceItems.map((item) => item.sourceIndex));
-  const hasApprovalHistory = items.some(
-    (item) => item.kind === 'event' && item.event.type === 'approval_request',
-  );
-  const approvalTimeline = buildApprovalAwareWorkSegments(
-    items.filter((item) => !surfaceSourceIndexes.has(item.sourceIndex)),
-  );
-  const failedCount = activityEvents.filter(
-    (event) =>
-      event.type === 'error' ||
-      (event.type === 'command_exec' &&
-        typeof event.exitCode === 'number' &&
-        event.exitCode !== 0) ||
-      (event.type === 'tool_call' && event.toolStatus === 'failed') ||
-      (event.type === 'subagent_update' && event.subagent?.status === 'failed'),
-  ).length;
-  const summaryParts = [
-    progressCount > 0 ? `${progressCount} update${progressCount === 1 ? '' : 's'}` : null,
-    activityEvents.length > 0
-      ? `${activityEvents.length} action${activityEvents.length === 1 ? '' : 's'}`
-      : null,
-  ].filter((part): part is string => Boolean(part));
-  const latestActivity = formatTurnWorkItemSummary(items[items.length - 1]);
-
-  // Keep operational detail folded while the concise latest activity and any
-  // requests for the user remain visible.
-  if (items.length === 0) return null;
+  const state = getProcessingState({ items, busy: active, outcome, waiting });
+  const counts = countProcessingActions(items);
+  const latest = [...items]
+    .reverse()
+    .find(
+      (item) =>
+        item.kind !== 'event' ||
+        (!['request_resolved', 'agent_ui_intent_resolved'].includes(item.event.type) &&
+          !resolvedTargets.has(getChatQuestionTargetId(item.event))),
+    );
+  const detail =
+    formatTurnWorkItemSummary(latest, state === 'working') || 'Preparing the next step';
+  if (items.length === 0 && !active && !waiting) return null;
 
   return (
-    <div className="message-bubble flex justify-start">
-      <div className="w-full border-y border-border-subtle/80">
-        {!hasApprovalHistory && (
-          <button
-            type="button"
-            onClick={() => setExpandedOverride(!showDetails)}
-            className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:bg-bg-secondary/35 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-            aria-expanded={showDetails}
-            aria-controls={detailsId}
-          >
-            <span className="shrink-0 text-text-tertiary">
-              {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-            </span>
-            {active ? (
-              <WorkingDots compact />
-            ) : (
-              <Wrench size={12} className="shrink-0 text-text-tertiary" />
-            )}
-            <span className="font-medium text-text-secondary">{active ? 'Live work' : 'Work'}</span>
-            <span className="min-w-0 flex-1 truncate text-text-tertiary">
-              {[summaryParts.join(' · '), latestActivity].filter(Boolean).join(' — ') ||
-                'Reasoning update'}
-            </span>
-            {failedCount > 0 && (
-              <span className="rounded-full bg-error/10 px-2 py-0.5 font-medium text-error">
-                {failedCount} failed
-              </span>
-            )}
-          </button>
-        )}
-
-        {surfaceItems.length > 0 && (
+    <ProcessingCard
+      state={state}
+      detail={detail}
+      actions={counts.actions}
+      failed={counts.failed}
+      expanded={expanded}
+      onToggle={() => setExpanded((value) => !value)}
+      startedAt={startedAt}
+      endedAt={endedAt}
+    >
+      {items.map((item) => {
+        if (
+          item.kind === 'event' &&
+          (['request_resolved', 'agent_ui_intent_resolved'].includes(item.event.type) ||
+            resolvedTargets.has(getChatQuestionTargetId(item.event)))
+        )
+          return null;
+        const surfaced = item.kind === 'event' && isSurfaceEvent(item.event);
+        return (
           <div
-            className="space-y-2 border-t border-border-subtle px-3 py-3"
-            role="region"
-            aria-label="Requests and structured updates"
+            key={workItemKey(item, item.sourceIndex)}
+            className="processing-item"
+            hidden={!expanded && !surfaced}
           >
-            {surfaceItems.map((item, index) => (
-              <ChatEventRenderer
-                key={buildActivityEventKey(item.event, index)}
-                event={item.event}
-              />
-            ))}
+            {(expanded || surfaced) && <TurnWorkItemDetail item={item} index={item.sourceIndex} />}
           </div>
-        )}
-
-        {hasApprovalHistory && <ApprovalAwareWorkTimeline segments={approvalTimeline} />}
-
-        {!hasApprovalHistory && (
-          <div id={detailsId} hidden={!showDetails}>
-            {showDetails && (
-              <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
-                {items.map((item, index) => {
-                  if (surfaceSourceIndexes.has(item.sourceIndex)) return null;
-                  if (item.kind === 'progress') {
-                    return (
-                      <div key={`progress-${item.sourceIndex}`} className="pr-2">
-                        <p className="mb-1 text-xs font-medium text-text-muted">Progress update</p>
-                        <div className="max-w-[72ch] break-words text-text-secondary">
-                          <MarkdownRenderer content={item.content} />
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  if (item.kind === 'thinking') {
-                    return (
-                      <div
-                        key={`thinking-${item.sourceIndex}`}
-                        className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
-                      >
-                        <p className="mb-1 text-xs font-medium not-italic text-text-muted">
-                          Reasoning
-                        </p>
-                        <p className="whitespace-pre-wrap break-words">{item.content}</p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <ChatEventRenderer
-                      key={buildActivityEventKey(item.event, index)}
-                      event={item.event}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+        );
+      })}
+    </ProcessingCard>
   );
 }
 
@@ -558,7 +501,10 @@ function WorkingDots({ compact = false }: { compact?: boolean }) {
   );
 }
 
-export function formatTurnWorkItemSummary(item: ChatTurnWorkItem | undefined): string {
+export function formatTurnWorkItemSummary(
+  item: ChatTurnWorkItem | undefined,
+  active = true,
+): string {
   if (!item) return '';
   if (item.kind === 'progress') return summarizeProgress(item.content);
   if (item.kind === 'thinking') return 'Reasoning through the next step';
@@ -571,7 +517,7 @@ export function formatTurnWorkItemSummary(item: ChatTurnWorkItem | undefined): s
           : `Command failed (${item.event.exitCode}): ${compactWorkValue(item.event.command, 72)}`;
       }
       return item.event.command
-        ? `Running ${compactWorkValue(item.event.command, 84)}`
+        ? `${active ? 'Running' : 'Command:'} ${compactWorkValue(item.event.command, 84)}`
         : 'Reading command output';
     case 'file_edit':
       return item.event.filePath
@@ -584,7 +530,9 @@ export function formatTurnWorkItemSummary(item: ChatTurnWorkItem | undefined): s
       if (item.event.toolStatus === 'completed') {
         return item.event.toolName ? `Finished ${item.event.toolName}` : 'Finished a tool call';
       }
-      return item.event.toolName ? `Using ${item.event.toolName}` : 'Using a tool';
+      return item.event.toolName
+        ? `${active ? 'Using' : 'Tool:'} ${item.event.toolName}`
+        : 'Tool activity';
     case 'approval_request':
       return 'Waiting for approval';
     case 'input_request':
@@ -623,6 +571,8 @@ export function formatTurnWorkItemSummary(item: ChatTurnWorkItem | undefined): s
         : 'Updating the goal';
     case 'goal_cleared':
       return 'Goal cleared';
+    case 'context_compaction':
+      return item.event.toolStatus === 'completed' ? 'Context compacted' : 'Compacting context';
     case 'error':
       return item.event.errorMessage
         ? `Error: ${compactWorkValue(item.event.errorMessage, 84)}`
@@ -711,7 +661,7 @@ function FileEditEvent({
   }, [diff, hasDiff]);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-info/20 bg-bg-tertiary/60">
+    <div className="chat-operation overflow-hidden rounded-lg border border-info/20 bg-bg-tertiary/60">
       <div className="flex items-center gap-1 px-2 py-1">
         <button
           type="button"
@@ -1605,16 +1555,20 @@ function CommandExecEvent({
   command,
   output,
   exitCode,
+  toolStatus,
 }: {
   command: string;
   output: string;
   exitCode?: number;
+  toolStatus?: CodexEvent['toolStatus'];
 }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedOutput, setCopiedOutput] = useState(false);
   const detailsId = useId();
-  const success = exitCode === 0 || exitCode === undefined;
+  const active = useProcessingActive();
+  const status = getOperationStatus({ type: 'command_exec', exitCode, toolStatus }, active);
+  const success = status === 'completed';
 
   const copyCommand = useCallback(() => {
     if (!command) return;
@@ -1633,7 +1587,7 @@ function CommandExecEvent({
   }, [output]);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border-subtle bg-bg-tertiary/60">
+    <div className="chat-operation overflow-hidden rounded-lg border border-border-subtle bg-bg-tertiary/60">
       <div className="flex items-center gap-1 px-2 py-1">
         <button
           type="button"
@@ -1644,12 +1598,20 @@ function CommandExecEvent({
           aria-controls={detailsId}
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          <Terminal size={12} className={success ? 'text-success' : 'text-error'} />
+          <Terminal
+            size={12}
+            className={
+              success ? 'text-success' : status === 'failed' ? 'text-error' : 'text-text-secondary'
+            }
+          />
           <span className="min-w-0 truncate font-mono text-sm text-text-primary">{command}</span>
           {exitCode !== undefined && (
             <span className={`ml-auto shrink-0 text-xs ${success ? 'text-success' : 'text-error'}`}>
               exit {exitCode}
             </span>
+          )}
+          {exitCode === undefined && (
+            <span className="ml-auto shrink-0 text-xs text-text-secondary">{status}</span>
           )}
         </button>
         {command && (
@@ -1687,13 +1649,15 @@ function CommandExecEvent({
 function ToolCallEvent({ event }: { event: CodexEvent }) {
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
-  const status = event.toolStatus ?? 'running';
+  const status = getOperationStatus(event, useProcessingActive());
   const toolName = event.toolName ?? 'Tool';
-  const hasDetails = Boolean(event.toolOutput) || Boolean(event.toolInput);
+  const hasInput = Boolean(event.toolInput && Object.keys(event.toolInput).length > 0);
+  const hasOutput = Boolean(event.toolOutput);
+  const hasDetails = hasInput || hasOutput;
 
   return (
     <div
-      className={`overflow-hidden rounded-lg border ${
+      className={`chat-operation overflow-hidden rounded-lg border ${
         status === 'failed'
           ? 'border-error/30 bg-error/5'
           : 'border-border-subtle bg-bg-tertiary/60'
@@ -1703,7 +1667,7 @@ function ToolCallEvent({ event }: { event: CodexEvent }) {
         type="button"
         onClick={() => setExpanded((current) => !current)}
         disabled={!hasDetails}
-        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/80 disabled:cursor-default disabled:hover:bg-transparent"
+        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/80 disabled:cursor-default disabled:hover:bg-transparent"
         aria-label={
           hasDetails
             ? `${expanded ? 'Collapse' : 'Expand'} details for ${toolName}`
@@ -1712,20 +1676,23 @@ function ToolCallEvent({ event }: { event: CodexEvent }) {
         aria-expanded={hasDetails ? expanded : undefined}
         aria-controls={hasDetails ? detailsId : undefined}
       >
-        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        {hasDetails && (expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />)}
         {status === 'failed' ? (
           <XCircle size={12} className="shrink-0 text-error" />
         ) : status === 'completed' ? (
           <CheckCircle2 size={12} className="shrink-0 text-success" />
         ) : (
-          <Loader2 size={12} className="shrink-0 animate-spin text-text-tertiary" />
+          <Wrench size={12} className="shrink-0 text-text-secondary" />
         )}
-        <span>
+        <span className="min-w-0 flex-1 truncate">
           Tool:{' '}
           <span className={status === 'failed' ? 'text-error' : 'text-text-secondary'}>
             {toolName}
           </span>
         </span>
+        {status !== 'failed' && (
+          <span className="shrink-0 text-xs text-text-secondary">{status}</span>
+        )}
         {status === 'failed' && (
           <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 text-eyebrow font-medium text-error">
             failed
@@ -1735,10 +1702,24 @@ function ToolCallEvent({ event }: { event: CodexEvent }) {
       {hasDetails && (
         <div id={detailsId} hidden={!expanded}>
           {expanded && (
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words border-t border-border-subtle p-4 text-xs font-mono leading-relaxed text-text-tertiary">
-              {event.toolOutput ??
-                (event.toolInput ? JSON.stringify(event.toolInput, null, 2) : '')}
-            </pre>
+            <div className="space-y-3 border-t border-border-subtle p-4">
+              {hasInput && (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-text-secondary">Input</p>
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs font-mono leading-relaxed text-text-secondary">
+                    {JSON.stringify(event.toolInput, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {hasOutput && (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-text-secondary">Output</p>
+                  <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-xs font-mono leading-relaxed text-text-secondary">
+                    {event.toolOutput}
+                  </pre>
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -1750,7 +1731,7 @@ export function PlanUpdateEvent({ plan }: { plan: NonNullable<CodexEvent['plan']
   const completed = plan.steps.filter((step) => step.status === 'completed').length;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-info/25 bg-info/5">
+    <div className="chat-operation overflow-hidden rounded-lg border border-info/25 bg-info/5">
       <div className="flex items-start gap-2.5 border-b border-info/15 px-4 py-3">
         <ListChecks size={14} className="mt-0.5 shrink-0 text-info" />
         <div className="min-w-0 flex-1">
@@ -1787,7 +1768,7 @@ export function PlanUpdateEvent({ plan }: { plan: NonNullable<CodexEvent['plan']
 
 function GoalUpdateEvent({ goal }: { goal: NonNullable<CodexEvent['goal']> }) {
   return (
-    <div className="rounded-lg border border-success/20 bg-success/5 px-4 py-3">
+    <div className="chat-operation rounded-lg border border-success/20 bg-success/5 px-4 py-3">
       <div className="flex items-start gap-2.5">
         <Target size={14} className="mt-0.5 shrink-0 text-success" />
         <div className="min-w-0">
@@ -1807,7 +1788,7 @@ function GoalUpdateEvent({ goal }: { goal: NonNullable<CodexEvent['goal']> }) {
 
 function GoalClearedEvent() {
   return (
-    <div className="rounded-lg border border-border-subtle bg-bg-tertiary/50 px-4 py-3 text-sm text-text-tertiary">
+    <div className="chat-operation rounded-lg border border-border-subtle bg-bg-tertiary/50 px-4 py-3 text-sm text-text-tertiary">
       Goal cleared
     </div>
   );
@@ -2254,24 +2235,14 @@ function formatActivityPreview(event: CodexEvent & { sessionId?: string }): stri
 }
 
 function buildActivityEventKey(event: CodexEvent & { sessionId?: string }, index: number): string {
+  const requestKey = getChatQuestionTargetId(event);
+  if (requestKey) return requestKey;
   return [
+    event.sessionId ?? event.appThreadId ?? 'thread',
     event.type,
-    event.itemId,
-    event.toolName,
-    event.toolStatus,
-    event.command,
-    event.filePath,
-    event.approvalRequestId === undefined ? undefined : String(event.approvalRequestId),
-    event.inputRequestId === undefined ? undefined : String(event.inputRequestId),
-    event.subagent?.id,
-    event.protocolThreadId,
-    event.plan?.updatedAt,
-    event.agentUIIntent?.id,
-    event.agentUIIntent?.revision,
-    event.goal?.updatedAt,
-    event.status,
-    String(index),
+    event.itemId ?? event.subagent?.id ?? event.agentUIIntent?.id ?? index,
+    event.type === 'file_edit' ? event.filePath : undefined,
   ]
-    .filter(Boolean)
+    .filter((part) => part !== undefined)
     .join(':');
 }

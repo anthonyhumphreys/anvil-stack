@@ -1,0 +1,114 @@
+@property --processing-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.processing-card {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, var(--color-bg-primary));
+}
+
+/* One low-energy accent moves on the perimeter. The neutral surface stays still. */
+.processing-card::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--processing-angle),
+    transparent 0deg 270deg,
+    color-mix(in srgb, var(--color-accent) 36%, transparent) 328deg,
+    transparent 360deg
+  );
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease-out;
+  animation: processing-perimeter 8s linear infinite paused;
+}
+
+.processing-card[data-processing-state='working']::before {
+  opacity: 1;
+}
+.processing-card[data-processing-motion='running']::before {
+  animation-play-state: running;
+}
+.processing-card-header {
+  display: flex;
+  width: 100%;
+  min-height: 64px;
+  align-items: center;
+  gap: 12px;
+  border-radius: inherit;
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  transition: background-color 140ms ease-out;
+}
+.processing-card-header:hover {
+  background: color-mix(in srgb, var(--color-bg-hover) 45%, transparent);
+}
+.processing-card-header:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+.processing-state-icon {
+  color: var(--color-text-secondary);
+}
+[data-processing-state='working'] .processing-state-icon {
+  color: var(--color-accent);
+}
+[data-processing-state='waiting'] .processing-state-icon {
+  color: var(--color-warning);
+}
+[data-processing-state='failed'] .processing-state-icon {
+  color: var(--color-error);
+}
+[data-processing-state='completed'] .processing-state-icon {
+  color: var(--color-success);
+}
+.processing-item {
+  border-top: 1px solid var(--color-border-subtle);
+  padding: 10px 12px;
+}
+.processing-item[hidden] {
+  display: none;
+}
+/* Inside the turn card, operations are rows with disclosure, not nested cards. */
+.processing-details .chat-operation {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.processing-details .animate-spin,
+.processing-details .animate-pulse {
+  animation: none;
+}
+
+@keyframes processing-perimeter {
+  to {
+    --processing-angle: 360deg;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .processing-card::before {
+    animation: none;
+    transition: none;
+  }
+  .processing-card-header {
+    transition: none;
+  }
+}

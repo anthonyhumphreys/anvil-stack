@@ -44,6 +44,8 @@ export interface ChatTurnUsage {
 
 export interface ComposedChatTurn {
   key: string;
+  startedAt?: string;
+  endedAt?: string;
   user: IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | null;
   work: ChatTurnWorkItem[];
   answer: IndexedChatEntry<AssistantEntry> | null;
@@ -240,6 +242,10 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
 
   return {
     key: userEntry?.id ?? answerSegment?.entry.id ?? `turn-${entries[0]?.sourceIndex ?? 0}`,
+    startedAt: userEntry?.timestamp ?? entries[0]?.timestamp,
+    endedAt: active
+      ? undefined
+      : entries.findLast((entry) => entry.kind !== 'user' && entry.timestamp)?.timestamp,
     user: userEntry ?? null,
     work,
     answer: answerSegment?.entry ?? null,

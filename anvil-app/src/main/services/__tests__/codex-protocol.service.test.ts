@@ -1,3 +1,4 @@
+import { AGENT_PROVIDERS, isAcpAgentProvider } from '../../../shared/agent-providers';
 import type { ChildProcess } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
@@ -1031,9 +1032,7 @@ describe('ACP work-surface parity', () => {
         toolCallId: 'edit-4',
         kind: 'edit',
         status: 'in_progress',
-        content: [
-          { type: 'diff', path: 'src/app.ts', oldText: 'start', newText },
-        ],
+        content: [{ type: 'diff', path: 'src/app.ts', oldText: 'start', newText }],
       });
 
     const events = collectEvents(createState(), [
@@ -1182,9 +1181,7 @@ describe('ACP work-surface parity', () => {
     ]);
     expect(acpEvents[0]).toEqual({ type: 'text', text: 'hi', agentLabel: 'Cursor' });
 
-    const codexEvents = collectEvents(createState(), [
-      { method: 'thread/compacted', params: {} },
-    ]);
+    const codexEvents = collectEvents(createState(), [{ method: 'thread/compacted', params: {} }]);
     expect(codexEvents[0]).toEqual({ type: 'context_compaction' });
     expect('agentLabel' in codexEvents[0]).toBe(false);
   });
@@ -1254,5 +1251,104 @@ describe('provider-neutral execution evidence', () => {
     expect(events[0].observedCostUsd).toBeUndefined();
     expect(events[1].observedCostUsd).toBe(0.5);
     expect(events[2].observedCostUsd).toBe(0);
+  });
+});
+
+describe.each(AGENT_PROVIDERS)('%s processing lifecycle', (provider) => {
+  it('normalizes tool start and completion with stable identity and status', () => {
+    const acp = isAcpAgentProvider(provider);
+    const messages = acp
+      ? [
+          {
+            method: 'session/update',
+            params: {
+              update: {
+                sessionUpdate: 'tool_call',
+                toolCallId: 'tool-1',
+                title: 'Read schema',
+                status: 'in_progress',
+              },
+            },
+          },
+          {
+            method: 'session/update',
+            params: {
+              update: {
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'tool-1',
+                status: 'completed',
+                rawOutput: 'Schema loaded',
+              },
+            },
+          },
+        ]
+      : [
+          {
+            method: 'item/started',
+            params: {
+              item: {
+                id: 'tool-1',
+                type: 'mcpToolCall',
+                server: 'db',
+                tool: 'read_schema',
+                arguments: { table: 'users' },
+                status: 'inProgress',
+              },
+            },
+          },
+          {
+            method: 'item/completed',
+            params: {
+              item: {
+                id: 'tool-1',
+                type: 'mcpToolCall',
+                server: 'db',
+                tool: 'read_schema',
+                result: 'Schema loaded',
+                status: 'completed',
+              },
+            },
+          },
+        ];
+    const events: CodexEvent[] = [];
+    const state = { threadId: 'thread-1', turnId: 'turn-1', initialized: true };
+    for (const message of messages)
+      handleCodexServerLine(state, JSON.stringify(message), {
+        onEvent: (event) => events.push(event),
+      });
+    expect(events.map((event) => event.toolStatus)).toEqual(['running', 'completed']);
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      itemId: 'tool-1',
+      toolStatus: 'completed',
+      toolOutput: 'Schema loaded',
+    });
+  });
+});
+
+describe('native app-server tool evidence', () => {
+  it.each([
+    { type: 'mcpToolCall', tool: 'read_schema', error: { message: 'Connection refused' } },
+    {
+      type: 'dynamicToolCall',
+      tool: 'search',
+      success: false,
+      contentItems: [{ type: 'inputText', text: 'Search failed' }],
+    },
+  ])('preserves failed $type outcomes and details', (item) => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'item/completed',
+        params: { item: { ...item, id: 'failed-tool', status: 'completed' } },
+      },
+    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'tool_call',
+      itemId: 'failed-tool',
+      toolStatus: 'failed',
+      toolName: item.tool,
+    });
+    expect(events[0].toolOutput).toBeTruthy();
   });
 });

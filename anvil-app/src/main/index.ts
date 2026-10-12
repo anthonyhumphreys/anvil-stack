@@ -478,7 +478,12 @@ app.whenReady().then(() => {
     return getWindowChromeState(win ?? mainWindow);
   });
 
-  createWindow();
+  // Fixture previews require an isolated development profile; never use real user data.
+  createWindow(
+    !app.isPackaged && isolatedDevProfileActive && process.env.ANVIL_DEV_PROCESSING_PREVIEW === '1'
+      ? { route: '/_dev/processing' }
+      : {},
+  );
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
