@@ -317,6 +317,22 @@ describe('cicd.service', () => {
     );
     expect(parseDocument(workflow.content).errors).toHaveLength(0);
     expect(workflow.content).toContain(projectFile);
+    const azure = createCicdPipeline(repoPath, {
+      provider: 'azure-pipelines',
+      template: 'dotnet-azure',
+      name: '.NET CI',
+    });
+    const azureDocument = parseDocument(azure.content);
+    expect(azureDocument.errors).toHaveLength(0);
+    const steps = azureDocument.toJS().stages[0].jobs[0].steps;
+    expect(steps).toContainEqual({
+      script: `dotnet publish 'src/service/${projectFile}' --configuration Release --output "$(Build.ArtifactStagingDirectory)"`,
+      displayName: 'Publish',
+    });
+    expect(steps).toContainEqual({
+      publish: '$(Build.ArtifactStagingDirectory)',
+      artifact: 'drop',
+    });
   });
 
   it('quotes workflow names and rejects traversal, symlink paths, and unsupported templates', () => {

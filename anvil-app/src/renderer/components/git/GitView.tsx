@@ -48,7 +48,11 @@ export function GitView() {
 
   const [selectedRepoId, setSelectedRepoId] = useState('');
   const [tab, setTab] = useState<Tab>('changes');
-  const [status, setStatus] = useState<GitStatusResult | null>(null);
+  const [statusSnapshot, setStatusSnapshot] = useState<{
+    repoId: string;
+    status: GitStatusResult;
+  } | null>(null);
+  const status = statusSnapshot?.repoId === selectedRepoId ? statusSnapshot.status : null;
   const [log, setLog] = useState<GitLogEntry[]>([]);
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
   const [pullRequests, setPullRequests] = useState<CodeReviewPullRequest[]>([]);
@@ -110,7 +114,7 @@ export function GitView() {
         window.anvil.git.log(selectedRepoId, 50),
         window.anvil.git.branches(selectedRepoId),
       ]);
-      setStatus(s);
+      setStatusSnapshot({ repoId: selectedRepoId, status: s });
       setLog(l);
       setBranches(b);
     } catch (err) {
@@ -152,7 +156,7 @@ export function GitView() {
     const interval = setInterval(() => {
       window.anvil.git
         .status(selectedRepoId)
-        .then(setStatus)
+        .then((status) => setStatusSnapshot({ repoId: selectedRepoId, status }))
         .catch(() => {});
     }, 5000);
     return () => clearInterval(interval);

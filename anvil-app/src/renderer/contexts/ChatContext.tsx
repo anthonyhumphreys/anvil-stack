@@ -3132,6 +3132,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const endTemporaryChat = useCallback(async () => {
     if (!temporaryThread) return;
+    threadLoadVersionRef.current += 1;
     await stopThreadLiveSession(temporaryThread.id);
     await window.anvil.chat.endTemporaryThread(temporaryThread.id).catch(() => false);
     delete liveSessionsByThreadIdRef.current[temporaryThread.id];

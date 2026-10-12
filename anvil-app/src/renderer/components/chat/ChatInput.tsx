@@ -218,6 +218,8 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
+  const allowAttachmentsRef = useRef(allowAttachments);
+  allowAttachmentsRef.current = allowAttachments;
   const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [standardFeedback, setStandardFeedback] = useState<{
@@ -610,7 +612,9 @@ export function ChatInput({
 
   const refreshComposerTriggers = useCallback(
     (nextValue: string, selectionStart: number | null) => {
-      const nextFileMention = findActiveFileMention(nextValue, selectionStart);
+      const nextFileMention = allowAttachments
+        ? findActiveFileMention(nextValue, selectionStart)
+        : null;
       const nextSlashCommand = nextFileMention
         ? null
         : findActiveSlashCommand(nextValue, selectionStart);
@@ -623,7 +627,7 @@ export function ChatInput({
       setSlashCommand(nextSlashCommand);
       setSkillMention(nextSkillMention);
     },
-    [],
+    [allowAttachments],
   );
 
   const handleTextChange = useCallback(
@@ -659,14 +663,17 @@ export function ChatInput({
       }
 
       const selectedFiles = files.slice(0, remainingSlots);
+      const attachmentDraftKey = draftKeyRef.current;
       setPreparingAttachments(true);
       setAttachmentError(files.length > remainingSlots ? 'Some files were skipped.' : null);
 
       try {
         const preparedInputs = await Promise.all(selectedFiles.map(fileToAttachmentInput));
+        if (!allowAttachmentsRef.current || draftKeyRef.current !== attachmentDraftKey) return;
         const prepared = await window.anvil.chat.prepareAttachments(
           preparedInputs.map((item) => item.input),
         );
+        if (!allowAttachmentsRef.current || draftKeyRef.current !== attachmentDraftKey) return;
         const previews = preparedInputs.reduce<Record<string, string>>((acc, item) => {
           if (item.previewDataUrl) acc[item.input.id!] = item.previewDataUrl;
           return acc;
@@ -706,10 +713,12 @@ export function ChatInput({
       return;
     }
 
+    const attachmentDraftKey = draftKeyRef.current;
     setPreparingAttachments(true);
     setAttachmentError(null);
     try {
       const selected = await window.anvil.chat.selectAttachments();
+      if (!allowAttachmentsRef.current || draftKeyRef.current !== attachmentDraftKey) return;
       markDraftChanged();
       setAttachments((prev) => mergeAttachments(prev, selected.slice(0, remainingSlots)));
       if (selected.length > remainingSlots) {
@@ -745,10 +754,12 @@ export function ChatInput({
 
       setPreparingAttachments(true);
       setAttachmentError(null);
+      const attachmentDraftKey = draftKeyRef.current;
       try {
         const prepared = await window.anvil.chat.prepareAttachments([
           { name: result.name, path: result.path },
         ]);
+        if (!allowAttachmentsRef.current || draftKeyRef.current !== attachmentDraftKey) return;
         markDraftChanged();
         setAttachments((prev) => mergeAttachments(prev, prepared));
 
@@ -1088,10 +1099,11 @@ export function ChatInput({
     attachmentsRef.current = [];
     setAttachments([]);
     setAttachmentPreviews({});
+    setFileMention(null);
   }, [allowAttachments]);
 
   useEffect(() => {
-    if (disabled || !fileMention || mentionRepoIds.length === 0) {
+    if (!allowAttachments || disabled || !fileMention || mentionRepoIds.length === 0) {
       setFileMentionResults([]);
       setFileMentionLoading(false);
       setFileMentionError(null);
@@ -1128,7 +1140,7 @@ export function ChatInput({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [disabled, fileMention, mentionRepoIds, mentionRepoKey]);
+  }, [allowAttachments, disabled, fileMention, mentionRepoIds, mentionRepoKey]);
 
   useEffect(() => {
     setSelectedSlashCommandIndex(0);

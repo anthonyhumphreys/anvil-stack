@@ -185,6 +185,14 @@ function stripSqlComments(sql: string): string {
   return sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*$/gm, '');
 }
 
+function dollarQuoteEnd(source: string, index: number): number | null {
+  if (source[index] !== '$') return null;
+  const delimiter = source.slice(index).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0];
+  if (!delimiter) return null;
+  const end = source.indexOf(delimiter, index + delimiter.length);
+  return end < 0 ? source.length : end + delimiter.length - 1;
+}
+
 function findMatchingParen(source: string, openingIndex: number): number {
   let depth = 0;
   let quote: "'" | '"' | '`' | ']' | null = null;
@@ -198,6 +206,11 @@ function findMatchingParen(source: string, openingIndex: number): number {
           quote = null;
         }
       }
+      continue;
+    }
+    const dollarEnd = dollarQuoteEnd(source, index);
+    if (dollarEnd !== null) {
+      index = dollarEnd;
       continue;
     }
     if (character === "'" || character === '"' || character === '`') {
@@ -225,6 +238,11 @@ function splitTopLevelSqlList(body: string): string[] {
         if (body[index + 1] === quote && quote !== ']') index += 1;
         else quote = null;
       }
+      continue;
+    }
+    const dollarEnd = dollarQuoteEnd(body, index);
+    if (dollarEnd !== null) {
+      index = dollarEnd;
       continue;
     }
     if (character === "'" || character === '"' || character === '`') quote = character;
@@ -347,7 +365,7 @@ export function parseSqlSnapshot(contents: string[], defaultSchema = 'dbo'): Par
     }
 
     for (const match of cleaned.matchAll(
-      /alter\s+table\s+(?:only\s+)?([#A-Za-z0-9_\[\]"`.]+)[\s\S]*?foreign\s+key\s*\([^)]*\)\s*references\s+([#A-Za-z0-9_\[\]"`.]+)/gi,
+      /alter\s+table\s+(?:only\s+)?([#A-Za-z0-9_\[\]"`.]+)[^;]*?foreign\s+key\s*\([^)]*\)\s*references\s+([#A-Za-z0-9_\[\]"`.]+)/gi,
     )) {
       relationships.add(
         `${splitQualifiedName(match[1], defaultSchema).qualifiedName} -> ${splitQualifiedName(match[2], defaultSchema).qualifiedName}`,

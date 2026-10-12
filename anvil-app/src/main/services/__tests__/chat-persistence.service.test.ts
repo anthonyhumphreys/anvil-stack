@@ -315,8 +315,10 @@ describe('chat thread persistence', () => {
     );
   });
 
-  it('tracks inbox attention and prevents active work from being settled', () => {
-    const thread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+  it.each([false, true])('tracks inbox attention and settling for temporary=%s', (temporary) => {
+    const thread = temporary
+      ? createTemporaryChatThread('coder')
+      : createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
 
     expect(thread.attentionState).toBe('idle');
     const settled = updateChatThread(thread.id, { settled: true });

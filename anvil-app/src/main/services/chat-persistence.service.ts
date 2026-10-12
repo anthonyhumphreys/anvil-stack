@@ -661,12 +661,23 @@ export function updateChatThread(
   const temporary = temporaryChats.get(threadId);
   if (temporary) {
     const now = new Date().toISOString();
-    if (typeof updates.title === 'string') temporary.thread.title = updates.title.trim() || 'Temporary chat';
-    if (typeof updates.personaId === 'string') temporary.thread.personaId = updates.personaId.trim() || 'coder';
-    if (updates.settled === true) temporary.thread.settledAt = now;
+    if (
+      updates.settled === true &&
+      ['working', 'approval', 'input'].includes(temporary.thread.attentionState)
+    ) {
+      throw new Error('This thread still needs attention and cannot be settled yet.');
+    }
+    if (typeof updates.title === 'string')
+      temporary.thread.title = updates.title.trim() || 'Temporary chat';
+    if (typeof updates.personaId === 'string')
+      temporary.thread.personaId = updates.personaId.trim() || 'coder';
+    if (updates.settled === true) {
+      temporary.thread.settledAt = now;
+    }
     if (updates.settled === false) temporary.thread.settledAt = undefined;
     if (updates.viewed) temporary.thread.lastViewedAt = now;
     if (updates.summary !== undefined) temporary.thread.summary = updates.summary ?? undefined;
+    if (updates.titleLocked === true) temporary.thread.titleLocked = true;
     temporary.thread.updatedAt = now;
     return { ...temporary.thread, repoIds: [] };
   }
@@ -743,11 +754,16 @@ export function updateChatThreadAttention(
   const temporary = temporaryChats.get(threadId);
   if (temporary) {
     temporary.thread.attentionState = attentionState;
+    if (
+      attentionState === 'working' ||
+      attentionState === 'approval' ||
+      attentionState === 'input'
+    ) {
+      temporary.thread.settledAt = undefined;
+    }
     temporary.thread.attentionUpdatedAt = now;
     temporary.thread.activeTurnStartedAt =
-      attentionState === 'working'
-        ? (temporary.thread.activeTurnStartedAt ?? now)
-        : undefined;
+      attentionState === 'working' ? (temporary.thread.activeTurnStartedAt ?? now) : undefined;
     temporary.thread.updatedAt = now;
     return { ...temporary.thread, repoIds: [] };
   }

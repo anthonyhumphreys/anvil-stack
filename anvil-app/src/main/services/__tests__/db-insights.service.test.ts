@@ -300,6 +300,42 @@ CREATE OR REPLACE PROCEDURE public.rebuild_order_totals() LANGUAGE SQL AS $$ SEL
     expect(snapshot.procedureCount).toBe(1);
   });
 
+  it.each(['$$', '$body$'])(
+    'preserves columns after a %s quoted PostgreSQL default',
+    (delimiter) => {
+      const snapshot = parseExportSnapshot([
+        {
+          fileName: 'postgres.sql',
+          content: `CREATE TABLE public.notes (
+          id bigint,
+          note text DEFAULT ${delimiter}),quoted, value${delimiter},
+          customer_id bigint REFERENCES public.customers(id)
+        );`,
+        },
+      ]);
+      expect(snapshot.tables[0]).toMatchObject({
+        qualifiedName: 'public.notes',
+        columnCount: 3,
+        fields: ['id', 'note', 'customer_id'],
+      });
+      expect(snapshot.relationships).toEqual(['public.notes -> public.customers']);
+    },
+  );
+
+  it('only attributes external foreign keys to their own ALTER TABLE statement', () => {
+    const snapshot = parseExportSnapshot([
+      {
+        fileName: 'postgres.sql',
+        content: `CREATE TABLE public.a (id bigint);
+          CREATE TABLE public.b (id bigint);
+          CREATE TABLE public.c (id bigint);
+          ALTER TABLE public.a ADD COLUMN x INT;
+          ALTER TABLE public.b ADD FOREIGN KEY (id) REFERENCES public.c(id);`,
+      },
+    ]);
+    expect(snapshot.relationships).toEqual(['public.b -> public.c']);
+  });
+
   it('parses MySQL dump table bodies with nested type parentheses and trailing engine options', () => {
     const snapshot = parseExportSnapshot([
       {

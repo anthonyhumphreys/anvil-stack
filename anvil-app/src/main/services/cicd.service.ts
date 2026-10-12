@@ -635,6 +635,10 @@ function renderPipelineTemplate(input: CicdCreatePipelineInput, stack: CicdStack
     '            displayName: Restore',
     `          - script: ${yamlScalar(`dotnet test${stack.projectFile ? ` ${shellQuote(stack.projectFile)}` : ''} --configuration Release`)}`,
     '            displayName: Test',
+    `          - script: ${yamlScalar(`dotnet publish${stack.projectFile ? ` ${shellQuote(stack.projectFile)}` : ''} --configuration Release --output "$(Build.ArtifactStagingDirectory)"`)}`,
+    '            displayName: Publish',
+    '          - publish: $(Build.ArtifactStagingDirectory)',
+    '            artifact: drop',
     '',
   ].join('\n');
 }
