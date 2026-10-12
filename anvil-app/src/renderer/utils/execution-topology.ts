@@ -22,6 +22,7 @@ export interface ExecutionTopologyNode {
   latestMessage?: string;
   sessionId?: string;
   appThreadId?: string;
+  threadSummary?: string;
 }
 
 export interface ExecutionTopology {
@@ -31,11 +32,27 @@ export interface ExecutionTopology {
   startedAt?: string;
 }
 
+const AGENT_WORK_SUMMARY_LIMIT = 160;
+
+/** Reduce an assignment or progress message to a readable row summary. */
+export function summarizeAgentWork(text?: string): string {
+  const source = text?.trim();
+  if (!source) return 'No assignment details reported';
+
+  const summary = source.replace(/\s+/g, ' ');
+  if (summary.length <= AGENT_WORK_SUMMARY_LIMIT) return summary;
+
+  const truncated = summary.slice(0, AGENT_WORK_SUMMARY_LIMIT - 1);
+  const wordBoundary = truncated.lastIndexOf(' ');
+  return `${truncated.slice(0, wordBoundary > 100 ? wordBoundary : truncated.length).trimEnd()}…`;
+}
+
 interface ExecutionTopologyInput {
   entries: ChatEntry[];
   sessions: CodexSession[];
   threadId: string | null;
   rootLabel: string;
+  rootSummary?: string;
   sessionStates?: Record<string, ExecutionTopologyNodeStatus>;
 }
 
@@ -44,6 +61,7 @@ export function buildExecutionTopology({
   sessions,
   threadId,
   rootLabel,
+  rootSummary,
   sessionStates = {},
 }: ExecutionTopologyInput): ExecutionTopology {
   const rootId = `thread:${threadId ?? 'new'}`;
@@ -66,6 +84,8 @@ export function buildExecutionTopology({
       : 'idle',
     kind: 'thread',
     prompt: [...entries].reverse().find((entry) => entry.kind === 'user')?.content,
+    appThreadId: threadId ?? undefined,
+    threadSummary: threadId ? rootSummary : undefined,
   });
 
   for (const session of relevantSessions) {

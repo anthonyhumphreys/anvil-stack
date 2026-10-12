@@ -10,7 +10,7 @@ order: 60
 
 # Chat personas, reasoning, and LLM providers
 
-Anvil Desktop chat sessions are not generic AI chats. They are grounded in repository context, work items, and the current branch state. The persona system shapes what the model optimises for, reasoning effort controls how much work the Codex turn asks the model to do, and the LLM provider configuration keeps credentials out of renderer code.
+Workspace chat sessions use repository context, work items, and the current branch state. The persona system shapes what the model optimises for, reasoning effort controls how much work the Codex turn asks the model to do, and the LLM provider configuration keeps credentials out of renderer code.
 
 ## Supported LLM providers
 
@@ -79,6 +79,14 @@ It is deliberately *not* used for repository-aware work: file reads, edits, comm
 The Settings status card shows what this Mac can actually do: which backend is active (`fm` CLI or a compiled Swift helper), the model's availability state, its context size, and whether streaming, image prompts, and token counting are supported. If the `fm` legal notice is pending, the card shows the `sudo fm license` command to run once.
 
 Local routing is not a replacement for agentic Codex work. It is useful for small wording, summarisation, or helper prompts where involving a larger backend would be theatre with an invoice.
+
+## Temporary chat
+
+Open Cmd+K and choose **Temporary chat** for an ad-hoc conversation. You can start it without a workspace or repository. The chat header identifies it as temporary, and **End temporary chat** discards it and returns to normal chat.
+
+Anvil keeps the transcript and unsent draft in memory until you end the chat or quit the app. Temporary chats stay out of saved thread lists, automatic title generation, and execution-event history. They use an empty working directory, read-only permissions, and no workspace, repository, governance, or MCP context.
+
+Temporary chat currently accepts text only and supports providers running through the Codex bridge. Cursor and Devin sessions, file attachments, pasted images, and file-drop uploads are unavailable in this mode.
 
 ## Thread titles and summaries
 

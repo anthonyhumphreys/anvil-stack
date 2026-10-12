@@ -57,6 +57,7 @@ import {
   emitLocalAssistantText,
   emitLocalAssistantTurnEnd,
   getSessionStatus,
+  isTemporaryChatSession,
   stopAllSessions,
   getSessionForRepo,
   listActiveCodexSessions,
@@ -85,6 +86,8 @@ import {
   deleteChatThread,
   ensureWorkItemChatThread,
   getChatThreadProviderBinding,
+  getChatThread,
+  isTemporaryChatThread,
   listChatThreads,
   listWorkItemChatThreads,
   saveChatEntry,
@@ -93,6 +96,8 @@ import {
   setChatThreadProviderThreadId,
   loadChatHistory,
   clearChatHistory,
+  createTemporaryChatThread,
+  endTemporaryChatThread,
   updateChatThread,
 } from '../services/chat-persistence.service.js';
 import {
@@ -268,6 +273,26 @@ export function registerChatHandlers(): void {
       const provider = options?.provider ?? getSettings().llmProvider;
       await assertChatProviderAvailable(provider);
 
+      const temporaryThread = getChatThread(options?.threadId ?? '');
+      const temporaryFlag = options?.temporaryChat === true;
+      if (temporaryFlag !== isTemporaryChatThread(options?.threadId)) {
+        throw new Error('Temporary chat session state does not match its thread.');
+      }
+      if (temporaryFlag) {
+        if (
+          !temporaryThread?.temporary ||
+          repoIds.length > 0 ||
+          options?.workspace ||
+          options?.scaffold ||
+          options?.providerThreadId ||
+          options?.forkFromProviderThreadId
+        ) {
+          throw new Error('Temporary chat cannot use workspace, repository, or resumed-thread context.');
+        }
+      } else if (temporaryThread?.temporary) {
+        throw new Error('Temporary chat sessions must use the isolated temporary session mode.');
+      }
+
       // Get repo paths from DB
       const db = getDb();
       const repoPaths: string[] = [];
@@ -277,7 +302,7 @@ export function registerChatHandlers(): void {
           | undefined;
         if (row) repoPaths.push(row.path);
       }
-      if (repoPaths.length === 0 && !options?.scaffold && !options?.workspace) {
+      if (repoPaths.length === 0 && !options?.scaffold && !options?.workspace && !temporaryFlag) {
         throw new Error('No repos found');
       }
 
@@ -293,8 +318,10 @@ export function registerChatHandlers(): void {
       }
 
       // Use first repo's path as primary cwd; pass all paths for context
-      const storedBinding = getChatThreadProviderBinding(options?.threadId);
-      const providerThreadId =
+      const storedBinding = temporaryFlag ? null : getChatThreadProviderBinding(options?.threadId);
+      const providerThreadId = temporaryFlag
+        ? undefined
+        :
         options?.providerThreadId ??
         (storedBinding?.provider === provider ? storedBinding.providerThreadId : undefined);
       const codexSession = await startSession(repoPaths, repoIds, personaId, {
@@ -356,6 +383,9 @@ export function registerChatHandlers(): void {
       attachments?: ChatAttachment[],
       options?: ChatSendOptions,
     ): Promise<void> => {
+      if (isTemporaryChatSession(sessionId) && (attachments?.length ?? 0) > 0) {
+        throw new Error('Temporary chat supports text messages only.');
+      }
       // Parse chat commands before sending
       const parsed = parseChatCommand(message);
 
@@ -538,6 +568,16 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:get-personas', (): Persona[] => {
     return getPersonas();
+  });
+
+  ipcMain.handle('chat:create-temporary-thread', (_event, personaId: string): ChatThread => {
+    const persona = getPersonas().find((candidate) => candidate.id === personaId);
+    if (!persona) throw new Error('Choose an available persona before starting a temporary chat.');
+    return createTemporaryChatThread(persona.id);
+  });
+
+  ipcMain.handle('chat:end-temporary-thread', (_event, threadId: string): boolean => {
+    return endTemporaryChatThread(threadId);
   });
 
   ipcMain.handle('chat:list-threads', (_event, workspaceId: string | null): ChatThread[] => {

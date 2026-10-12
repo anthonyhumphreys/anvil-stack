@@ -305,6 +305,7 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
           open={commandPaletteOpen}
           onClose={() => setCommandPaletteOpen(false)}
           userRole={userRole}
+          cloudFeaturesEnabled={cloudFeaturesEnabled}
           onToggleTerminal={toggleTerminal}
           onCreateWorkspace={() => setShowCreator(true)}
         />

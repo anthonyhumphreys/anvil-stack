@@ -31,6 +31,8 @@ import {
   resolvePersonaCodexPolicy,
   resolvePlanFeedbackDelivery,
   resolveSessionCwd,
+  resolveSessionTurnMode,
+  shouldPersistDojoExecutionEvent,
   stopManagedProviderProcess,
 } from '../codex-session.service.js';
 
@@ -51,6 +53,30 @@ afterEach(() => {
 });
 
 describe('codex session service', () => {
+  it('keeps temporary turns read-only and excludes their execution telemetry from storage', () => {
+    expect(
+      resolveSessionTurnMode({
+        temporaryChat: true,
+        permissionMode: 'full-access',
+        sessionModeOverride: 'full-access',
+        configuredMode: 'on-request',
+        currentMode: 'full-access',
+      }),
+    ).toBe('read-only');
+    expect(
+      shouldPersistDojoExecutionEvent(
+        { temporaryChat: true, appThreadId: 'temporary-thread' },
+        { type: 'usage', usage: { input: 10, cachedInput: 0, output: 5 } },
+      ),
+    ).toBe(false);
+    expect(
+      shouldPersistDojoExecutionEvent(
+        { temporaryChat: false, appThreadId: 'workspace-thread' },
+        { type: 'usage', usage: { input: 10, cachedInput: 0, output: 5 } },
+      ),
+    ).toBe(true);
+  });
+
   it('isolates provider children in a process group on POSIX', () => {
     expect(providerProcessSpawnOptions()).toEqual(
       process.platform === 'win32' ? {} : { detached: true },
@@ -353,6 +379,15 @@ describe('codex session service', () => {
 
     expect(cwd).toBe(path.join(userDataPath, 'workspace-chat', 'workspace-123'));
     expect(fs.statSync(cwd).isDirectory()).toBe(true);
+  });
+
+  it('uses a fresh empty directory for temporary chat instead of the app working directory', () => {
+    const cwd = resolveSessionCwd([], { temporaryChat: true }, '/tmp/anvil-test');
+    tempDirs.push(cwd);
+
+    expect(cwd).not.toBe(process.cwd());
+    expect(path.basename(cwd)).toMatch(/^anvil-temporary-chat-/);
+    expect(fs.readdirSync(cwd)).toEqual([]);
   });
 
   it('rejects unsafe workspace IDs when creating an isolated working directory', () => {

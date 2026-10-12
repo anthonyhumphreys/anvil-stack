@@ -41,7 +41,7 @@ export interface RepoIndexContextValue {
   activeJobForRepo: (repoId: string) => RepoIndexJob | null;
   /** Latest terminal job (completed/failed/cancelled) for a repo. */
   latestFinishedJobForRepo: (repoId: string) => RepoIndexJob | null;
-  /** Most recent failed job carrying an error message, for RM5. */
+  /** Most recent failed job, including jobs without an error message. */
   lastErrorForRepo: (repoId: string) => RepoIndexJob | null;
   isIndexing: (repoId: string) => boolean;
   /** Manual full refresh: enqueues mapped + enriched tiers. */
@@ -201,9 +201,7 @@ export function RepoIndexProvider({ children }: { children: ReactNode }) {
 
   const lastErrorForRepo = useCallback(
     (repoId: string) =>
-      (jobsByRepoId.get(repoId) ?? []).find(
-        (job) => job.state === 'failed' && Boolean(job.error),
-      ) ?? null,
+      (jobsByRepoId.get(repoId) ?? []).find((job) => job.state === 'failed') ?? null,
     [jobsByRepoId],
   );
 

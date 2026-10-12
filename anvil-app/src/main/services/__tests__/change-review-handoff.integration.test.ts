@@ -97,6 +97,40 @@ it('captures retained workflow worktree contents and detects cleanup without rep
   expect(() => resolveReviewRepairPaths('thread', ['repo'], review.id)).toThrow();
   expect(getChangeReview(review.id).freshness).toBe('unknown');
 });
+
+it('persists chat turn and changed-file context on the candidate snapshot', async () => {
+  const origin = {
+    chat: {
+      threadId: 'thread',
+      turnId: 'turn-4',
+      changedFiles: ['src/App.tsx', 'src/review.ts'],
+    },
+  };
+  const review = await createChangeReview({
+    workspaceId: 'ws',
+    repoId: 'repo',
+    baseRef: 'main',
+    origin,
+  });
+  expect(getChangeReview(review.id).origin?.chat).toEqual(origin.chat);
+  expect(review.candidate.tree).toBe(captureReviewSnapshot(context.repo).tree);
+});
+
+it('does not attach a chat turn from another workspace to a review', async () => {
+  db.prepare(
+    "INSERT INTO workspaces(id,name,created_at,updated_at) VALUES ('other','Other','now','now')",
+  ).run();
+  db.prepare("UPDATE chat_threads SET workspace_id = 'other' WHERE id = 'thread'").run();
+  await expect(
+    createChangeReview({
+      workspaceId: 'ws',
+      repoId: 'repo',
+      baseRef: 'main',
+      origin: { chat: { threadId: 'thread', turnId: 'turn-4', changedFiles: [] } },
+    }),
+  ).rejects.toThrow('Chat context is unavailable in this workspace.');
+});
+
 it('rejects a retained path in another Git repository', async () => {
   const unrelated = join(root, 'unrelated');
   mkdirSync(unrelated);

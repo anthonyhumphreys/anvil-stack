@@ -3,10 +3,14 @@ import { CheckCheck } from 'lucide-react';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
 import { ChangeReviewPanel } from './ChangeReviewPanel';
+import { readReviewOrigin, type ChangeReviewEntrySource } from '../../utils/change-review-context';
 export function ChangeReviewView() {
   const { activeWorkspace } = useWorkspace();
   const [params, setParams] = useSearchParams();
   const repoId = params.get('repo') ?? '';
+  const source = params.get('source');
+  const entrySource: ChangeReviewEntrySource | undefined =
+    source === 'chat' || source === 'git' || source === 'pull-request' ? source : undefined;
   const selected = repoId
     ? activeWorkspace?.repos.find((repo) => repo.id === repoId)
     : activeWorkspace?.repos[0];
@@ -44,18 +48,9 @@ export function ChangeReviewView() {
             initialCriterionId={params.get('criterion') ?? undefined}
             initialScenarioVersion={params.get('scenario') ?? undefined}
             initialBaseRef={params.get('baseRef') ?? undefined}
-            origin={{
-              automationRunId: params.get('automationRun') ?? undefined,
-              workflowRunId: params.get('workflowRun') ?? undefined,
-              executionPath: params.get('executionPath') ?? undefined,
-              pullRequest: params.get('pullRequest')
-                ? {
-                    id: params.get('pullRequest')!,
-                    provider: params.get('provider') ?? '',
-                    headSha: params.get('head') ?? '',
-                  }
-                : undefined,
-            }}
+            origin={readReviewOrigin(params)}
+            entrySource={entrySource}
+            entryThreadId={params.get('thread') ?? undefined}
           />
         ) : (
           <EmptyState

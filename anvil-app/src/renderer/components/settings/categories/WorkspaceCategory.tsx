@@ -305,7 +305,7 @@ export function WorkspaceCategory() {
             <SettingsLink to="delivery#work-items">Open work-item settings</SettingsLink>
           </li>
           <li className="flex items-center justify-between gap-3">
-            <span className="text-text-secondary">Documentation provider (Confluence, Notion)</span>
+            <span className="text-text-secondary">Documentation provider (Confluence, Notion, Linear)</span>
             <SettingsLink to="delivery#docs">Open docs settings</SettingsLink>
           </li>
           <li className="flex items-center justify-between gap-3">

@@ -30,6 +30,7 @@ import type {
   CicdFlowNode,
   CicdPipelineAnalysis,
   CicdPipelineFile,
+  CicdPipelineRecommendation,
   CicdProvider,
   CicdValidationFinding,
   RepoInfo,
@@ -38,30 +39,6 @@ import { ViewHeader } from '../layout/ViewScaffold';
 import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
-
-const TEMPLATES = [
-  {
-    id: 'node-ci',
-    name: 'Node CI',
-    provider: 'github-actions' as CicdProvider,
-    subtitle: 'Install, lint, test, build',
-    stages: ['checkout', 'setup node', 'pnpm install', 'lint', 'test', 'build'],
-  },
-  {
-    id: 'dotnet-azure',
-    name: '.NET Azure Pipeline',
-    provider: 'azure-pipelines' as CicdProvider,
-    subtitle: 'Restore, test, publish artifact',
-    stages: ['restore', 'build', 'test', 'publish'],
-  },
-  {
-    id: 'gated-release',
-    name: 'Gated Release',
-    provider: 'github-actions' as CicdProvider,
-    subtitle: 'Build, promote, environment approval',
-    stages: ['build', 'security scan', 'staging', 'approval', 'production'],
-  },
-] as const;
 
 type ViewMode = 'atlas' | 'files' | 'templates';
 
@@ -124,13 +101,13 @@ export function CicdView() {
     }
   }
 
-  async function createPipeline(template: (typeof TEMPLATES)[number]) {
+  async function createPipeline(template: CicdPipelineRecommendation) {
     if (!selectedRepo) return;
     setCreateError(null);
     const input: CicdCreatePipelineInput = {
       provider: template.provider,
-      template: template.id,
-      name: template.name,
+      template: template.template,
+      name: template.title,
     };
     try {
       const created = await window.anvil.cicd.createPipeline(selectedRepo.id, input);
@@ -297,6 +274,7 @@ export function CicdView() {
             {!error && !loading && mode === 'templates' && (
               <TemplateGallery
                 error={createError}
+                recommendations={analysis?.recommendations ?? []}
                 onCreate={createPipeline}
                 onPreview={(name) =>
                   setAssistantNote(
@@ -840,11 +818,13 @@ function PipelineFileCard({
 
 function TemplateGallery({
   error,
+  recommendations,
   onCreate,
   onPreview,
 }: {
   error: string | null;
-  onCreate: (template: (typeof TEMPLATES)[number]) => void;
+  recommendations: CicdPipelineRecommendation[];
+  onCreate: (template: CicdPipelineRecommendation) => void;
   onPreview: (name: string) => void;
 }) {
   return (
@@ -874,35 +854,42 @@ function TemplateGallery({
           )}
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-4">
-        {TEMPLATES.map((template) => (
+      <div className="space-y-4">
+        {recommendations.map((template) => (
           <div
-            key={template.id}
-            className="rounded-lg border border-border-subtle bg-bg-secondary p-5 text-left hover:border-accent/50"
+            key={`${template.provider}:${template.template}`}
+            className="rounded-lg border border-border-subtle bg-bg-secondary p-5 text-left"
             onDragOver={(event) => event.preventDefault()}
-            onDrop={() => onPreview(template.name)}
+            onDrop={() => onPreview(template.title)}
           >
-            <button onClick={() => onPreview(template.name)} className="block w-full text-left">
+            <button onClick={() => onPreview(template.title)} className="block w-full text-left">
               <div className="flex items-center justify-between">
                 <span className="rounded-lg bg-accent/15 p-2 text-accent">
                   <Plus size={18} />
                 </span>
                 <span className="text-xs text-text-tertiary">
                   {providerLabel(template.provider)}
+                  {` · #${template.rank} ${template.recommended ? 'Best fit' : 'Alternative'}`}
                 </span>
               </div>
-              <div className="mt-4 text-lg font-semibold">{template.name}</div>
-              <div className="mt-1 text-sm text-text-secondary">{template.subtitle}</div>
+              <div className="mt-4 text-lg font-semibold">{template.title}</div>
+              <div className="mt-1 text-sm text-text-secondary">{template.reason}</div>
             </button>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {template.stages.map((stage) => (
-                <span
-                  key={stage}
-                  className="rounded-full bg-bg-tertiary px-2 py-1 text-xs text-text-secondary"
-                >
-                  {stage}
-                </span>
-              ))}
+            <div className="mt-4">
+              <div className="text-xs font-medium text-text-tertiary">Detected from</div>
+              <div className="mt-1 text-sm text-text-secondary">
+                {template.evidence.join(' · ')}
+              </div>
+              <div className="mt-3 text-xs font-medium text-text-tertiary">
+                Commands in this starter
+              </div>
+              <ul className="mt-1 space-y-1 text-sm text-text-secondary">
+                {template.commands.map((command) => (
+                  <li key={command} className="font-mono text-xs">
+                    {command}
+                  </li>
+                ))}
+              </ul>
             </div>
             <button
               onClick={() => onCreate(template)}

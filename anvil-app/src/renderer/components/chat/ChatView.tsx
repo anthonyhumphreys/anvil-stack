@@ -132,6 +132,8 @@ export function ChatView({ userRole }: ChatViewProps) {
     threads,
     activeThread,
     activeThreadId,
+    isTemporaryChat,
+    endTemporaryChat,
     liveThreadStatuses,
     collaborationMode,
     activePlan,
@@ -209,7 +211,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const isDesignPersona = activePersona?.id === 'design';
   const isDbExpertPersona = activePersona?.id === 'db-expert';
   const isItsmPersona = activePersona ? ITSM_PERSONA_IDS.has(activePersona.id) : false;
-  const isWorkItemLayout = chatLayout === 'workitems';
+  const isWorkItemLayout = !isTemporaryChat && chatLayout === 'workitems';
   const browserAvailable = ROLE_FEATURES[userRole].includes('browser');
 
   const planIntents = useMemo(
@@ -381,7 +383,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   };
 
   const runTarget = useChatRunTarget({
-    workspaceId: scaffoldModeActive ? undefined : activeWorkspace?.id,
+    workspaceId: isTemporaryChat || scaffoldModeActive ? undefined : activeWorkspace?.id,
     threadId: activeThreadId,
     sourceSessionId: session?.id,
     provider: modelProvider,
@@ -516,10 +518,10 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const availableChatModelOptions = useMemo(
     () =>
-      activeThread?.purpose === 'side-question'
+      isTemporaryChat || activeThread?.purpose === 'side-question'
         ? modelOptions.filter((option) => !isAcpAgentProvider(option.provider))
         : modelOptions,
-    [activeThread?.purpose, modelOptions],
+    [activeThread?.purpose, isTemporaryChat, modelOptions],
   );
 
   // CH5 — classified error notice with retry / provider-switch recovery.
@@ -541,11 +543,14 @@ export function ChatView({ userRole }: ChatViewProps) {
   // C2/3.5 — repo-grounded starter prompts once a repo is mapped; persona
   // suggestions stay as the fallback in ChatEmptyState.
   const starterPrompts = useMemo(
-    () => (repos.some(repoIsMapped) ? getStarterPrompts({ repos, userRole }) : undefined),
-    [repos, userRole],
+    () =>
+      !isTemporaryChat && repos.some(repoIsMapped)
+        ? getStarterPrompts({ repos, userRole })
+        : undefined,
+    [isTemporaryChat, repos, userRole],
   );
   const scaffoldBusy = scaffoldStatus === 'syncing' || scaffoldStatus === 'indexing';
-  const workspaceChatReady = scaffoldModeActive || featureAvailability.chatEnabled;
+  const workspaceChatReady = isTemporaryChat || scaffoldModeActive || featureAvailability.chatEnabled;
   const chatInputDisabled =
     scaffoldBusy || !workspaceChatReady || (isWorkItemLayout && !activeThread?.workItemId);
   const composerDraftKey = [
@@ -579,8 +584,17 @@ export function ChatView({ userRole }: ChatViewProps) {
         sessionStates: executionSessionStates,
         threadId: activeThreadId,
         rootLabel: activeThread?.title ?? 'New thread',
+        rootSummary: activeThread?.summary,
       }),
-    [activeSessions, session, executionSessionStates, activeThread?.title, activeThreadId, entries],
+      [
+        activeSessions,
+        session,
+        executionSessionStates,
+        activeThread?.title,
+        activeThread?.summary,
+        activeThreadId,
+        entries,
+      ],
   );
   const visibleSessionId = executionTopology.nodes.find(
     (node) => node.kind === 'session',
@@ -589,7 +603,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   // C4 — one enum drives every non-transcript pane state.
   const paneKind: ChatPaneKind = deriveChatPaneState({
     scaffoldModeActive,
-    chatEnabled: featureAvailability.chatEnabled,
+    chatEnabled: isTemporaryChat || featureAvailability.chatEnabled,
     isEmpty,
     hasError: Boolean(error),
     isWorkItemLayout,
@@ -622,8 +636,12 @@ export function ChatView({ userRole }: ChatViewProps) {
   }, [paneKind, activeWorkspace?.id, featureAvailability.repoFeatureReason]);
 
   const showItsmWorkbench =
-    userRole === 'itsm' && isItsmPersona && panels.itsmWorkbenchOpen && !panels.previewMode;
-  const showPanelsCluster = !isDesignPersona && !isBaPersona;
+    !isTemporaryChat &&
+    userRole === 'itsm' &&
+    isItsmPersona &&
+    panels.itsmWorkbenchOpen &&
+    !panels.previewMode;
+  const showPanelsCluster = !isTemporaryChat && !isDesignPersona && !isBaPersona;
   const showActivitySidebar =
     panels.activityOpen &&
     !scaffoldModeActive &&
@@ -665,12 +683,18 @@ export function ChatView({ userRole }: ChatViewProps) {
     <div className="flex h-full flex-col">
       {/* CH4 — title + PR chip + one segmented Panels control. */}
       <ChatHeader
-        title={activeThread && !scaffoldModeActive ? activeThread.title : 'New thread'}
-        workspaceName={activeWorkspace?.name ?? 'No workspace'}
+        title={
+          isTemporaryChat
+            ? 'Temporary chat'
+            : activeThread && !scaffoldModeActive
+              ? activeThread.title
+              : 'New thread'
+        }
+        workspaceName={isTemporaryChat ? 'Temporary chat' : activeWorkspace?.name ?? 'No workspace'}
         scaffoldModeActive={scaffoldModeActive}
         scaffoldStatus={scaffoldStatus}
         pullRequestThread={
-          activeThread && !scaffoldModeActive
+          !isTemporaryChat && activeThread && !scaffoldModeActive
             ? {
                 threadId: activeThread.id,
                 preferredRepoId: activeThread.activeRepoId ?? undefined,
@@ -702,6 +726,23 @@ export function ChatView({ userRole }: ChatViewProps) {
         panelsGroupRef={panelsGroupRef}
       />
 
+      {isTemporaryChat && (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5 xl:px-6">
+          <p className="min-w-0 text-xs text-text-secondary">
+            Temporary chat · Text only, with no workspace or repository context. Kept only while Anvil is open.
+          </p>
+          <button
+            type="button"
+            onClick={() =>
+              void endTemporaryChat().then(() => navigate('/chat', { replace: true }))
+            }
+            className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            End temporary chat
+          </button>
+        </div>
+      )}
+
       {!scaffoldModeActive && visibleSessionId && (
         <SessionOwnershipChip
           key={visibleSessionId}
@@ -711,7 +752,7 @@ export function ChatView({ userRole }: ChatViewProps) {
       )}
 
       <div className="flex flex-1 overflow-hidden">
-        {!scaffoldModeActive &&
+        {!isTemporaryChat && !scaffoldModeActive &&
           (isWorkItemLayout ? (
             <WorkItemThreadRail
               threads={threads}
@@ -751,13 +792,13 @@ export function ChatView({ userRole }: ChatViewProps) {
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Readiness where the user is (§3) — compact strip above the
             transcript while repos are being prepared. */}
-          {!scaffoldModeActive && repos.length > 0 && (
+          {!isTemporaryChat && !scaffoldModeActive && repos.length > 0 && (
             <WorkspaceReadinessStrip
               className="mx-4 mt-3 shrink-0 xl:mx-6"
               onOpenWorkspace={() => navigate('/workspace')}
             />
           )}
-          {runTarget.record ? (
+          {runTarget.record && !isTemporaryChat ? (
             <RemoteThreadTranscript
               run={runTarget}
               priorTurns={runTarget.legacyId ? [] : composedTurns}
@@ -770,7 +811,9 @@ export function ChatView({ userRole }: ChatViewProps) {
               paneKind={paneKind}
               scaffoldRootPath={activeScaffoldSession?.rootPath}
               blockedReason={
-                featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.'
+                isTemporaryChat
+                  ? 'Temporary chat is ready.'
+                  : featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.'
               }
               onOpenWorkspace={() => navigate('/workspace')}
               personaId={activePersona?.id ?? 'coder'}
@@ -788,14 +831,15 @@ export function ChatView({ userRole }: ChatViewProps) {
               }
               turns={composedTurns}
               activeThreadId={activeThreadId}
+              changeReviewThreadId={!isTemporaryChat ? activeThreadId ?? undefined : undefined}
               busy={busy}
               isBaPersona={isBaPersona}
               personaName={activePersona?.name ?? 'Assistant'}
               personaColour={personaColour}
-              onBranch={isWorkItemLayout ? undefined : handleBranch}
+              onBranch={isTemporaryChat || isWorkItemLayout ? undefined : handleBranch}
               onReuseMessage={handleReuseMessage}
-              changesRepos={repos}
-              changesPreferredRepoId={activeThread?.activeRepoId}
+              changesRepos={isTemporaryChat ? [] : repos}
+              changesPreferredRepoId={isTemporaryChat ? undefined : activeThread?.activeRepoId}
               error={error}
               errorProviders={errorRecovery.providers}
               onErrorRetry={errorRecovery.onRetry}
@@ -943,6 +987,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             followUpCapabilities={runTarget.remote ? undefined : session?.capabilities?.followUp}
             onFollowUp={runTarget.remote ? undefined : followUp}
             sideQuestionAvailable={
+              !isTemporaryChat &&
               !runTarget.remote &&
               !scaffoldModeActive &&
               !isWorkItemLayout &&
@@ -968,25 +1013,31 @@ export function ChatView({ userRole }: ChatViewProps) {
             executionStrategy={executionStrategy}
             onExecutionStrategyChange={runTarget.remote ? undefined : setExecutionStrategy}
             codexMode={
-              isItsmPersona || activeThread?.purpose === 'side-question'
+              isTemporaryChat || isItsmPersona || activeThread?.purpose === 'side-question'
                 ? 'read-only'
                 : threadAccess.level
             }
-            onCodexModeChange={scaffoldModeActive ? undefined : threadAccess.setLevel}
-            codexModeDisabled={isItsmPersona || activeThread?.purpose === 'side-question'}
+            onCodexModeChange={
+              scaffoldModeActive || isTemporaryChat ? undefined : threadAccess.setLevel
+            }
+            codexModeDisabled={
+              isTemporaryChat || isItsmPersona || activeThread?.purpose === 'side-question'
+            }
             accessOptions={accessOptions}
             accessAppliedMode={appliedAccessMode}
             onAccessOptionSelect={scaffoldModeActive ? undefined : handleAccessOptionSelect}
             collaborationMode={runTarget.remote ? 'default' : collaborationMode}
             onCollaborationModeChange={
-              scaffoldModeActive || runTarget.remote ? undefined : setCollaborationMode
+              scaffoldModeActive || isTemporaryChat || runTarget.remote
+                ? undefined
+                : setCollaborationMode
             }
             fastMode={fastMode}
             fastModeAvailable={!runTarget.remote && fastModeTarget.available}
             onFastModeChange={scaffoldModeActive || runTarget.remote ? undefined : setFastMode}
             showSyntaxHint={isEmpty}
             leadingControls={
-              !scaffoldModeActive ? (
+              !scaffoldModeActive && !isTemporaryChat ? (
                 <>
                   <ChatPersonaPicker
                     personas={personas}
@@ -1000,7 +1051,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               ) : undefined
             }
             contextControls={
-              scaffoldModeActive ? null : (
+              scaffoldModeActive || isTemporaryChat ? null : (
                 <>
                   <RepoSelector
                     variant="dropdown"
@@ -1017,16 +1068,17 @@ export function ChatView({ userRole }: ChatViewProps) {
                 </>
               )
             }
-            prefill={composerPrefill}
-            draftKey={composerDraftKey}
+            prefill={isTemporaryChat ? null : composerPrefill}
+            draftKey={isTemporaryChat ? undefined : composerDraftKey}
+            allowAttachments={!isTemporaryChat}
             mentionRepoIds={mentionRepoIds}
-            slashCommands={slashCommands}
+            slashCommands={isTemporaryChat ? [] : slashCommands}
             focusRequest={composerFocusRequest}
           />
         </div>
 
         <ChatSidePanels
-          previewMode={panels.previewMode}
+          previewMode={isTemporaryChat ? null : panels.previewMode}
           previewInitialUrl={panels.previewInitialUrl}
           onClosePreview={() => panels.setActivePanel(null)}
           isBaPersona={isBaPersona}
@@ -1036,18 +1088,18 @@ export function ChatView({ userRole }: ChatViewProps) {
           onToggleFindings={() => setShowFindings((open) => !open)}
           onFindingFollowUp={handleFindingFollowUp}
           onDismissFinding={(idx) => setDismissedFindings((prev) => new Set(prev).add(idx))}
-          isDesignPersona={isDesignPersona}
+          isDesignPersona={isDesignPersona && !isTemporaryChat}
           designSidebarCollapsed={designSidebarCollapsed}
           onToggleDesignSidebar={() => setDesignSidebarCollapsed((c) => !c)}
           showItsmWorkbench={showItsmWorkbench}
-          workspaceId={activeWorkspace?.id ?? null}
+          workspaceId={isTemporaryChat ? null : activeWorkspace?.id ?? null}
           onItsmPrompt={(prompt) => {
             setComposerPrefill({ id: `itsm-${Date.now()}`, text: prompt });
             setComposerFocusRequest((current) => current + 1);
           }}
           showActivitySidebar={showActivitySidebar}
           activity={{
-            workspaceName: activeWorkspace?.name ?? 'workspace',
+            workspaceName: isTemporaryChat ? 'Temporary chat' : activeWorkspace?.name ?? 'workspace',
             runs: recentRuns,
             topology: executionTopology,
             lastViewedAt:
@@ -1088,7 +1140,8 @@ export function ChatView({ userRole }: ChatViewProps) {
           }}
           onDetachedCanvasClose={panels.handleDetachedCanvasClose}
           canvasOverlayAvailable={
-            Boolean(selectedArtifact) || planIntents.length > 0 || Boolean(activeGoal)
+            !isTemporaryChat &&
+            (Boolean(selectedArtifact) || planIntents.length > 0 || Boolean(activeGoal))
           }
         />
       </div>

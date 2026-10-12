@@ -32,6 +32,7 @@ export function ChatTranscript({
   scaffoldBusyMessage,
   turns,
   activeThreadId,
+  changeReviewThreadId,
   busy,
   isBaPersona,
   personaName,
@@ -64,6 +65,7 @@ export function ChatTranscript({
   scaffoldBusyMessage?: string;
   turns: ComposedChatTurn[];
   activeThreadId: string | null;
+  changeReviewThreadId?: string;
   busy: boolean;
   isBaPersona: boolean;
   personaName: string;
@@ -209,6 +211,8 @@ export function ChatTranscript({
                         workItems={[...turn.work, ...turn.trailingWork]}
                         repos={changesRepos}
                         preferredRepoId={changesPreferredRepoId}
+                        threadId={changeReviewThreadId}
+                        turnId={turn.key}
                         reviewRequest={
                           reviewRequest?.threadId === activeThreadId &&
                           reviewRequest.turnKey === turn.key

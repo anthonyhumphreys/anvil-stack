@@ -1,7 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import type { CodexSession } from '../../../shared/types';
 import type { ChatEntry } from '../../contexts/ChatContext';
-import { applyExecutionLifecycle, buildExecutionTopology } from '../execution-topology';
+import {
+  applyExecutionLifecycle,
+  buildExecutionTopology,
+  summarizeAgentWork,
+} from '../execution-topology';
+
+describe('summarizeAgentWork', () => {
+  it('collapses whitespace for a concise progress preview', () => {
+    expect(summarizeAgentWork('  Inspect   the auth\n boundary. ')).toBe(
+      'Inspect the auth boundary.',
+    );
+  });
+
+  it('clips long text at a word boundary', () => {
+    expect(summarizeAgentWork('Progress update')).toBe('Progress update');
+    const summary = summarizeAgentWork('word '.repeat(50));
+    expect(summary.length).toBeLessThan(160);
+    expect(summary.endsWith('…')).toBe(true);
+  });
+
+  it('clips long unbroken tokens so they remain bounded in the row', () => {
+    const summary = summarizeAgentWork('x'.repeat(300));
+    expect(summary.length).toBe(160);
+    expect(summary.endsWith('…')).toBe(true);
+  });
+
+  it('provides a useful preview when the agent has no text yet', () => {
+    expect(summarizeAgentWork()).toBe('No assignment details reported');
+  });
+});
 
 describe('buildExecutionTopology', () => {
   it('overlays a terminal provider event over a stale active-session snapshot', () => {
@@ -224,6 +253,31 @@ describe('buildExecutionTopology', () => {
         expect.objectContaining({ kind: 'session', label: 'Main agent', status: 'running' }),
       ]),
     );
+  });
+
+  it('uses thread metadata only for a topology rooted in an app thread', () => {
+    const withThread = buildExecutionTopology({
+      entries: [],
+      sessions: [],
+      threadId: 'thread-1',
+      rootLabel: 'Review the run control',
+      rootSummary: 'The run control is too cramped in the collapsed sidebar.',
+    });
+    expect(withThread.nodes.find((node) => node.kind === 'thread')).toMatchObject({
+      appThreadId: 'thread-1',
+      threadSummary: 'The run control is too cramped in the collapsed sidebar.',
+    });
+
+    const withoutThread = buildExecutionTopology({
+      entries: [],
+      sessions: [],
+      threadId: null,
+      rootLabel: 'New thread',
+      rootSummary: 'Stale summary must not leak into a new thread.',
+    });
+    expect(
+      withoutThread.nodes.find((node) => node.kind === 'thread')?.threadSummary,
+    ).toBeUndefined();
   });
 
   it('builds parent-child topology from subagent lifecycle events', () => {

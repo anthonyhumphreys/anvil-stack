@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ChangeReview } from '../../../shared/change-review-types';
-import { matchesReviewContext } from '../change-review-context';
+import {
+  buildChangeReviewPath,
+  buildChangeReviewReturnPath,
+  matchesReviewContext,
+  readReviewOrigin,
+} from '../change-review-context';
 const review = {
   id: 'review',
   repoId: 'repo',
@@ -12,6 +17,91 @@ const review = {
   },
 } as ChangeReview;
 describe('review route identity', () => {
+  it('round-trips a PR handoff with its exact head and returns to that PR', () => {
+    const path = buildChangeReviewPath({
+      repoId: 'repo one',
+      source: 'pull-request',
+      baseRef: 'main',
+      origin: {
+        pullRequest: { id: '7', provider: 'github', headSha: 'head', number: 7 },
+      },
+    });
+    const params = new URLSearchParams(path.split('?')[1]);
+    const origin = readReviewOrigin(params);
+    expect(path).toContain('repo=repo+one');
+    expect(origin?.pullRequest).toEqual({
+      id: '7',
+      provider: 'github',
+      headSha: 'head',
+      number: 7,
+    });
+    expect(matchesReviewContext(review, { repoId: 'repo', origin })).toBe(true);
+    expect(
+      buildChangeReviewReturnPath({ repoId: 'repo one', source: 'pull-request', origin }),
+    ).toBe('/codereview/repo%20one?pr=7&view=map');
+  });
+
+  it('keeps chat returns attached to the originating thread', () => {
+    const path = buildChangeReviewPath({
+      repoId: 'repo',
+      source: 'chat',
+      threadId: 'thread 1',
+      turnId: 'turn 4',
+      changedFiles: ['src/App.tsx', 'src/review.ts'],
+    });
+    const params = new URLSearchParams(path.split('?')[1]);
+    expect(params.get('thread')).toBe('thread 1');
+    expect(readReviewOrigin(params)?.chat).toEqual({
+      threadId: 'thread 1',
+      turnId: 'turn 4',
+      changedFiles: ['src/App.tsx', 'src/review.ts'],
+    });
+    expect(
+      buildChangeReviewReturnPath({
+        repoId: 'repo',
+        source: 'chat',
+        threadId: params.get('thread')!,
+      }),
+    ).toBe('/chat?thread=thread+1');
+    expect(
+      matchesReviewContext(
+        {
+          ...review,
+          origin: { chat: { threadId: 'thread 1', turnId: 'turn 4', changedFiles: [] } },
+        },
+        { repoId: 'repo', origin: readReviewOrigin(params) },
+      ),
+    ).toBe(true);
+    expect(buildChangeReviewReturnPath({ repoId: 'repo', origin: readReviewOrigin(params) })).toBe(
+      '/chat?thread=thread+1',
+    );
+  });
+
+  it('persists the Git entry source for later review-history links', () => {
+    const path = buildChangeReviewPath({
+      repoId: 'repo',
+      source: 'git',
+      baseRef: 'origin/main',
+      origin: { git: { baseRef: 'origin/main' } },
+    });
+    const origin = readReviewOrigin(new URLSearchParams(path.split('?')[1]));
+    expect(origin?.git).toEqual({ baseRef: 'origin/main' });
+    expect(buildChangeReviewReturnPath({ repoId: 'repo', origin })).toBe(
+      '/git?repo=repo&tab=changes',
+    );
+    expect(buildChangeReviewReturnPath({ repoId: 'repo' })).toBe('/git?repo=repo&tab=changes');
+    expect(
+      matchesReviewContext(
+        { ...review, origin: { git: { baseRef: 'origin/main' } } },
+        { repoId: 'repo', origin },
+      ),
+    ).toBe(true);
+  });
+
+  it('ignores incomplete PR route identity instead of creating a partial origin', () => {
+    expect(readReviewOrigin(new URLSearchParams('pullRequest=7&provider=github'))).toBeUndefined();
+  });
+
   it('opens an exact review with its Work Item from PR evidence', () => {
     expect(matchesReviewContext(review, { repoId: 'repo', reviewId: 'review' })).toBe(true);
     expect(matchesReviewContext(review, { repoId: 'other', reviewId: 'review' })).toBe(false);

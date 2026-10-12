@@ -40,6 +40,7 @@ import type {
   DojoConfig,
   DojoConfigInput,
   DojoReport,
+  DocsRequestContext,
   EmbeddedEditorTarget,
   SimulatorPreviewStartOptions,
   GateId,
@@ -228,6 +229,10 @@ const api: AnvilAPI = {
   },
 
   chat: {
+    createTemporaryThread: (personaId: string) =>
+      ipcRenderer.invoke('chat:create-temporary-thread', personaId),
+    endTemporaryThread: (threadId: string) =>
+      ipcRenderer.invoke('chat:end-temporary-thread', threadId),
     linkPullRequest: (threadId, input) =>
       ipcRenderer.invoke('chat:link-pull-request', threadId, input),
     unlinkPullRequest: (threadId, linkId) =>
@@ -722,14 +727,31 @@ const api: AnvilAPI = {
   },
 
   docs: {
-    listPages: (spaceKey?: string) => ipcRenderer.invoke('docs:list', spaceKey),
-    listChildren: (pageId: string) => ipcRenderer.invoke('docs:list-children', pageId),
-    checkStaleness: (pageId: string, repoId: string) =>
-      ipcRenderer.invoke('docs:check-stale', pageId, repoId),
-    generateUpdate: (pageId: string, repoId: string) =>
-      ipcRenderer.invoke('docs:generate-update', pageId, repoId),
-    createPage: (spaceKey: string, title: string, repoId: string) =>
-      ipcRenderer.invoke('docs:create', spaceKey, title, repoId),
+    listProjects: (context: DocsRequestContext) =>
+      ipcRenderer.invoke('docs:list-projects', context),
+    listPages: (spaceKey: string | undefined, context: DocsRequestContext) =>
+      ipcRenderer.invoke('docs:list', spaceKey, context),
+    listChildren: (pageId: string, context: DocsRequestContext) =>
+      ipcRenderer.invoke('docs:list-children', pageId, context),
+    checkStaleness: (pageId: string, repoId: string, context: DocsRequestContext) =>
+      ipcRenderer.invoke('docs:check-stale', pageId, repoId, context),
+    generateUpdate: (pageId: string, repoId: string, context: DocsRequestContext) =>
+      ipcRenderer.invoke('docs:generate-update', pageId, repoId, context),
+    createPage: (spaceKey: string, title: string, repoId: string, context: DocsRequestContext) =>
+      ipcRenderer.invoke('docs:create', spaceKey, title, repoId, context),
+    updatePage: (
+      pageId: string,
+      title: string,
+      content: string,
+      context: DocsRequestContext,
+    ) =>
+      ipcRenderer.invoke(
+        'docs:update',
+        pageId,
+        title,
+        content,
+        context,
+      ),
   },
 
   settings: {

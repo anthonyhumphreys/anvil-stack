@@ -154,6 +154,7 @@ interface ChatInputProps {
   leadingControls?: ReactNode;
   prefill?: { id: string; text: string; attachments?: ChatAttachment[] } | null;
   draftKey?: string;
+  allowAttachments?: boolean;
   mentionRepoIds?: string[];
   quickPrompts?: ChatQuickPrompt[];
   slashCommands?: ChatSlashCommand[];
@@ -206,6 +207,7 @@ export function ChatInput({
   leadingControls,
   prefill,
   draftKey,
+  allowAttachments = true,
   mentionRepoIds = [],
   quickPrompts = [],
   slashCommands = [],
@@ -216,6 +218,8 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
+  const allowAttachmentsRef = useRef(allowAttachments);
+  allowAttachmentsRef.current = allowAttachments;
   const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [standardFeedback, setStandardFeedback] = useState<{
@@ -608,7 +612,9 @@ export function ChatInput({
 
   const refreshComposerTriggers = useCallback(
     (nextValue: string, selectionStart: number | null) => {
-      const nextFileMention = findActiveFileMention(nextValue, selectionStart);
+      const nextFileMention = allowAttachments
+        ? findActiveFileMention(nextValue, selectionStart)
+        : null;
       const nextSlashCommand = nextFileMention
         ? null
         : findActiveSlashCommand(nextValue, selectionStart);
@@ -621,7 +627,7 @@ export function ChatInput({
       setSlashCommand(nextSlashCommand);
       setSkillMention(nextSkillMention);
     },
-    [],
+    [allowAttachments],
   );
 
   const handleTextChange = useCallback(
@@ -645,6 +651,10 @@ export function ChatInput({
   const addFiles = useCallback(
     async (files: File[]) => {
       if (disabled || files.length === 0) return;
+      if (!allowAttachments) {
+        setAttachmentError('Files are not available in temporary chats.');
+        return;
+      }
 
       const remainingSlots = MAX_ATTACHMENT_COUNT - attachments.length;
       if (remainingSlots <= 0) {
@@ -653,14 +663,17 @@ export function ChatInput({
       }
 
       const selectedFiles = files.slice(0, remainingSlots);
+      const attachmentDraftKey = draftKeyRef.current;
       setPreparingAttachments(true);
       setAttachmentError(files.length > remainingSlots ? 'Some files were skipped.' : null);
 
       try {
         const preparedInputs = await Promise.all(selectedFiles.map(fileToAttachmentInput));
+        if (!allowAttachmentsRef.current || draftKeyRef.current !== attachmentDraftKey) return;
         const prepared = await window.anvil.chat.prepareAttachments(
           preparedInputs.map((item) => item.input),
         );
+        if (!allowAttachmentsRef.current || draftKeyRef.current !== attachmentDraftKey) return;
         const previews = preparedInputs.reduce<Record<string, string>>((acc, item) => {
           if (item.previewDataUrl) acc[item.input.id!] = item.previewDataUrl;
           return acc;
@@ -675,7 +688,7 @@ export function ChatInput({
         setPreparingAttachments(false);
       }
     },
-    [attachments.length, disabled, markDraftChanged],
+    [allowAttachments, attachments.length, disabled, markDraftChanged],
   );
 
   const handlePaste = useCallback(
@@ -690,16 +703,22 @@ export function ChatInput({
 
   const handleSelectAttachments = useCallback(async () => {
     if (disabled) return;
+    if (!allowAttachments) {
+      setAttachmentError('Files are not available in temporary chats.');
+      return;
+    }
     const remainingSlots = MAX_ATTACHMENT_COUNT - attachments.length;
     if (remainingSlots <= 0) {
       setAttachmentError(`Attach up to ${MAX_ATTACHMENT_COUNT} files at a time.`);
       return;
     }
 
+    const attachmentDraftKey = draftKeyRef.current;
     setPreparingAttachments(true);
     setAttachmentError(null);
     try {
       const selected = await window.anvil.chat.selectAttachments();
+      if (!allowAttachmentsRef.current || draftKeyRef.current !== attachmentDraftKey) return;
       markDraftChanged();
       setAttachments((prev) => mergeAttachments(prev, selected.slice(0, remainingSlots)));
       if (selected.length > remainingSlots) {
@@ -710,7 +729,7 @@ export function ChatInput({
     } finally {
       setPreparingAttachments(false);
     }
-  }, [attachments.length, disabled, markDraftChanged]);
+  }, [allowAttachments, attachments.length, disabled, markDraftChanged]);
 
   const removeAttachment = useCallback(
     (attachmentId: string) => {
@@ -727,7 +746,7 @@ export function ChatInput({
 
   const handleSelectFileMention = useCallback(
     async (result: ChatFileMentionSearchResult) => {
-      if (disabled || preparingAttachments || !fileMention) return;
+      if (!allowAttachments || disabled || preparingAttachments || !fileMention) return;
       if (attachments.length >= MAX_ATTACHMENT_COUNT) {
         setAttachmentError(`Attach up to ${MAX_ATTACHMENT_COUNT} files at a time.`);
         return;
@@ -735,10 +754,12 @@ export function ChatInput({
 
       setPreparingAttachments(true);
       setAttachmentError(null);
+      const attachmentDraftKey = draftKeyRef.current;
       try {
         const prepared = await window.anvil.chat.prepareAttachments([
           { name: result.name, path: result.path },
         ]);
+        if (!allowAttachmentsRef.current || draftKeyRef.current !== attachmentDraftKey) return;
         markDraftChanged();
         setAttachments((prev) => mergeAttachments(prev, prepared));
 
@@ -770,6 +791,7 @@ export function ChatInput({
     },
     [
       attachments.length,
+      allowAttachments,
       disabled,
       fileMention,
       mentionRepoIds.length,
@@ -964,20 +986,21 @@ export function ChatInput({
 
   const handleDragEnter = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (disabled || !event.dataTransfer.types.includes('Files')) return;
+      if (!event.dataTransfer.types.includes('Files')) return;
       event.preventDefault();
+      if (!allowAttachments || disabled) return;
       setDragDepth((prev) => prev + 1);
     },
-    [disabled],
+    [allowAttachments, disabled],
   );
 
   const handleDragOver = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (disabled || !event.dataTransfer.types.includes('Files')) return;
+      if (!event.dataTransfer.types.includes('Files')) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = 'copy';
+      event.dataTransfer.dropEffect = allowAttachments && !disabled ? 'copy' : 'none';
     },
-    [disabled],
+    [allowAttachments, disabled],
   );
 
   const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
@@ -987,12 +1010,17 @@ export function ChatInput({
 
   const handleDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (disabled || !event.dataTransfer.types.includes('Files')) return;
+      if (!event.dataTransfer.types.includes('Files')) return;
       event.preventDefault();
       setDragDepth(0);
+      if (!allowAttachments) {
+        setAttachmentError('Files are not available in temporary chats.');
+        return;
+      }
+      if (disabled) return;
       void addFiles(Array.from(event.dataTransfer.files));
     },
-    [addFiles, disabled],
+    [addFiles, allowAttachments, disabled],
   );
 
   useEffect(() => {
@@ -1042,7 +1070,7 @@ export function ChatInput({
     markDraftChanged();
     setStandardFeedback(null);
     setValue((prev) => appendComposerPrefill(prev, prefill.text));
-    if (prefill.attachments?.length) {
+    if (allowAttachments && prefill.attachments?.length) {
       const current = attachmentsRef.current;
       const next = mergeAttachments(current, prefill.attachments);
       const uniqueIncoming = prefill.attachments.filter(
@@ -1064,10 +1092,18 @@ export function ChatInput({
       resizeTextarea();
       el.setSelectionRange(el.value.length, el.value.length);
     }, 0);
-  }, [markDraftChanged, prefill, resizeTextarea]);
+  }, [allowAttachments, markDraftChanged, prefill, resizeTextarea]);
 
   useEffect(() => {
-    if (disabled || !fileMention || mentionRepoIds.length === 0) {
+    if (allowAttachments) return;
+    attachmentsRef.current = [];
+    setAttachments([]);
+    setAttachmentPreviews({});
+    setFileMention(null);
+  }, [allowAttachments]);
+
+  useEffect(() => {
+    if (!allowAttachments || disabled || !fileMention || mentionRepoIds.length === 0) {
       setFileMentionResults([]);
       setFileMentionLoading(false);
       setFileMentionError(null);
@@ -1104,7 +1140,7 @@ export function ChatInput({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [disabled, fileMention, mentionRepoIds, mentionRepoKey]);
+  }, [allowAttachments, disabled, fileMention, mentionRepoIds, mentionRepoKey]);
 
   useEffect(() => {
     setSelectedSlashCommandIndex(0);
@@ -1332,7 +1368,9 @@ export function ChatInput({
                     : 'Follow-up sending is unavailable for this session...'
               : disabled
                 ? 'Chat is not ready yet...'
-                : mentionRepoIds.length > 0
+                : !allowAttachments
+                  ? 'Ask anything in this text-only temporary chat...'
+                  : mentionRepoIds.length > 0
                   ? 'Ask anything, or type /, @, or $...'
                   : 'Ask anything, paste images, or drop files here...'
           }
@@ -1342,7 +1380,7 @@ export function ChatInput({
         <ChatComposerFooter compact={compactFooter}>
           <div className="flex min-w-0 flex-wrap items-center gap-1">
             {leadingControls}
-            <button
+            {allowAttachments && <button
               type="button"
               onClick={() => void handleSelectAttachments()}
               disabled={disabled || preparingAttachments}
@@ -1356,7 +1394,7 @@ export function ChatInput({
               ) : (
                 <Paperclip size={15} />
               )}
-            </button>
+            </button>}
 
             {contextControls && (
               <div ref={contextMenuRef} className="relative">

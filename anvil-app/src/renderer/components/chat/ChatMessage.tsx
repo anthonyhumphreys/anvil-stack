@@ -39,7 +39,7 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { isAbsoluteEditorPath } from '../../../shared/editor-file-link';
-import type { ChatTurnWorkItem } from './chat-turns';
+import { buildApprovalAwareWorkSegments, type ChatTurnWorkItem } from './chat-turns';
 import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
 import { FileEditReviewGrid } from './TurnChangesFooter';
@@ -125,6 +125,90 @@ function ChatEventContent({ event }: ChatEventProps) {
   }
 }
 
+function ApprovalAwareWorkTimeline({
+  segments,
+}: {
+  segments: ReturnType<typeof buildApprovalAwareWorkSegments>;
+}) {
+  return (
+    <div className="space-y-2 border-t border-border-subtle px-3 py-3" data-approval-work-timeline>
+      {segments.map((segment) =>
+        segment.kind === 'approval' ? (
+          <ChatEventRenderer key={segment.key} event={segment.item.event} />
+        ) : (
+          <RoutineWorkSegment key={segment.key} segment={segment} />
+        ),
+      )}
+    </div>
+  );
+}
+
+function RoutineWorkSegment({
+  segment,
+}: {
+  segment: Extract<ReturnType<typeof buildApprovalAwareWorkSegments>[number], { kind: 'routine' }>;
+}) {
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const expanded = expandedOverride ?? segment.expandedByDefault;
+  const detailsId = useId();
+  const summary = segment.items.map(formatTurnWorkItemSummary).filter(Boolean).join(' · ');
+
+  return (
+    <div className="border-y border-border-subtle/70">
+      <button
+        type="button"
+        onClick={() => setExpandedOverride(!expanded)}
+        className="flex min-h-9 w-full items-center gap-2 px-1 py-1.5 text-left text-xs transition-colors hover:bg-bg-secondary/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        aria-expanded={expanded}
+        aria-controls={detailsId}
+      >
+        <span className="shrink-0 text-text-tertiary">
+          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </span>
+        <Wrench size={12} className="shrink-0 text-text-tertiary" />
+        <span className="font-medium text-text-secondary">Work</span>
+        <span className="min-w-0 flex-1 truncate text-text-tertiary">{summary}</span>
+      </button>
+      {expanded && (
+        <div id={detailsId} className="space-y-3 border-t border-border-subtle/70 px-2 py-3">
+          {segment.items.map((item, index) => (
+            <TurnWorkItemDetail key={workItemKey(item, index)} item={item} index={index} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TurnWorkItemDetail({ item, index }: { item: ChatTurnWorkItem; index: number }) {
+  if (item.kind === 'progress') {
+    return (
+      <div className="pr-2">
+        <p className="mb-1 text-xs font-medium text-text-muted">Progress update</p>
+        <div className="max-w-[72ch] break-words text-text-secondary">
+          <MarkdownRenderer content={item.content} />
+        </div>
+      </div>
+    );
+  }
+
+  if (item.kind === 'thinking') {
+    return (
+      <div className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary">
+        <p className="mb-1 text-xs font-medium not-italic text-text-muted">Reasoning</p>
+        <p className="whitespace-pre-wrap break-words">{item.content}</p>
+      </div>
+    );
+  }
+
+  return <ChatEventRenderer key={workItemKey(item, index)} event={item.event} />;
+}
+
+function workItemKey(item: ChatTurnWorkItem, index: number): string {
+  if (item.kind !== 'event') return `${item.kind}-${item.sourceIndex}`;
+  return buildActivityEventKey(item.event, index);
+}
+
 export function ActivityGroupMessage({
   events,
 }: {
@@ -134,10 +218,16 @@ export function ActivityGroupMessage({
   const [reviewOpen, setReviewOpen] = useState(false);
   const detailsId = useId();
   const summary = summarizeActivityEvents(events);
+  const hasApprovalHistory = events.some((event) => event.type === 'approval_request');
   const surfaceEvents = events.flatMap((event, index) =>
-    isSurfaceEvent(event) ? [{ event, index }] : [],
+    isSurfaceEvent(event) && event.type !== 'approval_request' ? [{ event, index }] : [],
   );
   const surfaceEventIndexes = new Set(surfaceEvents.map(({ index }) => index));
+  const approvalTimeline = buildApprovalAwareWorkSegments(
+    events.flatMap((event, sourceIndex) =>
+      surfaceEventIndexes.has(sourceIndex) ? [] : [{ kind: 'event' as const, event, sourceIndex }],
+    ),
+  );
   const fileEdits = events.filter((event) => event.type === 'file_edit' && event.filePath);
   const failedCommands = events.filter(
     (event) =>
@@ -156,32 +246,50 @@ export function ActivityGroupMessage({
   return (
     <div className="message-bubble flex justify-start">
       <div className="w-full border-y border-border-subtle bg-bg-secondary/25">
-        <button
-          type="button"
-          onClick={() => setExpanded((current) => !current)}
-          className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          aria-expanded={expanded}
-          aria-controls={detailsId}
-        >
-          <span className="mt-0.5 shrink-0 text-text-tertiary">
-            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          </span>
-          <Wrench size={12} className="mt-0.5 shrink-0 text-text-tertiary" />
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="text-xs font-medium text-text-secondary">Activity</span>
-              <span className="text-xs text-text-tertiary">{summary}</span>
-              {failedCommands.length > 0 && (
-                <span className="rounded-full bg-error/10 px-2 py-0.5 text-eyebrow font-medium text-error">
-                  {failedCommands.length} failed
-                </span>
+        {hasApprovalHistory ? (
+          <div className="flex w-full items-start gap-2 px-3 py-2.5 text-left">
+            <Wrench size={12} className="mt-0.5 shrink-0 text-text-tertiary" />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="text-xs font-medium text-text-secondary">Activity</span>
+                <span className="text-xs text-text-tertiary">{summary}</span>
+                {failedCommands.length > 0 && (
+                  <span className="rounded-full bg-error/10 px-2 py-0.5 text-eyebrow font-medium text-error">
+                    {failedCommands.length} failed
+                  </span>
+                )}
+              </div>
+              {preview && <p className="truncate pt-1 text-xs text-text-tertiary">{preview}</p>}
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+          >
+            <span className="mt-0.5 shrink-0 text-text-tertiary">
+              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </span>
+            <Wrench size={12} className="mt-0.5 shrink-0 text-text-tertiary" />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="text-xs font-medium text-text-secondary">Activity</span>
+                <span className="text-xs text-text-tertiary">{summary}</span>
+                {failedCommands.length > 0 && (
+                  <span className="rounded-full bg-error/10 px-2 py-0.5 text-eyebrow font-medium text-error">
+                    {failedCommands.length} failed
+                  </span>
+                )}
+              </div>
+              {!expanded && preview && (
+                <p className="truncate pt-1 text-xs text-text-tertiary">{preview}</p>
               )}
             </div>
-            {!expanded && preview && (
-              <p className="truncate pt-1 text-xs text-text-tertiary">{preview}</p>
-            )}
-          </div>
-        </button>
+          </button>
+        )}
         {surfaceEvents.length > 0 && (
           <div
             className="space-y-2 border-t border-border-subtle px-3 py-3"
@@ -193,6 +301,7 @@ export function ActivityGroupMessage({
             ))}
           </div>
         )}
+        {hasApprovalHistory && <ApprovalAwareWorkTimeline segments={approvalTimeline} />}
         {fileEdits.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 border-t border-border-subtle px-4 py-2">
             <button
@@ -217,17 +326,19 @@ export function ActivityGroupMessage({
             agentLabel={fileEdits[0]?.agentLabel ?? events[0]?.agentLabel}
           />
         )}
-        <div id={detailsId} hidden={!expanded}>
-          {expanded && (
-            <div className="max-h-96 space-y-2 overflow-auto border-t border-border-subtle p-3">
-              {events.map((event, index) =>
-                surfaceEventIndexes.has(index) ? null : (
-                  <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
-                ),
-              )}
-            </div>
-          )}
-        </div>
+        {!hasApprovalHistory && (
+          <div id={detailsId} hidden={!expanded}>
+            {expanded && (
+              <div className="max-h-96 space-y-2 overflow-auto border-t border-border-subtle p-3">
+                {events.map((event, index) =>
+                  surfaceEventIndexes.has(index) ? null : (
+                    <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
+                  ),
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -250,11 +361,15 @@ export function TurnWorkMessage({
   const surfaceItems = items.filter(
     (item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> =>
       item.kind === 'event' &&
-      (item.event.type === 'approval_request' ||
-        item.event.type === 'input_request' ||
-        item.event.type === 'agent_ui_intent'),
+      (item.event.type === 'input_request' || item.event.type === 'agent_ui_intent'),
   );
   const surfaceSourceIndexes = new Set(surfaceItems.map((item) => item.sourceIndex));
+  const hasApprovalHistory = items.some(
+    (item) => item.kind === 'event' && item.event.type === 'approval_request',
+  );
+  const approvalTimeline = buildApprovalAwareWorkSegments(
+    items.filter((item) => !surfaceSourceIndexes.has(item.sourceIndex)),
+  );
   const failedCount = activityEvents.filter(
     (event) =>
       event.type === 'error' ||
@@ -279,32 +394,34 @@ export function TurnWorkMessage({
   return (
     <div className="message-bubble flex justify-start">
       <div className="w-full border-y border-border-subtle/80">
-        <button
-          type="button"
-          onClick={() => setExpandedOverride(!showDetails)}
-          className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:bg-bg-secondary/35 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          aria-expanded={showDetails}
-          aria-controls={detailsId}
-        >
-          <span className="shrink-0 text-text-tertiary">
-            {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          </span>
-          {active ? (
-            <WorkingDots compact />
-          ) : (
-            <Wrench size={12} className="shrink-0 text-text-tertiary" />
-          )}
-          <span className="font-medium text-text-secondary">{active ? 'Live work' : 'Work'}</span>
-          <span className="min-w-0 flex-1 truncate text-text-tertiary">
-            {[summaryParts.join(' · '), latestActivity].filter(Boolean).join(' — ') ||
-              'Reasoning update'}
-          </span>
-          {failedCount > 0 && (
-            <span className="rounded-full bg-error/10 px-2 py-0.5 font-medium text-error">
-              {failedCount} failed
+        {!hasApprovalHistory && (
+          <button
+            type="button"
+            onClick={() => setExpandedOverride(!showDetails)}
+            className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:bg-bg-secondary/35 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            aria-expanded={showDetails}
+            aria-controls={detailsId}
+          >
+            <span className="shrink-0 text-text-tertiary">
+              {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
             </span>
-          )}
-        </button>
+            {active ? (
+              <WorkingDots compact />
+            ) : (
+              <Wrench size={12} className="shrink-0 text-text-tertiary" />
+            )}
+            <span className="font-medium text-text-secondary">{active ? 'Live work' : 'Work'}</span>
+            <span className="min-w-0 flex-1 truncate text-text-tertiary">
+              {[summaryParts.join(' · '), latestActivity].filter(Boolean).join(' — ') ||
+                'Reasoning update'}
+            </span>
+            {failedCount > 0 && (
+              <span className="rounded-full bg-error/10 px-2 py-0.5 font-medium text-error">
+                {failedCount} failed
+              </span>
+            )}
+          </button>
+        )}
 
         {surfaceItems.length > 0 && (
           <div
@@ -321,46 +438,50 @@ export function TurnWorkMessage({
           </div>
         )}
 
-        <div id={detailsId} hidden={!showDetails}>
-          {showDetails && (
-            <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
-              {items.map((item, index) => {
-                if (surfaceSourceIndexes.has(item.sourceIndex)) return null;
-                if (item.kind === 'progress') {
-                  return (
-                    <div key={`progress-${item.sourceIndex}`} className="pr-2">
-                      <p className="mb-1 text-xs font-medium text-text-muted">Progress update</p>
-                      <div className="max-w-[72ch] break-words text-text-secondary">
-                        <MarkdownRenderer content={item.content} />
+        {hasApprovalHistory && <ApprovalAwareWorkTimeline segments={approvalTimeline} />}
+
+        {!hasApprovalHistory && (
+          <div id={detailsId} hidden={!showDetails}>
+            {showDetails && (
+              <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
+                {items.map((item, index) => {
+                  if (surfaceSourceIndexes.has(item.sourceIndex)) return null;
+                  if (item.kind === 'progress') {
+                    return (
+                      <div key={`progress-${item.sourceIndex}`} className="pr-2">
+                        <p className="mb-1 text-xs font-medium text-text-muted">Progress update</p>
+                        <div className="max-w-[72ch] break-words text-text-secondary">
+                          <MarkdownRenderer content={item.content} />
+                        </div>
                       </div>
-                    </div>
-                  );
-                }
+                    );
+                  }
 
-                if (item.kind === 'thinking') {
+                  if (item.kind === 'thinking') {
+                    return (
+                      <div
+                        key={`thinking-${item.sourceIndex}`}
+                        className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
+                      >
+                        <p className="mb-1 text-xs font-medium not-italic text-text-muted">
+                          Reasoning
+                        </p>
+                        <p className="whitespace-pre-wrap break-words">{item.content}</p>
+                      </div>
+                    );
+                  }
+
                   return (
-                    <div
-                      key={`thinking-${item.sourceIndex}`}
-                      className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
-                    >
-                      <p className="mb-1 text-xs font-medium not-italic text-text-muted">
-                        Reasoning
-                      </p>
-                      <p className="whitespace-pre-wrap break-words">{item.content}</p>
-                    </div>
+                    <ChatEventRenderer
+                      key={buildActivityEventKey(item.event, index)}
+                      event={item.event}
+                    />
                   );
-                }
-
-                return (
-                  <ChatEventRenderer
-                    key={buildActivityEventKey(item.event, index)}
-                    event={item.event}
-                  />
-                );
-              })}
-            </div>
-          )}
-        </div>
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -178,6 +178,24 @@ export async function createChangeReview(
   input: Parameters<ChangeReviewApi['create']>[0],
 ): Promise<ChangeReview> {
   const path = repoPath(input);
+  if (input.origin?.chat) {
+    const chat = input.origin.chat;
+    if (
+      typeof chat.threadId !== 'string' ||
+      !chat.threadId.trim() ||
+      typeof chat.turnId !== 'string' ||
+      !chat.turnId.trim() ||
+      !Array.isArray(chat.changedFiles) ||
+      chat.changedFiles.length > 100 ||
+      chat.changedFiles.some((file) => typeof file !== 'string' || file.length > 500)
+    )
+      throw new Error('Chat review context is invalid. Reopen the change from its chat turn.');
+    const thread = getDb()
+      .prepare('SELECT workspace_id FROM chat_threads WHERE id = ?')
+      .get(chat.threadId) as { workspace_id: string } | undefined;
+    if (!thread || thread.workspace_id !== input.workspaceId)
+      throw new Error('Chat context is unavailable in this workspace.');
+  }
   let workItemRef = input.workItemRef;
   if (input.origin?.workflowRunId) {
     const row = getDb()

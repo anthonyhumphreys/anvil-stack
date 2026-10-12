@@ -6,13 +6,15 @@ export interface SidebarNavItemDefinition {
   label: string;
   /** One-line description shown as a secondary line/tooltip (NV2). */
   description?: string;
-  feature: Feature;
+  /** Search terms shared with the command palette. */
+  keywords?: string[];
+  feature?: Feature;
   requiresRepoFeature?: boolean;
   requiresChat?: boolean;
 }
 
 export interface SidebarToolGroupDefinition {
-  id: 'delivery' | 'build' | 'knowledge' | 'governance';
+  id: 'build' | 'delivery' | 'inspect' | 'knowledge' | 'governance';
   label: string;
   items: SidebarNavItemDefinition[];
 }
@@ -28,6 +30,7 @@ export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
     path: '/inbox',
     label: 'Activity',
     description: 'Work that needs you and work in progress across workspaces.',
+    keywords: ['inbox', 'attention', 'approval', 'failed', 'completed'],
     feature: 'chat',
   },
   {
@@ -50,12 +53,14 @@ export const AUTOMATE_NAV_ITEMS: SidebarNavItemDefinition[] = [
     path: '/automations',
     label: 'Automations',
     description: 'Watchtower — agents that run on events and schedules.',
+    keywords: ['watchtower', 'schedule', 'daemon', 'agents'],
     feature: 'automations',
   },
   {
     path: '/workflows',
     label: 'Workflows',
     description: 'Reusable multi-step agent pipelines.',
+    keywords: ['automation', 'agents', 'graph'],
     feature: 'workflows',
     requiresChat: true,
   },
@@ -63,54 +68,31 @@ export const AUTOMATE_NAV_ITEMS: SidebarNavItemDefinition[] = [
     path: '/dojo',
     label: 'Dojo',
     description: 'Agent practice runs and drills.',
+    keywords: ['agent', 'practice', 'drills'],
     feature: 'dojo',
     requiresChat: true,
   },
 ];
 
-export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
+export const SIDEBAR_FOOTER_NAV_ITEMS: SidebarNavItemDefinition[] = [
   {
-    id: 'delivery',
-    label: 'Delivery',
-    items: [
-      {
-        path: '/review',
-        label: 'Changes',
-        description: 'Review uncommitted working-tree changes.',
-        feature: 'codereview',
-      },
-      {
-        path: '/workitems',
-        label: 'Work Items',
-        description: 'Tickets and backlog from your work-item provider.',
-        feature: 'workitems',
-      },
-      {
-        path: '/codereview',
-        label: 'PR Review',
-        description: 'Review pull requests across workspace repos.',
-        feature: 'codereview',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/cicd',
-        label: 'CI/CD',
-        description: 'Pipeline status for workspace repos.',
-        feature: 'cicd',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/git',
-        label: 'Git',
-        description: 'Branches, diffs, and repository status.',
-        feature: 'git',
-        requiresRepoFeature: true,
-      },
-    ],
+    path: '/settings',
+    label: 'Settings',
+    description: 'Configure Anvil and its integrations.',
+    keywords: ['preferences', 'configuration'],
   },
   {
+    path: '/diagnostics',
+    label: 'Diagnostics',
+    description: 'Inspect app health, logs, and connected services.',
+    keywords: ['health', 'logs', 'troubleshooting'],
+  },
+];
+
+export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
+  {
     id: 'build',
-    label: 'Build & inspect',
+    label: 'Build',
     items: [
       {
         path: '/editor',
@@ -123,40 +105,15 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         path: '/browser',
         label: 'Browser',
         description: 'Preview running apps and simulators.',
+        keywords: ['web', 'localhost', 'dev server'],
         feature: 'browser',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/cloud',
-        label: 'Cloud',
-        description: 'Anvil Cloud environments and sandboxes.',
-        feature: 'cloud',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/db-insights',
-        label: 'DB Insights',
-        description: 'Import and analyse database schemas.',
-        feature: 'dbinsights',
-      },
-      {
-        path: '/dependencies',
-        label: 'Dependencies',
-        description: 'Package and dependency overview per repo.',
-        feature: 'dependencies',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/security',
-        label: 'Security',
-        description: 'Security audits and findings per repo.',
-        feature: 'security',
         requiresRepoFeature: true,
       },
       {
         path: '/onboard',
         label: 'Repo setup',
         description: 'AGENTS.md, devcontainer, and environment readiness checks.',
+        keywords: ['onboard', 'agents.md', 'devcontainer', 'wizard'],
         feature: 'onboard',
         requiresRepoFeature: true,
       },
@@ -164,7 +121,89 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         path: '/argent',
         label: 'Argent',
         description: 'Mobile companion and simulator checks.',
+        keywords: ['expo', 'mobile', 'simulator', 'emulator', 'mcp'],
         feature: 'argent',
+      },
+    ],
+  },
+  {
+    id: 'delivery',
+    label: 'Delivery',
+    items: [
+      {
+        path: '/workitems',
+        label: 'Work Items',
+        description: 'Tickets and backlog from your work-item provider.',
+        keywords: ['tickets', 'ado', 'backlog'],
+        feature: 'workitems',
+      },
+      {
+        path: '/review',
+        label: 'Changes',
+        description: 'Review uncommitted working-tree changes.',
+        keywords: ['diff', 'working tree', 'uncommitted'],
+        feature: 'codereview',
+      },
+      {
+        path: '/codereview',
+        label: 'PR Review',
+        description: 'Review pull requests across workspace repos.',
+        keywords: ['code review', 'pr', 'pull request'],
+        feature: 'codereview',
+        requiresRepoFeature: true,
+      },
+      {
+        path: '/cicd',
+        label: 'CI/CD',
+        description: 'Pipeline status for workspace repos.',
+        keywords: ['pipeline', 'build', 'deploy'],
+        feature: 'cicd',
+        requiresRepoFeature: true,
+      },
+      {
+        path: '/git',
+        label: 'Git',
+        description: 'Branches, diffs, and repository status.',
+        keywords: ['branch', 'commit', 'diff', 'status'],
+        feature: 'git',
+        requiresRepoFeature: true,
+      },
+    ],
+  },
+  {
+    id: 'inspect',
+    label: 'Inspect',
+    items: [
+      {
+        path: '/cloud',
+        label: 'Cloud',
+        description: 'Anvil Cloud environments and sandboxes.',
+        keywords: ['environment', 'sandbox'],
+        feature: 'cloud',
+        requiresRepoFeature: true,
+      },
+      {
+        path: '/db-insights',
+        label: 'DB Insights',
+        description: 'Import and analyse database schemas.',
+        keywords: ['database', 'db', 'schema', 'sql', 'import', 'ssms'],
+        feature: 'dbinsights',
+      },
+      {
+        path: '/dependencies',
+        label: 'Dependencies',
+        description: 'Package and dependency overview per repo.',
+        keywords: ['packages', 'libraries', 'npm'],
+        feature: 'dependencies',
+        requiresRepoFeature: true,
+      },
+      {
+        path: '/security',
+        label: 'Security',
+        description: 'Security audits and findings per repo.',
+        keywords: ['audit', 'vulnerabilities', 'owasp'],
+        feature: 'security',
+        requiresRepoFeature: true,
       },
     ],
   },
@@ -188,12 +227,14 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         path: '/docs',
         label: 'Documentation',
         description: 'Docs from your documentation provider.',
+        keywords: ['docs', 'confluence'],
         feature: 'docs',
       },
       {
         path: '/adrs',
         label: 'ADRs',
         description: 'Architecture decision records.',
+        keywords: ['architecture', 'decision', 'records'],
         feature: 'adrs',
         requiresRepoFeature: true,
       },
@@ -201,6 +242,7 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         path: '/diagrams',
         label: 'Diagrams',
         description: 'Architecture diagrams for workspace repos.',
+        keywords: ['architecture', 'drawio', 'mermaid'],
         feature: 'diagrams',
         requiresRepoFeature: true,
       },
@@ -220,6 +262,7 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         path: '/compliance',
         label: 'Data & Compliance',
         description: 'Privacy and compliance checks.',
+        keywords: ['dpia', 'privacy', 'terms'],
         feature: 'compliance',
         requiresRepoFeature: true,
       },
@@ -227,12 +270,34 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
   },
 ];
 
-/** Every navigable item, primary first — used by pinning and the palette. */
+/** Every sidebar destination, primary first and footer last. */
 export function allSidebarNavItems(): SidebarNavItemDefinition[] {
   return [
     ...PRIMARY_NAV_ITEMS,
     ...AUTOMATE_NAV_ITEMS,
     ...TOOL_NAV_GROUPS.flatMap((group) => group.items),
+    ...SIDEBAR_FOOTER_NAV_ITEMS,
+  ];
+}
+
+export interface SidebarNavigationEntry {
+  item: SidebarNavItemDefinition;
+  section: string;
+}
+
+/** Flatten the visible navigation in display order for other navigation surfaces. */
+export function getSidebarNavigationEntries(
+  userRole: UserRole,
+  cloudFeaturesEnabled: boolean,
+): SidebarNavigationEntry[] {
+  const navigation = getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled);
+  return [
+    ...navigation.primary.map((item) => ({ item, section: 'Workspace' })),
+    ...navigation.automate.map((item) => ({ item, section: 'Automate' })),
+    ...navigation.tools.flatMap((group) =>
+      group.items.map((item) => ({ item, section: group.label })),
+    ),
+    ...SIDEBAR_FOOTER_NAV_ITEMS.map((item) => ({ item, section: 'Settings' })),
   ];
 }
 
@@ -245,7 +310,7 @@ export function getAvailableSidebarNavigation(
   tools: SidebarToolGroupDefinition[];
 } {
   const isAvailable = (item: SidebarNavItemDefinition) =>
-    ROLE_FEATURES[userRole].includes(item.feature) &&
+    (!item.feature || ROLE_FEATURES[userRole].includes(item.feature)) &&
     (item.feature !== 'cloud' || cloudFeaturesEnabled);
 
   return {
@@ -260,7 +325,10 @@ export function getAvailableSidebarNavigation(
 
 /** Pinnable destinations are tool/automate items; primary items are always shown. */
 export function isPinnableNavItem(item: SidebarNavItemDefinition): boolean {
-  return !PRIMARY_NAV_ITEMS.some((primary) => primary.path === item.path);
+  return (
+    !PRIMARY_NAV_ITEMS.some((primary) => primary.path === item.path) &&
+    !SIDEBAR_FOOTER_NAV_ITEMS.some((footer) => footer.path === item.path)
+  );
 }
 
 /**

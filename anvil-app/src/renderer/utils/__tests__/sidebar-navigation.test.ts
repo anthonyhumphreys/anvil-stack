@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AUTOMATE_NAV_ITEMS,
   getAvailableSidebarNavigation,
+  getSidebarNavigationEntries,
   isPinnableNavItem,
   isSidebarNavItemActive,
   MAX_PINNED_NAV_TOOLS,
@@ -9,6 +10,7 @@ import {
   PINNED_NAV_TOOLS_STORAGE_KEY,
   PRIMARY_NAV_ITEMS,
   readPinnedNavTools,
+  SIDEBAR_FOOTER_NAV_ITEMS,
   TOOL_NAV_GROUPS,
   togglePinnedNavTool,
 } from '../sidebar-navigation';
@@ -108,6 +110,30 @@ describe('sidebar navigation', () => {
   it('gives every tool a one-line description (NV2)', () => {
     const tools = TOOL_NAV_GROUPS.flatMap((group) => group.items);
     expect(tools.every((item) => !!item.description)).toBe(true);
+  });
+
+  it('groups navigation by workflow and gives the palette the same available entries', () => {
+    expect(TOOL_NAV_GROUPS.map((group) => group.label)).toEqual([
+      'Build',
+      'Delivery',
+      'Inspect',
+      'Knowledge',
+      'Governance',
+    ]);
+
+    const navigation = getAvailableSidebarNavigation('developer', false);
+    const entries = getSidebarNavigationEntries('developer', false);
+    expect(entries.map(({ item }) => item.path)).toEqual([
+      ...navigation.primary.map((item) => item.path),
+      ...navigation.automate.map((item) => item.path),
+      ...navigation.tools.flatMap((group) => group.items.map((item) => item.path)),
+      ...SIDEBAR_FOOTER_NAV_ITEMS.map((item) => item.path),
+    ]);
+    expect(entries.some(({ item }) => item.path === '/cloud')).toBe(false);
+    expect(entries.some(({ item }) => item.path === '/meeting-notes')).toBe(true);
+    expect(entries.some(({ item }) => item.path === '/workspace-notes')).toBe(true);
+    expect(entries.some(({ item }) => item.path === '/dependencies')).toBe(true);
+    expect(entries.some(({ item }) => item.path === '/cicd')).toBe(true);
   });
 });
 

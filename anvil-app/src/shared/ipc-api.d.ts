@@ -334,6 +334,8 @@ export interface AnvilAPI {
   };
 
   chat: {
+    createTemporaryThread(personaId: string): Promise<ChatThread>;
+    endTemporaryThread(threadId: string): Promise<boolean>;
     linkPullRequest(
       threadId: string,
       input: ChatThreadPullRequestInput,
@@ -707,11 +709,18 @@ export interface AnvilAPI {
   };
 
   docs: {
-    listPages: (spaceKey?: string) => Promise<DocPage[]>;
-    listChildren: (pageId: string) => Promise<DocPage[]>;
-    checkStaleness: (pageId: string, repoId: string) => Promise<DocPage['staleness']>;
-    generateUpdate: (pageId: string, repoId: string) => Promise<string>;
-    createPage: (spaceKey: string, title: string, repoId: string) => Promise<string>;
+    listProjects: (context: import('./types.js').DocsRequestContext) => Promise<import('./types.js').LinearDocProject[]>;
+    listPages: (spaceKey: string | undefined, context: import('./types.js').DocsRequestContext) => Promise<DocPage[]>;
+    listChildren: (pageId: string, context: import('./types.js').DocsRequestContext) => Promise<DocPage[]>;
+    checkStaleness: (pageId: string, repoId: string, context: import('./types.js').DocsRequestContext) => Promise<DocPage['staleness']>;
+    generateUpdate: (pageId: string, repoId: string, context: import('./types.js').DocsRequestContext) => Promise<string>;
+    createPage: (spaceKey: string, title: string, repoId: string, context: import('./types.js').DocsRequestContext) => Promise<string>;
+    updatePage: (
+      pageId: string,
+      title: string,
+      content: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<void>;
   };
 
   settings: {

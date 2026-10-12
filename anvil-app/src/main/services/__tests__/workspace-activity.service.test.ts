@@ -95,22 +95,59 @@ describe('workspace activity feed', () => {
     expect(feed[0].items[0].detail).toContain('ready to review');
   });
 
-  it('aggregates errored repositories per workspace', () => {
+  it('emits a distinct actionable item with the latest reason for each errored repo', () => {
     seedWorkspace('ws-1', 'Repos');
     inMemoryDb
       .prepare(
         `INSERT INTO repos (id, name, path, remote_url, default_branch, status, file_count, branch_count, created_at, updated_at)
-         VALUES ('repo-err', 'broken-repo', '/tmp/broken', NULL, 'main', 'error', 0, 0, datetime('now'), datetime('now'))`,
+         VALUES
+           ('repo-err', 'broken-repo', '/tmp/broken', NULL, 'main', 'error', 0, 0, datetime('now'), datetime('now')),
+           ('repo-err-2', 'slow-repo', '/tmp/slow', NULL, 'main', 'error', 0, 0, datetime('now'), datetime('now')),
+           ('repo-err-unknown', 'unknown-repo', '/tmp/unknown', NULL, 'main', 'error', 0, 0, datetime('now'), datetime('now'))`,
       )
       .run();
     inMemoryDb
       .prepare(
-        `INSERT INTO workspace_repos (workspace_id, repo_id, added_at) VALUES ('ws-1', 'repo-err', datetime('now'))`,
+        `INSERT INTO workspace_repos (workspace_id, repo_id, added_at) VALUES
+           ('ws-1', 'repo-err', datetime('now')),
+           ('ws-1', 'repo-err-2', datetime('now')),
+           ('ws-1', 'repo-err-unknown', datetime('now'))`,
+      )
+      .run();
+    inMemoryDb
+      .prepare(
+        `INSERT INTO repo_index_jobs
+         (id, repo_id, tier, state, reason, progress, message, error, queued_at, finished_at)
+         VALUES
+           ('job-err', 'repo-err', 'mapped', 'failed', 'connect', 0, 'Index failed', 'Could not read package.json', datetime('now', '-1 minute'), datetime('now', '-1 minute')),
+           ('job-err-latest', 'repo-err', 'mapped', 'failed', 'manual', 0, 'Index failed', '', datetime('now'), datetime('now')),
+           ('job-err-2', 'repo-err-2', 'mapped', 'failed', 'connect', 0, 'Index failed', 'Permission denied for src/private', datetime('now'), datetime('now'))`,
       )
       .run();
 
     const feed = getWorkspaceActivityFeed();
     expect(feed[0].status).toBe('error');
-    expect(feed[0].items[0].title).toBe('1 repo needs attention');
+    expect(feed[0].count).toBe(3);
+    expect(feed[0].items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'repo-error-repo-err',
+          title: 'broken-repo needs attention',
+          detail: 'No error details are available.',
+          nextAction: 'Open Workspace to inspect and retry indexing.',
+          route: '/workspace?repo=repo-err',
+        }),
+        expect.objectContaining({
+          id: 'repo-error-repo-err-2',
+          title: 'slow-repo needs attention',
+          detail: 'Permission denied for src/private',
+        }),
+        expect.objectContaining({
+          id: 'repo-error-repo-err-unknown',
+          title: 'unknown-repo needs attention',
+          detail: 'No error details are available.',
+        }),
+      ]),
+    );
   });
 });

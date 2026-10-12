@@ -48,7 +48,7 @@ Role selection controls which tools appear. Cloud is also hidden until you enabl
 | Editor | Starts or attaches to the embedded VS Code server, focuses files from Anvil, or opens them in an external editor. | [Terminal and editor](/docs/desktop/terminal-and-editor) |
 | Browser | Detects local dev servers, opens an embedded preview, records annotations, sends page context to Chat, and can register the browser MCP bridge. | [Build, inspect, and run](/docs/desktop/build-inspect-and-run) |
 | Cloud | Runs Anvil Cloud health, build, runtime, workflow, service, and agent commands. It can also start and supervise authenticated remote executions. | [Cloud and mobile workbenches](/docs/desktop/cloud-and-mobile-workbenches) |
-| DB Insights | Imports database exports, detects tables, stored procedures, relationships, and risks, then prepares follow-up prompts for Chat. | [Assurance tools](/docs/desktop/assurance-tools) |
+| DB Insights | Analyses SQL DDL, MongoDB and DynamoDB JSON, or Redis key/type exports, then brings observed structure and follow-up prompts into Chat. | [Assurance tools](/docs/desktop/assurance-tools) |
 | Dependencies | Inventories npm, pnpm, Yarn, NuGet, and Python packages; runs vulnerability and licence checks; and exports SBOMs. | [Assurance tools](/docs/desktop/assurance-tools) |
 | Security | Runs repository security audits, tracks findings, creates work items, and exports reports. Its Pentest tab runs Docker-backed dynamic scans. | [Assurance tools](/docs/desktop/assurance-tools) |
 | Onboarding | Detects repository setup, generates `AGENTS.md` and devcontainer files, checks the environment, and can write or commit approved artifacts. | [Workspaces, repositories, and activity](/docs/desktop/workspaces-repositories-and-activity) |

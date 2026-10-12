@@ -4,8 +4,11 @@ import { formatShortcut, shortcutFor } from '../../utils/shortcuts';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
+  Activity,
   Bell,
+  Boxes,
   Code,
+  Cloud,
   Compass,
   Database,
   FileDiff,
@@ -30,6 +33,10 @@ import {
   FolderOpen,
   Wrench,
   MonitorSmartphone,
+  NotebookPen,
+  StickyNote,
+  Target,
+  Workflow,
 } from 'lucide-react';
 import type { ChatLayout, Feature, UserRole } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
@@ -38,6 +45,7 @@ import { useChatContext } from '../../contexts/ChatContext';
 import { getNextListboxIndex } from '../../utils/list-navigation';
 import { slugForDomId } from '../../utils/dom-id';
 import { isEditableShortcutTarget } from '../../utils/keyboard';
+import { getSidebarNavigationEntries, navItemGateReason } from '../../utils/sidebar-navigation';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,6 +60,7 @@ interface Command {
   keywords?: string[];
   shortcut?: string;
   feature?: Feature;
+  recent?: boolean;
   action: () => void;
 }
 
@@ -61,6 +70,7 @@ interface CommandPaletteProps {
   userRole: UserRole;
   onToggleTerminal: () => void;
   onCreateWorkspace: () => void;
+  cloudFeaturesEnabled: boolean;
 }
 
 const COMMAND_PALETTE_LIST_ID = 'command-palette-list';
@@ -111,6 +121,85 @@ export function buildCommandPaletteOptionId(commandId: string): string {
   return `command-palette-option-${slugForDomId(commandId)}`;
 }
 
+interface SearchablePaletteCommand {
+  label: string;
+  description?: string;
+  section: string;
+  keywords?: string[];
+  recent?: boolean;
+}
+
+export function filterCommandPaletteCommands<T extends SearchablePaletteCommand>(
+  commands: T[],
+  query: string,
+): T[] {
+  const trimmedQuery = query.trim().toLowerCase();
+  const candidates = trimmedQuery
+    ? commands
+    : (() => {
+        let recentThreads = 0;
+        return commands.filter((command) => {
+          if (command.section !== 'Threads') return true;
+          if (!command.recent || recentThreads >= 8) return false;
+          recentThreads += 1;
+          return true;
+        });
+      })();
+
+  if (!trimmedQuery) return candidates;
+  return candidates.filter((command) =>
+    [command.label, command.description, command.section, ...(command.keywords ?? [])]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(trimmedQuery),
+  );
+}
+
+export function groupPaletteCommands<T extends { section: string }>(commands: T[]) {
+  const groups = new Map<string, T[]>();
+  for (const command of commands) {
+    const group = groups.get(command.section);
+    if (group) group.push(command);
+    else groups.set(command.section, [command]);
+  }
+  return Array.from(groups, ([section, items]) => ({ section, items }));
+}
+
+function navigationIconForPath(path: string): React.ReactNode {
+  const icons: Record<string, React.ReactNode> = {
+    '/inbox': <Bell size={16} />,
+    '/chat': <MessageSquare size={16} />,
+    '/workspace': <Code size={16} />,
+    '/automations': <RadioTower size={16} />,
+    '/workflows': <GitFork size={16} />,
+    '/dojo': <Target size={16} />,
+    '/workitems': <TicketCheck size={16} />,
+    '/editor': <SquareTerminal size={16} />,
+    '/browser': <Globe size={16} />,
+    '/onboard': <Compass size={16} />,
+    '/argent': <MonitorSmartphone size={16} />,
+    '/review': <FileDiff size={16} />,
+    '/codereview': <GitPullRequest size={16} />,
+    '/cicd': <Workflow size={16} />,
+    '/git': <GitBranch size={16} />,
+    '/cloud': <Cloud size={16} />,
+    '/db-insights': <Database size={16} />,
+    '/dependencies': <Boxes size={16} />,
+    '/security': <Shield size={16} />,
+    '/meeting-notes': <NotebookPen size={16} />,
+    '/workspace-notes': <StickyNote size={16} />,
+    '/docs': <FileText size={16} />,
+    '/adrs': <BookOpen size={16} />,
+    '/diagrams': <GitFork size={16} />,
+    '/governance': <Landmark size={16} />,
+    '/compliance': <Scale size={16} />,
+    '/settings': <Settings size={16} />,
+    '/diagnostics': <Activity size={16} />,
+  };
+  return icons[path] ?? <Compass size={16} />;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -121,17 +210,20 @@ export function CommandPalette({
   userRole,
   onToggleTerminal,
   onCreateWorkspace,
+  cloudFeaturesEnabled,
 }: CommandPaletteProps) {
   const navigate = useNavigate();
   const { overrides: shortcuts } = useShortcuts();
-  const { activeWorkspace, workspaces, switchWorkspace, removeRepos } = useWorkspace();
-  const { threads } = useChatContext();
+  const { activeWorkspace, workspaces, switchWorkspace, removeRepos, featureAvailability } =
+    useWorkspace();
+  const { threads, startTemporaryChat } = useChatContext();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [chatLayout, setChatLayout] = useState<ChatLayout>('classic');
   // WS4: two-step "Remove repository" picker — null = normal command mode.
   const [repoRemoval, setRepoRemoval] = useState<{ confirmRepoId?: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   // ⌃1–9 switches workspaces from anywhere in the shell (WS4). The palette is
@@ -243,15 +335,14 @@ export function CommandPalette({
         };
       }),
 
-      // Jump to thread — recent active threads from the chat rail (CH6).
-      ...threads
-        .filter((thread) => !thread.settledAt)
+      // Thread commands remain searchable across the full thread history.
+      ...[...threads]
         .sort(
           (a, b) =>
+            Number(!!a.settledAt) - Number(!!b.settledAt) ||
             dateValueForSort(b.lastMessageAt ?? b.updatedAt) -
-            dateValueForSort(a.lastMessageAt ?? a.updatedAt),
+              dateValueForSort(a.lastMessageAt ?? a.updatedAt),
         )
-        .slice(0, 8)
         .map((thread) => ({
           id: `thread-${thread.id}`,
           label: `Jump to thread: ${thread.title}`,
@@ -259,6 +350,7 @@ export function CommandPalette({
           section: 'Threads',
           icon: <MessageSquare size={16} />,
           feature: 'chat' as Feature,
+          recent: !thread.settledAt,
           keywords: ['thread', 'chat', 'jump', thread.title.toLowerCase()],
           action: () =>
             go(
@@ -266,212 +358,25 @@ export function CommandPalette({
             ),
         })),
 
-      // Navigation
-      {
-        id: 'nav-inbox',
-        label: 'Go to Activity',
-        description: 'Review work that needs you and work still in progress across workspaces.',
-        section: 'Navigation',
-        icon: <Bell size={16} />,
-        feature: 'chat',
-        keywords: ['inbox', 'activity', 'attention', 'approval', 'failed', 'completed'],
-        action: () => go('/inbox'),
-      },
-      {
-        id: 'nav-repos',
-        label: 'Go to Workspace',
-        description: 'Connect, inspect, and index source repositories.',
-        section: 'Navigation',
-        icon: <Code size={16} />,
-        feature: 'repos',
-        keywords: ['repos', 'code'],
-        action: () => go('/workspace'),
-      },
-      {
-        id: 'nav-chat',
-        label: 'Go to Chat',
-        description: 'Work with the active persona and attached repo context.',
-        section: 'Navigation',
-        icon: <MessageSquare size={16} />,
-        feature: 'chat',
-        keywords: ['chat', 'ai', 'conversation'],
-        action: () => go('/chat'),
-      },
-      {
-        id: 'nav-editor',
-        label: 'Go to Editor',
-        description: 'Inspect files and open the embedded IDE.',
-        section: 'Navigation',
-        icon: <SquareTerminal size={16} />,
-        feature: 'editor',
-        keywords: ['editor', 'inspect', 'code', 'ide'],
-        action: () => go('/editor'),
-      },
-      {
-        id: 'nav-automations',
-        label: 'Go to Watchtower & schedules',
-        description: 'Manage event-driven and scheduled background agent work.',
-        section: 'Navigation',
-        icon: <RadioTower size={16} />,
-        feature: 'automations',
-        keywords: ['automation', 'watchtower', 'schedule', 'daemon', 'agents'],
-        action: () => go('/automations'),
-      },
-      {
-        id: 'nav-workflows',
-        label: 'Go to Workflows',
-        description: 'Build and run reusable multi-step agent workflows.',
-        section: 'Navigation',
-        icon: <GitFork size={16} />,
-        feature: 'workflows',
-        keywords: ['automation', 'workflow', 'agents', 'graph'],
-        action: () => go('/workflows'),
-      },
-      {
-        id: 'nav-onboard',
-        label: 'Go to Repo Setup',
-        description: 'AGENTS.md, devcontainer, and environment readiness checks per repo.',
-        section: 'Navigation',
-        icon: <Compass size={16} />,
-        feature: 'onboard',
-        keywords: ['onboard', 'repo setup', 'agents.md', 'devcontainer', 'wizard'],
-        action: () => go('/onboard'),
-      },
-      {
-        id: 'nav-db-insights',
-        label: 'Go to DB Insights',
-        description: 'Import database exports and analyze schemas.',
-        section: 'Navigation',
-        icon: <Database size={16} />,
-        feature: 'dbinsights',
-        keywords: ['database', 'db', 'schema', 'sql', 'insights'],
-        action: () => go('/db-insights'),
-      },
-      {
-        id: 'nav-workitems',
-        label: 'Go to Work Items',
-        section: 'Navigation',
-        icon: <TicketCheck size={16} />,
-        feature: 'workitems',
-        keywords: ['work', 'items', 'tickets', 'ado', 'backlog'],
-        action: () => go('/workitems'),
-      },
-      {
-        id: 'nav-security',
-        label: 'Go to Security',
-        section: 'Navigation',
-        icon: <Shield size={16} />,
-        feature: 'security',
-        keywords: ['security', 'audit', 'vulnerabilities'],
-        action: () => go('/security'),
-      },
-      {
-        id: 'nav-changes',
-        label: 'Go to Changes',
-        description: 'Review uncommitted working-tree changes.',
-        section: 'Navigation',
-        icon: <FileDiff size={16} />,
-        feature: 'codereview',
-        keywords: ['changes', 'review', 'diff', 'working tree', 'uncommitted'],
-        action: () => go('/review'),
-      },
-      {
-        id: 'nav-codereview',
-        label: 'Go to PR Review',
-        description: 'Review pull requests across workspace repos.',
-        section: 'Navigation',
-        icon: <GitPullRequest size={16} />,
-        feature: 'codereview',
-        keywords: ['code', 'review', 'pr', 'pull request'],
-        action: () => go('/codereview'),
-      },
-      {
-        id: 'nav-docs',
-        label: 'Go to Documentation',
-        section: 'Navigation',
-        icon: <FileText size={16} />,
-        feature: 'docs',
-        keywords: ['docs', 'confluence', 'documentation'],
-        action: () => go('/docs'),
-      },
-      {
-        id: 'nav-adrs',
-        label: 'Go to ADRs',
-        section: 'Navigation',
-        icon: <BookOpen size={16} />,
-        feature: 'adrs',
-        keywords: ['adr', 'architecture', 'decision', 'records'],
-        action: () => go('/adrs'),
-      },
-      {
-        id: 'nav-diagrams',
-        label: 'Go to Diagrams',
-        section: 'Navigation',
-        icon: <GitFork size={16} />,
-        feature: 'diagrams',
-        keywords: ['diagrams', 'architecture', 'drawio'],
-        action: () => go('/diagrams'),
-      },
-      {
-        id: 'nav-governance',
-        label: 'Go to Governance',
-        section: 'Navigation',
-        icon: <Landmark size={16} />,
-        feature: 'governance',
-        keywords: ['governance', 'boards', 'compliance'],
-        action: () => go('/governance'),
-      },
-      {
-        id: 'nav-browser',
-        label: 'Go to Browser',
-        section: 'Navigation',
-        icon: <Globe size={16} />,
-        feature: 'browser',
-        keywords: ['browser', 'web', 'localhost', 'dev server'],
-        action: () => go('/browser'),
-      },
-      {
-        id: 'nav-argent',
-        label: 'Go to Argent',
-        description: 'Set up and operate Argent against the Expo companion app.',
-        section: 'Navigation',
-        icon: <MonitorSmartphone size={16} />,
-        feature: 'argent',
-        keywords: ['argent', 'expo', 'mobile', 'simulator', 'emulator', 'mcp'],
-        action: () => go('/argent'),
-      },
-      {
-        id: 'nav-git',
-        label: 'Go to Git',
-        description: 'Inspect branches, diffs, and repository status.',
-        section: 'Navigation',
-        icon: <GitBranch size={16} />,
-        feature: 'git',
-        keywords: ['git', 'branch', 'commit', 'diff', 'status'],
-        action: () => go('/git'),
-      },
-      {
-        id: 'nav-compliance',
-        label: 'Go to Data & Compliance',
-        section: 'Navigation',
-        icon: <Scale size={16} />,
-        feature: 'compliance',
-        keywords: ['data', 'compliance', 'dpia', 'privacy', 'terms'],
-        action: () => go('/compliance'),
-      },
-      {
-        id: 'nav-settings',
-        label: 'Go to Settings',
-        section: 'Navigation',
-        icon: <Settings size={16} />,
-        shortcut: formatShortcut(
-          shortcutFor('settings', shortcuts),
-          navigator.platform.includes('Mac'),
-        ),
-        keywords: ['settings', 'config', 'preferences'],
-        action: () => go('/settings'),
-      },
-
+      // Navigation comes from the same catalog as the sidebar.
+      ...getSidebarNavigationEntries(userRole, cloudFeaturesEnabled).map(({ item, section }) => ({
+        id: `nav-${item.path.slice(1).replaceAll('/', '-')}`,
+        label: `Go to ${item.label}`,
+        description: navItemGateReason(item, featureAvailability) ?? item.description,
+        section,
+        icon: navigationIconForPath(item.path),
+        shortcut:
+          item.path === '/settings'
+            ? formatShortcut(shortcutFor('settings', shortcuts), navigator.platform.includes('Mac'))
+            : undefined,
+        feature: item.feature,
+        keywords: [
+          item.path.slice(1).replaceAll('-', ' '),
+          item.label.toLowerCase(),
+          ...(item.keywords ?? []),
+        ],
+        action: () => go(item.path),
+      })),
       // Actions
       {
         id: 'act-terminal',
@@ -544,6 +449,22 @@ export function CommandPalette({
         action: () => {
           navigate('/chat', { state: { newThreadRequest: crypto.randomUUID() } });
           onClose();
+        },
+      },
+      {
+        id: 'act-temporary-chat',
+        label: 'Start Temporary Chat',
+        description: 'Start a session that ends when Anvil closes, without workspace context.',
+        section: 'Actions',
+        icon: <MessageSquare size={16} />,
+        feature: 'chat',
+        keywords: ['temporary', 'ephemeral', 'private', 'no workspace', 'new chat'],
+        action: () => {
+          void (async () => {
+            await startTemporaryChat();
+            navigate('/chat?temporary=1');
+            onClose();
+          })();
         },
       },
       {
@@ -714,6 +635,8 @@ export function CommandPalette({
       workspaces,
       switchWorkspace,
       threads,
+      cloudFeaturesEnabled,
+      featureAvailability,
       go,
       navigate,
       onClose,
@@ -723,6 +646,7 @@ export function CommandPalette({
       promptChat,
       chatLayout,
       toggleChatLayout,
+      startTemporaryChat,
     ],
   );
 
@@ -781,17 +705,8 @@ export function CommandPalette({
     const allowed = (repoRemoval ? pickerCommands : commands).filter(
       (cmd) => !cmd.feature || ROLE_FEATURES[userRole].includes(cmd.feature),
     );
-    if (!query.trim()) return allowed;
-
-    const q = query.toLowerCase();
-    const matches = allowed.filter((cmd) => {
-      const haystack = [cmd.label, cmd.description, cmd.section, ...(cmd.keywords ?? [])]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(q);
-    });
-
+    const matches = filterCommandPaletteCommands(allowed, query);
+    if (!query.trim()) return matches;
     if (repoRemoval) return matches;
 
     const trimmedQuery = query.trim();
@@ -813,14 +728,8 @@ export function CommandPalette({
   }, [activeWorkspace, commands, pickerCommands, promptChat, query, repoRemoval, userRole]);
 
   // Group by section
-  const sections = useMemo(() => {
-    const map = new Map<string, Command[]>();
-    for (const cmd of filtered) {
-      if (!map.has(cmd.section)) map.set(cmd.section, []);
-      map.get(cmd.section)!.push(cmd);
-    }
-    return map;
-  }, [filtered]);
+  const sections = useMemo(() => groupPaletteCommands(filtered), [filtered]);
+  const orderedCommands = useMemo(() => sections.flatMap((section) => section.items), [sections]);
 
   // Reset on open/close
   useEffect(() => {
@@ -837,6 +746,16 @@ export function CommandPalette({
   }, [open]);
 
   useEffect(() => {
+    if (!open) return;
+    const previousFocus = document.activeElement;
+    return () => {
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+        previousFocus.focus();
+      }
+    };
+  }, [open]);
+
+  useEffect(() => {
     const handleLayoutChanged = (event: Event) => {
       const nextLayout = (event as CustomEvent<ChatLayout>).detail;
       if (nextLayout === 'classic' || nextLayout === 'workitems') {
@@ -850,8 +769,10 @@ export function CommandPalette({
 
   // Keep selection in bounds
   useEffect(() => {
-    if (selectedIndex >= filtered.length) setSelectedIndex(Math.max(0, filtered.length - 1));
-  }, [filtered.length, selectedIndex]);
+    if (selectedIndex >= orderedCommands.length) {
+      setSelectedIndex(Math.max(0, orderedCommands.length - 1));
+    }
+  }, [orderedCommands.length, selectedIndex]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -862,16 +783,36 @@ export function CommandPalette({
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       switch (e.key) {
+        case 'Tab': {
+          const focusable = Array.from(
+            dialogRef.current?.querySelectorAll<HTMLElement>(
+              'input:not([disabled]), button:not([disabled]):not([tabindex="-1"])',
+            ) ?? [],
+          );
+          if (focusable.length === 0) break;
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+          break;
+        }
         case 'ArrowDown':
         case 'ArrowUp':
         case 'Home':
         case 'End':
           e.preventDefault();
-          setSelectedIndex((index) => getNextListboxIndex(e.key, index, filtered.length) ?? index);
+          setSelectedIndex(
+            (index) => getNextListboxIndex(e.key, index, orderedCommands.length) ?? index,
+          );
           break;
         case 'Enter':
           e.preventDefault();
-          filtered[selectedIndex]?.action();
+          orderedCommands[selectedIndex]?.action();
           break;
         case 'Escape':
           e.preventDefault();
@@ -885,7 +826,7 @@ export function CommandPalette({
           break;
       }
     },
-    [filtered, selectedIndex, onClose, repoRemoval],
+    [orderedCommands, selectedIndex, onClose, repoRemoval],
   );
 
   if (!open) return null;
@@ -899,6 +840,10 @@ export function CommandPalette({
 
       {/* Palette */}
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
         className="relative w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
@@ -927,8 +872,8 @@ export function CommandPalette({
             aria-expanded={filtered.length > 0}
             aria-controls={COMMAND_PALETTE_LIST_ID}
             aria-activedescendant={
-              filtered[selectedIndex]
-                ? buildCommandPaletteOptionId(filtered[selectedIndex].id)
+              orderedCommands[selectedIndex]
+                ? buildCommandPaletteOptionId(orderedCommands[selectedIndex].id)
                 : undefined
             }
             className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none"
@@ -952,24 +897,26 @@ export function CommandPalette({
             </p>
           )}
 
-          {Array.from(sections.entries()).map(([section, cmds]) => (
+          {sections.map(({ section, items }) => (
             <div key={section}>
               <div className="flex items-center justify-between px-3 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-text-tertiary">
                 {section}
                 <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-xs normal-case tracking-normal text-text-muted">
-                  {cmds.length}
+                  {items.length}
                 </span>
               </div>
-              {cmds.map((cmd) => {
+              {items.map((cmd) => {
                 const idx = flatIndex++;
                 return (
                   <button
                     id={buildCommandPaletteOptionId(cmd.id)}
                     key={cmd.id}
                     data-index={idx}
+                    tabIndex={-1}
                     role="option"
                     aria-selected={idx === selectedIndex}
                     onMouseEnter={() => setSelectedIndex(idx)}
+                    onFocus={() => setSelectedIndex(idx)}
                     onClick={cmd.action}
                     className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
                       idx === selectedIndex

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { composeChatTurns, shouldJoinAssistantSegments } from '../chat-turns';
+import {
+  buildApprovalAwareWorkSegments,
+  composeChatTurns,
+  shouldJoinAssistantSegments,
+} from '../chat-turns';
 
 describe('composeChatTurns', () => {
   it('keeps progress and activity subordinate to the final answer', () => {
@@ -237,6 +241,161 @@ describe('composeChatTurns', () => {
 
     expect(turns[0].answer?.content).toBe('Here is the summary.');
     expect(turns[0].work).toEqual([]);
+  });
+});
+
+describe('buildApprovalAwareWorkSegments', () => {
+  it('keeps routine work and approvals in source order with full details retained', () => {
+    const [turn] = composeChatTurns([
+      { kind: 'user', content: 'Update the release config' },
+      {
+        kind: 'assistant',
+        content: 'I need to change the version field first.',
+        phase: 'progress',
+      },
+      {
+        kind: 'event',
+        event: { type: 'file_edit', filePath: 'package.json', diff: '-1.0.0\\n+1.0.1' },
+      },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 1, sessionId: 'session-a' },
+      },
+      { kind: 'assistant', content: 'The package script also needs a change.', phase: 'progress' },
+      {
+        kind: 'event',
+        event: {
+          type: 'command_exec',
+          command: 'pnpm version patch',
+          output: 'Updated package.json',
+        },
+      },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 2, sessionId: 'session-a' },
+      },
+      { kind: 'event', event: { type: 'tool_call', toolName: 'verify' } },
+    ]);
+
+    const segments = buildApprovalAwareWorkSegments(turn.work);
+    expect(segments.map((segment) => segment.kind)).toEqual([
+      'routine',
+      'approval',
+      'routine',
+      'approval',
+      'routine',
+    ]);
+    expect(segments.map((segment) => segment.key)).toEqual([
+      'work-1',
+      'approval-session-a:number:1',
+      'work-4',
+      'approval-session-a:number:2',
+      'work-7',
+    ]);
+    expect(
+      segments.flatMap((segment) =>
+        segment.kind === 'routine'
+          ? segment.items.map((item) => item.sourceIndex)
+          : [segment.item.sourceIndex],
+      ),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(segments[0]).toMatchObject({
+      kind: 'routine',
+      expandedByDefault: true,
+      items: [
+        { kind: 'progress', content: 'I need to change the version field first.' },
+        { kind: 'event', event: { type: 'file_edit', diff: '-1.0.0\\n+1.0.1' } },
+      ],
+    });
+    expect(segments[2]).toMatchObject({
+      kind: 'routine',
+      expandedByDefault: true,
+      items: [
+        { kind: 'progress', content: 'The package script also needs a change.' },
+        { kind: 'event', event: { type: 'command_exec', output: 'Updated package.json' } },
+      ],
+    });
+    expect(segments[4]).toMatchObject({ kind: 'routine', expandedByDefault: false });
+    expect(buildApprovalAwareWorkSegments(turn.work)).toEqual(segments);
+  });
+
+  it('keeps unanchored approvals standalone and omits resolved requests without losing work', () => {
+    const [turn] = composeChatTurns([
+      { kind: 'user', content: 'Make the change' },
+      { kind: 'event', event: { type: 'command_exec', command: 'pnpm test', output: 'passed' } },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 'pending', sessionId: 'session-a' },
+      },
+      {
+        kind: 'event',
+        event: { type: 'request_resolved', resolvedRequestId: 'pending', sessionId: 'session-a' },
+      },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 9, sessionId: 'session-a' },
+      },
+    ]);
+
+    const segments = buildApprovalAwareWorkSegments(turn.work);
+    expect(segments.map((segment) => segment.kind)).toEqual(['routine', 'approval']);
+    expect(segments[0]).toMatchObject({
+      kind: 'routine',
+      expandedByDefault: true,
+      items: [{ kind: 'event', event: { type: 'command_exec', output: 'passed' } }],
+    });
+    expect(segments[1]).toMatchObject({
+      kind: 'approval',
+      item: { event: { approvalRequestId: 9 } },
+    });
+  });
+
+  it('keeps approval keys stable when earlier requests are removed', () => {
+    const original = composeChatTurns([
+      { kind: 'user', content: 'Make two changes' },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 1, sessionId: 'session-a' },
+      },
+      { kind: 'event', event: { type: 'command_exec', command: 'pnpm test' } },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 2, sessionId: 'session-a' },
+      },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', sessionId: 'session-a' },
+      },
+    ])[0];
+    const afterEarlierResolution = composeChatTurns([
+      { kind: 'user', content: 'Make two changes' },
+      { kind: 'event', event: { type: 'command_exec', command: 'pnpm test' } },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', approvalRequestId: 2, sessionId: 'session-a' },
+      },
+      {
+        kind: 'event',
+        event: { type: 'approval_request', sessionId: 'session-a' },
+      },
+    ])[0];
+
+    const originalKeys = buildApprovalAwareWorkSegments(original.work)
+      .filter(
+        (segment): segment is Extract<typeof segment, { kind: 'approval' }> =>
+          segment.kind === 'approval',
+      )
+      .map((segment) => segment.key);
+    const shiftedKeys = buildApprovalAwareWorkSegments(afterEarlierResolution.work)
+      .filter(
+        (segment): segment is Extract<typeof segment, { kind: 'approval' }> =>
+          segment.kind === 'approval',
+      )
+      .map((segment) => segment.key);
+
+    expect(originalKeys[1]).toBe(shiftedKeys[0]);
+    expect(originalKeys[2]).toBe('approval-session-a-index-4');
+    expect(shiftedKeys[1]).toBe('approval-session-a-index-3');
   });
 });
 
