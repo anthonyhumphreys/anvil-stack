@@ -416,6 +416,16 @@ CREATE OR REPLACE PROCEDURE public.rebuild_order_totals() LANGUAGE SQL AS $$ SEL
     ).toThrow(/do not all match/);
   });
 
+  it.each([
+    ['an empty item', JSON.stringify([{ PK: { S: 'ORDER#1' } }, {}])],
+    ['an empty wrapped item', JSON.stringify([{ PK: { S: 'ORDER#1' } }, { Item: {} }])],
+    ['an empty item in an Items export', JSON.stringify({ Items: [{ PK: { S: 'ORDER#1' } }, {}] })],
+  ])('rejects DynamoDB exports containing %s', (_description, content) => {
+    expect(() => parseExportSnapshot([{ fileName: 'mixed.json', content }])).toThrow(
+      /do not all match/,
+    );
+  });
+
   it('returns useful errors for invalid and mixed technology exports', () => {
     expect(() =>
       parseExportSnapshot([{ fileName: 'data.json', content: '{"name":"unknown"}' }]),

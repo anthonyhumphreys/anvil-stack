@@ -553,7 +553,8 @@ function parseJsonDocuments(
       : parsed.map((item) => {
           if (!isRecord(item)) return null;
           const document = isRecord(item.Item) ? item.Item : item;
-          return Object.values(document).every(isDynamoAttribute) ? document : null;
+          const fields = Object.values(document);
+          return fields.length > 0 && fields.every(isDynamoAttribute) ? document : null;
         });
   if (!documents.length || documents.some((document) => document === null)) {
     throw new Error(
