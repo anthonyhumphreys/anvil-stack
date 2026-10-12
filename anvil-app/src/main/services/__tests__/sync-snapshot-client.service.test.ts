@@ -619,6 +619,9 @@ function recoveryChunks(...snapshots: Array<SnapshotFixture | null>): Map<string
 }
 
 beforeEach(() => {
+  // Keep recovery fixtures younger than the seven-day snapshot publication threshold.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-02T00:00:00.000Z'));
   resetSyncEngineForTests();
   tmpDir = mkdtempSync(join(tmpdir(), 'sync-snapshot-client-'));
   active.db = new Database(join(tmpDir, 'sync.db'));
@@ -635,6 +638,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   active.db.close();
   rmSync(tmpDir, { recursive: true, force: true });
 });
