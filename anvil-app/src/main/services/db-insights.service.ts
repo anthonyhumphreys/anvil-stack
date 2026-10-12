@@ -445,6 +445,8 @@ function parseJsonValues(content: string): unknown[] | null {
 
 function detectTechnology(fileName: string, content: string): DbInsightTechnology {
   const trimmed = content.trimStart();
+  const hasRedisTypeOutput =
+    /^\s*TYPE\s+\S+[ \t]*\r?\n\s*(?:string|list|set|zset|hash|stream|none)[ \t]*$/im.test(content);
   if (/\.(?:sql|txt)$/i.test(fileName)) {
     if (/\bGO\s*(?:\r?\n|$)|\bUSE\s+\[|\[[A-Za-z_][\w$#]*\]/i.test(content)) return 'sql-server';
     if (
@@ -456,8 +458,7 @@ function detectTechnology(fileName: string, content: string): DbInsightTechnolog
     if (/\bAUTO_INCREMENT\b|\bENGINE\s*=\s*\w+|`[\w$]+`/i.test(content)) return 'mysql';
     if (/\bAUTOINCREMENT\b|\bPRAGMA\s+|\bWITHOUT\s+ROWID\b/i.test(content)) return 'sqlite';
     if (/\bCREATE\s+(?:TABLE|VIEW|INDEX|PROCEDURE|FUNCTION)\b/i.test(content)) return 'sql';
-    if (/^\s*(?:TYPE|SCAN|HGETALL|LRANGE|SMEMBERS|ZRANGE|GET|SET)\s+/im.test(content))
-      return 'redis';
+    if (hasRedisTypeOutput) return 'redis';
     return 'unknown';
   }
 
@@ -469,12 +470,7 @@ function detectTechnology(fileName: string, content: string): DbInsightTechnolog
     if (values.some(isRedisDump)) return 'redis';
   }
 
-  if (
-    /^\s*TYPE\s+\S+\s*$/im.test(content) &&
-    /^(?:string|list|set|zset|hash|stream|none)\s*$/im.test(content)
-  ) {
-    return 'redis';
-  }
+  if (hasRedisTypeOutput) return 'redis';
   return 'unknown';
 }
 

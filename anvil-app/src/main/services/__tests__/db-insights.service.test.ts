@@ -200,6 +200,15 @@ describe('parseExportSnapshot', () => {
     });
   });
 
+  it.each(['GET session:1\nvalue', 'HGETALL key\nfield\nvalue', 'SCAN 0\nkey'])(
+    'rejects untyped Redis command output %s as an unsupported export',
+    (content) => {
+      expect(() => parseExportSnapshot([{ fileName: 'redis.txt', content }])).toThrow(
+        /do not look like supported/,
+      );
+    },
+  );
+
   it('summarises Redis TYPE output by observed key pattern and type', () => {
     const snapshot = parseExportSnapshot([
       {
