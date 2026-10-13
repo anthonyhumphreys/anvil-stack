@@ -11,6 +11,11 @@ import {
   listEditableAgents,
 } from './editable-agent.service.js';
 import { PERSONAS } from './persona-catalog.js';
+import { buildSurfaceGuide } from '../surfaces/guide.js';
+
+function withSurfaceGuide(prompt: string): string {
+  return `${prompt}\n\n${buildSurfaceGuide()}`;
+}
 
 function safeParseStringList(json: string | null | undefined): string[] {
   if (!json) return [];
@@ -70,17 +75,19 @@ export function buildSystemPrompt(
 
   const ids = Array.isArray(repoIds) ? repoIds : [repoIds];
   if (ids.length === 0) {
-    return renderPersonaPrompt(persona, {
-      repoName: 'Workspace documents and requirements',
-      primaryLanguage: 'Unknown',
-      architectureDescription:
-        'No repositories are attached to this workspace yet. Work from uploaded documentation, governance files, and the user conversation.',
-      conventions:
-        'No AGENTS.md is available yet. Be explicit about assumptions and avoid claiming repo-backed facts you cannot inspect.',
-      moduleSummaries: 'No modules analysed yet.',
-      workItems: 'No active work items linked.',
-      dbInsightsSummary,
-    });
+    return withSurfaceGuide(
+      renderPersonaPrompt(persona, {
+        repoName: 'Workspace documents and requirements',
+        primaryLanguage: 'Unknown',
+        architectureDescription:
+          'No repositories are attached to this workspace yet. Work from uploaded documentation, governance files, and the user conversation.',
+        conventions:
+          'No AGENTS.md is available yet. Be explicit about assumptions and avoid claiming repo-backed facts you cannot inspect.',
+        moduleSummaries: 'No modules analysed yet.',
+        workItems: 'No active work items linked.',
+        dbInsightsSummary,
+      }),
+    );
   }
 
   const db = getDb();
@@ -210,7 +217,7 @@ export function buildSystemPrompt(
     dbInsightsSummary,
   };
 
-  return renderPersonaPrompt(persona, variables);
+  return withSurfaceGuide(renderPersonaPrompt(persona, variables));
 }
 
 export function buildScaffoldSystemPrompt(personaId: string, rootPath: string): string {
@@ -239,6 +246,8 @@ export function buildScaffoldSystemPrompt(personaId: string, rootPath: string): 
     `[[${PRIMARY_SCAFFOLD_COMPLETE_MARKER}]]`,
     '{"repos":[{"name":"example-repo","path":"/absolute/path/to/example-repo"}]}',
     `[[/${PRIMARY_SCAFFOLD_COMPLETE_MARKER}]]`,
+    '',
+    buildSurfaceGuide(),
   ].join('\n');
 }
 
@@ -498,5 +507,5 @@ export function buildDesignSystemPrompt(
     designMode: designModeBlock,
   };
 
-  return loadPromptTemplate('personas/design.md', variables);
+  return withSurfaceGuide(loadPromptTemplate('personas/design.md', variables));
 }

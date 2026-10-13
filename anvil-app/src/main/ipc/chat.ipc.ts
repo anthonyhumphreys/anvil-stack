@@ -122,6 +122,7 @@ import {
   updateChatArtifactAnnotation,
 } from '../services/chat-artifact-annotation.service.js';
 import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
+import { resolveAnvilOwnedQuestion } from '../surfaces/core.js';
 
 const LOCAL_LLM_CHAT_MAX_PROMPT_CHARS = 8_000;
 // Hold back this many streamed characters so early refusals never reach the UI.
@@ -525,6 +526,7 @@ export function registerChatHandlers(): void {
   ipcMain.handle(
     'chat:resolve-agent-ui-question',
     (_event, intentId: string, resolution: AgentUIQuestionResolution) =>
+      resolveAnvilOwnedQuestion(intentId, resolution) ??
       resolveAgentUIQuestion(intentId, resolution),
   );
 
