@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'node:path';
 import { LEGACY_SCHEMA_REPAIR_SQL, SCHEMA_SQL, SCHEMA_VERSION, MIGRATIONS } from './schema.js';
+import { repairMissingColumns } from './schema-repair.js';
 import { LEGACY_DB_FILENAME, PRIMARY_DB_FILENAME } from '../../shared/app-identity.js';
 import type { AppTheme } from '../../shared/types.js';
 
@@ -92,4 +93,7 @@ export function runMigrations(database: Database.Database, defaultTheme: AppThem
 
     console.log('[Database] Migration complete');
   }
+
+  // Every start: heal columns older installs never received from migrations.
+  repairMissingColumns(database, SCHEMA_SQL);
 }

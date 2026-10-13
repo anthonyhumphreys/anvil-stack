@@ -43,6 +43,11 @@ afterEach(() => {
 });
 
 describe('decryptSecret', () => {
+  it('treats a column missing from an older schema (undefined) as not configured', () => {
+    expect(readStoredSecret(undefined)).toEqual({ state: 'not-configured' });
+    expect(decryptSecret(undefined, 'settings.githubPat')).toBeUndefined();
+  });
+
   it('returns undefined when secure storage is unavailable instead of decoding stored bytes', () => {
     safeStorageMock.isEncryptionAvailable.mockReturnValue(false);
 

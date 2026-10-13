@@ -191,10 +191,11 @@ export type SecretReadResult =
 
 /** Inspect without logging ciphertext, secret contents or underlying crypto errors. */
 export function readStoredSecret(
-  encrypted: Buffer | null,
+  encrypted: Buffer | null | undefined,
   allowLegacyPlaintext = true,
 ): SecretReadResult {
-  if (encrypted === null || encrypted.length === 0) return { state: 'not-configured' };
+  // `undefined` too: a column missing from an older schema reads as undefined.
+  if (encrypted == null || encrypted.length === 0) return { state: 'not-configured' };
   const value = Buffer.isBuffer(encrypted) ? encrypted : Buffer.from(encrypted);
   if (
     value.subarray(0, 'anvil-secret:'.length).toString() === 'anvil-secret:' &&
@@ -253,13 +254,16 @@ export function readStoredSecret(
   return { state: store === null ? 'unavailable' : 'invalid' };
 }
 
-export function decryptSecret(encrypted: Buffer | null, _label = 'secret'): string | undefined {
+export function decryptSecret(
+  encrypted: Buffer | null | undefined,
+  _label = 'secret',
+): string | undefined {
   const result = readStoredSecret(encrypted);
   return result.state === 'available' ? result.value : undefined;
 }
 
 /** Recovery/key custody never accepts the historical plaintext representation. */
-export function decryptSecretStrict(encrypted: Buffer | null): string | undefined {
+export function decryptSecretStrict(encrypted: Buffer | null | undefined): string | undefined {
   const result = readStoredSecret(encrypted, false);
   return result.state === 'available' ? result.value : undefined;
 }
