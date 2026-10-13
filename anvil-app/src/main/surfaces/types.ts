@@ -9,6 +9,8 @@ export interface ShareSnapshotOptions {
   includeComments: boolean;
   /** Review: include the full diff instead of hunks around findings. */
   includeFullDiff: boolean;
+  /** Diagram: Mermaid pre-rendered to SVG by the renderer (sanitised by the kind). */
+  diagramSvg?: string;
 }
 
 export interface ShareSnapshot {

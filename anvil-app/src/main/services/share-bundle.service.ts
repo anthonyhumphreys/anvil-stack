@@ -459,6 +459,9 @@ export function buildSurfaceShare(
   const snapshot: ShareSnapshot = share.snapshot(redacted, source.title, {
     includeComments,
     includeFullDiff,
+    ...(source.surfaceKind === 'diagram' && options.diagramSvg
+      ? { diagramSvg: options.diagramSvg }
+      : {}),
   });
   const bundle = newBundle({
     title: source.title,

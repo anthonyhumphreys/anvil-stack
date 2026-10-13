@@ -12,7 +12,9 @@ import type {
   ShareTarget,
 } from '../../../shared/shares-ipc';
 import { SHARE_DEFAULT_EXPIRES_DAYS } from '../../../shared/shares-ipc';
+import type { AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
 import { renderMermaid } from '../../utils/mermaid';
+import { useSurfaces } from '../surfaces/surfaces-context';
 import { Button, ConfirmDialog, Dialog } from '../ui';
 import {
   SHARE_EXPIRY_OPTIONS,
@@ -40,14 +42,35 @@ const DIAGRAM_CONFIG: import('mermaid').MermaidConfig = {
 };
 
 /** Pre-renders Mermaid/diagram artifacts so recipients see the diagram, not its source. */
-async function renderDiagramSvg(target: ShareTarget): Promise<string | undefined> {
-  if (target.itemType !== 'artifact') return undefined;
+async function mermaidSourceFor(
+  target: ShareTarget,
+  getSurface: (surfaceId: string) => AgentUISurfaceIntent | undefined,
+): Promise<string | undefined> {
+  if (target.itemType === 'surface') {
+    const surface = getSurface(target.itemId);
+    const data = surface?.payload.data as { format?: unknown; source?: unknown } | undefined;
+    return surface?.payload.surfaceKind === 'diagram' &&
+      data?.format === 'mermaid' &&
+      typeof data.source === 'string'
+      ? data.source
+      : undefined;
+  }
+  const artifact = await window.anvil.surfaces.getArtifact(target.itemId);
+  return artifact && (artifact.kind === 'mermaid' || artifact.kind === 'diagram')
+    ? artifact.content
+    : undefined;
+}
+
+async function renderDiagramSvg(
+  target: ShareTarget,
+  getSurface: (surfaceId: string) => AgentUISurfaceIntent | undefined,
+): Promise<string | undefined> {
   try {
-    const artifact = await window.anvil.surfaces.getArtifact(target.itemId);
-    if (!artifact || (artifact.kind !== 'mermaid' && artifact.kind !== 'diagram')) return undefined;
+    const source = await mermaidSourceFor(target, getSurface);
+    if (!source) return undefined;
     const renderId = `anvil-share-mermaid-${crypto.randomUUID()}`;
     try {
-      const { svg } = await renderMermaid(renderId, artifact.content, DIAGRAM_CONFIG);
+      const { svg } = await renderMermaid(renderId, source, DIAGRAM_CONFIG);
       return svg;
     } finally {
       document.getElementById(renderId)?.remove();
@@ -69,6 +92,7 @@ async function copyText(text: string): Promise<boolean> {
 
 export function ShareDialog({ target, title, open, onClose, onShared }: ShareDialogProps) {
   const headingId = useId();
+  const { getSurface } = useSurfaces();
   const [availability, setAvailability] = useState<Availability>('checking');
   const [existing, setExisting] = useState<ShareRecord[]>([]);
   const [preview, setPreview] = useState<SharePreview | null>(null);
@@ -117,7 +141,7 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
       .catch(() => {
         if (!cancelled) setAvailability('unavailable');
       });
-    void renderDiagramSvg(target).then((svg) => {
+    void renderDiagramSvg(target, getSurface).then((svg) => {
       if (cancelled) return;
       setDiagramSvg(svg);
       setDiagramReady(true);

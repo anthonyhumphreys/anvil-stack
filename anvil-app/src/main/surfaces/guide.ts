@@ -8,6 +8,7 @@ const TOOL_GROUPS: ReadonlyArray<{ intent: string; prefixes: readonly string[] }
   { intent: 'Dependencies, licences, SBOM', prefixes: ['deps_'] },
   { intent: 'CI/CD pipelines', prefixes: ['cicd_', 'pipeline_'] },
   { intent: 'Tables and charts of data', prefixes: ['data_'] },
+  { intent: 'Architecture and flow diagrams (Mermaid, draw.io)', prefixes: ['diagram_'] },
   { intent: 'Durable documents', prefixes: ['artifact_'] },
   { intent: 'Throwaway visuals', prefixes: ['sketch_'] },
   { intent: 'Read surfaces, comments, finish streaming', prefixes: ['surface_'] },
@@ -17,7 +18,7 @@ const TOOL_GROUPS: ReadonlyArray<{ intent: string; prefixes: readonly string[] }
 const SELECTION = [
   '## Inline surfaces',
   'Your reply can contain native Anvil surfaces. Pick the first that fits:',
-  '1. **Native surface.** If the work matches a domain below (review, findings, dependencies, pipeline, data), publish structured data with its tool. Anvil renders it with keyboard support and actions. Never hand-draw these as HTML.',
+  '1. **Native surface.** If the work matches a domain below (review, findings, dependencies, pipeline, data, diagram), publish structured data with its tool. Anvil renders it with keyboard support and actions. Never hand-draw these as HTML.',
   '2. **Artifact.** If the user will come back to it, edit it, hand it over or commit it, create an artifact.',
   '3. **Sketch.** If it only answers this moment visually (comparison, mockup, explanatory diagram), show a sketch.',
   'Never put structured data in a prose or Markdown table when a surface exists. Keep prose short around a surface: say what it shows and what to do next.',
