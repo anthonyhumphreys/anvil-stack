@@ -30,7 +30,6 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
   const open = useOverviewNavigate();
   const now = useNow();
   const [dropTarget, setDropTarget] = useState<DropTarget>(null);
-  const [dragging, setDragging] = useState(false);
   const [announcement, setAnnouncement] = useState('');
   const pendingFocus = useRef<string | null>(null);
   const modules = board.layout?.modules ?? [];
@@ -93,6 +92,8 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
   const handleDragOver = (event: DragEvent<HTMLElement>, target: DropTarget) => {
     if (!acceptsDrop(event)) return;
     event.preventDefault();
+    // Modules claim the drop; the board pane underneath only handles "append".
+    event.stopPropagation();
     event.dataTransfer.dropEffect = event.dataTransfer.types.includes(MODULE_DRAG_TYPE)
       ? 'move'
       : 'copy';
@@ -106,6 +107,7 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
   const handleDrop = (event: DragEvent<HTMLElement>, target: DropTarget) => {
     if (!acceptsDrop(event)) return;
     event.preventDefault();
+    event.stopPropagation();
     if (target !== 'end' && target) {
       const rect = event.currentTarget.getBoundingClientRect();
       target = { ...target, after: event.clientX > rect.left + rect.width / 2 };
@@ -115,7 +117,6 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
     if (movingId) move(movingId, indexFor(target, movingId));
     else if (libraryType) add(libraryType, indexFor(target));
     setDropTarget(null);
-    setDragging(false);
   };
 
   const configuring = modules.find((module) => module.id === board.configuringId) ?? null;
@@ -138,9 +139,27 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
     return <BoardSkeleton />;
   }
 
+  const paneDropActive = board.editing && dropTarget === 'end';
+
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <div
+        className={cx(
+          'min-h-0 min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]',
+          paneDropActive && 'bg-accent/[0.03]',
+        )}
+        {...(board.editing
+          ? {
+              // The whole board is the drop zone: anywhere outside a module appends.
+              onDragOver: (event: DragEvent<HTMLElement>) => handleDragOver(event, 'end'),
+              onDragLeave: (event: DragEvent<HTMLElement>) => {
+                if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+                setDropTarget((current) => (current === 'end' ? null : current));
+              },
+              onDrop: (event: DragEvent<HTMLElement>) => handleDrop(event, 'end'),
+            }
+          : {})}
+      >
         <div className="@container mx-auto max-w-[1600px] px-5 py-5">
           {board.error && (
             <InlineNotice tone="error" className="mb-4">
@@ -163,7 +182,7 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
               }
             />
           ) : (
-            <div className="grid grid-cols-1 items-start gap-4 @3xl:grid-cols-6">
+            <div className="grid grid-cols-1 items-stretch gap-4 @3xl:grid-cols-6">
               {modules.map((module, index) => (
                 <OverviewModulePanel
                   key={module.id}
@@ -175,8 +194,12 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
                   refreshToken={board.refreshToken}
                   now={now}
                   editing={board.editing}
-                  dropActive={
+                  dropSide={
                     dropTarget !== null && dropTarget !== 'end' && dropTarget.moduleId === module.id
+                      ? dropTarget.after
+                        ? 'after'
+                        : 'before'
+                      : null
                   }
                   onOpen={open}
                   onConfigure={() =>
@@ -197,11 +220,7 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
                     board.updateDraft((layout) => removeOverviewModule(layout, module.id));
                     setAnnouncement(`${moduleTitle(module)} removed from this overview.`);
                   }}
-                  onDragStart={() => setDragging(true)}
-                  onDragEnd={() => {
-                    setDragging(false);
-                    setDropTarget(null);
-                  }}
+                  onDragEnd={() => setDropTarget(null)}
                   onDragOver={(event) =>
                     handleDragOver(event, { moduleId: module.id, after: false })
                   }
@@ -209,24 +228,17 @@ export function OverviewBoard({ board }: { board: OverviewBoardController }) {
                 />
               ))}
 
-              {board.editing && (
-                <div
-                  onDragOver={(event) => handleDragOver(event, 'end')}
-                  onDragLeave={() =>
-                    setDropTarget((current) => (current === 'end' ? null : current))
-                  }
-                  onDrop={(event) => handleDrop(event, 'end')}
-                  className={cx(
-                    'flex min-h-28 flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed text-sm transition-colors @3xl:col-span-6',
-                    dropTarget === 'end'
-                      ? 'border-accent bg-accent/5 text-text-primary'
-                      : 'border-border text-text-tertiary',
-                    dragging && dropTarget !== 'end' && 'border-text-tertiary',
-                  )}
-                >
+              {board.editing && modules.length === 0 && (
+                <div className="flex min-h-40 flex-col items-center justify-center gap-1.5 text-sm text-text-tertiary @3xl:col-span-6">
                   <Plus size={16} aria-hidden="true" />
-                  <span>Drop a module here, or use Add in the library.</span>
+                  <span>Drag modules here from the library, or use Add.</span>
                 </div>
+              )}
+              {paneDropActive && modules.length > 0 && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none h-1 rounded-full bg-accent @3xl:col-span-6"
+                />
               )}
             </div>
           )}
@@ -269,8 +281,8 @@ function EditBar({ board }: { board: OverviewBoardController }) {
     <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border-subtle bg-bg-secondary/55 px-3 py-2 text-sm text-text-secondary">
       <Info size={15} className="shrink-0 text-text-tertiary" aria-hidden="true" />
       <span className="min-w-0 flex-1">
-        Drag modules to rearrange, or focus a handle and use the arrow keys. Changes apply when you
-        save.
+        Drag modules to rearrange, or drop one from the library anywhere on the board. Focus a
+        handle and use the arrow keys to move without a mouse. Changes apply when you save.
       </span>
       {board.scope.kind === 'workspace' && (
         <span className="flex items-center gap-2">

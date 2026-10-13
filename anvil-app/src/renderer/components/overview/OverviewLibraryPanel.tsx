@@ -169,10 +169,7 @@ export function OverviewLibraryPanel({
                       <span className="block truncate text-sm text-text-primary">
                         {definition.label}
                       </span>
-                      <span
-                        className="block truncate text-xs text-text-tertiary"
-                        title={definition.description}
-                      >
+                      <span className="line-clamp-2 block text-xs text-text-tertiary">
                         {definition.description}
                       </span>
                     </span>
@@ -199,14 +196,16 @@ export function OverviewLibraryPanel({
         </section>
 
         {modules.length > 0 && (
-          <section aria-labelledby="overview-library-current">
-            <h3
-              id="overview-library-current"
-              className="mb-2 text-xs font-medium text-text-tertiary"
-            >
-              Already on this overview
-            </h3>
-            <ul className="divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle">
+          <details className="group">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md text-xs font-medium text-text-tertiary hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 [&::-webkit-details-marker]:hidden">
+              <ChevronDown
+                size={12}
+                aria-hidden="true"
+                className="-rotate-90 transition-transform group-open:rotate-0"
+              />
+              On this overview ({modules.length})
+            </summary>
+            <ul className="mt-2 divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle">
               {modules.map((module) => {
                 const Icon = MODULE_ICONS[module.type];
                 return (
@@ -223,7 +222,7 @@ export function OverviewLibraryPanel({
                 );
               })}
             </ul>
-          </section>
+          </details>
         )}
 
         {needsConnection.length > 0 && (

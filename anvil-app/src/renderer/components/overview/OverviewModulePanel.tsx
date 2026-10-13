@@ -43,13 +43,13 @@ interface OverviewModulePanelProps {
   refreshToken: number;
   now: number;
   editing: boolean;
-  dropActive: boolean;
+  /** Insertion marker while something is dragged over this module. */
+  dropSide: 'before' | 'after' | null;
   onOpen: (target: OverviewTarget) => void;
   onConfigure: () => void;
   onMove: (toIndex: number) => void;
   onResize: (width: OverviewModuleWidth) => void;
   onRemove: () => void;
-  onDragStart: () => void;
   onDragEnd: () => void;
   onDragOver: (event: DragEvent<HTMLElement>) => void;
   onDrop: (event: DragEvent<HTMLElement>) => void;
@@ -64,13 +64,12 @@ export function OverviewModulePanel({
   refreshToken,
   now,
   editing,
-  dropActive,
+  dropSide,
   onOpen,
   onConfigure,
   onMove,
   onResize,
   onRemove,
-  onDragStart,
   onDragEnd,
   onDragOver,
   onDrop,
@@ -110,18 +109,25 @@ export function OverviewModulePanel({
         if (!editing) return;
         event.dataTransfer.setData(MODULE_DRAG_TYPE, module.id);
         event.dataTransfer.effectAllowed = 'move';
-        onDragStart();
       }}
       onDragEnd={onDragEnd}
       onDragOver={onDragOver}
       onDrop={onDrop}
       className={cx(
-        'flex min-w-0 flex-col rounded-xl border bg-bg-secondary/55 transition-[border-color,box-shadow]',
+        'relative flex min-w-0 flex-col rounded-xl border bg-bg-secondary/55',
         WIDTH_SPAN_CLASSES[module.width],
         editing ? 'border-border' : 'border-border-subtle',
-        dropActive && 'border-accent ring-2 ring-accent/30',
       )}
     >
+      {dropSide && (
+        <span
+          aria-hidden="true"
+          className={cx(
+            'pointer-events-none absolute -bottom-px -top-px w-1 rounded-full bg-accent',
+            dropSide === 'before' ? '-left-2.5' : '-right-2.5',
+          )}
+        />
+      )}
       <header className="flex min-w-0 items-center gap-2 px-4 pb-2 pt-3">
         {editing && (
           <button
