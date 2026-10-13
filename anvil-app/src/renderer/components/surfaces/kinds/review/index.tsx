@@ -1,8 +1,6 @@
-import type { SurfaceKindView, SurfaceViewProps } from '../../types';
+import type { SurfaceKindView } from '../../types';
+import { ReviewInline } from './ReviewInline';
+import { ReviewStage } from './ReviewStage';
 
-// Owned by the workstream building the 'review' surface. Replace this stub.
-function Placeholder({ intent }: SurfaceViewProps) {
-  return <p className="text-sm text-text-secondary">{intent.payload.digest}</p>;
-}
-
-export const reviewSurfaceView: SurfaceKindView = { Inline: Placeholder };
+/** Review surface (spec §8.1): calm inline review, three-pane workbench on the stage. */
+export const reviewSurfaceView: SurfaceKindView = { Inline: ReviewInline, Stage: ReviewStage };
