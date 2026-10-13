@@ -3,6 +3,21 @@
 Scope: `anvil-app` (main, preload, renderer, prompts, bundled MCP server).
 Related: [`ui-surfaces-review.md`](./ui-surfaces-review.md), [`../agent-ui-intents.md`](../agent-ui-intents.md), `PRODUCT.md`, `DESIGN.md`.
 
+## Implementation status (2026-10-13)
+
+Built on `develop`: the local MCP endpoint and provider injection (§6), the surface contract and core (§5), artifacts with revisions and sketches (§8.9–§8.10), the Review (§8.1), Findings (§8.3), Pipeline (§8.4), Dependencies (§8.5) and Data (§8.8) surfaces, inline host/stage/windows with the Canvas pane removed (§10), sharing including interactive shares and `share.update` (§11), and the sidebar consolidation with the Library (§12).
+
+Verified live: Codex 0.162 and cursor-agent 2026.09.10 connect to the endpoint and call tools. Not yet verified: Codex `thread/resume`, azure, llmgateway, devin (ACP requires API-key auth before `session/new`).
+
+Open follow-ups:
+- Surfaces §8.2, §8.6 restyle, §8.7, §8.11–§8.16 are not built.
+- Kind views receive `readOnly`, but mutation buttons still show in read-only threads; the host refuses the action instead of hiding the button.
+- Replay fixtures for the new surfaces, and visual QA in dark, light and flavour themes.
+- `CicdView`, `OnboardView` and `DiagramsView` need a `repoId` prop for the Health and Setup embeds.
+- Old review views are not yet launchers into the Review surface.
+- Sketch `tools/call` from frames is not wired.
+- Serving interactive shares from a separate user-content origin.
+
 ## How to use this document
 
 This is a product and system spec for agents building it. It isn't a schedule.
