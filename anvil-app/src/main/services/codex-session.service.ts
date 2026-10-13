@@ -2250,7 +2250,31 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
   }
 }
 
-function broadcastAgentUIIntent(
+/**
+ * Delivers structured feedback (surface actions, anchored comments) to a
+ * live session using the same steer / prompt / queue rules as plan edits.
+ * Returns false when the session is gone.
+ */
+export async function deliverStructuredAgentFeedback(
+  sessionId: string,
+  payload: string,
+): Promise<boolean> {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  const delivery = resolvePlanFeedbackDelivery(session.provider, session.status, session.turnId);
+  if (delivery === 'steer') {
+    await steerTurn(session.id, payload);
+  } else if (delivery === 'prompt') {
+    await sendMessage(session.id, payload);
+  } else if (delivery === 'queue') {
+    const queued = pendingPlanFeedback.get(session.id) ?? [];
+    queued.push(payload);
+    pendingPlanFeedback.set(session.id, queued);
+  }
+  return true;
+}
+
+export function broadcastAgentUIIntent(
   intent: NonNullable<CodexEvent['agentUIIntent']>,
   sessionId?: string,
 ): void {

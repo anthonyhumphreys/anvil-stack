@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 108;
+export const SCHEMA_VERSION = 110;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -315,6 +315,53 @@ CREATE TABLE IF NOT EXISTS chat_artifact_annotations (
 
 CREATE INDEX IF NOT EXISTS idx_chat_artifact_annotations_artifact_updated
   ON chat_artifact_annotations(artifact_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_sketches (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  source_message_id TEXT,
+  title TEXT NOT NULL,
+  html TEXT NOT NULL,
+  height INTEGER,
+  kept_artifact_id TEXT REFERENCES chat_artifacts(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sketches_thread
+  ON chat_sketches(thread_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS surface_comments (
+  id TEXT PRIMARY KEY,
+  surface_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  anchor_json TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_surface_comments_surface
+  ON surface_comments(surface_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS shares (
+  id TEXT PRIMARY KEY,
+  item_type TEXT NOT NULL CHECK (item_type IN ('artifact', 'surface')),
+  item_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  share_id TEXT NOT NULL UNIQUE,
+  media_type TEXT NOT NULL,
+  interactive INTEGER NOT NULL DEFAULT 0,
+  title TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_shares_item
+  ON shares(item_type, item_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS review_workspace_comments (
   id TEXT PRIMARY KEY,
@@ -3800,6 +3847,76 @@ CREATE TABLE IF NOT EXISTS overview_layouts (
   layout_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+`,
+  109: `
+-- Inline surfaces: throwaway sketches, anchored surface comments, and a
+-- revision row for every existing artifact (chat_artifact_revisions).
+CREATE TABLE IF NOT EXISTS chat_sketches (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  source_message_id TEXT,
+  title TEXT NOT NULL,
+  html TEXT NOT NULL,
+  height INTEGER,
+  kept_artifact_id TEXT REFERENCES chat_artifacts(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_sketches_thread
+  ON chat_sketches(thread_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS surface_comments (
+  id TEXT PRIMARY KEY,
+  surface_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  anchor_json TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_surface_comments_surface
+  ON surface_comments(surface_id, created_at ASC);
+
+INSERT OR IGNORE INTO chat_artifact_revisions (
+  id, artifact_id, version, source_message_id, title, kind, storage_scope, relative_path,
+  file_path, content, status, visibility, source, model, reasoning_effort, created_at
+)
+SELECT lower(hex(randomblob(16))), id, version, source_message_id, title, kind, storage_scope,
+  relative_path, file_path, content, status, visibility, source, model, reasoning_effort, updated_at
+FROM chat_artifacts;
+`,
+  110: `
+-- Shares: one row per published share of an artifact or surface version.
+-- Share URLs (bearer credentials) are kept in OS credential storage, not here.
+CREATE TABLE IF NOT EXISTS shares (
+  id TEXT PRIMARY KEY,
+  item_type TEXT NOT NULL CHECK (item_type IN ('artifact', 'surface')),
+  item_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  share_id TEXT NOT NULL UNIQUE,
+  media_type TEXT NOT NULL,
+  interactive INTEGER NOT NULL DEFAULT 0,
+  title TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_shares_item
+  ON shares(item_type, item_id, created_at DESC);
+
+INSERT OR IGNORE INTO shares (
+  id, item_type, item_id, version, share_id, media_type, interactive, title, expires_at,
+  created_at, updated_at, revoked_at
+)
+SELECT lower(hex(randomblob(16))), 'artifact', id, version, share_id, 'application/octet-stream', 0,
+  title, NULL, COALESCE(shared_at, updated_at), COALESCE(shared_at, updated_at), NULL
+FROM chat_artifacts
+WHERE share_id IS NOT NULL;
 `,
 };
 

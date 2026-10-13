@@ -34,6 +34,7 @@ export function AgentUIIntentSurface({
   intent: AgentUIIntent;
   mode?: 'chat' | 'canvas';
 }) {
+  if (intent.kind === 'surface') return null;
   return intent.kind === 'plan' ? (
     <PlanIntentSurface intent={intent} mode={mode} />
   ) : (

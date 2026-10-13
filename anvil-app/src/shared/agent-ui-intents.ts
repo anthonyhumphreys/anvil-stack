@@ -1,6 +1,6 @@
 export const AGENT_UI_PROTOCOL_VERSION = 1 as const;
 
-export type AgentUIIntentKind = 'plan' | 'question';
+export type AgentUIIntentKind = 'plan' | 'question' | 'surface';
 export type AgentUIIntentLifecycle = 'pending' | 'presented' | 'resolved' | 'dismissed' | 'expired';
 
 export interface AgentUIIntentScope {
@@ -105,7 +105,28 @@ export interface AgentUIQuestionPayload {
 }
 
 export type AgentUIQuestionIntent = AgentUIIntentBase<'question', AgentUIQuestionPayload>;
-export type AgentUIIntent = AgentUIPlanIntent | AgentUIQuestionIntent;
+
+/**
+ * Inline surface (docs/plans/inline-artifacts-and-canvas-tools.md §5). The
+ * semantic payload for `surfaceKind` lives in `data` and is validated by the
+ * kind's definition in `src/shared/surfaces/`.
+ */
+export interface AgentUISurfacePayload {
+  surfaceKind: string;
+  title: string;
+  /** Logical identity across turns (e.g. `review:<repo>:<scope>`); later publishes supersede earlier ones. */
+  key?: string;
+  /** True while the agent is still adding items. */
+  streaming: boolean;
+  /** Compact plain-text summary: what the agent sees back, and the fallback wherever the surface cannot render. */
+  digest: string;
+  data: unknown;
+  /** Set when a later surface with the same key replaced this one. */
+  supersededBy?: string;
+}
+
+export type AgentUISurfaceIntent = AgentUIIntentBase<'surface', AgentUISurfacePayload>;
+export type AgentUIIntent = AgentUIPlanIntent | AgentUIQuestionIntent | AgentUISurfaceIntent;
 
 export type AgentUIAnswerValue = string | string[] | boolean | null;
 

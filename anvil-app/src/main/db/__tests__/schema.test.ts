@@ -319,7 +319,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(108);
+      expect(SCHEMA_VERSION).toBe(110);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -931,5 +931,55 @@ describe('fresh database schema', () => {
         db.close();
       }
     });
+  });
+});
+
+describe('inline surfaces and shares migrations (v109, v110)', () => {
+  it('backfills artifact revisions and existing shares', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE chat_threads (id TEXT PRIMARY KEY);
+        CREATE TABLE chat_artifacts (
+          id TEXT PRIMARY KEY, thread_id TEXT, repo_id TEXT, source_message_id TEXT, title TEXT NOT NULL,
+          kind TEXT NOT NULL, storage_scope TEXT NOT NULL DEFAULT 'repository', relative_path TEXT NOT NULL,
+          file_path TEXT, content TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'draft', visibility TEXT NOT NULL DEFAULT 'local',
+          source TEXT NOT NULL DEFAULT 'assistant', model TEXT, reasoning_effort TEXT,
+          share_id TEXT, shared_url TEXT, shared_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE chat_artifact_revisions (
+          id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, version INTEGER NOT NULL, source_message_id TEXT,
+          title TEXT NOT NULL, kind TEXT NOT NULL, storage_scope TEXT NOT NULL DEFAULT 'repository',
+          relative_path TEXT NOT NULL, file_path TEXT, content TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft', visibility TEXT NOT NULL DEFAULT 'local',
+          source TEXT NOT NULL DEFAULT 'assistant', model TEXT, reasoning_effort TEXT,
+          created_at TEXT NOT NULL, UNIQUE(artifact_id, version)
+        );
+        INSERT INTO chat_threads VALUES ('t1');
+        INSERT INTO chat_artifacts (id, thread_id, title, kind, relative_path, content, version, share_id, shared_at, created_at, updated_at)
+          VALUES ('a1', 't1', 'Plan', 'markdown', 'plan.md', '# v3', 3, 'shr_1', '2026-10-01', '2026-09-01', '2026-10-01'),
+                 ('a2', 't1', 'Notes', 'markdown', 'notes.md', 'hi', 1, NULL, NULL, '2026-09-01', '2026-09-01');
+      `);
+      applyMigration(db, MIGRATIONS[109]!);
+      applyMigration(db, MIGRATIONS[110]!);
+
+      expect(
+        db.prepare('SELECT artifact_id, version, content FROM chat_artifact_revisions ORDER BY artifact_id').all(),
+      ).toEqual([
+        { artifact_id: 'a1', version: 3, content: '# v3' },
+        { artifact_id: 'a2', version: 1, content: 'hi' },
+      ]);
+      expect(db.prepare('SELECT item_type, item_id, version, share_id FROM shares').all()).toEqual([
+        { item_type: 'artifact', item_id: 'a1', version: 3, share_id: 'shr_1' },
+      ]);
+      for (const table of ['chat_sketches', 'surface_comments']) {
+        expect(
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+        ).toEqual({ name: table });
+      }
+    } finally {
+      db.close();
+    }
   });
 });
