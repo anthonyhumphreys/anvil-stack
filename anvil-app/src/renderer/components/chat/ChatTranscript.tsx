@@ -1,4 +1,4 @@
-import { useRef, useState, type RefObject } from 'react';
+import { useMemo, useRef, useState, type RefObject } from 'react';
 import { AlertTriangle, ArrowDown } from 'lucide-react';
 import type { AgentProvider, RepoInfo } from '../../../shared/types';
 import type { ChatTurnSurface, ComposedChatTurn } from './chat-turns';
@@ -7,6 +7,7 @@ import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
 import { ChatErrorNotice, type ChatErrorProviderOption } from './ChatErrorNotice';
 import { ChatPaneState, type ChatPaneKind } from './ChatPaneState';
 import { TurnChangesFooter, TurnUsageFooter } from './TurnChangesFooter';
+import { collectTurnFileChanges } from './chat-turn-changes';
 import { getChatTurnLiveState } from './chat-view-utils';
 import { ChatRunOutcomeFooter } from './ChatRunOutcomeFooter';
 import { getPendingQuestionTarget, summarizeChatTurnRun } from './chat-run-outcome';
@@ -94,6 +95,18 @@ export function ChatTranscript({
   const reviewRequestSequence = useRef(0);
   const pendingQuestionTarget = getPendingQuestionTarget(turns);
   const centered = paneKind !== 'transcript';
+  const laterEditedPathsByTurn = useMemo(() => {
+    const result = new Map<string, string[]>();
+    const seen = new Set<string>();
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const turn = turns[index];
+      result.set(turn.key, [...seen]);
+      for (const change of collectTurnFileChanges([...turn.work, ...turn.trailingWork])) {
+        seen.add(change.filePath);
+      }
+    }
+    return result;
+  }, [turns]);
 
   const requestFileReview = (turnKey: string, filePath: string) => {
     reviewRequestSequence.current += 1;
@@ -231,6 +244,7 @@ export function ChatTranscript({
                         preferredRepoId={changesPreferredRepoId}
                         threadId={changeReviewThreadId}
                         turnId={turn.key}
+                        laterTurnEditedPaths={laterEditedPathsByTurn.get(turn.key)}
                         reviewRequest={
                           reviewRequest?.threadId === activeThreadId &&
                           reviewRequest.turnKey === turn.key

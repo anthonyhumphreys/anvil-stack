@@ -1,17 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ExternalLink, FileDiff, GitCommitHorizontal, GitPullRequest } from 'lucide-react';
+import { ChevronRight, FileDiff, ScanSearch } from 'lucide-react';
 import type { RepoInfo } from '../../../shared/types';
-import { Button, PromptDialog } from '../ui';
+import { isAbsoluteEditorPath } from '../../../shared/editor-file-link';
+import { buildChangeReviewPath } from '../../utils/change-review-context';
+import { buildEditorUrl } from '../../utils/editor-link';
+import { useSurfaces } from '../surfaces/surfaces-context';
+import { Button, cx } from '../ui';
 import { DiffViewer } from './DiffViewer';
+import { requestChatPrefill } from './chat-prefill';
 import type { ChatTurnUsage, ChatTurnWorkItem } from './chat-turns';
 import {
+  buildTurnReviewPrompt,
+  countTurnStatuses,
+  firstChangedLine,
   formatTurnChangeSummary,
   repoRelativePath,
   resolveChangesRepoId,
+  sameTurnChangeSummary,
   summarizeTurnChanges,
+  type TurnFileChange,
 } from './chat-turn-changes';
-import { buildChangeReviewPath } from '../../utils/change-review-context';
+import { TurnChangesActions } from './turn-changes/TurnChangesActions';
+import { TurnChangesFileList } from './turn-changes/TurnChangesFileList';
+import { TurnFileStatusGlyph } from './turn-changes/TurnFileStatusGlyph';
 
 /**
  * Shared file/diff review grid — the same layout `ActivityGroupMessage` uses
@@ -75,9 +87,12 @@ export function FileEditReviewGrid({
 }
 
 /**
- * CH2 — per-turn changes footer. Sits under a completed answer with the
- * aggregate "N files changed · +X −Y" line, an inline review grid, and the
- * commit / open-PR / change-review escape hatches.
+ * CH2 / spec §8.2 — per-turn Changes. Sits under a settled answer as one calm
+ * line ("N files changed · +a −d" with status glyphs) and discloses on demand:
+ * the file list with per-file stats and diffs, "Open in editor", "Open in
+ * Changes", and the mutations (Undo turn, Commit, Open PR) behind confirms.
+ * "Review these changes" drafts a prompt that asks the agent for a Review
+ * surface (§8.1) — it never sends on its own.
  */
 export function TurnChangesFooter({
   workItems,
@@ -86,6 +101,8 @@ export function TurnChangesFooter({
   threadId,
   turnId,
   reviewRequest,
+  readOnly: readOnlyProp,
+  laterTurnEditedPaths,
 }: {
   workItems: ChatTurnWorkItem[];
   repos: RepoInfo[];
@@ -93,36 +110,64 @@ export function TurnChangesFooter({
   threadId?: string;
   turnId: string;
   reviewRequest?: { requestId: number; filePath: string };
+  /** Forces read-only (mutations hidden); otherwise read from the thread's surfaces context. */
+  readOnly?: boolean;
+  /**
+   * Paths edited by later turns in the same thread. Blocks Undo for those
+   * files and tells the review prompt whether this is the latest editing turn.
+   * Undefined when the caller doesn't know.
+   */
+  laterTurnEditedPaths?: readonly string[];
 }) {
   const navigate = useNavigate();
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [selectedFilePath, setSelectedFilePath] = useState<string>();
-  const [commitPromptOpen, setCommitPromptOpen] = useState(false);
-  const [commitMessage, setCommitMessage] = useState('');
-  const [actionBusy, setActionBusy] = useState<'commit' | 'pr' | null>(null);
-  const [actionResult, setActionResult] = useState<{
-    kind: 'success' | 'error';
-    text: string;
-    url?: string;
-  } | null>(null);
+  const { readOnly: surfacesReadOnly } = useSurfaces();
+  const readOnly = readOnlyProp ?? surfacesReadOnly;
+  const panelId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(() => new Set());
   const appliedReviewRequestRef = useRef<number | null>(null);
-  const reviewGridRef = useRef<HTMLDivElement>(null);
+  const fileTogglesRef = useRef(new Map<string, HTMLButtonElement>());
 
-  const summary = useMemo(() => summarizeTurnChanges(workItems), [workItems]);
+  const computedSummary = useMemo(() => summarizeTurnChanges(workItems), [workItems]);
+  // Work items are rebuilt on every transcript render; keep one stable summary.
+  const [summary, setSummary] = useState(computedSummary);
+  if (!sameTurnChangeSummary(summary, computedSummary)) setSummary(computedSummary);
+  const statusCounts = useMemo(
+    () => (summary ? countTurnStatuses(summary.files) : null),
+    [summary],
+  );
+  const repoId = useMemo(
+    () =>
+      summary
+        ? resolveChangesRepoId(
+            summary.files.map((file) => file.filePath),
+            repos,
+            preferredRepoId,
+          )
+        : null,
+    [preferredRepoId, repos, summary],
+  );
+  const repo = repos.find((item) => item.id === repoId) ?? null;
+
   useEffect(() => {
     if (!reviewRequest || appliedReviewRequestRef.current === reviewRequest.requestId) return;
     appliedReviewRequestRef.current = reviewRequest.requestId;
-    const fileIndex =
-      summary?.files.findIndex((file) => file.filePath === reviewRequest.filePath) ?? -1;
-    if (fileIndex >= 0) setSelectedFilePath(reviewRequest.filePath);
-    setReviewOpen(true);
+    const known = summary?.files.some((file) => file.filePath === reviewRequest.filePath);
+    setExpanded(true);
+    if (known) {
+      setExpandedPaths((current) => new Set(current).add(reviewRequest.filePath));
+    }
     window.requestAnimationFrame(() => {
-      reviewGridRef.current?.scrollIntoView({
+      const target = known ? fileTogglesRef.current.get(reviewRequest.filePath) : undefined;
+      const element = target ?? document.getElementById(panelId);
+      element?.scrollIntoView({
         behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
         block: 'nearest',
       });
+      target?.focus({ preventScroll: true });
     });
-  }, [reviewRequest, summary]);
+  }, [panelId, reviewRequest, summary]);
+
   // §7 funnel — a rendered change summary means the agent produced a diff.
   const diffProposedTrackedRef = useRef(false);
   useEffect(() => {
@@ -136,207 +181,138 @@ export function TurnChangesFooter({
       })
       .catch(() => {});
   }, [summary]);
+
   const agentLabel = workItems.find(
     (item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> =>
       item.kind === 'event' && Boolean(item.event.agentLabel),
   )?.event.agentLabel;
-  const repoId = useMemo(
-    () =>
-      summary
-        ? resolveChangesRepoId(
-            summary.files.map((file) => file.filePath),
-            repos,
-            preferredRepoId,
+
+  if (!summary || !statusCounts) return null;
+
+  const displayPath = (file: TurnFileChange) =>
+    (repo ? repoRelativePath(file.filePath, repo.path) : null) ?? file.filePath;
+
+  const toggleFile = (filePath: string) =>
+    setExpandedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(filePath)) next.delete(filePath);
+      else next.add(filePath);
+      return next;
+    });
+
+  // The editor falls back to the active workspace; no workspace id is needed here.
+  const openInEditor = (file: TurnFileChange) => {
+    const relative = repo ? repoRelativePath(file.filePath, repo.path) : null;
+    const isAbsolute = isAbsoluteEditorPath(file.filePath);
+    navigate(
+      buildEditorUrl({
+        repoId: relative ? repo?.id : undefined,
+        repoName: relative ? repo?.name : undefined,
+        relativePath: relative ?? (isAbsolute ? undefined : file.filePath),
+        absolutePath: isAbsolute ? file.filePath : undefined,
+        line: firstChangedLine(file.diff),
+        source: 'chat',
+        title: displayPath(file),
+      }),
+    );
+  };
+
+  const openInChanges =
+    repoId && threadId
+      ? () =>
+          navigate(
+            buildChangeReviewPath({
+              repoId,
+              source: 'chat',
+              threadId,
+              turnId,
+              changedFiles: summary.files.map((file) => file.filePath),
+            }),
           )
-        : null,
-    [preferredRepoId, repos, summary],
+      : undefined;
+
+  const reviewTheseChanges = () =>
+    requestChatPrefill(
+      buildTurnReviewPrompt({
+        repoId,
+        paths: summary.files.map(displayPath),
+        isLatestEditingTurn:
+          laterTurnEditedPaths === undefined ? undefined : laterTurnEditedPaths.length === 0,
+      }),
+    );
+
+  const statuses = (['added', 'modified', 'deleted'] as const).filter(
+    (status) => statusCounts[status] > 0,
   );
-
-  if (!summary) return null;
-
-  const stageablePaths = () => {
-    const repo = repos.find((item) => item.id === repoId);
-    if (!repo) return [];
-    return summary.files
-      .map((file) => repoRelativePath(file.filePath, repo.path))
-      .filter((path): path is string => Boolean(path));
-  };
-
-  const openCommitPrompt = () => {
-    setActionResult(null);
-    setCommitMessage('');
-    setCommitPromptOpen(true);
-    if (repoId) {
-      void window.anvil.git
-        .generateCommitMessage(repoId)
-        .then((message) => setCommitMessage(message))
-        .catch(() => undefined);
-    }
-  };
-
-  const runCommit = async (message: string) => {
-    setCommitPromptOpen(false);
-    if (!repoId) {
-      setActionResult({ kind: 'error', text: 'No repository is attached to these changes.' });
-      return;
-    }
-    setActionBusy('commit');
-    setActionResult(null);
-    try {
-      const paths = stageablePaths();
-      if (paths.length > 0) await window.anvil.git.stage(repoId, paths);
-      const hash = await window.anvil.git.commit(repoId, message);
-      void window.anvil.metrics
-        .track('change_applied', { fileCount: summary.files.length, via: 'commit' })
-        .catch(() => {});
-      setActionResult({ kind: 'success', text: `Committed ${hash.slice(0, 8)}` });
-    } catch (err) {
-      setActionResult({
-        kind: 'error',
-        text: err instanceof Error ? err.message : 'Commit failed',
-      });
-    } finally {
-      setActionBusy(null);
-    }
-  };
-
-  const runOpenPr = async () => {
-    if (!repoId) {
-      setActionResult({ kind: 'error', text: 'No repository is attached to these changes.' });
-      return;
-    }
-    setActionBusy('pr');
-    setActionResult(null);
-    try {
-      const result = await window.anvil.git.createPullRequest(repoId);
-      void window.anvil.metrics
-        .track('change_applied', { fileCount: summary.files.length, via: 'pr' })
-        .catch(() => {});
-      if (result.pullRequestUrl) {
-        window.open(result.pullRequestUrl, '_blank', 'noopener');
-        setActionResult({
-          kind: 'success',
-          text: `Pull request opened on ${result.branch}`,
-          url: result.pullRequestUrl,
-        });
-      } else {
-        setActionResult({
-          kind: 'success',
-          text: `Committed ${result.commitHash?.slice(0, 8) ?? 'changes'} — no PR provider is configured for ${result.repoName}.`,
-        });
-      }
-    } catch (err) {
-      setActionResult({
-        kind: 'error',
-        text: err instanceof Error ? err.message : 'Open PR failed',
-      });
-    } finally {
-      setActionBusy(null);
-    }
-  };
 
   return (
     <div className="message-bubble flex justify-start" data-testid="turn-changes-footer">
-      <div className="w-full overflow-hidden rounded-lg border border-border-subtle bg-bg-secondary/45">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2">
-          <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-text-secondary">
-            <FileDiff size={12} className="shrink-0 text-info" aria-hidden="true" />
-            {formatTurnChangeSummary(summary)}
+      <div className="w-full min-w-0">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={panelId}
+            onClick={() => setExpanded((open) => !open)}
+            className="-ml-1 flex min-w-0 items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <ChevronRight
+              size={12}
+              aria-hidden="true"
+              className={cx(
+                'shrink-0 text-text-tertiary motion-safe:transition-transform',
+                expanded && 'rotate-90',
+              )}
+            />
+            <FileDiff size={12} className="shrink-0 text-text-tertiary" aria-hidden="true" />
+            <span className="tabular-nums">{formatTurnChangeSummary(summary)}</span>
+          </button>
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {statuses.map((status) => (
+              <TurnFileStatusGlyph
+                key={status}
+                status={status}
+                count={statusCounts[status]}
+                showLabel
+              />
+            ))}
           </span>
-          <span className="ml-auto flex flex-wrap items-center gap-1.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setReviewOpen((open) => !open)}
-              aria-expanded={reviewOpen}
-            >
-              {reviewOpen ? 'Hide review' : 'Review'}
-            </Button>
-            <Button
-              variant="ghost"
-              disabled={!repoId || !threadId}
-              size="sm"
-              onClick={() =>
-                repoId &&
-                threadId &&
-                navigate(
-                  buildChangeReviewPath({
-                    repoId,
-                    source: 'chat',
-                    threadId,
-                    turnId,
-                    changedFiles: summary.files.map((file) => file.filePath),
-                  }),
-                )
-              }
-            >
-              Open in Change Review
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={openCommitPrompt}
-              disabled={!repoId || actionBusy !== null}
-            >
-              <GitCommitHorizontal size={12} />
-              Commit…
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void runOpenPr()}
-              disabled={!repoId || actionBusy !== null}
-            >
-              <GitPullRequest size={12} />
-              {actionBusy === 'pr' ? 'Opening…' : 'Open PR'}
+          <span className="ml-auto">
+            <Button variant="ghost" size="sm" onClick={reviewTheseChanges}>
+              <ScanSearch size={12} aria-hidden="true" />
+              Review these changes
             </Button>
           </span>
         </div>
 
-        {actionResult && (
-          <p
-            className={`border-t border-border-subtle px-3 py-2 text-xs ${
-              actionResult.kind === 'success' ? 'text-success' : 'text-error'
-            }`}
-            role="status"
-          >
-            {actionResult.text}
-            {actionResult.url && (
-              <a
-                href={actionResult.url}
-                target="_blank"
-                rel="noreferrer"
-                className="ml-1.5 inline-flex items-center gap-0.5 text-info hover:underline"
-              >
-                Open <ExternalLink size={10} />
-              </a>
-            )}
-          </p>
-        )}
-
-        {reviewOpen && (
-          <div ref={reviewGridRef}>
-            <FileEditReviewGrid
-              edits={summary.files.map((file) => ({ filePath: file.filePath, diff: file.diff }))}
-              agentLabel={agentLabel ?? undefined}
-              selectedFilePath={selectedFilePath}
-              onSelectFile={setSelectedFilePath}
-            />
-          </div>
-        )}
+        {/* Kept mounted while collapsed so action results and undo state survive. */}
+        <div
+          id={panelId}
+          hidden={!expanded}
+          className="mt-1.5 overflow-hidden rounded-lg border border-border-subtle"
+        >
+          <TurnChangesFileList
+            files={summary.files}
+            displayPath={displayPath}
+            expandedPaths={expandedPaths}
+            onToggleFile={toggleFile}
+            onOpenInEditor={openInEditor}
+            agentLabel={agentLabel ?? undefined}
+            toggleRef={(filePath, element) => {
+              if (element) fileTogglesRef.current.set(filePath, element);
+              else fileTogglesRef.current.delete(filePath);
+            }}
+          />
+          <TurnChangesActions
+            summary={summary}
+            repo={repo}
+            readOnly={readOnly}
+            laterTurnEditedPaths={laterTurnEditedPaths}
+            checkUndo={expanded}
+            onOpenInChanges={openInChanges}
+          />
+        </div>
       </div>
-
-      <PromptDialog
-        open={commitPromptOpen}
-        title="Commit these changes"
-        description="Stages the files changed in this turn and creates a commit."
-        label="Commit message"
-        defaultValue={commitMessage}
-        placeholder="Describe the change"
-        confirmLabel={actionBusy === 'commit' ? 'Committing…' : 'Commit'}
-        onSubmit={(message) => void runCommit(message)}
-        onCancel={() => setCommitPromptOpen(false)}
-      />
     </div>
   );
 }
