@@ -17,10 +17,6 @@ export interface ScrollMetrics {
 export const CHAT_BOTTOM_THRESHOLD_PX = 96;
 export const NEW_CHAT_THREAD_LABEL = 'New thread';
 
-export function clampCanvasZoom(zoom: number): number {
-  return Math.min(200, Math.max(50, Math.round(zoom / 10) * 10));
-}
-
 export function isNearChatBottom(
   metrics: ScrollMetrics,
   thresholdPx = CHAT_BOTTOM_THRESHOLD_PX,

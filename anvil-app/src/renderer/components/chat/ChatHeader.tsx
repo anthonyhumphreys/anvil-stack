@@ -1,23 +1,17 @@
 import { useEffect, useRef, useState, type Ref } from 'react';
-import {
-  Bot,
-  CircleHelp,
-  Globe,
-  LifeBuoy,
-  PanelRightOpen,
-  PictureInPicture2,
-  X,
-} from 'lucide-react';
-import type { WorkspaceScaffoldStatus } from '../../../shared/types';
+import { Bot, CircleHelp, Globe, LifeBuoy, Target, X } from 'lucide-react';
+import type { ChatGoalSnapshot, WorkspaceScaffoldStatus } from '../../../shared/types';
 import { SegmentedControl } from '../ui';
+import { ChatSurfacesPopover } from './ChatSurfacesPopover';
 import { ThreadPullRequests } from './ThreadPullRequests';
+import { formatGoalStatus } from './chat-view-utils';
 import type { ChatPanelId } from './useChatPanels';
 
 /**
- * CH4 — low-density chat header: title + workspace, PR chip, one
- * mutually-exclusive Panels control (Activity · Canvas · Preview), and the
- * role-gated ITSM workbench toggle. The Chat/Tickets layout switch moved to
- * the thread rail header (ChatLayoutToggle).
+ * CH4 — low-density chat header: title + goal chip + workspace, PR chip,
+ * Surfaces (n), one mutually-exclusive Panels control (Activity · Preview),
+ * and the role-gated ITSM workbench toggle. The Chat/Tickets layout switch
+ * moved to the thread rail header (ChatLayoutToggle).
  */
 export function ChatHeader({
   title,
@@ -28,9 +22,9 @@ export function ChatHeader({
   showPanels,
   activePanel,
   onSelectPanel,
-  canvasAvailable,
-  canvasCount,
-  canvasDetached,
+  goal,
+  onOpenGoal,
+  showSurfaces = true,
   previewAvailable,
   activityRunningCount,
   showItsmToggle,
@@ -51,9 +45,11 @@ export function ChatHeader({
   showPanels: boolean;
   activePanel: ChatPanelId | null;
   onSelectPanel: (panel: ChatPanelId | null) => void;
-  canvasAvailable: boolean;
-  canvasCount: number;
-  canvasDetached: boolean;
+  /** Active thread goal, shown as a chip next to the title. */
+  goal?: ChatGoalSnapshot | null;
+  onOpenGoal?: () => void;
+  /** Whether the thread's Surfaces list is offered. */
+  showSurfaces?: boolean;
   previewAvailable: boolean;
   activityRunningCount: number;
   showItsmToggle: boolean;
@@ -76,6 +72,21 @@ export function ChatHeader({
             >
               {title}
             </h2>
+            {goal && (
+              <button
+                type="button"
+                onClick={onOpenGoal}
+                disabled={!onOpenGoal}
+                title={`Goal: ${goal.objective}`}
+                className="flex min-w-0 max-w-64 shrink items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:hover:bg-transparent"
+              >
+                <Target size={12} aria-hidden="true" className="shrink-0 text-success" />
+                <span className="truncate">{goal.objective}</span>
+                <span className="shrink-0 text-text-tertiary">
+                  · {formatGoalStatus(goal.status)}
+                </span>
+              </button>
+            )}
           </div>
           <p title={workspaceName} className="truncate text-xs text-text-tertiary">
             {workspaceName}
@@ -116,6 +127,7 @@ export function ChatHeader({
       </div>
 
       <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
+        {showSurfaces && <ChatSurfacesPopover />}
         {showItsmToggle && (
           <button
             type="button"
@@ -159,25 +171,6 @@ export function ChatHeader({
                     activityRunningCount > 0
                       ? `Activity panel, ${activityRunningCount} running`
                       : 'Activity panel',
-                },
-                {
-                  value: 'canvas',
-                  label: (
-                    <>
-                      <span className="hidden min-[900px]:inline">
-                        {canvasDetached ? 'Canvas (detached)' : 'Canvas'}
-                      </span>
-                      {canvasCount > 0 && (
-                        <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-eyebrow font-semibold text-accent">
-                          {canvasCount}
-                        </span>
-                      )}
-                    </>
-                  ),
-                  icon: canvasDetached ? PictureInPicture2 : PanelRightOpen,
-                  disabled: !canvasAvailable,
-                  ariaLabel: canvasDetached ? 'Reattach canvas' : 'Canvas panel',
-                  title: canvasDetached ? 'Reattach canvas' : 'Canvas panel',
                 },
                 {
                   value: 'preview',

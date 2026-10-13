@@ -12,6 +12,8 @@ import { Check, Copy, ChevronDown, ChevronRight } from 'lucide-react';
 import { highlightCode } from './shiki';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { StreamedMermaidPreview } from './StreamedMermaidPreview';
+import { ArtifactFencePlaceholder, SketchFence } from './SurfaceFences';
+import { readFenceLanguage, surfaceFenceKind } from './surface-fences';
 
 const COLLAPSE_THRESHOLD = 20;
 const HIGHLIGHT_DEBOUNCE_MS = 120;
@@ -37,14 +39,23 @@ interface CodeBlockProps {
  * and injects the prop). Alternatively, blocks with className "language-*"
  * are always fenced. Blocks with neither are inline.
  */
-export function CodeBlock({ children, className, 'data-fenced': isFenced }: CodeBlockProps) {
+export function CodeBlock({ children, className, node, 'data-fenced': isFenced }: CodeBlockProps) {
   // Detect language from className like "language-typescript"
   const langMatch = className?.match(/language-(\w+)/);
   const language = langMatch?.[1] ?? '';
+  const fenceLanguage = readFenceLanguage(className);
+  const surfaceFence = surfaceFenceKind(fenceLanguage);
 
   // Fenced if explicitly marked OR if has a language class
   if (isFenced || language) {
     const code = extractText(children).trimEnd();
+    const meta = typeof node?.data?.meta === 'string' ? (node.data.meta as string) : undefined;
+
+    // Surface fences (fallback protocol) never render as code blocks.
+    if (surfaceFence === 'artifact') {
+      return <ArtifactFencePlaceholder language={fenceLanguage} meta={meta} code={code} />;
+    }
+    if (surfaceFence === 'sketch') return <SketchFence meta={meta} code={code} />;
 
     if (language === 'mermaid') {
       return <MermaidCodeBlock source={code} />;

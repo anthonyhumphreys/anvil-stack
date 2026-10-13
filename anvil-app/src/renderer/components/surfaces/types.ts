@@ -17,6 +17,10 @@ export interface SurfaceViewProps {
   onComment: (anchor: SurfaceAnchor) => void;
   /** Ask the host to open the stage, optionally focused on a target. */
   onOpenStage: (targetId?: string) => void;
+  /** Target (finding, row, node…) the stage should focus, from `onOpenStage(targetId)`. */
+  focusTargetId?: string;
+  /** Read-only thread: hide or disable `mutation` actions. */
+  readOnly?: boolean;
 }
 
 export interface SurfaceKindView {

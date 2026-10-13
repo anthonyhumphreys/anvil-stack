@@ -25,7 +25,7 @@ import {
 } from './chat-review-feedback';
 import { useChatScroll } from './useChatScroll';
 import { buildFindingFollowUpPrompt } from './ChatFindingCard';
-import { PendingQuestionPrompt, WorkflowActionConfirmation } from './ChatPromptOverlays';
+import { PendingQuestionPrompt, PlanChip, WorkflowActionConfirmation } from './ChatPromptOverlays';
 import { useChatErrorRecovery } from './useChatErrorRecovery';
 import { composeChatTurns } from './chat-turns';
 import { buildChatRequestTargetDomId, getPendingQuestionTarget } from './chat-run-outcome';
@@ -47,6 +47,8 @@ import { buildExecutionTopology } from '../../utils/execution-topology';
 import { CHAT_PREFILL_EVENT } from './AgentUIIntentSurface';
 import { resolveChatFastModeTarget } from '../../utils/chat-fast-mode';
 import { useChatPanels, type ChatPanelId } from './useChatPanels';
+import { SurfacesProvider } from '../surfaces/SurfacesProvider';
+import { SurfaceStage } from '../surfaces/SurfaceStage';
 import { useChatViewData } from './useChatViewData';
 import { useChatRouteIntents } from './useChatRouteIntents';
 import { useChatWorkflowAction } from './useChatWorkflowAction';
@@ -64,7 +66,6 @@ import { WORKSPACE_REPOSITORIES_PATH } from '../../utils/sidebar-navigation';
 // Re-exported for the existing `../ChatView` import path used by tests.
 export {
   buildMessageReusePrefill,
-  clampCanvasZoom,
   getChatTurnLiveState,
   getNewChatThreadActionLabel,
   isNearChatBottom,
@@ -101,9 +102,23 @@ function buildSlashCommands(agentLabel: string): ChatSlashCommand[] {
     {
       id: 'review',
       command: '/review',
+      label: 'Review my changes',
+      description: `Ask ${agentLabel} to review your current changes as a Review surface.`,
+      insertText: 'Review my current changes and publish a review surface.',
+    },
+    {
+      id: 'review-item',
+      command: '/review-item',
       label: 'Review work item',
       description: `Ask ${agentLabel} to review an ADO work item.`,
       insertText: '/review ADO-',
+    },
+    {
+      id: 'visualize',
+      command: '/visualize',
+      label: 'Visualize',
+      description: `Ask ${agentLabel} to answer visually with a sketch.`,
+      insertText: 'Answer visually with a sketch: ',
     },
   ];
 }
@@ -142,8 +157,6 @@ export function ChatView({ userRole }: ChatViewProps) {
     activeGoal,
     activeArtifacts,
     discardArtifact,
-    shareArtifact,
-    unshareArtifact,
     chatLayout,
     send,
     followUp,
@@ -227,13 +240,15 @@ export function ChatView({ userRole }: ChatViewProps) {
       !intent.presentation.hidden,
   );
 
-  const panels = useChatPanels({
-    threadId: activeThreadId,
-    artifacts: activeArtifacts,
-    hasVisiblePlanIntent: Boolean(visiblePlanIntent),
-    planIntentCount: planIntents.length,
-    hasGoal: Boolean(activeGoal),
-  });
+  // The sticky Plan chip follows the plan still in progress.
+  const stickyPlanIntent =
+    visiblePlanIntent?.payload.lifecycle === 'active' ? visiblePlanIntent : undefined;
+  const stickyPlanSnapshot =
+    !visiblePlanIntent && activePlan?.steps.some((step) => step.status !== 'completed')
+      ? activePlan
+      : null;
+
+  const panels = useChatPanels();
 
   const { recentRuns, activeSessions, executionSessionStates, setExecutionSessionStates } =
     useChatViewData(activeWorkspace?.id);
@@ -318,6 +333,10 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
   const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
+  const transcriptSurfaces = useMemo(
+    () => composedTurns.flatMap((turn) => turn.surfaces.map((surface) => surface.intent)),
+    [composedTurns],
+  );
 
   const pendingQuestionTarget = useMemo(
     () => getPendingQuestionTarget(composedTurns),
@@ -551,7 +570,8 @@ export function ChatView({ userRole }: ChatViewProps) {
     [isTemporaryChat, repos, userRole],
   );
   const scaffoldBusy = scaffoldStatus === 'syncing' || scaffoldStatus === 'indexing';
-  const workspaceChatReady = isTemporaryChat || scaffoldModeActive || featureAvailability.chatEnabled;
+  const workspaceChatReady =
+    isTemporaryChat || scaffoldModeActive || featureAvailability.chatEnabled;
   const chatInputDisabled =
     scaffoldBusy || !workspaceChatReady || (isWorkItemLayout && !activeThread?.workItemId);
   const composerDraftKey = [
@@ -570,11 +590,6 @@ export function ChatView({ userRole }: ChatViewProps) {
       ),
     [agentUIIntents],
   );
-  const selectedArtifact = panels.canvasPlanSelected
-    ? null
-    : (activeArtifacts.find((artifact) => artifact.id === panels.selectedArtifactId) ??
-      activeArtifacts[0] ??
-      null);
   const executionTopology = useMemo(
     () =>
       buildExecutionTopology({
@@ -587,15 +602,15 @@ export function ChatView({ userRole }: ChatViewProps) {
         rootLabel: activeThread?.title ?? 'New thread',
         rootSummary: activeThread?.summary,
       }),
-      [
-        activeSessions,
-        session,
-        executionSessionStates,
-        activeThread?.title,
-        activeThread?.summary,
-        activeThreadId,
-        entries,
-      ],
+    [
+      activeSessions,
+      session,
+      executionSessionStates,
+      activeThread?.title,
+      activeThread?.summary,
+      activeThreadId,
+      entries,
+    ],
   );
   const visibleSessionId = executionTopology.nodes.find(
     (node) => node.kind === 'session',
@@ -649,37 +664,6 @@ export function ChatView({ userRole }: ChatViewProps) {
     showPanelsCluster &&
     !showItsmWorkbench &&
     !panels.previewMode;
-  const canvasHasContent =
-    activeArtifacts.length > 0 ||
-    Boolean(visiblePlanIntent) ||
-    Boolean(activeGoal) ||
-    (panels.showPlanHistory && planIntents.length > 0);
-  const showCanvasSidebar =
-    showPanelsCluster &&
-    !showItsmWorkbench &&
-    !panels.previewMode &&
-    !panels.activityOpen &&
-    panels.canvasOpen &&
-    !panels.canvasExpanded &&
-    !panels.canvasDetached &&
-    canvasHasContent;
-
-  const canvasSidebarProps = {
-    artifacts: activeArtifacts,
-    selectedArtifact,
-    activePlan,
-    planIntents,
-    activeGoal,
-    planSelected: panels.canvasPlanSelected,
-    onSelectPlan: panels.selectPlan,
-    onSelectArtifact: panels.selectArtifact,
-    onDiscardArtifact: discardArtifact,
-    onShareArtifact: shareArtifact,
-    onUnshareArtifact: unshareArtifact,
-    zoom: panels.canvasZoom,
-    onZoomChange: panels.setCanvasZoom,
-  } as const;
-
   const content = (
     <div className="flex h-full flex-col">
       {/* CH4 — title + PR chip + one segmented Panels control. */}
@@ -691,7 +675,9 @@ export function ChatView({ userRole }: ChatViewProps) {
               ? activeThread.title
               : 'New thread'
         }
-        workspaceName={isTemporaryChat ? 'Temporary chat' : activeWorkspace?.name ?? 'No workspace'}
+        workspaceName={
+          isTemporaryChat ? 'Temporary chat' : (activeWorkspace?.name ?? 'No workspace')
+        }
         scaffoldModeActive={scaffoldModeActive}
         scaffoldStatus={scaffoldStatus}
         pullRequestThread={
@@ -704,21 +690,18 @@ export function ChatView({ userRole }: ChatViewProps) {
             : null
         }
         showPanels={showPanelsCluster}
-        activePanel={
-          showActivitySidebar
-            ? 'activity'
-            : panels.previewMode
-              ? 'preview'
-              : showCanvasSidebar || panels.canvasDetached || panels.canvasExpanded
-                ? 'canvas'
-                : null
-        }
+        activePanel={showActivitySidebar ? 'activity' : panels.previewMode ? 'preview' : null}
         onSelectPanel={(panel: ChatPanelId | null) => panels.setActivePanel(panel)}
-        canvasAvailable={
-          activeArtifacts.length > 0 || planIntents.length > 0 || Boolean(activeGoal)
+        goal={isTemporaryChat ? null : activeGoal}
+        onOpenGoal={
+          showPanelsCluster && !scaffoldModeActive
+            ? () => {
+                panels.setActivePanel('activity');
+                panels.setGoalPopoverOpen(true);
+              }
+            : undefined
         }
-        canvasCount={activeArtifacts.length}
-        canvasDetached={panels.canvasDetached}
+        showSurfaces={!isTemporaryChat && !scaffoldModeActive}
         previewAvailable={browserAvailable}
         activityRunningCount={executionTopology.runningCount}
         showItsmToggle={userRole === 'itsm' && isItsmPersona}
@@ -730,13 +713,12 @@ export function ChatView({ userRole }: ChatViewProps) {
       {isTemporaryChat && (
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5 xl:px-6">
           <p className="min-w-0 text-xs text-text-secondary">
-            Temporary chat · Text only, with no workspace or repository context. Kept only while Anvil is open.
+            Temporary chat · Text only, with no workspace or repository context. Kept only while
+            Anvil is open.
           </p>
           <button
             type="button"
-            onClick={() =>
-              void endTemporaryChat().then(() => navigate('/chat', { replace: true }))
-            }
+            onClick={() => void endTemporaryChat().then(() => navigate('/chat', { replace: true }))}
             className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >
             End temporary chat
@@ -753,7 +735,8 @@ export function ChatView({ userRole }: ChatViewProps) {
       )}
 
       <div className="flex flex-1 overflow-hidden">
-        {!isTemporaryChat && !scaffoldModeActive &&
+        {!isTemporaryChat &&
+          !scaffoldModeActive &&
           (isWorkItemLayout ? (
             <WorkItemThreadRail
               threads={threads}
@@ -789,8 +772,9 @@ export function ChatView({ userRole }: ChatViewProps) {
             />
           ))}
 
-        {/* Chat column */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        {/* Chat column — the surface stage overlays it; rail and sidebar stay visible. */}
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          <SurfaceStage />
           {/* Readiness where the user is (§3) — compact strip above the
             transcript while repos are being prepared. */}
           {!isTemporaryChat && !scaffoldModeActive && repos.length > 0 && (
@@ -815,7 +799,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               blockedReason={
                 isTemporaryChat
                   ? 'Temporary chat is ready.'
-                  : featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.'
+                  : (featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.')
               }
               onOpenWorkspace={() => navigate(WORKSPACE_REPOSITORIES_PATH)}
               personaId={activePersona?.id ?? 'coder'}
@@ -833,7 +817,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               }
               turns={composedTurns}
               activeThreadId={activeThreadId}
-              changeReviewThreadId={!isTemporaryChat ? activeThreadId ?? undefined : undefined}
+              changeReviewThreadId={!isTemporaryChat ? (activeThreadId ?? undefined) : undefined}
               busy={busy}
               isBaPersona={isBaPersona}
               personaName={activePersona?.name ?? 'Assistant'}
@@ -855,6 +839,13 @@ export function ChatView({ userRole }: ChatViewProps) {
           )}
 
           {/* Input */}
+          {!pendingQuestions[0] && !isTemporaryChat && (stickyPlanIntent || stickyPlanSnapshot) && (
+            <PlanChip
+              key={stickyPlanIntent?.id ?? 'snapshot'}
+              intent={stickyPlanIntent}
+              snapshot={stickyPlanIntent ? null : stickyPlanSnapshot}
+            />
+          )}
           {pendingQuestions[0] && (
             <PendingQuestionPrompt
               key={pendingQuestions[0].id}
@@ -1094,14 +1085,16 @@ export function ChatView({ userRole }: ChatViewProps) {
           designSidebarCollapsed={designSidebarCollapsed}
           onToggleDesignSidebar={() => setDesignSidebarCollapsed((c) => !c)}
           showItsmWorkbench={showItsmWorkbench}
-          workspaceId={isTemporaryChat ? null : activeWorkspace?.id ?? null}
+          workspaceId={isTemporaryChat ? null : (activeWorkspace?.id ?? null)}
           onItsmPrompt={(prompt) => {
             setComposerPrefill({ id: `itsm-${Date.now()}`, text: prompt });
             setComposerFocusRequest((current) => current + 1);
           }}
           showActivitySidebar={showActivitySidebar}
           activity={{
-            workspaceName: isTemporaryChat ? 'Temporary chat' : activeWorkspace?.name ?? 'workspace',
+            workspaceName: isTemporaryChat
+              ? 'Temporary chat'
+              : (activeWorkspace?.name ?? 'workspace'),
             runs: recentRuns,
             topology: executionTopology,
             lastViewedAt:
@@ -1130,24 +1123,27 @@ export function ChatView({ userRole }: ChatViewProps) {
             goalsSupported,
             agentLabel,
           }}
-          showCanvasSidebar={showCanvasSidebar}
-          canvas={canvasSidebarProps}
-          canvasExpanded={panels.canvasExpanded}
-          canvasDetached={panels.canvasDetached}
-          onExpandCanvas={() => panels.setCanvasExpanded(true)}
-          onCollapseCanvas={() => panels.setCanvasExpanded(false)}
-          onDetachCanvas={() => {
-            panels.setCanvasExpanded(false);
-            panels.setCanvasDetached(true);
-          }}
-          onDetachedCanvasClose={panels.handleDetachedCanvasClose}
-          canvasOverlayAvailable={
-            !isTemporaryChat &&
-            (Boolean(selectedArtifact) || planIntents.length > 0 || Boolean(activeGoal))
-          }
         />
       </div>
     </div>
+  );
+
+  const surfacesContent = (
+    <SurfacesProvider
+      threadId={activeThreadId}
+      workspaceName={isTemporaryChat ? 'Temporary chat' : (activeWorkspace?.name ?? '')}
+      transcriptSurfaces={transcriptSurfaces}
+      intents={agentUIIntents}
+      artifacts={activeArtifacts}
+      discardArtifact={discardArtifact}
+      readOnly={
+        isItsmPersona ||
+        activeThread?.purpose === 'side-question' ||
+        threadAccess.level === 'read-only'
+      }
+    >
+      {content}
+    </SurfacesProvider>
   );
 
   if (isDesignPersona) {
@@ -1156,14 +1152,14 @@ export function ChatView({ userRole }: ChatViewProps) {
         threadId={activeThreadId}
         onComposeFeedback={handleComposeFeedback}
       >
-        <DesignProvider>{content}</DesignProvider>
+        <DesignProvider>{surfacesContent}</DesignProvider>
       </ChatReviewFeedbackProvider>
     );
   }
 
   return (
     <ChatReviewFeedbackProvider threadId={activeThreadId} onComposeFeedback={handleComposeFeedback}>
-      {content}
+      {surfacesContent}
     </ChatReviewFeedbackProvider>
   );
 }

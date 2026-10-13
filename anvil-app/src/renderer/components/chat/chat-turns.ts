@@ -1,3 +1,4 @@
+import type { AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
 import type { CodexEvent } from '../../../shared/types';
 import type { ChatEntry } from '../../contexts/ChatContext';
 
@@ -42,6 +43,12 @@ export interface ChatTurnUsage {
   model?: string;
 }
 
+/** An inline surface published during the turn; it renders in the reply, not the work log. */
+export interface ChatTurnSurface {
+  intent: AgentUISurfaceIntent;
+  sourceIndex: number;
+}
+
 export interface ComposedChatTurn {
   key: string;
   startedAt?: string;
@@ -50,6 +57,8 @@ export interface ComposedChatTurn {
   work: ChatTurnWorkItem[];
   answer: IndexedChatEntry<AssistantEntry> | null;
   trailingWork: ChatTurnWorkItem[];
+  /** Surfaces in publish order; compare `sourceIndex` with `answer` to place them. */
+  surfaces: ChatTurnSurface[];
   usage?: ChatTurnUsage;
   /** Provider-reported turn lifecycle. Missing means the provider supplied no terminal outcome. */
   runOutcome?: NonNullable<CodexEvent['turnOutcome']>;
@@ -155,8 +164,7 @@ function requestKey(event: CodexEvent, requestId: string | number): string {
 
 function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): ComposedChatTurn {
   const userEntry = entries.find((entry) => entry.kind === 'user') as
-    | IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>>
-    | undefined;
+    IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | undefined;
   const assistantSegments = coalesceAssistantSegments(entries);
   const explicitFinal = [...assistantSegments]
     .reverse()
@@ -182,6 +190,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
 
   const work: ChatTurnWorkItem[] = [];
   const trailingWork: ChatTurnWorkItem[] = [];
+  const surfaces: ChatTurnSurface[] = [];
   const usage = emptyTurnUsage();
   const seenUsageIds = new Set<string>();
   let sawUsage = false;
@@ -207,6 +216,15 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     // activity list. Providers that do not report it leave it undefined.
     if (entry.kind === 'event' && entry.event.type === 'turn_outcome') {
       runOutcome = entry.event.turnOutcome;
+      continue;
+    }
+
+    if (
+      entry.kind === 'event' &&
+      entry.event.type === 'agent_ui_intent' &&
+      entry.event.agentUIIntent?.kind === 'surface'
+    ) {
+      surfaces.push({ intent: entry.event.agentUIIntent, sourceIndex: entry.sourceIndex });
       continue;
     }
 
@@ -250,6 +268,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     work,
     answer: answerSegment?.entry ?? null,
     trailingWork,
+    surfaces,
     usage: sawUsage ? usage : undefined,
     runOutcome,
   };

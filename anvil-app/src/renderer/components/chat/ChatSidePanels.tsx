@@ -6,22 +6,15 @@ import { BrowserPanel } from '../browser/BrowserPanel';
 import { DesignSidebar } from '../design/DesignSidebar';
 import { ResizableSidebarPanel } from '../layout/ResizableSidebarPanel';
 import { AgentActivitySidebar } from './ChatActivityPanel';
-import { ChatCanvasSidebar } from './ChatCanvasPanel';
 import { ChatFindingCard } from './ChatFindingCard';
-import { DetachedCanvasWindow } from './DetachedCanvasWindow';
 import { ItsmWorkbench } from './ItsmWorkbench';
 
 /**
- * Right-side surface stack — extracted from ChatView (Phase 5 split).
+ * Right-side panel stack — extracted from ChatView (Phase 5 split).
  * Renders whichever side panel is active: findings (BA), design sidebar,
- * ITSM workbench, preview, activity, canvas, plus the expanded/detached
- * canvas presentations.
+ * ITSM workbench, preview, or activity. Agent output renders inline in the
+ * thread as surfaces.
  */
-
-type CanvasProps = Omit<
-  ComponentProps<typeof ChatCanvasSidebar>,
-  'presentation' | 'onExpand' | 'onDetach'
->;
 
 export function ChatSidePanels({
   previewMode,
@@ -42,15 +35,6 @@ export function ChatSidePanels({
   onItsmPrompt,
   showActivitySidebar,
   activity,
-  showCanvasSidebar,
-  canvas,
-  canvasExpanded,
-  canvasDetached,
-  onExpandCanvas,
-  onCollapseCanvas,
-  onDetachCanvas,
-  onDetachedCanvasClose,
-  canvasOverlayAvailable,
 }: {
   previewMode: PreviewMode | null;
   previewInitialUrl: string;
@@ -71,16 +55,6 @@ export function ChatSidePanels({
   onItsmPrompt: (prompt: string) => void;
   showActivitySidebar: boolean;
   activity: ComponentProps<typeof AgentActivitySidebar>;
-  showCanvasSidebar: boolean;
-  canvas: CanvasProps;
-  canvasExpanded: boolean;
-  canvasDetached: boolean;
-  onExpandCanvas: () => void;
-  onCollapseCanvas: () => void;
-  onDetachCanvas: () => void;
-  onDetachedCanvasClose: () => void;
-  /** Whether the expanded/detached overlays have content to show. */
-  canvasOverlayAvailable: boolean;
 }) {
   const totalFindingCount = openFindings.length;
 
@@ -195,49 +169,6 @@ export function ChatSidePanels({
         >
           <AgentActivitySidebar {...activity} />
         </ResizableSidebarPanel>
-      )}
-
-      {showCanvasSidebar && (
-        <ResizableSidebarPanel
-          storageKey="chat:canvas"
-          side="right"
-          title="Canvas"
-          defaultWidth={460}
-          minWidth={360}
-          maxWidth={960}
-          collapsedWidth={0}
-          collapsible={false}
-          className="border-l border-border/60 bg-bg-secondary/50"
-        >
-          <ChatCanvasSidebar
-            {...canvas}
-            presentation="sidebar"
-            onExpand={onExpandCanvas}
-            onDetach={onDetachCanvas}
-          />
-        </ResizableSidebarPanel>
-      )}
-
-      {canvasExpanded && !canvasDetached && canvasOverlayAvailable && (
-        <div className="fixed inset-y-3 left-20 right-3 z-50 flex min-h-0 overflow-hidden rounded-xl border border-border bg-bg-primary shadow-2xl">
-          <ChatCanvasSidebar
-            {...canvas}
-            presentation="expanded"
-            onExpand={onCollapseCanvas}
-            onDetach={onDetachCanvas}
-          />
-        </div>
-      )}
-
-      {canvasDetached && canvasOverlayAvailable && (
-        <DetachedCanvasWindow title="Anvil Canvas" onClose={onDetachedCanvasClose}>
-          <ChatCanvasSidebar
-            {...canvas}
-            presentation="detached"
-            onExpand={onDetachedCanvasClose}
-            onDetach={onDetachedCanvasClose}
-          />
-        </DetachedCanvasWindow>
       )}
     </>
   );

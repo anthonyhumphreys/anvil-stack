@@ -58,6 +58,7 @@ import { resolveChatFastModeTarget } from '../utils/chat-fast-mode';
 import { isAcpAgentProvider } from '../../shared/agent-providers';
 import { agentEventLabel } from '../utils/agent-display';
 import { buildEmptyThreadLabel, buildThreadTitle } from '../utils/thread-display-title';
+import { shouldReplaceIntent } from '../utils/intent-revision';
 
 export type ChatEntry = (
   | {
@@ -1899,7 +1900,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       const activeThread = activeThreadRef.current;
-      sections.push(buildArtifactCanvasPrompt(activeThread?.title));
 
       if (activeThread?.workItemId) {
         const providerLabel = activeThread.workItemProvider
@@ -3662,6 +3662,7 @@ function upsertAgentUIIntentState(
   incoming: AgentUIIntent,
 ): AgentUIIntent[] {
   const index = intents.findIndex((intent) => intent.id === incoming.id);
+  if (index >= 0 && !shouldReplaceIntent(intents[index], incoming)) return intents;
   const next =
     index < 0
       ? [incoming, ...intents]
@@ -3679,8 +3680,13 @@ function upsertAgentUIIntentEntry(entries: ChatEntry[], event: CodexEvent): Chat
       entry.event.agentUIIntent?.id === intentId,
   );
   if (index < 0) return [...entries, { kind: 'event', event }];
+  const existing = entries[index];
+  const current = existing.kind === 'event' ? existing.event.agentUIIntent : undefined;
+  if (current && event.agentUIIntent && !shouldReplaceIntent(current, event.agentUIIntent)) {
+    return entries;
+  }
   const updated = [...entries];
-  updated[index] = { kind: 'event', event };
+  updated[index] = existing.kind === 'event' ? { ...existing, event } : { kind: 'event', event };
   return updated;
 }
 
@@ -4440,25 +4446,6 @@ function buildAttachmentPrompt(message: string, attachments: ChatAttachment[]): 
     .join('\n');
 
   return `[Attached files]\n${manifest}\n\n${message}`;
-}
-
-function buildArtifactCanvasPrompt(threadTitle?: string): string {
-  return [
-    '[Canvas artifacts]',
-    'When you create substantial reusable output, put it in an artifact fence so Anvil can persist it to the repo canvas.',
-    'Use this exact format:',
-    '```artifact:path/to/name.md kind=markdown title="Short title"',
-    'content here',
-    '```',
-    'Supported kinds: markdown, mermaid, html, docx, pptx, pdf, csv, xlsx, code, data, text.',
-    'Use artifacts for plans, review packs, diagrams, HTML prototypes, dashboards, documents, presentations, spreadsheets, specs, migration notes, and handover documents.',
-    'For throwaway output that should stay in this Anvil session instead of being written to the repository, add storage=session to the fence header.',
-    'For a binary docx, pptx, pdf, or xlsx already created under .anvil/artifacts, add encoding=file to the fence header and put a short description inside the fence. Do not inline binary data.',
-    'Keep ordinary commentary outside artifact fences.',
-    threadTitle ? `Current thread: ${threadTitle}` : null,
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join('\n');
 }
 
 function buildDesignChatStartOptions(

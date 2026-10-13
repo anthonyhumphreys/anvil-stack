@@ -1,7 +1,8 @@
 import { useRef, useState, type RefObject } from 'react';
 import { AlertTriangle, ArrowDown } from 'lucide-react';
 import type { AgentProvider, RepoInfo } from '../../../shared/types';
-import type { ComposedChatTurn } from './chat-turns';
+import type { ChatTurnSurface, ComposedChatTurn } from './chat-turns';
+import { SurfaceHost } from '../surfaces/SurfaceHost';
 import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
 import { ChatErrorNotice, type ChatErrorProviderOption } from './ChatErrorNotice';
 import { ChatPaneState, type ChatPaneKind } from './ChatPaneState';
@@ -186,6 +187,11 @@ export function ChatTranscript({
                         endedAt={turn.endedAt}
                       />
                     )}
+                    <TurnSurfaces
+                      surfaces={turn.surfaces.filter(
+                        (surface) => !turn.answer || surface.sourceIndex < turn.answer.sourceIndex,
+                      )}
+                    />
                     {turn.answer && (
                       <AssistantMessage
                         content={turn.answer.content}
@@ -194,6 +200,13 @@ export function ChatTranscript({
                         colour={personaColour}
                         active={liveState === 'responding'}
                         onBranch={onBranch ? () => onBranch(turn.answer!.sourceIndex) : undefined}
+                      />
+                    )}
+                    {turn.answer && (
+                      <TurnSurfaces
+                        surfaces={turn.surfaces.filter(
+                          (surface) => surface.sourceIndex > turn.answer!.sourceIndex,
+                        )}
                       />
                     )}
                     {/* H5 — usage/context/cost rollup for the turn. */}
@@ -254,6 +267,18 @@ export function ChatTranscript({
           {busy ? 'Jump to live work' : 'Latest'}
         </button>
       )}
+    </div>
+  );
+}
+
+/** Inline surfaces sit in the reply column, on the thread background. */
+export function TurnSurfaces({ surfaces }: { surfaces: ChatTurnSurface[] }) {
+  if (surfaces.length === 0) return null;
+  return (
+    <div className="message-bubble flex w-full flex-col items-start gap-5">
+      {surfaces.map((surface) => (
+        <SurfaceHost key={surface.intent.id} intent={surface.intent} />
+      ))}
     </div>
   );
 }

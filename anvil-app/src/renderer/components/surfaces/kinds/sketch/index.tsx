@@ -1,8 +1,5 @@
-import type { SurfaceKindView, SurfaceViewProps } from '../../types';
+import type { SurfaceKindView } from '../../types';
+import { SketchInline, SketchStage } from './SketchSurfaceViews';
 
-// Owned by the workstream building the 'sketch' surface. Replace this stub.
-function Placeholder({ intent }: SurfaceViewProps) {
-  return <p className="text-sm text-text-secondary">{intent.payload.digest}</p>;
-}
-
-export const sketchSurfaceView: SurfaceKindView = { Inline: Placeholder };
+export { SketchFrame } from './SketchFrame';
+export const sketchSurfaceView: SurfaceKindView = { Inline: SketchInline, Stage: SketchStage };

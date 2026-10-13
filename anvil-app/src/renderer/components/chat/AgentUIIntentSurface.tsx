@@ -24,30 +24,35 @@ import type {
   AgentUIQuestion,
   AgentUIQuestionIntent,
 } from '../../../shared/agent-ui-intents';
+import { SurfaceHost } from '../surfaces/SurfaceHost';
+import { CHAT_PREFILL_EVENT } from './chat-prefill';
 
-export const CHAT_PREFILL_EVENT = 'anvil:chat-prefill';
+export { CHAT_PREFILL_EVENT } from './chat-prefill';
+
+/** `workbench` is the expanded, editable presentation (the sticky plan chip). */
+export type AgentUIIntentMode = 'chat' | 'workbench';
 
 export function AgentUIIntentSurface({
   intent,
   mode = 'chat',
 }: {
   intent: AgentUIIntent;
-  mode?: 'chat' | 'canvas';
+  mode?: AgentUIIntentMode;
 }) {
-  if (intent.kind === 'surface') return null;
+  if (intent.kind === 'surface') return <SurfaceHost intent={intent} />;
   return intent.kind === 'plan' ? (
     <PlanIntentSurface intent={intent} mode={mode} />
   ) : (
-    <QuestionIntentSurface intent={intent} compact={mode === 'canvas'} />
+    <QuestionIntentSurface intent={intent} compact={mode === 'workbench'} />
   );
 }
 
 export function PlanIntentSurface({
   intent: incomingIntent,
-  mode = 'canvas',
+  mode = 'workbench',
 }: {
   intent: AgentUIPlanIntent;
-  mode?: 'chat' | 'canvas';
+  mode?: AgentUIIntentMode;
 }) {
   const [intent, setIntent] = useState(incomingIntent);
   const [editing, setEditing] = useState(false);
@@ -201,7 +206,7 @@ export function PlanIntentSurface({
           </span>
         </button>
         <div className="flex shrink-0 items-center gap-0.5">
-          {mode === 'canvas' && !editing && (
+          {mode === 'workbench' && !editing && (
             <button
               type="button"
               onClick={() => setEditing(true)}
@@ -212,18 +217,18 @@ export function PlanIntentSurface({
               <Pencil size={13} />
             </button>
           )}
-          {mode === 'canvas' && (
+          {mode === 'workbench' && (
             <button
               type="button"
               onClick={() => void updatePresentation({ hidden: true })}
               className="rounded-md p-1.5 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              title="Hide plan from Canvas"
-              aria-label="Hide plan from Canvas"
+              title="Hide plan"
+              aria-label="Hide plan"
             >
               <EyeOff size={13} />
             </button>
           )}
-          {mode === 'canvas' && intent.payload.lifecycle === 'completed' && (
+          {mode === 'workbench' && intent.payload.lifecycle === 'completed' && (
             <button
               type="button"
               onClick={() => void applyOperations([{ type: 'archive_plan' }])}
@@ -325,7 +330,7 @@ export function PlanIntentSurface({
                             </p>
                           )}
                         </div>
-                        {!editing && mode === 'canvas' && (
+                        {!editing && mode === 'workbench' && (
                           <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                             {step.status !== 'done' && (
                               <button

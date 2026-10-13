@@ -1,8 +1,17 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, ListChecks, Loader2, MessageSquare } from 'lucide-react';
-import type { AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  ListChecks,
+  Loader2,
+  MessageSquare,
+} from 'lucide-react';
+import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
+import type { ChatPlanSnapshot } from '../../../shared/types';
 import type { WorkflowChatIntent } from '../../utils/workflow-chat-intent';
-import { QuestionIntentSurface } from './AgentUIIntentSurface';
+import { PlanIntentSurface, QuestionIntentSurface } from './AgentUIIntentSurface';
 
 /**
  * Composer-level prompt overlays — extracted from ChatView (Phase 5 split).
@@ -58,6 +67,104 @@ export function PendingQuestionPrompt({
         className="max-h-[min(60vh,560px)] overflow-y-auto border-t border-warning/20 p-2"
       >
         <QuestionIntentSurface intent={intent} />
+      </div>
+    </div>
+  );
+}
+
+/** Progress for the sticky plan chip: completed and total steps. */
+export function planProgress(
+  plan:
+    { kind: 'intent'; intent: AgentUIPlanIntent } | { kind: 'snapshot'; plan: ChatPlanSnapshot },
+): { done: number; total: number; title: string } {
+  if (plan.kind === 'intent') {
+    const steps = plan.intent.payload.steps;
+    return {
+      done: steps.filter((step) => step.status === 'done').length,
+      total: steps.length,
+      title: plan.intent.payload.title,
+    };
+  }
+  return {
+    done: plan.plan.steps.filter((step) => step.status === 'completed').length,
+    total: plan.plan.steps.length,
+    title: 'Implementation plan',
+  };
+}
+
+/** Sticky "Plan x/y" chip above the composer; expands the active plan in place. */
+export function PlanChip({
+  intent,
+  snapshot,
+}: {
+  intent?: AgentUIPlanIntent;
+  snapshot?: ChatPlanSnapshot | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const source = intent
+    ? ({ kind: 'intent', intent } as const)
+    : snapshot
+      ? ({ kind: 'snapshot', plan: snapshot } as const)
+      : null;
+  if (!source) return null;
+  const { done, total, title } = planProgress(source);
+  if (total === 0) return null;
+
+  return (
+    <div className="mx-auto w-full max-w-[1040px] px-4 pb-2 xl:px-6">
+      <div className={expanded ? 'rounded-xl border border-border-subtle bg-bg-secondary' : ''}>
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          className={`flex items-center gap-2 rounded-full border border-border-subtle px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${expanded ? 'm-2' : ''}`}
+        >
+          <ListChecks size={13} aria-hidden="true" className="text-info" />
+          <span className="max-w-64 truncate font-medium text-text-primary">{title}</span>
+          <span className="tabular-nums">
+            Plan {done}/{total}
+          </span>
+          {expanded ? (
+            <ChevronDown size={12} aria-hidden="true" />
+          ) : (
+            <ChevronRight size={12} aria-hidden="true" />
+          )}
+        </button>
+        {expanded && (
+          <div className="max-h-[min(50vh,480px)] overflow-y-auto border-t border-border-subtle">
+            {source.kind === 'intent' ? (
+              <PlanIntentSurface intent={source.intent} mode="workbench" />
+            ) : (
+              <ol className="space-y-1.5 p-3">
+                {source.plan.explanation && (
+                  <li className="mb-2 max-w-[72ch] text-xs leading-5 text-text-secondary">
+                    {source.plan.explanation}
+                  </li>
+                )}
+                {source.plan.steps.map((step, index) => (
+                  <li key={`${index}-${step.step}`} className="flex items-start gap-2 text-sm">
+                    {step.status === 'completed' ? (
+                      <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-success" />
+                    ) : step.status === 'in_progress' ? (
+                      <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin text-info" />
+                    ) : (
+                      <Circle size={14} className="mt-0.5 shrink-0 text-text-tertiary" />
+                    )}
+                    <span
+                      className={
+                        step.status === 'completed'
+                          ? 'text-text-tertiary line-through'
+                          : 'text-text-secondary'
+                      }
+                    >
+                      {step.step}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

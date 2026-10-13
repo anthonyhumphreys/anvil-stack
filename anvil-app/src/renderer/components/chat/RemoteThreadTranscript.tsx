@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2 } from 'lucide-react';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
 import type { ComposedChatTurn } from './chat-turns';
+import { SurfaceDigest } from '../surfaces/SurfaceDigest';
 import { agentProviderLabel } from '../../utils/agent-display';
 import { remoteChatConnectionNotice } from '../../utils/remote-chat-connection-status';
 import type { useChatRunTarget } from './useChatRunTarget';
@@ -95,6 +96,9 @@ export function RemoteThreadTranscript({
                 active={false}
               />
             )}
+            {turn.surfaces.map((surface) => (
+              <SurfaceDigest key={surface.intent.id} intent={surface.intent} />
+            ))}
             {turn.trailingWork.length > 0 && (
               <TurnWorkMessage items={turn.trailingWork} active={false} />
             )}

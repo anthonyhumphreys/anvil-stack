@@ -42,6 +42,7 @@ import { isAbsoluteEditorPath } from '../../../shared/editor-file-link';
 import { buildApprovalAwareWorkSegments, type ChatTurnWorkItem } from './chat-turns';
 import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
+import { MessageStreamingContext } from './surface-fences';
 import { FileEditReviewGrid } from './TurnChangesFooter';
 import { LiveGlyph, ProcessingCard, useProcessingActive } from './ProcessingCard';
 import { countProcessingActions, getOperationStatus, getProcessingState } from './processing-state';
@@ -572,6 +573,9 @@ export function formatTurnWorkItemSummary(
     case 'plan_update':
       return 'Updating the plan';
     case 'agent_ui_intent':
+      if (item.event.agentUIIntent?.kind === 'surface') {
+        return `Published ${compactWorkValue(item.event.agentUIIntent.payload.title, 84)}`;
+      }
       return item.event.agentUIIntent?.kind === 'question'
         ? 'Waiting for your input'
         : 'Updating the plan';
@@ -2000,7 +2004,9 @@ export function AssistantMessage({
           {active && <span className="font-normal text-text-tertiary">Responding</span>}
         </ChatAssistantMessageHeader>
         <ChatAssistantMessageBody>
-          <MarkdownRenderer content={display} />
+          <MessageStreamingContext.Provider value={active}>
+            <MarkdownRenderer content={display} />
+          </MessageStreamingContext.Provider>
         </ChatAssistantMessageBody>
         <ChatAssistantMessageActions>
           <MessageActionsToolbar
@@ -2238,6 +2244,9 @@ function formatActivityPreview(event: CodexEvent & { sessionId?: string }): stri
     case 'plan_update':
       return event.plan ? `Plan: ${event.plan.steps.length} steps` : 'Plan update';
     case 'agent_ui_intent':
+      if (event.agentUIIntent?.kind === 'surface') {
+        return `Published ${event.agentUIIntent.payload.title}`;
+      }
       return event.agentUIIntent?.kind === 'plan'
         ? `Plan: ${event.agentUIIntent.payload.steps.length} steps`
         : 'Input requested';
