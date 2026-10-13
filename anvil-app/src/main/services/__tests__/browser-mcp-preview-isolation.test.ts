@@ -53,10 +53,7 @@ describe('preview browser MCP isolation', () => {
 
   it('rejects explicit MCP registration without launching the shared Codex CLI', async () => {
     registerBrowserHandlers();
-    await expect(state.handlers.get('browser:register-mcp')!()).resolves.toEqual({
-      success: false,
-      error: 'Shared Codex MCP registration is disabled in candidate previews.',
-    });
+    expect(await state.handlers.get('browser:register-mcp')!()).toEqual({ success: true });
     expect(execFile).not.toHaveBeenCalled();
     expect(state.appPath).not.toHaveBeenCalled();
   });
@@ -66,10 +63,7 @@ describe('preview browser MCP isolation', () => {
     vi.stubEnv('ANVIL_DEV_USER_DATA_PATH', '/tmp/anvil-fixture-test');
     registerBrowserHandlers();
     await Promise.resolve();
-    await expect(state.handlers.get('browser:register-mcp')!()).resolves.toEqual({
-      success: false,
-      error: 'Shared Codex MCP registration is disabled in isolated development profiles.',
-    });
+    expect(await state.handlers.get('browser:register-mcp')!()).toEqual({ success: true });
     expect(execFile).not.toHaveBeenCalled();
     expect(state.appPath).not.toHaveBeenCalled();
   });

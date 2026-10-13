@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   bestVerifiedMode,
+  getAgentToolsCapability,
   getProviderCapability,
   supportsCrossDeviceResume,
 } from '../provider-capability.service';
@@ -51,5 +52,31 @@ describe('provider capability matrix (SESSION-01 audit)', () => {
     for (const p of ALL) {
       expect(supportsCrossDeviceResume(p)).toBe(false);
     }
+  });
+
+  it('declares an agent tools transport with evidence for every provider', () => {
+    for (const p of ALL) {
+      const tools = getProviderCapability(p).agentTools;
+      expect(tools.transport).toBe('mcp-http');
+      expect(tools.evidence).toContain('codex-session.service.ts');
+    }
+    expect(getProviderCapability('codex').agentTools.verified).toBe(true);
+    expect(getProviderCapability('cursor').agentTools.verified).toBe(true);
+    expect(getProviderCapability('devin').agentTools.verified).toBe(false);
+    expect(getProviderCapability('llmgateway').agentTools.verified).toBe(false);
+  });
+
+  it('reports the stdio shim when an ACP agent does not advertise http, and fallback without an endpoint', () => {
+    expect(getAgentToolsCapability('devin', { acpHttpAdvertised: false })).toMatchObject({
+      transport: 'mcp-stdio-shim',
+      verified: false,
+    });
+    expect(getAgentToolsCapability('codex', { acpHttpAdvertised: false }).transport).toBe(
+      'mcp-http',
+    );
+    expect(getAgentToolsCapability('cursor', { endpointAvailable: false }).transport).toBe(
+      'fallback',
+    );
+    expect(getAgentToolsCapability('cursor')).toBe(getProviderCapability('cursor').agentTools);
   });
 });

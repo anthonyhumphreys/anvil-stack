@@ -87,6 +87,22 @@ import {
 import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
 import { supportsNativeResume } from './provider-capability.service.js';
 import { isPermissionMode } from '../../../cloud/contract/permissions.js';
+import { ROLE_FEATURES } from '../../shared/types.js';
+import type { AgentToolSessionContext } from '../agent-tools/dispatch.js';
+import {
+  awaitAgentMcpEndpoint,
+  getAgentMcpEndpoint,
+  getAgentMcpTokenForSession,
+  mintAgentMcpToken,
+  revokeAgentMcpToken,
+} from './agent-mcp/registry.js';
+import {
+  ANVIL_MCP_TOKEN_ENV,
+  buildAcpMcpServers,
+  buildCodexMcpArgs,
+  readAcpMcpCapabilities,
+  type AcpMcpCapabilities,
+} from './agent-mcp/injection.js';
 
 const ACP_PROVIDER_LABELS: Record<AcpAgentProvider, string> = {
   cursor: 'Cursor',
@@ -101,6 +117,8 @@ const ACP_AUTH_METHODS: Record<AcpAgentProvider, string> = {
 interface ManagedSession {
   id: string;
   repoId?: string;
+  /** Every repo in the session's scope; the MCP endpoint enforces tool repo arguments against it. */
+  repoIds: string[];
   workspaceId?: string;
   appThreadId?: string;
   kind: 'repo' | 'workspace' | 'scaffold';
@@ -124,6 +142,8 @@ interface ManagedSession {
   acpAuthRetried?: boolean;
   /** True when the ACP agent advertised `agentCapabilities.loadSession` at initialize. */
   acpLoadSession?: boolean;
+  /** `agentCapabilities.mcpCapabilities` from the ACP initialize result. */
+  acpMcpCapabilities?: AcpMcpCapabilities;
   /** Deferred session start while the initialize result is in flight (resume needs the advertised capability first). */
   acpPendingSessionStart?: { resumeSessionId?: string };
   /** True once session/load was sent — a failure falls back to session/new once. */
@@ -435,11 +455,33 @@ export async function startSession(
         : agentProvider === 'llmgateway'
           ? getLlmGatewayCodexConfigArgs()
           : ['app-server'];
-  if (options?.temporaryChat) args.push('-c', 'mcp_servers={}');
+  // Local MCP endpoint (spec §6.2): one bearer token per session, delivered via
+  // env (Codex) or the ACP stdin channel — never in args. Temporary chats and
+  // headless Mesh runs get no Anvil server.
+  const mcpEndpoint =
+    options?.temporaryChat || runtime?.headless ? undefined : await awaitAgentMcpEndpoint();
+  const mcpToken = mcpEndpoint
+    ? mintAgentMcpToken(id, () => getAgentToolSessionContext(id))
+    : undefined;
+  if (!isAcpAgentProvider(provider)) {
+    args.push(
+      ...buildCodexMcpArgs({
+        temporaryChat: options?.temporaryChat,
+        url: mcpToken ? mcpEndpoint?.url : undefined,
+      }),
+    );
+  }
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
-  const env = await buildCodexProcessEnvironment(agentProvider, settings, runtime?.extraEnv);
+  let env: Record<string, string>;
+  try {
+    env = await buildCodexProcessEnvironment(agentProvider, settings, runtime?.extraEnv);
+  } catch (err) {
+    revokeAgentMcpToken(id);
+    throw err;
+  }
+  if (mcpToken && !isAcpAgentProvider(provider)) env[ANVIL_MCP_TOKEN_ENV] = mcpToken;
   if (gatewayConfig)
     args.push(...(await writeGatewayCodexCatalog(env.CODEX_HOME, gatewayConfig.models)));
 
@@ -452,6 +494,7 @@ export async function startSession(
       ...providerProcessSpawnOptions(),
     });
   } catch (err) {
+    revokeAgentMcpToken(id);
     if (options?.temporaryChat) rmSync(cwd, { recursive: true, force: true });
     throw new Error(
       `Failed to spawn ${acpProcessLabel(provider)}: ${err instanceof Error ? err.message : err}`,
@@ -468,6 +511,7 @@ export async function startSession(
   const session: ManagedSession = {
     id,
     repoId: repoIds[0],
+    repoIds: [...repoIds],
     workspaceId: options?.scaffold?.workspaceId ?? options?.workspace?.workspaceId,
     appThreadId: options?.threadId,
     kind: options?.scaffold ? 'scaffold' : repoIds.length > 0 ? 'repo' : 'workspace',
@@ -519,6 +563,7 @@ export async function startSession(
   proc.stderr?.on('data', () => undefined);
 
   proc.on('exit', (code, signal) => {
+    revokeAgentMcpToken(id);
     removeTemporaryChatDirectory(session);
     console.log(`[Codex:${id.slice(0, 8)}] exited with code=${code} signal=${signal}`);
     for (const intent of expireAgentUIIntentsForSession(id)) {
@@ -582,7 +627,9 @@ export async function startSession(
       session.acpPendingSessionStart = { resumeSessionId: options.providerThreadId };
       session.continuity = 'resumed';
     } else {
-      sendAcpSessionNew(session);
+      // session/new also waits for the initialize result: the advertised
+      // mcpCapabilities decide how the Anvil MCP server is attached.
+      session.acpPendingSessionStart = {};
       // ACP cannot fork a provider thread: a "fork" is a new session the
       // renderer seeds from the transcript — record that honestly.
       session.continuity = options?.forkFromProviderThreadId ? 'transcript-seeded' : 'new';
@@ -895,6 +942,26 @@ function sendFollowUpAwareProviderRequest(
     pendingProviderFollowUps.delete(key);
     throw new Error(`${acpProcessLabel(session.provider)} could not accept ${method}.`);
   }
+}
+
+/**
+ * Live tool context for the local MCP endpoint, resolved per request so mode
+ * and role changes apply immediately. Undefined for ended or temporary sessions.
+ */
+export function getAgentToolSessionContext(sessionId: string): AgentToolSessionContext | undefined {
+  const session = sessions.get(sessionId);
+  if (!session || session.temporaryChat || session.stopping) return undefined;
+  const role = getSettings().userRole;
+  return {
+    sessionId,
+    appThreadId: session.appThreadId,
+    workspaceId: session.workspaceId,
+    repoIds: session.repoIds,
+    provider: session.agentProvider,
+    // A persona-clamped read-only session stays read-only whatever the caller pinned.
+    mode: session.mode === 'read-only' ? 'read-only' : (session.modeOverride ?? session.mode),
+    features: (role && ROLE_FEATURES[role]) || [],
+  };
 }
 
 export function isTemporaryChatSession(sessionId: string): boolean {
@@ -1212,10 +1279,21 @@ function followUpFingerprint(
   });
 }
 
+function acpMcpServers(session: ManagedSession) {
+  const endpoint = getAgentMcpEndpoint();
+  return buildAcpMcpServers({
+    url: endpoint?.url,
+    token: getAgentMcpTokenForSession(session.id),
+    capabilities: session.acpMcpCapabilities,
+    shimPath: endpoint?.shimPath,
+    execPath: process.execPath,
+  });
+}
+
 function sendAcpSessionNew(session: ManagedSession): void {
   sendCodexJsonRpc(session.process, 'session/new', {
     cwd: session.cwd,
-    mcpServers: [],
+    mcpServers: acpMcpServers(session),
     _meta: { systemPrompt: session.systemPrompt },
   });
 }
@@ -1346,6 +1424,7 @@ export function stopSession(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) return;
   session.stopping = true;
+  revokeAgentMcpToken(sessionId);
   failPendingFollowUps(session, 'The session stopped before this queued task could start.');
   session.rejectThreadReady?.(new Error('Session stopped before it became ready.'));
   session.resolveThreadReady = null;
@@ -1822,6 +1901,7 @@ function observeAcpInitializeResult(session: ManagedSession, line: string): void
   const capabilities = result?.agentCapabilities as Record<string, unknown> | undefined;
   if (capabilities) {
     session.acpLoadSession = capabilities.loadSession === true;
+    session.acpMcpCapabilities = readAcpMcpCapabilities(capabilities);
   }
 
   const pending = session.acpPendingSessionStart;
@@ -1836,13 +1916,13 @@ function observeAcpInitializeResult(session: ManagedSession, line: string): void
     sendCodexJsonRpc(session.process, 'session/load', {
       sessionId: pending.resumeSessionId,
       cwd: session.cwd,
-      mcpServers: [],
+      mcpServers: acpMcpServers(session),
       _meta: { systemPrompt: session.systemPrompt },
     });
     return;
   }
   // Agent cannot load sessions (or none was requested): start fresh and say so.
-  session.continuity = pending.resumeSessionId ? 'transcript-seeded' : 'new';
+  if (pending.resumeSessionId) session.continuity = 'transcript-seeded';
   sendAcpSessionNew(session);
 }
 

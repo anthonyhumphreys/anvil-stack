@@ -5,9 +5,8 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { getBrowserMcpNames, PRIMARY_BROWSER_MCP_NAME } from '../../shared/app-identity.js';
+import { getBrowserMcpNames } from '../../shared/app-identity.js';
 import {
-  buildBrowserMcpAddArgs,
   isCurrentBrowserMcpRegistration,
   parseCodexStdioMcpRegistration,
   type CodexStdioMcpRegistration,
@@ -56,8 +55,11 @@ function ownedGuest(owner: WebContents, id: number): WebContents {
 }
 
 // ---------------------------------------------------------------------------
-// Codex MCP registration
+// Legacy global Codex MCP registration
 // ---------------------------------------------------------------------------
+// Browser tools are now served to every session by the local Anvil MCP
+// endpoint (agent-tools/browser-tools.ts). The old global `codex mcp add`
+// registration is removed once, and only when it points at this app's script.
 
 async function getChromeMcpRegistration(name: string): Promise<CodexStdioMcpRegistration | null> {
   try {
@@ -83,68 +85,19 @@ function resolveChromeMcpScriptPath(): string | null {
   return existsSync(scriptPath) ? scriptPath : null;
 }
 
-async function removeChromeMcp(name: string): Promise<void> {
-  await execFileAsync('codex', ['mcp', 'remove', name], { timeout: 15_000 });
-}
-
-async function registerChromeMcp(): Promise<{ success: boolean; error?: string }> {
-  if (previewBuild) {
-    return {
-      success: false,
-      error: 'Shared Codex MCP registration is disabled in candidate previews.',
-    };
-  }
-  if (process.env.ANVIL_DEV_USER_DATA_PATH?.trim()) {
-    return {
-      success: false,
-      error: 'Shared Codex MCP registration is disabled in isolated development profiles.',
-    };
-  }
+async function removeLegacyChromeMcpRegistration(): Promise<void> {
+  if (previewBuild || process.env.ANVIL_DEV_USER_DATA_PATH?.trim()) return;
   const scriptPath = resolveChromeMcpScriptPath();
-
-  if (!scriptPath) {
-    return { success: false, error: 'Anvil Chrome MCP server script not found.' };
-  }
-
-  const registrations = new Map<string, CodexStdioMcpRegistration>();
+  if (!scriptPath) return;
   for (const name of getBrowserMcpNames()) {
     const registration = await getChromeMcpRegistration(name);
-    if (registration) registrations.set(name, registration);
-  }
-
-  const primaryRegistration = registrations.get(PRIMARY_BROWSER_MCP_NAME);
-  if (
-    primaryRegistration &&
-    isCurrentBrowserMcpRegistration(primaryRegistration, process.execPath, scriptPath)
-  ) {
-    try {
-      for (const name of registrations.keys()) {
-        if (name !== PRIMARY_BROWSER_MCP_NAME) await removeChromeMcp(name);
-      }
-      return { success: true };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[Browser] Failed to remove legacy MCP registration: ${msg}`);
-      return { success: false, error: msg };
-    }
-  }
-
-  try {
-    if (primaryRegistration) await removeChromeMcp(PRIMARY_BROWSER_MCP_NAME);
-    await execFileAsync(
-      'codex',
-      buildBrowserMcpAddArgs(PRIMARY_BROWSER_MCP_NAME, process.execPath, scriptPath),
-      { timeout: 15_000 },
-    );
-    for (const name of registrations.keys()) {
-      if (name !== PRIMARY_BROWSER_MCP_NAME) await removeChromeMcp(name);
-    }
-    console.log(`[Browser] Registered ${PRIMARY_BROWSER_MCP_NAME} MCP with Codex CLI`);
-    return { success: true };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Browser] Failed to register MCP: ${msg}`);
-    return { success: false, error: msg };
+    if (
+      !registration ||
+      !isCurrentBrowserMcpRegistration(registration, process.execPath, scriptPath)
+    )
+      continue;
+    await execFileAsync('codex', ['mcp', 'remove', name], { timeout: 15_000 });
+    console.log(`[Browser] Removed legacy global ${name} MCP registration`);
   }
 }
 
@@ -199,26 +152,14 @@ export function registerBrowserHandlers(): void {
       selectedWorkspace = null;
     }
   });
-  ipcMain.handle('browser:register-mcp', () => registerChromeMcp());
+  // The local Anvil MCP endpoint serves browser tools to every session.
+  ipcMain.handle('browser:register-mcp', () => ({ success: true }));
 
-  void repairChromeMcpRegistration().catch((err) => {
+  void removeLegacyChromeMcpRegistration().catch((err) => {
     console.warn(
-      `[Browser] Failed to check Chrome MCP registration: ${err instanceof Error ? err.message : String(err)}`,
+      `[Browser] Failed to remove legacy Chrome MCP registration: ${err instanceof Error ? err.message : String(err)}`,
     );
   });
-}
-
-async function repairChromeMcpRegistration(): Promise<void> {
-  if (previewBuild || process.env.ANVIL_DEV_USER_DATA_PATH?.trim()) return;
-  const registrations = await Promise.all(
-    getBrowserMcpNames().map((name) => getChromeMcpRegistration(name)),
-  );
-  if (!registrations.some(Boolean)) return;
-
-  const result = await registerChromeMcp();
-  if (!result.success) {
-    console.warn(`[Browser] Failed to repair Chrome MCP registration: ${result.error}`);
-  }
 }
 
 export { cleanupBrowser };

@@ -65,6 +65,7 @@ import { registerSurfacesHandlers } from './ipc/surfaces.ipc.js';
 import { registerSharesHandlers } from './ipc/shares.ipc.js';
 import { registerLibraryHandlers } from './ipc/library.ipc.js';
 import { registerSurfaceTools } from './surfaces/index.js';
+import { startAgentMcpEndpoint, stopAgentMcpEndpoint } from './services/agent-mcp/index.js';
 import {
   clearPendingLaunchIntent,
   deliverPendingLaunchIntent,
@@ -449,6 +450,7 @@ app.whenReady().then(() => {
   registerSharesHandlers();
   registerLibraryHandlers();
   registerSurfaceTools();
+  void startAgentMcpEndpoint();
   registerVoiceHandlers(mainWindow!);
   void syncMobileCompanionServer().catch((err) => {
     console.error('[Mobile Companion] Failed to start server:', err);
@@ -512,6 +514,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   shutdownAutomationRuntime();
   cleanupChatSessions();
+  void stopAgentMcpEndpoint();
   cleanupBaSessions();
   cleanupDiagramServices();
   cleanupTerminals();
