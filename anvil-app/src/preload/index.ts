@@ -7,6 +7,9 @@ import type {
 } from '../shared/dojo-types';
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AnvilAPI } from '../shared/ipc-api.js';
+import { surfacesBridge } from './surfaces.js';
+import { sharesBridge } from './shares.js';
+import { libraryBridge } from './library.js';
 import type {
   AutomationDaemonStatus,
   AutomationDefinition,
@@ -1392,6 +1395,9 @@ const api: AnvilAPI = {
       return () => ipcRenderer.removeListener('compliance:progress', handler);
     },
   },
+  surfaces: surfacesBridge,
+  shares: sharesBridge,
+  library: libraryBridge,
 };
 
 contextBridge.exposeInMainWorld('anvil', api);

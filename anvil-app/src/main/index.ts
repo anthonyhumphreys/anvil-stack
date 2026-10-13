@@ -61,6 +61,10 @@ import { registerLifecycleHandlers } from './ipc/lifecycle.ipc.js';
 import { registerDependencyHandlers } from './ipc/dependencies.ipc.js';
 import { registerRunHandlers, cleanupRunProcesses } from './ipc/run.ipc.js';
 import { registerVoiceHandlers } from './ipc/voice.ipc.js';
+import { registerSurfacesHandlers } from './ipc/surfaces.ipc.js';
+import { registerSharesHandlers } from './ipc/shares.ipc.js';
+import { registerLibraryHandlers } from './ipc/library.ipc.js';
+import { registerSurfaceTools } from './surfaces/index.js';
 import {
   clearPendingLaunchIntent,
   deliverPendingLaunchIntent,
@@ -441,6 +445,10 @@ app.whenReady().then(() => {
   registerLifecycleHandlers();
   registerRunHandlers();
   registerDependencyHandlers();
+  registerSurfacesHandlers();
+  registerSharesHandlers();
+  registerLibraryHandlers();
+  registerSurfaceTools();
   registerVoiceHandlers(mainWindow!);
   void syncMobileCompanionServer().catch((err) => {
     console.error('[Mobile Companion] Failed to start server:', err);

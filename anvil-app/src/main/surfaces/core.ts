@@ -53,3 +53,17 @@ export async function deliverSurfaceFeedback(
 ): Promise<boolean> {
   throw new Error('deliverSurfaceFeedback not implemented');
 }
+
+/**
+ * Asks the user to approve an Anvil-side mutation requested by an agent tool
+ * (create work items, post to PR, write & commit…). Publishes an approval
+ * question in the thread and resolves when the user answers. Resolves false
+ * on reject, dismiss, or session end. User-initiated surface actions do not
+ * need this: the click (plus the renderer's confirm) is the approval.
+ */
+export async function requestUserApproval(
+  _ctx: AgentToolSessionContext,
+  _request: { title: string; detail: string; consequences?: string },
+): Promise<boolean> {
+  throw new Error('requestUserApproval not implemented');
+}

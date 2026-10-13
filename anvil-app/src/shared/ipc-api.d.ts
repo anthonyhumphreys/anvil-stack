@@ -1326,6 +1326,10 @@ export interface AnvilAPI {
       }) => void,
     ): () => void;
   };
+
+  surfaces: import('./surfaces/ipc.js').SurfacesApi;
+  shares: import('./shares-ipc.js').SharesApi;
+  library: import('./library-ipc.js').LibraryApi;
 }
 
 export interface BrandAPI {
