@@ -141,7 +141,7 @@ function StageCallout({
   );
 }
 
-export function ReviewStage({ intent, onAction, onComment, focusTargetId }: StageProps) {
+export function ReviewStage({ intent, onAction, onComment, focusTargetId, readOnly }: StageProps) {
   const data = useMemo(() => readReviewData(intent), [intent]);
   const streaming = intent.payload.streaming;
   const nav = useMemo<ReviewStageNav>(
@@ -158,7 +158,7 @@ export function ReviewStage({ intent, onAction, onComment, focusTargetId }: Stag
     () => initialStageState(nav, focusTargetId),
   );
   const dispatch = (action: ReviewStageAction) => dispatchRaw({ action, nav });
-  const actions = useReviewActions(data, onAction);
+  const actions = useReviewActions(data, onAction, readOnly);
   const rootRef = useRef<HTMLDivElement>(null);
   const diffRef = useRef<HTMLDivElement>(null);
   const navRef = useRef<HTMLElement>(null);
@@ -206,7 +206,10 @@ export function ReviewStage({ intent, onAction, onComment, focusTargetId }: Stag
   const activeStat = data.files.find((file) => file.path === activeFile);
   const activeFindings = activeFile ? findingsForFile(data.findings, activeFile) : [];
   const busy = actions.pending !== null;
-  const canPost = data.scope.type === 'pull-request' && !!data.scope.pullRequestId;
+  const canPost =
+    data.scope.type === 'pull-request' &&
+    !!data.scope.pullRequestId &&
+    actions.available('post_to_pr');
   const chapterPaths = new Set(
     data.chapters.flatMap((chapter) => chapter.files.map((file) => file.path)),
   );
@@ -437,6 +440,7 @@ export function ReviewStage({ intent, onAction, onComment, focusTargetId }: Stag
               finding={focused}
               busy={busy}
               canPostToPullRequest={canPost}
+              available={actions.available}
               onAction={actions.request}
               onComment={(finding) => onComment(findingAnchor(finding))}
               onJump={(finding) => dispatch({ type: 'focus-finding', id: finding.id })}
@@ -524,20 +528,22 @@ export function ReviewStage({ intent, onAction, onComment, focusTargetId }: Stag
           <X size={13} aria-hidden="true" />
           Dismiss
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy || !unresolvedTargets.some((id) => !findingById.get(id)?.workItem)}
-          onClick={() =>
-            actions.request(
-              'create_work_items',
-              unresolvedTargets.filter((id) => !findingById.get(id)?.workItem),
-            )
-          }
-        >
-          <ListTodo size={13} aria-hidden="true" />
-          Create work items
-        </Button>
+        {actions.available('create_work_items') ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy || !unresolvedTargets.some((id) => !findingById.get(id)?.workItem)}
+            onClick={() =>
+              actions.request(
+                'create_work_items',
+                unresolvedTargets.filter((id) => !findingById.get(id)?.workItem),
+              )
+            }
+          >
+            <ListTodo size={13} aria-hidden="true" />
+            Create work items
+          </Button>
+        ) : null}
         {canPost ? (
           <Button
             variant="ghost"

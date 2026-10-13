@@ -15,6 +15,12 @@ import { TerminalPanel } from '../terminal/TerminalPanel';
 import { isEditableShortcutTarget, isShellShortcutOptInTarget } from '../../utils/keyboard';
 import { SidebarActivityProvider } from './SidebarActivityCenter';
 import { PictureInPicture2 } from 'lucide-react';
+import {
+  allSidebarNavItems,
+  DEMOTED_NAV_ITEMS,
+  isSidebarNavItemActive,
+  resolveLegacyRoute,
+} from '../../utils/sidebar-navigation';
 
 const EditorView = lazy(() =>
   import('../editor/EditorView').then((module) => ({ default: module.EditorView })),
@@ -197,7 +203,7 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
           <header className="titlebar-drag flex h-11 shrink-0 items-center border-b border-border/60 bg-bg-secondary pl-20 pr-4">
             <PictureInPicture2 size={13} className="mr-2 text-accent" />
             <span className="truncate text-xs font-medium text-text-secondary">
-              {getToolWindowTitle(location.pathname)}
+              {getToolWindowTitle(location.pathname, location.search)}
             </span>
             <span className="ml-2 text-xs text-text-tertiary">Detached</span>
           </header>
@@ -318,9 +324,35 @@ export function shouldIgnoreShellShortcut(target: EventTarget | null): boolean {
   return isEditableShortcutTarget(target) && !isShellShortcutOptInTarget(target);
 }
 
-export function getToolWindowTitle(pathname: string): string {
-  const segment = pathname.split('/').filter(Boolean)[0] ?? 'tool';
-  return segment
+const REPO_SECTION_TITLES: Record<string, string> = { health: 'Health', setup: 'Setup' };
+
+/**
+ * Detached-window title for a route: the matching nav destination (Library,
+ * Notes, Health…) rather than the raw first path segment, so the Library
+ * (`/workspace?view=library`) isn't titled "Workspace".
+ */
+export function getToolWindowTitle(pathname: string, search = ''): string {
+  const legacy = resolveLegacyRoute(pathname, search);
+  if (legacy) {
+    const [legacyPath, legacyQuery = ''] = legacy.split('?');
+    return getToolWindowTitle(legacyPath, legacyQuery);
+  }
+  const segments = pathname.split('/').filter(Boolean);
+  if (segments[0] === 'workspace') {
+    if (segments[1] === 'repos' && REPO_SECTION_TITLES[segments[3]]) {
+      return REPO_SECTION_TITLES[segments[3]];
+    }
+    const params = new URLSearchParams(search);
+    const view = params.get('view');
+    if (view === 'repositories' || (view !== 'library' && params.has('repo'))) {
+      return 'Repositories';
+    }
+  }
+  const match = [...allSidebarNavItems(), ...DEMOTED_NAV_ITEMS]
+    .filter((item) => isSidebarNavItemActive(pathname, item, search))
+    .sort((left, right) => right.path.length - left.path.length)[0];
+  if (match) return match.label;
+  return (segments[0] ?? 'tool')
     .split('-')
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(' ');

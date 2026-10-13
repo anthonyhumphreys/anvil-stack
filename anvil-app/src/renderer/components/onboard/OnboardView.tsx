@@ -63,9 +63,10 @@ function clearPersisted(repoId: string) {
   }
 }
 
-export function OnboardView() {
+/** `repoId` preselects the repo when embedded (repo Setup); otherwise the last-worked repo. */
+export function OnboardView({ repoId }: { repoId?: string } = {}) {
   const { repos: workspaceRepos, featureAvailability } = useWorkspace();
-  const [restoredRepoId] = useState(() => loadPersistedRepoId());
+  const [restoredRepoId] = useState(() => repoId ?? loadPersistedRepoId());
 
   const [selectedRepo, setSelectedRepo] = useState<RepoInfo | null>(null);
   const [detection, setDetection] = useState<OnboardDetection | null>(null);

@@ -173,3 +173,43 @@ describe('browser session authentication and target binding', () => {
     ).toBe(409);
   });
 });
+
+describe('in-process bridge commands', () => {
+  it('exposes the scope and target only while the bridge runs', () => {
+    service.setBrowserScope({ workspaceId: 'ws-1', repoPaths: ['/work/ws-1'] });
+    expect(service.getBrowserScope()).toEqual({
+      target: discovery().target,
+      scope: { workspaceId: 'ws-1', repoPaths: ['/work/ws-1'] },
+    });
+    service.stopBridge();
+    expect(service.getBrowserScope()).toBeNull();
+  });
+
+  it('runs commands against the attached page and refuses a changed target', async () => {
+    const guest = target();
+    service.attachDebugger(guest as unknown as WebContents);
+    const pinned = service.getBrowserScope()!.target;
+    expect(await service.browserBridgeCommand('/status', undefined, pinned)).toEqual({
+      attached: true,
+      url: 'http://localhost:3000',
+    });
+    expect(await service.browserBridgeCommand('/evaluate', { expression: '1' }, pinned)).toEqual({
+      result: { value: 'ok' },
+    });
+    expect(guest.debugger.sendCommand).toHaveBeenCalledWith('Runtime.evaluate', {
+      expression: '1',
+      returnByValue: true,
+    });
+    expect(
+      (await service.browserBridgeCommand('/navigate', { url: 'file:///etc/passwd' }, pinned))
+        .error,
+    ).toMatch(/Only HTTP and HTTPS/);
+
+    service.setBrowserScope({ workspaceId: 'ws-2', repoPaths: [] });
+    guest.debugger.sendCommand.mockClear();
+    expect(
+      (await service.browserBridgeCommand('/evaluate', { expression: '1' }, pinned)).error,
+    ).toMatch(/target changed/i);
+    expect(guest.debugger.sendCommand).not.toHaveBeenCalled();
+  });
+});

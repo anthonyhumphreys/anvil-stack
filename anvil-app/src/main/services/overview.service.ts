@@ -56,6 +56,22 @@ const FAILURE_TTL_MS = 30_000;
 const NETWORK_CONCURRENCY = 4;
 const STALE_DOC_DAYS = 7;
 
+// Renderer routes (mirrors src/renderer/utils/sidebar-navigation.ts; main can't import it).
+const WORKSPACE_REPOSITORIES_ROUTE = '/workspace?view=repositories';
+const WORKSPACE_NOTES_ROUTE = '/notes?tab=workspace';
+const LIBRARY_DOCS_ROUTE = '/workspace?view=library&kind=doc';
+
+/** Repo Health › Security when the repo is known, else the Repositories tab to pick one. */
+function securityRoute(repoId?: string): string {
+  return repoId
+    ? `/workspace/repos/${encodeURIComponent(repoId)}/health/security`
+    : WORKSPACE_REPOSITORIES_ROUTE;
+}
+
+function libraryAdrRoute(repoId?: string): string {
+  return `/workspace?view=library&kind=adr${repoId ? `&repo=${encodeURIComponent(repoId)}` : ''}`;
+}
+
 // ---------------------------------------------------------------------------
 // Scope
 // ---------------------------------------------------------------------------
@@ -535,7 +551,10 @@ export function collectFindings(
       detectedAt: iso(row.completed_at),
       target: {
         workspaceId: ref.workspaceId,
-        route: `/${source === 'security' ? 'security' : 'codereview'}/${encodeURIComponent(repo.id)}`,
+        route:
+          source === 'security'
+            ? securityRoute(repo.id)
+            : `/codereview/${encodeURIComponent(repo.id)}`,
       },
     });
   };
@@ -608,7 +627,10 @@ function loadFindings(
     source:
       sources.length === 2 ? 'Checks' : sources[0] === 'security' ? 'Security' : 'Code review',
     emptyReason: 'no-matches',
-    viewAllRoute: ctx.scope.kind === 'workspace' ? '/security' : undefined,
+    viewAllRoute:
+      ctx.scope.kind === 'workspace'
+        ? securityRoute(ctx.repos.length === 1 ? ctx.repos[0].id : undefined)
+        : undefined,
   });
 }
 
@@ -731,7 +753,7 @@ async function loadRepositories(
       source: 'Local',
       emptyReason: 'no-matches',
       observedAt: oldest(statuses.map((status) => status.observedAt)) ?? new Date().toISOString(),
-      viewAllRoute: '/workspace?view=repositories',
+      viewAllRoute: WORKSPACE_REPOSITORIES_ROUTE,
     },
   );
 }
@@ -868,7 +890,7 @@ async function loadIdeas(
         workspaceName: ctx.workspaceNames.get(note.workspace_id),
         repoName: note.repo ?? undefined,
         createdAt: iso(note.created_at),
-        target: { workspaceId: note.workspace_id, route: '/workspace-notes' },
+        target: { workspaceId: note.workspace_id, route: WORKSPACE_NOTES_ROUTE },
       });
     }
   }
@@ -888,7 +910,7 @@ async function loadIdeas(
           workspaceId: ref.workspaceId,
           workspaceName: ref.workspaceName,
           repoName: repo.name,
-          target: { workspaceId: ref.workspaceId, route: '/adrs' },
+          target: { workspaceId: ref.workspaceId, route: libraryAdrRoute(repo.id) },
         });
       }
     });
@@ -897,7 +919,7 @@ async function loadIdeas(
   return result('ideas', rows, module.rows, {
     source: 'Local',
     emptyReason: 'no-matches',
-    viewAllRoute: ctx.scope.kind === 'workspace' ? '/workspace-notes' : undefined,
+    viewAllRoute: ctx.scope.kind === 'workspace' ? WORKSPACE_NOTES_ROUTE : undefined,
   });
 }
 
@@ -1197,7 +1219,7 @@ async function loadDocumentation(
     observedAt: entry.observedAt,
     lastSuccessAt: entry.lastSuccessAt,
     emptyReason: mode === 'needs-review' ? 'no-matches' : 'no-recent-activity',
-    viewAllRoute: ctx.scope.kind === 'workspace' ? '/docs' : undefined,
+    viewAllRoute: ctx.scope.kind === 'workspace' ? LIBRARY_DOCS_ROUTE : undefined,
     ...(entry.error
       ? { state: 'disconnected', message: entry.error, setupTarget: 'delivery#docs' }
       : {}),
@@ -1366,7 +1388,10 @@ async function loadActivity(
           workspaceName: ref.workspaceName,
           target: {
             workspaceId: ref.workspaceId,
-            route: `/${source.kind}/${encodeURIComponent(repo.id)}`,
+            route:
+              source.kind === 'security'
+                ? securityRoute(repo.id)
+                : `/codereview/${encodeURIComponent(repo.id)}`,
           },
         });
       }
@@ -1394,7 +1419,7 @@ async function loadActivity(
         occurredAt: iso(note.created_at) ?? note.created_at,
         workspaceId: note.workspace_id,
         workspaceName: ctx.workspaceNames.get(note.workspace_id) ?? 'Workspace',
-        target: { workspaceId: note.workspace_id, route: '/workspace-notes' },
+        target: { workspaceId: note.workspace_id, route: WORKSPACE_NOTES_ROUTE },
       });
     }
   }

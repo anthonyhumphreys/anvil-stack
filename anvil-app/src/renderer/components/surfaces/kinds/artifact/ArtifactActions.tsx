@@ -7,7 +7,7 @@ import type { ChatArtifact } from '../../../../../shared/types';
 import { buildEditorUrl } from '../../../../utils/editor-link';
 import { Button, ConfirmDialog } from '../../../ui';
 import { useSurfaces } from '../../surfaces-context';
-import { isSyntheticSurfaceId } from '../../surface-utils';
+import { isActionAvailable, isSyntheticSurfaceId } from '../../surface-utils';
 import type { SurfaceViewProps } from '../../types';
 
 /** Ids handled locally here or by the shared chrome, so declared duplicates are skipped. */
@@ -18,10 +18,12 @@ export function ArtifactActions({
   artifact,
   onAction,
   onOpenStage,
+  readOnly,
 }: {
   intent: AgentUISurfaceIntent;
   artifact: ChatArtifact;
   onAction: SurfaceViewProps['onAction'];
+  readOnly?: boolean;
   onOpenStage?: () => void;
 }) {
   const navigate = useNavigate();
@@ -36,6 +38,7 @@ export function ArtifactActions({
         ([id, spec]) =>
           !LOCAL_ACTION_IDS.has(id) &&
           (spec.targets ?? 'none') === 'none' &&
+          isActionAvailable('artifact', id, readOnly) &&
           (id !== 'save_to_repo' || artifact.storage === 'session'),
       );
 
@@ -93,7 +96,7 @@ export function ArtifactActions({
           {spec.label}
         </Button>
       ))}
-      {artifact.storage === 'session' && (
+      {artifact.storage === 'session' && !readOnly && (
         <Button
           variant="ghost"
           size="sm"

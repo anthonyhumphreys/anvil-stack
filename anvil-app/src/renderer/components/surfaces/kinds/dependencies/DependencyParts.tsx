@@ -9,6 +9,7 @@ import { Button, cx } from '../../../ui';
 import type { SurfaceViewProps } from '../../types';
 import { SeverityBadge } from '../../shared-ui/SeverityGlyph';
 import { useSurfaceActions } from '../../shared-ui/useSurfaceActions';
+import { isActionAvailable } from '../../surface-utils';
 import { fixVersions, packageAnchor, packageKey, worstSeverity } from './model';
 
 export function LicenseLabel({ pkg }: { pkg: DependencyPackage }) {
@@ -89,7 +90,8 @@ export function useDependencyActions(
 ) {
   const actions = useSurfaceActions(props.onAction);
   const { run, confirm, pending } = actions;
-  const { onComment } = props;
+  const { onComment, readOnly } = props;
+  const canCreateWorkItems = isActionAvailable('dependencies', 'create_work_items', readOnly);
   const handlers = useMemo(
     () => ({
       pending,
@@ -98,7 +100,7 @@ export function useDependencyActions(
         const eligible = packages.filter(
           (pkg) => keys.includes(packageKey(pkg)) && !pkg.workItemId,
         );
-        if (eligible.length === 0) return;
+        if (!canCreateWorkItems || eligible.length === 0) return;
         confirm({
           action: 'create_work_items',
           targetIds: eligible.map(packageKey),
@@ -107,9 +109,11 @@ export function useDependencyActions(
           confirmLabel: 'Create work items',
         });
       },
+      /** False in read-only threads: work item creation is a mutation. */
+      canCreateWorkItems,
       comment: (pkg: DependencyPackage) => onComment(packageAnchor(pkg)),
     }),
-    [pending, run, confirm, packages, onComment],
+    [pending, run, confirm, packages, onComment, canCreateWorkItems],
   );
   return { ...actions, handlers };
 }
@@ -191,14 +195,16 @@ export function PackageDetail({
         >
           Ask agent to upgrade
         </Button>
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={Boolean(pkg.workItemId) || handlers.pending !== null}
-          onClick={() => handlers.createWorkItems([packageKey(pkg)])}
-        >
-          Create work item
-        </Button>
+        {handlers.canCreateWorkItems && (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={Boolean(pkg.workItemId) || handlers.pending !== null}
+            onClick={() => handlers.createWorkItems([packageKey(pkg)])}
+          >
+            Create work item
+          </Button>
+        )}
         <Button size="sm" variant="ghost" onClick={() => handlers.comment(pkg)}>
           Comment
         </Button>

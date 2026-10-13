@@ -18,7 +18,7 @@ import {
 import type { LibraryItem } from '../../../shared/library-ipc';
 import type { Feature } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
-import { libraryPath, type LibraryFilterKey } from '../../utils/sidebar-navigation';
+import { chatItemPath, libraryPath, type LibraryFilterKey } from '../../utils/sidebar-navigation';
 import { Button, IconButton, cx } from '../ui';
 import { EmptyState, InlineNotice } from '../layout/ViewScaffold';
 import { SharedLinksList } from '../share/SharedLinksList';
@@ -248,7 +248,7 @@ export function LibraryView() {
           </EmbeddedTool>
         ) : toolOpen && filter === 'diagram' ? (
           <EmbeddedTool>
-            <DiagramsView />
+            <DiagramsView repoId={repoFilter ?? undefined} />
           </EmbeddedTool>
         ) : toolOpen && filter === 'compliance' ? (
           <EmbeddedTool>
@@ -289,8 +289,7 @@ export function LibraryView() {
                       onOpen={() => openItem(item)}
                       onOpenThread={
                         item.threadId
-                          ? () =>
-                              navigate(`/chat?thread=${encodeURIComponent(item.threadId ?? '')}`)
+                          ? () => navigate(chatItemPath(item.threadId ?? ''))
                           : undefined
                       }
                     />

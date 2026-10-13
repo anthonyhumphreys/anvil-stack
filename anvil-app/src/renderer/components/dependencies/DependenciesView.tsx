@@ -12,6 +12,7 @@ import { RepoSelector } from '../shared/RepoSelector';
 import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { repoDetailPath } from '../../utils/sidebar-navigation';
 
 const managers: PackageManager[] = ['npm', 'pnpm', 'yarn', 'nuget', 'python'];
 const sbomFormats: Array<{ value: SbomFormat; label: string; extension: string }> = [
@@ -121,7 +122,7 @@ export function DependenciesView() {
           <RepoSelector
             indexedOnly={false}
             selectedRepoId={null}
-            onSelect={(repo) => navigate(`/dependencies/${repo.id}`)}
+            onSelect={(repo) => navigate(repoDetailPath(repo.id, 'health', 'dependencies'))}
           />
         </div>
       ) : (

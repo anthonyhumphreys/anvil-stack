@@ -10,11 +10,13 @@ import {
   type SurfacesContextValue,
 } from './surfaces-context';
 import {
+  ARTIFACT_LINK_PARAM,
   buildArtifactSurfaceIntent,
   isSurfaceIntent,
   newerIntent,
   parseSyntheticArtifactSurfaceId,
   readStageSurfaceId,
+  resolveArtifactStageSurfaceId,
   surfaceDomId,
   withStageSurface,
 } from './surface-utils';
@@ -97,6 +99,19 @@ export function SurfacesProvider({
 
   const stageSurfaceId = readStageSurfaceId(searchParams);
   const stageTargetId = searchParams.get(STAGE_TARGET_PARAM);
+
+  // `?artifact=` deep links (Library) become a stage surface once the owning
+  // thread is selected (`?thread=` consumed) and its surfaces/artifacts load.
+  const linkedArtifactId = searchParams.get(ARTIFACT_LINK_PARAM);
+  const threadPending = searchParams.has('thread');
+  useEffect(() => {
+    if (!linkedArtifactId || threadPending) return;
+    const surfaceId = resolveArtifactStageSurfaceId(linkedArtifactId, surfaces, artifacts);
+    if (!surfaceId) return;
+    const next = withStageSurface(searchParams, surfaceId);
+    next.delete(ARTIFACT_LINK_PARAM);
+    setSearchParams(next, { replace: true });
+  }, [artifacts, linkedArtifactId, searchParams, setSearchParams, surfaces, threadPending]);
 
   const openStage = useCallback(
     (surfaceId: string, options?: OpenStageOptions) => {

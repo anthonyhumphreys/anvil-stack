@@ -27,6 +27,7 @@ export function ReviewFindingDetail({
   finding,
   busy,
   canPostToPullRequest,
+  available = () => true,
   onAction,
   onComment,
   onJump,
@@ -34,6 +35,8 @@ export function ReviewFindingDetail({
   finding: ReviewFinding;
   busy: boolean;
   canPostToPullRequest: boolean;
+  /** Hides mutation actions in read-only threads (see `useReviewActions`). */
+  available?: (action: ReviewAction) => boolean;
   onAction: (action: ReviewAction, ids: string[]) => void;
   onComment: (finding: ReviewFinding) => void;
   onJump: (finding: ReviewFinding) => void;
@@ -89,7 +92,7 @@ export function ReviewFindingDetail({
               label={`Suggested patch for ${finding.filePath}`}
             />
           </div>
-          {!resolved ? (
+          {!resolved && available('apply_patch') ? (
             <Button
               variant="secondary"
               size="sm"
@@ -205,7 +208,7 @@ export function ReviewFindingDetail({
           <MessageSquarePlus size={13} aria-hidden="true" />
           Comment
         </Button>
-        {!finding.workItem && !resolved ? (
+        {!finding.workItem && !resolved && available('create_work_items') ? (
           <Button
             variant="ghost"
             size="sm"
@@ -216,7 +219,7 @@ export function ReviewFindingDetail({
             Work item
           </Button>
         ) : null}
-        {canPostToPullRequest && !finding.prCommentUrl && !resolved ? (
+        {canPostToPullRequest && available('post_to_pr') && !finding.prCommentUrl && !resolved ? (
           <Button
             variant="ghost"
             size="sm"

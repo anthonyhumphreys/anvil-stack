@@ -3286,6 +3286,19 @@ export interface DiagnosticsSnapshot {
   };
   processes: DiagnosticProcessMetric[];
   featureMetrics: DiagnosticFeatureMetric[];
+  /** Local agent MCP endpoint status. Never carries bearer tokens. */
+  agentMcp?: {
+    listening: boolean;
+    port?: number;
+    error?: string;
+    activeSessions: number;
+    sessions: Array<{
+      sessionId: string;
+      createdAt: string;
+      toolCalls: number;
+      toolErrors: number;
+    }>;
+  };
 }
 
 export interface DiagramFile {

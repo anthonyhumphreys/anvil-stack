@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense } from 'react';
 import { Compass, Loader2 } from 'lucide-react';
 import type { RepoInfo } from '../../../shared/types';
 import { repoIsMapped } from '../../contexts/WorkspaceContext';
@@ -10,30 +10,13 @@ const OnboardView = lazy(() =>
   import('../onboard/OnboardView').then((module) => ({ default: module.OnboardView })),
 );
 
-/** OnboardView restores the repo it last worked on from this key. */
-const ONBOARD_REPO_STORAGE_KEY = 'anvil:onboard-repo';
-
-function rememberOnboardRepo(repoId: string): void {
-  try {
-    window.localStorage.setItem(ONBOARD_REPO_STORAGE_KEY, repoId);
-  } catch {
-    // Storage can be unavailable; the wizard falls back to its own picker.
-  }
-}
-
 /**
  * Repo detail › Setup (spec §12): the readiness checklist plus the repo-setup
  * wizard (AGENTS.md, devcontainer, environment, connectors) for this repo.
- * The wizard is preselected through its persisted-repo key before it mounts;
- * remount per repo via `key`.
+ * The wizard is preselected with `repoId`; remount per repo via `key`.
  */
 export function RepoSetupPanel({ repo }: { repo: RepoInfo }) {
   const allowed = useAllowedFeatures();
-  // Runs before OnboardView's own initial state reads the key.
-  useState(() => {
-    rememberOnboardRepo(repo.id);
-    return true;
-  });
 
   if (!isFeatureAllowed(allowed, 'onboard')) {
     return (
@@ -65,7 +48,7 @@ export function RepoSetupPanel({ repo }: { repo: RepoInfo }) {
             </div>
           }
         >
-          <OnboardView />
+          <OnboardView repoId={repo.id} />
         </Suspense>
       </div>
     </div>

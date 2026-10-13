@@ -192,14 +192,16 @@ export function FindingsStage(props: SurfaceViewProps & { focusTargetId?: string
           >
             Dismiss
           </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={handlers.pending !== null}
-            onClick={() => handlers.onCreateWorkItems([...selected])}
-          >
-            Create work items
-          </Button>
+          {handlers.canCreateWorkItems && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={handlers.pending !== null}
+              onClick={() => handlers.onCreateWorkItems([...selected])}
+            >
+              Create work items
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear
           </Button>

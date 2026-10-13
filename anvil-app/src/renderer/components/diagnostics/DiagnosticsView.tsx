@@ -191,6 +191,8 @@ export function DiagnosticsView() {
             </div>
           </div>
         </section>
+
+        {snapshot?.agentMcp && <AgentMcpSection status={snapshot.agentMcp} />}
       </main>
     </div>
   );
@@ -297,6 +299,57 @@ function FeatureMetricRow({ metric }: { metric: DiagnosticFeatureMetric }) {
         </div>
       </div>
     </div>
+  );
+}
+
+type AgentMcpDiagnostics = NonNullable<DiagnosticsSnapshot['agentMcp']>;
+
+function describeAgentMcpEndpoint(status: AgentMcpDiagnostics): string {
+  if (!status.listening) {
+    return status.error ? `Not running: ${status.error}` : 'Not running';
+  }
+  const sessions = `${status.activeSessions} session${status.activeSessions === 1 ? '' : 's'}`;
+  return status.port ? `Listening on 127.0.0.1:${status.port} · ${sessions}` : sessions;
+}
+
+/** Local agent tools endpoint: listening state and per-session counters (never tokens). */
+function AgentMcpSection({ status }: { status: AgentMcpDiagnostics }) {
+  return (
+    <section className="mt-6">
+      <SectionHeader title="Agent Tools Endpoint" subtitle={describeAgentMcpEndpoint(status)} />
+      {status.sessions.length > 0 && (
+        <div className="mt-3 overflow-hidden rounded-lg border border-border">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-border bg-bg-secondary text-xs uppercase text-text-tertiary">
+              <tr>
+                <th className="px-4 py-2 font-medium">Session</th>
+                <th className="px-4 py-2 font-medium">Connected</th>
+                <th className="px-4 py-2 text-right font-medium">Tool calls</th>
+                <th className="px-4 py-2 text-right font-medium">Errors</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border-subtle">
+              {status.sessions.map((session) => (
+                <tr key={session.sessionId} className="bg-bg-primary text-text-secondary">
+                  <td className="max-w-0 truncate px-4 py-2 font-mono text-xs text-text-primary">
+                    {session.sessionId}
+                  </td>
+                  <td className="px-4 py-2 text-xs">
+                    {new Date(session.createdAt).toLocaleTimeString()}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums">{session.toolCalls}</td>
+                  <td
+                    className={`px-4 py-2 text-right tabular-nums ${session.toolErrors > 0 ? 'text-error' : ''}`}
+                  >
+                    {session.toolErrors}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 

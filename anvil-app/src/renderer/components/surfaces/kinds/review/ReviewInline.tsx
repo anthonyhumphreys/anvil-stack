@@ -221,7 +221,13 @@ function InlineSkeleton() {
   );
 }
 
-export function ReviewInline({ intent, onAction, onComment, onOpenStage }: SurfaceViewProps) {
+export function ReviewInline({
+  intent,
+  onAction,
+  onComment,
+  onOpenStage,
+  readOnly,
+}: SurfaceViewProps) {
   const data = useMemo(() => readReviewData(intent), [intent]);
   const streaming = intent.payload.streaming;
   const baseId = useId();
@@ -230,7 +236,7 @@ export function ReviewInline({ intent, onAction, onComment, onOpenStage }: Surfa
   const [selected, setSelected] = useState<string[]>([]);
   const [openChapters, setOpenChapters] = useState<Set<string>>(() => new Set());
   const [openFiles, setOpenFiles] = useState<Set<string>>(() => new Set());
-  const actions = useReviewActions(data, onAction);
+  const actions = useReviewActions(data, onAction, readOnly);
 
   if (!data) {
     return <p className="max-w-[72ch] text-sm text-text-secondary">{intent.payload.digest}</p>;
@@ -439,7 +445,9 @@ export function ReviewInline({ intent, onAction, onComment, onOpenStage }: Surfa
             Accept all
           </Button>
         ) : null}
-        {data.scope.type === 'pull-request' && data.scope.pullRequestId ? (
+        {data.scope.type === 'pull-request' &&
+        data.scope.pullRequestId &&
+        actions.available('post_to_pr') ? (
           <Button
             variant="ghost"
             size="sm"
@@ -450,7 +458,7 @@ export function ReviewInline({ intent, onAction, onComment, onOpenStage }: Surfa
             Post to PR
           </Button>
         ) : null}
-        {workItemIds.length ? (
+        {workItemIds.length && actions.available('create_work_items') ? (
           <Button
             variant="ghost"
             size="sm"

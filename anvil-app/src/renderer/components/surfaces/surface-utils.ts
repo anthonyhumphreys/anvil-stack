@@ -1,5 +1,6 @@
 import type { AgentUIIntent, AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
 import { AGENT_UI_PROTOCOL_VERSION } from '../../../shared/agent-ui-intents';
+import { getSurfaceKind } from '../../../shared/surfaces/registry';
 import type { ShareTarget } from '../../../shared/shares-ipc';
 import type { ArtifactSurfaceData, SketchSurfaceData } from '../../../shared/surfaces/types';
 import type { ChatArtifact } from '../../../shared/types';
@@ -9,6 +10,28 @@ export { newerIntent, shouldReplaceIntent };
 
 export const SURFACE_STAGE_PARAM = 'surface';
 const SYNTHETIC_ARTIFACT_PREFIX = 'artifact:';
+
+/**
+ * Whether a declared action should be offered. Read-only threads hide every
+ * `mutation` action (the host controller refuses them anyway); undeclared ids
+ * are local view affordances and stay available.
+ */
+export function isActionAvailable(
+  kind: string,
+  action: string,
+  readOnly: boolean | undefined,
+): boolean {
+  if (!readOnly) return true;
+  return getSurfaceKind(kind)?.actions[action]?.semantics.type !== 'mutation';
+}
+
+/** `isActionAvailable` bound to one surface kind, for views that check several actions. */
+export function actionAvailability(
+  kind: string,
+  readOnly: boolean | undefined,
+): (action: string) => boolean {
+  return (action) => isActionAvailable(kind, action, readOnly);
+}
 
 export function isSurfaceIntent(intent: AgentUIIntent | undefined): intent is AgentUISurfaceIntent {
   return intent?.kind === 'surface';
@@ -121,6 +144,39 @@ export function buildArtifactSurfaceIntent(artifact: ChatArtifact): AgentUISurfa
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
   };
+}
+
+/** `?artifact=<id>` deep link (Library) — resolved to a stage surface once the thread loads. */
+export const ARTIFACT_LINK_PARAM = 'artifact';
+
+/**
+ * Stage surface for an artifact deep link: the latest published artifact
+ * surface for it, else the synthetic stage-only surface when the thread knows
+ * the artifact (fence-persisted). Null while the owning thread isn't loaded.
+ */
+export function resolveArtifactStageSurfaceId(
+  artifactId: string,
+  surfaces: readonly AgentUISurfaceIntent[],
+  artifacts: readonly Pick<ChatArtifact, 'id'>[],
+): string | null {
+  let latest: { id: string; version: number; createdAt: number } | undefined;
+  for (const surface of surfaces) {
+    if (surface.payload.surfaceKind !== 'artifact') continue;
+    const data = readArtifactSurfaceData(surface.payload.data);
+    if (data?.artifactId !== artifactId) continue;
+    const createdAt = Date.parse(surface.createdAt) || 0;
+    if (
+      !latest ||
+      data.version > latest.version ||
+      (data.version === latest.version && createdAt >= latest.createdAt)
+    ) {
+      latest = { id: surface.id, version: data.version, createdAt };
+    }
+  }
+  if (latest) return latest.id;
+  return artifacts.some((artifact) => artifact.id === artifactId)
+    ? syntheticArtifactSurfaceId(artifactId)
+    : null;
 }
 
 export function readArtifactSurfaceData(data: unknown): ArtifactSurfaceData | null {

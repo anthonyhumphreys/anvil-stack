@@ -53,6 +53,24 @@ describe('Review inline surface', () => {
     expect(renderToStaticMarkup(<Inline {...props(data)} />)).toContain('Post to PR');
   });
 
+  it('hides mutation actions in read-only threads', () => {
+    const data = reviewData({
+      scope: { type: 'pull-request', repoId: 'repo-1', pullRequestId: '42' },
+    });
+    const editable = renderToStaticMarkup(<Inline {...props(data)} />);
+    expect(editable).toContain('Post to PR');
+    expect(editable).toContain('Create work items');
+    const inline = renderToStaticMarkup(<Inline {...props(data)} readOnly />);
+    expect(inline).not.toContain('Post to PR');
+    expect(inline).not.toContain('Create work items');
+    expect(inline).toContain('Ask agent to fix');
+    if (!Stage) return;
+    const stage = renderToStaticMarkup(<Stage {...props(data)} presentation="stage" readOnly />);
+    expect(stage).not.toContain('Post to PR');
+    expect(stage).not.toContain('Create work items');
+    expect(stage).not.toContain('Apply patch');
+  });
+
   it('streams: provisional verdict, fading rows and a skeleton before the first finding', () => {
     const streamingMarkup = renderToStaticMarkup(<Inline {...props(reviewData(), true)} />);
     expect(streamingMarkup).toContain('Reviewing');

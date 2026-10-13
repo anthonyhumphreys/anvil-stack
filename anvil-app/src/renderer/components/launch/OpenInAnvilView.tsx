@@ -4,6 +4,7 @@ import { ExternalLink, FolderOpen, Loader2, Rocket, XCircle } from 'lucide-react
 import type { OpenInAnvilLaunchIntent } from '../../../shared/types';
 import { useBrand } from '../../contexts/BrandContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { libraryPath } from '../../utils/sidebar-navigation';
 
 export function OpenInAnvilView() {
   const navigate = useNavigate();
@@ -138,7 +139,7 @@ export function OpenInAnvilView() {
       if (intent.iterationId) {
         navigate('/workitems', { replace: true });
       } else if (intent.docsParentId) {
-        navigate('/docs', { replace: true });
+        navigate(libraryPath({ kind: 'doc' }), { replace: true });
       } else {
         navigate('/workspace', { replace: true });
       }

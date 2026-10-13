@@ -76,7 +76,7 @@ function FileCard({ artifact }: { artifact: ChatArtifact }) {
   );
 }
 
-export function ArtifactInline({ intent, onAction, onOpenStage }: SurfaceViewProps) {
+export function ArtifactInline({ intent, onAction, onOpenStage, readOnly }: SurfaceViewProps) {
   const { data, artifact, head, exact, loading, error } = useArtifactForIntent(intent);
   const previewRef = useRef<HTMLDivElement>(null);
   const [overflowing, setOverflowing] = useState(false);
@@ -128,6 +128,7 @@ export function ArtifactInline({ intent, onAction, onOpenStage }: SurfaceViewPro
         intent={intent}
         artifact={artifact}
         onAction={onAction}
+        readOnly={readOnly}
         onOpenStage={() => onOpenStage()}
       />
     </div>
@@ -136,7 +137,7 @@ export function ArtifactInline({ intent, onAction, onOpenStage }: SurfaceViewPro
 
 type StageMode = 'preview' | 'source' | 'diff';
 
-export function ArtifactStage({ intent, onAction, onComment }: SurfaceViewProps) {
+export function ArtifactStage({ intent, onAction, onComment, readOnly }: SurfaceViewProps) {
   const { data, artifact: turnArtifact, head, loading, error } = useArtifactForIntent(intent);
   const [revisions, setRevisions] = useState<ChatArtifactRevision[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
@@ -275,7 +276,7 @@ export function ArtifactStage({ intent, onAction, onComment }: SurfaceViewProps)
           <ArtifactPreview key={`${shown.id}:${shown.version}`} artifact={shown} mode={mode} />
         </div>
       )}
-      <ArtifactActions intent={intent} artifact={shown} onAction={onAction} />
+      <ArtifactActions intent={intent} artifact={shown} onAction={onAction} readOnly={readOnly} />
     </div>
   );
 }

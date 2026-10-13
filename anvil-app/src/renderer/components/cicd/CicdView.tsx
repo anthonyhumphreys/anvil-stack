@@ -52,10 +52,11 @@ interface DrilldownNode {
   depth: number;
 }
 
-export function CicdView() {
+/** `repoId` preselects the repo when embedded (repo Health); the picker still switches. */
+export function CicdView({ repoId }: { repoId?: string } = {}) {
   const navigate = useNavigate();
   const { activeWorkspace, repos, featureAvailability } = useWorkspace();
-  const [selectedRepoId, setSelectedRepoId] = useState(repos[0]?.id ?? '');
+  const [selectedRepoId, setSelectedRepoId] = useState(repoId ?? repos[0]?.id ?? '');
   const [analysis, setAnalysis] = useState<CicdPipelineAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +76,10 @@ export function CicdView() {
   useEffect(() => {
     if (!selectedRepoId && repos[0]?.id) setSelectedRepoId(repos[0].id);
   }, [repos, selectedRepoId]);
+
+  useEffect(() => {
+    if (repoId) setSelectedRepoId(repoId);
+  }, [repoId]);
 
   useEffect(() => {
     if (!selectedRepo?.id) return;

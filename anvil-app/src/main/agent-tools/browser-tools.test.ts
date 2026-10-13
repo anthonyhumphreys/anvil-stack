@@ -7,7 +7,7 @@ import {
   BROWSER_TOOLS,
   createBrowserToolProvider,
   isBrowserInSessionScope,
-  type BrowserBridgeInfo,
+  type BrowserScopeSnapshot,
   type BrowserToolDeps,
 } from './browser-tools';
 import {
@@ -26,18 +26,16 @@ const ctx: AgentToolSessionContext = {
   features: ['browser'],
 };
 
-const info: BrowserBridgeInfo = {
-  port: 1,
-  token: 't',
+const info: BrowserScopeSnapshot = {
   target: 'gen',
   scope: { workspaceId: 'ws-1', repoPaths: ['/work/ws-1'] },
 };
 
 function setup(overrides: Partial<BrowserToolDeps> = {}) {
-  const request = vi.fn<BrowserToolDeps['request']>(async () => ({}));
+  const request = vi.fn<BrowserToolDeps['command']>(async () => ({}));
   const deps: BrowserToolDeps = {
-    readBridgeInfo: () => info,
-    request,
+    getScope: () => info,
+    command: request,
     repoPaths: () => [],
     ...overrides,
   };
@@ -76,7 +74,7 @@ describe('browser agent tools', () => {
     const { provider, request } = setup();
     request.mockResolvedValueOnce({ result: {} });
     const result = await provider.call(ctx, 'browser_navigate', { url: 'http://localhost:5173' });
-    expect(request).toHaveBeenCalledWith(info, '/navigate', { url: 'http://localhost:5173' });
+    expect(request).toHaveBeenCalledWith('/navigate', { url: 'http://localhost:5173' }, 'gen');
     expect(result).toEqual({
       content: [{ type: 'text', text: 'Navigated to http://localhost:5173' }],
     });
@@ -99,7 +97,7 @@ describe('browser agent tools', () => {
     const { provider, request } = setup();
     request.mockResolvedValue({ result: { result: { value: 'Clicked: a' } } });
     await provider.call(ctx, 'browser_click', { selector: "a'); alert(1); ('" });
-    const expression = (request.mock.calls[0][2] as { expression: string }).expression;
+    const expression = (request.mock.calls[0][1] as { expression: string }).expression;
     expect(expression).toContain(JSON.stringify("a'); alert(1); ('"));
     expect(expression).not.toContain("'Element not found: a'");
 
@@ -121,7 +119,7 @@ describe('browser agent tools', () => {
   });
 
   it('refuses when the bridge is not running or belongs to another workspace', async () => {
-    const stopped = setup({ readBridgeInfo: () => null });
+    const stopped = setup({ getScope: () => null });
     await expect(stopped.provider.call(ctx, 'browser_status', {})).rejects.toMatchObject({
       code: 'unavailable',
     });
@@ -130,6 +128,26 @@ describe('browser agent tools', () => {
       other.provider.call({ ...ctx, workspaceId: 'ws-2' }, 'browser_status', {}),
     ).rejects.toMatchObject({ code: 'forbidden' });
     expect(other.request).not.toHaveBeenCalled();
+  });
+
+  it('refuses before running any command when the bridge has no scope or another repo', async () => {
+    const unscoped = setup({ getScope: () => ({ target: 'gen', scope: null }) });
+    await expect(
+      unscoped.provider.call(ctx, 'browser_navigate', { url: 'http://localhost:1' }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect(unscoped.request).not.toHaveBeenCalled();
+
+    const repoCtx = { ...ctx, workspaceId: undefined };
+    const elsewhere = setup({ repoPaths: () => ['/work/elsewhere'] });
+    await expect(elsewhere.provider.call(repoCtx, 'browser_screenshot', {})).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+    expect(elsewhere.request).not.toHaveBeenCalled();
+
+    const inside = setup({ repoPaths: () => ['/work/ws-1/app'] });
+    inside.request.mockResolvedValueOnce({ attached: false, url: null });
+    await inside.provider.call(repoCtx, 'browser_status', {});
+    expect(inside.request).toHaveBeenCalledWith('/status', undefined, 'gen');
   });
 
   it('accepts repo sessions whose repositories sit inside the browser scope', () => {

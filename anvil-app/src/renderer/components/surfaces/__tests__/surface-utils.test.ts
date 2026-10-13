@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import type { AgentUISurfaceIntent } from '../../../../shared/agent-ui-intents';
 import type { ChatArtifact } from '../../../../shared/types';
 import {
+  actionAvailability,
   buildArtifactSurfaceIntent,
   canShareSurface,
   describeRegion,
   formatRelativeTime,
   formatSurfaceMeta,
+  isActionAvailable,
   isEmptySurfaceData,
   isSyntheticSurfaceId,
   newerIntent,
@@ -14,6 +16,7 @@ import {
   parseSyntheticArtifactSurfaceId,
   readArtifactSurfaceData,
   readStageSurfaceId,
+  resolveArtifactStageSurfaceId,
   resolveShareTarget,
   resolveSupersedingId,
   shouldReplaceIntent,
@@ -220,5 +223,57 @@ describe('misc', () => {
     expect(surfaceWindowName('surface:ab/c')).toBe('anvil-surface-surface-ab-c');
     expect(surfaceWindowTitle('Review', 'Payments')).toBe('Review — Payments');
     expect(surfaceWindowTitle('Review', '')).toBe('Review');
+  });
+});
+
+describe('read-only action availability', () => {
+  it('hides registry mutation actions only when read-only', () => {
+    expect(isActionAvailable('review', 'post_to_pr', true)).toBe(false);
+    expect(isActionAvailable('review', 'apply_patch', true)).toBe(false);
+    expect(isActionAvailable('review', 'create_work_items', true)).toBe(false);
+    expect(isActionAvailable('findings', 'create_work_items', true)).toBe(false);
+    expect(isActionAvailable('dependencies', 'create_work_items', true)).toBe(false);
+    expect(isActionAvailable('artifact', 'save_to_repo', true)).toBe(false);
+    expect(isActionAvailable('review', 'post_to_pr', false)).toBe(true);
+    expect(isActionAvailable('artifact', 'save_to_repo', undefined)).toBe(true);
+  });
+
+  it('keeps non-mutation and undeclared actions available', () => {
+    expect(isActionAvailable('review', 'ask_fix', true)).toBe(true);
+    expect(isActionAvailable('review', 'dismiss', true)).toBe(true);
+    expect(isActionAvailable('findings', 'not_declared', true)).toBe(true);
+    expect(isActionAvailable('unknown-kind', 'anything', true)).toBe(true);
+    const review = actionAvailability('review', true);
+    expect(review('accept')).toBe(true);
+    expect(review('post_to_pr')).toBe(false);
+  });
+});
+
+describe('artifact deep links', () => {
+  const artifactSurface = (id: string, version: number, createdAt: string) =>
+    surface(
+      id,
+      { surfaceKind: 'artifact', data: { artifactId: 'a1', version, operation: 'created' } },
+      { createdAt },
+    );
+
+  it('prefers the latest published surface for the artifact', () => {
+    const surfaces = [
+      artifactSurface('s-v1', 1, '2026-01-01T10:00:00.000Z'),
+      artifactSurface('s-v2', 2, '2026-01-01T11:00:00.000Z'),
+      surface('other', { surfaceKind: 'artifact', data: { artifactId: 'a2', version: 3 } }),
+      surface('review'),
+    ];
+    expect(resolveArtifactStageSurfaceId('a1', surfaces, [])).toBe('s-v2');
+    expect(resolveArtifactStageSurfaceId('a1', [...surfaces].reverse(), [{ id: 'a1' }])).toBe(
+      's-v2',
+    );
+  });
+
+  it('falls back to the synthetic stage surface, or waits for the thread', () => {
+    expect(resolveArtifactStageSurfaceId('a1', [surface('review')], [{ id: 'a1' }])).toBe(
+      syntheticArtifactSurfaceId('a1'),
+    );
+    expect(resolveArtifactStageSurfaceId('a1', [], [{ id: 'a9' }])).toBeNull();
   });
 });

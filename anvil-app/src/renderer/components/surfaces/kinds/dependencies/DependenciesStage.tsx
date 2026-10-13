@@ -216,14 +216,16 @@ export function DependenciesStage(props: SurfaceViewProps & { focusTargetId?: st
           >
             Ask agent to upgrade
           </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={handlers.pending !== null}
-            onClick={() => handlers.createWorkItems([...selected])}
-          >
-            Create work items
-          </Button>
+          {handlers.canCreateWorkItems && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={handlers.pending !== null}
+              onClick={() => handlers.createWorkItems([...selected])}
+            >
+              Create work items
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear
           </Button>

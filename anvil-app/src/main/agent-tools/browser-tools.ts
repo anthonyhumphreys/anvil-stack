@@ -1,15 +1,19 @@
 // Embedded browser tools served by the local MCP endpoint (spec §6.3). Same
 // tool surface as scripts/chrome-mcp-server.mjs, but the workspace check uses
 // the session context resolved from the bearer token instead of the MCP
-// process cwd, and only this process's own bridge is used.
+// process cwd, and commands go straight to this process's bridge (no loopback
+// HTTP hop or discovery file).
 
-import { readFileSync, realpathSync } from 'node:fs';
-import { request } from 'node:http';
-import { isAbsolute, join, relative } from 'node:path';
-import { previewBuild } from '../../shared/preview-build.js';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative } from 'node:path';
 import type { JsonSchema } from '../../shared/surfaces/types.js';
 import { getDb } from '../db/database.js';
-import { getPrimaryHiddenDirPath } from '../utils/app-paths.js';
+import {
+  browserBridgeCommand,
+  getBrowserScope,
+  type BrowserBridgeResponse,
+  type BrowserScopeSnapshot,
+} from '../services/browser.service.js';
 import {
   AgentToolError,
   textResult,
@@ -19,19 +23,15 @@ import {
   type AgentToolSessionContext,
 } from './dispatch.js';
 
-export interface BrowserBridgeInfo {
-  port: number;
-  pid?: number;
-  token: string;
-  target: string;
-  scope?: { workspaceId?: string; repoPaths?: string[] } | null;
-}
+export type { BrowserBridgeResponse, BrowserScopeSnapshot };
 
-export type BrowserBridgeResponse = Record<string, unknown> & { error?: string };
+export type BrowserScope = { workspaceId?: string; repoPaths?: string[] } | null | undefined;
 
 export interface BrowserToolDeps {
-  readBridgeInfo(): BrowserBridgeInfo | null;
-  request(info: BrowserBridgeInfo, path: string, body?: unknown): Promise<BrowserBridgeResponse>;
+  /** The running bridge's scope and target generation; null when stopped. */
+  getScope(): BrowserScopeSnapshot | null;
+  /** Run a bridge command pinned to the target generation the scope check saw. */
+  command(path: string, body: unknown, target: string): Promise<BrowserBridgeResponse>;
   repoPaths(repoIds: readonly string[]): string[];
 }
 
@@ -140,68 +140,9 @@ export const BROWSER_TOOLS: AgentToolDefinition[] = TOOL_SPECS.map((tool) => ({
 
 const TOOL_NAMES = new Set(BROWSER_TOOLS.map((tool) => tool.name));
 
-function bridgeInfoPath(): string {
-  const dir = previewBuild
-    ? join(getPrimaryHiddenDirPath(), 'previews', previewBuild.buildId)
-    : getPrimaryHiddenDirPath();
-  return join(dir, 'browser-bridge.json');
-}
-
 const defaultDeps: BrowserToolDeps = {
-  readBridgeInfo() {
-    try {
-      const info = JSON.parse(readFileSync(bridgeInfoPath(), 'utf8')) as BrowserBridgeInfo;
-      if (
-        typeof info.token !== 'string' ||
-        typeof info.target !== 'string' ||
-        !Number.isInteger(info.port) ||
-        info.pid !== process.pid
-      )
-        return null;
-      return info;
-    } catch {
-      return null;
-    }
-  },
-  request(info, path, body) {
-    return new Promise((resolve, reject) => {
-      const payload = body === undefined ? null : JSON.stringify(body);
-      const req = request(
-        {
-          hostname: '127.0.0.1',
-          port: info.port,
-          path,
-          method: payload === null ? 'GET' : 'POST',
-          headers: {
-            Authorization: `Bearer ${info.token}`,
-            'X-Anvil-Target': info.target,
-            ...(payload !== null
-              ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-              : {}),
-          },
-          timeout: 30_000,
-        },
-        (res) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (chunk: Buffer) => chunks.push(chunk));
-          res.on('end', () => {
-            try {
-              resolve(JSON.parse(Buffer.concat(chunks).toString()) as BrowserBridgeResponse);
-            } catch {
-              resolve({ error: 'Invalid response from browser bridge' });
-            }
-          });
-        },
-      );
-      req.on('error', reject);
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('Browser bridge request timed out'));
-      });
-      if (payload !== null) req.write(payload);
-      req.end();
-    });
-  },
+  getScope: getBrowserScope,
+  command: (path, body, target) => browserBridgeCommand(path, body, target),
   repoPaths(repoIds) {
     if (repoIds.length === 0) return [];
     const statement = getDb().prepare('SELECT path FROM repos WHERE id = ?');
@@ -227,7 +168,7 @@ function isWithin(root: string, candidate: string): boolean {
 
 export function isBrowserInSessionScope(
   ctx: AgentToolSessionContext,
-  scope: BrowserBridgeInfo['scope'],
+  scope: BrowserScope,
   sessionRepoPaths: readonly string[],
 ): boolean {
   if (!scope) return false;
@@ -272,12 +213,12 @@ export function createBrowserToolProvider(deps: BrowserToolDeps = defaultDeps): 
     path: string,
     body?: unknown,
   ): Promise<BrowserBridgeResponse> {
-    const info = deps.readBridgeInfo();
-    if (!info) throw new AgentToolError(NO_BRIDGE, 'unavailable');
-    if (!isBrowserInSessionScope(ctx, info.scope, deps.repoPaths(ctx.repoIds))) {
+    const bridgeState = deps.getScope();
+    if (!bridgeState) throw new AgentToolError(NO_BRIDGE, 'unavailable');
+    if (!isBrowserInSessionScope(ctx, bridgeState.scope, deps.repoPaths(ctx.repoIds))) {
       throw new AgentToolError(OUT_OF_SCOPE, 'forbidden');
     }
-    return deps.request(info, path, body);
+    return deps.command(path, body, bridgeState.target);
   }
 
   async function evaluate(ctx: AgentToolSessionContext, expression: string) {

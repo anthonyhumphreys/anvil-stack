@@ -2,10 +2,9 @@ import { lazy, Suspense, useCallback } from 'react';
 import { Loader2, MessageSquare, ShieldOff } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { Feature, RepoInfo } from '../../../shared/types';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { chatPromptPath, repoDetailPath, type RepoHealthTab } from '../../utils/sidebar-navigation';
 import { Button } from '../ui';
-import { EmptyState, InlineNotice } from '../layout/ViewScaffold';
+import { EmptyState } from '../layout/ViewScaffold';
 import { ViewTabs, type ViewTab } from '../library/ViewTabs';
 import { isFeatureAllowed, useAllowedFeatures } from '../library/useAllowedFeatures';
 import { resolveRepoHealthTab } from './repo-sections';
@@ -52,11 +51,10 @@ export const REPO_HEALTH_TAB_DEFINITIONS: Array<
  * Repo detail › Health (spec §12): the saved history and tools that used to
  * be the Security, Dependencies and CI/CD destinations, scoped to one repo.
  * Security and Dependencies read `:repoId` from the route
- * (`/workspace/repos/:repoId/health/:tab`), so they are embedded unchanged.
+ * (`/workspace/repos/:repoId/health/:tab`); CI/CD takes the repo as a prop.
  */
 export function RepoHealthPanel({ repo, tab }: { repo: RepoInfo; tab?: string }) {
   const navigate = useNavigate();
-  const { repos } = useWorkspace();
   const allowed = useAllowedFeatures();
   const tabs = REPO_HEALTH_TAB_DEFINITIONS.filter((entry) =>
     isFeatureAllowed(allowed, entry.feature),
@@ -81,8 +79,6 @@ export function RepoHealthPanel({ repo, tab }: { repo: RepoInfo; tab?: string })
   }
 
   const definition = tabs.find((entry) => entry.id === active)!;
-  // CicdView keeps its own repository picker and opens on the workspace's first repo.
-  const cicdOpensElsewhere = active === 'cicd' && repos[0] && repos[0].id !== repo.id;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -104,12 +100,6 @@ export function RepoHealthPanel({ repo, tab }: { repo: RepoInfo; tab?: string })
           Ask the agent
         </Button>
       </div>
-      {cicdOpensElsewhere && (
-        <InlineNotice tone="info" className="mx-4 mt-3">
-          Choose <span className="font-medium text-text-primary">{repo.name}</span> in the pipeline
-          view&apos;s repository picker.
-        </InlineNotice>
-      )}
       <div
         role="tabpanel"
         aria-labelledby={`repo-health-tab-${active}`}
@@ -124,11 +114,11 @@ export function RepoHealthPanel({ repo, tab }: { repo: RepoInfo; tab?: string })
           }
         >
           {active === 'security' ? (
-            <SecurityView />
+            <SecurityView embedded />
           ) : active === 'dependencies' ? (
             <DependenciesView />
           ) : (
-            <CicdView />
+            <CicdView repoId={repo.id} />
           )}
         </Suspense>
       </div>

@@ -12,8 +12,10 @@ import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 
 type ViewMode = 'gallery' | 'viewer';
 
-export function DiagramsView() {
-  const { repoId: routeRepoId } = useParams<{ repoId?: string }>();
+/** `repoId` preselects the repo when embedded (Library); falls back to the `:repoId` route param. */
+export function DiagramsView({ repoId }: { repoId?: string } = {}) {
+  const { repoId: routeParamRepoId } = useParams<{ repoId?: string }>();
+  const routeRepoId = repoId ?? routeParamRepoId;
   const { repos, featureAvailability } = useWorkspace();
   const [selectedRepoId, setSelectedRepoId] = useState<string>(routeRepoId ?? '');
   const [diagrams, setDiagrams] = useState<DiagramFile[]>([]);

@@ -166,6 +166,16 @@ describe('findings views', () => {
     expect(markup).toContain('Query concatenation');
   });
 
+  it('hides Create work item in read-only threads', () => {
+    const Stage = findingsSurfaceView.Stage!;
+    expect(renderToStaticMarkup(<Stage {...props()} presentation="stage" />)).toContain(
+      'Create work item',
+    );
+    const readOnly = renderToStaticMarkup(<Stage {...props()} presentation="stage" readOnly />);
+    expect(readOnly).not.toContain('Create work item');
+    expect(readOnly).toContain('Ask agent to fix');
+  });
+
   it('tolerates malformed data', () => {
     expect(() =>
       renderToStaticMarkup(<findingsSurfaceView.Inline {...props({}, null)} />),

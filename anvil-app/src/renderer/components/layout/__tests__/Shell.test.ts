@@ -43,9 +43,30 @@ describe('shouldIgnoreShellShortcut', () => {
 });
 
 describe('getToolWindowTitle', () => {
-  it('turns the active route into a compact detached-window title', () => {
+  it('uses the matching nav destination for the detached-window title', () => {
     expect(getToolWindowTitle('/browser')).toBe('Browser');
-    expect(getToolWindowTitle('/meeting-notes')).toBe('Meeting Notes');
-    expect(getToolWindowTitle('/security/repo-1')).toBe('Security');
+    expect(getToolWindowTitle('/chat', '?toolWindow=1')).toBe('Chat');
+    expect(getToolWindowTitle('/notes', '?tab=meeting')).toBe('Notes');
+    expect(getToolWindowTitle('/settings/providers')).toBe('Settings');
+  });
+
+  it('titles workspace views by their tab, not the route segment', () => {
+    expect(getToolWindowTitle('/workspace', '?view=library&kind=adr&toolWindow=1')).toBe('Library');
+    expect(getToolWindowTitle('/workspace', '?view=repositories')).toBe('Repositories');
+    expect(getToolWindowTitle('/workspace', '?repo=r1')).toBe('Repositories');
+    expect(getToolWindowTitle('/workspace')).toBe('Workspace');
+    expect(getToolWindowTitle('/workspace/repos/r1/health/security')).toBe('Health');
+    expect(getToolWindowTitle('/workspace/repos/r1/setup')).toBe('Setup');
+  });
+
+  it('follows removed routes to their new home', () => {
+    expect(getToolWindowTitle('/meeting-notes')).toBe('Notes');
+    expect(getToolWindowTitle('/security/repo-1')).toBe('Health');
+    expect(getToolWindowTitle('/adrs')).toBe('Library');
+  });
+
+  it('falls back to the first path segment', () => {
+    expect(getToolWindowTitle('/some-tool/x')).toBe('Some Tool');
+    expect(getToolWindowTitle('/')).toBe('Tool');
   });
 });

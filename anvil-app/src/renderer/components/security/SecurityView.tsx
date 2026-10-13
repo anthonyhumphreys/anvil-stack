@@ -18,6 +18,7 @@ import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { SecurityTabs } from './SecurityTabs';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { repoDetailPath } from '../../utils/sidebar-navigation';
 
 const auditSteps = [
   { key: 'scope', label: 'Detecting scope', icon: Search, threshold: 5 },
@@ -99,7 +100,8 @@ function SecurityAuditProgress({ message, percent }: { message: string; percent:
   );
 }
 
-export function SecurityView() {
+/** `embedded` hides the audit-type tab bar when repo Health already shows one. */
+export function SecurityView({ embedded = false }: { embedded?: boolean }) {
   const { repoId } = useParams<{ repoId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -230,7 +232,7 @@ export function SecurityView() {
   if (!repoId) {
     return (
       <div className="flex h-full flex-1 flex-col">
-        <SecurityTabs />
+        <SecurityTabs embedded={embedded} />
         <ViewHeader
           icon={Shield}
           title="Security Audit"
@@ -239,7 +241,7 @@ export function SecurityView() {
         <div className="flex-1 overflow-auto p-5">
           <RepoSelector
             selectedRepoId={null}
-            onSelect={(repo) => navigate(`/security/${repo.id}`)}
+            onSelect={(repo) => navigate(repoDetailPath(repo.id, 'health', 'security'))}
           />
         </div>
       </div>
@@ -249,7 +251,7 @@ export function SecurityView() {
   // Audit view for specific repo
   return (
     <div className="flex h-full flex-1 flex-col">
-      <SecurityTabs />
+      <SecurityTabs embedded={embedded} />
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar: audit list */}
         <div className="flex w-[260px] shrink-0 flex-col border-r border-border-subtle bg-bg-secondary">

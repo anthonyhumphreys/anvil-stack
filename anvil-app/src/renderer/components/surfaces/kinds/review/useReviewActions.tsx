@@ -1,10 +1,11 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
   ReviewFinding,
   ReviewSurfaceData,
 } from '../../../../../shared/surfaces/kinds/review/types';
 import { formatFindingLocation } from '../../../../../shared/surfaces/kinds/review/model';
 import { ConfirmDialog, PromptDialog } from '../../../ui';
+import { actionAvailability } from '../../surface-utils';
 import type { SurfaceViewProps } from '../../types';
 
 export type ReviewAction =
@@ -53,8 +54,11 @@ function describeTargets(findings: readonly ReviewFinding[]): string {
 export function useReviewActions(
   data: ReviewSurfaceData | null,
   onAction: SurfaceViewProps['onAction'],
+  readOnly?: boolean,
 ): {
   request: (action: ReviewAction, ids: string[]) => void;
+  /** False for mutation actions in read-only threads: hide their controls. */
+  available: (action: ReviewAction) => boolean;
   pending: ReviewAction | null;
   status: ReviewActionStatus | null;
   dialogOpen: boolean;
@@ -64,6 +68,7 @@ export function useReviewActions(
   const [status, setStatus] = useState<ReviewActionStatus | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const inFlight = useRef(false);
+  const available = useMemo(() => actionAvailability('review', readOnly), [readOnly]);
 
   const execute = useCallback(
     async (action: ReviewAction, ids: string[], note?: string) => {
@@ -93,7 +98,7 @@ export function useReviewActions(
 
   const request = useCallback(
     (action: ReviewAction, ids: string[]) => {
-      if (!data) return;
+      if (!data || !available(action)) return;
       const findings = data.findings.filter((finding) => ids.includes(finding.id));
       switch (action) {
         case 'dismiss':
@@ -169,7 +174,7 @@ export function useReviewActions(
           void execute(action, ids);
       }
     },
-    [data, execute],
+    [available, data, execute],
   );
 
   const close = () => setDialog(null);
@@ -208,5 +213,5 @@ export function useReviewActions(
     </>
   );
 
-  return { request, pending, status, dialogOpen: dialog !== null, dialogs };
+  return { request, available, pending, status, dialogOpen: dialog !== null, dialogs };
 }

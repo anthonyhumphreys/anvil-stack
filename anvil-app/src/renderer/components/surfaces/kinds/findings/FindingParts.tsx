@@ -70,6 +70,8 @@ export interface FindingActionHandlers {
   onAskFix: (ids: string[]) => void;
   onDismiss: (ids: string[]) => void;
   onCreateWorkItems: (ids: string[]) => void;
+  /** False in read-only threads: work item creation is a mutation. */
+  canCreateWorkItems: boolean;
   onComment: (finding: SurfaceFinding) => void;
   pending: string | null;
 }
@@ -149,14 +151,16 @@ export function FindingDetail({
         >
           Dismiss
         </Button>
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={Boolean(finding.workItemId) || handlers.pending !== null}
-          onClick={() => handlers.onCreateWorkItems([finding.id])}
-        >
-          Create work item
-        </Button>
+        {handlers.canCreateWorkItems && (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={Boolean(finding.workItemId) || handlers.pending !== null}
+            onClick={() => handlers.onCreateWorkItems([finding.id])}
+          >
+            Create work item
+          </Button>
+        )}
         <Button size="sm" variant="ghost" onClick={() => handlers.onComment(finding)}>
           Comment
         </Button>
