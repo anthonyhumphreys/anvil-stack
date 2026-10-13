@@ -1,8 +1,8 @@
-import type { SurfaceKindView, SurfaceViewProps } from '../../types';
+import type { SurfaceKindView } from '../../types';
+import { DependenciesInline } from './DependenciesInline';
+import { DependenciesStage } from './DependenciesStage';
 
-// Owned by the workstream building the 'dependencies' surface. Replace this stub.
-function Placeholder({ intent }: SurfaceViewProps) {
-  return <p className="text-sm text-text-secondary">{intent.payload.digest}</p>;
-}
-
-export const dependenciesSurfaceView: SurfaceKindView = { Inline: Placeholder };
+export const dependenciesSurfaceView: SurfaceKindView = {
+  Inline: DependenciesInline,
+  Stage: DependenciesStage,
+};

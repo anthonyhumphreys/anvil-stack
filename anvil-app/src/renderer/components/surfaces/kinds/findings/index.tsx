@@ -1,8 +1,8 @@
-import type { SurfaceKindView, SurfaceViewProps } from '../../types';
+import type { SurfaceKindView } from '../../types';
+import { FindingsInline } from './FindingsInline';
+import { FindingsStage } from './FindingsStage';
 
-// Owned by the workstream building the 'findings' surface. Replace this stub.
-function Placeholder({ intent }: SurfaceViewProps) {
-  return <p className="text-sm text-text-secondary">{intent.payload.digest}</p>;
-}
-
-export const findingsSurfaceView: SurfaceKindView = { Inline: Placeholder };
+export const findingsSurfaceView: SurfaceKindView = {
+  Inline: FindingsInline,
+  Stage: FindingsStage,
+};
