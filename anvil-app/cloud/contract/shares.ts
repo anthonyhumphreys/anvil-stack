@@ -33,6 +33,13 @@ export interface SharedArtifactDescriptor {
   sealed?: boolean;
   /** Pre-encryption byte length; present when sealed. */
   plaintextBytes?: number;
+  /**
+   * Content version: 1 at publish, incremented by every completed
+   * `share.update`. The share id (and so the URL) never changes.
+   */
+  version?: number;
+  /** When the published bytes were last replaced by `share.update`; null if never. */
+  updatedAt?: string | null;
 }
 
 export const SHARED_ARTIFACT_TRANSITIONS: Record<
@@ -73,10 +80,15 @@ export interface ShareCreateResult {
   expiresAt: string;
 }
 
+/**
+ * Finalizes either a fresh reservation (publishes it) or a pending
+ * `share.update` on a published share (swaps the bytes in place).
+ */
 export interface ShareFinalizeParams {
   shareId: string;
   byteLength: number;
   sha256: string;
+  sealed?: boolean;
 }
 
 export interface ShareFinalizeResult {
@@ -98,4 +110,28 @@ export interface ShareRevokeParams {
 
 export interface ShareRevokeResult {
   share: SharedArtifactDescriptor;
+}
+
+/**
+ * `share.update` (user actor): reserves replacement bytes for a
+ * `published` share so its link stays stable. The bytes are PUT to the
+ * returned `uploadPath` (the same route as the original upload) and a
+ * following `share.finalize` swaps them in atomically after size + sha256
+ * verification. Until then — and if verification fails — readers keep
+ * getting the current bytes. The share keeps its id, `published` state,
+ * expiry and media type; `sealed` must match the original reservation.
+ */
+export interface ShareUpdateParams {
+  shareId: string;
+  byteLength: number;
+  sha256: string;
+  sealed?: boolean;
+  plaintextBytes?: number;
+}
+
+export interface ShareUpdateResult {
+  /** API path the replacement bytes are PUT to. */
+  uploadPath: string;
+  /** Deadline for the replacement upload + finalize. */
+  expiresAt: string;
 }

@@ -1,3 +1,6 @@
+/** Media type of an Anvil share bundle (desktop: src/shared/shares-ipc.ts). */
+export const SHARE_BUNDLE_MEDIA_TYPE = "application/vnd.anvil.share+json";
+
 /** Minimal RFC4180-ish CSV parser for preview tables. */
 export function parseCsv(text: string, maxRows = 60): string[][] {
   const rows: string[][] = [];
@@ -47,6 +50,7 @@ export function mediaTypeLabel(mediaType: string): string {
   if (mediaType === "text/vnd.mermaid") return "Mermaid";
   if (mediaType === "text/plain") return "Text";
   if (mediaType === "application/pdf") return "PDF";
+  if (mediaType === SHARE_BUNDLE_MEDIA_TYPE) return "Anvil share";
   if (mediaType.includes("wordprocessingml")) return "Word";
   if (mediaType.includes("presentationml")) return "PowerPoint";
   if (mediaType.includes("spreadsheetml")) return "Excel";

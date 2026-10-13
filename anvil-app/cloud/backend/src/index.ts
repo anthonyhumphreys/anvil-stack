@@ -722,7 +722,8 @@ async function handleRpcInternal(
     case 'share.create':
     case 'share.finalize':
     case 'share.list':
-    case 'share.revoke': {
+    case 'share.revoke':
+    case 'share.update': {
       const internal =
         envelope.request.operation === 'share.create'
           ? '/internal/share-create'
@@ -730,7 +731,9 @@ async function handleRpcInternal(
             ? '/internal/share-finalize'
             : envelope.request.operation === 'share.list'
               ? '/internal/share-list'
-              : '/internal/share-revoke';
+              : envelope.request.operation === 'share.update'
+                ? '/internal/share-update'
+                : '/internal/share-revoke';
       const response = await sessionStub(env).fetch(
         new Request(`https://internal.anvil${internal}`, {
           method: 'POST',

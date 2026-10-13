@@ -18,6 +18,7 @@ import type {
   ShareFinalizeResult,
   ShareListResult,
   ShareRevokeResult,
+  ShareUpdateResult,
   SharedArtifactDescriptor,
 } from '../../../cloud/contract/shares.js';
 
@@ -120,6 +121,62 @@ export async function publishSharedArtifact(input: {
     share: finalized.share,
     shareKey: shareKey.toString('base64url'),
   };
+}
+
+/**
+ * Replaces a published share's bytes under the same share id, so the
+ * link (and its fragment key) stays stable: seal with the EXISTING key →
+ * `share.update` reserve → PUT → `share.finalize` (atomic swap after the
+ * backend verifies size + sha256). `sealBytesWithKey` draws a fresh random
+ * 96-bit GCM nonce on every call, so reusing the key never reuses a
+ * nonce. `mediaType` must equal the share's original media type: it is
+ * bound into the seal's associated data and the backend keeps it fixed.
+ */
+export async function updateSharedArtifact(input: {
+  shareId: string;
+  shareKey: string;
+  bytes: Uint8Array;
+  mediaType: string;
+}): Promise<SharedArtifactDescriptor> {
+  const ctx = shareContext();
+  if (ctx === null) {
+    throw new Error('Artifact sharing requires an active sync session.');
+  }
+  const key = Buffer.from(input.shareKey, 'base64url');
+  if (key.byteLength !== 32) {
+    throw new Error('The stored share key is malformed; share as a new link instead.');
+  }
+  const ciphertext = sealBytesWithKey(
+    shareSealAssociatedData({ mediaType: input.mediaType }),
+    key,
+    Buffer.from(input.bytes),
+  );
+  const sha256 = createHash('sha256').update(ciphertext).digest('hex');
+  const reservation = await shareRpc<ShareUpdateResult>('share.update', {
+    shareId: input.shareId,
+    byteLength: ciphertext.byteLength,
+    sha256,
+    sealed: true,
+    plaintextBytes: input.bytes.byteLength,
+  });
+  const response = await fetch(new URL(reservation.uploadPath, ctx.apiUrl), {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${ctx.accessToken}`,
+      'Content-Type': input.mediaType,
+    },
+    body: new Blob([new Uint8Array(ciphertext)]),
+  });
+  if (!response.ok) {
+    throw new Error(`share upload failed: HTTP ${response.status}`);
+  }
+  const finalized = await shareRpc<ShareFinalizeResult>('share.finalize', {
+    shareId: input.shareId,
+    byteLength: ciphertext.byteLength,
+    sha256,
+    sealed: true,
+  });
+  return finalized.share;
 }
 
 export async function listSharedArtifacts(scope?: {

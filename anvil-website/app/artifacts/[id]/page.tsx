@@ -6,16 +6,33 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fetchSharedArtifact, HostedApiError } from "@/lib/hosted/client";
 import { renderSharedMarkdown } from "@/lib/markdown";
-import { parseCsv, mediaTypeLabel, formatBytes } from "./csv";
+import { parseCsv, mediaTypeLabel, formatBytes, SHARE_BUNDLE_MEDIA_TYPE } from "./csv";
 import { SandboxedHtml } from "./sandboxed-html";
 import { SealedShareView } from "./sealed-share-view";
+import { ShareBundleView } from "./share-bundle-view";
+
+function formatShareDate(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? iso
+    : date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** "Version 4 · updated 12 Nov 2026" once a share has been updated in place. */
+function versionLine(headers: Headers): string | null {
+  const version = Number(headers.get("x-anvil-share-version") ?? "1");
+  const updatedAt = headers.get("x-anvil-share-updated-at");
+  if (!updatedAt && !(Number.isInteger(version) && version > 1)) return null;
+  const label = Number.isInteger(version) && version > 0 ? `Version ${version}` : "Updated";
+  return updatedAt ? `${label} · updated ${formatShareDate(updatedAt)}` : label;
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Shared artifact | Anvil",
-  description: "Anvilユーザーが共有したアーティファクト"
+  description: "An item shared from Anvil, decrypted in your browser."
 };
 
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
@@ -29,7 +46,7 @@ function UnavailablePage({ reason }: { reason: string }) {
           <Badge variant="secondary" className="border bg-muted/70">
             Shared artifact
           </Badge>
-          <h1 className="mt-6 text-2xl font-semibold">この共有リンクは利用できません</h1>
+          <h1 className="mt-6 text-2xl font-semibold">This share link isn&apos;t available</h1>
           <p className="mt-4 text-sm leading-7 text-muted-foreground">{reason}</p>
         </section>
       </main>
@@ -45,7 +62,7 @@ export default async function SharedArtifactPage({
 }) {
   const { id } = await params;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
-    return <UnavailablePage reason="共有リンクの形式が正しくありません。" />;
+    return <UnavailablePage reason="This share link isn't in a valid format. Check that it was copied in full." />;
   }
 
   let upstream: Response;
@@ -54,17 +71,17 @@ export default async function SharedArtifactPage({
   } catch (error) {
     if (error instanceof HostedApiError && error.code === "unconfigured") {
       return (
-        <UnavailablePage reason="共有アーティファクトの配信は現在この環境では設定されていません。" />
+        <UnavailablePage reason="Shared items aren't served from this deployment: the hosted share service isn't configured." />
       );
     }
     return (
-      <UnavailablePage reason="配信サーバに接続できませんでした。時間をおいて再度お試しください。" />
+      <UnavailablePage reason="Couldn't reach the share service. Try again in a few minutes." />
     );
   }
 
   if (!upstream.ok) {
     return (
-      <UnavailablePage reason="この共有リンクは取り消されたか、期限切れです。発行者に新しいリンクを確認してください。" />
+      <UnavailablePage reason="This link was revoked or has expired. Ask the person who shared it for a new link." />
     );
   }
 
@@ -73,8 +90,9 @@ export default async function SharedArtifactPage({
   const title = titleHeader === null ? "Shared artifact" : decodeURIComponent(titleHeader);
   const expiresHeader = upstream.headers.get("x-anvil-share-expires-at");
   const expiresLabel =
-    expiresHeader === null ? null : new Date(expiresHeader).toLocaleDateString("ja-JP");
+    expiresHeader === null ? null : formatShareDate(expiresHeader);
   const byteLength = Number(upstream.headers.get("content-length") ?? "0");
+  const updatedLabel = versionLine(upstream.headers);
 
   // Sealed shares: the stored bytes are ciphertext under a key carried in
   // the URL fragment — which never reaches this server. Render the shell
@@ -92,15 +110,18 @@ export default async function SharedArtifactPage({
           <section className="mx-auto max-w-4xl px-4 py-10 sm:px-6 lg:px-8">
             <div className="flex flex-wrap items-center gap-3">
               <Badge variant="secondary" className="border bg-muted/70">
-                Shared artifact · {mediaTypeLabel(mediaType)} · 暗号化
+                Shared artifact · {mediaTypeLabel(mediaType)} · encrypted
               </Badge>
+              {updatedLabel && (
+                <span className="text-xs text-muted-foreground">{updatedLabel}</span>
+              )}
               {expiresLabel && (
-                <span className="text-xs text-muted-foreground">共有期限: {expiresLabel}</span>
+                <span className="text-xs text-muted-foreground">Expires {expiresLabel}</span>
               )}
             </div>
             <h1 className="mt-4 text-2xl font-semibold leading-snug">{title}</h1>
             <p className="mt-2 text-xs text-muted-foreground">
-              Anvilユーザーが共有したアーティファクトです。共有リンクは発行者が取り消せます。
+              Shared from Anvil. The person who shared it can revoke this link at any time.
             </p>
             <div className="mt-6">
               <SealedShareView
@@ -123,14 +144,18 @@ export default async function SharedArtifactPage({
 
   const bytes = await upstream.arrayBuffer();
   const isTextual =
-    mediaType.startsWith("text/") || mediaType === "application/json";
+    mediaType.startsWith("text/") ||
+    mediaType === "application/json" ||
+    mediaType === SHARE_BUNDLE_MEDIA_TYPE;
   const text =
     isTextual && bytes.byteLength <= MAX_TEXT_BYTES
       ? new TextDecoder().decode(bytes)
       : null;
 
   let body: React.ReactNode;
-  if (mediaType === "text/markdown" && text !== null) {
+  if (mediaType === SHARE_BUNDLE_MEDIA_TYPE && text !== null) {
+    body = <ShareBundleView text={text} fallbackTitle={title} />;
+  } else if (mediaType === "text/markdown" && text !== null) {
     const html = await renderSharedMarkdown(text);
     body = (
       <div
@@ -181,16 +206,16 @@ export default async function SharedArtifactPage({
     body = (
       <div className="rounded-lg border bg-card p-8 text-center">
         <p className="text-sm text-muted-foreground">
-          {mediaTypeLabel(mediaType)}形式（{formatBytes(byteLength)}）はプレビューできません。
+          {mediaTypeLabel(mediaType)} files ({formatBytes(byteLength)}) can&apos;t be previewed here.
         </p>
         <Button asChild className="mt-4">
-          <a href={`/artifacts/${id}/raw`}>ダウンロード</a>
+          <a href={`/artifacts/${id}/raw`}>Download</a>
         </Button>
       </div>
     );
   } else {
     const note =
-      mediaType === "text/vnd.mermaid" ? "Mermaidソース（図としては未描画）" : null;
+      mediaType === "text/vnd.mermaid" ? "Mermaid source (not rendered as a diagram)" : null;
     body = (
       <div>
         {note && <p className="mb-2 text-xs text-muted-foreground">{note}</p>}
@@ -210,20 +235,23 @@ export default async function SharedArtifactPage({
             <Badge variant="secondary" className="border bg-muted/70">
               Shared artifact · {mediaTypeLabel(mediaType)}
             </Badge>
+            {updatedLabel && (
+              <span className="text-xs text-muted-foreground">{updatedLabel}</span>
+            )}
             {expiresLabel && (
-              <span className="text-xs text-muted-foreground">共有期限: {expiresLabel}</span>
+              <span className="text-xs text-muted-foreground">Expires {expiresLabel}</span>
             )}
             <span className="text-xs text-muted-foreground">{formatBytes(byteLength)}</span>
             <a
               href={`/artifacts/${id}/raw`}
               className="ml-auto text-xs font-medium text-muted-foreground underline-offset-4 hover:underline"
             >
-              元ファイルをダウンロード
+              Download original file
             </a>
           </div>
           <h1 className="mt-4 text-2xl font-semibold leading-snug">{title}</h1>
           <p className="mt-2 text-xs text-muted-foreground">
-            Anvilユーザーが共有したアーティファクトです。共有リンクは発行者が取り消せます。
+            Shared from Anvil. The person who shared it can revoke this link at any time.
           </p>
           <div className="mt-6">{body}</div>
         </section>

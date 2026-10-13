@@ -5,8 +5,9 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 
 import { Button } from "@/components/ui/button";
-import { mediaTypeLabel, formatBytes, parseCsv } from "./csv";
+import { mediaTypeLabel, formatBytes, parseCsv, SHARE_BUNDLE_MEDIA_TYPE } from "./csv";
 import { SandboxedHtml } from "./sandboxed-html";
+import { ShareBundleView } from "./share-bundle-view";
 
 type Status =
   | { kind: "working"; step: string }
@@ -58,27 +59,27 @@ export function SealedShareView(props: {
         setStatus({
           kind: "error",
           message:
-            "このリンクには復号キーが含まれていません。#以降の部分を含む完全なリンクを開いてください。",
+            "This link is missing its decryption key. Open the full link, including everything after the #.",
         });
         return;
       }
       const key = base64UrlDecode(keyParam);
       if (key === null || key.byteLength !== 32) {
-        setStatus({ kind: "error", message: "リンク内の復号キーが壊れています。" });
+        setStatus({ kind: "error", message: "The decryption key in this link is damaged. Ask the sender for the link again." });
         return;
       }
       const response = await fetch(`/artifacts/${props.id}/raw`, { cache: "no-store" });
       if (!response.ok) {
         setStatus({
           kind: "error",
-          message: "共有データを取得できませんでした。リンクが取り消された可能性があります。",
+          message: "Couldn't fetch the shared data. The link may have been revoked.",
         });
         return;
       }
       const ciphertext = new Uint8Array(await response.arrayBuffer());
       const actual = await sha256Hex(ciphertext);
       if (actual !== props.sha256) {
-        setStatus({ kind: "error", message: "取得したデータのチェックサムが一致しません。" });
+        setStatus({ kind: "error", message: "The downloaded data failed its checksum, so it wasn't decrypted." });
         return;
       }
       let plain: ArrayBuffer;
@@ -98,20 +99,20 @@ export function SealedShareView(props: {
       } catch {
         setStatus({
           kind: "error",
-          message: "復号に失敗しました。リンクのキーが正しくないか、データが改ざんされています。",
+          message: "Decryption failed. The key in the link is wrong or the data was altered.",
         });
         return;
       }
       const bytes = new Uint8Array(plain);
       if (props.plaintextBytes !== null && bytes.byteLength !== props.plaintextBytes) {
-        setStatus({ kind: "error", message: "復号後のデータ長が一致しません。" });
+        setStatus({ kind: "error", message: "The decrypted size doesn't match what the sender recorded." });
         return;
       }
       if (!cancelled) setStatus({ kind: "ready", bytes });
     };
     void run().catch(() => {
       if (!cancelled) {
-        setStatus({ kind: "error", message: "復号処理に失敗しました。" });
+        setStatus({ kind: "error", message: "Decryption failed." });
       }
     });
     return () => {
@@ -122,7 +123,7 @@ export function SealedShareView(props: {
   if (status.kind === "working") {
     return (
       <div className="rounded-lg border bg-card p-8 text-center">
-        <p className="text-sm text-muted-foreground">ブラウザ内で復号しています…</p>
+        <p className="text-sm text-muted-foreground">Decrypting in your browser…</p>
       </div>
     );
   }
@@ -135,11 +136,16 @@ export function SealedShareView(props: {
   }
 
   const { bytes } = status;
-  const isTextual = props.mediaType.startsWith("text/") || props.mediaType === "application/json";
+  const isTextual =
+    props.mediaType.startsWith("text/") ||
+    props.mediaType === "application/json" ||
+    props.mediaType === SHARE_BUNDLE_MEDIA_TYPE;
   const text = isTextual ? new TextDecoder().decode(bytes) : null;
 
   let body: React.ReactNode;
-  if (props.mediaType === "text/markdown" && text !== null) {
+  if (props.mediaType === SHARE_BUNDLE_MEDIA_TYPE && text !== null) {
+    body = <ShareBundleView text={text} fallbackTitle={props.title} />;
+  } else if (props.mediaType === "text/markdown" && text !== null) {
     body = <MarkdownBody text={text} />;
   } else if (props.mediaType === "text/html" && text !== null) {
     body = <SandboxedHtml html={text} title={props.title} />;
@@ -177,9 +183,8 @@ export function SealedShareView(props: {
     body = (
       <div className="rounded-lg border bg-card p-8 text-center">
         <p className="text-sm text-muted-foreground">
-          {mediaTypeLabel(props.mediaType)}形式（
-          {formatBytes(props.plaintextBytes ?? bytes.byteLength)}
-          ）はプレビューできません。
+          {mediaTypeLabel(props.mediaType)} files ({formatBytes(props.plaintextBytes ?? bytes.byteLength)})
+          can&apos;t be previewed here.
         </p>
         <Button asChild className="mt-4">
           <DownloadLink bytes={bytes} mediaType={props.mediaType} filename={props.title} />
@@ -187,7 +192,7 @@ export function SealedShareView(props: {
       </div>
     );
   } else {
-    const note = props.mediaType === "text/vnd.mermaid" ? "Mermaidソース（図としては未描画）" : null;
+    const note = props.mediaType === "text/vnd.mermaid" ? "Mermaid source (not rendered as a diagram)" : null;
     body = (
       <div>
         {note && <p className="mb-2 text-xs text-muted-foreground">{note}</p>}
@@ -202,8 +207,8 @@ export function SealedShareView(props: {
     <div>
       {body}
       <p className="mt-4 text-xs text-muted-foreground">
-        このアーティファクトは発行者のデバイスで暗号化され、お使いのブラウザで復号されました。
-        サーバは暗号文のみを保管しています。
+        This was encrypted on the sender&apos;s device and decrypted in your browser. The server
+        only stores ciphertext.
       </p>
     </div>
   );
@@ -223,7 +228,7 @@ function MarkdownBody({ text }: { text: string }) {
     };
   }, [text]);
   if (html === null) {
-    return <p className="text-sm text-muted-foreground">レンダリングしています…</p>;
+    return <p className="text-sm text-muted-foreground">Rendering…</p>;
   }
   return (
     <div
@@ -249,7 +254,7 @@ function DownloadLink({
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   return (
     <a href={url} download={filename}>
-      復号してダウンロード
+      Download decrypted file
     </a>
   );
 }

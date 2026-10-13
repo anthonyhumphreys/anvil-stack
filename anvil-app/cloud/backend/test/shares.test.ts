@@ -7,6 +7,7 @@ import type {
   ShareFinalizeResult,
   ShareListResult,
   ShareRevokeResult,
+  ShareUpdateResult,
 } from '../../contract/shares';
 import { sha256Hex } from '../src/hash';
 import { PREVIEW_END_MS } from '../src/hosted/policy';
@@ -356,6 +357,181 @@ describe('shared artifacts', () => {
         .exec('SELECT state FROM shared_artifacts WHERE share_id = ?', reserved.shareId)
         .toArray()[0] as { state: string } | undefined;
       expect(row?.state).toBe('expired');
+    });
+  });
+  describe('share.update (stable links)', () => {
+    async function updateShare(
+      auth: string,
+      shareId: string,
+      text: string,
+      extra: Record<string, unknown> = {},
+    ) {
+      const body = new TextEncoder().encode(text);
+      const sha = await sha256Hex(text);
+      const response = await postRpc(
+        'share.update',
+        { shareId, byteLength: body.byteLength, sha256: sha, ...extra },
+        auth,
+      );
+      return { response, body, sha };
+    }
+
+    it('swaps bytes under the same share id only after finalize verifies them', async () => {
+      const f = await fixture('share-update-happy');
+      const published = await publishShare(f.auth, 'version one');
+      const shareId = published.share.shareId;
+      expect(published.share.version).toBe(1);
+      expect(published.share.updatedAt).toBeNull();
+
+      const { response, body, sha } = await updateShare(f.auth, shareId, 'version two, longer');
+      const reserved = expectSuccess<ShareUpdateResult>(response);
+      expect(reserved.uploadPath).toBe(`/v1/shared/${shareId}`);
+      expect(Date.parse(reserved.expiresAt)).toBeGreaterThan(Date.now());
+
+      // Reserved but not uploaded: readers still get the published bytes.
+      const beforeUpload = await hostedShareRead(shareId);
+      expect(await beforeUpload.text()).toBe('version one');
+
+      const put = await putShare(reserved.uploadPath, f.auth, body);
+      expect(put.status).toBe(200);
+
+      // Uploaded but not finalized: still the published bytes.
+      const beforeFinalize = await hostedShareRead(shareId);
+      expect(beforeFinalize.headers.get('x-anvil-share-version')).toBe('1');
+      expect(await beforeFinalize.text()).toBe('version one');
+
+      const finalized = expectSuccess<ShareFinalizeResult>(
+        await postRpc('share.finalize', { shareId, byteLength: body.byteLength, sha256: sha }, f.auth),
+      );
+      expect(finalized.share.shareId).toBe(shareId);
+      expect(finalized.share.state).toBe('published');
+      expect(finalized.share.version).toBe(2);
+      expect(finalized.share.updatedAt).not.toBeNull();
+      expect(finalized.share.sha256).toBe(sha);
+      expect(finalized.share.byteLength).toBe(body.byteLength);
+      expect(finalized.share.expiresAt).toBe(published.share.expiresAt);
+
+      const after = await hostedShareRead(shareId);
+      expect(after.status).toBe(200);
+      expect(after.headers.get('x-anvil-share-version')).toBe('2');
+      expect(after.headers.get('x-anvil-share-updated-at')).toBe(finalized.share.updatedAt);
+      expect(await after.text()).toBe('version two, longer');
+
+      const listed = expectSuccess<ShareListResult>(await postRpc('share.list', {}, f.auth));
+      expect(listed.shares.find((s) => s.shareId === shareId)?.version).toBe(2);
+    });
+
+    it('keeps the published bytes when the replacement fails verification', async () => {
+      const f = await fixture('share-update-checksum');
+      const published = await publishShare(f.auth, 'original');
+      const shareId = published.share.shareId;
+      const declared = await updateShare(f.auth, shareId, 'replaced');
+      const reserved = expectSuccess<ShareUpdateResult>(declared.response);
+      // Same length, different bytes: the stored digest will not match.
+      const put = await putShare(reserved.uploadPath, f.auth, new TextEncoder().encode('tampered'));
+      expect(put.status).toBe(200);
+      const finalize = await postRpc(
+        'share.finalize',
+        { shareId, byteLength: declared.body.byteLength, sha256: declared.sha },
+        f.auth,
+      );
+      expect(isRpcError(finalize.body)).toBe(true);
+      if (isRpcError(finalize.body)) {
+        expect(finalize.body.error.details?.['reason']).toBe('checksum-mismatch');
+      }
+      const read = await hostedShareRead(shareId);
+      expect(read.status).toBe(200);
+      expect(read.headers.get('x-anvil-share-version')).toBe('1');
+      expect(await read.text()).toBe('original');
+
+      // The failed attempt left nothing pending; a fresh update still works.
+      const retry = await updateShare(f.auth, shareId, 'replaced');
+      expectSuccess<ShareUpdateResult>(retry.response);
+    });
+
+    it('rejects finalize manifests that disagree with the update reservation', async () => {
+      const f = await fixture('share-update-manifest');
+      const published = await publishShare(f.auth, 'first');
+      const shareId = published.share.shareId;
+      const declared = await updateShare(f.auth, shareId, 'second!');
+      const reserved = expectSuccess<ShareUpdateResult>(declared.response);
+      expect((await putShare(reserved.uploadPath, f.auth, declared.body)).status).toBe(200);
+      const wrong = await postRpc(
+        'share.finalize',
+        { shareId, byteLength: declared.body.byteLength, sha256: '1'.repeat(64) },
+        f.auth,
+      );
+      expect(isRpcError(wrong.body)).toBe(true);
+      if (isRpcError(wrong.body)) {
+        expect(wrong.body.error.details?.['reason']).toBe('manifest-mismatch');
+      }
+      const short = await putShare(reserved.uploadPath, f.auth, declared.body.slice(0, -1));
+      expect(short.status).not.toBe(200);
+    });
+
+    it('only updates published shares owned by the caller', async () => {
+      const f = await fixture('share-update-state');
+      const other = await fixture('share-update-stranger');
+
+      const reservedOnly = await createShare(f.auth, { byteLength: 4 });
+      const notPublished = await updateShare(f.auth, reservedOnly.shareId, 'next');
+      expect(isRpcError(notPublished.response.body)).toBe(true);
+      if (isRpcError(notPublished.response.body)) {
+        expect(notPublished.response.body.error.code).toBe('conflict');
+        expect(notPublished.response.body.error.details?.['reason']).toBe('share-state');
+      }
+
+      const published = await publishShare(f.auth, 'owned');
+      const foreign = await updateShare(other.auth, published.share.shareId, 'hijack');
+      expect(isRpcError(foreign.response.body)).toBe(true);
+      if (isRpcError(foreign.response.body)) {
+        expect(foreign.response.body.error.code).toBe('not-found');
+      }
+
+      expectSuccess<ShareRevokeResult>(
+        await postRpc('share.revoke', { shareId: published.share.shareId }, f.auth),
+      );
+      const revoked = await updateShare(f.auth, published.share.shareId, 'too late');
+      expect(isRpcError(revoked.response.body)).toBe(true);
+      if (isRpcError(revoked.response.body)) {
+        expect(revoked.response.body.error.details?.['reason']).toBe('share-state');
+      }
+    });
+
+    it('cannot change the protection class and rejects malformed params', async () => {
+      const f = await fixture('share-update-sealed');
+      const published = await publishShare(f.auth, 'plain share');
+      const flip = await updateShare(f.auth, published.share.shareId, 'sealed now', {
+        sealed: true,
+      });
+      expect(isRpcError(flip.response.body)).toBe(true);
+      if (isRpcError(flip.response.body)) {
+        expect(flip.response.body.error.details?.['reason']).toBe('manifest-mismatch');
+      }
+      const malformed = await postRpc(
+        'share.update',
+        { shareId: published.share.shareId, byteLength: 0, sha256: 'nope' },
+        f.auth,
+      );
+      expect(isRpcError(malformed.body)).toBe(true);
+    });
+
+    it('revoking a share with a pending update drops the staged bytes', async () => {
+      const f = await fixture('share-update-revoke');
+      const published = await publishShare(f.auth, 'live');
+      const shareId = published.share.shareId;
+      const declared = await updateShare(f.auth, shareId, 'staged');
+      const reserved = expectSuccess<ShareUpdateResult>(declared.response);
+      expect((await putShare(reserved.uploadPath, f.auth, declared.body)).status).toBe(200);
+      expectSuccess<ShareRevokeResult>(await postRpc('share.revoke', { shareId }, f.auth));
+      const read = await hostedShareRead(shareId);
+      expect(read.status).toBe(404);
+      await runInDurableObject(sessionStub(), async (_instance: SessionCoordinator, state) => {
+        const row = state.storage.sql
+          .exec('SELECT pending_r2_key FROM shared_artifacts WHERE share_id = ?', shareId)
+          .toArray()[0] as { pending_r2_key: string | null } | undefined;
+        expect(row?.pending_r2_key).toBeNull();
+      });
     });
   });
 });

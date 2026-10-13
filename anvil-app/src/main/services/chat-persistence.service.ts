@@ -12,6 +12,7 @@ import type {
   WorkItemProvider,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
+import { revokeThreadSharesInBackground } from './share-deletion-hooks.js';
 
 interface TemporaryChatRecord {
   thread: ChatThread;
@@ -798,6 +799,7 @@ export function deleteChatThread(threadId: string): void {
     endTemporaryChatThread(threadId);
     return;
   }
+  revokeThreadSharesInBackground([threadId]);
   const db = getDb();
   const tx = db.transaction(() => {
     db.prepare('DELETE FROM chat_messages WHERE thread_id = ?').run(threadId);

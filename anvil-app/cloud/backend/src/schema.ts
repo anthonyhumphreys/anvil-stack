@@ -763,7 +763,19 @@ CREATE TABLE IF NOT EXISTS shared_artifacts (
   expires_at INTEGER,
   revoked_at INTEGER,
   sealed INTEGER NOT NULL DEFAULT 0,
-  plaintext_bytes INTEGER
+  plaintext_bytes INTEGER,
+  -- share.update: the published content version (1 at publish) and when it
+  -- was last replaced. Replacement bytes stage under pending_r2_key until
+  -- share.finalize verifies and swaps them in; readers keep the current
+  -- r2_key until then.
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER,
+  pending_r2_key TEXT,
+  pending_byte_length INTEGER,
+  pending_sha256 TEXT,
+  pending_plaintext_bytes INTEGER,
+  pending_upload_expires_at INTEGER,
+  pending_uploaded INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_shared_artifacts_account
   ON shared_artifacts (account_id, state);

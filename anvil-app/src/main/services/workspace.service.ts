@@ -20,6 +20,7 @@ import {
   SYNC_ENTITY_WORKSPACE_DEFINITION,
 } from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
+import { revokeWorkspaceSharesInBackground } from './share-deletion-hooks.js';
 import { getSettings } from './settings.service.js';
 import {
   buildEntityPayload,
@@ -440,6 +441,7 @@ export function updateWorkspace(id: string, opts: WorkspaceUpdateOptions): Works
  * Throws if the workspace does not exist.
  */
 export function deleteWorkspace(id: string): void {
+  revokeWorkspaceSharesInBackground(id);
   const db = getDb();
   if (!isWorkspaceSyncSelected(id)) {
     deleteWorkspaceRows(id);

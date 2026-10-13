@@ -91,6 +91,7 @@ export const OPERATIONS = [
   'share.finalize',
   'share.list',
   'share.revoke',
+  'share.update',
 ] as const;
 
 export type OperationName = (typeof OPERATIONS)[number];
@@ -171,6 +172,7 @@ export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
   'share.finalize': 'sync/2',
   'share.list': 'sync/2',
   'share.revoke': 'sync/2',
+  'share.update': 'sync/2',
 };
 
 /**
@@ -250,6 +252,7 @@ export const OPERATION_ROLE: Record<OperationName, ActorRole> = {
   'share.finalize': 'user',
   'share.list': 'user',
   'share.revoke': 'user',
+  'share.update': 'user',
 };
 
 export function profileForOperation(operation: OperationName): OperationProfile {
@@ -415,4 +418,7 @@ export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass>
   'share.finalize': 'control',
   'share.list': 'control',
   'share.revoke': 'control',
+  // Replacement bytes for a published share count against the same
+  // per-account share quota as share.create.
+  'share.update': 'mutating',
 };

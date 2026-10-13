@@ -46,6 +46,7 @@ import type {
   ShareFinalizeResult,
   ShareListResult,
   ShareRevokeResult,
+  ShareUpdateResult,
   SharedArtifactDescriptor,
   SharedArtifactState,
 } from '../../contract/shares';
@@ -234,6 +235,14 @@ interface SharedArtifactRow {
   revoked_at: number | null;
   sealed: number;
   plaintext_bytes: number | null;
+  version: number;
+  updated_at: number | null;
+  pending_r2_key: string | null;
+  pending_byte_length: number | null;
+  pending_sha256: string | null;
+  pending_plaintext_bytes: number | null;
+  pending_upload_expires_at: number | null;
+  pending_uploaded: number;
   [key: string]: string | number | null;
 }
 
@@ -368,6 +377,20 @@ export class SessionCoordinator extends DurableObject<Env> {
       'plaintext_bytes',
       'ALTER TABLE shared_artifacts ADD COLUMN plaintext_bytes INTEGER',
     );
+    // share.update: additive columns for objects created before stable-link
+    // updates existed — existing rows read as version 1, nothing pending.
+    for (const [name, ddl] of [
+      ['version', 'version INTEGER NOT NULL DEFAULT 1'],
+      ['updated_at', 'updated_at INTEGER'],
+      ['pending_r2_key', 'pending_r2_key TEXT'],
+      ['pending_byte_length', 'pending_byte_length INTEGER'],
+      ['pending_sha256', 'pending_sha256 TEXT'],
+      ['pending_plaintext_bytes', 'pending_plaintext_bytes INTEGER'],
+      ['pending_upload_expires_at', 'pending_upload_expires_at INTEGER'],
+      ['pending_uploaded', 'pending_uploaded INTEGER NOT NULL DEFAULT 0'],
+    ] as const) {
+      this.ensureColumn('shared_artifacts', name, `ALTER TABLE shared_artifacts ADD COLUMN ${ddl}`);
+    }
     // ENV-01: additive columns for objects created before enrollment
     // classes existed — existing rows read as 'device' via the defaults.
     this.ensureColumn(
@@ -875,6 +898,13 @@ export class SessionCoordinator extends DurableObject<Env> {
         case 'POST /internal/share-create': {
           const response = await this.ctx.blockConcurrencyWhile(() =>
             this.handleShareCreate(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/share-update': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleShareUpdate(request),
           );
           await this.ensureSweepAlarm();
           return response;
@@ -3266,7 +3296,38 @@ export class SessionCoordinator extends DurableObject<Env> {
       revokedAt: row.revoked_at === null ? null : new Date(row.revoked_at).toISOString(),
       sealed: row.sealed === 1,
       ...(row.plaintext_bytes === null ? {} : { plaintextBytes: row.plaintext_bytes }),
+      version: typeof row.version === 'number' ? row.version : 1,
+      updatedAt:
+        typeof row.updated_at === 'number' ? new Date(row.updated_at).toISOString() : null,
     };
+  }
+
+  /** Deletes a staged share.update object (best-effort) and clears the pending columns. */
+  private async discardPendingShareUpdate(row: SharedArtifactRow): Promise<void> {
+    if (row.pending_r2_key !== null && row.pending_r2_key !== undefined) {
+      await this.env.ARTIFACTS.delete(row.pending_r2_key).catch(() => undefined);
+    }
+    this.ctx.storage.sql.exec(
+      `UPDATE shared_artifacts
+       SET pending_r2_key = NULL, pending_byte_length = NULL, pending_sha256 = NULL,
+           pending_plaintext_bytes = NULL, pending_upload_expires_at = NULL, pending_uploaded = 0
+       WHERE share_id = ?`,
+      row.share_id,
+    );
+    row.pending_r2_key = null;
+    row.pending_byte_length = null;
+    row.pending_sha256 = null;
+    row.pending_plaintext_bytes = null;
+    row.pending_upload_expires_at = null;
+    row.pending_uploaded = 0;
+  }
+
+  private hasPendingShareUpdate(row: SharedArtifactRow): boolean {
+    return (
+      row.state === 'published' &&
+      typeof row.pending_r2_key === 'string' &&
+      row.pending_r2_key.length > 0
+    );
   }
 
   /**
@@ -3286,6 +3347,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       );
       row.state = 'expired';
       await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+      if (row.pending_r2_key) await this.discardPendingShareUpdate(row);
     }
     return row;
   }
@@ -3365,7 +3427,8 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (deviceLimitDenial !== null) return deviceLimitDenial;
     const used = this.ctx.storage.sql
       .exec(
-        `SELECT COALESCE(SUM(byte_length), 0) AS total FROM shared_artifacts
+        `SELECT COALESCE(SUM(byte_length + COALESCE(pending_byte_length, 0)), 0) AS total
+         FROM shared_artifacts
          WHERE account_id = ? AND state NOT IN ('revoked', 'expired')`,
         caller.accountId,
       )
@@ -3417,6 +3480,104 @@ export class SessionCoordinator extends DurableObject<Env> {
   }
 
   /**
+   * `share.update` (user actor): reserves replacement bytes for a
+   * `published` share so its link stays stable. The bytes stage under a
+   * fresh pending R2 key — readers keep the current object — and
+   * `share.finalize` swaps them in after size + sha256 verification. A new
+   * update replaces any earlier pending one. Same quotas as share.create.
+   */
+  private async handleShareUpdate(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['shareId'] !== 'string' ||
+      typeof body['byteLength'] !== 'number' ||
+      !Number.isInteger(body['byteLength']) ||
+      body['byteLength'] < 1 ||
+      body['byteLength'] > SHARE_MAX_BYTES ||
+      typeof body['sha256'] !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(body['sha256']) ||
+      (body['sealed'] !== undefined && typeof body['sealed'] !== 'boolean') ||
+      (body['plaintextBytes'] !== undefined &&
+        (typeof body['plaintextBytes'] !== 'number' ||
+          !Number.isInteger(body['plaintextBytes']) ||
+          body['plaintextBytes'] < 1))
+    ) {
+      return authError('malformed-request');
+    }
+    let row = this.readShare(body['shareId']);
+    if (row === null || row.account_id !== caller.accountId) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    const now = Date.now();
+    if (this.deletionRow(caller.accountId) !== null) {
+      return Response.json(
+        { error: { code: 'forbidden', retryable: false, details: { reason: 'account-deleted' } } },
+        { status: 403 },
+      );
+    }
+    const deviceLimitDenial = this.hostedDeviceMutationDenial(caller.accountId);
+    if (deviceLimitDenial !== null) return deviceLimitDenial;
+    row = await this.expireShareIfDue(row, now);
+    if (row.state !== 'published') {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'share-state', state: row.state });
+    }
+    // E2E: replacement bytes cannot change the share's protection class.
+    if (body['sealed'] !== undefined && body['sealed'] !== (row.sealed === 1)) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'manifest-mismatch' });
+    }
+    const used = this.ctx.storage.sql
+      .exec(
+        `SELECT COALESCE(SUM(byte_length + COALESCE(pending_byte_length, 0)), 0) AS total
+         FROM shared_artifacts
+         WHERE account_id = ? AND state NOT IN ('revoked', 'expired')`,
+        caller.accountId,
+      )
+      .toArray()[0] as { total: number } | undefined;
+    // An earlier pending update on this share is replaced, not added to.
+    const usedBytes = (used?.total ?? 0) - (row.pending_byte_length ?? 0);
+    if (usedBytes + body['byteLength'] > SHARE_ACCOUNT_MAX_BYTES) {
+      return Response.json(
+        {
+          error: {
+            code: 'quota-exceeded',
+            retryable: false,
+            details: {
+              reason: 'account-share-bytes',
+              limitBytes: SHARE_ACCOUNT_MAX_BYTES,
+              usedBytes,
+            },
+          },
+        },
+        { status: 403 },
+      );
+    }
+    if (row.pending_r2_key) await this.discardPendingShareUpdate(row);
+    const nextVersion = (typeof row.version === 'number' ? row.version : 1) + 1;
+    const pendingKey = `shared/${row.share_id}/v${nextVersion}-${crypto.randomUUID()}`;
+    const uploadExpiresAt = now + SHARE_UPLOAD_TTL_MS;
+    this.ctx.storage.sql.exec(
+      `UPDATE shared_artifacts
+       SET pending_r2_key = ?, pending_byte_length = ?, pending_sha256 = ?,
+           pending_plaintext_bytes = ?, pending_upload_expires_at = ?, pending_uploaded = 0
+       WHERE share_id = ? AND state = 'published'`,
+      pendingKey,
+      body['byteLength'],
+      body['sha256'],
+      typeof body['plaintextBytes'] === 'number' ? body['plaintextBytes'] : null,
+      uploadExpiresAt,
+      row.share_id,
+    );
+    const result: ShareUpdateResult = {
+      uploadPath: `/v1/shared/${row.share_id}`,
+      expiresAt: new Date(uploadExpiresAt).toISOString(),
+    };
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
    * Streams a share reservation's bytes into R2. Same rule as artifact
    * uploads: `content-length` must equal the reservation so the body
    * streams straight into R2, and the stored size is verified after write.
@@ -3430,6 +3591,9 @@ export class SessionCoordinator extends DurableObject<Env> {
     const row = this.readShare(shareId);
     if (row === null || row.account_id !== caller.accountId) {
       return rpcErrorResponse(undefined, 'not-found');
+    }
+    if (this.hasPendingShareUpdate(row)) {
+      return await this.handleShareReplacementUpload(request, row, now);
     }
     if (row.state !== 'reserved') {
       return rpcErrorResponse(undefined, 'conflict', { reason: 'share-not-reserved' });
@@ -3472,6 +3636,57 @@ export class SessionCoordinator extends DurableObject<Env> {
   }
 
   /**
+   * share.update upload: streams replacement bytes for a published share
+   * into its pending R2 key. The current object keeps serving readers.
+   */
+  private async handleShareReplacementUpload(
+    request: Request,
+    row: SharedArtifactRow,
+    now: number,
+  ): Promise<Response> {
+    const pendingKey = row.pending_r2_key as string;
+    const expected = row.pending_byte_length ?? -1;
+    if ((row.pending_upload_expires_at ?? 0) <= now) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'reservation-expired' });
+    }
+    const declared = Number(request.headers.get('content-length') ?? 'NaN');
+    if (!Number.isFinite(declared) || declared !== expected) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'size-mismatch', expected });
+    }
+    if (request.body === null) {
+      return rpcErrorResponse(undefined, 'malformed-request');
+    }
+    let stored: R2Object;
+    try {
+      stored = await this.env.ARTIFACTS.put(pendingKey, request.body, {
+        httpMetadata: { contentType: row.media_type },
+      });
+    } catch {
+      await this.env.ARTIFACTS.delete(pendingKey).catch(() => undefined);
+      return rpcErrorResponse(undefined, 'unavailable', { reason: 'share-upload-failed' });
+    }
+    if (stored.size !== expected) {
+      await this.env.ARTIFACTS.delete(pendingKey).catch(() => undefined);
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'size-mismatch',
+        expected,
+        actual: stored.size,
+      });
+    }
+    this.ctx.storage.sql.exec(
+      'UPDATE shared_artifacts SET pending_uploaded = 1 WHERE share_id = ? AND pending_r2_key = ?',
+      row.share_id,
+      pendingKey,
+    );
+    return Response.json({
+      shareId: row.share_id,
+      byteLength: stored.size,
+      state: 'published',
+      pending: true,
+    });
+  }
+
+  /**
    * `share.finalize` (user actor): verifies the stored R2 object against
    * the reservation and publishes. A verification mismatch discards the
    * object and the row — mismatched bytes are never published.
@@ -3491,6 +3706,9 @@ export class SessionCoordinator extends DurableObject<Env> {
     const row = this.readShare(body['shareId']);
     if (row === null || row.account_id !== caller.accountId) {
       return rpcErrorResponse(undefined, 'not-found');
+    }
+    if (this.hasPendingShareUpdate(row)) {
+      return await this.handleShareReplacementFinalize(body, row);
     }
     if (row.state !== 'reserved' && row.state !== 'uploaded') {
       return rpcErrorResponse(undefined, 'conflict', { reason: 'share-state', state: row.state });
@@ -3533,6 +3751,73 @@ export class SessionCoordinator extends DurableObject<Env> {
         fresh ?? { ...row, state: 'published', published_at: now, expires_at: expiresAt },
       ),
     };
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * share.finalize for a pending share.update: verifies the staged object
+   * against the update reservation, then swaps it in with one row update
+   * (readers see either the old or the new bytes, never a mix). The share
+   * keeps its id, published state and expiry; its version increments. A
+   * verification failure discards only the staged bytes — the published
+   * content is untouched.
+   */
+  private async handleShareReplacementFinalize(
+    body: Record<string, unknown>,
+    initial: SharedArtifactRow,
+  ): Promise<Response> {
+    const now = Date.now();
+    const row = await this.expireShareIfDue(initial, now);
+    if (row.state !== 'published' || !row.pending_r2_key) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'share-state', state: row.state });
+    }
+    if (body['byteLength'] !== row.pending_byte_length || body['sha256'] !== row.pending_sha256) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'manifest-mismatch' });
+    }
+    const deviceLimitDenial = this.hostedDeviceMutationDenial(row.account_id);
+    if (deviceLimitDenial !== null) return deviceLimitDenial;
+    if (
+      body['sealed'] !== undefined &&
+      (typeof body['sealed'] !== 'boolean' || body['sealed'] !== (row.sealed === 1))
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'manifest-mismatch' });
+    }
+    const pendingKey = row.pending_r2_key;
+    const probe = await this.readShareObjectDigest(pendingKey);
+    if (probe === null) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'share-not-uploaded' });
+    }
+    if (probe.size !== row.pending_byte_length || probe.sha256 !== row.pending_sha256) {
+      await this.discardPendingShareUpdate(row);
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'checksum-mismatch' });
+    }
+    const previousKey = row.r2_key;
+    this.ctx.storage.sql.exec(
+      `UPDATE shared_artifacts
+       SET r2_key = pending_r2_key,
+           byte_length = pending_byte_length,
+           sha256 = pending_sha256,
+           plaintext_bytes = pending_plaintext_bytes,
+           version = version + 1,
+           updated_at = ?,
+           pending_r2_key = NULL, pending_byte_length = NULL, pending_sha256 = NULL,
+           pending_plaintext_bytes = NULL, pending_upload_expires_at = NULL, pending_uploaded = 0
+       WHERE share_id = ? AND state = 'published' AND pending_r2_key = ?`,
+      now,
+      row.share_id,
+      pendingKey,
+    );
+    const fresh = this.readShare(row.share_id);
+    if (fresh === null || fresh.r2_key !== pendingKey) {
+      // A concurrent update or revocation won; this staged object is stale.
+      await this.env.ARTIFACTS.delete(pendingKey).catch(() => undefined);
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'share-state',
+        state: fresh?.state ?? 'expired',
+      });
+    }
+    await this.env.ARTIFACTS.delete(previousKey).catch(() => undefined);
+    const result: ShareFinalizeResult = { share: this.shareDescriptor(fresh) };
     return Response.json(result, { status: 200 });
   }
 
@@ -3593,6 +3878,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       row.state = 'revoked';
       row.revoked_at = now;
       await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+      if (row.pending_r2_key) await this.discardPendingShareUpdate(row);
     } else if (row.state === 'reserved' || row.state === 'uploaded') {
       this.ctx.storage.sql.exec(
         "UPDATE shared_artifacts SET state = 'expired' WHERE share_id = ?",
@@ -3645,6 +3931,10 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (row.published_at !== null) {
       headers.set('x-anvil-share-published-at', new Date(row.published_at).toISOString());
     }
+    headers.set('x-anvil-share-version', String(typeof row.version === 'number' ? row.version : 1));
+    if (typeof row.updated_at === 'number') {
+      headers.set('x-anvil-share-updated-at', new Date(row.updated_at).toISOString());
+    }
     if (row.expires_at !== null) {
       headers.set('x-anvil-share-expires-at', new Date(row.expires_at).toISOString());
     }
@@ -3655,10 +3945,16 @@ export class SessionCoordinator extends DurableObject<Env> {
   /** Purges every share row + R2 object for a deleted account. */
   private async purgeAccountShares(accountId: string): Promise<void> {
     const rows = this.ctx.storage.sql
-      .exec('SELECT share_id, r2_key FROM shared_artifacts WHERE account_id = ?', accountId)
-      .toArray() as { share_id: string; r2_key: string }[];
+      .exec(
+        'SELECT share_id, r2_key, pending_r2_key FROM shared_artifacts WHERE account_id = ?',
+        accountId,
+      )
+      .toArray() as { share_id: string; r2_key: string; pending_r2_key: string | null }[];
     for (const row of rows) {
       await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+      if (row.pending_r2_key) {
+        await this.env.ARTIFACTS.delete(row.pending_r2_key).catch(() => undefined);
+      }
     }
     this.ctx.storage.sql.exec('DELETE FROM shared_artifacts WHERE account_id = ?', accountId);
   }
@@ -3960,18 +4256,47 @@ export class SessionCoordinator extends DurableObject<Env> {
     // deleting the R2 objects outside the transaction.
     const shareSweeps = this.ctx.storage.sql
       .exec(
-        `SELECT share_id, r2_key FROM shared_artifacts
+        `SELECT share_id, r2_key, pending_r2_key FROM shared_artifacts
          WHERE (state = 'reserved' AND upload_expires_at < ?)
             OR (state IN ('uploaded', 'published') AND expires_at IS NOT NULL AND expires_at < ?)`,
         now,
         now,
       )
-      .toArray() as { share_id: string; r2_key: string }[];
+      .toArray() as { share_id: string; r2_key: string; pending_r2_key: string | null }[];
     for (const row of shareSweeps) {
       await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+      if (row.pending_r2_key) {
+        await this.env.ARTIFACTS.delete(row.pending_r2_key).catch(() => undefined);
+      }
       this.ctx.storage.sql.exec(
-        "UPDATE shared_artifacts SET state = 'expired' WHERE share_id = ?",
+        `UPDATE shared_artifacts
+         SET state = 'expired', pending_r2_key = NULL, pending_byte_length = NULL,
+             pending_sha256 = NULL, pending_plaintext_bytes = NULL,
+             pending_upload_expires_at = NULL, pending_uploaded = 0
+         WHERE share_id = ?`,
         row.share_id,
+      );
+    }
+    // share.update reservations whose upload window lapsed without a
+    // finalize: drop the staged bytes; the published content is untouched.
+    // The window is doubled so an upload that finished just in time can
+    // still finalize.
+    const staleUpdates = this.ctx.storage.sql
+      .exec(
+        `SELECT share_id, pending_r2_key FROM shared_artifacts
+         WHERE pending_r2_key IS NOT NULL AND pending_upload_expires_at < ?`,
+        now - SHARE_UPLOAD_TTL_MS,
+      )
+      .toArray() as { share_id: string; pending_r2_key: string }[];
+    for (const row of staleUpdates) {
+      await this.env.ARTIFACTS.delete(row.pending_r2_key).catch(() => undefined);
+      this.ctx.storage.sql.exec(
+        `UPDATE shared_artifacts
+         SET pending_r2_key = NULL, pending_byte_length = NULL, pending_sha256 = NULL,
+             pending_plaintext_bytes = NULL, pending_upload_expires_at = NULL, pending_uploaded = 0
+         WHERE share_id = ? AND pending_r2_key = ?`,
+        row.share_id,
+        row.pending_r2_key,
       );
     }
     // Terminal shares whose objects are already gone: keep the row for
