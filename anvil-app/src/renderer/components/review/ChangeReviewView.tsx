@@ -3,6 +3,7 @@ import { CheckCheck } from 'lucide-react';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
 import { ChangeReviewPanel } from './ChangeReviewPanel';
+import { ReviewInChatButton } from '../codereview/ReviewInChat';
 import { readReviewOrigin, type ChangeReviewEntrySource } from '../../utils/change-review-context';
 export function ChangeReviewView() {
   const { activeWorkspace } = useWorkspace();
@@ -19,20 +20,30 @@ export function ChangeReviewView() {
       <ViewHeader
         icon={CheckCheck}
         title="Change review"
-        description="Compare local changes and accept them with evidence."
+        description="Review local changes in chat, or accept them here with captured evidence."
         actions={
-          <select
-            aria-label="Review repository"
-            value={selected?.id ?? ''}
-            onChange={(e) => setParams({ repo: e.target.value })}
-            className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm"
-          >
-            {activeWorkspace?.repos.map((repo) => (
-              <option key={repo.id} value={repo.id}>
-                {repo.name}
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              aria-label="Review repository"
+              value={selected?.id ?? ''}
+              onChange={(e) => setParams({ repo: e.target.value })}
+              className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm"
+            >
+              {activeWorkspace?.repos.map((repo) => (
+                <option key={repo.id} value={repo.id}>
+                  {repo.name}
+                </option>
+              ))}
+            </select>
+            <ReviewInChatButton
+              size="md"
+              scope={
+                selected
+                  ? { type: 'working-tree', repoId: selected.id, repoName: selected.name }
+                  : null
+              }
+            />
+          </>
         }
       />
       <div className="min-h-0 flex-1 overflow-auto">

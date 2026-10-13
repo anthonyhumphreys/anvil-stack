@@ -26,6 +26,7 @@ import {
   type ChangeReviewEntrySource,
 } from '../../utils/change-review-context';
 import { NativeEvidencePanel } from './NativeEvidencePanel';
+import { NewReviewsInChatNote } from '../codereview/ReviewInChat';
 import { copyTextToClipboard } from '../../utils/clipboard';
 
 const button =
@@ -556,6 +557,21 @@ export function ChangeReviewPanel({
               Criteria fetched {new Date(criteria!.fetchedAt).toLocaleString()}
               {review.workItemRef ? ` from ${review.workItemRef.provider}` : ' locally'}.
             </p>
+            {!workItem ? (
+              <NewReviewsInChatNote
+                scope={
+                  review.origin?.pullRequest
+                    ? {
+                        type: 'pull-request',
+                        repoId,
+                        pullRequestId: String(
+                          review.origin.pullRequest.number ?? review.origin.pullRequest.id,
+                        ),
+                      }
+                    : { type: 'working-tree', repoId }
+                }
+              />
+            ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
             <button

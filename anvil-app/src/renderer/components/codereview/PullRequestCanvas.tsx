@@ -50,6 +50,8 @@ import {
 import { PullRequestEvidencePanel } from '../review/PullRequestEvidencePanel';
 import { PullRequestThreads } from './PullRequestThreads';
 import { PullRequestDiffView } from './PullRequestDiffView';
+import { ReviewInChatButton } from './ReviewInChat';
+import type { ReviewInChatScope } from './review-in-chat';
 
 type ExperienceMode = 'story' | 'map' | 'diff';
 
@@ -280,6 +282,14 @@ export function PullRequestCanvas({
     ],
   );
 
+  const reviewScope: ReviewInChatScope = {
+    type: 'pull-request',
+    repoId,
+    repoName: activeWorkspace?.repos.find((repo) => repo.id === repoId)?.name,
+    pullRequestId,
+    title: visualisation?.pullRequest.title,
+  };
+
   const linkedProvider = searchParams.get('provider');
   const threadPullRequest =
     (visualisation?.repoId === repoId && visualisation.pullRequest.id === pullRequestId
@@ -315,7 +325,9 @@ export function PullRequestCanvas({
             <h1 className="truncate text-sm font-semibold text-text-primary">
               Pull request #{pullRequestId}
             </h1>
-            <p className="mt-0.5 text-xs text-text-tertiary">Traditional diff review</p>
+            <p className="mt-0.5 text-xs text-text-tertiary">
+              Traditional diff review · New reviews open inline in chat
+            </p>
           </div>
           <button
             type="button"
@@ -323,10 +335,11 @@ export function PullRequestCanvas({
               setMode('map');
               void generate(false);
             }}
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
+            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
           >
             <Sparkles size={13} /> Visualise PR
           </button>
+          <ReviewInChatButton scope={reviewScope} />
           {onClose && (
             <button
               type="button"
@@ -396,6 +409,11 @@ export function PullRequestCanvas({
               {generating ? 'Retrying…' : 'Try again'}
             </button>
           )}
+          {error && (
+            <div className="mt-3 flex justify-center">
+              <ReviewInChatButton scope={reviewScope} variant="secondary" />
+            </div>
+          )}
         </div>
       </div>
     );
@@ -427,6 +445,8 @@ export function PullRequestCanvas({
             <span className="shrink-0 font-mono tabular-nums">
               {visualisation.headSha.slice(0, 8)}
             </span>
+            <span className="hidden shrink-0 text-border xl:inline">/</span>
+            <span className="hidden truncate xl:inline">New reviews open inline in chat</span>
           </div>
         </div>
 
@@ -480,6 +500,7 @@ export function PullRequestCanvas({
         >
           <MessageSquareText size={13} /> <span className="hidden xl:inline">Ask in chat</span>
         </button>
+        <ReviewInChatButton scope={reviewScope} className="shrink-0" />
         <button
           type="button"
           onClick={() =>

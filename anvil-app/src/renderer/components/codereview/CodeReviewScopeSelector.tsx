@@ -6,6 +6,7 @@ import {
   GitCommit,
   GitPullRequest,
   Loader2,
+  MessageSquareText,
   Search,
 } from 'lucide-react';
 import type {
@@ -30,6 +31,8 @@ interface Props {
   repoId: string;
   onScopeSelected: (scopeType: CodeReviewScopeType, scopeRef?: CodeReviewScopeRef) => void;
   onScopeDirty?: () => void;
+  /** Row action on each pull request: open chat with a prefilled Review prompt. */
+  onReviewPullRequestInChat?: (pullRequest: CodeReviewPullRequest) => void;
   disabled: boolean;
 }
 
@@ -75,6 +78,7 @@ export function CodeReviewScopeSelector({
   repoId,
   onScopeSelected,
   onScopeDirty,
+  onReviewPullRequestInChat,
   disabled,
 }: Props) {
   const [selectedScope, setSelectedScope] = useState<CodeReviewScopeType>('latest_commit');
@@ -389,42 +393,67 @@ export function CodeReviewScopeSelector({
                     (!selectedPullRequestId && manualPullRequestId === pullRequest.id);
 
                   return (
-                    <button
+                    <div
                       key={pullRequest.id}
-                      onClick={() => {
-                        markDirty();
-                        setSelectedPullRequestId(pullRequest.id);
-                      }}
-                      type="button"
-                      className={`w-full rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                      className={`group/pr rounded-lg border transition-colors ${
                         isSelected
                           ? 'border-accent/40 bg-accent/10 text-text-primary'
                           : 'border-border-subtle bg-bg-primary text-text-secondary hover:border-border hover:bg-bg-tertiary'
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-text-primary">
-                            #{pullRequest.id} {pullRequest.title}
+                      <button
+                        onClick={() => {
+                          markDirty();
+                          setSelectedPullRequestId(pullRequest.id);
+                        }}
+                        type="button"
+                        aria-pressed={isSelected}
+                        className="w-full rounded-lg px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-text-primary">
+                              #{pullRequest.id} {pullRequest.title}
+                            </div>
+                            <div className="mt-1 truncate text-xs text-text-tertiary">
+                              {pullRequest.author ? `${pullRequest.author} • ` : ''}
+                              {pullRequest.sourceBranch} → {pullRequest.targetBranch}
+                            </div>
                           </div>
-                          <div className="mt-1 truncate text-xs text-text-tertiary">
-                            {pullRequest.author ? `${pullRequest.author} • ` : ''}
-                            {pullRequest.sourceBranch} → {pullRequest.targetBranch}
-                          </div>
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-eyebrow font-semibold uppercase tracking-wide ${
+                              pullRequest.state === 'open'
+                                ? 'bg-success/15 text-success'
+                                : pullRequest.state === 'merged'
+                                  ? 'bg-accent/15 text-accent'
+                                  : 'bg-bg-elevated text-text-secondary'
+                            }`}
+                          >
+                            {pullRequest.isDraft ? 'Draft' : pullRequest.state}
+                          </span>
                         </div>
-                        <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-eyebrow font-semibold uppercase tracking-wide ${
-                            pullRequest.state === 'open'
-                              ? 'bg-success/15 text-success'
-                              : pullRequest.state === 'merged'
-                                ? 'bg-accent/15 text-accent'
-                                : 'bg-bg-elevated text-text-secondary'
+                      </button>
+                      {onReviewPullRequestInChat && (
+                        <div
+                          className={`px-3 pb-2 ${
+                            isSelected
+                              ? ''
+                              : 'hidden group-focus-within/pr:block group-hover/pr:block [@media(hover:none)]:block'
                           }`}
                         >
-                          {pullRequest.isDraft ? 'Draft' : pullRequest.state}
-                        </span>
-                      </div>
-                    </button>
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => onReviewPullRequestInChat(pullRequest)}
+                            title="Opens chat with a prefilled prompt. Nothing is sent until you press Enter."
+                            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-medium text-text-secondary hover:bg-bg-elevated hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:opacity-50"
+                          >
+                            <MessageSquareText size={13} aria-hidden="true" />
+                            Review #{pullRequest.id} in chat
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>

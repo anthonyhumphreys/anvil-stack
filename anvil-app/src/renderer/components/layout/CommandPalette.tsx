@@ -200,7 +200,7 @@ export function buildAskAgentCommands(): AskAgentCommandMetadata[] {
       keywords: ['review', 'changes', 'diff', 'code review', 'quality', 'working tree'],
       feature: 'codereview',
       prompt:
-        'Review my changes. Prioritise correctness, regressions, missing tests, and security risks. Cite files and lines where possible.',
+        'Review my changes: call review_context for the working tree, then publish the review with review_publish so it opens as a Review surface. Prioritise correctness, regressions, missing tests, and security risks, and anchor every finding to a changed line.',
     },
   ];
 }

@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   CodexEvent,
 } from '../../../../shared/types';
+import { SURFACE_REPLAY_SCENARIOS } from './chat-replay-surface-fixtures';
 
 export const CHAT_REPLAY_PROVENANCE =
   'Synthetic local fixture data. No provider messages, workspace data, or IPC responses.';
@@ -506,6 +507,8 @@ export const CHAT_REPLAY_SCENARIOS: ChatReplayScenario[] = [
   recoveryScenario,
   artifactReviewScenario,
   makeLargeTranscript(),
+  // Inline surfaces (§14): one fixture per kind plus the 30-surface heavy thread.
+  ...SURFACE_REPLAY_SCENARIOS,
 ];
 
 export function getChatReplayScenario(scenarioId: string): ChatReplayScenario {

@@ -1,5 +1,6 @@
-import { Profiler, useCallback, useMemo, useRef, useState } from 'react';
+import { Profiler, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ProfilerOnRenderCallback } from 'react';
+import type { AgentUIIntent } from '../../../../shared/agent-ui-intents';
 import type {
   ChatArtifact,
   ChatAttachment,
@@ -27,7 +28,10 @@ import {
   syntheticFollowUpResult,
 } from './chat-replay-fixtures';
 import { deriveReplayEntries, replayChatScenario } from './chat-replay-state';
+import { REPLAY_SURFACE_ARTIFACTS } from './chat-replay-surface-fixtures';
 import { useChatScroll } from '../useChatScroll';
+import { SurfacesProvider } from '../../surfaces/SurfacesProvider';
+import { SurfaceStage } from '../../surfaces/SurfaceStage';
 
 interface ReplayPerformanceState {
   inputSamples: number[];
@@ -44,6 +48,13 @@ interface ReplayPerformanceState {
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_PROVIDERS: never[] = [];
+const EMPTY_INTENTS: AgentUIIntent[] = [];
+/** Themes for the §14 visual check: dark, light and one flavour theme. */
+const REPLAY_THEMES = [
+  { id: 'dark', label: 'Dark' },
+  { id: 'light', label: 'Light' },
+  { id: 'agent-after-hours', label: 'Agent After Hours (flavour)' },
+] as const;
 const MAX_INPUT_SAMPLES = 200;
 const timestamp = '2026-09-25T09:00:00.000Z';
 const sideQuestionSuffix = ':side-question';
@@ -138,6 +149,14 @@ export function ChatReplayPreview() {
   );
   const entries = useMemo(() => deriveReplayEntries(messages), [messages]);
   const turns = useMemo(() => composeChatTurns(entries), [entries]);
+  const transcriptSurfaces = useMemo(
+    () => turns.flatMap((turn) => turn.surfaces.map((surface) => surface.intent)),
+    [turns],
+  );
+  const [theme, setTheme] = useState<(typeof REPLAY_THEMES)[number]['id']>('dark');
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
   const isSelectedThreadBusy =
     (scenario.id === 'streaming-rich-content' || scenario.id === 'parallel-agents-status') &&
     selectedThreadId === scenario.initialThreadId &&
@@ -537,37 +556,46 @@ export function ChatReplayPreview() {
             </nav>
           )}
 
-          <div className="min-h-0 flex-1">
-            <ChatReviewFeedbackProvider
+          <div className="relative min-h-0 flex-1">
+            <SurfacesProvider
               threadId={selectedThreadId}
-              onComposeFeedback={composeReviewFeedback}
+              workspaceName="Synthetic replay"
+              transcriptSurfaces={transcriptSurfaces}
+              intents={EMPTY_INTENTS}
+              artifacts={REPLAY_SURFACE_ARTIFACTS}
             >
-              <Profiler id="transcript" onRender={onProfileRender}>
-                <ChatTranscript
-                  paneKind="transcript"
-                  personaId="coder"
-                  hasRepos
-                  hasGovernanceDocs={false}
-                  isDbExpertPersona={false}
-                  onSuggestionClick={() => undefined}
-                  turns={turns}
-                  activeThreadId={selectedThreadId}
-                  busy={isSelectedThreadBusy}
-                  isBaPersona={false}
-                  personaName="Coder"
-                  personaColour="#48d597"
-                  changesRepos={scenario.id === 'artifact-diff-feedback' ? [SYNTHETIC_REPO] : []}
-                  error={transportError}
-                  errorProviders={EMPTY_PROVIDERS}
-                  onErrorRetry={retryLocally}
-                  messagesContainerRef={messagesContainerRef}
-                  messagesEndRef={messagesEndRef}
-                  showJumpToLatest={showJumpToLatest}
-                  onJumpToLatest={jumpToLatest}
-                  onReuseMessage={() => undefined}
-                />
-              </Profiler>
-            </ChatReviewFeedbackProvider>
+              <SurfaceStage />
+              <ChatReviewFeedbackProvider
+                threadId={selectedThreadId}
+                onComposeFeedback={composeReviewFeedback}
+              >
+                <Profiler id="transcript" onRender={onProfileRender}>
+                  <ChatTranscript
+                    paneKind="transcript"
+                    personaId="coder"
+                    hasRepos
+                    hasGovernanceDocs={false}
+                    isDbExpertPersona={false}
+                    onSuggestionClick={() => undefined}
+                    turns={turns}
+                    activeThreadId={selectedThreadId}
+                    busy={isSelectedThreadBusy}
+                    isBaPersona={false}
+                    personaName="Coder"
+                    personaColour="#48d597"
+                    changesRepos={scenario.id === 'artifact-diff-feedback' ? [SYNTHETIC_REPO] : []}
+                    error={transportError}
+                    errorProviders={EMPTY_PROVIDERS}
+                    onErrorRetry={retryLocally}
+                    messagesContainerRef={messagesContainerRef}
+                    messagesEndRef={messagesEndRef}
+                    showJumpToLatest={showJumpToLatest}
+                    onJumpToLatest={jumpToLatest}
+                    onReuseMessage={() => undefined}
+                  />
+                </Profiler>
+              </ChatReviewFeedbackProvider>
+            </SurfacesProvider>
           </div>
 
           <div
@@ -626,8 +654,29 @@ export function ChatReplayPreview() {
                 </option>
               ))}
             </select>
+            <label
+              className="mt-3 block text-xs font-medium text-text-tertiary"
+              htmlFor="chat-replay-theme"
+            >
+              Theme
+            </label>
+            <select
+              id="chat-replay-theme"
+              value={theme}
+              onChange={(event) =>
+                setTheme(event.target.value as (typeof REPLAY_THEMES)[number]['id'])
+              }
+              className="mt-1 w-full rounded-lg border border-border bg-bg-primary px-2.5 py-2 text-xs text-text-primary"
+            >
+              {REPLAY_THEMES.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <Metric label="Replay step" value={scenarioProgress} />
+              <Metric label="Surfaces" value={String(transcriptSurfaces.length)} />
               <Metric label="Messages loaded" value={String(messagesLoaded)} />
               <Metric label="Connection" value={transportLabel} />
               <Metric label="Thread" value={selectedThreadId} />

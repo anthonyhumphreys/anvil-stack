@@ -11,6 +11,58 @@ import {
   syntheticFollowUpResult,
 } from '../replay/chat-replay-fixtures';
 import { replayChatScenario } from '../replay/chat-replay-state';
+import {
+  HEAVY_SURFACE_COUNT,
+  REPLAY_REVIEW_DIFF_FILES,
+  REPLAY_SURFACE_ARTIFACTS,
+  REPLAY_SURFACE_ARTIFACT_REVISIONS,
+  REPLAY_SURFACE_SKETCHES,
+  SURFACE_REPLAY_SCENARIOS,
+} from '../replay/chat-replay-surface-fixtures';
+import type { AgentUISurfaceIntent } from '../../../../shared/agent-ui-intents';
+import { validateDataSurface, type DataSurfaceData } from '../../../../shared/surfaces/kinds/data';
+import type { ReviewSurfaceData } from '../../../../shared/surfaces/kinds/review';
+import { checkLineAnchor, findDiffFile } from '../../../../shared/surfaces/kinds/review/diff';
+import { isDecisionConsistent } from '../../../../shared/surfaces/kinds/review/model';
+import { getSurfaceKind } from '../../../../shared/surfaces/registry';
+import { formatSchemaErrors, validateJsonSchema } from '../../../../shared/surfaces/validate';
+import { resolveSupersedingId } from '../../surfaces/surface-utils';
+
+function completeTurns(scenarioId: string) {
+  const scenario = getChatReplayScenario(scenarioId);
+  const snapshot = replayChatScenario(scenario);
+  return composeChatTurns(
+    chatMessagesToEntries(snapshot.messagesByThread[scenario.initialThreadId]),
+  );
+}
+
+function turnsAt(scenarioId: string, step: number) {
+  const scenario = getChatReplayScenario(scenarioId);
+  const snapshot = replayChatScenario(scenario, step);
+  return composeChatTurns(
+    chatMessagesToEntries(snapshot.messagesByThread[scenario.initialThreadId]),
+    { active: true },
+  );
+}
+
+function surfacesOf(turns: ReturnType<typeof composeChatTurns>): AgentUISurfaceIntent[] {
+  return turns.flatMap((turn) => turn.surfaces.map((surface) => surface.intent));
+}
+
+/** Every surface intent published anywhere in a scenario, including streaming revisions. */
+function everyPublishedSurface(): AgentUISurfaceIntent[] {
+  return SURFACE_REPLAY_SCENARIOS.flatMap((scenario) =>
+    scenario.steps.flatMap((step) => {
+      const messages =
+        step.kind === 'message' ? [step.message] : step.kind === 'history' ? step.messages : [];
+      return messages.flatMap((message) =>
+        message.event?.type === 'agent_ui_intent' && message.event.agentUIIntent?.kind === 'surface'
+          ? [message.event.agentUIIntent]
+          : [],
+      );
+    }),
+  );
+}
 
 describe('synthetic chat replay scenarios', () => {
   it('labels the fixture data synthetic and contains the required interaction scenarios', () => {
@@ -21,6 +73,14 @@ describe('synthetic chat replay scenarios', () => {
       'errors-reconnect-thread-switch',
       'artifact-diff-feedback',
       'large-transcript',
+      'surface-review-working-tree',
+      'surface-findings',
+      'surface-dependencies',
+      'surface-pipeline',
+      'surface-data-chart',
+      'surface-artifact-revisions',
+      'surface-sketch',
+      'surface-heavy-thread',
     ]);
   });
 
@@ -222,5 +282,143 @@ describe('synthetic chat replay scenarios', () => {
       delivery: 'queued',
       deliveryIntent: 'queue',
     });
+  });
+});
+
+describe('inline surface replay fixtures', () => {
+  it('validates every published surface payload against its kind schema and digest', async () => {
+    expect(validateJsonSchema({ type: 'object', required: ['x'] }, {})).not.toEqual([]);
+    const published = everyPublishedSurface();
+    expect(published.length).toBeGreaterThan(HEAVY_SURFACE_COUNT);
+    for (const intent of published) {
+      const definition = getSurfaceKind(intent.payload.surfaceKind);
+      expect(definition, intent.payload.surfaceKind).toBeDefined();
+      const errors = validateJsonSchema(definition!.schema, intent.payload.data);
+      expect(errors, `${intent.id}: ${formatSchemaErrors(errors)}`).toEqual([]);
+      expect(intent.payload.digest).toBe(definition!.digest(intent.payload.data));
+      expect(intent.scope.threadId).toBeTruthy();
+      if (intent.payload.surfaceKind === 'data') {
+        expect(validateDataSurface(intent.payload.data as DataSurfaceData)).toEqual([]);
+      }
+    }
+  });
+
+  it('streams the working-tree Review in place, then completes with anchored findings', () => {
+    const streaming = surfacesOf(turnsAt('surface-review-working-tree', 2));
+    expect(streaming).toHaveLength(1);
+    expect(streaming[0]).toMatchObject({ revision: 1, payload: { streaming: true } });
+    expect((streaming[0].payload.data as ReviewSurfaceData).findings).toHaveLength(1);
+
+    const midway = surfacesOf(turnsAt('surface-review-working-tree', 3));
+    expect(midway).toHaveLength(1);
+    expect(midway[0]).toMatchObject({ revision: 2, payload: { streaming: true } });
+
+    const turns = completeTurns('surface-review-working-tree');
+    expect(turns).toHaveLength(1);
+    const [review] = surfacesOf(turns);
+    expect(turns[0].surfaces).toHaveLength(1);
+    expect(review).toMatchObject({
+      id: 'fixture-surface-review-working-tree',
+      revision: 3,
+      payload: { surfaceKind: 'review', streaming: false },
+    });
+    expect(turns[0].answer?.content).toContain('logged refresh token');
+    expect(
+      turns[0].work.some(
+        (item) => item.kind === 'event' && item.event.toolName === 'review_context',
+      ),
+    ).toBe(true);
+
+    const data = review.payload.data as ReviewSurfaceData;
+    expect(data.scope.type).toBe('working-tree');
+    expect(data.findings.length).toBeGreaterThanOrEqual(6);
+    expect(data.findings.length).toBeLessThanOrEqual(9);
+    expect(new Set(data.findings.map((finding) => finding.severity))).toEqual(
+      new Set(['critical', 'high', 'medium', 'low', 'info']),
+    );
+    expect(data.chapters.map((chapter) => chapter.index)).toEqual([1, 2, 3]);
+    expect(data.risks.length).toBeGreaterThan(0);
+    expect(isDecisionConsistent(data.verdict.decision, data.findings)).toBe(true);
+    for (const finding of data.findings) {
+      const file = findDiffFile(REPLAY_REVIEW_DIFF_FILES, finding.filePath);
+      expect(file, finding.filePath).toBeDefined();
+      expect(checkLineAnchor(file!, finding.lineStart, finding.lineEnd), finding.id).toBeNull();
+      expect(data.hunks[finding.filePath]?.length, finding.id).toBeGreaterThan(0);
+    }
+    for (const chapter of data.chapters) {
+      for (const file of chapter.files) {
+        expect(data.files.some((entry) => entry.path === file.path)).toBe(true);
+      }
+    }
+  });
+
+  it.each([
+    ['surface-findings', 'findings'],
+    ['surface-dependencies', 'dependencies'],
+    ['surface-pipeline', 'pipeline'],
+    ['surface-data-chart', 'data'],
+    ['surface-sketch', 'sketch'],
+  ])('composes %s into one turn with a %s surface', (scenarioId, kind) => {
+    const turns = completeTurns(scenarioId);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].surfaces.map((surface) => surface.intent.payload.surfaceKind)).toEqual([kind]);
+    expect(turns[0].answer?.content).toBeTruthy();
+  });
+
+  it('completes the running security audit in place', () => {
+    const running = surfacesOf(turnsAt('surface-findings', 1));
+    expect(running[0].payload).toMatchObject({ streaming: true, data: { auditStatus: 'running' } });
+    const [complete] = surfacesOf(completeTurns('surface-findings'));
+    expect(complete).toMatchObject({
+      revision: 2,
+      payload: { streaming: false, data: { auditStatus: 'completed' } },
+    });
+  });
+
+  it('charts the data surface from numeric columns', () => {
+    const [surface] = surfacesOf(completeTurns('surface-data-chart'));
+    const data = surface.payload.data as DataSurfaceData;
+    expect(data.chart).toMatchObject({ type: 'line', x: 'week', y: ['p50', 'p95'] });
+    expect(data.rows).toHaveLength(12);
+  });
+
+  it('supersedes the created artifact surface with the updated one', () => {
+    const turns = completeTurns('surface-artifact-revisions');
+    expect(turns).toHaveLength(2);
+    expect(turns.map((turn) => turn.surfaces.length)).toEqual([1, 1]);
+    const all = surfacesOf(turns);
+    const [created, updated] = all;
+    expect(created.payload.data).toMatchObject({ version: 1, operation: 'created' });
+    expect(updated.payload.data).toMatchObject({ version: 2, operation: 'updated' });
+    expect(resolveSupersedingId(created, all)).toBe(updated.id);
+    expect(resolveSupersedingId(updated, all)).toBeUndefined();
+
+    const artifactId = (created.payload.data as { artifactId: string }).artifactId;
+    expect(REPLAY_SURFACE_ARTIFACTS.find((item) => item.id === artifactId)?.version).toBe(2);
+    expect(
+      REPLAY_SURFACE_ARTIFACT_REVISIONS.filter(
+        (revision) => revision.artifactId === artifactId,
+      ).map((revision) => revision.version),
+    ).toEqual([1, 2]);
+  });
+
+  it('backs the sketch surface with self-contained, token-themed HTML', () => {
+    const [surface] = surfacesOf(completeTurns('surface-sketch'));
+    const sketchId = (surface.payload.data as { sketchId: string }).sketchId;
+    const sketch = REPLAY_SURFACE_SKETCHES.find((item) => item.id === sketchId);
+    expect(sketch?.html).toContain('var(--anvil-');
+    expect(sketch?.html).not.toMatch(/<script|https?:\/\//i);
+  });
+
+  it('provides a 30-surface heavy thread where every surface stays live', () => {
+    const turns = completeTurns('surface-heavy-thread');
+    const surfaces = surfacesOf(turns);
+    expect(turns).toHaveLength(HEAVY_SURFACE_COUNT / 2);
+    expect(surfaces).toHaveLength(HEAVY_SURFACE_COUNT);
+    expect(new Set(surfaces.map((surface) => surface.id)).size).toBe(HEAVY_SURFACE_COUNT);
+    expect(new Set(surfaces.map((surface) => surface.payload.surfaceKind))).toEqual(
+      new Set(['review', 'findings', 'data', 'pipeline', 'dependencies', 'artifact', 'sketch']),
+    );
+    expect(surfaces.every((surface) => !resolveSupersedingId(surface, surfaces))).toBe(true);
   });
 });

@@ -14,11 +14,15 @@ import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { PullRequestCanvas } from './PullRequestCanvas';
 import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { Button } from '../ui';
+import { ReviewInChatButton } from './ReviewInChat';
+import { reviewInChatPath, reviewInChatScopeFromCodeReview } from './review-in-chat';
 
 export function CodeReviewView() {
   const { repoId } = useParams<{ repoId: string }>();
   const navigate = useNavigate();
-  const { featureAvailability } = useWorkspace();
+  const { featureAvailability, repos } = useWorkspace();
+  const repoName = repos.find((repo) => repo.id === repoId)?.name;
   const [searchParams, setSearchParams] = useSearchParams();
   const visualisePullRequestId = searchParams.get('pr');
   const initialCanvasMode = searchParams.get('view') === 'diff' ? 'diff' : 'map';
@@ -151,6 +155,16 @@ export function CodeReviewView() {
     }
   }, [repoId, mode, pendingScope, syncReviewState]);
 
+  const chatScope =
+    repoId && pendingScope
+      ? reviewInChatScopeFromCodeReview(
+          repoId,
+          pendingScope.scopeType,
+          pendingScope.scopeRef,
+          repoName,
+        )
+      : null;
+
   // API not available (preload needs rebuild/restart)
   if (repoId && !window.anvil.codereview) {
     return (
@@ -261,21 +275,44 @@ export function CodeReviewView() {
               repoId={repoId}
               onScopeSelected={handleScopeSelected}
               onScopeDirty={handleScopeDirty}
+              onReviewPullRequestInChat={(pullRequest) =>
+                navigate(
+                  reviewInChatPath({
+                    type: 'pull-request',
+                    repoId,
+                    repoName,
+                    pullRequestId: pullRequest.id,
+                    title: pullRequest.title,
+                  }),
+                )
+              }
               disabled={running}
             />
           </div>
         )}
 
-        {/* Run button */}
-        {scopeReady && !running && (
-          <div className="border-b border-border-subtle p-4">
-            <button
-              onClick={handleRunReview}
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-accent-foreground transition-opacity hover:opacity-90"
-            >
-              <Play size={14} />
-              Run {mode === 'quick_glance' ? 'Quick Glance' : 'Senior Dev Review'}
-            </button>
+        {/* Review in chat (primary) or the built-in run for scopes without a diff */}
+        {scopeReady && !running && pendingScope && (
+          <div className="space-y-2 border-b border-border-subtle p-4">
+            {chatScope ? (
+              <>
+                <ReviewInChatButton scope={chatScope} size="md" className="w-full" />
+                <Button variant="ghost" size="sm" onClick={handleRunReview} className="w-full">
+                  <Play size={13} aria-hidden="true" />
+                  Run built-in {mode === 'quick_glance' ? 'Quick Glance' : 'Senior Dev Review'}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button onClick={handleRunReview} className="w-full">
+                  <Play size={14} aria-hidden="true" />
+                  Run {mode === 'quick_glance' ? 'Quick Glance' : 'Senior Dev Review'}
+                </Button>
+                <p className="text-xs leading-5 text-text-tertiary">
+                  Full-codebase reviews run here. Diff scopes open as a Review in chat.
+                </p>
+              </>
+            )}
           </div>
         )}
 
@@ -298,7 +335,7 @@ export function CodeReviewView() {
 
         {/* Review history */}
         <div className="flex-1 overflow-auto p-2">
-          <p className="px-2 pb-1 text-sm font-medium text-text-secondary">Review history</p>
+          <p className="px-2 pb-1 text-sm font-medium text-text-secondary">Saved reviews</p>
           {reviews.map((review) => (
             <button
               key={review.id}
@@ -331,7 +368,7 @@ export function CodeReviewView() {
           ))}
           {reviews.length === 0 && !running && (
             <p className="p-3 text-center text-xs text-text-secondary">
-              Completed reviews appear here.
+              Built-in reviews appear here. Reviews in chat stay in their thread.
             </p>
           )}
         </div>
@@ -347,6 +384,7 @@ export function CodeReviewView() {
         {selectedReview ? (
           <CodeReviewReport
             review={selectedReview}
+            repoName={repoName}
             onVisualisePullRequest={(pullRequestId) =>
               setSearchParams({ pr: pullRequestId, view: 'map' })
             }
@@ -358,7 +396,7 @@ export function CodeReviewView() {
             description={
               running
                 ? progress.message || 'Anvil is inspecting the selected scope.'
-                : 'Review a commit, branch diff, pull request, or the full codebase.'
+                : 'Pick a commit, branch diff or pull request, then review it in chat.'
             }
           />
         )}

@@ -7,13 +7,112 @@ import type {
   ChatArtifactAnnotationInput,
   ChatArtifactAnnotationPatch,
 } from '../../../../../shared/types';
+import type { SurfacesApi } from '../../../../../shared/surfaces/ipc';
+import type { SurfaceComment } from '../../../../../shared/surfaces/types';
 import { ChatReplayPreview } from '../ChatReplayPreview';
+import {
+  REPLAY_SURFACE_ARTIFACTS,
+  REPLAY_SURFACE_ARTIFACT_REVISIONS,
+  REPLAY_SURFACE_SKETCHES,
+} from '../chat-replay-surface-fixtures';
 import '../../../../styles/global.css';
 import './preview.css';
 
 const noopUnsubscribe = () => undefined;
 let localAnnotations: ChatArtifactAnnotation[] = [];
 let nextAnnotationId = 0;
+
+// In-memory surface store so artifact, sketch, revision and comment views render offline.
+const SHARING_DISABLED = 'Sharing is disabled in the synthetic replay.';
+let localArtifacts = [...REPLAY_SURFACE_ARTIFACTS];
+let localSketches = [...REPLAY_SURFACE_SKETCHES];
+let localSurfaceComments: SurfaceComment[] = [];
+let nextSurfaceCommentId = 0;
+
+const localSurfaces: SurfacesApi = {
+  runAction: async (request) => ({
+    ok: true,
+    message: `Synthetic replay: "${request.action}" was not executed.`,
+  }),
+  listComments: async (surfaceId) =>
+    localSurfaceComments.filter((comment) => comment.surfaceId === surfaceId),
+  addComment: async (input) => {
+    const now = new Date().toISOString();
+    const comment: SurfaceComment = {
+      id: `fixture-surface-comment-${++nextSurfaceCommentId}`,
+      surfaceId: input.surfaceId,
+      anchor: input.anchor,
+      body: input.body,
+      status: 'open',
+      createdAt: now,
+      updatedAt: now,
+    };
+    localSurfaceComments = [...localSurfaceComments, comment];
+    return comment;
+  },
+  setCommentStatus: async (commentId, status) => {
+    const existing = localSurfaceComments.find((comment) => comment.id === commentId);
+    if (!existing) throw new Error('Synthetic comment was not found.');
+    const updated = { ...existing, status, updatedAt: new Date().toISOString() };
+    localSurfaceComments = localSurfaceComments.map((comment) =>
+      comment.id === commentId ? updated : comment,
+    );
+    return updated;
+  },
+  getSketch: async (sketchId) => localSketches.find((sketch) => sketch.id === sketchId) ?? null,
+  keepSketch: async (sketchId, title) => {
+    const sketch = localSketches.find((candidate) => candidate.id === sketchId);
+    if (!sketch) throw new Error('Synthetic sketch was not found.');
+    const now = new Date().toISOString();
+    const artifact = {
+      id: `fixture-kept-${sketch.id}`,
+      threadId: sketch.threadId,
+      title: title ?? sketch.title,
+      kind: 'html' as const,
+      storage: 'session' as const,
+      relativePath: `${sketch.id}.html`,
+      content: sketch.html,
+      version: 1,
+      status: 'draft' as const,
+      visibility: 'local' as const,
+      source: 'assistant' as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+    localArtifacts = [...localArtifacts.filter((item) => item.id !== artifact.id), artifact];
+    localSketches = localSketches.map((candidate) =>
+      candidate.id === sketchId ? { ...candidate, keptArtifactId: artifact.id } : candidate,
+    );
+    return artifact;
+  },
+  getArtifact: async (artifactId) => localArtifacts.find((item) => item.id === artifactId) ?? null,
+  listArtifactRevisions: async (artifactId) =>
+    REPLAY_SURFACE_ARTIFACT_REVISIONS.filter((revision) => revision.artifactId === artifactId),
+  getArtifactRevision: async (artifactId, version) =>
+    REPLAY_SURFACE_ARTIFACT_REVISIONS.find(
+      (revision) => revision.artifactId === artifactId && revision.version === version,
+    ) ?? null,
+};
+
+const localShares = {
+  available: async () => false,
+  list: async () => [],
+  preview: async () => {
+    throw new Error(SHARING_DISABLED);
+  },
+  publish: async () => {
+    throw new Error(SHARING_DISABLED);
+  },
+  update: async () => {
+    throw new Error(SHARING_DISABLED);
+  },
+  revoke: async () => {
+    throw new Error(SHARING_DISABLED);
+  },
+  copyLink: async () => {
+    throw new Error(SHARING_DISABLED);
+  },
+};
 
 const localAnvilBridge = {
   chat: {
@@ -55,7 +154,13 @@ const localAnvilBridge = {
       localAnnotations = localAnnotations.filter((annotation) => annotation.id !== id);
       return true;
     },
+    discardArtifact: async (artifactId: string) => {
+      localArtifacts = localArtifacts.filter((item) => item.id !== artifactId);
+      return true;
+    },
   },
+  surfaces: localSurfaces,
+  shares: localShares,
   codexRegistry: {
     snapshot: async () => ({ skills: [] }),
   },

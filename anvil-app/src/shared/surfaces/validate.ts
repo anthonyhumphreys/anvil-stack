@@ -1,6 +1,6 @@
 // Validator for the JsonSchema subset in src/shared/surfaces/types.ts. Used at the
 // main-process trust boundary for tool arguments and surface payloads.
-import type { JsonSchema } from '../../shared/surfaces/types.js';
+import type { JsonSchema } from './types.js';
 
 export interface SchemaValidationError {
   path: string;

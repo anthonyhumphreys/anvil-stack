@@ -23,3 +23,22 @@ without submitting them.
 The provider selector changes display attribution. Protocol normalization for
 the six supported providers is covered by `codex-protocol.service.test.ts`;
 turn state and replay behavior are covered by `processing-state.test.ts`.
+
+# Chat replay and inline surface fixtures
+
+The standalone transcript replay (no Electron, no IPC) runs from `anvil-app/`:
+
+```sh
+pnpm exec vite --config scripts/chat-replay.vite.config.ts
+```
+
+Open `http://127.0.0.1:4179/` and pick a fixture. `Surface · …` fixtures cover
+each inline surface kind (`chat-replay-surface-fixtures.ts`): a streaming
+working-tree Review, Findings, Dependencies, Pipeline, Data with a chart, an
+Artifact created then updated (the older surface collapses as superseded), a
+Sketch, and a 30-surface heavy thread for the performance budget in
+`docs/chat-replay-benchmark.md`. Use **Step** to watch a surface stream and
+update in place, and the **Theme** selector for the dark, light and flavour
+visual check. The preview entry (`dev-preview/main.tsx`) serves artifacts,
+revisions, sketches and comments from memory; actions and sharing are inert.
+`chat-replay.test.ts` validates every fixture payload against its kind schema.

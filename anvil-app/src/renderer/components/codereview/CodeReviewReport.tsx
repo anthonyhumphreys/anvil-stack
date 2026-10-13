@@ -29,13 +29,17 @@ import { copyTextToClipboard } from '../../utils/clipboard';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
 import { RepositoryMap } from '../repos/RepositoryMap';
 import { WORKSPACE_REPOSITORIES_PATH } from '../../utils/sidebar-navigation';
+import { NewReviewsInChatNote } from './ReviewInChat';
+import { reviewInChatScopeFromCodeReview } from './review-in-chat';
 
 interface Props {
   review: CodeReview;
+  repoName?: string;
   onVisualisePullRequest?: (pullRequestId: string) => void;
 }
 
-export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
+/** Saved (pre-surface) review report. New reviews open as a Review surface in chat (§8.1). */
+export function CodeReviewReport({ review, repoName, onVisualisePullRequest }: Props) {
   const navigate = useNavigate();
   const { activeWorkspace, repos } = useWorkspace();
   const [findings, setFindings] = useState<CodeReviewFinding[]>([]);
@@ -292,6 +296,12 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
   const scopeLabel = formatScopeLabel(review.scopeType, review.scopeRef);
   const canPostToPullRequest =
     review.scopeType === 'pull_request' && Boolean(review.scopeRef?.pullRequest?.id);
+  const chatScope = reviewInChatScopeFromCodeReview(
+    review.repoId,
+    review.scopeType,
+    review.scopeRef,
+    repoName,
+  );
   const changeMapCommitMismatch = Boolean(
     mapGraph &&
     changeSummary?.currentCommitSha &&
@@ -308,6 +318,7 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
             <p className="text-xs text-text-secondary">
               {new Date(review.startedAt).toLocaleString()} — {modeLabel} — {scopeLabel}
             </p>
+            <NewReviewsInChatNote scope={chatScope} className="mt-0.5" />
           </div>
           <div className="flex items-center gap-2">
             <WorkspaceGitActions repos={repos} compact onError={setActionError} />
@@ -315,7 +326,7 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
               <button
                 type="button"
                 onClick={() => onVisualisePullRequest(review.scopeRef!.pullRequest!.id)}
-                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition-colors hover:bg-accent/85"
+                className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary"
               >
                 <Sparkles size={14} /> Visualise PR
               </button>
