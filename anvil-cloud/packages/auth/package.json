@@ -12,6 +12,6 @@
   },
   "dependencies": {
     "@anvil-cloud/runtime": "workspace:*",
-    "jose": "^6.2.3"
+    "jose": "^6.2.12"
   }
 }

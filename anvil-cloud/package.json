@@ -27,21 +27,22 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^22.10.2",
-    "eslint": "^10.7.0",
-    "globals": "^17.7.0",
-    "prettier": "^3.8.4",
-    "typescript": "^5.7.2",
-    "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.9",
-    "wrangler": "4.120.0"
+    "@types/node": "^22.20.5",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.9",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^4.1.11",
+    "wrangler": "4.147.0"
   },
   "pnpm": {
     "overrides": {
-      "brace-expansion@5": "5.0.9",
+      "brace-expansion@5": "5.0.12",
       "esbuild": "0.28.1",
       "nanoid@3": "3.3.18",
-      "postcss": "8.5.26"
+      "postcss": "8.5.26",
+      "sharp": "0.35.5"
     }
   }
 }
