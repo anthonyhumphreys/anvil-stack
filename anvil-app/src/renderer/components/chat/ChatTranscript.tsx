@@ -181,6 +181,7 @@ export function ChatTranscript({
                         active={liveState !== null}
                         outcome={turn.runOutcome}
                         waiting={runSummary?.state === 'awaiting-user'}
+                        answering={liveState === 'responding'}
                         startedAt={turn.startedAt}
                         endedAt={turn.endedAt}
                       />

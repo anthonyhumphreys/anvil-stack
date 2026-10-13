@@ -103,6 +103,24 @@ describe('processing evidence and rendering', () => {
     expect(getProcessingState({ items, busy: false })).toBe('ended');
   });
 
+  it('hands the live indicator to a streaming answer without claiming an outcome', () => {
+    const items: ChatTurnWorkItem[] = [
+      { kind: 'event', sourceIndex: 0, event: { type: 'tool_call', toolName: 'read_file' } },
+    ];
+    expect(getProcessingState({ items, busy: true, answering: true })).toBe('answering');
+    expect(getProcessingState({ items, busy: true, answering: true, waiting: true })).toBe(
+      'waiting',
+    );
+    expect(getProcessingState({ items, busy: true, answering: true, outcome: 'completed' })).toBe(
+      'completed',
+    );
+    const html = renderToStaticMarkup(
+      createElement(TurnWorkMessage, { items, active: true, answering: true }),
+    );
+    expect(html).toContain('Work done');
+    expect(html).toContain('data-processing-motion="paused"');
+  });
+
   it('renders one collapsed card and an initial activity card without mounting hidden tool output', () => {
     const items: ChatTurnWorkItem[] = [
       {

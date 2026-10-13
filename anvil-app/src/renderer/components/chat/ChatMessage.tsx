@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, useId } from 'react';
+import { useState, useCallback, useEffect, useRef, useId, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FileText,
@@ -43,7 +43,7 @@ import { buildApprovalAwareWorkSegments, type ChatTurnWorkItem } from './chat-tu
 import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
 import { FileEditReviewGrid } from './TurnChangesFooter';
-import { ProcessingCard, useProcessingActive } from './ProcessingCard';
+import { LiveGlyph, ProcessingCard, useProcessingActive } from './ProcessingCard';
 import { countProcessingActions, getOperationStatus, getProcessingState } from './processing-state';
 import { buildChatRequestTargetDomId, getChatQuestionTargetId } from './chat-run-outcome';
 import {
@@ -206,7 +206,10 @@ function TurnWorkItemDetail({ item, index }: { item: ChatTurnWorkItem; index: nu
 
   if (item.kind === 'thinking') {
     return (
-      <div className="border-l border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary">
+      <div
+        data-work-reasoning
+        className="border-l border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
+      >
         <p className="mb-1 text-xs font-medium not-italic text-text-muted">Reasoning</p>
         <p className="whitespace-pre-wrap break-words">{item.content}</p>
       </div>
@@ -361,6 +364,7 @@ export function TurnWorkMessage({
   active = false,
   outcome,
   waiting = false,
+  answering = false,
   startedAt,
   endedAt,
 }: {
@@ -368,6 +372,8 @@ export function TurnWorkMessage({
   active?: boolean;
   outcome?: CodexEvent['turnOutcome'];
   waiting?: boolean;
+  /** The answer is streaming; the reply header carries the live indicator. */
+  answering?: boolean;
   startedAt?: string;
   endedAt?: string;
 }) {
@@ -383,7 +389,8 @@ export function TurnWorkMessage({
       ];
     }),
   );
-  const state = getProcessingState({ items, busy: active, outcome, waiting });
+  const state = getProcessingState({ items, busy: active, outcome, waiting, answering });
+  const liveSteps = state === 'working';
   const counts = countProcessingActions(items);
   const latest = [...items]
     .reverse()
@@ -408,7 +415,7 @@ export function TurnWorkMessage({
       startedAt={startedAt}
       endedAt={endedAt}
     >
-      {items.map((item) => {
+      {items.map((item, position) => {
         if (
           item.kind === 'event' &&
           (['request_resolved', 'agent_ui_intent_resolved'].includes(item.event.type) ||
@@ -421,6 +428,12 @@ export function TurnWorkMessage({
             key={workItemKey(item, item.sourceIndex)}
             className="processing-item"
             hidden={!expanded && !surfaced}
+            data-step-status={
+              item.kind === 'event' && STEP_OPERATION_TYPES.has(item.event.type)
+                ? getOperationStatus(item.event, liveSteps)
+                : undefined
+            }
+            style={{ '--step-index': position } as CSSProperties}
           >
             {(expanded || surfaced) && <TurnWorkItemDetail item={item} index={item.sourceIndex} />}
           </div>
@@ -429,6 +442,13 @@ export function TurnWorkMessage({
     </ProcessingCard>
   );
 }
+
+/** Rows whose timeline dot reflects an outcome; others stay neutral. */
+const STEP_OPERATION_TYPES = new Set<CodexEvent['type']>([
+  'tool_call',
+  'command_exec',
+  'file_edit',
+]);
 
 export type TurnActivityState = 'thinking' | 'working' | 'responding';
 
@@ -1822,21 +1842,17 @@ function ErrorEvent({ message }: { message: string }) {
   );
 }
 
+/** A recorded status change. The turn card owns the live indicator. */
 function StatusEvent({ status }: { status: string }) {
   if (status === 'complete') return null;
 
   const label =
     {
-      thinking: 'Thinking...',
-      executing: 'Executing...',
+      thinking: 'Thinking',
+      executing: 'Executing',
     }[status] ?? status;
 
-  return (
-    <div className="flex items-center gap-2 py-1.5 text-sm text-text-tertiary">
-      <Loader2 size={12} className="animate-spin" />
-      {label}
-    </div>
-  );
+  return <div className="py-1 text-xs text-text-tertiary">{label}</div>;
 }
 
 export function ThinkingMessage({ content }: { content: string }) {
@@ -1972,7 +1988,7 @@ export function AssistantMessage({
           aria-live={active ? 'polite' : undefined}
         >
           {active ? (
-            <WorkingDots compact />
+            <LiveGlyph size="sm" />
           ) : (
             <span
               className="h-1.5 w-1.5 rounded-full bg-text-tertiary"

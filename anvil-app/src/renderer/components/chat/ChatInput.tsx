@@ -13,7 +13,6 @@ import {
   Send,
   SlidersHorizontal,
   Sparkles,
-  Square,
   Zap,
   X,
 } from 'lucide-react';
@@ -29,6 +28,11 @@ import type {
   ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
+import {
+  ComposerSendControl,
+  ComposerStopButton,
+  type ComposerSendOption,
+} from './ComposerSendControl';
 import { ChatAccessLevelChip } from './ChatAccessLevelChip';
 import {
   ChatComposerEditor,
@@ -47,6 +51,14 @@ import {
   isCurrentComposerDraft,
   type ComposerDraftVersion,
 } from './chat-composer-intent';
+
+// Stable defaults: effects key on these props, so a fresh [] per render would loop.
+const NO_REPO_IDS: string[] = [];
+const NO_QUICK_PROMPTS: ChatQuickPrompt[] = [];
+const NO_SLASH_COMMANDS: ChatSlashCommand[] = [];
+
+type BusySendChoice = 'guide' | 'queue' | 'side';
+type IdleSendChoice = 'send' | 'side';
 
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_RENDERER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -208,9 +220,9 @@ export function ChatInput({
   prefill,
   draftKey,
   allowAttachments = true,
-  mentionRepoIds = [],
-  quickPrompts = [],
-  slashCommands = [],
+  mentionRepoIds = NO_REPO_IDS,
+  quickPrompts = NO_QUICK_PROMPTS,
+  slashCommands = NO_SLASH_COMMANDS,
   focusRequest = 0,
   showSyntaxHint = false,
 }: ChatInputProps) {
@@ -231,6 +243,11 @@ export function ChatInput({
   const [pendingFollowUpId, setPendingFollowUpId] = useState<string | null>(null);
   const [standardSendPending, setStandardSendPending] = useState(false);
   const [sideQuestionPending, setSideQuestionPending] = useState(false);
+  const [busySendChoice, setBusySendChoice] = useState<BusySendChoice>('guide');
+  const [idleSendChoice, setIdleSendChoice] = useState<IdleSendChoice>('send');
+  const [pendingFollowUpIntent, setPendingFollowUpIntent] = useState<ChatFollowUpIntent | null>(
+    null,
+  );
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [preparingAttachments, setPreparingAttachments] = useState(false);
   const [fileMention, setFileMention] = useState<ActiveFileMention | null>(null);
@@ -467,6 +484,7 @@ export function ChatInput({
         draftKey: submission.draftKey,
       };
       setPendingFollowUpId(submission.requestId);
+      setPendingFollowUpIntent(submission.intent);
       setFollowUpFeedback({
         kind: 'success',
         message: retry
@@ -524,7 +542,10 @@ export function ChatInput({
           followUpPendingRef.current.draftKey === submission.draftKey
         ) {
           followUpPendingRef.current = null;
-          if (draftKeyRef.current === submission.draftKey) setPendingFollowUpId(null);
+          if (draftKeyRef.current === submission.draftKey) {
+            setPendingFollowUpId(null);
+            setPendingFollowUpIntent(null);
+          }
         }
       }
     },
@@ -1047,6 +1068,7 @@ export function ChatInput({
     setFollowUpFeedback(null);
     setUncertainFollowUps([]);
     setPendingFollowUpId(null);
+    setPendingFollowUpIntent(null);
     setStandardSendPending(false);
     setSideQuestionPending(false);
     followUpPendingRef.current = null;
@@ -1104,7 +1126,7 @@ export function ChatInput({
 
   useEffect(() => {
     if (!allowAttachments || disabled || !fileMention || mentionRepoIds.length === 0) {
-      setFileMentionResults([]);
+      setFileMentionResults((current) => (current.length === 0 ? current : []));
       setFileMentionLoading(false);
       setFileMentionError(null);
       return;
@@ -1201,6 +1223,69 @@ export function ChatInput({
     disabled || !hasContent || preparingAttachments || !!pendingFollowUpId || followUpBlocked;
   const sideQuestionButtonDisabled =
     disabled || !hasContent || preparingAttachments || sideQuestionPending;
+  const canAskSideQuestion = Boolean(sideQuestionAvailable && onSideQuestion);
+  const sideQuestionOption: ComposerSendOption = {
+    id: 'side',
+    label: 'Side question',
+    shortLabel: 'Side question',
+    description: 'Ask in a separate read-only chat. The main run continues.',
+    icon: CircleHelp,
+    disabled: sideQuestionButtonDisabled,
+    pending: sideQuestionPending,
+    ariaLabel: 'Ask a read-only side question',
+    run: () => {
+      void handleSideQuestion();
+      if (!busy) setIdleSendChoice('send');
+    },
+  };
+  const sendOptions: ComposerSendOption[] = busy
+    ? [
+        ...(canGuide
+          ? [
+              {
+                id: 'guide',
+                label: 'Guide current run',
+                shortLabel: 'Guide',
+                description: 'Send now. The agent adjusts the run it is working on.',
+                icon: Send,
+                disabled: followUpButtonDisabled,
+                pending: pendingFollowUpId !== null && pendingFollowUpIntent === 'guide',
+                ariaLabel: 'Guide the current run',
+                run: () => void handleFollowUp('guide'),
+              },
+            ]
+          : []),
+        ...(canQueue
+          ? [
+              {
+                id: 'queue',
+                label: 'Queue next',
+                shortLabel: 'Queue',
+                description: 'Send when the current run finishes.',
+                icon: ListChecks,
+                disabled: followUpButtonDisabled,
+                pending: pendingFollowUpId !== null && pendingFollowUpIntent === 'queue',
+                ariaLabel: 'Queue for the next run',
+                run: () => void handleFollowUp('queue'),
+              },
+            ]
+          : []),
+        ...(canAskSideQuestion ? [sideQuestionOption] : []),
+      ]
+    : [
+        {
+          id: 'send',
+          label: 'Send',
+          shortLabel: 'Send',
+          description: 'Send to the agent.',
+          icon: Send,
+          disabled: disabled || !hasContent || preparingAttachments || standardSendPending,
+          pending: standardSendPending,
+          ariaLabel: 'Send message',
+          run: () => void handleSend(),
+        },
+        ...(canAskSideQuestion ? [sideQuestionOption] : []),
+      ];
   const showQuickPrompts =
     !busy &&
     !disabled &&
@@ -1360,7 +1445,7 @@ export function ChatInput({
           placeholder={
             busy
               ? canGuide && canQueue
-                ? 'Write a message, then choose Guide current run or Queue next...'
+                ? 'Guide this run, or queue what comes next…'
                 : canGuide
                   ? 'Write guidance for the current run...'
                   : canQueue
@@ -1430,13 +1515,13 @@ export function ChatInput({
           </div>
 
           <div
-            className={`flex min-w-0 flex-wrap items-center justify-end gap-1.5 ${
-              compactFooter ? 'w-full flex-col items-stretch' : 'ml-auto'
+            className={`flex min-w-0 items-center gap-1.5 ${
+              compactFooter ? 'w-full' : 'ml-auto flex-wrap justify-end'
             }`}
           >
             <div
               className={`flex min-w-0 flex-wrap items-center gap-1.5 ${
-                compactFooter ? 'w-full' : 'flex-none'
+                compactFooter ? 'flex-1' : 'flex-none'
               }`}
             >
               {/* CH1 — the thread's access level is always visible here. */}
@@ -1486,95 +1571,30 @@ export function ChatInput({
                 disabled={disabled}
                 colour={personaColour}
               />
-              {busy ? (
-                <>
-                  {canGuide && (
-                    <button
-                      type="button"
-                      onClick={() => void handleFollowUp('guide')}
-                      disabled={followUpButtonDisabled}
-                      className="flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
-                      style={{ backgroundColor: personaColour }}
-                      aria-label="Guide the current run"
-                      title="Send guidance to the agent’s current run"
-                    >
-                      <Send size={13} />
-                      Guide current run
-                    </button>
-                  )}
-                  {canQueue && (
-                    <button
-                      type="button"
-                      onClick={() => void handleFollowUp('queue')}
-                      disabled={followUpButtonDisabled}
-                      className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-tertiary px-2.5 text-xs font-medium text-text-primary transition-colors hover:bg-bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
-                      aria-label="Queue for the next run"
-                      title="Send this message after the current run finishes"
-                    >
-                      <ListChecks size={13} />
-                      Queue next
-                    </button>
-                  )}
-                  {!canGuide && !canQueue && (
-                    <span className="px-2 text-xs text-text-tertiary">
-                      Follow-up sending is unavailable for this session.
+              {busy && <ComposerStopButton onStop={onStop} />}
+              {busy && !canGuide && !canQueue && !canAskSideQuestion
+                ? hasContent && (
+                    <span className="px-1 text-xs text-text-tertiary">
+                      Follow-ups are unavailable for this session.
                     </span>
+                  )
+                : (!busy || hasContent) && (
+                    <ComposerSendControl
+                      key={busy ? 'busy' : 'idle'}
+                      options={sendOptions}
+                      selectedId={busy ? busySendChoice : idleSendChoice}
+                      onSelect={(id) =>
+                        busy
+                          ? setBusySendChoice(id as BusySendChoice)
+                          : setIdleSendChoice(id as IdleSendChoice)
+                      }
+                      colour={personaColour}
+                      hasContent={hasContent}
+                      menuLabel={
+                        busy ? 'More ways to send while the run continues' : 'More ways to send'
+                      }
+                    />
                   )}
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void handleSend()}
-                  disabled={disabled || !hasContent || preparingAttachments || standardSendPending}
-                  className="composer-send flex h-8 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold text-bg-primary transition-[transform,filter,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-30"
-                  style={{
-                    backgroundColor: hasContent
-                      ? personaColour
-                      : `color-mix(in srgb, ${personaColour} 25%, transparent)`,
-                  }}
-                  aria-label={standardSendPending ? 'Sending message' : 'Send message'}
-                  aria-busy={standardSendPending}
-                  title={standardSendPending ? 'Sending message' : 'Send message'}
-                >
-                  {standardSendPending ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Send size={14} />
-                  )}
-                  Send
-                </button>
-              )}
-              {sideQuestionAvailable && onSideQuestion && (
-                <button
-                  type="button"
-                  onClick={() => void handleSideQuestion()}
-                  disabled={sideQuestionButtonDisabled}
-                  className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border-subtle bg-transparent px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-35"
-                  aria-label="Ask a read-only side question"
-                  aria-busy={sideQuestionPending}
-                  title="Start a separate read-only conversation. The main run continues."
-                >
-                  {sideQuestionPending ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : (
-                    <CircleHelp size={13} />
-                  )}
-                  Side question
-                </button>
-              )}
-              {busy && (
-                <button
-                  type="button"
-                  onClick={onStop}
-                  disabled={!onStop}
-                  className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/70 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="Stop generation"
-                  aria-label="Stop current run"
-                >
-                  <Square size={12} fill="currentColor" />
-                  Stop
-                </button>
-              )}
             </div>
           </div>
         </ChatComposerFooter>
@@ -2391,15 +2411,15 @@ function RunSettingsDropdown({
   return (
     <div
       ref={containerRef}
-      className={`relative min-w-0 ${compact ? 'flex-1' : ''}`}
+      className="relative min-w-0"
       onKeyDown={handleKeyDown}
     >
       <button
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className={`flex min-h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
-          compact ? 'w-full py-1' : 'h-8 max-w-64'
+        className={`flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
+          compact ? 'max-w-56' : 'max-w-64'
         }`}
         title={`Run settings: ${label}`}
         aria-label={`Run settings: ${label}`}
@@ -2408,13 +2428,7 @@ function RunSettingsDropdown({
         aria-controls={open ? RUN_SETTINGS_MENU_ID : undefined}
       >
         <SlidersHorizontal size={13} className="shrink-0 text-text-tertiary" />
-        <span
-          className={
-            compact ? 'min-w-0 flex-1 whitespace-normal break-words text-left' : 'truncate'
-          }
-        >
-          {label}
-        </span>
+        <span className="truncate">{label}</span>
         <ChevronDown
           size={12}
           className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}

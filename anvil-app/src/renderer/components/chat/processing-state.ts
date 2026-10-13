@@ -1,7 +1,8 @@
 import type { CodexEvent } from '../../../shared/types';
 import type { ChatTurnWorkItem } from './chat-turns';
 
-export type ProcessingState = 'working' | 'waiting' | 'completed' | 'failed' | 'stopped' | 'ended';
+export type ProcessingState =
+  'working' | 'waiting' | 'answering' | 'completed' | 'failed' | 'stopped' | 'ended';
 export type OperationStatus = 'running' | 'completed' | 'failed' | 'recorded';
 
 export function getOperationStatus(event: CodexEvent, active: boolean): OperationStatus {
@@ -18,11 +19,14 @@ export function getProcessingState({
   busy,
   outcome,
   waiting = false,
+  answering = false,
 }: {
   items: readonly ChatTurnWorkItem[];
   busy: boolean;
   outcome?: CodexEvent['turnOutcome'];
   waiting?: boolean;
+  /** The answer is streaming: the reply carries the live indicator, not the card. */
+  answering?: boolean;
 }): ProcessingState {
   if (outcome === 'completed') return 'completed';
   if (outcome === 'failed') return 'failed';
@@ -39,7 +43,8 @@ export function getProcessingState({
   const status = events.findLast((event) => event.type === 'status');
   if (status?.status === 'error') return 'failed';
   // A replayed inProgress item is observation, not evidence of a live run.
-  return busy ? 'working' : 'ended';
+  if (!busy) return 'ended';
+  return answering ? 'answering' : 'working';
 }
 
 export function countProcessingActions(items: readonly ChatTurnWorkItem[]) {

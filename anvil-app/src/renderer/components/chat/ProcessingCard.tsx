@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Check, ChevronDown, ChevronRight, Circle, OctagonX, Pause, Wrench } from 'lucide-react';
+import { Check, ChevronRight, Circle, OctagonX, Pause } from 'lucide-react';
 import { formatProcessingElapsed, type ProcessingState } from './processing-state';
 
 const ProcessingActiveContext = createContext(false);
@@ -16,19 +16,70 @@ export const useProcessingActive = () => useContext(ProcessingActiveContext);
 const labels: Record<ProcessingState, string> = {
   working: 'Working',
   waiting: 'Your input is needed',
+  answering: 'Work done',
   completed: 'Work completed',
   failed: 'Work failed',
   stopped: 'Work stopped',
   ended: 'Activity ended',
 };
 const icons = {
-  working: Wrench,
   waiting: Pause,
+  answering: Check,
   completed: Check,
   failed: OctagonX,
   stopped: Pause,
   ended: Circle,
 };
+
+/**
+ * The live mark shared by the turn card and a streaming answer: a forge dot
+ * whose ring breathes while work continues and throws one ripple per strike.
+ */
+export function LiveGlyph({ strike = 0, size = 'md' }: { strike?: number; size?: 'sm' | 'md' }) {
+  return (
+    <span className={`live-glyph live-glyph--${size}`} aria-hidden="true">
+      <span className="live-glyph-ring" />
+      <span className="live-glyph-dot" />
+      {strike > 0 && <span key={strike} className="live-glyph-strike" />}
+    </span>
+  );
+}
+
+/** Rolls the latest step into place, keeping the previous one long enough to leave. */
+function StepTicker({ text }: { text: string }) {
+  const [lines, setLines] = useState<{ current: string; previous: string | null; key: number }>({
+    current: text,
+    previous: null,
+    key: 0,
+  });
+  useEffect(() => {
+    setLines((value) =>
+      value.current === text
+        ? value
+        : { current: text, previous: value.current, key: value.key + 1 },
+    );
+  }, [text]);
+  return (
+    <span className="processing-ticker mt-1 block text-text-secondary">
+      {lines.previous !== null && (
+        <span
+          key={`out-${lines.key}`}
+          className="processing-ticker-line is-leaving"
+          aria-hidden="true"
+          onAnimationEnd={() => setLines((value) => ({ ...value, previous: null }))}
+        >
+          {lines.previous}
+        </span>
+      )}
+      <span
+        key={`in-${lines.key}`}
+        className={`processing-ticker-line ${lines.key > 0 ? 'is-entering' : ''}`}
+      >
+        {lines.current}
+      </span>
+    </span>
+  );
+}
 
 export function ProcessingCard({
   state,
@@ -59,6 +110,20 @@ export function ProcessingCard({
   const fallbackStart = useRef<number | null>(null);
   const stoppedAt = useRef<number | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
+  // Motion is earned by change seen in this mount; replayed history stays still.
+  const mountedState = useRef(state);
+  const [settled, setSettled] = useState(false);
+  const previousActions = useRef(actions);
+  const [strike, setStrike] = useState(0);
+
+  useEffect(() => {
+    if (state !== mountedState.current) setSettled(true);
+  }, [state]);
+
+  useEffect(() => {
+    if (actions > previousActions.current && active) setStrike((value) => value + 1);
+    previousActions.current = actions;
+  }, [actions, active]);
 
   useEffect(() => {
     if (!active) return;
@@ -93,7 +158,7 @@ export function ProcessingCard({
     return () => window.clearInterval(timer);
   }, [active, startedAt, endedAt, pageVisible, visible]);
 
-  const Icon = icons[state];
+  const Icon = state === 'working' ? null : icons[state];
   return (
     <ProcessingActiveContext.Provider value={active}>
       <div className="message-bubble flex min-w-0 justify-start">
@@ -102,6 +167,8 @@ export function ProcessingCard({
           className="processing-card"
           data-processing-state={state}
           data-processing-motion={active && visible && pageVisible ? 'running' : 'paused'}
+          data-processing-settled={settled ? 'true' : undefined}
+          data-processing-expanded={expanded ? 'true' : undefined}
         >
           <button
             type="button"
@@ -111,7 +178,18 @@ export function ProcessingCard({
             aria-controls={detailsId}
             aria-label={`${expanded ? 'Collapse' : 'Expand'} processing details. ${labels[state]}`}
           >
-            <Icon size={15} className="processing-state-icon shrink-0" aria-hidden="true" />
+            <span className="processing-state-mark">
+              {Icon ? (
+                <Icon
+                  key={state}
+                  size={15}
+                  className="processing-state-icon shrink-0"
+                  aria-hidden="true"
+                />
+              ) : (
+                <LiveGlyph strike={strike} />
+              )}
+            </span>
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="font-medium text-text-primary" role="status">
@@ -119,23 +197,22 @@ export function ProcessingCard({
                 </span>
                 {actions > 0 && (
                   <span className="text-text-secondary">
-                    {actions} action{actions === 1 ? '' : 's'}
+                    <span key={actions} className="processing-count tabular-nums">
+                      {actions}
+                    </span>{' '}
+                    action{actions === 1 ? '' : 's'}
                   </span>
                 )}
                 {failed > 0 && <span className="text-error">{failed} failed</span>}
               </span>
-              <span className="mt-1 block truncate text-text-secondary">{detail}</span>
+              <StepTicker text={detail} />
             </span>
             {elapsed !== null && (
               <span className="shrink-0 tabular-nums text-text-secondary" aria-label="Elapsed time">
                 {formatProcessingElapsed(elapsed)}
               </span>
             )}
-            {expanded ? (
-              <ChevronDown size={13} aria-hidden="true" />
-            ) : (
-              <ChevronRight size={13} aria-hidden="true" />
-            )}
+            <ChevronRight size={13} className="processing-chevron shrink-0" aria-hidden="true" />
           </button>
           <div id={detailsId} className="processing-details">
             {children}

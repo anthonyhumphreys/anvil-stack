@@ -24,10 +24,13 @@ import { Button, cx } from '../ui';
 export function WorkspaceReadinessStrip({
   onOpenWorkspace,
   className,
+  hideWhenReady = false,
 }: {
   /** Optional CTA shown when a repo needs attention — typically navigates to /workspace. */
   onOpenWorkspace?: () => void;
   className?: string;
+  /** Chat only needs the strip while repositories are being prepared or have failed. */
+  hideWhenReady?: boolean;
 }) {
   const { repos, activeScaffoldSession } = useWorkspace();
   const repoIndex = useRepoIndex();
@@ -65,6 +68,13 @@ export function WorkspaceReadinessStrip({
     }
     return `${mappedCount}/${repos.length} ${repos.length === 1 ? 'repository' : 'repositories'} ready`;
   })();
+
+  const allReady =
+    activeJobs.length === 0 &&
+    failedRows.length === 0 &&
+    activeScaffoldSession?.status !== 'indexing' &&
+    mappedCount === repos.length;
+  if (hideWhenReady && allReady) return null;
 
   const combinedPercent = (() => {
     if (activeJobs.length === 0) return null;

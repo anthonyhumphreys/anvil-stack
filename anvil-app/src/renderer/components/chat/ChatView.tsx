@@ -795,6 +795,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             transcript while repos are being prepared. */}
           {!isTemporaryChat && !scaffoldModeActive && repos.length > 0 && (
             <WorkspaceReadinessStrip
+              hideWhenReady
               className="mx-4 mt-3 shrink-0 xl:mx-6"
               onOpenWorkspace={() => navigate(WORKSPACE_REPOSITORIES_PATH)}
             />
