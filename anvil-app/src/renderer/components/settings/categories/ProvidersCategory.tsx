@@ -862,28 +862,33 @@ export function ProvidersCategory() {
                     }`
                   : 'Using docs-backed model defaults until Codex CLI is available.'}
               </p>
-              {codexStatus?.features && (
-                <div className="flex flex-wrap gap-2 pt-1">
+              {/* Reserve the chip row while the CLI check runs so the form below doesn't jump. */}
+              {(codexStatus === null || codexStatus.features) && (
+                <div
+                  className="flex flex-wrap gap-2 pt-1"
+                  aria-busy={codexStatus === null || undefined}
+                >
                   <CapabilityChip
                     label="Computer use"
-                    active={Boolean(codexStatus.features.computer_use?.enabled)}
+                    active={Boolean(codexStatus?.features?.computer_use?.enabled)}
                   />
                   <CapabilityChip
                     label="Browser use"
-                    active={Boolean(codexStatus.features.browser_use?.enabled)}
+                    active={Boolean(codexStatus?.features?.browser_use?.enabled)}
                   />
                   <CapabilityChip
                     label="Multi-agent"
-                    active={Boolean(codexStatus.features.multi_agent?.enabled)}
+                    active={Boolean(codexStatus?.features?.multi_agent?.enabled)}
                   />
                   <CapabilityChip
                     label="Voice"
-                    active={Boolean(codexStatus.features.realtime_conversation?.enabled)}
+                    active={Boolean(codexStatus?.features?.realtime_conversation?.enabled)}
                   />
                   <CapabilityChip
-                    label={`Web search: ${codexStatus.webSearchMode ?? 'unknown'}`}
+                    label={`Web search: ${codexStatus ? (codexStatus.webSearchMode ?? 'unknown') : 'checking'}`}
                     active={
-                      Boolean(codexStatus.webSearchMode) && codexStatus.webSearchMode !== 'disabled'
+                      Boolean(codexStatus?.webSearchMode) &&
+                      codexStatus?.webSearchMode !== 'disabled'
                     }
                   />
                 </div>

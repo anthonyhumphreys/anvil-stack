@@ -122,7 +122,10 @@ export function Sidebar({
     minWidth: 224,
     maxWidth: 340,
   });
-  const [autoCompact, setAutoCompact] = useState(false);
+  // Chat gets the room on narrower windows. Derived during render (not in an
+  // effect) so a route change lays out once at the final width.
+  const [narrowWindow, setNarrowWindow] = useState(() => window.innerWidth < 1500);
+  const autoCompact = location.pathname.startsWith('/chat') && narrowWindow;
   const [narrowExpansion, setNarrowExpansion] = useState(false);
   const [automateOpen, setAutomateOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -132,16 +135,14 @@ export function Sidebar({
   const compact = collapsed || (autoCompact && !narrowExpansion);
 
   useEffect(() => {
-    const updateCompactMode = () => {
-      const shouldCompact = location.pathname.startsWith('/chat') && window.innerWidth < 1500;
-      setAutoCompact(shouldCompact);
-      if (!shouldCompact) setNarrowExpansion(false);
-    };
+    const updateNarrowWindow = () => setNarrowWindow(window.innerWidth < 1500);
+    window.addEventListener('resize', updateNarrowWindow);
+    return () => window.removeEventListener('resize', updateNarrowWindow);
+  }, []);
 
-    updateCompactMode();
-    window.addEventListener('resize', updateCompactMode);
-    return () => window.removeEventListener('resize', updateCompactMode);
-  }, [location.pathname]);
+  useEffect(() => {
+    if (!autoCompact) setNarrowExpansion(false);
+  }, [autoCompact]);
 
   const navigation = useMemo(
     () => getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled),
@@ -306,7 +307,7 @@ export function Sidebar({
 
   return (
     <aside
-      className="relative z-30 flex h-full min-h-0 shrink-0 flex-col bg-bg-secondary transition-[width] duration-200"
+      className="relative z-30 flex h-full min-h-0 shrink-0 flex-col bg-bg-secondary"
       style={{ width: compact ? 72 : width }}
     >
       {/* Titlebar drag region — clears macOS traffic lights outside fullscreen. */}

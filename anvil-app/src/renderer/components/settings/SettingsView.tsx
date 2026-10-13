@@ -218,7 +218,7 @@ export function SettingsView({
         reportError: setStatusError,
       }}
     >
-      <div className="@container h-full overflow-auto px-4 md:px-6">
+      <div className="@container h-full overflow-auto px-4 [scrollbar-gutter:stable] md:px-6">
         <div className="mx-auto max-w-7xl space-y-5 pb-6">
           <header className="sticky top-0 z-20 border-b border-border bg-bg-primary py-4">
             <div className="flex flex-wrap items-start justify-between gap-4">
@@ -265,7 +265,7 @@ export function SettingsView({
                 </div>
                 <span
                   className={cx(
-                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs',
+                    'inline-flex min-w-[10.5rem] items-center justify-center gap-1.5 rounded-full border px-2.5 py-1 text-xs',
                     allSaved
                       ? 'border-success/30 bg-success/10 text-success'
                       : 'border-border-subtle bg-bg-primary text-text-tertiary',

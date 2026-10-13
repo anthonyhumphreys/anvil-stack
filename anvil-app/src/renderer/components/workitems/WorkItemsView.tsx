@@ -24,6 +24,7 @@ import { repoIsMapped, useWorkspace } from '../../contexts/WorkspaceContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 import { SettingsLink } from '../shared/SettingsLink';
+import { presentSetupError } from '../../utils/setup-error';
 import { ChangeReviewPanel } from '../review/ChangeReviewPanel';
 
 export function buildWorkItemTree(items: WorkItem[]): WorkItem[] {
@@ -95,7 +96,7 @@ export function WorkItemsView() {
         setSelectedIterations(activeWorkspace?.preferences?.workitems.iterationIds ?? []);
       })
       .catch((err) => {
-        if (!cancelled) setError(String(err));
+        if (!cancelled) setError(presentSetupError(err, 'Something went wrong. Try again.'));
       });
     return () => {
       cancelled = true;
@@ -118,7 +119,7 @@ export function WorkItemsView() {
       setIterations(nextIterations);
     } catch (err) {
       if (version === request.current)
-        setError(err instanceof Error ? err.message : 'Could not load Work Items. Try refreshing.');
+        setError(presentSetupError(err, 'Could not load Work Items. Try refreshing.'));
     } finally {
       if (version === request.current) setLoading(false);
     }
@@ -141,7 +142,7 @@ export function WorkItemsView() {
       setSelectedTags([]);
       setConnectionId(id);
     } catch (err) {
-      setError(String(err));
+      setError(presentSetupError(err, 'Something went wrong. Try again.'));
     } finally {
       setBusy(false);
     }
@@ -156,7 +157,7 @@ export function WorkItemsView() {
         },
       });
     } catch (err) {
-      setError(String(err));
+      setError(presentSetupError(err, 'Something went wrong. Try again.'));
     }
   }
   async function launch(mode: 'plan' | 'implement' | 'impact') {
@@ -242,7 +243,8 @@ export function WorkItemsView() {
           </>
         }
       />
-      {error ? (
+      {/* With no tracker connected the empty state below explains what to do. */}
+      {error && connections.length > 0 ? (
         <InlineNotice icon={AlertTriangle} tone="error" className="mx-4 my-2">
           {error}
         </InlineNotice>
