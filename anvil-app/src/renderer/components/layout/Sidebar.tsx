@@ -25,7 +25,7 @@ import {
   GripVertical,
   PictureInPicture2,
   Target,
-  Layers,
+  LayoutDashboard,
   Library,
   Pin,
   PinOff,
@@ -71,7 +71,7 @@ const NAV_ICONS: Record<string, ReactNode> = {
   '/overview': <House size={19} />,
   '/inbox': <Bell size={19} />,
   '/chat': <MessageSquare size={19} />,
-  '/workspace': <Layers size={19} />,
+  '/workspace': <LayoutDashboard size={19} />,
   '/automations': <RadioTower size={19} />,
   '/dojo': <Target size={19} />,
   '/workflows': <GitFork size={18} />,
@@ -305,6 +305,27 @@ export function Sidebar({
     setWidth(width + (event.key === 'ArrowRight' ? 24 : -24));
   };
 
+  const renderPrimaryItem = (item: SidebarNavItemDefinition) => (
+    <SidebarNavButton
+      key={item.path}
+      item={item}
+      active={isSidebarNavItemActive(location.pathname, item, location.search)}
+      compact={compact}
+      featureAvailability={featureAvailability}
+      indicator={
+        item.path === '/inbox'
+          ? inboxIndicator
+          : item.feature
+            ? activityIndicators[item.feature]
+            : undefined
+      }
+      onNavigate={navigate}
+      onOpenInNewWindow={openToolWindow}
+      onContextMenu={openNavContextMenu}
+      prominent={item.path === '/chat'}
+    />
+  );
+
   return (
     <aside
       className="relative z-30 flex h-full min-h-0 shrink-0 flex-col bg-bg-secondary"
@@ -325,6 +346,12 @@ export function Sidebar({
               </span>
             )}
           </div>
+          {/* Scope by position: these span every workspace, so they sit above the switcher. */}
+          <nav aria-label="All workspaces" className="mb-3 flex flex-col gap-1">
+            {navigation.primary
+              .filter((item) => item.scope === 'global')
+              .map((item) => renderPrimaryItem(item))}
+          </nav>
           <WorkspaceRail
             compact={compact}
             statusLabel={statusLabel}
@@ -341,26 +368,9 @@ export function Sidebar({
         <div className="min-h-0 flex-1 px-2.5 py-2.5">
           <nav className="h-full overflow-y-auto pr-1">
             <div className="flex flex-col gap-1">
-              {navigation.primary.map((item) => (
-                <SidebarNavButton
-                  key={item.path}
-                  item={item}
-                  active={isSidebarNavItemActive(location.pathname, item, location.search)}
-                  compact={compact}
-                  featureAvailability={featureAvailability}
-                  indicator={
-                    item.path === '/inbox'
-                      ? inboxIndicator
-                      : item.feature
-                        ? activityIndicators[item.feature]
-                        : undefined
-                  }
-                  onNavigate={navigate}
-                  onOpenInNewWindow={openToolWindow}
-                  onContextMenu={openNavContextMenu}
-                  prominent={item.path === '/chat'}
-                />
-              ))}
+              {navigation.primary
+                .filter((item) => item.scope !== 'global')
+                .map((item) => renderPrimaryItem(item))}
 
               {pinnedItems.length > 0 && (
                 <div className={compact ? 'mt-1 flex flex-col gap-1' : 'mt-1 flex flex-col gap-1'}>

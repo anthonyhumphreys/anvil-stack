@@ -347,6 +347,7 @@ export function getToolWindowTitle(pathname: string, search = ''): string {
     if (view === 'repositories' || (view !== 'library' && params.has('repo'))) {
       return 'Repositories';
     }
+    if (view !== 'library') return 'Workspace overview';
   }
   const match = [...allSidebarNavItems(), ...DEMOTED_NAV_ITEMS]
     .filter((item) => isSidebarNavItemActive(pathname, item, search))

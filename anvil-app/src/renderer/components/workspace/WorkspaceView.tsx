@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { FolderSearch, LayoutDashboard, Link2 } from 'lucide-react';
 import type { WorkspaceRepoDefinition } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -71,6 +71,7 @@ export function WorkspaceView() {
         <>
           <ViewHeader
             icon={LayoutDashboard}
+            eyebrow={<WorkspaceBreadcrumb />}
             title={activeWorkspace?.name ?? 'Workspace'}
             meta={<StatusChip label={featureAvailability.statusLabel} />}
             className="border-b-0 pb-0"
@@ -121,6 +122,7 @@ function WorkspaceOverview({
     <>
       <ViewHeader
         icon={LayoutDashboard}
+        eyebrow={<WorkspaceBreadcrumb />}
         title={board.editing ? 'Customise overview' : title}
         meta={board.editing ? undefined : <StatusChip label={statusLabel} />}
         description={
@@ -135,6 +137,26 @@ function WorkspaceOverview({
       <NeedsCheckoutBanner onChanged={onChanged} />
       <OverviewBoard board={board} />
     </>
+  );
+}
+
+/** Every workspace page sits under Home (all workspaces); say so and link back. */
+function WorkspaceBreadcrumb() {
+  return (
+    <nav aria-label="Breadcrumb">
+      <ol className="flex items-center gap-1.5">
+        <li>
+          <Link
+            to="/overview"
+            className="rounded-sm hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            Home
+          </Link>
+        </li>
+        <li aria-hidden="true">/</li>
+        <li aria-current="page">Workspace</li>
+      </ol>
+    </nav>
   );
 }
 

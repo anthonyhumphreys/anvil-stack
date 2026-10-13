@@ -365,7 +365,7 @@ export function OverviewHeaderActions({ board }: { board: OverviewBoardControlle
         disabled={!board.layoutState}
       >
         <SlidersHorizontal size={13} aria-hidden="true" />
-        Customise overview
+        {board.scope.kind === 'global' ? 'Customise Home' : 'Customise overview'}
       </Button>
     </>
   );

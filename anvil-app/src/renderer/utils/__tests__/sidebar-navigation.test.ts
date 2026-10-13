@@ -30,13 +30,16 @@ const toolItems = () => TOOL_NAV_GROUPS.flatMap((group) => group.items);
 const findTool = (path: string) => toolItems().find((item) => item.path === path)!;
 
 describe('sidebar navigation (spec §12)', () => {
-  it('keeps the primary navigation focused on Overview, Activity, Chat, and Workspace', () => {
+  it('separates the all-workspaces Home from the active workspace', () => {
     expect(PRIMARY_NAV_ITEMS.map((item) => item.label)).toEqual([
-      'Overview',
+      'Home',
       'Activity',
+      'Overview',
       'Chat',
-      'Workspace',
     ]);
+    expect(
+      PRIMARY_NAV_ITEMS.filter((item) => item.scope === 'global').map((item) => item.path),
+    ).toEqual(['/overview', '/inbox']);
   });
 
   it('lists exactly the 18 consolidated destinations, each once', () => {
@@ -49,10 +52,10 @@ describe('sidebar navigation (spec §12)', () => {
 
     expect(new Set(sidebar).size).toBe(sidebar.length);
     expect(sidebar).toEqual([
-      'Overview',
+      'Home',
       'Activity',
+      'Overview',
       'Chat',
-      'Workspace',
       'Automations',
       'Workflows',
       'Dojo',

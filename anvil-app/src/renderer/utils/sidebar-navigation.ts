@@ -13,6 +13,8 @@ export interface SidebarNavItemDefinition {
   anyFeatures?: Feature[];
   requiresRepoFeature?: boolean;
   requiresChat?: boolean;
+  /** `global` items sit above the workspace switcher; everything else belongs to the active workspace. */
+  scope?: 'global';
 }
 
 export interface SidebarToolGroupDefinition {
@@ -44,9 +46,10 @@ export const WORKSPACE_LIBRARY_PATH = '/workspace?view=library';
 export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
   {
     path: '/overview',
-    label: 'Overview',
-    description: 'Changes, findings, tickets and ideas across your workspaces.',
-    keywords: ['dashboard', 'home', 'summary', 'all workspaces'],
+    label: 'Home',
+    description: 'Changes, findings, tickets and ideas across all your workspaces.',
+    keywords: ['dashboard', 'overview', 'summary', 'all workspaces'],
+    scope: 'global',
   },
   {
     path: '/inbox',
@@ -54,6 +57,26 @@ export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
     description: 'Work that needs you and work in progress across workspaces.',
     keywords: ['inbox', 'attention', 'approval', 'failed', 'completed'],
     feature: 'chat',
+    scope: 'global',
+  },
+  {
+    path: '/workspace',
+    label: 'Overview',
+    description:
+      "The active workspace's home: its overview, repositories, health, setup and library.",
+    keywords: [
+      'workspace',
+      'workspace home',
+      'dashboard',
+      'repositories',
+      'repos',
+      'health',
+      'setup',
+      'security',
+      'dependencies',
+      'ci/cd',
+    ],
+    feature: 'repos',
   },
   {
     path: '/chat',
@@ -61,13 +84,6 @@ export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
     description: 'Agent sessions for the active workspace.',
     feature: 'chat',
     requiresChat: true,
-  },
-  {
-    path: '/workspace',
-    label: 'Workspace',
-    description: 'Overview, repositories, health, and setup for the active workspace.',
-    keywords: ['repositories', 'repos', 'health', 'setup', 'security', 'dependencies', 'ci/cd'],
-    feature: 'repos',
   },
 ];
 
@@ -279,7 +295,10 @@ export function getSidebarNavigationEntries(
 ): SidebarNavigationEntry[] {
   const navigation = getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled);
   return [
-    ...navigation.primary.map((item) => ({ item, section: 'Workspace' })),
+    ...navigation.primary.map((item) => ({
+      item,
+      section: item.scope === 'global' ? 'All workspaces' : 'Workspace',
+    })),
     ...navigation.automate.map((item) => ({ item, section: 'Automate' })),
     ...navigation.tools.flatMap((group) =>
       group.items.map((item) => ({ item, section: group.label })),

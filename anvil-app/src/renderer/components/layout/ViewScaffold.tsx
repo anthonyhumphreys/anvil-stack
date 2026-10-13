@@ -3,6 +3,8 @@ import type { LucideIcon } from 'lucide-react';
 
 interface ViewHeaderProps {
   icon?: LucideIcon;
+  /** Small line above the title, e.g. a breadcrumb back to Home. */
+  eyebrow?: ReactNode;
   title: string;
   description?: ReactNode;
   meta?: ReactNode;
@@ -12,6 +14,7 @@ interface ViewHeaderProps {
 
 export function ViewHeader({
   icon: Icon,
+  eyebrow,
   title,
   description,
   meta,
@@ -22,6 +25,7 @@ export function ViewHeader({
     <header className={`shrink-0 border-b border-border bg-bg-secondary/45 px-5 py-4 ${className}`}>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="min-w-0">
+          {eyebrow && <div className="mb-1 text-xs text-text-tertiary">{eyebrow}</div>}
           <div className="flex min-w-0 items-center gap-2.5">
             {Icon && <Icon size={18} className="shrink-0 text-accent" aria-hidden="true" />}
             <h1 className="truncate text-base font-semibold text-text-primary">{title}</h1>

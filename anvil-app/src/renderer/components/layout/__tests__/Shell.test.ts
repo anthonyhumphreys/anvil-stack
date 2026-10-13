@@ -54,7 +54,8 @@ describe('getToolWindowTitle', () => {
     expect(getToolWindowTitle('/workspace', '?view=library&kind=adr&toolWindow=1')).toBe('Library');
     expect(getToolWindowTitle('/workspace', '?view=repositories')).toBe('Repositories');
     expect(getToolWindowTitle('/workspace', '?repo=r1')).toBe('Repositories');
-    expect(getToolWindowTitle('/workspace')).toBe('Workspace');
+    expect(getToolWindowTitle('/workspace')).toBe('Workspace overview');
+    expect(getToolWindowTitle('/overview')).toBe('Home');
     expect(getToolWindowTitle('/workspace/repos/r1/health/security')).toBe('Health');
     expect(getToolWindowTitle('/workspace/repos/r1/setup')).toBe('Setup');
   });

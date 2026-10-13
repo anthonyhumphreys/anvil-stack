@@ -37,6 +37,7 @@ import {
   NotebookPen,
   Target,
   Workflow,
+  LayoutDashboard,
 } from 'lucide-react';
 import type { ChatLayout, Feature, UserRole } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
@@ -293,7 +294,7 @@ function navigationIconForPath(path: string): React.ReactNode {
     '/overview': <House size={16} />,
     '/inbox': <Bell size={16} />,
     '/chat': <MessageSquare size={16} />,
-    '/workspace': <Code size={16} />,
+    '/workspace': <LayoutDashboard size={16} />,
     '/automations': <RadioTower size={16} />,
     '/workflows': <GitFork size={16} />,
     '/dojo': <Target size={16} />,
