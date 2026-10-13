@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 107;
+export const SCHEMA_VERSION = 108;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -967,6 +967,13 @@ CREATE TABLE IF NOT EXISTS workspace_preferences (
   workitems_json TEXT,
   docs_json TEXT,
   launch_json TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS overview_layouts (
+  layout_key TEXT PRIMARY KEY,
+  workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+  layout_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
@@ -3782,6 +3789,16 @@ CREATE TABLE IF NOT EXISTS mesh_host_command_receipts (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (backend_id, account_id, principal_id, request_id),
   CHECK ((status = 'executing' AND result_json IS NULL) OR (status = 'completed' AND result_json IS NOT NULL))
+);
+`,
+  108: `
+-- ANV-51: local-only overview layouts. Keys are 'global', 'workspace-default',
+-- or 'workspace:<id>' (workspace_id set so deletes cascade). Not synced.
+CREATE TABLE IF NOT EXISTS overview_layouts (
+  layout_key TEXT PRIMARY KEY,
+  workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+  layout_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 `,
 };

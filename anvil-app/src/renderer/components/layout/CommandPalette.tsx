@@ -6,6 +6,7 @@ import {
   BookOpen,
   Activity,
   Bell,
+  House,
   Boxes,
   Code,
   Cloud,
@@ -45,7 +46,11 @@ import { useChatContext } from '../../contexts/ChatContext';
 import { getNextListboxIndex } from '../../utils/list-navigation';
 import { slugForDomId } from '../../utils/dom-id';
 import { isEditableShortcutTarget } from '../../utils/keyboard';
-import { getSidebarNavigationEntries, navItemGateReason } from '../../utils/sidebar-navigation';
+import {
+  getSidebarNavigationEntries,
+  navItemGateReason,
+  WORKSPACE_REPOSITORIES_PATH,
+} from '../../utils/sidebar-navigation';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -168,6 +173,7 @@ export function groupPaletteCommands<T extends { section: string }>(commands: T[
 
 function navigationIconForPath(path: string): React.ReactNode {
   const icons: Record<string, React.ReactNode> = {
+    '/overview': <House size={16} />,
     '/inbox': <Bell size={16} />,
     '/chat': <MessageSquare size={16} />,
     '/workspace': <Code size={16} />,
@@ -417,7 +423,7 @@ export function CommandPalette({
         icon: <Code size={16} />,
         feature: 'repos',
         keywords: ['connect', 'add', 'repository', 'repo'],
-        action: () => go('/workspace'),
+        action: () => go(WORKSPACE_REPOSITORIES_PATH),
       },
       ...(activeWorkspace && activeWorkspace.repos.length > 0
         ? [

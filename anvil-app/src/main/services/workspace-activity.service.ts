@@ -138,7 +138,7 @@ function scaffoldItem(row: ScaffoldRow): WorkspaceActivityItem | null {
       id: `scaffold-${row.workspace_id}`,
       workspaceId: row.workspace_id,
       feature: row.status === 'indexing' ? 'repos' : 'chat',
-      route: row.status === 'indexing' ? '/workspace' : '/chat',
+      route: row.status === 'indexing' ? '/workspace?view=repositories' : '/chat',
       title: row.status === 'indexing' ? 'Workspace indexing' : 'Workspace setup running',
       detail:
         row.status === 'indexing'
@@ -205,7 +205,7 @@ export function getWorkspaceActivityFeed(): WorkspaceActivitySummary[] {
         id: `repos-indexing-${workspaceId}`,
         workspaceId,
         feature: 'repos',
-        route: '/workspace',
+        route: '/workspace?view=repositories',
         title: `${bucket.indexing.length} repo${bucket.indexing.length === 1 ? '' : 's'} indexing`,
         detail: bucket.indexing.join(', '),
         status: 'running',

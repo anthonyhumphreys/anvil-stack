@@ -18,6 +18,11 @@ import { ROLE_FEATURES } from '../shared/types';
 const ReposView = lazy(() =>
   import('./components/repos/ReposView').then((module) => ({ default: module.ReposView })),
 );
+const OverviewView = lazy(() =>
+  import('./components/overview/OverviewView').then((module) => ({
+    default: module.OverviewView,
+  })),
+);
 const WorkspaceView = lazy(() =>
   import('./components/workspace/WorkspaceView').then((module) => ({
     default: module.WorkspaceView,
@@ -464,6 +469,17 @@ function AppContent() {
                           </ErrorBoundary>
                         </WorkspaceGate>,
                       )}
+                    />
+                    {/* ANV-51: all-workspaces overview. */}
+                    <Route
+                      path="/overview"
+                      element={
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <OverviewView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>
+                      }
                     />
                     {/* WS2: `/workspace` is the workspace home; `/repos` keeps
                       working as the same management surface. */}

@@ -12,6 +12,7 @@ import type { RunStatus } from '../../../shared/run-types';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { useRepoIndex } from '../../contexts/RepoIndexContext';
+import { WORKSPACE_REPOSITORIES_PATH } from '../../utils/sidebar-navigation';
 
 export type SidebarActivityStatus = 'running' | 'queued' | 'ready' | 'warning' | 'error';
 
@@ -197,7 +198,8 @@ function useSidebarActivityData(): SidebarActivityValue {
         nextItems.push({
           id: `scaffold-${activeScaffoldSession.id}`,
           feature: activeScaffoldSession.status === 'indexing' ? 'repos' : 'chat',
-          route: activeScaffoldSession.status === 'indexing' ? '/workspace' : '/chat',
+          route:
+            activeScaffoldSession.status === 'indexing' ? WORKSPACE_REPOSITORIES_PATH : '/chat',
           title:
             activeScaffoldSession.status === 'indexing'
               ? 'Workspace indexing'
@@ -217,7 +219,7 @@ function useSidebarActivityData(): SidebarActivityValue {
       nextItems.push({
         id: 'repos-indexing',
         feature: 'repos',
-        route: '/workspace',
+        route: WORKSPACE_REPOSITORIES_PATH,
         title: `${indexingRepos.length} repo${indexingRepos.length === 1 ? '' : 's'} indexing`,
         detail: indexingRepos.map((repo) => repo.name).join(', '),
         status: 'running',
@@ -226,7 +228,7 @@ function useSidebarActivityData(): SidebarActivityValue {
       nextItems.push({
         id: 'workspace-indexing',
         feature: 'repos',
-        route: '/workspace',
+        route: WORKSPACE_REPOSITORIES_PATH,
         title: 'Repository indexing pending',
         detail: featureAvailability.repoFeatureReason ?? 'Index repositories to unlock features.',
         status: 'warning',

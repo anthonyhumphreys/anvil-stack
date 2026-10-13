@@ -166,6 +166,16 @@ const api: AnvilAPI = {
     },
   },
 
+  overview: {
+    sources: () => ipcRenderer.invoke('overview:sources'),
+    getLayout: (scope) => ipcRenderer.invoke('overview:get-layout', scope),
+    saveLayout: (target, layout) => ipcRenderer.invoke('overview:save-layout', target, layout),
+    saveWorkspaceDefault: (workspaceId: string, layout) =>
+      ipcRenderer.invoke('overview:save-workspace-default', workspaceId, layout),
+    resetLayout: (target) => ipcRenderer.invoke('overview:reset-layout', target),
+    loadModule: (request) => ipcRenderer.invoke('overview:load-module', request),
+  },
+
   workspaceNotes: {
     list: (workspaceId?: string, includeReviewed?: boolean) =>
       ipcRenderer.invoke('workspace-notes:list', workspaceId, includeReviewed),

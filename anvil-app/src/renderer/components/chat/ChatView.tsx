@@ -59,6 +59,7 @@ import {
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { agentProviderLabel } from '../../utils/agent-display';
 import { buildMessageReusePrefill, shouldFocusChatComposerFromKey } from './chat-view-utils';
+import { WORKSPACE_REPOSITORIES_PATH } from '../../utils/sidebar-navigation';
 
 // Re-exported for the existing `../ChatView` import path used by tests.
 export {
@@ -795,7 +796,7 @@ export function ChatView({ userRole }: ChatViewProps) {
           {!isTemporaryChat && !scaffoldModeActive && repos.length > 0 && (
             <WorkspaceReadinessStrip
               className="mx-4 mt-3 shrink-0 xl:mx-6"
-              onOpenWorkspace={() => navigate('/workspace')}
+              onOpenWorkspace={() => navigate(WORKSPACE_REPOSITORIES_PATH)}
             />
           )}
           {runTarget.record && !isTemporaryChat ? (
@@ -815,7 +816,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                   ? 'Temporary chat is ready.'
                   : featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.'
               }
-              onOpenWorkspace={() => navigate('/workspace')}
+              onOpenWorkspace={() => navigate(WORKSPACE_REPOSITORIES_PATH)}
               personaId={activePersona?.id ?? 'coder'}
               hasRepos={activeRepos.length > 0}
               hasGovernanceDocs={selectedGovernanceDocs.length > 0}

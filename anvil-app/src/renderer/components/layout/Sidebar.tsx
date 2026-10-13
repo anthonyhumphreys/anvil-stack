@@ -21,6 +21,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Bell,
+  House,
   RadioTower,
   Wrench,
   Activity,
@@ -71,6 +72,7 @@ import {
 } from '../../utils/sidebar-navigation';
 
 const NAV_ICONS: Record<string, ReactNode> = {
+  '/overview': <House size={19} />,
   '/inbox': <Bell size={19} />,
   '/chat': <MessageSquare size={19} />,
   '/workspace': <Layers size={19} />,

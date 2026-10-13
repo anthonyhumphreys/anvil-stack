@@ -25,7 +25,16 @@ export const MAX_PINNED_NAV_TOOLS = 5;
 /** localStorage key for the pinned-tool preference (NV2). */
 export const PINNED_NAV_TOOLS_STORAGE_KEY = 'layout:pinned-nav-tools:v1';
 
+/** The workspace's repository management tab (WS2; the default tab is Overview). */
+export const WORKSPACE_REPOSITORIES_PATH = '/workspace?view=repositories';
+
 export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
+  {
+    path: '/overview',
+    label: 'Overview',
+    description: 'Changes, findings, tickets and ideas across your workspaces.',
+    keywords: ['dashboard', 'home', 'summary', 'all workspaces'],
+  },
   {
     path: '/inbox',
     label: 'Activity',
@@ -43,7 +52,7 @@ export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
   {
     path: '/workspace',
     label: 'Workspace',
-    description: 'Repositories, readiness, and setup for the active workspace.',
+    description: 'Overview, repositories, and setup for the active workspace.',
     feature: 'repos',
   },
 ];

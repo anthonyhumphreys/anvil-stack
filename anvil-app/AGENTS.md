@@ -54,6 +54,7 @@ SQLite schema, current schema version, and incremental migrations are all in `sr
 - `src/renderer/App.tsx` wires role gating, connector setup, workspace selection, launch intents, and top-level routes.
 - Workspace state is central. `src/renderer/contexts/WorkspaceContext.tsx` and the matching workspace IPC/service layer coordinate active repos and per-workspace preferences.
 - The preload bridge in `src/preload/index.ts` is the renderer's only route to privileged APIs. If a capability is not exposed there, the renderer should not reach for Node APIs directly.
+- Overviews (ANV-51): `src/shared/overview.ts` owns the module catalogue, layout model and pure layout ops; `src/main/services/overview.service.ts` loads module data (workspace-scoped, network sources cached with last-success fallback) and `overview-layout.service.ts` persists local-only layouts in `overview_layouts`. UI lives in `src/renderer/components/overview/`; `/overview` is global and `/workspace` shows Overview | Repositories tabs (`?view=repositories`, or any `?repo=`). Link repository-management intents to `WORKSPACE_REPOSITORIES_PATH`.
 - Repo onboarding, chat, code review, security, documentation, BA sessions, diagrams, ADRs, automations, launch intents, diagnostics, mobile companion, and terminals all follow the same broad path: renderer view -> preload API -> IPC handler -> service/persistence layer.
 
 ## Repo-Specific Gotchas
@@ -62,6 +63,7 @@ SQLite schema, current schema version, and incremental migrations are all in `sr
 - Native dependencies (`better-sqlite3`, `node-pty`) make installs and rebuilds platform-sensitive. If native behavior looks strange after dependency or Node changes, rerun `pnpm install` before blaming the app.
 - The macOS notarized release path requires a Developer ID Application certificate and Apple notary credentials. The unsigned/internal release path is not the same thing, even if Gatekeeper is feeling generous that day.
 - `mobile/` is an Expo Router companion app in the pnpm workspace. Keep its Expo/React Native dependencies and commands scoped to `mobile/`.
+- If `pnpm dev` fails with "electron does not provide an export named 'app'", the shell inherited `ELECTRON_RUN_AS_NODE=1` (e.g. from an Electron-hosted terminal); unset it. `pnpm test` rebuilds native modules for Node, so run `pnpm run rebuild:native:electron` before launching the app again. `ANVIL_DEV_USER_DATA_PATH` points dev runs at an isolated profile.
 - `video/` is intentionally separate from the Electron app and still has its own `package-lock.json`. Do not mix Remotion dependencies into the root package unless the task explicitly spans both.
 
 ## Skills

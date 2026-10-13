@@ -4,6 +4,7 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { Button } from '../ui/Button';
 import { EmptyState } from '../layout/ViewScaffold';
 import { WorkspaceReadinessStrip } from '../workspace/WorkspaceReadinessStrip';
+import { WORKSPACE_REPOSITORIES_PATH } from '../../utils/sidebar-navigation';
 
 export interface RepoFeatureEmptyStateProps {
   icon: LucideIcon;
@@ -31,7 +32,7 @@ export function RepoFeatureEmptyState({
 }: RepoFeatureEmptyStateProps) {
   const { repos } = useWorkspace();
   const navigate = useNavigate();
-  const openWorkspace = () => navigate('/workspace');
+  const openWorkspace = () => navigate(WORKSPACE_REPOSITORIES_PATH);
 
   if (repos.length === 0) {
     return (

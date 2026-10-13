@@ -248,6 +248,15 @@ import type {
   SyncDeviceTrustPolicy,
   SyncEncryptedSyncAccountResetConfirmation,
 } from './sync-device-security';
+import type {
+  OverviewLayout,
+  OverviewLayoutState,
+  OverviewLayoutTarget,
+  OverviewModuleRequest,
+  OverviewModuleResult,
+  OverviewScope,
+  OverviewSources,
+} from './overview';
 
 export interface AnvilAPI {
   cloudAgentSettings: {
@@ -289,6 +298,17 @@ export interface AnvilAPI {
     ) => Promise<CompanionEnrollmentPolicy | null>;
     removeEnrollmentPolicy: (enrollmentId: string) => Promise<void>;
     onEvent: (callback: (event: CompanionEvent) => void) => () => void;
+  };
+
+  /** ANV-51: configurable overviews. Layouts are local-only and never synced. */
+  overview: {
+    sources: () => Promise<OverviewSources>;
+    getLayout: (scope: OverviewScope) => Promise<OverviewLayoutState>;
+    saveLayout: (target: OverviewLayoutTarget, layout: OverviewLayout) => Promise<OverviewLayout>;
+    /** Save the default for every workspace and drop this workspace's override. */
+    saveWorkspaceDefault: (workspaceId: string, layout: OverviewLayout) => Promise<OverviewLayout>;
+    resetLayout: (target: OverviewLayoutTarget) => Promise<void>;
+    loadModule: (request: OverviewModuleRequest) => Promise<OverviewModuleResult>;
   };
 
   workspaceNotes: {

@@ -36,6 +36,7 @@ import {
 } from './services/bootstrap-policy.service.js';
 import { registerAgentHandlers } from './ipc/agents.ipc.js';
 import { registerWorkspaceNotesHandlers } from './ipc/workspace-notes.ipc.js';
+import { registerOverviewHandlers } from './ipc/overview.ipc.js';
 import { registerWorkspaceScaffoldHandlers } from './ipc/workspace-scaffold.ipc.js';
 import { registerLaunchHandlers } from './ipc/launch.ipc.js';
 import { previewBuild, previewProfileDirectory } from '../shared/preview-build.js';
@@ -417,6 +418,7 @@ app.whenReady().then(() => {
     },
   });
   registerWorkspaceNotesHandlers();
+  registerOverviewHandlers();
   registerWorkspaceScaffoldHandlers();
   registerAgentHandlers();
   registerLaunchHandlers();

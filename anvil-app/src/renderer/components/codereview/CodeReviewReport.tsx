@@ -28,6 +28,7 @@ import { buildEditorUrl } from '../../utils/editor-link';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
 import { RepositoryMap } from '../repos/RepositoryMap';
+import { WORKSPACE_REPOSITORIES_PATH } from '../../utils/sidebar-navigation';
 
 interface Props {
   review: CodeReview;
@@ -358,7 +359,7 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
                 </p>
                 <button
                   type="button"
-                  onClick={() => navigate('/workspace')}
+                  onClick={() => navigate(WORKSPACE_REPOSITORIES_PATH)}
                   className="mt-3 rounded-md border border-warning/40 px-2.5 py-1.5 text-xs font-medium text-warning hover:bg-warning/10"
                 >
                   Open Repositories
