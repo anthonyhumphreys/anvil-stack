@@ -6,6 +6,7 @@ import { findingsSurfaceView } from './kinds/findings';
 import { dependenciesSurfaceView } from './kinds/dependencies';
 import { pipelineSurfaceView } from './kinds/pipeline';
 import { dataSurfaceView } from './kinds/data';
+import { diagramSurfaceView } from './kinds/diagram';
 
 const VIEWS: Record<string, SurfaceKindView> = {
   artifact: artifactSurfaceView,
@@ -15,6 +16,7 @@ const VIEWS: Record<string, SurfaceKindView> = {
   dependencies: dependenciesSurfaceView,
   pipeline: pipelineSurfaceView,
   data: dataSurfaceView,
+  diagram: diagramSurfaceView,
 };
 
 export function getSurfaceView(kind: string): SurfaceKindView | undefined {

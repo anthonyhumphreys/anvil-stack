@@ -6,6 +6,7 @@ import { findingsSurfaceKind } from './kinds/findings.js';
 import { dependenciesSurfaceKind } from './kinds/dependencies.js';
 import { pipelineSurfaceKind } from './kinds/pipeline.js';
 import { dataSurfaceKind } from './kinds/data.js';
+import { diagramSurfaceKind } from './kinds/diagram.js';
 
 /** Every registered surface kind. Add a kind by adding one entry here. */
 export const SURFACE_KINDS: readonly SurfaceKindDefinition[] = [
@@ -16,6 +17,7 @@ export const SURFACE_KINDS: readonly SurfaceKindDefinition[] = [
   dependenciesSurfaceKind,
   pipelineSurfaceKind,
   dataSurfaceKind,
+  diagramSurfaceKind,
 ] as SurfaceKindDefinition[];
 
 const BY_KIND = new Map(SURFACE_KINDS.map((definition) => [definition.kind, definition]));

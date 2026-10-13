@@ -72,7 +72,7 @@ The conversation is the workspace. When the agent's answer has structure, the an
 - **Canvas pane.** `ChatSidePanels.tsx:200-241` renders the canvas as a right pane, an expanded overlay, or a single `window.open` portal (`DetachedCanvasWindow.tsx`, fixed name `anvil-canvas`). It holds artifacts, plans, the goal snapshot, annotations, share and zoom (`ChatCanvasPanel.tsx`).
 - **Artifacts.** These are a prompt convention (`buildArtifactCanvasPrompt`, `ChatContext.tsx:4445`), parsed only **after** the turn ends (`extractChatArtifactInputs`, `ChatContext.tsx:4530`).
   - The fence also renders as a raw code block, because `MarkdownRenderer` → `CodeBlock`.
-  - `upsertChatArtifact` (`chat-artifact.service.ts:305`) overwrites content and bumps `version`. A `chat_artifact_revisions` table exists in the schema, but nothing writes to it, so no history is kept in practice.
+  - `upsertChatArtifact` (`chat-artifact.service.ts:305`) overwrites the head row and bumps `version`, writing each version to `chat_artifact_revisions`. History exists, but nothing in the UI shows it.
 - **Agent UI intents** (`src/shared/agent-ui-intents.ts`, `agent-ui-intent.service.ts`, `docs/agent-ui-intents.md`) already define a provider-neutral, revisioned, validated envelope for `plan` and `question`.
   - They render inline (`ChatMessage.tsx:115` → `AgentUIIntentSurface`), and pending questions stay pinned above the composer (`ChatPromptOverlays.tsx`).
   - The doc anticipates `ArtifactSurface`, `DiffSurface` and `TestResultsSurface`. **This is the foundation to extend.**
@@ -400,7 +400,7 @@ Markdown, HTML, docx, pptx, pdf, csv, xlsx, code and diagram source: today's art
   - Binary kinds reference files under `.anvil/artifacts` (the existing `encoding=file` rules).
 - **Inline:** a height-capped preview with a fade. Binary kinds show a file card. Each turn shows **the version that turn produced**. Older instances collapse to "v1 · superseded by v3 ↓".
 - **Stage:** full preview, Preview/Source toggle, version switcher, diff against any earlier version, and the comments rail.
-- **Versions:** write a `chat_artifact_revisions` row on every create and update; the table exists but is unused today. Migration 109 backfills the current head of every artifact. `chat_artifacts` stays the head row for sync, share and mesh.
+- **Versions:** `chat_artifact_revisions` already gets a row on every create and update. Migration 109 backfills a row for any head version that's missing (`INSERT OR IGNORE`). `chat_artifacts` stays the head row for sync, share and mesh.
 - **Actions:** Share… (preview first; §11), Update link / Revoke when shared, open in editor, save to repo (session → repository, mutation), discard (`ConfirmDialog`; lists any live links it will revoke).
 - **Anchors:** `text-selection`, `region` (HTML).
 - **Library:** every artifact's head is listed in the Workspace Library (§10).
