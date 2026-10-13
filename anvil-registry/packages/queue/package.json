@@ -16,10 +16,10 @@
   "dependencies": {
     "@anvilstack/config": "workspace:*",
     "@anvilstack/shared": "workspace:*",
-    "@aws-sdk/client-sqs": "^3.1050.0",
-    "bullmq": "^5.58.5"
+    "@aws-sdk/client-sqs": "^3.1146.0",
+    "bullmq": "^5.81.5"
   },
   "devDependencies": {
-    "vitest": "^3.2.6"
+    "vitest": "^3.2.7"
   }
 }

@@ -29,19 +29,19 @@
     "typecheck:smokes": "tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --types node --skipLibCheck scripts/smoke-scoped-upstream.ts"
   },
   "devDependencies": {
-    "@types/node": "^22.15.21",
-    "tsx": "^4.22.4",
-    "turbo": "^2.9.18",
-    "typescript": "^5.8.3",
-    "vitest": "^3.2.6"
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.7",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
   },
   "pnpm": {
     "overrides": {
       "esbuild": "0.28.1",
-      "fast-uri": "3.1.5",
+      "fast-uri": "3.1.8",
       "find-my-way": "9.7.0",
       "postcss": "8.5.26",
-      "sharp": "0.35.0",
+      "sharp": "0.35.5",
       "vite": "7.3.5"
     }
   }
