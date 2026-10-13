@@ -46,6 +46,7 @@ import { MessageStreamingContext } from './surface-fences';
 import { FileEditReviewGrid } from './TurnChangesFooter';
 import { LiveGlyph, ProcessingCard, useProcessingActive } from './ProcessingCard';
 import { countProcessingActions, getOperationStatus, getProcessingState } from './processing-state';
+import { displayCommand } from '../../utils/command-display';
 import { buildChatRequestTargetDomId, getChatQuestionTargetId } from './chat-run-outcome';
 import {
   ChatAssistantMessageActions,
@@ -534,11 +535,11 @@ export function formatTurnWorkItemSummary(
     case 'command_exec':
       if (item.event.command && typeof item.event.exitCode === 'number') {
         return item.event.exitCode === 0
-          ? `Completed ${compactWorkValue(item.event.command, 84)}`
-          : `Command failed (${item.event.exitCode}): ${compactWorkValue(item.event.command, 72)}`;
+          ? `Completed ${compactWorkValue(displayCommand(item.event.command), 84)}`
+          : `Command failed (${item.event.exitCode}): ${compactWorkValue(displayCommand(item.event.command), 72)}`;
       }
       return item.event.command
-        ? `${active ? 'Running' : 'Command:'} ${compactWorkValue(item.event.command, 84)}`
+        ? `${active ? 'Running' : 'Command:'} ${compactWorkValue(displayCommand(item.event.command), 84)}`
         : 'Reading command output';
     case 'file_edit':
       return item.event.filePath
@@ -1610,6 +1611,7 @@ function CommandExecEvent({
     });
   }, [output]);
 
+  const shown = command ? displayCommand(command) : 'Command output';
   return (
     <div className="chat-operation overflow-hidden rounded-lg border border-border-subtle bg-bg-tertiary/60">
       <div className="flex items-center gap-1 px-2 py-1">
@@ -1617,9 +1619,10 @@ function CommandExecEvent({
           type="button"
           onClick={() => setExpanded((current) => !current)}
           className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/80"
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} command output for ${command || 'command'}`}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} command output for ${shown}`}
           aria-expanded={expanded}
           aria-controls={detailsId}
+          title={command || undefined}
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           <Terminal
@@ -1628,36 +1631,39 @@ function CommandExecEvent({
               success ? 'text-success' : status === 'failed' ? 'text-error' : 'text-text-secondary'
             }
           />
-          <span className="min-w-0 truncate font-mono text-sm text-text-primary">{command}</span>
-          {exitCode !== undefined && (
-            <span className={`ml-auto shrink-0 text-xs ${success ? 'text-success' : 'text-error'}`}>
-              exit {exitCode}
-            </span>
-          )}
-          {exitCode === undefined && (
-            <span className="ml-auto shrink-0 text-xs text-text-secondary">{status}</span>
-          )}
+          <span
+            className={`min-w-0 truncate font-mono text-sm ${command ? 'text-text-primary' : 'text-text-tertiary'}`}
+          >
+            {shown}
+          </span>
         </button>
-        {command && (
-          <button
-            onClick={copyCommand}
-            className="rounded-lg p-2 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title={copied ? 'Copied command' : 'Copy command'}
-            aria-label={copied ? 'Copied command' : 'Copy command'}
-          >
-            {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
-          </button>
-        )}
-        {output && (
-          <button
-            onClick={copyOutput}
-            className="rounded-lg px-2 py-1.5 text-xs font-medium text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title={copiedOutput ? 'Copied output' : 'Copy output'}
-            aria-label={copiedOutput ? 'Copied output' : 'Copy output'}
-          >
-            {copiedOutput ? 'Copied' : 'Output'}
-          </button>
-        )}
+        <span
+          className={`w-16 shrink-0 text-right text-xs ${
+            exitCode === undefined ? 'text-text-secondary' : success ? 'text-success' : 'text-error'
+          }`}
+        >
+          {exitCode === undefined ? status : `exit ${exitCode}`}
+        </span>
+        <button
+          onClick={copyCommand}
+          disabled={!command}
+          className="rounded-lg p-2 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:invisible"
+          title={copied ? 'Copied command' : 'Copy command'}
+          aria-label={copied ? 'Copied command' : 'Copy command'}
+          aria-hidden={!command || undefined}
+        >
+          {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
+        </button>
+        <button
+          onClick={copyOutput}
+          disabled={!output}
+          className="w-16 rounded-lg px-2 py-1.5 text-xs font-medium text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:invisible"
+          title={copiedOutput ? 'Copied output' : 'Copy output'}
+          aria-label={copiedOutput ? 'Copied output' : 'Copy output'}
+          aria-hidden={!output || undefined}
+        >
+          {copiedOutput ? 'Copied' : 'Output'}
+        </button>
       </div>
       <div id={detailsId} hidden={!expanded}>
         {expanded && output && (

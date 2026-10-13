@@ -182,6 +182,10 @@
   border-radius: 50%;
   background: var(--color-bg-secondary);
 }
+/* Operation rows (commands, tools): centre the dot on the header line. */
+.processing-item:has(.chat-operation)::after {
+  top: 26px;
+}
 .processing-item[data-step-status='completed']::after {
   border-color: color-mix(in srgb, var(--color-success) 70%, transparent);
   background: color-mix(in srgb, var(--color-success) 35%, var(--color-bg-secondary));

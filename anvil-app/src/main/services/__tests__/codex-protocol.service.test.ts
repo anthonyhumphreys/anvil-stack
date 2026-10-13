@@ -275,6 +275,18 @@ describe('codex protocol service', () => {
     expect(events[0].output).toContain('truncated');
   });
 
+  it('tags streamed command output with its item id so it merges into the command row', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'item/commandExecution/outputDelta',
+        params: { threadId: 't', turnId: 'u', itemId: 'call_1', delta: 'line\n' },
+      },
+    ]);
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'command_exec', itemId: 'call_1', output: 'line\n' }),
+    ]);
+  });
+
   it('preserves numeric approval request ids from app-server', () => {
     const events = collectEvents(createState(), [
       {

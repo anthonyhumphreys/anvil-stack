@@ -31,6 +31,9 @@ export function saveChatEvent(
   }
   const db = getDb();
   const existingCommand = findCommandEventToUpdate(threadId, sessionId, event);
+  // Output that can't be attributed to a running command would persist as a
+  // blank, unlabeled row; the command's completion carries its full output.
+  if (event.type === 'command_exec' && !event.command && !existingCommand) return;
   if (existingCommand) {
     const existingEvent = parseEvent(existingCommand.event_json);
     if (existingEvent?.type === 'command_exec') {
@@ -107,7 +110,10 @@ function findCommandEventToUpdate(
   for (const row of rows) {
     const candidate = parseEvent(row.event_json);
     if (candidate?.type !== 'command_exec') continue;
-    if (!event.command) return candidate.exitCode === undefined ? row : null;
+    if (event.itemId && candidate.itemId && candidate.itemId !== event.itemId) continue;
+    if (!event.command) {
+      return candidate.command && candidate.exitCode === undefined ? row : null;
+    }
     if (candidate.command === event.command && candidate.exitCode === undefined) return row;
     return null;
   }

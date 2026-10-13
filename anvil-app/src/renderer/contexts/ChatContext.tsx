@@ -3719,6 +3719,7 @@ export function upsertCommandEntry(
 ): ChatEntry[] {
   const sameScope = (candidate: CodexEvent) =>
     (candidate.sessionId ?? candidate.appThreadId) === (event.sessionId ?? event.appThreadId);
+  const outputOnly = !event.command;
   const index = event.itemId
     ? entries.findIndex(
         (entry) =>
@@ -3727,17 +3728,26 @@ export function upsertCommandEntry(
           entry.event.itemId === event.itemId &&
           sameScope(entry.event),
       )
-    : entries.length - 1;
+    : outputOnly
+      ? findRunningCommandIndex(entries, sameScope)
+      : entries.length - 1;
+  // Output that can't be attributed to a command would render as a blank,
+  // unlabeled row; the command's completion carries its aggregated output.
+  if (outputOnly && index < 0) return entries;
   const existing = entries[index];
   if (
     existing?.kind !== 'event' ||
     existing.event.type !== 'command_exec' ||
     !sameScope(existing.event) ||
     (!event.itemId &&
-      (existing.event.itemId || (event.command && existing.event.command !== event.command)))
+      !outputOnly &&
+      (existing.event.itemId || existing.event.command !== event.command))
   ) {
+    if (outputOnly) return entries;
     return [...entries, { kind: 'event', event, timestamp }];
   }
+  // A late delta after completion would duplicate the aggregated output.
+  if (outputOnly && existing.event.exitCode !== undefined) return entries;
   const updated = [...entries];
   updated[index] = {
     ...existing,
@@ -3754,6 +3764,20 @@ export function upsertCommandEntry(
     },
   };
   return updated;
+}
+
+/** Most recent command in scope that hasn't finished (no exit code yet), searching back a little. */
+function findRunningCommandIndex(
+  entries: ChatEntry[],
+  sameScope: (candidate: CodexEvent) => boolean,
+): number {
+  for (let index = entries.length - 1; index >= 0 && index >= entries.length - 40; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind !== 'event' || entry.event.type !== 'command_exec') continue;
+    if (!sameScope(entry.event)) continue;
+    return entry.event.exitCode === undefined && entry.event.command ? index : -1;
+  }
+  return -1;
 }
 
 /** Merge tool lifecycle snapshots so each operation keeps one row as it updates. */

@@ -75,6 +75,68 @@ describe('processing evidence and rendering', () => {
     expect(entries[2]).toMatchObject({ event: { sessionId: 'b', itemId: 'one' } });
   });
 
+  it('attaches id-less output to the running command and never adds a blank row', () => {
+    let entries = upsertCommandEntry([], {
+      type: 'command_exec',
+      sessionId: 'a',
+      itemId: 'one',
+      command: "/bin/zsh -lc 'git diff --stat'",
+      toolStatus: 'running',
+    });
+    entries = upsertCommandEntry(entries, { type: 'command_exec', sessionId: 'a', output: 'a.ts' });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ event: { itemId: 'one', output: 'a.ts' } });
+
+    entries = upsertCommandEntry(entries, {
+      type: 'command_exec',
+      sessionId: 'a',
+      itemId: 'one',
+      command: "/bin/zsh -lc 'git diff --stat'",
+      output: 'a.ts | 2 +-',
+      exitCode: 0,
+    });
+    // Late deltas after completion (with or without an id) are dropped.
+    entries = upsertCommandEntry(entries, { type: 'command_exec', sessionId: 'a', output: 'late' });
+    entries = upsertCommandEntry(entries, {
+      type: 'command_exec',
+      sessionId: 'a',
+      itemId: 'one',
+      output: 'late',
+    });
+    // Output for an unknown command id is dropped too.
+    entries = upsertCommandEntry(entries, {
+      type: 'command_exec',
+      sessionId: 'a',
+      itemId: 'ghost',
+      output: 'stray',
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ event: { output: 'a.ts | 2 +-', exitCode: 0 } });
+  });
+
+  it('drops persisted output-only rows on reload instead of rendering blank commands', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'm1',
+        role: 'system',
+        content: 'command_exec',
+        timestamp: '2026-10-13T10:00:00.000Z',
+        event: { type: 'command_exec', itemId: 'one', command: 'git status', exitCode: 0 },
+      },
+      {
+        id: 'm2',
+        role: 'system',
+        content: 'command_exec',
+        timestamp: '2026-10-13T10:00:01.000Z',
+        event: { type: 'command_exec', command: '', output: 'stray tail' },
+      },
+    ] as Parameters<typeof chatMessagesToEntries>[0]);
+    const commands = entries.filter(
+      (entry) => entry.kind === 'event' && entry.event.type === 'command_exec',
+    );
+    expect(commands).toHaveLength(1);
+  });
+
   it('does not invent successful outcomes for commands or sparse tool records', () => {
     expect(getOperationStatus({ type: 'command_exec' }, false)).toBe('recorded');
     expect(getOperationStatus({ type: 'tool_call', toolStatus: 'running' }, false)).toBe(

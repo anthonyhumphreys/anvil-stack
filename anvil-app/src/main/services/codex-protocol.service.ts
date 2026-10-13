@@ -713,6 +713,7 @@ export function handleCodexServerLine(
       const params = msg.params as Record<string, unknown>;
       emitEvent(state, callbacks, {
         type: 'command_exec',
+        itemId: getItemId(params),
         command: '',
         output: limitTail((params?.delta as string) ?? '', MAX_RENDERED_COMMAND_OUTPUT_CHARS),
       });
