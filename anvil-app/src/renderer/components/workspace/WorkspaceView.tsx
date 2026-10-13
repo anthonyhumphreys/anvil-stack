@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState, type KeyboardEvent } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { FolderSearch, LayoutDashboard, Link2 } from 'lucide-react';
 import type { WorkspaceRepoDefinition } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { ReposView } from '../repos/ReposView';
-import { Button, cx } from '../ui';
+import { Button } from '../ui';
 import { InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 import {
   OverviewBoard,
@@ -13,21 +13,24 @@ import {
 } from '../overview/OverviewBoard';
 import { plural } from '../overview/overview-format';
 import { useOverviewBoard } from '../overview/useOverviewBoard';
-
-type WorkspaceTab = 'overview' | 'repositories';
-
-const TABS: Array<{ id: WorkspaceTab; label: string }> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'repositories', label: 'Repositories' },
-];
+import { LibraryView } from '../library/LibraryView';
+import { ViewTabs } from '../library/ViewTabs';
+import { resolveWorkspaceTab, WORKSPACE_TABS as TABS, type WorkspaceTab } from './workspace-tabs';
+import {
+  WORKSPACE_LIBRARY_PATH,
+  WORKSPACE_REPOSITORIES_PATH,
+} from '../../utils/sidebar-navigation';
 
 /**
  * WS2: workspace home at `/workspace`.
  *
- * ANV-51: Overview (default) and Repositories are sibling tabs. The
- * repositories management surface (list, detail, readiness strip,
+ * ANV-51: Overview (default), Repositories and Library are sibling tabs.
+ * The repositories management surface (list, detail, readiness strip,
  * add/remove) keeps its behaviour under `?view=repositories`; a `repo`
- * query param also opens it so Activity links land on the right detail.
+ * query param also opens it so Activity links land on the right detail,
+ * and `/workspace/repos/:repoId/health|setup/…` opens a repo's Health or
+ * Setup section (spec §12). The Library (`?view=library`) lists artifacts,
+ * reports and repo knowledge across the workspace (spec §10).
  * The workspace-scoped header carries the workspace name, the truthful
  * status label, and (WS3) a needs-checkout banner when synced repo
  * definitions haven't been mapped to local checkouts on this device.
@@ -36,15 +39,20 @@ const TABS: Array<{ id: WorkspaceTab; label: string }> = [
  */
 export function WorkspaceView() {
   const { activeWorkspace, featureAvailability, refreshWorkspaces, repos } = useWorkspace();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const tab: WorkspaceTab =
-    searchParams.get('view') === 'repositories' || searchParams.has('repo')
-      ? 'repositories'
-      : 'overview';
+  const [searchParams] = useSearchParams();
+  const { repoId: routeRepoId } = useParams<{ repoId?: string }>();
+  const navigate = useNavigate();
+  const tab = resolveWorkspaceTab(searchParams, routeRepoId);
 
   const selectTab = (next: WorkspaceTab) => {
     if (next === tab) return;
-    setSearchParams(next === 'repositories' ? { view: 'repositories' } : {});
+    navigate(
+      next === 'repositories'
+        ? WORKSPACE_REPOSITORIES_PATH
+        : next === 'library'
+          ? WORKSPACE_LIBRARY_PATH
+          : '/workspace',
+    );
   };
 
   return (
@@ -69,10 +77,24 @@ export function WorkspaceView() {
           />
           <WorkspaceTabs tab={tab} onSelect={selectTab} />
           <NeedsCheckoutBanner onChanged={() => void refreshWorkspaces()} />
-          {/* Repositories section — the workspace's management surface. */}
-          <div className="min-h-0 flex-1">
-            <ReposView />
-          </div>
+          {tab === 'library' ? (
+            <div
+              role="tabpanel"
+              aria-labelledby="workspace-tab-library"
+              className="flex min-h-0 flex-1 flex-col"
+            >
+              <LibraryView />
+            </div>
+          ) : (
+            /* Repositories section — the workspace's management surface. */
+            <div
+              role="tabpanel"
+              aria-labelledby="workspace-tab-repositories"
+              className="min-h-0 flex-1"
+            >
+              <ReposView />
+            </div>
+          )}
         </>
       )}
     </div>
@@ -131,45 +153,15 @@ function WorkspaceTabs({
   tab: WorkspaceTab;
   onSelect: (tab: WorkspaceTab) => void;
 }) {
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
-    event.preventDefault();
-    const index = TABS.findIndex((entry) => entry.id === tab);
-    const next = TABS[(index + (event.key === 'ArrowRight' ? 1 : -1) + TABS.length) % TABS.length];
-    onSelect(next.id);
-    requestAnimationFrame(() => document.getElementById(`workspace-tab-${next.id}`)?.focus());
-  };
   return (
     <div className="shrink-0 border-b border-border bg-bg-secondary/45 px-5">
-      <div
-        role="tablist"
-        aria-label="Workspace views"
-        className="flex gap-5"
-        onKeyDown={handleKeyDown}
-      >
-        {TABS.map((entry) => {
-          const selected = entry.id === tab;
-          return (
-            <button
-              key={entry.id}
-              id={`workspace-tab-${entry.id}`}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => onSelect(entry.id)}
-              className={cx(
-                'relative -mb-px border-b-2 pb-2.5 pt-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
-                selected
-                  ? 'border-accent text-text-primary'
-                  : 'border-transparent text-text-tertiary hover:text-text-primary',
-              )}
-            >
-              {entry.label}
-            </button>
-          );
-        })}
-      </div>
+      <ViewTabs
+        tabs={TABS}
+        value={tab}
+        onChange={onSelect}
+        label="Workspace views"
+        idPrefix="workspace-tab"
+      />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Code, Plus } from 'lucide-react';
 import type {
   RepoInfo,
@@ -15,6 +15,11 @@ import { AddRepositoriesDialog } from '../shared/AddRepositoriesDialog';
 import { WorkspaceReadinessStrip } from '../workspace/WorkspaceReadinessStrip';
 import { Button } from '../ui';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { ViewTabs } from '../library/ViewTabs';
+import { RepoHealthPanel } from './RepoHealthPanel';
+import { RepoSetupPanel } from './RepoSetupPanel';
+import { HEALTH_HINT_LABELS, REPO_SECTIONS, resolveRepoSection } from './repo-sections';
+import { repoDetailPath, type RepoDetailSection } from '../../utils/sidebar-navigation';
 
 /**
  * Repository management surface — mounted under `/workspace` (as the
@@ -27,7 +32,14 @@ export function ReposView() {
   const { repos, refreshWorkspaces } = useWorkspace();
   const repoIndex = useRepoIndex();
   const [searchParams, setSearchParams] = useSearchParams();
-  const selectedRepoId = searchParams.get('repo');
+  const navigate = useNavigate();
+  const {
+    repoId: routeRepoId,
+    section: routeSection,
+    tab: routeTab,
+  } = useParams<{ repoId?: string; section?: string; tab?: string }>();
+  const selectedRepoId = routeRepoId ?? searchParams.get('repo');
+  const { section, tab, hint } = resolveRepoSection(routeSection, routeTab, searchParams);
   const selectionRequestId = useRef(0);
   const [selectedRepo, setSelectedRepo] = useState<RepoInfo | null>(null);
   const [summary, setSummary] = useState<RepoSummary | null>(null);
@@ -81,9 +93,23 @@ export function ReposView() {
 
   const handleRepoSelection = (repo: RepoInfo) => {
     if (selectedRepoId === repo.id) return;
+    // Keep the open section (or the redirect hint) when switching repos.
+    if (section !== 'overview') {
+      navigate(repoDetailPath(repo.id, section, tab));
+      return;
+    }
+    if (hint) {
+      navigate(repoDetailPath(repo.id, hint.section, hint.tab));
+      return;
+    }
     const next = new URLSearchParams(searchParams);
     next.set('repo', repo.id);
     setSearchParams(next);
+  };
+
+  const selectSection = (next: RepoDetailSection) => {
+    if (!selectedRepo || next === section) return;
+    navigate(repoDetailPath(selectedRepo.id, next, tab));
   };
 
   // Keep selection in the URL so Activity links, refreshes, and browser
@@ -213,26 +239,64 @@ export function ReposView() {
             />
           </div>
 
-          {/* Right panel — repo detail */}
-          <div className="min-w-0 flex-1 overflow-auto p-4">
+          {/* Right panel — repo detail: Overview | Health | Setup (spec §12). */}
+          <div className="flex min-w-0 flex-1 flex-col">
             {selectedRepo ? (
-              <RepoDetail
-                repo={selectedRepo}
-                summary={summary}
-                mapStatus={mapStatus}
-                onRefreshMap={() => void repoIndex.startIndex(selectedRepo.id)}
-                onMapRefreshModeChange={(mode) => void handleMapRefreshModeChange(mode)}
-              />
+              <>
+                <div className="flex shrink-0 items-center gap-4 border-b border-border-subtle px-4">
+                  <span
+                    className="max-w-[40%] truncate py-2 text-sm font-semibold text-text-primary"
+                    title={selectedRepo.path}
+                  >
+                    {selectedRepo.name}
+                  </span>
+                  <ViewTabs
+                    tabs={REPO_SECTIONS}
+                    value={section}
+                    onChange={selectSection}
+                    label={`${selectedRepo.name} sections`}
+                    idPrefix="repo-section-tab"
+                    size="sm"
+                  />
+                </div>
+                <div
+                  role="tabpanel"
+                  aria-labelledby={`repo-section-tab-${section}`}
+                  className="flex min-h-0 flex-1 flex-col"
+                >
+                  {section === 'health' ? (
+                    <RepoHealthPanel key={selectedRepo.id} repo={selectedRepo} tab={tab} />
+                  ) : section === 'setup' ? (
+                    <RepoSetupPanel key={selectedRepo.id} repo={selectedRepo} />
+                  ) : (
+                    <div className="min-h-0 flex-1 overflow-auto p-4">
+                      <RepoDetail
+                        repo={selectedRepo}
+                        summary={summary}
+                        mapStatus={mapStatus}
+                        onRefreshMap={() => void repoIndex.startIndex(selectedRepo.id)}
+                        onMapRefreshModeChange={(mode) => void handleMapRefreshModeChange(mode)}
+                      />
+                    </div>
+                  )}
+                </div>
+              </>
             ) : (
-              <EmptyState
-                icon={Code}
-                title={repos.length === 0 ? 'Add a repository' : 'Choose a repository'}
-                description={
-                  repos.length === 0
-                    ? 'Connect a local folder, clone a remote repo, or scaffold a fresh project — Anvil indexes it in the background.'
-                    : 'Select a repository to inspect its structure and index.'
-                }
-              />
+              <div className="min-h-0 flex-1 overflow-auto p-4">
+                <EmptyState
+                  icon={Code}
+                  title={repos.length === 0 ? 'Add a repository' : 'Choose a repository'}
+                  description={
+                    repos.length === 0
+                      ? 'Connect a local folder, clone a remote repo, or scaffold a fresh project — Anvil indexes it in the background.'
+                      : hint?.section === 'setup'
+                        ? 'Select a repository to set it up for agents: AGENTS.md, devcontainer, and environment checks.'
+                        : hint?.section === 'health'
+                          ? `Select a repository to see its ${HEALTH_HINT_LABELS[hint.tab ?? 'security']}.`
+                          : 'Select a repository to inspect its structure, health, and setup.'
+                  }
+                />
+              </div>
             )}
           </div>
         </div>

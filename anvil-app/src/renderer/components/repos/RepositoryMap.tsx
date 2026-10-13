@@ -38,6 +38,7 @@ import type {
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
+import { repoDetailPath } from '../../utils/sidebar-navigation';
 
 interface RepositoryMapProps {
   repoId?: string;
@@ -451,7 +452,7 @@ export function RepositoryMap({
             onOpenScope={() => openScope(selectedNode.id)}
             onOpenEditor={() => openInEditor(selectedNode)}
             onAskChat={(question) => askChat(selectedNode, question)}
-            onOpenSecurity={() => repoId && navigate(`/security/${repoId}`)}
+            onOpenSecurity={() => repoId && navigate(repoDetailPath(repoId, 'health', 'security'))}
           />
         )}
       </div>

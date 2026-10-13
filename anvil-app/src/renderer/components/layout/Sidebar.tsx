@@ -3,19 +3,14 @@ import {
   Cloud,
   Database,
   MessageSquare,
-  Compass,
   TicketCheck,
-  Shield,
   GitPullRequest,
   FileDiff,
-  FileText,
-  BookOpen,
   Settings,
   GitFork,
   Landmark,
   Globe,
   GitBranch,
-  Scale,
   SquareTerminal,
   ChevronRight,
   ChevronsLeft,
@@ -25,15 +20,13 @@ import {
   RadioTower,
   Wrench,
   Activity,
-  Boxes,
-  Workflow,
   NotebookPen,
-  StickyNote,
   MonitorSmartphone,
   GripVertical,
   PictureInPicture2,
   Target,
   Layers,
+  Library,
   Pin,
   PinOff,
 } from 'lucide-react';
@@ -62,8 +55,11 @@ import {
   getAvailableSidebarNavigation,
   isPinnableNavItem,
   isSidebarNavItemActive,
+  LIBRARY_PATH,
   MAX_PINNED_NAV_TOOLS,
   navItemGateReason,
+  NOTES_PATH,
+  PINNED_NAV_TOOLS_CHANGED_EVENT,
   readPinnedNavTools,
   SIDEBAR_FOOTER_NAV_ITEMS,
   togglePinnedNavTool,
@@ -79,26 +75,19 @@ const NAV_ICONS: Record<string, ReactNode> = {
   '/automations': <RadioTower size={19} />,
   '/dojo': <Target size={19} />,
   '/workflows': <GitFork size={18} />,
-  '/meeting-notes': <NotebookPen size={18} />,
-  '/workspace-notes': <StickyNote size={18} />,
   '/editor': <SquareTerminal size={18} />,
-  '/db-insights': <Database size={18} />,
-  '/onboard': <Compass size={18} />,
   '/workitems': <TicketCheck size={18} />,
-  '/dependencies': <Boxes size={18} />,
-  '/security': <Shield size={18} />,
   '/review': <FileDiff size={18} />,
   '/codereview': <GitPullRequest size={18} />,
-  '/cicd': <Workflow size={18} />,
-  '/cloud': <Cloud size={18} />,
-  '/docs': <FileText size={18} />,
-  '/adrs': <BookOpen size={18} />,
-  '/diagrams': <GitFork size={18} />,
-  '/governance': <Landmark size={18} />,
-  '/browser': <Globe size={18} />,
-  '/argent': <MonitorSmartphone size={18} />,
   '/git': <GitBranch size={18} />,
-  '/compliance': <Scale size={18} />,
+  '/cloud': <Cloud size={18} />,
+  [NOTES_PATH]: <NotebookPen size={18} />,
+  [LIBRARY_PATH]: <Library size={18} />,
+  '/governance': <Landmark size={18} />,
+  // Demoted tools (palette + pinnable).
+  '/browser': <Globe size={18} />,
+  '/db-insights': <Database size={18} />,
+  '/argent': <MonitorSmartphone size={18} />,
   '/settings': <Settings size={18} />,
   '/diagnostics': <Activity size={18} />,
 };
@@ -159,7 +148,11 @@ export function Sidebar({
     [userRole, cloudFeaturesEnabled],
   );
   const pinnableItems = useMemo(
-    () => [...navigation.automate, ...navigation.tools.flatMap((group) => group.items)],
+    () => [
+      ...navigation.automate,
+      ...navigation.tools.flatMap((group) => group.items),
+      ...navigation.demoted,
+    ],
     [navigation],
   );
   const pinnedItems = useMemo(
@@ -170,10 +163,10 @@ export function Sidebar({
     [pinnedPaths, pinnableItems],
   );
   const automateActive = navigation.automate.some((item) =>
-    isSidebarNavItemActive(location.pathname, item),
+    isSidebarNavItemActive(location.pathname, item, location.search),
   );
   const toolsActive = navigation.tools.some((group) =>
-    group.items.some((item) => isSidebarNavItemActive(location.pathname, item)),
+    group.items.some((item) => isSidebarNavItemActive(location.pathname, item, location.search)),
   );
   const inboxIndicator = buildAggregateActivityIndicator(activityItems);
   const automateRoute = navigation.automate[0]?.path;
@@ -192,11 +185,20 @@ export function Sidebar({
   // Hydrate pinned tools once the available items are known (NV2). Paths whose
   // feature is role-hidden are dropped from rendering but kept in storage so
   // they come back if the role changes.
+  // Legacy pins (removed §12 destinations) are migrated on read.
   useEffect(() => {
     setPinnedPaths((current) => {
       if (current.length > 0) return current;
       return readPinnedNavTools(new Set(pinnableItems.map((item) => item.path)));
     });
+  }, [pinnableItems]);
+
+  // Demoted tools are pinned from the command palette, which announces it.
+  useEffect(() => {
+    const reload = () =>
+      setPinnedPaths(readPinnedNavTools(new Set(pinnableItems.map((item) => item.path))));
+    window.addEventListener(PINNED_NAV_TOOLS_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(PINNED_NAV_TOOLS_CHANGED_EVENT, reload);
   }, [pinnableItems]);
 
   const togglePinned = useCallback((path: string) => {
@@ -342,7 +344,7 @@ export function Sidebar({
                 <SidebarNavButton
                   key={item.path}
                   item={item}
-                  active={isSidebarNavItemActive(location.pathname, item)}
+                  active={isSidebarNavItemActive(location.pathname, item, location.search)}
                   compact={compact}
                   featureAvailability={featureAvailability}
                   indicator={
@@ -365,7 +367,7 @@ export function Sidebar({
                     <SidebarNavButton
                       key={item.path}
                       item={item}
-                      active={isSidebarNavItemActive(location.pathname, item)}
+                      active={isSidebarNavItemActive(location.pathname, item, location.search)}
                       compact={compact}
                       featureAvailability={featureAvailability}
                       indicator={item.feature ? activityIndicators[item.feature] : undefined}
@@ -429,7 +431,7 @@ export function Sidebar({
                         <SidebarNavButton
                           key={item.path}
                           item={item}
-                          active={isSidebarNavItemActive(location.pathname, item)}
+                          active={isSidebarNavItemActive(location.pathname, item, location.search)}
                           compact={false}
                           featureAvailability={featureAvailability}
                           indicator={item.feature ? activityIndicators[item.feature] : undefined}
@@ -488,7 +490,11 @@ export function Sidebar({
                               <SidebarNavButton
                                 key={item.path}
                                 item={item}
-                                active={isSidebarNavItemActive(location.pathname, item)}
+                                active={isSidebarNavItemActive(
+                                  location.pathname,
+                                  item,
+                                  location.search,
+                                )}
                                 compact={false}
                                 featureAvailability={featureAvailability}
                                 indicator={

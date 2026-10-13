@@ -3,7 +3,6 @@ import { useShortcuts } from '../../hooks/useShortcuts';
 import { formatShortcut, shortcutFor } from '../../utils/shortcuts';
 import { useNavigate } from 'react-router-dom';
 import {
-  BookOpen,
   Activity,
   Bell,
   House,
@@ -13,15 +12,17 @@ import {
   Compass,
   Database,
   FileDiff,
-  FileText,
   FolderMinus,
   GitBranch,
   GitFork,
   GitPullRequest,
   Globe,
   Landmark,
+  Library,
   MessageSquare,
   Palette,
+  Pin,
+  PinOff,
   Search,
   Settings,
   Shield,
@@ -30,12 +31,10 @@ import {
   Terminal,
   TicketCheck,
   RadioTower,
-  Scale,
   FolderOpen,
   Wrench,
   MonitorSmartphone,
   NotebookPen,
-  StickyNote,
   Target,
   Workflow,
 } from 'lucide-react';
@@ -47,9 +46,21 @@ import { getNextListboxIndex } from '../../utils/list-navigation';
 import { slugForDomId } from '../../utils/dom-id';
 import { isEditableShortcutTarget } from '../../utils/keyboard';
 import {
+  chatPromptPath,
+  getAvailableSidebarNavigation,
   getSidebarNavigationEntries,
+  LIBRARY_PATH,
+  libraryPath,
+  MAX_PINNED_NAV_TOOLS,
   navItemGateReason,
+  NOTES_PATH,
+  PINNED_NAV_TOOLS_CHANGED_EVENT,
+  readPinnedNavTools,
+  repositoriesSectionHintPath,
+  togglePinnedNavTool,
   WORKSPACE_REPOSITORIES_PATH,
+  writePinnedNavTools,
+  type SidebarNavItemDefinition,
 } from '../../utils/sidebar-navigation';
 
 // ---------------------------------------------------------------------------
@@ -65,6 +76,8 @@ interface Command {
   keywords?: string[];
   shortcut?: string;
   feature?: Feature;
+  /** Additional features the role must have (e.g. chat for agent commands). */
+  requiresFeatures?: Feature[];
   recent?: boolean;
   action: () => void;
 }
@@ -122,6 +135,97 @@ export function buildToggleChatLayoutCommandMetadata(currentLayout: ChatLayout) 
   };
 }
 
+export type AskAgentCommandId =
+  | 'ask-agent-security-audit'
+  | 'ask-agent-dependencies'
+  | 'ask-agent-cicd'
+  | 'ask-agent-review-changes';
+
+export interface AskAgentCommandMetadata {
+  id: AskAgentCommandId;
+  label: string;
+  description: string;
+  section: string;
+  keywords: string[];
+  /** Role feature for the underlying domain; chat is always required too. */
+  feature: Feature;
+  prompt: string;
+}
+
+/** Section heading for the agent-backed replacements of removed tools (spec §12). */
+export const ASK_AGENT_SECTION = 'Ask the agent';
+
+/**
+ * Security, Dependencies and CI/CD stopped being destinations (spec §12):
+ * their results now arrive as chat surfaces. These commands start a chat with
+ * a prefilled (not sent) prompt via the `/chat?prompt=` route intent.
+ */
+export function buildAskAgentCommands(): AskAgentCommandMetadata[] {
+  return [
+    {
+      id: 'ask-agent-security-audit',
+      label: 'Ask the agent: Run a security audit',
+      description: 'Findings with severity, evidence, and fixes, right in the thread.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['security', 'audit', 'scan', 'vulnerabilities', 'owasp', 'findings'],
+      feature: 'security',
+      prompt:
+        'Run a security audit of the repositories in this workspace. Report concrete findings with severity, evidence (file and line), and a practical fix for each.',
+    },
+    {
+      id: 'ask-agent-dependencies',
+      label: 'Ask the agent: Check dependencies',
+      description: 'Outdated, deprecated, vulnerable, and licence-risky packages.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['dependencies', 'packages', 'npm', 'sbom', 'licences', 'licenses', 'upgrade'],
+      feature: 'dependencies',
+      prompt:
+        'Check the dependencies in this workspace: outdated or deprecated packages, known vulnerabilities, and licence risks. Prioritise what to upgrade first and why.',
+    },
+    {
+      id: 'ask-agent-cicd',
+      label: 'Ask the agent: Analyse CI/CD',
+      description: 'Stages, gates, failing or slow steps, and improvements.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['ci', 'cd', 'ci/cd', 'cicd', 'pipeline', 'build', 'deploy', 'workflow'],
+      feature: 'cicd',
+      prompt:
+        'Analyse the CI/CD pipelines in this workspace. Map the stages and gates, flag failing, flaky, or slow steps, and suggest concrete improvements.',
+    },
+    {
+      id: 'ask-agent-review-changes',
+      label: 'Ask the agent: Review my changes',
+      description: 'Bugs, regressions, missing tests, and risky assumptions.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['review', 'changes', 'diff', 'code review', 'quality', 'working tree'],
+      feature: 'codereview',
+      prompt:
+        'Review my changes. Prioritise correctness, regressions, missing tests, and security risks. Cite files and lines where possible.',
+    },
+  ];
+}
+
+/** Pin/unpin a demoted tool from the palette (it has no sidebar row to right-click). */
+export function buildPinToolCommandMetadata(
+  item: Pick<SidebarNavItemDefinition, 'path' | 'label'>,
+  pinned: string[],
+) {
+  const isPinned = pinned.includes(item.path);
+  const atCap = !isPinned && pinned.length >= MAX_PINNED_NAV_TOOLS;
+  return {
+    id: `pin-${item.path.slice(1).replaceAll('/', '-')}`,
+    label: isPinned ? `Unpin ${item.label} from navigation` : `Pin ${item.label} to navigation`,
+    description: atCap
+      ? `Up to ${MAX_PINNED_NAV_TOOLS} tools can be pinned. Unpin one first.`
+      : isPinned
+        ? 'Remove it from the primary navigation.'
+        : 'Show it in the primary navigation.',
+    keywords: ['pin', 'unpin', 'sidebar', 'navigation', item.label.toLowerCase()],
+    isPinned,
+    disabled: atCap,
+  };
+}
+
 export function buildCommandPaletteOptionId(commandId: string): string {
   return `command-palette-option-${slugForDomId(commandId)}`;
 }
@@ -171,6 +275,19 @@ export function groupPaletteCommands<T extends { section: string }>(commands: T[
   return Array.from(groups, ([section, items]) => ({ section, items }));
 }
 
+function askAgentIcon(id: AskAgentCommandId): React.ReactNode {
+  switch (id) {
+    case 'ask-agent-security-audit':
+      return <Shield size={16} />;
+    case 'ask-agent-dependencies':
+      return <Boxes size={16} />;
+    case 'ask-agent-cicd':
+      return <Workflow size={16} />;
+    case 'ask-agent-review-changes':
+      return <GitPullRequest size={16} />;
+  }
+}
+
 function navigationIconForPath(path: string): React.ReactNode {
   const icons: Record<string, React.ReactNode> = {
     '/overview': <House size={16} />,
@@ -183,23 +300,15 @@ function navigationIconForPath(path: string): React.ReactNode {
     '/workitems': <TicketCheck size={16} />,
     '/editor': <SquareTerminal size={16} />,
     '/browser': <Globe size={16} />,
-    '/onboard': <Compass size={16} />,
     '/argent': <MonitorSmartphone size={16} />,
     '/review': <FileDiff size={16} />,
     '/codereview': <GitPullRequest size={16} />,
-    '/cicd': <Workflow size={16} />,
     '/git': <GitBranch size={16} />,
     '/cloud': <Cloud size={16} />,
     '/db-insights': <Database size={16} />,
-    '/dependencies': <Boxes size={16} />,
-    '/security': <Shield size={16} />,
-    '/meeting-notes': <NotebookPen size={16} />,
-    '/workspace-notes': <StickyNote size={16} />,
-    '/docs': <FileText size={16} />,
-    '/adrs': <BookOpen size={16} />,
-    '/diagrams': <GitFork size={16} />,
+    [NOTES_PATH]: <NotebookPen size={16} />,
+    [LIBRARY_PATH]: <Library size={16} />,
     '/governance': <Landmark size={16} />,
-    '/compliance': <Scale size={16} />,
     '/settings': <Settings size={16} />,
     '/diagnostics': <Activity size={16} />,
   };
@@ -228,6 +337,7 @@ export function CommandPalette({
   const [chatLayout, setChatLayout] = useState<ChatLayout>('classic');
   // WS4: two-step "Remove repository" picker — null = normal command mode.
   const [repoRemoval, setRepoRemoval] = useState<{ confirmRepoId?: string } | null>(null);
+  const [pinnedPaths, setPinnedPaths] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -258,10 +368,38 @@ export function CommandPalette({
 
   const promptChat = useCallback(
     (prompt: string) => {
-      navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+      navigate(chatPromptPath(prompt));
       onClose();
     },
     [navigate, onClose],
+  );
+
+  // Demoted tools (Browser, DB Insights, Argent) are pinned from here.
+  const pinnableNavPaths = useMemo(() => {
+    const navigation = getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled);
+    return new Set(
+      [
+        ...navigation.automate,
+        ...navigation.tools.flatMap((group) => group.items),
+        ...navigation.demoted,
+      ].map((item) => item.path),
+    );
+  }, [userRole, cloudFeaturesEnabled]);
+
+  useEffect(() => {
+    if (open) setPinnedPaths(readPinnedNavTools(pinnableNavPaths));
+  }, [open, pinnableNavPaths]);
+
+  const togglePinnedTool = useCallback(
+    (path: string) => {
+      const next = togglePinnedNavTool(pinnedPaths, path);
+      if (next === pinnedPaths) return;
+      writePinnedNavTools(next);
+      setPinnedPaths(next);
+      window.dispatchEvent(new CustomEvent(PINNED_NAV_TOOLS_CHANGED_EVENT));
+      onClose();
+    },
+    [pinnedPaths, onClose],
   );
 
   const toggleChatLayout = useCallback(async () => {
@@ -290,19 +428,6 @@ export function CommandPalette({
               feature: 'editor' as Feature,
               keywords: ['workspace', 'editor', 'code', 'ide', activeWorkspace.name.toLowerCase()],
               action: () => go('/editor'),
-            },
-            {
-              id: 'workspace-review-changes',
-              label: 'Review Current Workspace Changes',
-              description: 'Ask Chat for bugs, regressions, missing tests, and risky assumptions.',
-              section: 'Workspace',
-              icon: <GitPullRequest size={16} />,
-              feature: 'chat' as Feature,
-              keywords: ['workspace', 'review', 'diff', 'changes', 'quality'],
-              action: () =>
-                promptChat(
-                  'Review the current workspace changes. Prioritise correctness, regressions, missing tests, security risks, and developer workflow issues. Cite files and lines where possible.',
-                ),
             },
             {
               id: 'workspace-dev-loop',
@@ -383,6 +508,78 @@ export function CommandPalette({
         ],
         action: () => go(item.path),
       })),
+      // Pin/unpin demoted tools — they have no sidebar row to right-click.
+      ...getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled).demoted.map((item) => {
+        const metadata = buildPinToolCommandMetadata(item, pinnedPaths);
+        return {
+          id: metadata.id,
+          label: metadata.label,
+          description: metadata.description,
+          section: 'More tools',
+          icon: metadata.isPinned ? <PinOff size={16} /> : <Pin size={16} />,
+          feature: item.feature,
+          keywords: metadata.keywords,
+          action: () => {
+            if (!metadata.disabled) togglePinnedTool(item.path);
+          },
+        };
+      }),
+
+      // Spec §12: agent-backed replacements for the removed result tools.
+      ...buildAskAgentCommands().map((metadata) => ({
+        id: metadata.id,
+        label: metadata.label,
+        description: metadata.description,
+        section: metadata.section,
+        icon: askAgentIcon(metadata.id),
+        feature: metadata.feature,
+        requiresFeatures: ['chat'] as Feature[],
+        keywords: ['ask', 'agent', 'chat', ...metadata.keywords],
+        action: () => promptChat(metadata.prompt),
+      })),
+
+      // Saved history and setup moved into repo detail (Health, Setup).
+      {
+        id: 'repo-health-security',
+        label: 'Open Security history (repo Health)',
+        description: 'Pick a repository to see its past security audits.',
+        section: 'Repository health',
+        icon: <Shield size={16} />,
+        feature: 'security',
+        keywords: ['security', 'audit', 'history', 'health', 'findings'],
+        action: () => go(repositoriesSectionHintPath('health', 'security')),
+      },
+      {
+        id: 'repo-health-dependencies',
+        label: 'Open Dependencies (repo Health)',
+        description: 'Pick a repository to inspect packages, licences, and SBOMs.',
+        section: 'Repository health',
+        icon: <Boxes size={16} />,
+        feature: 'dependencies',
+        keywords: ['dependencies', 'packages', 'sbom', 'licences', 'health'],
+        action: () => go(repositoriesSectionHintPath('health', 'dependencies')),
+      },
+      {
+        id: 'repo-health-cicd',
+        label: 'Open CI/CD (repo Health)',
+        description: 'Pick a repository to explore its pipelines.',
+        section: 'Repository health',
+        icon: <Workflow size={16} />,
+        feature: 'cicd',
+        keywords: ['ci', 'cd', 'cicd', 'pipeline', 'build', 'health'],
+        action: () => go(repositoriesSectionHintPath('health', 'cicd')),
+      },
+      {
+        id: 'repo-setup',
+        label: 'Set up a repository for agents',
+        description: 'AGENTS.md, devcontainer, and environment readiness (repo Setup).',
+        section: 'Repository health',
+        icon: <Compass size={16} />,
+        feature: 'onboard',
+        keywords: ['onboard', 'setup', 'agents.md', 'devcontainer', 'repo setup', 'wizard'],
+        action: () => go(repositoriesSectionHintPath('setup')),
+      },
+
       // Actions
       {
         id: 'act-terminal',
@@ -493,15 +690,6 @@ export function CommandPalette({
         action: () => go('/editor'),
       },
       {
-        id: 'act-run-security',
-        label: 'Run Security Audit',
-        section: 'Actions',
-        icon: <Shield size={16} />,
-        feature: 'security',
-        keywords: ['run', 'security', 'audit', 'scan'],
-        action: () => go('/security'),
-      },
-      {
         id: 'act-run-review',
         label: 'Run PR Review',
         section: 'Actions',
@@ -522,11 +710,12 @@ export function CommandPalette({
       {
         id: 'act-create-diagram',
         label: 'Create Architecture Diagram',
+        description: 'Open the diagram tool in the Library.',
         section: 'Actions',
         icon: <GitFork size={16} />,
         feature: 'diagrams',
-        keywords: ['diagram', 'architecture', 'drawio', 'mermaid'],
-        action: () => go('/diagrams'),
+        keywords: ['diagram', 'architecture', 'drawio', 'mermaid', 'library'],
+        action: () => go(libraryPath({ kind: 'diagram', tool: true })),
       },
       {
         id: 'act-open-browser',
@@ -653,6 +842,9 @@ export function CommandPalette({
       chatLayout,
       toggleChatLayout,
       startTemporaryChat,
+      userRole,
+      pinnedPaths,
+      togglePinnedTool,
     ],
   );
 
@@ -709,7 +901,9 @@ export function CommandPalette({
   // Filter by role and query
   const filtered = useMemo(() => {
     const allowed = (repoRemoval ? pickerCommands : commands).filter(
-      (cmd) => !cmd.feature || ROLE_FEATURES[userRole].includes(cmd.feature),
+      (cmd) =>
+        (!cmd.feature || ROLE_FEATURES[userRole].includes(cmd.feature)) &&
+        (cmd.requiresFeatures ?? []).every((feature) => ROLE_FEATURES[userRole].includes(feature)),
     );
     const matches = filterCommandPaletteCommands(allowed, query);
     if (!query.trim()) return matches;

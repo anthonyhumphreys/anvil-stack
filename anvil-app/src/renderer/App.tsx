@@ -1,5 +1,12 @@
 import { lazy, Suspense, useEffect, useState, useCallback, type ReactNode } from 'react';
-import { Routes, Route, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  Routes,
+  Route,
+  Navigate,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom';
 import { AppRouter } from './components/layout/AppRouter';
 import { Shell } from './components/layout/Shell';
 import { ErrorBoundary } from './components/layout/ErrorBoundary';
@@ -14,6 +21,7 @@ import { WelcomeOverlay } from './components/onboard/WelcomeOverlay';
 import { RoleHiddenNotice } from './components/shared/RoleHiddenNotice';
 import type { UserRole, Feature, AppTheme } from '../shared/types';
 import { ROLE_FEATURES } from '../shared/types';
+import { resolveLegacyRoute } from './utils/sidebar-navigation';
 
 const ReposView = lazy(() =>
   import('./components/repos/ReposView').then((module) => ({ default: module.ReposView })),
@@ -35,9 +43,6 @@ const ChatView = lazy(() =>
 const ProcessingPreview = import.meta.env.DEV
   ? lazy(() => import('./components/chat/replay/ProcessingPreview'))
   : null;
-const OnboardView = lazy(() =>
-  import('./components/onboard/OnboardView').then((module) => ({ default: module.OnboardView })),
-);
 const ChangeReviewView = lazy(() =>
   import('./components/review/ChangeReviewView').then((module) => ({
     default: module.ChangeReviewView,
@@ -56,16 +61,10 @@ const DbInsightsView = lazy(() =>
     default: module.DbInsightsView,
   })),
 );
-const SecurityView = lazy(() =>
-  import('./components/security/SecurityView').then((module) => ({ default: module.SecurityView })),
-);
 const CodeReviewView = lazy(() =>
   import('./components/codereview/CodeReviewView').then((module) => ({
     default: module.CodeReviewView,
   })),
-);
-const CicdView = lazy(() =>
-  import('./components/cicd/CicdView').then((module) => ({ default: module.CicdView })),
 );
 const AutomationsView = lazy(() =>
   import('./components/automations/AutomationsView').then((module) => ({
@@ -74,15 +73,6 @@ const AutomationsView = lazy(() =>
 );
 const DojoView = lazy(() =>
   import('./components/dojo/DojoView').then((module) => ({ default: module.DojoView })),
-);
-const DocsView = lazy(() =>
-  import('./components/docs/DocsView').then((module) => ({ default: module.DocsView })),
-);
-const AdrsView = lazy(() =>
-  import('./components/adrs/AdrsView').then((module) => ({ default: module.AdrsView })),
-);
-const DiagramsView = lazy(() =>
-  import('./components/diagrams/DiagramsView').then((module) => ({ default: module.DiagramsView })),
 );
 const GovernanceView = lazy(() =>
   import('./components/governance/GovernanceView').then((module) => ({
@@ -97,16 +87,6 @@ const ArgentView = lazy(() =>
 );
 const GitView = lazy(() =>
   import('./components/git/GitView').then((module) => ({ default: module.GitView })),
-);
-const ComplianceView = lazy(() =>
-  import('./components/compliance/ComplianceView').then((module) => ({
-    default: module.ComplianceView,
-  })),
-);
-const DependenciesView = lazy(() =>
-  import('./components/dependencies/DependenciesView').then((module) => ({
-    default: module.DependenciesView,
-  })),
 );
 const DiagnosticsView = lazy(() =>
   import('./components/diagnostics/DiagnosticsView').then((module) => ({
@@ -131,18 +111,11 @@ const OpenInAnvilView = lazy(() =>
     default: module.OpenInAnvilView,
   })),
 );
-const MeetingNotesView = lazy(() =>
-  import('./components/meeting/MeetingNotesView').then((module) => ({
-    default: module.MeetingNotesView,
-  })),
+const NotesView = lazy(() =>
+  import('./components/notes/NotesView').then((module) => ({ default: module.NotesView })),
 );
 const InboxView = lazy(() =>
   import('./components/inbox/InboxView').then((module) => ({ default: module.InboxView })),
-);
-const WorkspaceNotesView = lazy(() =>
-  import('./components/workspace/WorkspaceNotesView').then((module) => ({
-    default: module.WorkspaceNotesView,
-  })),
 );
 
 type OnboardingPreviewStep = 'welcome';
@@ -190,6 +163,44 @@ function DefaultRedirect() {
     (summary) => summary.count > 0 && (summary.status === 'warning' || summary.status === 'error'),
   );
   return <Navigate to={!isNewUser && hasPendingAttention ? '/inbox' : '/chat'} replace />;
+}
+
+const LEGACY_REDIRECT_PATHS = [
+  '/security/*',
+  '/dependencies/*',
+  '/cicd/*',
+  '/onboard',
+  '/adrs',
+  '/diagrams/*',
+  '/docs',
+  '/compliance',
+  '/library',
+  '/meeting-notes',
+  '/workspace-notes',
+];
+
+/** Repo the repo-setup wizard last worked on (OnboardView persists it). */
+const ONBOARD_REPO_STORAGE_KEY = 'anvil:onboard-repo';
+
+/**
+ * Spec §12: removed destinations redirect to their new homes (repo detail
+ * Health/Setup, the Library, or Notes) so old links, notifications, launch
+ * intents, tool windows and pins keep landing somewhere sensible.
+ */
+function LegacyRedirect() {
+  const location = useLocation();
+  const { repos, loading } = useWorkspace();
+  if (loading) return <SplashScreen label="Loading workspace" />;
+  let onboardRepoId: string | null = null;
+  try {
+    const remembered = window.localStorage.getItem(ONBOARD_REPO_STORAGE_KEY);
+    if (remembered && repos.some((repo) => repo.id === remembered)) onboardRepoId = remembered;
+  } catch {
+    // Storage can be unavailable; fall back to the repository picker.
+  }
+  const target =
+    resolveLegacyRoute(location.pathname, location.search, { onboardRepoId }) ?? '/workspace';
+  return <Navigate to={target} replace />;
 }
 
 function ChatRoute({ userRole }: { userRole: UserRole }) {
@@ -493,6 +504,42 @@ function AppContent() {
                         </WorkspaceGate>
                       }
                     />
+                    {/* Spec §12: repo detail Health (Security, Dependencies, CI/CD)
+                      and Setup sections — path params so embedded tools that
+                      read `:repoId` work unchanged. */}
+                    <Route
+                      path="/workspace/repos/:repoId/:section/:tab?"
+                      element={
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <WorkspaceView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>
+                      }
+                    />
+                    {/* Merged Notes: Workspace notes | Meeting notes. */}
+                    <Route
+                      path="/notes"
+                      element={
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <NotesView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>
+                      }
+                    />
+                    {/* Removed destinations (spec §12) redirect to their new homes. */}
+                    {LEGACY_REDIRECT_PATHS.map((path) => (
+                      <Route
+                        key={path}
+                        path={path}
+                        element={
+                          <WorkspaceGate>
+                            <LegacyRedirect />
+                          </WorkspaceGate>
+                        }
+                      />
+                    ))}
                     <Route
                       path="/repos"
                       element={
@@ -512,28 +559,6 @@ function AppContent() {
                       }
                     />
 
-                    <Route
-                      path="/meeting-notes"
-                      element={guard(
-                        'meeting-notes',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <MeetingNotesView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
-                      path="/workspace-notes"
-                      element={guard(
-                        'workspace-notes',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <WorkspaceNotesView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
                     <Route
                       path="/chat"
                       element={guard('chat', <ChatRoute userRole={userRole} />)}
@@ -555,17 +580,6 @@ function AppContent() {
                         <WorkspaceGate>
                           <ErrorBoundary>
                             <DbInsightsView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
-                      path="/onboard"
-                      element={guard(
-                        'onboard',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <OnboardView />
                           </ErrorBoundary>
                         </WorkspaceGate>,
                       )}
@@ -604,56 +618,12 @@ function AppContent() {
                       )}
                     />
                     <Route
-                      path="/dependencies/:repoId?"
-                      element={guard(
-                        'dependencies',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <DependenciesView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
-                      path="/security/:repoId/dependencies"
-                      element={guard(
-                        'dependencies',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <DependenciesView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
-                      path="/security/:repoId?"
-                      element={guard(
-                        'security',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <SecurityView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
                       path="/codereview/:repoId?"
                       element={guard(
                         'codereview',
                         <WorkspaceGate>
                           <ErrorBoundary>
                             <CodeReviewView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
-                      path="/cicd"
-                      element={guard(
-                        'cicd',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <CicdView />
                           </ErrorBoundary>
                         </WorkspaceGate>,
                       )}
@@ -711,39 +681,6 @@ function AppContent() {
                       )}
                     />
                     <Route
-                      path="/docs"
-                      element={guard(
-                        'docs',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <DocsView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
-                      path="/adrs"
-                      element={guard(
-                        'adrs',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <AdrsView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
-                      path="/diagrams/:repoId?"
-                      element={guard(
-                        'diagrams',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <DiagramsView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
                       path="/governance"
                       element={guard(
                         'governance',
@@ -794,17 +731,6 @@ function AppContent() {
                         <WorkspaceGate>
                           <ErrorBoundary>
                             <GitView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
-                      )}
-                    />
-                    <Route
-                      path="/compliance"
-                      element={guard(
-                        'compliance',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <ComplianceView />
                           </ErrorBoundary>
                         </WorkspaceGate>,
                       )}

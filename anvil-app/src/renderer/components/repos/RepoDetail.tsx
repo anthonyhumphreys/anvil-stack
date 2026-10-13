@@ -27,6 +27,7 @@ import { useNavigate } from 'react-router-dom';
 import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
 import { useRepoIndex } from '../../contexts/RepoIndexContext';
 import { buildEditorUrl } from '../../utils/editor-link';
+import { libraryPath } from '../../utils/sidebar-navigation';
 import { Button, IconButton, Menu, MenuItem, MenuSeparator, cx } from '../ui';
 import { RemoveRepoDialog } from './RemoveRepoDialog';
 import { RepoReadinessChecklist } from './RepoReadinessChecklist';
@@ -260,7 +261,11 @@ export function RepoDetail({
             <ExternalLink size={14} aria-hidden="true" />
             Open in VS Code
           </Button>
-          <Button variant="secondary" size="sm" onClick={() => navigate(`/diagrams/${repo.id}`)}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => navigate(libraryPath({ kind: 'diagram', repoId: repo.id }))}
+          >
             <GitFork size={14} aria-hidden="true" />
             Diagrams
           </Button>

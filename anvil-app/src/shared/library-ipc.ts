@@ -10,6 +10,8 @@ export interface LibraryItem {
   subtype?: string;
   title: string;
   repoId?: string;
+  /** Display name of `repoId` (additive). */
+  repoName?: string;
   threadId?: string;
   threadTitle?: string;
   path?: string;
@@ -18,6 +20,14 @@ export interface LibraryItem {
   updatedAt: string;
 }
 
+export interface LibraryListFilter {
+  kind?: LibraryItemKind;
+  repoId?: string;
+  query?: string;
+  /** Only items with a live (unrevoked, unexpired) share link (additive). */
+  sharedOnly?: boolean;
+}
+
 export interface LibraryApi {
-  list(workspaceId: string, filter?: { kind?: LibraryItemKind; repoId?: string; query?: string }): Promise<LibraryItem[]>;
+  list(workspaceId: string, filter?: LibraryListFilter): Promise<LibraryItem[]>;
 }

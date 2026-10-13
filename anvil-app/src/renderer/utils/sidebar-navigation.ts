@@ -9,6 +9,8 @@ export interface SidebarNavItemDefinition {
   /** Search terms shared with the command palette. */
   keywords?: string[];
   feature?: Feature;
+  /** Available when the role has ANY of these features (merged destinations such as Notes). */
+  anyFeatures?: Feature[];
   requiresRepoFeature?: boolean;
   requiresChat?: boolean;
 }
@@ -25,8 +27,19 @@ export const MAX_PINNED_NAV_TOOLS = 5;
 /** localStorage key for the pinned-tool preference (NV2). */
 export const PINNED_NAV_TOOLS_STORAGE_KEY = 'layout:pinned-nav-tools:v1';
 
+/** Window event fired when pins change outside the sidebar (e.g. from the command palette). */
+export const PINNED_NAV_TOOLS_CHANGED_EVENT = 'anvil:pinned-nav-tools-changed';
+
 /** The workspace's repository management tab (WS2; the default tab is Overview). */
 export const WORKSPACE_REPOSITORIES_PATH = '/workspace?view=repositories';
+
+/** Merged Notes destination (Workspace notes | Meeting notes). */
+export const NOTES_PATH = '/notes';
+
+/** Sidebar alias for the Workspace Library tab; redirects to `/workspace?view=library`. */
+export const LIBRARY_PATH = '/library';
+
+export const WORKSPACE_LIBRARY_PATH = '/workspace?view=library';
 
 export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
   {
@@ -52,7 +65,8 @@ export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
   {
     path: '/workspace',
     label: 'Workspace',
-    description: 'Overview, repositories, and setup for the active workspace.',
+    description: 'Overview, repositories, health, and setup for the active workspace.',
+    keywords: ['repositories', 'repos', 'health', 'setup', 'security', 'dependencies', 'ci/cd'],
     feature: 'repos',
   },
 ];
@@ -98,6 +112,11 @@ export const SIDEBAR_FOOTER_NAV_ITEMS: SidebarNavItemDefinition[] = [
   },
 ];
 
+/**
+ * Spec §12: 29 destinations become 18. Results about the current task
+ * (reports, findings, documents) moved to repo detail Health/Setup, the
+ * Library, or chat surfaces; queues, live tools and editors stay.
+ */
 export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
   {
     id: 'build',
@@ -109,29 +128,6 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         description: 'Embedded IDE for workspace files.',
         feature: 'editor',
         requiresRepoFeature: true,
-      },
-      {
-        path: '/browser',
-        label: 'Browser',
-        description: 'Preview running apps and simulators.',
-        keywords: ['web', 'localhost', 'dev server'],
-        feature: 'browser',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/onboard',
-        label: 'Repo setup',
-        description: 'AGENTS.md, devcontainer, and environment readiness checks.',
-        keywords: ['onboard', 'agents.md', 'devcontainer', 'wizard'],
-        feature: 'onboard',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/argent',
-        label: 'Argent',
-        description: 'Mobile companion and simulator checks.',
-        keywords: ['expo', 'mobile', 'simulator', 'emulator', 'mcp'],
-        feature: 'argent',
       },
     ],
   },
@@ -162,14 +158,6 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         requiresRepoFeature: true,
       },
       {
-        path: '/cicd',
-        label: 'CI/CD',
-        description: 'Pipeline status for workspace repos.',
-        keywords: ['pipeline', 'build', 'deploy'],
-        feature: 'cicd',
-        requiresRepoFeature: true,
-      },
-      {
         path: '/git',
         label: 'Git',
         description: 'Branches, diffs, and repository status.',
@@ -191,29 +179,6 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         feature: 'cloud',
         requiresRepoFeature: true,
       },
-      {
-        path: '/db-insights',
-        label: 'DB Insights',
-        description: 'Import and analyse database schemas.',
-        keywords: ['database', 'db', 'schema', 'sql', 'import', 'ssms'],
-        feature: 'dbinsights',
-      },
-      {
-        path: '/dependencies',
-        label: 'Dependencies',
-        description: 'Package and dependency overview per repo.',
-        keywords: ['packages', 'libraries', 'npm'],
-        feature: 'dependencies',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/security',
-        label: 'Security',
-        description: 'Security audits and findings per repo.',
-        keywords: ['audit', 'vulnerabilities', 'owasp'],
-        feature: 'security',
-        requiresRepoFeature: true,
-      },
     ],
   },
   {
@@ -221,39 +186,28 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
     label: 'Knowledge',
     items: [
       {
-        path: '/meeting-notes',
-        label: 'Meeting Notes',
-        description: 'Notes captured from meetings.',
-        feature: 'meeting-notes',
+        path: NOTES_PATH,
+        label: 'Notes',
+        description: 'Workspace notes and meeting notes.',
+        keywords: ['meeting notes', 'workspace notes', 'transcript', 'capture'],
+        anyFeatures: ['workspace-notes', 'meeting-notes'],
       },
       {
-        path: '/workspace-notes',
-        label: 'Workspace Notes',
-        description: 'Shared notes for this workspace.',
-        feature: 'workspace-notes',
-      },
-      {
-        path: '/docs',
-        label: 'Documentation',
-        description: 'Docs from your documentation provider.',
-        keywords: ['docs', 'confluence'],
-        feature: 'docs',
-      },
-      {
-        path: '/adrs',
-        label: 'ADRs',
-        description: 'Architecture decision records.',
-        keywords: ['architecture', 'decision', 'records'],
-        feature: 'adrs',
-        requiresRepoFeature: true,
-      },
-      {
-        path: '/diagrams',
-        label: 'Diagrams',
-        description: 'Architecture diagrams for workspace repos.',
-        keywords: ['architecture', 'drawio', 'mermaid'],
-        feature: 'diagrams',
-        requiresRepoFeature: true,
+        path: LIBRARY_PATH,
+        label: 'Library',
+        description: 'Artifacts, reviews, ADRs, diagrams, and compliance docs.',
+        keywords: [
+          'artifacts',
+          'reports',
+          'adrs',
+          'architecture decisions',
+          'diagrams',
+          'compliance',
+          'documentation',
+          'docs',
+          'shared links',
+        ],
+        feature: 'repos',
       },
     ],
   },
@@ -267,19 +221,40 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         description: 'Governance gates and lifecycle status.',
         feature: 'governance',
       },
-      {
-        path: '/compliance',
-        label: 'Data & Compliance',
-        description: 'Privacy and compliance checks.',
-        keywords: ['dpia', 'privacy', 'terms'],
-        feature: 'compliance',
-        requiresRepoFeature: true,
-      },
     ],
   },
 ];
 
-/** Every sidebar destination, primary first and footer last. */
+/**
+ * Demoted tools (spec §12): not in the sidebar, but reachable from the
+ * command palette and pinnable to the primary nav.
+ */
+export const DEMOTED_NAV_ITEMS: SidebarNavItemDefinition[] = [
+  {
+    path: '/browser',
+    label: 'Browser',
+    description: 'Preview running apps and simulators.',
+    keywords: ['web', 'localhost', 'dev server', 'preview'],
+    feature: 'browser',
+    requiresRepoFeature: true,
+  },
+  {
+    path: '/db-insights',
+    label: 'DB Insights',
+    description: 'Import and analyse database schemas.',
+    keywords: ['database', 'db', 'schema', 'sql', 'import', 'ssms'],
+    feature: 'dbinsights',
+  },
+  {
+    path: '/argent',
+    label: 'Argent',
+    description: 'Mobile companion and simulator checks.',
+    keywords: ['expo', 'mobile', 'simulator', 'emulator', 'mcp'],
+    feature: 'argent',
+  },
+];
+
+/** Every sidebar destination, primary first and footer last (demoted tools excluded). */
 export function allSidebarNavItems(): SidebarNavItemDefinition[] {
   return [
     ...PRIMARY_NAV_ITEMS,
@@ -294,6 +269,9 @@ export interface SidebarNavigationEntry {
   section: string;
 }
 
+/** Section label the command palette uses for demoted tools. */
+export const DEMOTED_NAV_SECTION = 'More tools';
+
 /** Flatten the visible navigation in display order for other navigation surfaces. */
 export function getSidebarNavigationEntries(
   userRole: UserRole,
@@ -306,8 +284,23 @@ export function getSidebarNavigationEntries(
     ...navigation.tools.flatMap((group) =>
       group.items.map((item) => ({ item, section: group.label })),
     ),
+    ...navigation.demoted.map((item) => ({ item, section: DEMOTED_NAV_SECTION })),
     ...SIDEBAR_FOOTER_NAV_ITEMS.map((item) => ({ item, section: 'Settings' })),
   ];
+}
+
+/** Role/Cloud availability for a single destination. */
+export function isNavItemAvailable(
+  item: SidebarNavItemDefinition,
+  userRole: UserRole,
+  cloudFeaturesEnabled: boolean,
+): boolean {
+  const features = ROLE_FEATURES[userRole];
+  if (item.feature && !features.includes(item.feature)) return false;
+  if (item.anyFeatures && !item.anyFeatures.some((feature) => features.includes(feature))) {
+    return false;
+  }
+  return item.feature !== 'cloud' || cloudFeaturesEnabled;
 }
 
 export function getAvailableSidebarNavigation(
@@ -317,10 +310,10 @@ export function getAvailableSidebarNavigation(
   primary: SidebarNavItemDefinition[];
   automate: SidebarNavItemDefinition[];
   tools: SidebarToolGroupDefinition[];
+  demoted: SidebarNavItemDefinition[];
 } {
   const isAvailable = (item: SidebarNavItemDefinition) =>
-    (!item.feature || ROLE_FEATURES[userRole].includes(item.feature)) &&
-    (item.feature !== 'cloud' || cloudFeaturesEnabled);
+    isNavItemAvailable(item, userRole, cloudFeaturesEnabled);
 
   return {
     primary: PRIMARY_NAV_ITEMS.filter(isAvailable),
@@ -329,10 +322,11 @@ export function getAvailableSidebarNavigation(
       ...group,
       items: group.items.filter(isAvailable),
     })).filter((group) => group.items.length > 0),
+    demoted: DEMOTED_NAV_ITEMS.filter(isAvailable),
   };
 }
 
-/** Pinnable destinations are tool/automate items; primary items are always shown. */
+/** Pinnable destinations are tool/automate/demoted items; primary items are always shown. */
 export function isPinnableNavItem(item: SidebarNavItemDefinition): boolean {
   return (
     !PRIMARY_NAV_ITEMS.some((primary) => primary.path === item.path) &&
@@ -350,10 +344,45 @@ export function togglePinnedNavTool(pinned: string[], path: string): string[] {
   return [...pinned, path];
 }
 
-/** Read pinned tool paths from localStorage; drops unknown/stale entries. */
+/**
+ * Pins pointing at destinations removed in the §12 consolidation. A string
+ * maps the pin to the tool's new home; `null` drops it (the tool now lives
+ * inside repo detail, which has no single destination to pin).
+ */
+export const LEGACY_PINNED_NAV_REPLACEMENTS: Readonly<Record<string, string | null>> = {
+  '/meeting-notes': NOTES_PATH,
+  '/workspace-notes': NOTES_PATH,
+  '/docs': LIBRARY_PATH,
+  '/adrs': LIBRARY_PATH,
+  '/diagrams': LIBRARY_PATH,
+  '/compliance': LIBRARY_PATH,
+  '/security': null,
+  '/dependencies': null,
+  '/cicd': null,
+  '/onboard': null,
+};
+
+/** Map legacy pins to their new homes, dropping removed ones and duplicates. */
+export function migratePinnedNavTools(pinned: string[]): string[] {
+  const next: string[] = [];
+  for (const path of pinned) {
+    const mapped = Object.prototype.hasOwnProperty.call(LEGACY_PINNED_NAV_REPLACEMENTS, path)
+      ? LEGACY_PINNED_NAV_REPLACEMENTS[path]
+      : path;
+    if (mapped && !next.includes(mapped)) next.push(mapped);
+  }
+  return next;
+}
+
+/**
+ * Read pinned tool paths from localStorage; migrates legacy entries (writing
+ * the migrated list back when the storage is writable) and drops unknown or
+ * unavailable entries from the returned list.
+ */
 export function readPinnedNavTools(
   availablePaths: ReadonlySet<string>,
-  storage: Pick<Storage, 'getItem'> | undefined = safeLocalStorage(),
+  storage:
+    (Pick<Storage, 'getItem'> & Partial<Pick<Storage, 'setItem'>>) | undefined = safeLocalStorage(),
 ): string[] {
   if (!storage) return [];
   try {
@@ -361,10 +390,13 @@ export function readPinnedNavTools(
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((entry): entry is string => typeof entry === 'string')
-      .filter((entry) => availablePaths.has(entry))
-      .slice(0, MAX_PINNED_NAV_TOOLS);
+    const stored = parsed.filter((entry): entry is string => typeof entry === 'string');
+    const migrated = migratePinnedNavTools(stored);
+    if (storage.setItem && migrated.join('\n') !== stored.join('\n')) {
+      // Role-hidden pins stay in storage; only the legacy migration is persisted.
+      storage.setItem(PINNED_NAV_TOOLS_STORAGE_KEY, JSON.stringify(migrated));
+    }
+    return migrated.filter((entry) => availablePaths.has(entry)).slice(0, MAX_PINNED_NAV_TOOLS);
   } catch {
     return [];
   }
@@ -413,12 +445,196 @@ export function navItemGateReason(
   return undefined;
 }
 
-export function isSidebarNavItemActive(pathname: string, item: SidebarNavItemDefinition): boolean {
-  if (item.path === '/dependencies') {
-    return pathname.startsWith('/dependencies') || /\/security\/[^/]+\/dependencies/.test(pathname);
+/**
+ * Whether a destination is the current route. The Library lives on the
+ * Workspace route (`?view=library`), so both need the query string.
+ */
+export function isSidebarNavItemActive(
+  pathname: string,
+  item: SidebarNavItemDefinition,
+  search = '',
+): boolean {
+  const inLibrary =
+    pathname === '/workspace' && new URLSearchParams(search).get('view') === 'library';
+  if (item.path === LIBRARY_PATH) return inLibrary || pathname.startsWith(LIBRARY_PATH);
+  if (item.path === '/workspace') return pathname.startsWith('/workspace') && !inLibrary;
+  return pathname === item.path || pathname.startsWith(`${item.path}/`);
+}
+
+// ---------------------------------------------------------------------------
+// Destinations for consolidated tools (spec §12)
+// ---------------------------------------------------------------------------
+
+export type RepoDetailSection = 'overview' | 'health' | 'setup';
+export type RepoHealthTab = 'security' | 'dependencies' | 'cicd';
+export type NotesTab = 'workspace' | 'meeting';
+/** Library filter keys, as used in `/workspace?view=library&kind=…`. */
+export type LibraryFilterKey =
+  'all' | 'artifact' | 'surface' | 'adr' | 'diagram' | 'compliance' | 'doc' | 'shared';
+
+export const REPO_HEALTH_TABS: readonly RepoHealthTab[] = ['security', 'dependencies', 'cicd'];
+export const LIBRARY_FILTER_KEYS: readonly LibraryFilterKey[] = [
+  'all',
+  'artifact',
+  'surface',
+  'adr',
+  'diagram',
+  'compliance',
+  'doc',
+  'shared',
+];
+
+export function isRepoHealthTab(value: string | null | undefined): value is RepoHealthTab {
+  return !!value && (REPO_HEALTH_TABS as readonly string[]).includes(value);
+}
+
+export function isLibraryFilterKey(value: string | null | undefined): value is LibraryFilterKey {
+  return !!value && (LIBRARY_FILTER_KEYS as readonly string[]).includes(value);
+}
+
+/**
+ * Repo detail URL. Overview keeps the established `?repo=` form; Health and
+ * Setup use path params so embedded tools that read `:repoId` work as-is.
+ */
+export function repoDetailPath(
+  repoId: string,
+  section: RepoDetailSection = 'overview',
+  tab: RepoHealthTab = 'security',
+): string {
+  const id = encodeURIComponent(repoId);
+  if (section === 'health') return `/workspace/repos/${id}/health/${tab}`;
+  if (section === 'setup') return `/workspace/repos/${id}/setup`;
+  return `${WORKSPACE_REPOSITORIES_PATH}&repo=${id}`;
+}
+
+/** Repositories tab with a hint: picking a repo opens this section. */
+export function repositoriesSectionHintPath(
+  section: Exclude<RepoDetailSection, 'overview'>,
+  tab?: RepoHealthTab,
+): string {
+  const params = new URLSearchParams({ view: 'repositories', section });
+  if (section === 'health' && tab) params.set('tab', tab);
+  return `/workspace?${params.toString()}`;
+}
+
+/**
+ * Library tab URL. `tool` opens the kind's full management tool (ADR browser,
+ * diagram editor, compliance generator, provider docs) instead of the list.
+ */
+export function libraryPath(
+  options: { kind?: LibraryFilterKey; repoId?: string; tool?: boolean } = {},
+): string {
+  const params = new URLSearchParams({ view: 'library' });
+  if (options.kind && options.kind !== 'all') params.set('kind', options.kind);
+  if (options.repoId) params.set('repo', options.repoId);
+  if (options.tool) params.set('tool', '1');
+  return `/workspace?${params.toString()}`;
+}
+
+export function notesPath(tab: NotesTab = 'workspace'): string {
+  return `${NOTES_PATH}?tab=${tab}`;
+}
+
+/** Deep link into a chat thread, optionally opening a surface or artifact on the stage. */
+export function chatItemPath(
+  threadId: string,
+  target?: { surfaceId?: string; artifactId?: string },
+): string {
+  const params = new URLSearchParams({ thread: threadId });
+  if (target?.surfaceId) params.set('surface', target.surfaceId);
+  if (target?.artifactId) params.set('artifact', target.artifactId);
+  return `/chat?${params.toString()}`;
+}
+
+/** Start a chat with a prefilled (not sent) prompt via the `?prompt=` route intent. */
+export function chatPromptPath(prompt: string): string {
+  return `/chat?prompt=${encodeURIComponent(prompt)}`;
+}
+
+/** Carry legacy query params (auditId, workspaceId, toolWindow…) onto the new target. */
+function withLegacySearch(target: string, search: string): string {
+  const legacy = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  if ([...legacy.keys()].length === 0) return target;
+  const [path, query = ''] = target.split('?');
+  const params = new URLSearchParams(query);
+  legacy.forEach((value, key) => {
+    if (!params.has(key)) params.set(key, value);
+  });
+  const merged = params.toString();
+  return merged ? `${path}?${merged}` : path;
+}
+
+/**
+ * Map a route removed in the §12 consolidation to its new home. Returns
+ * `null` for routes that are still destinations. `onboardRepoId` lets the
+ * caller send `/onboard` straight to a known repo's Setup section.
+ */
+export function resolveLegacyRoute(
+  pathname: string,
+  search = '',
+  options: { onboardRepoId?: string | null } = {},
+): string | null {
+  const segments = pathname.split('/').filter(Boolean).map(safeDecode);
+  const [root, second, third] = segments;
+  let target: string;
+
+  switch (root) {
+    case 'security':
+      if (!second) target = repositoriesSectionHintPath('health', 'security');
+      else
+        target = repoDetailPath(
+          second,
+          'health',
+          third === 'dependencies' ? 'dependencies' : 'security',
+        );
+      break;
+    case 'dependencies':
+      target = second
+        ? repoDetailPath(second, 'health', 'dependencies')
+        : repositoriesSectionHintPath('health', 'dependencies');
+      break;
+    case 'cicd':
+      target = second
+        ? repoDetailPath(second, 'health', 'cicd')
+        : repositoriesSectionHintPath('health', 'cicd');
+      break;
+    case 'onboard':
+      target = options.onboardRepoId
+        ? repoDetailPath(options.onboardRepoId, 'setup')
+        : repositoriesSectionHintPath('setup');
+      break;
+    case 'adrs':
+      target = libraryPath({ kind: 'adr' });
+      break;
+    case 'diagrams':
+      target = libraryPath({ kind: 'diagram', repoId: second });
+      break;
+    case 'docs':
+      target = libraryPath({ kind: 'doc' });
+      break;
+    case 'compliance':
+      target = libraryPath({ kind: 'compliance' });
+      break;
+    case 'library':
+      target = libraryPath();
+      break;
+    case 'meeting-notes':
+      target = notesPath('meeting');
+      break;
+    case 'workspace-notes':
+      target = notesPath('workspace');
+      break;
+    default:
+      return null;
   }
-  if (item.path === '/security') {
-    return pathname.startsWith('/security') && !pathname.endsWith('/dependencies');
+
+  return withLegacySearch(target, search);
+}
+
+function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
   }
-  return pathname.startsWith(item.path);
 }
