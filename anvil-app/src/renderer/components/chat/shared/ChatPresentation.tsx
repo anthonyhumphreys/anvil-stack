@@ -282,7 +282,7 @@ export function ChatThreadItemFrame({
   return (
     <div
       {...props}
-      className={`group flex min-w-0 rounded-lg transition-colors ${
+      className={`group relative flex min-w-0 rounded-lg transition-colors ${
         active ? 'bg-accent/10' : 'hover:bg-bg-tertiary/55'
       } ${className}`.trim()}
     />

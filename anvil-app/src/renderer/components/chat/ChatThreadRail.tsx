@@ -147,29 +147,44 @@ export function ChatThreadRail({
             />
           ) : (
             <p
-              className="line-clamp-2 text-sm font-medium leading-snug text-text-primary"
+              className={`text-sm leading-snug ${
+                compact
+                  ? `truncate ${active ? 'text-text-primary' : 'text-text-secondary group-hover:text-text-primary'}`
+                  : 'line-clamp-2 font-medium text-text-primary'
+              }`}
               title={thread.title}
             >
               {thread.title}
+              {compact && displayState !== 'idle' && (
+                <span className="sr-only">
+                  , {displayState === 'complete' ? 'Finished' : threadStateLabel(displayState)}
+                </span>
+              )}
             </p>
           )}
           {!compact && thread.summary && (
-            <p className="mt-1 line-clamp-1 text-xs leading-snug text-text-tertiary">
+            <p className="mt-0.5 truncate text-xs leading-snug text-text-tertiary">
               {thread.summary}
             </p>
           )}
           {!compact && (
-            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-              <span className={threadStateTextClass(displayState)}>
+            <div className="mt-1.5 flex min-w-0 items-center gap-1.5 text-xs">
+              <span className={`shrink-0 ${threadStateTextClass(displayState)}`}>
                 {threadStateLabel(displayState)}
               </span>
               {context && (
                 <>
-                  <span className="text-text-tertiary/60">·</span>
-                  <span className="max-w-full truncate text-text-tertiary">{context}</span>
+                  <span className="shrink-0 text-text-tertiary/60" aria-hidden="true">
+                    ·
+                  </span>
+                  <span className="min-w-0 truncate text-text-tertiary">{context}</span>
                 </>
               )}
-              {accessLevels && <ChatAccessLevelBadge level={accessLevel} />}
+              {accessLevels && (
+                <span className="ml-auto shrink-0 pl-1">
+                  <ChatAccessLevelBadge level={accessLevel} />
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -195,7 +210,7 @@ export function ChatThreadRail({
             {rowContent}
           </ChatThreadItemButton>
         )}
-        <div className={getThreadActionVisibilityClass()}>
+        <div className={getThreadActionVisibilityClass(editing)}>
           {editing ? (
             <>
               <ThreadAction
@@ -444,14 +459,26 @@ function ThreadAction({
   );
 }
 
+/** A fixed one-line-tall slot, so dots and icons share one title indent. */
 function ThreadStatusIcon({ state }: { state: ThreadDisplayState }) {
-  const className = `mt-0.5 h-3.5 w-3.5 shrink-0 ${threadStateTextClass(state)}`;
-  if (state === 'working') return <LoaderCircle className={`${className} animate-spin`} />;
-  if (state === 'approval') return <CircleAlert className={className} />;
-  if (state === 'input') return <CircleHelp className={className} />;
-  if (state === 'failed') return <CircleAlert className={className} />;
-  if (state === 'complete') return <CheckCircle2 className={className} />;
-  return <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-text-tertiary/50" />;
+  const className = `h-3.5 w-3.5 ${threadStateTextClass(state)}`;
+  const icon =
+    state === 'working' ? (
+      <LoaderCircle className={`${className} animate-spin`} />
+    ) : state === 'approval' || state === 'failed' ? (
+      <CircleAlert className={className} />
+    ) : state === 'input' ? (
+      <CircleHelp className={className} />
+    ) : state === 'complete' ? (
+      <CheckCircle2 className={className} />
+    ) : (
+      <span className="h-1.5 w-1.5 rounded-full bg-text-tertiary/50" />
+    );
+  return (
+    <span className="flex h-[1.2rem] w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
+      {icon}
+    </span>
+  );
 }
 
 function threadStateLabel(state: ThreadDisplayState): string {
@@ -527,7 +554,12 @@ export function shouldSelectThreadFromKey(event: Pick<KeyboardEvent, 'key' | 'ta
   return event.key === 'Enter' || event.key === ' ';
 }
 
-export function getThreadActionVisibilityClass(): string {
-  // Keep the action width constant so hovering never rewraps thread content.
-  return 'pointer-events-none flex w-[6.5rem] shrink-0 items-center gap-0.5 self-start rounded-lg border border-border/60 bg-bg-secondary p-0.5 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100';
+export function getThreadActionVisibilityClass(editing = false): string {
+  const toolbar =
+    'flex items-center gap-0.5 rounded-lg border border-border/60 bg-bg-secondary p-0.5';
+  // While renaming, save/cancel sit beside the input so they never cover it.
+  if (editing) return `${toolbar} shrink-0 self-start`;
+  // Otherwise the toolbar floats over the row's top-right corner, so titles get
+  // the full rail width and hovering never rewraps thread content.
+  return `${toolbar} pointer-events-none absolute right-1.5 top-1.5 z-10 shadow-sm opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100`;
 }

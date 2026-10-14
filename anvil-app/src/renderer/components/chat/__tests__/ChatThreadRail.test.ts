@@ -35,6 +35,14 @@ describe('getThreadActionVisibilityClass', () => {
     expect(className).toContain('group-hover:opacity-100');
     expect(className).toContain('group-focus-within:opacity-100');
   });
+
+  it('floats over the row instead of reserving title width, except while renaming', () => {
+    expect(getThreadActionVisibilityClass()).toContain('absolute');
+    expect(getThreadActionVisibilityClass()).not.toMatch(/\bw-\[/);
+    const editing = getThreadActionVisibilityClass(true);
+    expect(editing).not.toContain('absolute');
+    expect(editing).not.toContain('opacity-0');
+  });
 });
 
 const makeThread = (overrides: Partial<ChatThread> = {}): ChatThread => ({

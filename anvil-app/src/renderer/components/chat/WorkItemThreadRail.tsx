@@ -250,7 +250,7 @@ export function WorkItemThreadRail({
                 </div>
               )}
             </div>
-            <div className={getThreadActionVisibilityClass()}>
+            <div className={getThreadActionVisibilityClass(editingThreadId === thread.id)}>
               {editingThreadId === thread.id ? (
                 <>
                   <ThreadAction label="Save title" onClick={commitRename}>
