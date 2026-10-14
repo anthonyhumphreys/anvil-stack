@@ -170,6 +170,7 @@ export function ProcessingCard({
           data-processing-settled={settled ? 'true' : undefined}
           data-processing-expanded={expanded ? 'true' : undefined}
         >
+          {strike > 0 && <span key={strike} className="processing-card-flare" aria-hidden="true" />}
           <button
             type="button"
             className="processing-card-header"

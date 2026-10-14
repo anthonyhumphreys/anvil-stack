@@ -217,6 +217,38 @@ describe('processing evidence and rendering', () => {
     });
   });
 
+  it('settles a no-action turn in place when a late thread title refresh arrives', () => {
+    const entries = chatMessagesToEntries([
+      { id: 'user', role: 'user', content: 'Hi', timestamp: '2026-10-12T10:00:00.000Z' },
+      {
+        id: 'answer',
+        role: 'assistant',
+        content: 'Hi — what are we working on?',
+        timestamp: '2026-10-12T10:00:03.000Z',
+      },
+      {
+        id: 'end',
+        role: 'system',
+        content: '',
+        timestamp: '2026-10-12T10:00:04.000Z',
+        event: { type: 'turn_outcome', turnOutcome: 'completed' },
+      },
+    ]);
+    entries.push({
+      kind: 'event',
+      event: { type: 'thread_metadata', threadTitle: 'Greeting' },
+      timestamp: '2026-10-12T10:00:20.000Z',
+    });
+    const [turn] = composeChatTurns(entries);
+    expect(turn).toMatchObject({ work: [], trailingWork: [], runOutcome: 'completed' });
+    expect(turn.endedAt).toBe('2026-10-12T10:00:04.000Z');
+    const html = renderToStaticMarkup(
+      createElement(TurnWorkMessage, { items: [], outcome: turn.runOutcome }),
+    );
+    expect(html).toContain('Work completed');
+    expect(html).toContain('Answered directly');
+  });
+
   it('hides resolved approvals without hiding a request with the same id in another session', () => {
     const items: ChatTurnWorkItem[] = [
       {

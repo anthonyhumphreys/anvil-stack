@@ -5,6 +5,7 @@ import {
   buildChatRequestTargetDomId,
   getChatQuestionTargetId,
   getPendingQuestionTarget,
+  shouldShowRunOutcomeFooter,
   summarizeChatTurnRun,
 } from '../chat-run-outcome';
 
@@ -29,6 +30,24 @@ describe('chat run outcome', () => {
       commands: [{ command: 'pnpm test', exitCode: 0, output: '42 passed' }],
       nextAction: 'Read the response and follow up if needed.',
     });
+  });
+
+  it('drops the footer for a clean completion but keeps it when a command failed', () => {
+    const summarize = (exitCode: number) =>
+      summarizeChatTurnRun(
+        composeChatTurns([
+          { kind: 'user', content: 'Run the checks' },
+          event({ type: 'command_exec', command: 'pnpm test', exitCode }),
+          event({ type: 'turn_outcome', turnOutcome: 'completed' }),
+        ])[0],
+      )!;
+    expect(shouldShowRunOutcomeFooter(summarize(0))).toBe(false);
+    expect(shouldShowRunOutcomeFooter(summarize(1))).toBe(true);
+    const [stopped] = composeChatTurns([
+      { kind: 'user', content: 'Make the change' },
+      event({ type: 'turn_outcome', turnOutcome: 'interrupted' }),
+    ]);
+    expect(shouldShowRunOutcomeFooter(summarizeChatTurnRun(stopped)!)).toBe(true);
   });
 
   it('marks a failed turn and does not hide a non-zero command result', () => {

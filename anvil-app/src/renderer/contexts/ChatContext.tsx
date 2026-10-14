@@ -1816,6 +1816,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         // into the per-turn footer instead of rendering a work row.
         flushPendingStreamEntry();
         setEntries((prev) => [...prev, { kind: 'event', event }]);
+      } else if (event.type === 'thread_metadata') {
+        // Title/summary refreshes land after the turn settles; they update the
+        // thread list above and are not turn activity.
       } else {
         flushPendingStreamEntry();
         setEntries((prev) => [

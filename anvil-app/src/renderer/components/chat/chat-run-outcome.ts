@@ -221,6 +221,18 @@ export function summarizeChatTurnRun(
   };
 }
 
+/**
+ * A clean completed run adds nothing to the footer: the turn card already
+ * says "Work completed" and the changes footer carries any edits. Keep it
+ * for every other state, and for completions that hide a failed command.
+ */
+export function shouldShowRunOutcomeFooter(summary: ChatRunSummary): boolean {
+  if (summary.state !== 'completed') return true;
+  return summary.commands.some(
+    (command) => typeof command.exitCode === 'number' && command.exitCode !== 0,
+  );
+}
+
 export function collectChatCommandEvidence(workItems: ChatTurnWorkItem[]): ChatCommandEvidence[] {
   return workItems.flatMap((item) => {
     if (

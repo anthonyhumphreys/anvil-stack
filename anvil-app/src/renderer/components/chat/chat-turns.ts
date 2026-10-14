@@ -212,6 +212,10 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     // rows instead of rendering or counting them.
     if (entry.kind === 'event' && entry.event.type === 'file_read') continue;
 
+    // Thread title/summary refreshes arrive after the turn settles; they are
+    // thread metadata, not turn activity or evidence of when the turn ended.
+    if (entry.kind === 'event' && entry.event.type === 'thread_metadata') continue;
+
     // The outcome belongs to the turn summary rather than the operational
     // activity list. Providers that do not report it leave it undefined.
     if (entry.kind === 'event' && entry.event.type === 'turn_outcome') {
@@ -263,7 +267,12 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     startedAt: userEntry?.timestamp ?? entries[0]?.timestamp,
     endedAt: active
       ? undefined
-      : entries.findLast((entry) => entry.kind !== 'user' && entry.timestamp)?.timestamp,
+      : entries.findLast(
+          (entry) =>
+            entry.kind !== 'user' &&
+            entry.timestamp &&
+            !(entry.kind === 'event' && entry.event.type === 'thread_metadata'),
+        )?.timestamp,
     user: userEntry ?? null,
     work,
     answer: answerSegment?.entry ?? null,

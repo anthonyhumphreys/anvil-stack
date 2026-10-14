@@ -3,7 +3,22 @@
  * breathes while work continues and strikes once per new action, the latest
  * step rolls into place, and the edge cools from heat to neutral when the
  * turn settles. Replayed history renders still.
+ *
+ * While work runs the edge holds heat like worked metal: two hot spots wander
+ * the top and bottom seams at unrelated rates, and every new action flares
+ * the whole rim once before it cools back.
  */
+@property --heat-top {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 18%;
+}
+@property --heat-bottom {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 78%;
+}
+
 .processing-card {
   position: relative;
   width: 100%;
@@ -25,6 +40,56 @@
 }
 .processing-card[data-processing-state='waiting'] {
   border-color: color-mix(in srgb, var(--color-warning) 38%, var(--color-border));
+}
+
+/* Heat edge ------------------------------------------------------------ */
+/* Both layers paint only the 1px rim, sitting exactly over the border. */
+.processing-card::before,
+.processing-card-flare {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: calc(12px + 1px);
+  padding: 1px;
+  pointer-events: none;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.processing-card::before {
+  background:
+    radial-gradient(
+      32% 150% at var(--heat-top) 0%,
+      color-mix(in srgb, var(--color-accent) 92%, var(--color-text-primary)),
+      color-mix(in srgb, var(--color-accent) 50%, transparent) 50%,
+      transparent 76%
+    ),
+    radial-gradient(
+      24% 150% at var(--heat-bottom) 100%,
+      color-mix(in srgb, var(--color-accent) 75%, transparent),
+      transparent 70%
+    );
+  opacity: 0;
+  /* Cools at the same pace as the border settles to neutral. */
+  transition: opacity 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.processing-card[data-processing-state='working']::before {
+  opacity: 1;
+  transition-duration: 420ms;
+  animation:
+    processing-heat-top 6.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate,
+    processing-heat-bottom 9.2s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+.processing-card[data-processing-motion='paused']::before {
+  animation-play-state: paused;
+}
+.processing-card-flare {
+  background: color-mix(in srgb, var(--color-accent) 85%, var(--color-text-primary));
+  animation: processing-flare 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.processing-card:not([data-processing-state='working']) .processing-card-flare {
+  display: none;
 }
 .processing-card[data-processing-state='failed'] {
   border-color: color-mix(in srgb, var(--color-error) 28%, var(--color-border));
@@ -229,6 +294,30 @@
   animation: spin 1.4s linear infinite;
 }
 
+@keyframes processing-heat-top {
+  from {
+    --heat-top: 6%;
+  }
+  to {
+    --heat-top: 70%;
+  }
+}
+@keyframes processing-heat-bottom {
+  from {
+    --heat-bottom: 94%;
+  }
+  to {
+    --heat-bottom: 34%;
+  }
+}
+@keyframes processing-flare {
+  from {
+    opacity: 0.95;
+  }
+  to {
+    opacity: 0;
+  }
+}
 @keyframes live-glyph-breathe {
   0%,
   100% {
@@ -312,9 +401,14 @@
 
 @media (prefers-reduced-motion: reduce) {
   .processing-card,
+  .processing-card::before,
   .processing-card-header,
   .processing-chevron {
     transition: none;
+  }
+  /* The rim holds still heat; the flare stays because it is opacity only. */
+  .processing-card[data-processing-state='working']::before {
+    animation: none;
   }
   .live-glyph-ring,
   .live-glyph-strike,

@@ -10,7 +10,11 @@ import { TurnChangesFooter, TurnUsageFooter } from './TurnChangesFooter';
 import { collectTurnFileChanges } from './chat-turn-changes';
 import { getChatTurnLiveState } from './chat-view-utils';
 import { ChatRunOutcomeFooter } from './ChatRunOutcomeFooter';
-import { getPendingQuestionTarget, summarizeChatTurnRun } from './chat-run-outcome';
+import {
+  getPendingQuestionTarget,
+  shouldShowRunOutcomeFooter,
+  summarizeChatTurnRun,
+} from './chat-run-outcome';
 import { stripFindingMarkers } from '../../utils/finding-parser';
 import type { StarterPrompt } from '../../utils/starter-prompts';
 
@@ -189,7 +193,10 @@ export function ChatTranscript({
                         onBranch={onBranch ? () => onBranch(turn.user!.sourceIndex) : undefined}
                       />
                     )}
-                    {(turn.work.length > 0 || turn.trailingWork.length > 0 || liveState) && (
+                    {(turn.work.length > 0 ||
+                      turn.trailingWork.length > 0 ||
+                      liveState ||
+                      turn.runOutcome) && (
                       <TurnWorkMessage
                         items={[...turn.work, ...turn.trailingWork]}
                         active={liveState !== null}
@@ -224,7 +231,7 @@ export function ChatTranscript({
                     )}
                     {/* H5 — usage/context/cost rollup for the turn. */}
                     {turn.usage && <TurnUsageFooter usage={turn.usage} />}
-                    {runSummary && (
+                    {runSummary && shouldShowRunOutcomeFooter(runSummary) && (
                       <ChatRunOutcomeFooter
                         summary={runSummary}
                         repos={changesRepos}

@@ -45,7 +45,12 @@ import { AgentUIIntentSurface } from './AgentUIIntentSurface';
 import { MessageStreamingContext } from './surface-fences';
 import { FileEditReviewGrid } from './TurnChangesFooter';
 import { LiveGlyph, ProcessingCard, useProcessingActive } from './ProcessingCard';
-import { countProcessingActions, getOperationStatus, getProcessingState } from './processing-state';
+import {
+  countProcessingActions,
+  getOperationStatus,
+  getProcessingState,
+  type ProcessingState,
+} from './processing-state';
 import { displayCommand } from '../../utils/command-display';
 import { buildChatRequestTargetDomId, getChatQuestionTargetId } from './chat-run-outcome';
 import {
@@ -402,9 +407,8 @@ export function TurnWorkMessage({
         (!['request_resolved', 'agent_ui_intent_resolved'].includes(item.event.type) &&
           !resolvedTargets.has(getChatQuestionTargetId(item.event))),
     );
-  const detail =
-    formatTurnWorkItemSummary(latest, state === 'working') || 'Preparing the next step';
-  if (items.length === 0 && !active && !waiting) return null;
+  const detail = formatTurnWorkItemSummary(latest, state === 'working') || IDLE_DETAIL[state];
+  if (items.length === 0 && !active && !waiting && !outcome) return null;
 
   return (
     <ProcessingCard
@@ -444,6 +448,17 @@ export function TurnWorkMessage({
     </ProcessingCard>
   );
 }
+
+/** Card detail when the turn has no activity to summarise yet (or at all). */
+const IDLE_DETAIL: Record<ProcessingState, string> = {
+  working: 'Preparing the next step',
+  waiting: 'Waiting for you',
+  answering: 'Writing the response',
+  completed: 'Answered directly',
+  failed: 'No actions recorded',
+  stopped: 'No actions recorded',
+  ended: 'No actions recorded',
+};
 
 /** Rows whose timeline dot reflects an outcome; others stay neutral. */
 const STEP_OPERATION_TYPES = new Set<CodexEvent['type']>([
