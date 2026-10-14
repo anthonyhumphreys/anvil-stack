@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { GitCompare, MessageSquarePlus } from 'lucide-react';
 import type { ChatArtifactRevision } from '../../../../../shared/surfaces/ipc';
 import type { ChatArtifact } from '../../../../../shared/types';
@@ -17,10 +17,9 @@ import {
   BINARY_ARTIFACT_KINDS,
   applyRevision,
   artifactLocation,
+  artifactShortLocation,
   useArtifactVersion,
 } from './useArtifactVersion';
-
-const INLINE_PREVIEW_MAX_HEIGHT = 320;
 
 function useArtifactForIntent(intent: SurfaceViewProps['intent']) {
   const data = readArtifactSurfaceData(intent.payload.data);
@@ -47,11 +46,13 @@ function ArtifactMeta({
   requestedVersion: number;
 }) {
   return (
-    <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-text-tertiary">
+    <p className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap text-xs text-text-tertiary">
       <ArtifactIcon kind={artifact.kind} size={12} />
-      <span className="font-mono [overflow-wrap:anywhere]">{artifactLocation(artifact)}</span>
+      <span className="min-w-0 truncate font-mono" title={artifactLocation(artifact)}>
+        {artifactShortLocation(artifact)}
+      </span>
       <span aria-hidden="true">·</span>
-      <span>v{artifact.version}</span>
+      <span className="shrink-0">v{artifact.version}</span>
       {head && head.version > artifact.version && (
         <span className="text-text-secondary">· latest is v{head.version}</span>
       )}
@@ -76,21 +77,9 @@ function FileCard({ artifact }: { artifact: ChatArtifact }) {
   );
 }
 
+/** Inline artifacts render at their natural height; the host's minimise control folds them. */
 export function ArtifactInline({ intent, onAction, onOpenStage, readOnly }: SurfaceViewProps) {
   const { data, artifact, head, exact, loading, error } = useArtifactForIntent(intent);
-  const previewRef = useRef<HTMLDivElement>(null);
-  const [overflowing, setOverflowing] = useState(false);
-
-  useEffect(() => {
-    const element = previewRef.current;
-    if (!element || typeof ResizeObserver === 'undefined') return;
-    const update = () => setOverflowing(element.scrollHeight > element.clientHeight + 1);
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(element);
-    if (element.firstElementChild) observer.observe(element.firstElementChild);
-    return () => observer.disconnect();
-  }, [artifact?.id, artifact?.version]);
 
   if (!data) return <p className="text-sm text-text-secondary">{intent.payload.digest}</p>;
   if (!artifact) {
@@ -108,20 +97,8 @@ export function ArtifactInline({ intent, onAction, onOpenStage, readOnly }: Surf
       {binary ? (
         <FileCard artifact={artifact} />
       ) : (
-        <div className="relative">
-          <div
-            ref={previewRef}
-            className="overflow-hidden"
-            style={{ maxHeight: INLINE_PREVIEW_MAX_HEIGHT }}
-          >
-            <ArtifactPreview artifact={artifact} mode="preview" />
-          </div>
-          {overflowing && (
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-bg-primary to-transparent"
-            />
-          )}
+        <div className="min-w-0 overflow-x-auto">
+          <ArtifactPreview artifact={artifact} mode="preview" />
         </div>
       )}
       <ArtifactActions

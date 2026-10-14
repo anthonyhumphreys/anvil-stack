@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AgentUISurfaceIntent } from '../../../../shared/agent-ui-intents';
 import { SurfaceHost } from '../SurfaceHost';
 import { SurfacesContext, type SurfacesContextValue } from '../surfaces-context';
@@ -83,6 +83,30 @@ describe('SurfaceHost', () => {
     expect(markup).toContain('Open in window');
     expect(markup).toContain('Bring to front');
     expect(markup).not.toContain('3 critical advisories');
+  });
+
+  it('offers minimise, and folds to the header when the intent or the user asks', () => {
+    const open = render(intent());
+    expect(open).toContain('aria-label="Minimise"');
+    expect(open).toContain('aria-expanded="true"');
+
+    const hinted = intent();
+    hinted.presentation = { collapsed: true, hidden: false };
+    const folded = render(hinted);
+    expect(folded).toContain('aria-label="Restore"');
+    expect(folded).toContain('aria-expanded="false"');
+    expect(folded).toMatch(/<div id="[^"]+" hidden="">/);
+    expect(folded).toContain('Dependency audit');
+
+    const storage = new Map([['anvil:surface-minimised:surface:1', 'true']]);
+    vi.stubGlobal('window', {
+      localStorage: { getItem: (key: string) => storage.get(key) ?? null },
+    });
+    try {
+      expect(render(intent())).toContain('aria-label="Restore"');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('prefers the newer copy from context', () => {

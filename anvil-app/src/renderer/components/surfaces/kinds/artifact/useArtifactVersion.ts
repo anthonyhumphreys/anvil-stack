@@ -28,6 +28,11 @@ export function artifactLocation(artifact: ChatArtifact): string {
     : (artifact.filePath ?? `.anvil/artifacts/${artifact.relativePath}`);
 }
 
+/** The path as the user names it (repo-relative), for one-line metadata; the full path is the tooltip. */
+export function artifactShortLocation(artifact: ChatArtifact): string {
+  return artifact.storage === 'session' ? 'Session only' : artifact.relativePath;
+}
+
 /** Loads the head artifact and the revision a turn produced, so old turns show their own version. */
 export function useArtifactVersion(
   artifactId: string,

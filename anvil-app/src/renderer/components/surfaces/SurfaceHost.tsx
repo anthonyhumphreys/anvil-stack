@@ -1,5 +1,11 @@
-import { useCallback, useRef, useState } from 'react';
-import { ArrowDown, Maximize2, PictureInPicture2 } from 'lucide-react';
+import { useCallback, useId, useRef, useState } from 'react';
+import {
+  ArrowDown,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Maximize2,
+  PictureInPicture2,
+} from 'lucide-react';
 import type { AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
 import { getSurfaceKind } from '../../../shared/surfaces/registry';
 import type { SurfaceAnchor } from '../../../shared/surfaces/types';
@@ -30,6 +36,35 @@ function reservedHeight(intent: AgentUISurfaceIntent): number {
   return sketch?.height ? Math.min(sketch.height, 1600) : DEFAULT_RESERVED_HEIGHT;
 }
 
+const MINIMISED_STORAGE_PREFIX = 'anvil:surface-minimised:';
+
+/**
+ * Whether the user folded this surface down to its header. Only folded ids are
+ * stored, so the default (the intent's own `collapsed` hint) needs no entry.
+ */
+export function useSurfaceMinimised(surfaceId: string, initial: boolean): [boolean, () => void] {
+  const key = `${MINIMISED_STORAGE_PREFIX}${surfaceId}`;
+  const [minimised, setMinimised] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(key);
+      return stored === null ? initial : stored === 'true';
+    } catch {
+      return initial;
+    }
+  });
+  const toggle = useCallback(() => {
+    const next = !minimised;
+    setMinimised(next);
+    try {
+      if (next === initial) window.localStorage.removeItem(key);
+      else window.localStorage.setItem(key, String(next));
+    } catch {
+      // Storage is a convenience; the toggle still works for this session.
+    }
+  }, [initial, key, minimised]);
+  return [minimised, toggle];
+}
+
 /**
  * Inline host for a published surface: shared chrome (icon, title, meta,
  * stage / window / overflow controls), streaming, updated, superseded and
@@ -51,6 +86,11 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
   const windowOpen = context.isWindowOpen(intent.id);
   const wide = definition?.wide === true;
   const surfaceId = intent.id;
+  const bodyId = useId();
+  const [minimised, toggleMinimised] = useSurfaceMinimised(
+    surfaceId,
+    intent.presentation.collapsed,
+  );
   const { openStage } = context;
 
   const handleOpenStage = useCallback(
@@ -144,63 +184,78 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
             Updated · v{intent.revision}
           </button>
         )}
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/surface:opacity-100 [@media(hover:none)]:opacity-100">
-          {openStage && (
-            <IconButton
-              icon={Maximize2}
-              label="Expand to stage"
-              onClick={() => handleOpenStage()}
+        <div className="flex shrink-0 items-center gap-0.5">
+          <div className="flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/surface:opacity-100 [@media(hover:none)]:opacity-100">
+            {openStage && (
+              <IconButton
+                icon={Maximize2}
+                label="Expand to stage"
+                onClick={() => handleOpenStage()}
+              />
+            )}
+            {context.openWindow && (
+              <IconButton
+                icon={PictureInPicture2}
+                label={windowOpen ? 'Bring window to front' : 'Open in window'}
+                onClick={() =>
+                  windowOpen ? context.focusWindow?.(intent.id) : context.openWindow?.(intent.id)
+                }
+              />
+            )}
+            <SurfaceOverflowMenu
+              intent={intent}
+              canComment={comments.supported}
+              onCommentSurface={() => setComposerAnchor({ type: 'surface' })}
+              share={share}
             />
-          )}
-          {context.openWindow && (
-            <IconButton
-              icon={PictureInPicture2}
-              label={windowOpen ? 'Bring window to front' : 'Open in window'}
-              onClick={() =>
-                windowOpen ? context.focusWindow?.(intent.id) : context.openWindow?.(intent.id)
-              }
-            />
-          )}
-          <SurfaceOverflowMenu
-            intent={intent}
-            canComment={comments.supported}
-            onCommentSurface={() => setComposerAnchor({ type: 'surface' })}
-            share={share}
+          </div>
+          {/* Always visible: once folded, this is the way back. */}
+          <IconButton
+            icon={minimised ? ChevronsUpDown : ChevronsDownUp}
+            label={minimised ? 'Restore' : 'Minimise'}
+            aria-expanded={!minimised}
+            aria-controls={bodyId}
+            onClick={toggleMinimised}
           />
         </div>
       </header>
 
-      {windowOpen ? (
-        <p className="flex items-center gap-2 text-xs text-text-tertiary">
-          <PictureInPicture2 size={13} aria-hidden="true" />
-          Open in window ·
-          <button
-            type="button"
-            onClick={() => context.focusWindow?.(intent.id)}
-            className="rounded-md px-1 font-medium text-text-secondary underline-offset-2 hover:text-text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+      {/* Folded, not unmounted: previews keep their state and need no re-render. */}
+      <div id={bodyId} hidden={minimised}>
+        {windowOpen ? (
+          <p className="flex items-center gap-2 text-xs text-text-tertiary">
+            <PictureInPicture2 size={13} aria-hidden="true" />
+            Open in window ·
+            <button
+              type="button"
+              onClick={() => context.focusWindow?.(intent.id)}
+              className="rounded-md px-1 font-medium text-text-secondary underline-offset-2 hover:text-text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              Bring to front
+            </button>
+          </p>
+        ) : (
+          <div
+            ref={bodyRef}
+            style={mounted ? undefined : { minHeight: reservedHeight(intent) }}
+            className="min-w-0"
           >
-            Bring to front
-          </button>
-        </p>
-      ) : (
-        <div
-          ref={bodyRef}
-          style={mounted ? undefined : { minHeight: reservedHeight(intent) }}
-          className="min-w-0"
-        >
-          {!mounted || (streaming && isEmptySurfaceData(intent.payload.data)) ? (
-            <SurfaceSkeleton label={streaming ? 'The agent is writing this surface' : undefined} />
-          ) : (
-            <SurfaceKindRenderer
-              intent={intent}
-              presentation="inline"
-              onAction={actions.onAction}
-              onComment={handleComment}
-              onOpenStage={handleOpenStage}
-            />
-          )}
-        </div>
-      )}
+            {!mounted || (streaming && isEmptySurfaceData(intent.payload.data)) ? (
+              <SurfaceSkeleton
+                label={streaming ? 'The agent is writing this surface' : undefined}
+              />
+            ) : (
+              <SurfaceKindRenderer
+                intent={intent}
+                presentation="inline"
+                onAction={actions.onAction}
+                onComment={handleComment}
+                onOpenStage={handleOpenStage}
+              />
+            )}
+          </div>
+        )}
+      </div>
 
       {context.blockedWindowId === intent.id && (
         <p role="status" className="text-xs text-warning">
