@@ -1,9 +1,10 @@
-import { useContext, useRef, useState } from 'react';
-import { Loader2, Maximize2, Shapes } from 'lucide-react';
+import { useContext, useMemo, useRef, useState } from 'react';
+import { Loader2, Shapes } from 'lucide-react';
 import { SketchFrame } from '../surfaces/kinds/sketch/SketchFrame';
+import { SurfaceHost } from '../surfaces/SurfaceHost';
 import { ArtifactIcon } from '../surfaces/surface-icons';
 import { useSurfaces } from '../surfaces/surfaces-context';
-import { syntheticArtifactSurfaceId } from '../surfaces/surface-utils';
+import { buildArtifactSurfaceIntent } from '../surfaces/surface-utils';
 import { useViewportMount } from '../surfaces/useViewportMount';
 import {
   MessageStreamingContext,
@@ -25,7 +26,11 @@ function FenceSource({ code }: { code: string }) {
   );
 }
 
-/** Compact card for an ```artifact fence, linked to the artifact persisted after the turn. */
+/**
+ * An ```artifact fence. Once the artifact is persisted after the turn it renders
+ * as the same inline surface a tool-published artifact gets (preview, stage,
+ * pop-out window); until then it is a compact writing / unsaved card.
+ */
 export function ArtifactFencePlaceholder({
   language,
   meta,
@@ -36,24 +41,28 @@ export function ArtifactFencePlaceholder({
   code: string;
 }) {
   const streaming = useContext(MessageStreamingContext);
-  const { artifacts, openStage } = useSurfaces();
+  const { artifacts } = useSurfaces();
   const info = parseFenceInfo(language, meta);
   const artifact = findFenceArtifact(artifacts, info);
-  const title =
-    artifact?.title ?? info.title ?? fenceTitleFromPath(info.relativePath) ?? 'Artifact';
-  const status = artifact
-    ? `v${artifact.version} · ${artifact.storage === 'session' ? 'Session only' : artifact.relativePath}`
-    : streaming
-      ? 'Writing…'
-      : 'Not saved to this thread';
+  const intent = useMemo(
+    () => (artifact ? buildArtifactSurfaceIntent(artifact) : null),
+    [artifact],
+  );
 
+  if (intent) {
+    return (
+      <div className="my-3" data-artifact-fence>
+        <SurfaceHost intent={intent} />
+      </div>
+    );
+  }
+
+  const title = info.title ?? fenceTitleFromPath(info.relativePath) ?? 'Artifact';
   return (
     <div className="my-2" data-artifact-fence>
       <div className="flex items-center gap-3 rounded-lg border border-border-subtle px-3 py-2">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-bg-tertiary text-text-secondary">
-          {artifact ? (
-            <ArtifactIcon kind={artifact.kind} size={15} />
-          ) : streaming ? (
+          {streaming ? (
             <Loader2 size={15} aria-hidden="true" className="animate-spin" />
           ) : (
             <ArtifactIcon kind="text" size={15} />
@@ -62,25 +71,11 @@ export function ArtifactFencePlaceholder({
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium text-text-primary">{title}</span>
           <span className="block truncate text-xs text-text-tertiary" aria-live="polite">
-            {status}
+            {streaming ? 'Writing…' : 'Not saved to this thread'}
           </span>
         </span>
-        {artifact && openStage && (
-          <button
-            type="button"
-            onClick={(event) =>
-              openStage(syntheticArtifactSurfaceId(artifact.id), {
-                returnFocus: event.currentTarget,
-              })
-            }
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-secondary hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            <Maximize2 size={12} aria-hidden="true" />
-            Open
-          </button>
-        )}
       </div>
-      {!streaming && !artifact && <FenceSource code={code} />}
+      {!streaming && <FenceSource code={code} />}
     </div>
   );
 }

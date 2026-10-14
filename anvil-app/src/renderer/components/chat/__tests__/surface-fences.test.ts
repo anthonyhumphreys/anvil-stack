@@ -1,9 +1,11 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { AgentUISurfaceIntent } from '../../../../shared/agent-ui-intents';
 import type { ChatArtifact } from '../../../../shared/types';
 import type { ChatEntry } from '../../../contexts/ChatContext';
+import { SurfacesContext, type SurfacesContextValue } from '../../surfaces/surfaces-context';
 import { buildThreadSurfaceEntries } from '../ChatSurfacesPopover';
 import { planProgress } from '../ChatPromptOverlays';
 import { composeChatTurns } from '../chat-turns';
@@ -81,6 +83,41 @@ describe('surface fences', () => {
     expect(markup).toContain('Runbook');
     expect(markup).toContain('Chart');
     expect(markup).not.toContain('data-line-number-gutter');
+  });
+
+  it('renders a persisted fence artifact as an inline surface with stage and window controls', () => {
+    const context: SurfacesContextValue = {
+      threadId: 't',
+      workspaceName: 'Workspace',
+      surfaces: [],
+      artifacts: [artifact],
+      resolve: (intent) => intent,
+      getSurface: () => undefined,
+      stageSurfaceId: null,
+      stageTargetId: null,
+      readOnly: false,
+      isWindowOpen: () => false,
+      scrollToSurface: () => undefined,
+      openStage: () => undefined,
+      openWindow: () => undefined,
+    };
+    const markup = renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(
+          SurfacesContext.Provider,
+          { value: context },
+          createElement(MarkdownRenderer, {
+            content: '```artifact:docs/runbook.md kind=markdown title="Runbook"\n# Runbook\n```\n',
+          }),
+        ),
+      ),
+    );
+    expect(markup).toContain('data-surface-id="artifact:art-1"');
+    expect(markup).toContain('Expand to stage');
+    expect(markup).toContain('Open in window');
+    expect(markup).not.toContain('Not saved to this thread');
   });
 });
 

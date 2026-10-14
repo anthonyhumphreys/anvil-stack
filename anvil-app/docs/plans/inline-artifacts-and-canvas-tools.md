@@ -266,7 +266,7 @@ ACP v1 requires every agent to support stdio, and makes HTTP optional. So the sh
 ### 6.4 Fallback (no MCP)
 
 - The fence protocol survives for **artifacts and sketches only**: ```` ```artifact ```` and ```` ```sketch ````.
-- Fences are parsed **while streaming** and are never shown as code blocks. `CodeBlock` treats an `artifact` or `sketch` language as a surface placeholder.
+- Fences are parsed **while streaming** and are never shown as code blocks. `CodeBlock` treats an `artifact` or `sketch` language as a surface placeholder. Once a fence artifact is persisted, the placeholder becomes the same inline artifact surface a tool-published artifact gets (preview, stage, window), using the synthetic `artifact:<id>` surface.
 - Structured native surfaces, actions and mutations need MCP. The guide tells the agent this when the capability is `fallback`.
 
 ### 6.5 Third-party MCP Apps
