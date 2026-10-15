@@ -4,6 +4,8 @@ import { deploymentVariable } from "@/lib/deployment-env.js";
 import { normalizePathWithQuery, signRequest } from "./signing";
 import type {
   HostedAccount,
+  HostedBillingInterval,
+  HostedCheckoutResult,
   HostedBillingOverview,
   HostedDashboardRequestInput,
   HostedDashboardRequestResult,
@@ -219,7 +221,7 @@ export function getAccount(identity: HostedIdentity): Promise<HostedAccount> {
   return hostedCall<HostedAccount>("/internal/hosted/account", identity);
 }
 
-/** POST /internal/hosted/billing — access state and legacy payment records. */
+/** POST /internal/hosted/billing — access state and payment records. */
 export function getBilling(identity: HostedIdentity): Promise<HostedBillingOverview> {
   return hostedCall<HostedBillingOverview>("/internal/hosted/billing", identity);
 }
@@ -232,6 +234,22 @@ export function getEntitlement(identity: HostedIdentity): Promise<HostedEntitlem
 /** POST /internal/hosted/portal — Stripe Customer Portal session. */
 export function createPortal(identity: HostedIdentity): Promise<HostedPortalResult> {
   return hostedCall<HostedPortalResult>("/internal/hosted/portal", identity);
+}
+
+export function createCheckout(
+  identity: HostedIdentity,
+  interval: HostedBillingInterval,
+  organizationId?: string,
+  seats?: number
+): Promise<HostedCheckoutResult> {
+  return hostedCall<HostedCheckoutResult>("/internal/hosted/checkout", {
+    ...identity, interval, planKey: organizationId ? "sync_team" : "sync_personal",
+    ...(organizationId ? { organizationId, seats } : {})
+  });
+}
+
+export function redeemBetaCode(identity: HostedIdentity, code: string): Promise<{ accessUntil: string }> {
+  return hostedCall("/internal/hosted/beta/redeem", { ...identity, code });
 }
 
 /** Organization billing is scoped to the organization customer in Stripe. */

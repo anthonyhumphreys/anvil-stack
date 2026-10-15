@@ -1,76 +1,80 @@
 ---
-title: Chat, canvas, and agent runs
+title: Chat, surfaces and agent runs
 navTitle: Chat and agent runs
-description: Threads, providers, permissions, attachments, plans, canvas artifacts, agent activity, and handoffs in Anvil Desktop Chat.
+description: Threads, providers, permissions, attachments, plans, inline surfaces, agent activity and handoffs in Anvil Desktop.
 product: Anvil Desktop
 section: Guides
 journey: build
 order: 50
 ---
 
-# Chat, canvas, and agent runs
+# Chat, surfaces and agent runs
 
-Chat is the main workbench in Anvil Desktop. A thread belongs to a workspace and can carry repository context, a work item, a persona, provider state, a plan, a goal, attachments, artifacts, and the event history from one or more agent turns.
+Chat is where most work happens in Anvil Desktop. A thread belongs to a workspace and can carry repository context, a work item, a persona, a provider and model, a plan, a goal, attachments, the documents an agent produced, and the full history of every turn.
 
 ## Threads and context
 
-Create a general thread or attach it to a work item. Work-item threads are grouped by their ticket so planning and implementation do not split into unrelated transcripts. A thread can reference more than one repository and has one active repository for actions that need a single target.
+Start a general thread, or attach one to a work item. Work-item threads are grouped under their ticket, so planning and building don't end up in unrelated conversations. A thread can reference several repositories and has one active repository for actions that need a single target.
 
-You can rename, settle, reopen, or delete a thread. Forking copies the conversation up to a selected point and asks the provider to fork its own thread when that provider supports it.
+You can rename, archive, reopen or delete a thread. Branching copies the conversation up to a chosen point, and asks the provider to branch its own copy too when it supports that.
 
-File mentions search the connected repositories. File and image attachments pass through the main process before the agent receives them. Check the visible repository chips and attachment list before sending a request that could change files.
+Type `@` to mention files from your repositories. Attached files and images go through the main process before the agent sees them. Before sending anything that could change files, check the repository chips and attachments above the composer.
 
-## Providers, models, and reasoning
+## Providers, models and reasoning
 
-The configured primary provider starts new chats. Anvil supports Codex CLI, Cursor CLI, OpenAI API, and Azure AI Foundry routes. The model selector follows the provider, and reasoning effort is stored as a run control rather than buried in the prompt.
+New chats use your primary provider. Anvil can drive:
 
-Codex, OpenAI, and Azure-backed sessions use the Codex app-server path. Cursor sessions use the local `cursor-agent` CLI. Availability therefore depends on local installation and authentication as well as saved settings.
+- **Codex**, **OpenAI** and **Azure AI Foundry**, through Codex's app server
+- **LLMGateway**, through Codex with LLMGateway's models
+- **Cursor** and **Devin**, through their own command-line agents
 
-Optional local models handle only eligible short helper prompts. Apple Foundation Models, Ollama, and LM Studio do not replace the agent runtime for repository tools, commands, approvals, or long-running turns.
+The model list follows the provider you pick. Reasoning effort is a setting on the run, not something hidden in the prompt. Whether a provider works depends on it being installed and signed in on your machine, not only on your Anvil settings.
+
+Optional local models only handle short helper prompts. Apple Foundation Models, Ollama and LM Studio don't replace the agent for repository tools, commands, approvals or long turns.
 
 ## Permissions and live control
 
 Each session starts with a permission mode:
 
-| Mode | Expected boundary |
+| Mode | What the agent can do |
 | --- | --- |
-| Read only | Inspect and explain without changing files. |
-| On request | Ask before file changes or commands that need approval. |
-| Workspace auto | Work within the selected workspace under the provider's supported policy. |
-| Full access | Use the provider's broadest supported local access. Review this choice carefully. |
+| Read only | Look and explain, without changing files. |
+| On request | Ask before changing files or running commands that need approval. |
+| Workspace auto | Work inside the selected workspace, within what the provider allows. |
+| Full access | Use the widest local access the provider supports. Choose this carefully. |
 
-While a turn runs, you can steer it with more context, interrupt the current work, or stop the session. Approval and input requests remain visible in the thread and Inbox. Approving an action should follow inspection of the command, path, permission, or requested data.
+While a turn runs, you can add context to steer it, interrupt the current step or stop the session. Approval and input requests stay visible in the thread and in the Inbox. Read the command, path, permission or data being asked for before you approve it.
 
-## Plans, questions, and goals
+## Plans, questions and goals
 
-Provider events can become native Anvil UI instead of raw transcript text:
+Some agent output becomes proper Anvil interface instead of plain text:
 
-- plan intents show steps and accept progress patches
-- question intents show structured choices and collect a resolution
-- goals expose the current objective and progress state
+- plans show their steps and update as work progresses
+- questions show structured choices and record your answer
+- goals show the current objective and how far along it is
 
-Guided questions can present suggested answers alongside a free-text response, so clarification can stay attached to the work being discussed.
+Questions can offer suggested answers alongside a free-text reply, so clarifications stay attached to the work.
 
-These records persist with the thread. You can dismiss and restore supported intents without deleting their history.
+All of this is saved with the thread. You can dismiss and restore these without losing their history.
 
-## Canvas artifacts and annotations
+## Inline surfaces and artifacts
 
-Agents can produce persistent canvas artifacts, including Markdown, diagrams, HTML, documents, presentations, spreadsheets, code, data, and text. The canvas keeps these outputs separate from the conversational stream so they can be inspected and reused.
+Agents can publish documents, diagrams, data tables, reviews and quick visual sketches straight into the conversation. These render inline where they were produced. Each one can expand to fill the screen or open in its own window, and a minimise button folds it down to its title.
 
-Artifacts can reference a file written under `.anvil/artifacts`. You can read the file, discard the artifact record, and attach annotations to a specific artifact. Annotations support create, update, and delete operations and should identify the concrete change needed rather than becoming a second chat thread.
+Artifacts are durable documents: Markdown, diagrams, HTML, Word documents, presentations, spreadsheets, code, data and text. An artifact can point at a file under `.anvil/artifacts`. You can read it, discard it and add comments to specific parts. Make comments about a concrete change rather than turning them into a second conversation.
 
-Treat artifact previews as review surfaces. A generated plan or report is not proof that its commands were run, and a generated binary still needs layout or content checks appropriate to its format.
+Treat previews as something to review, not proof. A generated plan or report doesn't show that its commands were run, and a generated file still needs checking in the format it's in.
 
-## Agent activity and fan-out
+## Agent activity and parallel work
 
-The activity pane separates the parent turn from delegated agent work. Subagent events show status and progress without forcing every internal event into the main conversation. The current execution topology can fan work out when the provider and task allow it, then settle child activity back into the parent turn.
+Each turn has a working card that shows what the agent is doing: the commands it runs, files it edits and tools it uses. Expand it to see every step. Delegated work from helper agents shows its status and progress without flooding the main conversation, and folds back into the parent turn when it finishes.
 
-Anvil records active sessions and recent agent runs so the Inbox, repository twin, sidebar indicators, and companion views can report work that continues outside the visible thread.
+Anvil tracks active sessions and recent runs, so the Inbox, the repository twin, the sidebar and companion devices can show work that's carrying on outside the thread you're looking at.
 
-For workspace-level activity, failures, usage coverage, and coaching reports, open [Dojo](/docs/desktop/dojo).
+For activity, failures, usage and coaching across a workspace, open [Dojo](/docs/desktop/dojo).
 
-## Usage and completion
+## Usage and finishing up
 
-When the Codex CLI exposes usage limits, Anvil displays the current usage snapshot. This is informational and depends on what the installed CLI returns.
+When the Codex CLI reports usage limits, Anvil shows the latest snapshot. It's for information only and depends on what your installed CLI returns.
 
-A good completed thread leaves a short result, changed files, checks run, failures or skipped checks, and remaining risk. Settle the thread when the work is genuinely done. Use [Agent workflows](/docs/desktop/agent-workflows) for planning, implementation, review, and handover patterns.
+A well-finished thread ends with a short result, the files that changed, the checks that ran, anything that failed or was skipped, and what risk remains. Archive the thread when the work is really done. See [Agent workflows](/docs/desktop/agent-workflows) for planning, building, review and handover patterns.

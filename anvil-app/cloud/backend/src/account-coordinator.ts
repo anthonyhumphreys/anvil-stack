@@ -83,7 +83,7 @@ import {
   type DevicePresenceEntry,
   type DevicePresenceResult,
 } from '../../contract/companion';
-import { hostedEnforcementEnabled } from './hosted/enforcement';
+import { checkHostedAccess, hostedEnforcementEnabled } from './hosted/enforcement';
 import {
   fairUseStatus,
   parseFairUseRestrictionCommand,
@@ -2201,12 +2201,17 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
   }
 
-  /** Hosted device quota preflight; Sync/Mesh authorization is billing-free. */
   private async hostedWriteDenial(
     auth: SpikeAuth,
     requestId: string | undefined,
   ): Promise<Response | null> {
     if (!hostedEnforcementEnabled(this.env)) return null;
+    const access = await checkHostedAccess(this.env, auth.accountId, Date.now());
+    if (!access.allowed) {
+      return rpcErrorResponse(requestId, access.reason === 'billing-unavailable' ? 'unavailable' : 'forbidden', {
+        reason: access.reason,
+      });
+    }
     let response: Response;
     try {
       response = await this.env.SESSIONS.get(this.env.SESSIONS.idFromName('sessions')).fetch(

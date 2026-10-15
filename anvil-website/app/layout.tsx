@@ -4,8 +4,10 @@ import { Analytics } from "@vercel/analytics/next";
 import { ThemeScript } from "@/components/site/theme-script";
 import "./globals.css";
 
+// Variable Archivo with the width axis: normal width for text, set wide for display.
 const archivo = Archivo({
   subsets: ["latin"],
+  axes: ["wdth"],
   variable: "--font-sans",
   display: "swap"
 });
@@ -16,29 +18,32 @@ const mono = JetBrains_Mono({
   display: "swap"
 });
 
+const description =
+  "Anvil is a free, open-source desktop app for running coding agents on your own repos. Plan the work, watch it happen, and review every change. Add paid hosted Sync & Mesh to work across machines, or self-host for free.";
+
 export const metadata: Metadata = {
-  title: "Anvil | Open source developer tools",
-  description: "Anvil Desktop is an open source app for agent workflows on your own repos. Sync & Mesh keeps portable state in step across paired machines, with an npm policy gateway, hardened Node image, and portable runtime beside it.",
+  title: "Anvil | A workbench for coding agents",
+  description,
   metadataBase: new URL("https://anvil.dev"),
   icons: {
-    icon: [{ url: "/anvil-crest.svg", type: "image/svg+xml" }],
-    shortcut: ["/anvil-crest.svg"]
+    icon: [{ url: "/anvil-mark.svg", type: "image/svg+xml" }],
+    shortcut: ["/anvil-mark.svg"]
   },
   openGraph: {
-    title: "Anvil | Open source developer tools",
-    description: "An open source desktop app for agent workflows on your repos. Add Sync & Mesh when work needs to move between paired machines.",
+    title: "Anvil | A workbench for coding agents",
+    description,
     type: "website"
   },
   twitter: {
     card: "summary_large_image",
-    title: "Anvil | Open source developer tools",
-    description: "Open source desktop app for agent workflows on your repos, plus an end-to-end encrypted sync layer and companion OSS tools."
+    title: "Anvil | A workbench for coding agents",
+    description
   }
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${archivo.variable} ${mono.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${archivo.variable} ${mono.variable}`} data-scroll-behavior="smooth" suppressHydrationWarning>
       <head>
         <ThemeScript />
       </head>

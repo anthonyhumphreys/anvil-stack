@@ -1,68 +1,77 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import {
-  ArrowRight,
-  Check,
-  Download,
-  FileDown,
-  GitBranch,
-  MonitorSmartphone,
-  Server,
-  Share2
-} from "lucide-react";
+import { ArrowRight, Check, FileDown, Minus, Share2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EnvelopeBoundary } from "@/components/site/envelope-boundary";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
-import { agentExecutionModes, syncModes } from "@/lib/site";
+import { agentEnvironments, syncBackends } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Sync & Mesh | Anvil",
   description:
-    "Choose which workspaces to sync and run Mesh jobs on your own machines. Sync and Mesh are free."
+    "Keep your Anvil workspaces, templates and agents in step across your machines, send jobs between machines, and move a running session. Encrypted on your device before anything leaves it."
 };
 
-const loopSteps = [
-  { step: "Outbox", body: "Edits queue locally. Offline or online, the write lands on your device first." },
-  { step: "Seal", body: "At dispatch, each entity seals under your account key. If the key is missing, the row waits. Plaintext is never a fallback." },
-  { step: "Push", body: "The backend validates the envelope shape and journals ciphertext. Dedupe rides the envelope hash." },
-  { step: "Pull", body: "Paired devices pull over a live socket with polling fallback, then unseal at the boundary and apply." },
-  { step: "Settle", body: "Conflicts stay visible. Quarantined envelopes retry when their key version arrives." }
+const syncs = [
+  "Workspace setups: which repos, which agent, which rules",
+  "Templates and custom agents you've built",
+  "The settings you choose to share"
 ];
 
-const handoffStates = [
-  "requested",
-  "target-prepared",
-  "source-quiescing",
-  "checkpointed",
-  "ownership-transferred",
-  "target-activating",
-  "completed"
+const neverSyncs = [
+  "Your repository files",
+  "API keys and provider logins",
+  "Chat transcripts",
+  "Paths on your machine"
 ];
 
-const meshPoints = [
-  "Jobs for workspace prep, provider sessions, and diagnostics are created against your account and claimed by your enrolled devices.",
-  "Workers verify the pinned Git state before spawning. Attempts run in isolated worktrees at the pinned commit.",
-  "Compute, credentials, and providers stay on your machines. The account service records durable decisions; it never executes.",
-  "States stay explicit: `Stopping…` while cancellation propagates, `Lost contact` when the outcome is unknown."
+const journey = [
+  { title: "Saved here first", body: "Your change lands on this machine straight away, online or not." },
+  {
+    title: "Sealed",
+    body: "Before it leaves, it's encrypted with your account key. If the key isn't there, it waits. It never falls back to plain text."
+  },
+  {
+    title: "Stored",
+    body: "The server checks the envelope is well formed and stores it. It sees sizes and timings, never contents."
+  },
+  {
+    title: "Delivered",
+    body: "Your other machines pick it up over a live connection and decrypt it on arrival."
+  },
+  {
+    title: "Settled",
+    body: "If two machines changed the same thing, you see the conflict rather than silently losing one side."
+  }
 ];
 
-const sharePoints = [
+const handoff = [
+  "Requested",
+  "Target prepared",
+  "Source paused",
+  "Checkpoint sealed",
+  "Ownership moved",
+  "Target started",
+  "Done"
+];
+
+const leaving = [
   {
     icon: Share2,
-    title: "Sealed share links",
-    body: "Artifact shares carry a fresh key in the URL fragment. It never reaches a server. The share page fetches ciphertext and decrypts in your browser. Revoking removes the ciphertext."
+    title: "Share links that stay private",
+    body: "Each link carries its own key after the #, which browsers never send to a server. The page downloads ciphertext and decrypts it on the reader's machine. Revoke a link and the ciphertext is deleted."
   },
   {
     icon: FileDown,
-    title: "Your data, exportable",
-    body: "Export every synced entity to a portable JSON document and import through a staged preview with conflict counts. Account deletion is durable and visible end to end."
+    title: "Export everything",
+    body: "Download an encrypted backup of your synced data. Preview changes before you import it, and keep your account recovery key so you can restore it."
   },
   {
-    icon: MonitorSmartphone,
-    title: "Everywhere Anvil runs",
-    body: "Desktop, the mobile companion, Raycast, and the headless daemon connect to the same account. Live host sessions require client support and a reachable, enabled host route."
+    icon: Trash2,
+    title: "Delete your account",
+    body: "Deleting your account removes its data from the backend, and you can follow the deletion through to the end."
   }
 ];
 
@@ -71,44 +80,30 @@ export default function SyncPage() {
     <div className="min-h-screen bg-background">
       <SiteHeader active="sync" />
       <main id="main-content">
-        <section className="border-b">
-          <div className="mx-auto grid max-w-7xl gap-12 px-4 py-14 sm:px-6 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-8 lg:py-24">
-            <div className="flex flex-col gap-7">
-              <h1 className="max-w-3xl text-4xl font-semibold leading-[1.02] tracking-[-0.03em] sm:text-5xl lg:text-6xl">
-                Sync your state. Run jobs on your machines.
-              </h1>
-              <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-                Sync shares portable Anvil settings between paired devices as
-                end-to-end-encrypted envelopes. Mesh jobs run on machines you enrolled,
-                and session handoff moves ownership through a sealed checkpoint. The
-                account service handles identity, discovery, and durable job decisions;
-                it does not hold your keys or run your repo.
+        <section className="page-shell pb-20 pt-16 sm:pt-24">
+          <h1 className="font-display text-display-1 max-w-[15ch]">Your workbench, on every machine you use.</h1>
+          <div className="mt-10 grid gap-14 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start">
+            <div>
+              <p className="lede">
+                Sync &amp; Mesh moves your Anvil setup between machines and lets them share work. It&apos;s
+                all encrypted on your device first, so the server in the middle only ever handles
+                sealed envelopes.
               </p>
-              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                Local is the default for each workspace. Sync shares workspace definitions,
-                templates, custom agents, and selected settings; repository files, provider
-                credentials, machine paths, and chat transcripts stay on their machines.
-              </p>
-              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+              <div className="mt-8 flex flex-wrap gap-3">
                 <Button asChild size="lg">
-                  <Link href="/account">
-                    Open your account
-                    <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                  </Link>
+                  <Link href="/waitlist">Join the waitlist</Link>
                 </Button>
                 <Button asChild size="lg" variant="outline">
-                  <Link href="/docs/sync/self-deploy">
-                    <GitBranch data-icon="inline-start" aria-hidden="true" />
-                    Self-deploy the backend
-                  </Link>
+                  <Link href="/docs/sync/self-deploy">Run your own backend</Link>
                 </Button>
               </div>
-              <p className="text-sm text-muted-foreground">
-                Alpha infrastructure. The protocol is implemented and tested, and Cloudflare
-                deployment is rehearsed. Physical multi-device acceptance and hosted production
-                provisioning remain open.{" "}
-                <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline underline-offset-4">
-                  Current status and limits
+              <p className="mt-6 max-w-[52ch] text-sm leading-6 text-muted-foreground">
+                Sync &amp; Mesh is in alpha. It works today on a backend you deploy to your own
+                Cloudflare account. Anvil hosting is paid, with plans starting at £6 a month when
+                signup opens. Join the waitlist; invited testers receive a beta access code.{" "}
+                <Link href="/account/billing" className="font-medium text-foreground underline underline-offset-4">Redeem your code</Link>.{" "}
+                <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground">
+                  What works today
                 </Link>
               </p>
             </div>
@@ -116,290 +111,212 @@ export default function SyncPage() {
           </div>
         </section>
 
-        <section className="border-b bg-muted/20 py-16 lg:py-20" aria-labelledby="loop-title">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="max-w-2xl">
-              <h2 id="loop-title" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                How a write travels
-              </h2>
-              <p className="mt-3 text-base leading-7 text-muted-foreground">
-                Every edit takes the same path, whether the peer is one desk away or one
-                ocean away. The interesting part is what the middle never learns.
-              </p>
-            </div>
-            <ol className="mt-10 grid gap-x-8 gap-y-8 sm:grid-cols-2 lg:grid-cols-5">
-              {loopSteps.map((item, index) => (
-                <li key={item.step} className="relative border-t pt-5">
-                  <p className="font-mono text-[0.6875rem] text-muted-foreground">0{index + 1}</p>
-                  <h3 className="mt-2 font-semibold">{item.step}</h3>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.body}</p>
-                </li>
-              ))}
-            </ol>
-          </div>
-        </section>
-
-        <section className="border-b py-16 lg:py-20" aria-labelledby="mesh-title">
-          <div className="mx-auto grid max-w-7xl gap-12 px-4 sm:px-6 lg:grid-cols-[1fr_1fr] lg:px-8">
+        <section className="border-t py-20 lg:py-28" aria-labelledby="what-syncs">
+          <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
             <div>
-              <h2 id="mesh-title" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                Mesh: jobs run on your machines, not ours
+              <h2 id="what-syncs" className="font-display text-display-2 max-w-[11ch]">
+                What syncs, and what never does.
               </h2>
-              <p className="mt-4 text-base leading-7 text-muted-foreground">
-                Enrolled devices advertise what they can run. When you dispatch a job, a
-                capable machine claims it and verifies the pinned workspace. Supported
-                upgraded clients use an authenticated, encrypted host session for live
-                commands and output when a route is enabled and reachable; durable job
-                decisions and required recovery remain account-scoped.
-              </p>
-              <ul className="mt-7 grid gap-3">
-                {meshPoints.map((point) => (
-                  <li key={point} className="flex items-start gap-2.5 text-sm leading-6 text-muted-foreground">
-                    <Check className="proof-check" aria-hidden="true" />
-                    <span>{point}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div className="grid content-start gap-6">
-              <div className="rounded-lg border bg-muted/30 p-5">
-                <h3 className="text-sm font-semibold">Host connection</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  The app selects a supported host route automatically. Managed HTTPS
-                  endpoints are off by default and require operator provisioning; they are
-                  not available just by choosing Sync. These endpoints use a provider proxy,
-                  not a peer-to-peer connection. When no host route is available,
-                  supported account-coordinator behavior remains in use.
-                </p>
-              </div>
-              <div className="rounded-lg border bg-card p-5">
-                <h3 className="text-sm font-semibold">Session handoff</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Send a running session to another device. The target materializes the
-                  workspace at pinned commits, the source quiesces and seals a checkpoint,
-                  and ownership transfers at a fenced generation. No live process ever
-                  migrates.
-                </p>
-                <ol className="mt-4 flex flex-wrap items-center gap-1.5" aria-label="Handoff states">
-                  {handoffStates.map((state, index) => (
-                    <li key={state} className="flex items-center gap-1.5">
-                      <span className="rounded-md border bg-muted/50 px-2 py-1 font-mono text-[0.625rem] text-muted-foreground">
-                        {state}
-                      </span>
-                      {index < handoffStates.length - 1 ? (
-                        <ArrowRight className="size-3 text-muted-foreground" aria-hidden="true" />
-                      ) : null}
-                    </li>
-                  ))}
-                </ol>
-                <p className="mt-4 border-t pt-4 text-sm leading-6 text-muted-foreground">
-                  A dirty tree or unpushed commit blocks the handoff up front with concrete
-                  remediation. The handoff stops before transfer when the workspace is not ready.
-                </p>
-              </div>
-              <div className="rounded-lg border bg-muted/30 p-5">
-                <p className="text-sm leading-6 text-muted-foreground">
-                  The mesh worker opt-in is per-device and never syncs. Enabling it lets
-                  that machine claim account jobs. There is deliberately no account-level
-                  “run everywhere” switch.
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className="border-b bg-muted/20 py-16 lg:py-20" aria-labelledby="agents-title">
-          <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[0.72fr_1.28fr] lg:px-8">
-            <div>
-              <h2 id="agents-title" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                Give a workflow a temporary machine
-              </h2>
-              <p className="mt-4 text-base leading-7 text-muted-foreground">
-                A workflow can ask for a temporary environment on AWS Lambda MicroVM, Cloudflare
-                Sandbox, Vercel Sandbox, or Anvil Cloud Agents. Existing AWS, Cloudflare, and Vercel
-                integrations use accounts you configure; those providers bill you directly. Anvil
-                Cloud Agents is planned Anvil-operated compute. It is not yet available and will
-                be paid when it launches. Local work stays on enrolled devices and does not need a
-                hosted environment.
-              </p>
-              <div className="mt-6 flex flex-wrap gap-3">
-                <Button asChild>
-                  <Link href="/docs/cloud/agent-sandboxes">
-                    Read the sandbox contract
-                    <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                  </Link>
-                </Button>
-                <Button asChild variant="outline">
-                  <Link href="/docs/cloud/aws-preview">Inspect the AWS adapter</Link>
-                </Button>
-              </div>
-            </div>
-            <div className="overflow-hidden rounded-lg border bg-card">
-              <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.5fr)_auto] gap-4 border-b px-5 py-3 text-xs font-medium text-muted-foreground">
-                <span>Provider</span>
-                <span>What it does</span>
-                <span className="text-right">Status</span>
-              </div>
-              <ul className="divide-y">
-                {agentExecutionModes.map((mode) => (
-                  <li key={mode.provider} className="grid gap-2 px-5 py-4 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.5fr)_auto] sm:items-baseline sm:gap-4">
-                    <Link href={mode.href} className="font-medium text-foreground underline-offset-4 hover:underline">
-                      {mode.provider}
-                    </Link>
-                    <p className="text-sm leading-6 text-muted-foreground">{mode.detail}</p>
-                    <span className="font-mono text-[0.6875rem] text-muted-foreground sm:text-right">
-                      {mode.status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-          <div className="mx-auto mt-8 max-w-7xl px-4 sm:px-6 lg:px-8">
-            <p className="max-w-4xl border-t pt-4 text-sm leading-6 text-muted-foreground">
-              This table describes agent environments connected through Desktop Mesh. Anvil Cloud
-              has a separate agent-execution control plane and an AWS preview transport. The
-              Anvil Cloud Agents hosted service is not yet available.
-            </p>
-          </div>
-        </section>
-
-        <section className="border-b bg-muted/20 py-16 lg:py-20" aria-labelledby="share-title">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="max-w-2xl">
-              <h2 id="share-title" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                Shares, exports, and the way out
-              </h2>
-              <p className="mt-3 text-base leading-7 text-muted-foreground">
-                You can export synced entities, import them through a staged preview, or seal an
-                artifact for someone else. Leaving is a supported operation, not a support ticket.
+              <p className="mt-5 max-w-[36ch] text-muted-foreground">
+                Every workspace starts local. Nothing syncs until you turn it on for that workspace.
               </p>
             </div>
-            <div className="mt-10 grid gap-x-10 gap-y-8 sm:grid-cols-3">
-              {sharePoints.map((item) => (
-                <article key={item.title} className="border-t pt-5">
-                  <div className="flex items-center gap-2.5">
-                    <item.icon className="size-4 text-accent" aria-hidden="true" />
-                    <h3 className="font-semibold">{item.title}</h3>
-                  </div>
-                  <p className="mt-2.5 text-sm leading-6 text-muted-foreground">{item.body}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="border-b py-16 lg:py-20" aria-labelledby="hosted-title">
-          <div className="mx-auto grid max-w-7xl gap-12 px-4 sm:px-6 lg:grid-cols-[0.8fr_1.2fr] lg:px-8">
-            <div>
-              <h2 id="hosted-title" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                Anvil-hosted, if you would rather not run it
-              </h2>
-              <p className="mt-4 text-base leading-7 text-muted-foreground">
-                The same Sync v2 and Mesh v2 backend with WorkOS sign-in, device management, and artifact
-                storage handled for you. Sync &amp; Mesh are free. Production
-                provisioning is still in progress, so hosted availability remains gated.
-              </p>
-              <div className="mt-6 flex flex-wrap gap-3">
-                <Button asChild>
-                  <Link href="/account">
-                    Open your account
-                    <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                  </Link>
-                </Button>
-                <Button asChild variant="outline">
-                  <Link href="/pricing">Pricing model</Link>
-                </Button>
-              </div>
-            </div>
-            <div className="grid gap-5">
-              <div className="overflow-hidden rounded-lg border bg-card">
-                <div className="flex items-center gap-2.5 border-b px-5 py-3.5">
-                  <Server className="size-4 text-accent" aria-hidden="true" />
-                  <h3 className="text-sm font-semibold">What hosted includes</h3>
-                </div>
-                <ul className="grid gap-0 divide-y">
-                  {[
-                    "Sealed sync of workspaces, templates, agents, and approved settings",
-                    "Mesh job dispatch to your enrolled devices",
-                    "Sealed artifact storage within your account limits",
-                    "Web account: devices, pair codes, data deletion, and legacy billing records",
-                    "Backend-enforced account, security, and fair-use limits; billing health does not gate Sync & Mesh"
-                  ].map((point) => (
-                    <li key={point} className="flex items-start gap-2.5 px-5 py-3.5 text-sm leading-6 text-muted-foreground">
-                      <Check className="proof-check" aria-hidden="true" />
-                      <span>{point}</span>
+            <div className="grid gap-px overflow-hidden rounded-xl border bg-border sm:grid-cols-2">
+              <div className="bg-card p-7">
+                <h3 className="text-lg font-semibold">Syncs, encrypted</h3>
+                <ul className="mt-5 grid gap-3">
+                  {syncs.map((item) => (
+                    <li key={item} className="flex gap-3 text-[0.9375rem] leading-7">
+                      <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                      {item}
                     </li>
                   ))}
                 </ul>
               </div>
-              <div className="grid gap-4 rounded-lg border bg-muted/30 p-5 sm:grid-cols-2">
-                <div className="flex items-start gap-3">
-                  <Check className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
-                  <div>
-                    <p className="font-medium">Free</p>
-                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                      No Sync &amp; Mesh subscription is required. Authentication, account lifecycle,
-                      and fair-use restrictions still apply.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <Download className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
-                  <div>
-                    <p className="font-medium">Self-host stays free</p>
-                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                      <code className="rounded border bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">anvil-cloud mesh apply</code>{" "}
-                      deploys the official worker to your Cloudflare account.
-                    </p>
-                  </div>
-                </div>
+              <div className="bg-card p-7">
+                <h3 className="text-lg font-semibold">Never leaves the machine</h3>
+                <ul className="mt-5 grid gap-3">
+                  {neverSyncs.map((item) => (
+                    <li key={item} className="flex gap-3 text-[0.9375rem] leading-7">
+                      <Minus className="mt-1.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
               </div>
             </div>
           </div>
         </section>
 
-        <section className="py-16 lg:py-20" aria-labelledby="backends-title">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="max-w-2xl">
-              <h2 id="backends-title" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                Four ways to connect
+        <section className="border-t bg-muted/40 py-20 lg:py-28" aria-labelledby="journey-title">
+          <div className="page-shell">
+            <h2 id="journey-title" className="font-display text-display-2 max-w-[18ch]">
+              How a change reaches your other machines.
+            </h2>
+            <ol className="mt-14 grid gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-5">
+              {journey.map((item, index) => (
+                <li key={item.title} className="relative border-t-2 border-foreground/80 pt-5">
+                  <span className="font-mono text-sm text-accent">{index + 1}</span>
+                  <h3 className="mt-2 text-lg font-semibold">{item.title}</h3>
+                  <p className="mt-2 text-[0.9375rem] leading-7 text-muted-foreground">{item.body}</p>
+                </li>
+              ))}
+            </ol>
+            <p className="mt-12 max-w-[60ch] text-muted-foreground">
+              The details, including key rotation and how a new device gets the key, are in{" "}
+              <Link href="/docs/sync/encryption" className="font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground">
+                encryption and keys
+              </Link>
+              .
+            </p>
+          </div>
+        </section>
+
+        <section className="border-t py-20 lg:py-28" aria-labelledby="mesh-title">
+          <div className="page-shell grid gap-14 lg:grid-cols-2">
+            <div>
+              <h2 id="mesh-title" className="font-display text-display-2 max-w-[13ch]">
+                Send work to another machine.
               </h2>
-              <p className="mt-3 text-base leading-7 text-muted-foreground">
-                Configure this in Anvil Desktop under Settings → Sync &amp; Mesh. The same client
-                can talk to local-only, hosted, self-deployed, or conformant backends.
+              <p className="mt-5 max-w-[48ch] text-lg leading-8 text-muted-foreground">
+                Each machine says what it can run. Send a job and a suitable machine picks it up, checks
+                out the exact commit you pinned, and runs it in its own worktree. You watch the
+                output from wherever you are.
               </p>
-            </div>
-            <div className="mt-10 overflow-hidden rounded-lg border">
-              <ul className="divide-y">
-                {syncModes.map((mode, index) => (
-                  <li key={mode.mode} className="grid gap-2 px-5 py-5 sm:grid-cols-[12rem_1fr_auto] sm:items-baseline sm:gap-6">
-                    <p className="flex items-baseline gap-3 font-medium">
-                      <span className="font-mono text-[0.6875rem] text-muted-foreground">0{index + 1}</span>
-                      {mode.mode}
-                    </p>
-                    <p className="text-sm leading-6 text-muted-foreground">{mode.body}</p>
-                    <p className="font-mono text-xs text-muted-foreground sm:text-right">{mode.cost}</p>
-                  </li>
-                ))}
+              <ul className="mt-8 grid gap-4 text-[0.9375rem] leading-7">
+                <li className="flex gap-3">
+                  <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                  The work, the credentials and the model calls stay on your machines. Our side only
+                  keeps track of jobs; it never runs them.
+                </li>
+                <li className="flex gap-3">
+                  <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                  Making a machine a worker is a choice you make on that machine. There&apos;s no switch that
+                  makes every machine run everything.
+                </li>
+                <li className="flex gap-3">
+                  <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                  When a job is stopping or a machine goes quiet, Anvil says so plainly instead of
+                  guessing.
+                </li>
               </ul>
             </div>
-            <p className="mt-6 max-w-3xl text-sm leading-6 text-muted-foreground">
-              Hosted staging and QA are available when
-              <code className="font-mono text-xs">ANVIL_HOSTED_BACKEND_URL</code> names a
-              tested HTTPS origin. Production provisioning is still finishing. The account area on
-              this site is live, and self-hosted backends work today. The{" "}
-              <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline underline-offset-4">
-                status page
-              </Link>{" "}
-              tracks what is proven and what is still pending.
+            <div className="rounded-xl border bg-card p-7 sm:p-8">
+              <h3 className="text-xl font-semibold">Move a running session</h3>
+              <p className="mt-3 text-[0.9375rem] leading-7 text-muted-foreground">
+                Hand a session from your laptop to your desktop, or back. The other machine prepares the
+                same workspace, this one pauses and seals a checkpoint, and the session carries on
+                over there. Processes don&apos;t migrate; the session resumes from the checkpoint.
+              </p>
+              <ol className="mt-7 grid gap-0" aria-label="Handoff steps">
+                {handoff.map((state, index) => (
+                  <li key={state} className="flex items-center gap-4">
+                    <span className="flex w-5 flex-col items-center self-stretch" aria-hidden="true">
+                      <span className={`w-px flex-1 ${index === 0 ? "bg-transparent" : "bg-border"}`} />
+                      <span className={`size-2.5 rounded-full border-2 ${index === handoff.length - 1 ? "border-accent bg-accent" : "border-foreground/60 bg-card"}`} />
+                      <span className={`w-px flex-1 ${index === handoff.length - 1 ? "bg-transparent" : "bg-border"}`} />
+                    </span>
+                    <span className="py-1.5 text-[0.9375rem]">{state}</span>
+                  </li>
+                ))}
+              </ol>
+              <p className="mt-6 border-t pt-5 text-sm leading-6 text-muted-foreground">
+                Uncommitted or unpushed changes stop a handoff before it starts, and Anvil tells you
+                what to fix.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="border-t py-20 lg:py-28" aria-labelledby="borrow-title">
+          <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
+            <div>
+              <h2 id="borrow-title" className="font-display text-display-2 max-w-[12ch]">
+                Borrow a machine for a while.
+              </h2>
+              <p className="mt-5 max-w-[38ch] text-muted-foreground">
+                A workflow can ask for a temporary environment in a cloud account you connect. That
+                provider bills you directly.
+              </p>
+              <Link
+                href="/docs/cloud/agent-sandboxes"
+                className="mt-6 inline-flex min-h-11 items-center gap-2 font-medium underline decoration-border underline-offset-4 hover:decoration-foreground"
+              >
+                How sandboxes work
+                <ArrowRight className="size-4" aria-hidden="true" />
+              </Link>
+            </div>
+            <ul className="divide-y border-y">
+              {agentEnvironments.map((environment) => (
+                <li key={environment.provider} className="grid gap-1 py-5 sm:grid-cols-[13rem_minmax(0,1fr)_auto] sm:items-baseline sm:gap-6">
+                  <Link href={environment.href} className="font-semibold underline-offset-4 hover:underline">
+                    {environment.provider}
+                  </Link>
+                  <p className="text-[0.9375rem] leading-7 text-muted-foreground">{environment.detail}</p>
+                  <span className={`text-sm font-medium ${environment.status === "Later" ? "text-muted-foreground" : "text-foreground"}`}>
+                    {environment.status}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <section className="border-t bg-muted/40 py-20 lg:py-28" aria-labelledby="leave-title">
+          <div className="page-shell">
+            <h2 id="leave-title" className="font-display text-display-2 max-w-[16ch]">
+              Share safely. Leave whenever you like.
+            </h2>
+            <ul className="mt-14 grid gap-x-12 gap-y-10 md:grid-cols-3">
+              {leaving.map((item) => (
+                <li key={item.title}>
+                  <item.icon className="size-5 text-accent" aria-hidden="true" />
+                  <h3 className="mt-4 text-lg font-semibold">{item.title}</h3>
+                  <p className="mt-2 text-[0.9375rem] leading-7 text-muted-foreground">{item.body}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <section className="border-t py-20 lg:py-28" aria-labelledby="backends-title">
+          <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
+            <div>
+              <h2 id="backends-title" className="font-display text-display-2 max-w-[11ch]">
+                Choose where it lives.
+              </h2>
+              <p className="mt-5 max-w-[38ch] text-muted-foreground">
+                The same app talks to any of these. Pick one in Settings, under Sync &amp; Mesh.
+              </p>
+            </div>
+            <ul className="divide-y border-y">
+              {syncBackends.map((backend) => (
+                <li key={backend.name} className="grid gap-1 py-5 sm:grid-cols-[13rem_minmax(0,1fr)_auto] sm:items-baseline sm:gap-6">
+                  <p className="font-semibold">{backend.name}</p>
+                  <p className="text-[0.9375rem] leading-7 text-muted-foreground">{backend.body}</p>
+                  <p className="text-sm font-medium sm:text-right">{backend.cost}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <section className="border-t py-24 lg:py-32">
+          <div className="page-shell">
+            <h2 className="font-display text-display-1 max-w-[15ch]">Be first in when hosting opens.</h2>
+            <p className="lede mt-6">
+              Join the waitlist to get access as soon as hosted Sync &amp; Mesh opens. Until then,
+              you can run the whole thing yourself.
             </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Button asChild variant="outline">
-                <Link href="/docs/sync/overview">
-                  Read the Sync &amp; Mesh docs
-                  <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                </Link>
+            <div className="mt-9 flex flex-wrap gap-3">
+              <Button asChild size="lg">
+                <Link href="/waitlist">Join the waitlist</Link>
+              </Button>
+              <Button asChild size="lg" variant="outline">
+                <Link href="/pricing">See pricing</Link>
+              </Button>
+              <Button asChild size="lg" variant="ghost">
+                <Link href="/docs/sync">Read the docs</Link>
               </Button>
             </div>
           </div>

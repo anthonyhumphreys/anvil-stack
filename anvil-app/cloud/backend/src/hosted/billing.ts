@@ -1,6 +1,3 @@
-// D1 billing store — Stripe rows remain as history and cleanup state. The
-// entitlement read model provides free hosted capabilities independent of it.
-//
 // stripe_subscriptions is a verbatim provider mirror: webhook upserts
 // overwrite the Stripe-owned fields (status, period end, cancel flag)
 // wholesale because event order is not guaranteed and reconciliation is
@@ -18,6 +15,7 @@ import {
 } from './policy';
 import type { StripeSubscription } from './stripe';
 import type { BillingAccountRow } from './store';
+import { betaAccessUntil } from './beta';
 
 export const RENEWAL_GRACE_DAYS = 7;
 export const OUTAGE_GRACE_HOURS = 24;
@@ -95,11 +93,6 @@ export interface OrganizationBillingSummary {
   checkoutAvailable: boolean;
 }
 
-/**
- * Returns D1 statements which materialize the fixed fair-use team capacity.
- * Legacy subscription webhooks may still update billing history, but they do
- * not grant extra seats or remove free team access.
- */
 export function organizationCapacityRefreshStatements(
   db: D1Database,
   organizationId: string,
@@ -119,19 +112,24 @@ export function organizationCapacityRefreshStatements(
     .prepare(
       `UPDATE organization_billing_state
        SET scheduled_seat_capacity = NULL, scheduled_effective_at = NULL, updated_at = ?
-       WHERE organization_id = ?`,
+       WHERE organization_id = ? AND scheduled_effective_at <= ?`,
     )
-    .bind(now, organizationId);
+    .bind(now, organizationId, now);
 
   const updateCapacity = db
     .prepare(
       `UPDATE organization_billing_state
        SET preview_seat_capacity = ${FREE_TEAM_SEAT_CAPACITY},
-           effective_seat_capacity = ${FREE_TEAM_SEAT_CAPACITY},
+           effective_seat_capacity = MAX(${FREE_TEAM_SEAT_CAPACITY}, COALESCE((
+             SELECT paid_seat_quantity FROM stripe_subscriptions
+             WHERE organization_id = ? AND plan_key = 'sync_team' AND has_paid_invoice = 1
+               AND status IN ('active', 'past_due', 'canceled') AND paid_through > ?
+             ORDER BY verified_at DESC, updated_at DESC LIMIT 1
+           ), 0)),
            updated_at = ?
        WHERE organization_id = ?`,
     )
-    .bind(now, organizationId);
+    .bind(organizationId, now, now, organizationId);
 
   return [ensureState, clearAppliedSchedule, updateCapacity];
 }
@@ -151,10 +149,8 @@ export async function refreshOrganizationTeamCapacity(
   return row?.effective_seat_capacity ?? 0;
 }
 
-export function hostedCheckoutAvailable(_env: Env, _now: number): boolean {
-  // Sync subscriptions are retired. Keep the response field and route guard
-  // for stale clients, but never advertise or open another checkout session.
-  return false;
+export function hostedCheckoutAvailable(env: Env, _now: number): boolean {
+  return env.HOSTED_CHECKOUT_ENABLED === 'true';
 }
 
 export async function getStripeCustomerForAccount(
@@ -771,7 +767,6 @@ export async function findActiveTeamBillingForUser(
   };
 }
 
-/** Current free team capacity, refreshed independently of legacy subscriptions. */
 export async function getOrganizationTeamCapacity(
   db: D1Database,
   organizationId: string,
@@ -835,12 +830,6 @@ export async function lastWebhookProcessedAt(db: D1Database): Promise<number | n
   return row?.processed_at ?? null;
 }
 
-/**
- * Current capability entitlement. Subscription rows remain in the billing
- * tables and in billing overviews, but never alter free Sync/Mesh access.
- * `paidThrough` remains in this internal return shape for source compatibility
- * with the previous enforcement path and is always null.
- */
 export async function getEntitlementSnapshot(
   db: D1Database,
   billingAccount: BillingAccountRow,
@@ -848,18 +837,39 @@ export async function getEntitlementSnapshot(
   limits: HostedLimits,
   billingUnavailable: boolean,
 ): Promise<{ entitlement: HostedEntitlement; paidThrough: number | null }> {
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM stripe_subscriptions WHERE billing_account_id = ? AND organization_id IS NULL`,
+    )
+    .bind(billingAccount.id)
+    .all<StripeSubscriptionRow>();
+  const subscriptions: HostedSubscriptionState[] = results.map((row) => ({
+    planKey: 'sync_personal',
+    status: row.status as HostedSubscriptionState['status'],
+    hasPaidInvoice: row.has_paid_invoice === 1 && row.plan_key === 'sync_personal',
+    paidThrough: row.paid_through ?? 0,
+    failedRenewalAt: row.first_failed_renewal_at,
+    cancelAtPeriodEnd: row.cancel_at_period_end === 1,
+    verifiedAt: row.verified_at,
+  }));
+  const team = await findActiveTeamBillingForUser(db, billingAccount.id);
   const entitlement = evaluateHostedEntitlement({
     now,
     lifecycle: billingAccount.lifecycle,
     previewEligible: false,
+    betaAccessUntil: await betaAccessUntil(db, billingAccount.id),
     revision: Math.max(0, billingAccount.updated_at),
     limits,
-    subscriptions: [],
-    billingUnavailable: false,
-    renewalGraceDays: 0,
-    outageGraceHours: 0,
+    subscriptions,
+    sponsorship: team,
+    billingUnavailable,
+    renewalGraceDays: RENEWAL_GRACE_DAYS,
+    outageGraceHours: OUTAGE_GRACE_HOURS,
   });
-  return { entitlement, paidThrough: null };
+  return {
+    entitlement,
+    paidThrough: entitlement.accessUntil === null ? null : Date.parse(entitlement.accessUntil),
+  };
 }
 
 /**

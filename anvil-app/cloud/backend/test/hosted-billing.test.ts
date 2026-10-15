@@ -26,6 +26,7 @@ const WORKOS_API_KEY = 'sk_test_workos_fake';
 const HOSTED_CLIENT_ID = 'client_hosted_test';
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
+const MONTHLY_PRICE = 'price_test_monthly';
 /** A fixed evaluation instant safely past the 2026-11-01 preview cutoff. */
 const POST_PREVIEW = PREVIEW_END_MS + 30 * DAY;
 
@@ -377,7 +378,7 @@ describe('stripe webhook signature gate', () => {
 });
 
 describe('checkout.session.completed', () => {
-  it('processes historical checkout completion without restoring paid access', async () => {
+  it('records checkout completion without granting access before a paid invoice', async () => {
     const identity = makeIdentity(`co-${crypto.randomUUID()}`);
     const account = await getOrCreateBillingAccount(hostedDb(), identity);
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -426,7 +427,11 @@ describe('checkout.session.completed', () => {
       DEFAULT_HOSTED_LIMITS,
       false,
     );
-    expect(entitlement).toMatchObject({ state: 'active', source: 'none', reason: 'free' });
+    expect(entitlement).toMatchObject({
+      state: 'restricted',
+      source: 'none',
+      reason: 'subscription-required',
+    });
   });
 
   it('expires an open checkout session on checkout.session.expired', async () => {
@@ -764,14 +769,14 @@ describe('entitlement over stored provider truth', () => {
       false,
     );
     expect(entitlement.state).toBe('active');
-    expect(entitlement.source).toBe('none');
-    expect(entitlement.planKey).toBeNull();
-    expect(entitlement.reason).toBe('free');
-    expect(entitlement.accessUntil).toBeNull();
+    expect(entitlement.source).toBe('subscription');
+    expect(entitlement.planKey).toBe('sync_personal');
+    expect(entitlement.reason).toBe('paid');
+    expect(entitlement.accessUntil).toBe(new Date(paidThroughSec * 1000).toISOString());
     expect(entitlement.capabilities).toEqual({ syncWrite: true, meshSubmit: true });
   });
 
-  it('keeps free capabilities during a recently failed legacy renewal and billing outage', async () => {
+  it('allows bounded grace after a failed renewal even during a billing outage', async () => {
     const identity = makeIdentity(`grace-${crypto.randomUUID()}`);
     const account = await getOrCreateBillingAccount(hostedDb(), identity);
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -807,13 +812,13 @@ describe('entitlement over stored provider truth', () => {
       DEFAULT_HOSTED_LIMITS,
       true,
     );
-    expect(entitlement.state).toBe('active');
-    expect(entitlement.source).toBe('none');
-    expect(entitlement.reason).toBe('free');
-    expect(entitlement.graceUntil).toBeNull();
+    expect(entitlement.state).toBe('grace');
+    expect(entitlement.source).toBe('renewal-grace');
+    expect(entitlement.reason).toBe('renewal-failed');
+    expect(entitlement.graceUntil).toBe(new Date(periodEnd + 7 * DAY).toISOString());
   });
 
-  it('keeps access before and after preview for an incomplete legacy subscription', async () => {
+  it('denies access before and after the old preview deadline for an incomplete subscription', async () => {
     const identity = makeIdentity(`inc-${crypto.randomUUID()}`);
     const account = await getOrCreateBillingAccount(hostedDb(), identity);
     const customerId = `cus_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -837,9 +842,8 @@ describe('entitlement over stored provider truth', () => {
       DEFAULT_HOSTED_LIMITS,
       false,
     );
-    expect(postCutoff.state).toBe('active');
-    expect(postCutoff.reason).toBe('free');
-    // The same row has the same free access before the boundary.
+    expect(postCutoff.state).toBe('restricted');
+    expect(postCutoff.reason).toBe('subscription-required');
     const preCutoff = await getEntitlement(
       hostedDb(),
       account,
@@ -847,13 +851,89 @@ describe('entitlement over stored provider truth', () => {
       DEFAULT_HOSTED_LIMITS,
       false,
     );
-    expect(preCutoff.state).toBe('active');
-    expect(preCutoff.reason).toBe('free');
+    expect(preCutoff.state).toBe('restricted');
+    expect(preCutoff.reason).toBe('subscription-required');
   });
 });
 
 describe('internal billing routes', () => {
-  it('rejects stale personal and team checkout requests before Stripe or account mutation', async () => {
+  it('opens configured checkout for an admitted account without granting access before payment', async () => {
+    const identity = makeIdentity(`paid-checkout-${crypto.randomUUID()}`);
+    const account = await admittedAccount(identity);
+    const customerId = `cus_${crypto.randomUUID().replaceAll('-', '')}`;
+    const sessionId = `cs_${crypto.randomUUID().replaceAll('-', '')}`;
+    await stubStripe('GET', `/v1/prices/${MONTHLY_PRICE}`, {
+      id: MONTHLY_PRICE,
+      active: true,
+      livemode: false,
+      currency: 'gbp',
+      unit_amount: 600,
+      recurring: { interval: 'month', interval_count: 1 },
+    });
+    await stubStripe('POST', '/v1/customers', { id: customerId });
+    await stubStripe('POST', '/v1/checkout/sessions', {
+      id: sessionId,
+      status: 'open',
+      customer: customerId,
+      url: 'https://checkout.stripe.com/test',
+    });
+    const checkout = await signedHostedPost('/internal/hosted/checkout', {
+      ...identity,
+      interval: 'month',
+    });
+    expect(checkout.status).toBe(200);
+    expect(checkout.body).toEqual({ checkoutUrl: 'https://checkout.stripe.com/test', sessionId });
+    expect(
+      (await getEntitlement(hostedDb(), account, Date.now(), DEFAULT_HOSTED_LIMITS, false)).state,
+    ).toBe('restricted');
+    await stubStripe('GET', `/v1/checkout/sessions/${sessionId}`, {
+      id: sessionId,
+      status: 'open',
+      customer: customerId,
+      url: 'https://checkout.stripe.com/test',
+    });
+    expect(
+      (await signedHostedPost('/internal/hosted/checkout', { ...identity, interval: 'month' }))
+        .body,
+    ).toEqual(checkout.body);
+  });
+
+  it('rejects unapproved waitlist identities and prices that do not match the advertised plan', async () => {
+    const identity = makeIdentity(`unapproved-checkout-${crypto.randomUUID()}`);
+    await stubWaitlist(identity, 'pending');
+    const denied = await signedHostedPost('/internal/hosted/checkout', {
+      ...identity,
+      interval: 'month',
+    });
+    expect(denied.status).toBe(403);
+    expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
+    await admittedAccount(identity);
+    await stubStripe('GET', `/v1/prices/${MONTHLY_PRICE}`, {
+      id: MONTHLY_PRICE,
+      active: true,
+      livemode: false,
+      currency: 'gbp',
+      unit_amount: 6000,
+      recurring: { interval: 'month', interval_count: 1 },
+    });
+    expect(
+      (await signedHostedPost('/internal/hosted/checkout', { ...identity, interval: 'month' }))
+        .status,
+    ).toBe(503);
+    expect(
+      (
+        await signedHostedPost('/internal/hosted/checkout', {
+          ...identity,
+          interval: 'month',
+          planKey: 'sync_team',
+          organizationId: 'org_foreign',
+          seats: 5,
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it('keeps personal and team checkout disabled until launch without provider or account mutation', async () => {
     const identity = makeIdentity(`retired-checkout-${crypto.randomUUID()}`);
     const countsBefore = await hostedDb()
       .prepare(
@@ -861,7 +941,7 @@ describe('internal billing routes', () => {
                 (SELECT COUNT(*) FROM checkout_sessions) AS checkouts`,
       )
       .first<{ customers: number; checkouts: number }>();
-    for (const checkoutEnabled of ['', 'false', 'true']) {
+    for (const checkoutEnabled of ['', 'false']) {
       env.HOSTED_CHECKOUT_ENABLED = checkoutEnabled;
       env.STRIPE_SECRET_KEY = '';
       for (const planKey of ['sync_personal', 'sync_team']) {
@@ -914,8 +994,8 @@ describe('internal billing routes', () => {
     await getOrCreateBillingAccount(hostedDb(), identity);
     const entitlement = await signedHostedPost('/internal/hosted/entitlement', identity);
     expect(entitlement.status).toBe(200);
-    expect(entitlement.body['state']).toBe('active');
-    expect(entitlement.body['reason']).toBe('free');
+    expect(entitlement.body['state']).toBe('restricted');
+    expect(entitlement.body['reason']).toBe('subscription-required');
 
     const overview = await signedHostedPost('/internal/hosted/billing', identity);
     expect(overview.status).toBe(200);
@@ -923,11 +1003,11 @@ describe('internal billing routes', () => {
     expect(overview.body['subscription']).toBeNull();
     expect(overview.body['pendingCheckout']).toBeNull();
     expect(overview.body['lastReconcileAt']).toBeNull();
-    expect((overview.body['entitlement'] as HostedEntitlement)).toMatchObject({
-      state: 'active',
+    expect(overview.body['entitlement'] as HostedEntitlement).toMatchObject({
+      state: 'restricted',
       source: 'none',
-      reason: 'free',
-      capabilities: { syncWrite: true, meshSubmit: true },
+      reason: 'subscription-required',
+      capabilities: { syncWrite: false, meshSubmit: false },
     });
   });
 });

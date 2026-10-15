@@ -10,6 +10,17 @@ import { isRecord } from '../rpc';
 const DEFAULT_API_BASE = 'https://api.stripe.com';
 const SIGNATURE_TOLERANCE_MS = 300_000;
 const STRIPE_REQUEST_TIMEOUT_MS = 10_000;
+export function stripeConfigured(env: Env): boolean {
+  const secret = env.STRIPE_SECRET_KEY;
+  if (typeof secret !== 'string') return false;
+  if (env.HOSTED_BILLING_ENVIRONMENT === 'staging') return secret.startsWith('sk_test_');
+  return (
+    env.HOSTED_BILLING_ENVIRONMENT === 'production' &&
+    secret.startsWith('sk_live_') &&
+    (env.STRIPE_API_BASE === undefined || env.STRIPE_API_BASE.length === 0)
+  );
+}
+
 /** Webhook endpoints for each Stripe account must use this same API version. */
 export const STRIPE_API_VERSION = '2026-08-26.dahlia';
 

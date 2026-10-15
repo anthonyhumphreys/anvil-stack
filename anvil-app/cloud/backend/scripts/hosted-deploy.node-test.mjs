@@ -276,7 +276,7 @@ test('target vars retain optional settings but lock deployment and WorkOS identi
     },
     staging,
   );
-  assert.equal(vars.HOSTED_CHECKOUT_ENABLED, 'false');
+  assert.equal(vars.HOSTED_CHECKOUT_ENABLED, 'true');
   assert.equal(vars.ANVIL_CLOUD_AGENTS_ENABLED, 'true');
   assert.equal(vars.HOSTED_SYNC_LIMITS, '{"jobs":10}');
   assert.equal(vars.OIDC_CLIENT_ID, staging.workos.desktopClientId);
@@ -450,7 +450,7 @@ test('generated production config rejects the staging-only early checkout flag',
   }
 });
 
-test('free service deploys without Stripe prices and retired checkout cannot be re-enabled', () => {
+test('beta deploys without Stripe prices and paid signup requires explicit checkout configuration', () => {
   const directory = mkdtempSync(join(tmpdir(), 'hosted-config-test-'));
   const production = {
     ...staging,
@@ -483,7 +483,7 @@ test('free service deploys without Stripe prices and retired checkout cannot be 
     );
     assert.throws(
       () => validateGeneratedConfig(productionPath, production, 'production'),
-      /Sync checkout is retired/,
+      /checkout requires STRIPE_PRICE_SYNC_MONTHLY/,
     );
 
     writeJson(
@@ -494,6 +494,23 @@ test('free service deploys without Stripe prices and retired checkout cannot be 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('paid signup can be explicitly enabled only with prices, HTTPS return URLs and Stripe secrets', () => {
+  const config = { vars: {
+    HOSTED_CHECKOUT_ENABLED: 'true',
+    STRIPE_PRICE_SYNC_MONTHLY: 'price_personal_month',
+    STRIPE_PRICE_SYNC_ANNUAL: 'price_personal_year',
+    STRIPE_PRICE_TEAM_MONTHLY: 'price_team_month',
+    STRIPE_PRICE_TEAM_ANNUAL: 'price_team_year',
+    HOSTED_CHECKOUT_SUCCESS_URL: 'https://example.test/account/billing',
+    HOSTED_CHECKOUT_CANCEL_URL: 'https://example.test/account/billing',
+    HOSTED_PORTAL_RETURN_URL: 'https://example.test/account/billing',
+  } };
+  assert.throws(() => validateCheckoutSecrets(config, {}, 'staging'), /requires both Stripe secrets/);
+  assert.doesNotThrow(() => validateCheckoutSecrets(config, {
+    STRIPE_SECRET_KEY: 'sk_test_fake', STRIPE_WEBHOOK_SECRET: 'whsec_fake',
+  }, 'staging'));
 });
 
 test('production migration list cannot reuse staging WorkOS user IDs', () => {
@@ -580,7 +597,7 @@ test('backend secrets keep WorkOS and Stripe environment credentials correctly s
   );
   assert.throws(
     () => validateCheckoutSecrets({ vars: { HOSTED_CHECKOUT_ENABLED: 'true' } }, shared, 'staging'),
-    /Sync checkout is retired/,
+    /checkout requires STRIPE_PRICE_SYNC_MONTHLY/,
   );
   validateCheckoutSecrets({ vars: { HOSTED_CHECKOUT_ENABLED: 'false' } }, shared, 'staging');
   validateCheckoutSecrets({ vars: { HOSTED_CHECKOUT_ENABLED: 'false' } }, {}, 'production');

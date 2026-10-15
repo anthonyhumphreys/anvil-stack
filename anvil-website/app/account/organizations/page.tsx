@@ -36,7 +36,7 @@ async function OrganizationData({
       <header className="grid gap-1">
         <h1 className="text-3xl font-semibold tracking-[-0.02em]">Organisation membership</h1>
         <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
-          Manage membership, invitations, roles, and legacy billing records. Membership does not
+          Manage membership, invitations, roles, and hosted team billing. Membership does not
           share workspaces, devices, or Sync &amp; Mesh data; each person&apos;s Sync &amp; Mesh
           access stays independent.
         </p>

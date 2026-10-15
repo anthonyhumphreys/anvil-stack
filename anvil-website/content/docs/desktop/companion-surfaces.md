@@ -10,7 +10,7 @@ order: 180
 
 # Companion surfaces
 
-Anvil's companion surfaces are opt-in controls for local agent work. They are useful when the desktop app is not frontmost and a session needs a short action: approve, decline, reply, interrupt, launch a workflow, or open the work back on the Mac.
+Use Anvil's phone, watch, menu bar or Raycast controls to check on work while the desktop app is in the background. Depending on the companion, you can approve or decline a step, reply, interrupt, launch a workflow or reopen the work on your Mac.
 
 They are not a replacement for the desktop workspace. Full diffs, terminal work, browser checks, and handover review still belong on the desktop.
 
@@ -44,8 +44,8 @@ Companion approval requests show the command or file change, repository, workspa
 
 Destructive or unclear actions belong on Desktop, where the full thread, diff, and terminal context are visible. A small screen is good at answering "continue this known check." It is bad at reviewing a shell command that can delete half a monorepo.
 
-## Security posture
+## Access and approvals
 
 Companion access is local, authenticated, and revocable. Treat tokens and pairing tickets as workflow credentials, not decoration. Network reachability still depends on the selected advertised address and the host machine's firewall.
 
-Use companion surfaces for short commands. When the action needs repository inspection, terminal output, or a decision with real blast radius, open the desktop app and review the evidence.
+Use companions for short commands. Open Desktop when you need to inspect a repository, read terminal output or review the consequences of an action before approving it.

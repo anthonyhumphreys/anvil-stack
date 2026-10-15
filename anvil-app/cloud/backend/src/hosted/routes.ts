@@ -7,6 +7,7 @@
 
 import { BROWSER_WORKSPACE_MAX_RPC_BODY_BYTES } from '../../../contract/browser-workspace';
 import { isRecord, rpcErrorResponse } from '../rpc';
+import { handleBetaRedeem } from './beta';
 import {
   handleBillingOverview,
   handleCheckout,
@@ -134,12 +135,18 @@ async function handleHostedMeshHosts(body: unknown, env: Env, db: D1Database): P
     return rpcErrorResponse(undefined, 'not-found', { reason: 'unlinked' });
   }
   const result = await listHostedMachineHosts(env, account.sync_account_id);
-  return result === null ? rpcErrorResponse(undefined, 'unavailable') : Response.json(result, {
-    headers: { 'cache-control': 'no-store' },
-  });
+  return result === null
+    ? rpcErrorResponse(undefined, 'unavailable')
+    : Response.json(result, {
+        headers: { 'cache-control': 'no-store' },
+      });
 }
 
-async function handleHostedMachineAdmission(body: unknown, env: Env, db: D1Database): Promise<Response> {
+async function handleHostedMachineAdmission(
+  body: unknown,
+  env: Env,
+  db: D1Database,
+): Promise<Response> {
   if (
     !isRecord(body) ||
     !validateHostedIdentity(body) ||
@@ -150,7 +157,8 @@ async function handleHostedMachineAdmission(body: unknown, env: Env, db: D1Datab
     typeof body['grantId'] !== 'string' ||
     typeof body['origin'] !== 'string' ||
     typeof body['requestId'] !== 'string'
-  ) return rpcErrorResponse(undefined, 'malformed-request');
+  )
+    return rpcErrorResponse(undefined, 'malformed-request');
   const account = await getBillingAccountByIdentity(db, body);
   if (account === null) return rpcErrorResponse(undefined, 'not-found');
   if (account.lifecycle !== 'active') {
@@ -236,6 +244,8 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
           return await handleHostedMachineAdmission(json, env, db);
         case '/internal/hosted/checkout':
           return await handleCheckout(json, env, db);
+        case '/internal/hosted/beta/redeem':
+          return await handleBetaRedeem(json, env, db);
         case '/internal/hosted/portal':
           return await handlePortal(json, env, db);
         case '/internal/hosted/billing':

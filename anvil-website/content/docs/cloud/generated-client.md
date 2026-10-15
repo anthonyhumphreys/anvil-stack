@@ -12,9 +12,9 @@ order: 160
 
 The builder emits generated client files under `.anvil/generated`.
 
-The goal is to keep browser code attached to manifest-derived query and
-mutation metadata instead of hard-coded runtime paths. React/Vite is the current
-default Cell UI path, and the generated client is the paved road for that path.
+The generated client lets browser code call queries and mutations by name,
+using metadata from the manifest. You don't need to hard-code runtime paths.
+React/Vite is the current default for Cell interfaces.
 
 ## Output
 
@@ -55,7 +55,7 @@ await generated.mutations.createNote({
 });
 ```
 
-The generated helper is the paved road. Use the lower-level client when you need
+Use the generated helper for most calls. Use the lower-level client when you need
 to pass generated definitions around explicitly:
 
 ```ts

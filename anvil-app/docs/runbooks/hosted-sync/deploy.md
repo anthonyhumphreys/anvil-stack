@@ -1,6 +1,6 @@
 # Hosted Sync staging deployment
 
-Use the guarded staging workflow for the current free Sync and Mesh release.
+Use the guarded staging workflow for the invite-only hosted Sync and Mesh beta.
 It deploys the existing staging backend and applies D1 migrations. It does not
 deploy the Anvil Cloud Agents provisioner or container image. Cloud Agents
 remain disabled by default. Start with
@@ -76,10 +76,13 @@ deployment and descriptor shape only. Complete the live gates in
 [staging-acceptance.md](staging-acceptance.md), including two physical hosts
 on separate WANs.
 
-Legacy Stripe configuration is not required for free Sync or Mesh. Keep
-checkout disabled. Access decisions must not depend on subscription state or
-Stripe availability; see [entitlement incidents](entitlement-incidents.md)
-for the remaining legacy billing caveats.
+Stripe configuration is not required for code-only beta access. Keep checkout
+disabled and hosted billing enforcement enabled. Apply migration `0006_beta_codes`
+before deploying the paid-access code. Approve each tester on the WorkOS waitlist
+and issue a dated code using [beta access](beta-access.md). Existing accounts do
+not get blanket access from the former preview flag. Before rollout, inventory
+current testers and give them codes or verify their paid subscription evidence.
+See [entitlement incidents](entitlement-incidents.md) for denied-write recovery.
 
 ## Production
 

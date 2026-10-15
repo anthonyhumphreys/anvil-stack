@@ -104,7 +104,7 @@ the loop and no silent discard.
   Cloudflare deployments; a physical multi-device demo is still pending.
   Cross-device timing — how fast a wrap or a pull actually lands on real
   hardware — is the least proven part.
-- Conflict resolution is manual by design. If you expected three-way merge
-  magic, there isn't any — by decision, not by omission.
+- Conflicts require manual resolution. The sync engine does not merge
+  divergent edits automatically.
 - Fallback polling is a convergence path, not a performance path. Expect
   latency, not loss.

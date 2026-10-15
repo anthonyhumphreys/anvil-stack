@@ -136,9 +136,11 @@ async function withWorkosIdentity<T>(identity: WorkosIdentity, run: () => Promis
   const previousIssuer = env.OIDC_ISSUER;
   const previousClientId = env.OIDC_CLIENT_ID;
   const previousHostedClientId = env.HOSTED_WORKOS_CLIENT_ID;
+  const previousEnforcement = env.HOSTED_BILLING_ENFORCEMENT;
   env.OIDC_ISSUER = WORKOS_AUTHKIT_ISSUER;
   env.OIDC_CLIENT_ID = identity.workosClientId;
   env.HOSTED_WORKOS_CLIENT_ID = identity.workosClientId;
+  env.HOSTED_BILLING_ENFORCEMENT = 'true';
   await fetch(`${WORKOS_API}/__workos-stub/reset`, { method: 'POST' });
   try {
     return await run();
@@ -147,6 +149,7 @@ async function withWorkosIdentity<T>(identity: WorkosIdentity, run: () => Promis
     env.OIDC_ISSUER = previousIssuer;
     env.OIDC_CLIENT_ID = previousClientId;
     env.HOSTED_WORKOS_CLIENT_ID = previousHostedClientId;
+    env.HOSTED_BILLING_ENFORCEMENT = previousEnforcement;
   }
 }
 
@@ -383,7 +386,7 @@ describe('enrollment-code authentication', () => {
         const resumed = expectSuccess<SessionDescribeResult>(
           await postRpc('session.describe', {}, bearer(sessions[0]!)),
         );
-        expect(resumed.entitlement).toMatchObject({ state: 'active', reason: 'free' });
+        expect(resumed.entitlement).toMatchObject({ state: 'active', reason: 'paid' });
         const admittedWrite = await postRpc(
           'sync.push',
           {

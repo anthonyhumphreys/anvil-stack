@@ -3,9 +3,9 @@ import type { HostedAccessState, HostedEntitlement } from "@/lib/hosted/types";
 import { formatDate } from "@/lib/format";
 
 const STATE_LABELS: Record<HostedAccessState, string> = {
-  preview: "Legacy preview",
+  preview: "Beta access",
   active: "Active",
-  grace: "Legacy billing grace",
+  grace: "Billing grace",
   restricted: "Restricted",
   unknown: "Unknown"
 };
@@ -30,21 +30,26 @@ export function EntitlementStateBadge({ state }: { state: HostedAccessState }) {
 export function entitlementSummary(entitlement: HostedEntitlement): string {
   switch (entitlement.state) {
     case "preview": {
-      return "Sync & Mesh are free. This account still reports a legacy preview state.";
+      const until = formatDate(entitlement.accessUntil);
+      return until ? `Invited beta access is active until ${until}. No subscription is needed during this period.` : "Invited beta access is active.";
     }
     case "active": {
       return entitlement.reason === "free"
-        ? "Sync & Mesh access is active and does not require a subscription."
-        : "Sync & Mesh access is active.";
+        ? "Self-hosted Sync & Mesh access is active. No Anvil subscription is required."
+        : "Your subscription includes hosted Sync & Mesh.";
     }
     case "grace": {
       const until = formatDate(entitlement.graceUntil);
       return until
-        ? `A legacy billing record is in grace until ${until}. Sync & Mesh access does not depend on billing.`
-        : "A legacy billing record is in grace. Sync & Mesh access does not depend on billing.";
+        ? `Hosted access continues until ${until}. Check billing before the grace period ends.`
+        : "Hosted access is in a billing grace period. Check your subscription.";
     }
     case "restricted":
-      return "The backend reports this account as restricted. This can reflect an account, security, or policy decision.";
+      return entitlement.reason === "subscription-required" || entitlement.reason === "preview-ended"
+        ? "Hosted Sync & Mesh needs a subscription or a valid beta code. Local work, reads, exports and account recovery remain available."
+        : entitlement.reason === "device-limit-exceeded"
+          ? "Hosted writes are paused because this account exceeds its device limit. Revoke a device to resume."
+          : "Hosted writes are restricted by account or service policy. Local work remains available.";
     case "unknown":
       return "The backend could not determine the entitlement state.";
   }

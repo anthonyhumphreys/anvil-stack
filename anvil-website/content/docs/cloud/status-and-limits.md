@@ -1,7 +1,7 @@
 ---
 title: Status and limits
 navTitle: Status and limits
-description: Current alpha maturity, working surfaces, non-goals, and known limits for Anvil Cloud, including the unavailable Anvil Cloud Agents hosted service.
+description: What works in Anvil Cloud today, known limits, deployment restrictions and work still needed before hosted agents launch.
 product: Anvil Cloud
 section: Reference
 journey: reference
@@ -10,20 +10,16 @@ order: 200
 
 # Status and limits
 
-Anvil Cloud is alpha software with real implementation across the runtime,
-builder, local server, React/Vite client path, CLI, Lens, and AWS preview
-adapter.
+Anvil Cloud is alpha software. You can run Cells locally, build React/Vite
+clients, inspect them with the CLI and Lens, and try AWS preview deployments.
 
-Anvil Cloud Agents is the planned hosted compute service operated by Anvil. It
-is unavailable and disabled by default. Hosted compute will be paid when
-released, but no price or release date has been set. Existing provider
-integrations use accounts you configure, and those cloud and model providers
-bill you directly.
+Anvil Cloud Agents will run agents on machines we host. It hasn't launched
+and has no price or release date yet. The existing integrations use your own
+provider accounts, which bill you directly.
 
-Use it for inspection, local development, adapter design, demos, tests, and
-contribution work. Do not treat it as production hosting. The useful question is
-not "is it done?" It is "which parts are implemented, which parts are gated, and
-what evidence should I inspect before trusting a Cell?"
+Use it for local development, demos, tests and contribution work. Before a
+preview deployment, check which features your adapter supports and inspect
+the generated plan. Production hosting is not ready.
 
 ## Implemented surfaces
 
@@ -36,7 +32,7 @@ what evidence should I inspect before trusting a Cell?"
 | Builder           | Config, import policy, typecheck, server/client bundle, manifest extraction, generated client, and build metadata exist.                                                                                                                                                                                                                                                                                               |
 | Local runtime     | Local HTTP server, JSON database with snapshot branches and TTL cleanup, files, auth, logs, usage events, events, jobs, workflows, supervised services, manifest, and inspection state exist.                                                                                                                                                                                                                          |
 | CLI               | `new`, `dev`, `check`, `review`, `build`, `agents`, `executions conformance`, `channels simulate`, `inspect`, `logs`, `usage --local`, `usage --preview`, `db` table and branch lifecycle commands, `workflows`, `services list`, named `deploy --preview`, `rollback --preview --dry-run`, and `destroy --preview` exist.                                                                                                                    |
-| Client            | React/Vite is the current paved road. The browser client supports generated query/mutation metadata, mounted agent session helpers, token lookup, structured runtime errors, hook helpers, and manual `refetch`.                                                                                                                                                                                                      |
+| Client            | React/Vite is the default UI setup. The browser client supports generated query/mutation metadata, mounted agent session helpers, token lookup, structured runtime errors, hook helpers and manual `refetch`. |
 | Lens              | Local Lens is served at `/_anvil/lens` and reads the same local runtime truth as CLI JSON: manifest, capabilities, auth users, logs, traces, usage totals, active database branch, database state, workflows, services, and diagnostics.                                                                                                                                                                                |
 | Examples          | `examples/notes` is the canonical local demo. `examples/aws-preview` is the AWS-compatible smoke Cell.                                                                                                                                                                                                                                                                                                                 |
 | AWS preview       | Plan, review aggregation, CloudFormation synthesis, artifacts, optional provisioner, named preview metadata, Lambda bridge, DynamoDB, S3, SQS, EventBridge events and schedules, Step Functions workflows, outbound fetch guard, ECS/Fargate service resource synthesis, CloudWatch logs, remote inspect, remote logs, usage visibility, rollback intent, preview destroy, cost-driver hints, and cleanup hints exist. |

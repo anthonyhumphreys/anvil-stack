@@ -220,9 +220,7 @@ export function mergeTargetVars(existing, target) {
   }
   return {
     ...existing,
-    // Managed Anvil compute is a separate product and stays opt-in. Sync
-    // subscription settings are deliberately retired in this service.
-    HOSTED_CHECKOUT_ENABLED: 'false',
+    HOSTED_CHECKOUT_ENABLED: existing.HOSTED_CHECKOUT_ENABLED ?? 'false',
     ANVIL_CLOUD_AGENTS_ENABLED: existing.ANVIL_CLOUD_AGENTS_ENABLED ?? 'false',
     // Hosted managed tunnel provisioning stays disabled unless the generated
     // recipe vars explicitly opt in after provider pricing/capacity review.
@@ -304,8 +302,7 @@ export function validateGeneratedConfig(
     throw new HostedDeployError(
       `${environment} generated config has the wrong HOSTED_BILLING_ENVIRONMENT.`,
     );
-  if (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true')
-    throw new HostedDeployError(`${environment} Sync checkout is retired and must remain disabled.`);
+  validateCheckoutVars(config, environment);
   if (!['true', 'false'].includes(config.vars?.ANVIL_CLOUD_AGENTS_ENABLED))
     throw new HostedDeployError(
       `${environment} ANVIL_CLOUD_AGENTS_ENABLED must be the literal string 'true' or 'false'.`,
@@ -506,11 +503,27 @@ export function validateBackendSecrets(
   return secrets;
 }
 
+export function validateCheckoutVars(config, environment) {
+  const vars = config.vars ?? {};
+  if (!['true', 'false'].includes(vars.HOSTED_CHECKOUT_ENABLED))
+    throw new HostedDeployError(`${environment} HOSTED_CHECKOUT_ENABLED must be true or false.`);
+  if (vars.HOSTED_CHECKOUT_ENABLED !== 'true') return;
+  for (const name of ['STRIPE_PRICE_SYNC_MONTHLY', 'STRIPE_PRICE_SYNC_ANNUAL', 'STRIPE_PRICE_TEAM_MONTHLY', 'STRIPE_PRICE_TEAM_ANNUAL']) {
+    if (typeof vars[name] !== 'string' || !/^price_[A-Za-z0-9_]+$/.test(vars[name]))
+      throw new HostedDeployError(`${environment} checkout requires ${name}.`);
+  }
+  for (const name of ['HOSTED_CHECKOUT_SUCCESS_URL', 'HOSTED_CHECKOUT_CANCEL_URL', 'HOSTED_PORTAL_RETURN_URL']) {
+    let valid = false;
+    try { valid = new URL(vars[name]).protocol === 'https:'; } catch {}
+    if (!valid) throw new HostedDeployError(`${environment} checkout requires an HTTPS ${name}.`);
+  }
+}
+
 export function validateCheckoutSecrets(config, secrets, environment) {
-  if (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true')
-    throw new HostedDeployError(`${environment} Sync checkout is retired and must remain disabled.`);
-  // Stripe credentials are optional: they support cleanup of existing
-  // subscriptions through the portal and webhook mirror, never new sales.
+  validateCheckoutVars(config, environment);
+  if (config.vars?.HOSTED_CHECKOUT_ENABLED === 'true' &&
+    (!secrets?.STRIPE_SECRET_KEY || !secrets?.STRIPE_WEBHOOK_SECRET))
+    throw new HostedDeployError(`${environment} checkout requires both Stripe secrets.`);
   if (secrets?.STRIPE_SECRET_KEY) validateStripeSecretMode(secrets.STRIPE_SECRET_KEY, environment);
 }
 

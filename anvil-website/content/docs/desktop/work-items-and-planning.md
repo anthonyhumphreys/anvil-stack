@@ -1,7 +1,7 @@
 ---
 title: Work items and planning
 navTitle: Work items
-description: How Anvil Desktop brings Linear, Jira, Azure DevOps, BA notes, acceptance criteria, and implementation planning into repo-aware work.
+description: Connect Linear, Jira or Azure DevOps tickets to your repos, add acceptance criteria and plan implementation.
 product: Anvil Desktop
 section: Guides
 journey: build
@@ -10,7 +10,7 @@ order: 90
 
 # Work items and planning
 
-Work item context belongs next to code. Anvil Desktop treats tickets, acceptance criteria, branch state, implementation notes, and agent sessions as one delivery surface instead of five browser tabs and a prayer.
+Keep a ticket, its acceptance criteria, the working branch and agent sessions together in Anvil Desktop. This lets you plan and review a change against the work item that prompted it.
 
 ## Supported planning sources
 
@@ -24,7 +24,7 @@ Anvil is designed around provider-backed work item systems and local planning st
 - acceptance criteria pasted into a session
 - local follow-up tasks created from review or security findings
 
-The exact connector surface depends on configuration. The important behavior is that planning work stays attached to the workspace and repository being changed.
+Available actions depend on the connector and its configuration. Planning stays attached to the active workspace and repository.
 
 ## Planning flow
 

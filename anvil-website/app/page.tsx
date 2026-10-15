@@ -1,94 +1,218 @@
-import Image from "next/image";
 import Link from "next/link";
 import {
   ArrowRight,
-  ArrowUpRight,
+  Bell,
+  ClipboardList,
   Download,
   Github,
   KeyRound,
-  Radio,
-  RefreshCcw,
-  Server
+  ShieldCheck,
+  Smartphone,
+  Workflow
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MeshSchematic } from "@/components/site/mesh-schematic";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
-import { TerminalPanel } from "@/components/site/terminal-panel";
+import { Workbench } from "@/components/site/workbench";
 import {
+  companionProducts,
+  desktopProviders,
   docsHighlights,
   githubRepositoryUrl,
-  hostedSyncInfo,
   latestDesktopDmgUrl,
-  productLines,
-  syncLayer,
-  syncModes,
-  syncMoves
+  releasesUrl
 } from "@/lib/site";
 
-const moveIcons = [KeyRound, Radio, RefreshCcw] as const;
+const capabilities = [
+  {
+    icon: Bell,
+    title: "Work keeps running",
+    body: "Threads and terminals carry on while you switch workspaces. A notification takes you straight to whichever one needs you."
+  },
+  {
+    icon: ShieldCheck,
+    title: "Review is built in",
+    body: "Diffs, test runs, security and dependency checks sit next to the conversation that produced them."
+  },
+  {
+    icon: ClipboardList,
+    title: "Plans you can follow",
+    body: "Break a job into work items with acceptance criteria, and keep the risks and follow-ups attached to them."
+  },
+  {
+    icon: Workflow,
+    title: "Automations",
+    body: "Schedule recurring checks and multi-agent workflows. Each run gets its own throwaway worktree."
+  },
+  {
+    icon: KeyRound,
+    title: "Your agents, your accounts",
+    body: "Use the Codex, Cursor or Devin subscription you already have, or your own OpenAI or Azure keys."
+  },
+  {
+    icon: Smartphone,
+    title: "Check in from anywhere",
+    body: "Approve a step or send a reply from your iPhone, Apple Watch, Raycast or the menu bar."
+  }
+];
 
 export default function HomePage() {
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader active="home" />
       <main id="main-content">
-        <HeroSection />
-        <DesktopSection />
-        <SyncLayerSection />
-        <StackSection />
-        <DocsSection />
-        <ClosingSection />
+        <Hero />
+        <Workbench />
+        <Capabilities />
+        <SyncBand />
+        <Workshop />
+        <OpenSource />
+        <DocsPaths />
+        <Closing />
       </main>
       <SiteFooter />
     </div>
   );
 }
 
-function HeroSection() {
+function Hero() {
   return (
-    <section className="overflow-hidden border-b">
-      <div className="mx-auto grid max-w-7xl gap-12 px-4 py-14 sm:px-6 lg:grid-cols-[0.92fr_1.08fr] lg:items-center lg:px-8 lg:py-24">
-        <div className="flex flex-col gap-8">
-          <div className="flex flex-col gap-5">
-            <h1 className="max-w-4xl text-5xl font-semibold leading-[0.96] tracking-[-0.03em] text-foreground sm:text-6xl lg:text-[4.4rem]">
-              Run agent work where your code lives.
-            </h1>
-            <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-              Anvil Desktop is an open-source workspace for agent work on your own
-              repos. Plan, run, review, and keep checks with the work in one local app. Add
-              Sync &amp; Mesh when you need a second machine to pick up the work.
-            </p>
-          </div>
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+    <section className="page-shell pb-16 pt-16 sm:pt-24 lg:pb-24">
+      <h1 className="font-display text-display-1 max-w-[14ch]">A workbench for coding agents.</h1>
+      <div className="mt-10 grid gap-12 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:items-end">
+        <div>
+          <p className="lede">
+            Anvil is a free desktop app for running coding agents on your own repos. Plan the work,
+            watch it happen, and check every change before you keep it.
+          </p>
+          <div className="mt-8 flex flex-wrap items-center gap-3">
             <Button asChild size="lg">
               <Link href={latestDesktopDmgUrl}>
-                <Download data-icon="inline-start" aria-hidden="true" />
-                Download for macOS
+                <Download aria-hidden="true" />
+                Download for Mac
               </Link>
             </Button>
             <Button asChild size="lg" variant="outline">
-              <Link href="/sync">
-                See Sync &amp; Mesh
-                <ArrowRight data-icon="inline-end" aria-hidden="true" />
+              <Link href={githubRepositoryUrl}>
+                <Github aria-hidden="true" />
+                View the source
               </Link>
             </Button>
-            <Link
-              className="inline-flex min-h-11 items-center gap-2 px-2 text-sm font-medium text-muted-foreground hover:text-foreground"
-              href={githubRepositoryUrl}
-            >
-              <Github className="size-4" aria-hidden="true" />
-              anvil-stack on GitHub
-            </Link>
           </div>
+          <p className="mt-5 text-sm leading-6 text-muted-foreground">
+            Want to pick it up on another machine?{" "}
+            <Link href="/sync" className="font-medium text-foreground underline decoration-accent/60 underline-offset-4">
+              Add hosted Sync &amp; Mesh
+            </Link>
+            . Paid hosting, free self-hosting. Beta access by invitation.
+          </p>
+          <p className="mt-5 max-w-[56ch] text-sm leading-6 text-muted-foreground">
+            Also on{" "}
+            <Link href={releasesUrl} className="font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground">
+              Windows and Linux
+            </Link>
+            . Mac builds aren&apos;t notarised yet, so the{" "}
+            <Link href="/docs/desktop/installation" className="font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground">
+              install guide
+            </Link>{" "}
+            has one Terminal command to run before the first launch.
+          </p>
+        </div>
+        <dl className="spec-plate" aria-label="Anvil Desktop at a glance">
+          <div>
+            <dt>Price</dt>
+            <dd>Free, MIT licensed</dd>
+          </div>
+          <div>
+            <dt>Agents</dt>
+            <dd>{desktopProviders.join(", ")}</dd>
+          </div>
+          <div>
+            <dt>Runs</dt>
+            <dd>On your machine, against your checkouts</dd>
+          </div>
+          <div>
+            <dt>Account</dt>
+            <dd>Not needed</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+  );
+}
+
+function Capabilities() {
+  return (
+    <section className="border-t py-20 lg:py-28" aria-labelledby="capabilities-title">
+      <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
+        <div>
+          <h2 id="capabilities-title" className="font-display text-display-2 max-w-[12ch]">
+            More than a chat window.
+          </h2>
+          <p className="mt-5 max-w-[38ch] text-muted-foreground">
+            The parts of a coding job that happen around the prompt live in the same app.
+          </p>
           <Link
-            href="/sync"
-            className="group flex w-fit items-center gap-2 rounded-md font-mono text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            href="/docs/desktop"
+            className="mt-6 inline-flex min-h-11 items-center gap-2 font-medium underline decoration-border underline-offset-4 hover:decoration-foreground"
           >
-            <span className="inline-block size-1.5 rounded-full bg-accent" aria-hidden="true" />
-            Optional account layer · sealed sync, mesh jobs, session handoff
-            <ArrowUpRight className="size-3.5 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" aria-hidden="true" />
+            Everything Desktop can do
+            <ArrowRight className="size-4" aria-hidden="true" />
           </Link>
+        </div>
+        <ul className="grid gap-x-12 gap-y-10 sm:grid-cols-2">
+          {capabilities.map((item) => (
+            <li key={item.title}>
+              <item.icon className="size-5 text-accent" aria-hidden="true" />
+              <h3 className="mt-4 text-lg font-semibold">{item.title}</h3>
+              <p className="mt-2 text-[0.9375rem] leading-7 text-muted-foreground">{item.body}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+function SyncBand() {
+  return (
+    <section className="border-t bg-muted/40 py-20 lg:py-28" aria-labelledby="sync-title">
+      <div className="page-shell grid gap-14 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-center">
+        <div>
+          <h2 id="sync-title" className="font-display text-display-2 max-w-[14ch]">
+            Pick up where you left off.
+          </h2>
+          <p className="mt-5 max-w-[46ch] text-lg leading-8 text-muted-foreground">
+            Sync &amp; Mesh keeps your workspaces, templates and agents in step across your machines.
+            Send a long job to the machine under your desk, or move a running session to your laptop
+            when you head out.
+          </p>
+          <ul className="mt-7 grid gap-3 text-[0.9375rem] leading-7">
+            <li className="flex gap-3">
+              <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
+              Encrypted on your device. The server only ever sees sealed envelopes.
+            </li>
+            <li className="flex gap-3">
+              <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
+              Your code, keys and chat history never sync.
+            </li>
+            <li className="flex gap-3">
+              <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
+              Paid Anvil hosting from £6 a month, or free if you run the backend yourself.
+            </li>
+          </ul>
+          <div className="mt-8 flex flex-wrap gap-3">
+            <Button asChild>
+              <Link href="/waitlist">Join the Sync &amp; Mesh waitlist</Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link href="/pricing">See pricing</Link>
+            </Button>
+          </div>
+          <p className="mt-4 text-sm text-muted-foreground">
+            Invited testers receive a beta code. <Link href="/account/billing" className="underline underline-offset-4">Redeem yours</Link> without a payment method.
+          </p>
         </div>
         <MeshSchematic className="min-w-0" />
       </div>
@@ -96,356 +220,169 @@ function HeroSection() {
   );
 }
 
-function SyncLayerSection() {
+function Workshop() {
   return (
-    <section className="border-b bg-muted/20" aria-labelledby="sync-layer-title">
-      <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-20">
-        <div className="grid gap-10 lg:grid-cols-[0.62fr_1.38fr]">
-          <div>
-            <h2 id="sync-layer-title" className="max-w-md text-3xl font-semibold tracking-[-0.02em] text-foreground sm:text-4xl">
-              Add another machine without copying your workspace by hand.
-            </h2>
-            <p className="mt-4 max-w-md text-base leading-7 text-muted-foreground">
-              {syncLayer.description}
-            </p>
-            <div className="mt-6 flex flex-wrap items-center gap-3">
-              <Button asChild>
-                <Link href={syncLayer.detailHref}>
-                  How Sync &amp; Mesh works
-                  <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                </Link>
-              </Button>
-              <Link
-                href={syncLayer.docsHref}
-                className="inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
-              >
-                Read the docs
-                <ArrowRight className="size-3.5" aria-hidden="true" />
-              </Link>
-            </div>
-          </div>
-
-          <div className="grid gap-8">
-            <ol className="grid gap-x-8 gap-y-6 sm:grid-cols-3">
-              {syncMoves.map((move, index) => {
-                const Icon = moveIcons[index] ?? KeyRound;
-                return (
-                  <li key={move.title} className="border-t pt-5">
-                    <div className="flex items-center gap-2.5">
-                      <Icon className="size-4 text-accent" aria-hidden="true" />
-                      <h3 className="font-semibold">{move.title}</h3>
-                    </div>
-                    <p className="mt-2.5 text-sm leading-6 text-muted-foreground">{move.body}</p>
-                    <p className="mt-3 font-mono text-[0.6875rem] tracking-wide text-muted-foreground">
-                      {move.proof}
-                    </p>
-                  </li>
-                );
-              })}
-            </ol>
-
-            <div className="grid gap-5 lg:grid-cols-[1.35fr_1fr]">
-              <div className="overflow-hidden rounded-lg border bg-background">
-                <div className="border-b px-5 py-3.5">
-                  <h3 className="text-sm font-semibold">Pick the backend, keep the keys</h3>
-                </div>
-                <ul className="divide-y">
-                  {syncModes.map((mode) => (
-                    <li key={mode.mode} className="grid gap-1.5 px-5 py-4 sm:grid-cols-[9.5rem_1fr] sm:gap-x-4">
-                      <p className="font-medium">{mode.mode}</p>
-                      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                        <p className="text-sm leading-6 text-muted-foreground">{mode.body}</p>
-                        <p className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground">{mode.cost}</p>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <aside className="flex flex-col rounded-lg border bg-background p-5">
-                <div className="flex items-center gap-2.5">
-                  <Server className="size-4 text-accent" aria-hidden="true" />
-                  <h3 className="font-semibold">{hostedSyncInfo.title}</h3>
-                </div>
-                <p className="mt-3 flex-1 text-sm leading-6 text-muted-foreground">{hostedSyncInfo.body}</p>
-                <div className="mt-5">
-                  <Button asChild variant="outline" size="sm">
-                    <Link href={hostedSyncInfo.href}>
-                      {hostedSyncInfo.cta}
-                      <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                    </Link>
-                  </Button>
-                </div>
-              </aside>
-            </div>
-          </div>
+    <section className="border-t py-20 lg:py-28" aria-labelledby="workshop-title">
+      <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
+        <div>
+          <h2 id="workshop-title" className="font-display text-display-2 max-w-[11ch]">
+            The rest of the workshop.
+          </h2>
+          <p className="mt-5 max-w-[38ch] text-muted-foreground">
+            Separate open-source tools for the jobs around agent work. Use any of them on their own;
+            none of them need Desktop.
+          </p>
         </div>
-      </div>
-    </section>
-  );
-}
-
-function DesktopSection() {
-  const [desktop] = productLines;
-
-  return (
-    <section id="products" className="border-b py-16 lg:py-20">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <SectionHeading
-          title="From checkout to handoff, in one workspace."
-          description="Open a repo, give the agent the context it needs, inspect the change, and hand off a result with the checks attached. Anvil Desktop runs locally on macOS."
-        />
-        <div className="mt-10">
-          {desktop ? <ProductFeature product={desktop} /> : null}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function StackSection() {
-  const [, registry, cloud, nodeBase] = productLines;
-  const companions = [cloud, registry, nodeBase].filter(Boolean);
-  const summaries: Record<string, string> = {
-    cloud: "Build provider-neutral Cells and Agents, inspect them locally, and deploy through the CLI.",
-    registry: "Put deterministic policy and reviewable analysis in front of npm installs.",
-    "node-base": "Run Node installs in a controlled container, either with scripts disabled or observed."
-  };
-
-  return (
-    <section className="border-b py-16 lg:py-20">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <SectionHeading
-          title="Add only what the job needs."
-          description="These projects are optional. Each one owns a separate problem and comes with its own docs and repository."
-        />
-        <div className="mt-10 grid gap-5 md:grid-cols-3">
-          {companions.map((product) => (
-            <StackCard
-              key={product.id}
-              product={product}
-              summary={summaries[product.id] ?? product.description}
-            />
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function ProductFeature({ product }: { product: (typeof productLines)[number] }) {
-  const desktopTasks = [
-    { title: "Start with a repo", body: "Index local checkouts, branch state, and architecture context before the first prompt." },
-    { title: "Run the work", body: "Plan, implement, investigate, or review in a chat-first workspace with terminals attached." },
-    { title: "Inspect the change", body: "Use Git state, tests, security checks, and review criteria before accepting the result." },
-    { title: "Hand it over", body: "Keep decisions, checks, and unresolved risk with the work so the next person can pick it up." }
-  ];
-
-  return (
-    <article className="overflow-hidden rounded-lg border bg-card lg:grid lg:grid-cols-[1.08fr_0.92fr]">
-      <div className="grid gap-7 p-6 sm:p-8">
-        <ProductHeading product={product} />
-        <p className="max-w-2xl text-base leading-7 text-muted-foreground">
-          A local workspace for repo-aware agent delivery. The app keeps the conversation,
-          checkout, terminal, review, and handoff in the same place while active work continues.
-        </p>
-        <ol className="grid gap-4 border-y py-5 sm:grid-cols-2">
-          {desktopTasks.map((task, index) => (
-            <li key={task.title} className="flex items-start gap-3">
-              <span className="font-mono text-xs text-muted-foreground">0{index + 1}</span>
+        <ul className="divide-y border-y">
+          {companionProducts.map((product) => (
+            <li key={product.id} className="grid gap-4 py-8 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-10">
               <div>
-                <h4 className="font-medium">{task.title}</h4>
-                <p className="mt-1 text-sm leading-6 text-muted-foreground">{task.body}</p>
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <h3 className="text-xl font-semibold">{product.title}</h3>
+                  <span className="text-sm text-muted-foreground">{product.statusLabel}</span>
+                </div>
+                <p className="mt-1 font-medium">{product.tagline}</p>
+                <p className="mt-2 max-w-[60ch] text-[0.9375rem] leading-7 text-muted-foreground">
+                  {product.description}
+                </p>
+                <code className="mt-4 inline-block max-w-full overflow-x-auto rounded-md border bg-muted/60 px-2.5 py-1.5 font-mono text-[0.8125rem]">
+                  {product.command}
+                </code>
+              </div>
+              <div className="flex gap-4 text-sm font-medium sm:flex-col sm:items-end sm:pt-1">
+                <Link href={product.href} className="underline decoration-border underline-offset-4 hover:decoration-foreground">
+                  Docs
+                </Link>
+                <Link href={product.repoHref} className="text-muted-foreground hover:text-foreground">
+                  Source
+                </Link>
               </div>
             </li>
           ))}
-        </ol>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild size="sm">
-            <Link href={latestDesktopDmgUrl}>
-              <Download data-icon="inline-start" aria-hidden="true" />
-              Download Desktop
-            </Link>
-          </Button>
-          <Button asChild size="sm" variant="outline">
-            <Link href={product.href}>
-              Read the Desktop docs
-              <ArrowRight data-icon="inline-end" aria-hidden="true" />
-            </Link>
-          </Button>
-          <Button asChild size="sm" variant="ghost">
-            <Link href={product.repoHref}>Browse source</Link>
-          </Button>
-        </div>
+        </ul>
       </div>
-      <div className="relative aspect-[16/10] border-t bg-muted lg:aspect-auto lg:border-l lg:border-t-0">
-        <Image
-          src={product.image}
-          alt={product.imageAlt}
-          fill
-          priority
-          className="object-cover object-top"
-          sizes="(min-width: 1024px) 560px, 100vw"
-        />
-      </div>
-    </article>
+    </section>
   );
 }
 
-function StackCard({
-  product,
-  summary
-}: {
-  product: (typeof productLines)[number];
-  summary: string;
-}) {
+function OpenSource() {
   return (
-    <article className="flex flex-col rounded-lg border bg-card p-5">
-      <div className="flex items-start gap-3.5">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-md border bg-background">
-          <product.icon className="size-5 text-accent" aria-hidden="true" />
-        </span>
+    <section className="border-t py-20 lg:py-28" aria-labelledby="oss-title">
+      <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-center">
         <div>
-          <h3 className="text-lg font-semibold tracking-[-0.015em]">{product.title}</h3>
-          <p className="mt-0.5 font-mono text-[0.6875rem] text-muted-foreground">{product.repoName}</p>
-        </div>
-      </div>
-      <p className="mt-4 flex-1 text-sm leading-6 text-muted-foreground">{summary}</p>
-      <div className="mt-4 rounded-md border bg-muted/45 px-3 py-3 font-mono text-xs text-muted-foreground">{product.command}</div>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Button asChild size="sm" variant="outline">
-          <Link href={product.href}>
-            Docs
-            <ArrowRight data-icon="inline-end" aria-hidden="true" />
-          </Link>
-        </Button>
-        <Button asChild size="sm" variant="ghost">
-          <Link href={product.repoHref}>Repository</Link>
-        </Button>
-      </div>
-    </article>
-  );
-}
-
-function ProductHeading({ product }: { product: (typeof productLines)[number] }) {
-  return (
-    <div className="flex items-start gap-4">
-      <span className="flex size-11 shrink-0 items-center justify-center rounded-md border bg-background">
-        <product.icon className="size-5 text-accent" aria-hidden="true" />
-      </span>
-      <div>
-        <h3 className="text-2xl font-semibold tracking-[-0.015em]">{product.title}</h3>
-        <p className="mt-1 font-mono text-xs text-muted-foreground">{product.repoName}</p>
-      </div>
-    </div>
-  );
-}
-
-
-function DocsSection() {
-  const homepageDocs = docsHighlights.filter((doc) =>
-    [
-      "Start here",
-      "Desktop agent workflows",
-      "Sync & Mesh overview",
-      "Mesh jobs",
-      "Desktop architecture",
-      "Monorepo map"
-    ].includes(doc.label)
-  );
-
-  return (
-    <section className="border-b py-16 lg:py-20">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
-          <SectionHeading
-            title="Read the path that matches the work."
-            description="Start with Desktop, Sync & Mesh, or the companion tools. Commands, architecture, limits, and repository ownership live in the docs."
-          />
-          <div className="flex flex-wrap gap-2">
+          <h2 id="oss-title" className="font-display text-display-2 max-w-[13ch]">
+            Open source, all the way down.
+          </h2>
+          <p className="mt-5 max-w-[44ch] text-lg leading-8 text-muted-foreground">
+            The app, the sync backend, the registry and this website live in one MIT-licensed
+            repo. Read how it works, run it from source, or send a fix.
+          </p>
+          <div className="mt-8 flex flex-wrap gap-3">
             <Button asChild variant="outline">
               <Link href={githubRepositoryUrl}>
-                <Github data-icon="inline-start" aria-hidden="true" />
+                <Github aria-hidden="true" />
                 anvil-stack on GitHub
               </Link>
             </Button>
+            <Button asChild variant="ghost">
+              <Link href="/docs/project/contributing">How to contribute</Link>
+            </Button>
           </div>
         </div>
-        <div className="mt-8 grid gap-x-10 sm:grid-cols-2">
-          {homepageDocs.map((doc) => (
-            <Link
-              key={doc.href}
-              href={doc.href}
-              className="group flex items-start gap-4 rounded-sm border-t py-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            >
-              <doc.icon className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
-              <div>
-                <h3 className="flex items-center gap-1.5 font-medium">
-                  {doc.label}
-                  <ArrowRight
-                    className="size-3.5 -translate-x-1 text-muted-foreground opacity-0 transition-[opacity,transform] duration-200 ease-out group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100"
-                    aria-hidden="true"
-                  />
-                </h3>
-                <p className="mt-1 text-sm leading-6 text-muted-foreground">{doc.description}</p>
-              </div>
-            </Link>
-          ))}
-        </div>
+        <figure className="forge-panel">
+          <div className="forge-window-bar" aria-hidden="true">
+            <span className="dot dot--ember" />
+            <span className="dot" />
+            <span className="dot" />
+            <span className="ml-2 font-mono text-[0.6875rem] text-[oklch(var(--forge-dim))]">Run Anvil from source</span>
+          </div>
+          <pre className="overflow-x-auto p-5 font-mono text-[0.8125rem] leading-7 sm:p-6">
+            <code>
+              <span className="text-[oklch(var(--forge-dim))]"># clone the monorepo</span>
+              {"\n"}
+              <span className="text-[oklch(var(--forge-ember))]">$</span> git clone {githubRepositoryUrl}
+              {"\n"}
+              <span className="text-[oklch(var(--forge-ember))]">$</span> cd anvil-stack/anvil-app
+              {"\n\n"}
+              <span className="text-[oklch(var(--forge-dim))]"># each project installs on its own</span>
+              {"\n"}
+              <span className="text-[oklch(var(--forge-ember))]">$</span> pnpm install
+              {"\n"}
+              <span className="text-[oklch(var(--forge-ember))]">$</span> pnpm dev
+            </code>
+          </pre>
+          <figcaption className="sr-only">
+            Commands to clone the anvil-stack repository and start Anvil Desktop in development mode.
+          </figcaption>
+        </figure>
       </div>
     </section>
   );
 }
 
-function ClosingSection() {
+function DocsPaths() {
   return (
-    <section className="py-16 lg:py-20">
-      <div className="mx-auto grid max-w-7xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-[1fr_1.1fr] lg:px-8">
+    <section className="border-t py-20 lg:py-28" aria-labelledby="docs-title">
+      <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
         <div>
-          <h2 className="max-w-xl text-3xl font-semibold tracking-[-0.02em] text-foreground sm:text-4xl">
-            Start local. Add the cloud path later.
+          <h2 id="docs-title" className="font-display text-display-2 max-w-[10ch]">
+            Find your way in.
           </h2>
-          <p className="mt-4 max-w-lg text-base leading-7 text-muted-foreground">
-            Download Anvil Desktop for macOS, then decide whether a second machine, a
-            self-deployed backend, or a cloud agent environment belongs in the workflow.
-            You can use Desktop without an account.
+          <p className="mt-5 max-w-[36ch] text-muted-foreground">
+            The docs cover setup, how each part works and what doesn&apos;t work yet.
           </p>
-          <div className="mt-7 flex flex-wrap gap-3">
-            <Button asChild>
-              <Link href={latestDesktopDmgUrl}>
-                <Download data-icon="inline-start" aria-hidden="true" />
-                Download for macOS
-              </Link>
-            </Button>
-            <Button asChild variant="outline">
-              <Link href="/docs">
-                Read the docs
-                <ArrowRight data-icon="inline-end" aria-hidden="true" />
-              </Link>
-            </Button>
-          </div>
+          <Link
+            href="/docs"
+            className="mt-6 inline-flex min-h-11 items-center gap-2 font-medium underline decoration-border underline-offset-4 hover:decoration-foreground"
+          >
+            Browse all docs
+            <ArrowRight className="size-4" aria-hidden="true" />
+          </Link>
         </div>
-        <TerminalPanel
-          title="mesh deploy / your cloudflare account"
-          command="anvil-cloud mesh apply --name anvil-sync"
-          lines={[
-            { text: "plan    wrangler.mesh.jsonc · DO bindings + R2 bucket", tone: "dim" },
-            { text: "deploy  worker uploaded · migrations applied (14)", tone: "plain" },
-            { text: "secrets provisioned after first deploy", tone: "plain" },
-            { text: "ready   admin health check passed", tone: "ok" },
-            { text: "next    anvil-cloud mesh connection --name anvil-sync --base-url …", tone: "accent" }
-          ]}
-        />
+        <ul className="grid gap-x-10 sm:grid-cols-2">
+          {docsHighlights.map((doc) => (
+            <li key={doc.href} className="border-t">
+              <Link
+                href={doc.href}
+                className="group flex items-start gap-4 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <doc.icon className="mt-1 size-4 shrink-0 text-accent" aria-hidden="true" />
+                <span>
+                  <span className="block font-semibold group-hover:underline group-hover:decoration-border group-hover:underline-offset-4">
+                    {doc.label}
+                  </span>
+                  <span className="mt-1 block text-[0.9375rem] leading-6 text-muted-foreground">{doc.description}</span>
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
       </div>
     </section>
   );
 }
 
-function SectionHeading({ title, description }: { title: string; description: string }) {
+function Closing() {
   return (
-    <div className="max-w-2xl">
-      <h2 className="text-3xl font-semibold tracking-[-0.02em] text-foreground sm:text-4xl">{title}</h2>
-      <p className="mt-3 text-base leading-7 text-muted-foreground">{description}</p>
-    </div>
+    <section className="border-t py-24 lg:py-32">
+      <div className="page-shell">
+        <h2 className="font-display text-display-1 max-w-[16ch]">Try it on a repo you know well.</h2>
+        <p className="lede mt-6">
+          You&apos;ll know within an hour whether it fits how you work. It&apos;s free, it needs no
+          account, and it sends us nothing unless you switch on crash reports.
+        </p>
+        <div className="mt-9 flex flex-wrap gap-3">
+          <Button asChild size="lg">
+            <Link href={latestDesktopDmgUrl}>
+              <Download aria-hidden="true" />
+              Download for Mac
+            </Link>
+          </Button>
+          <Button asChild size="lg" variant="outline">
+            <Link href="/docs/desktop/installation">Read the install guide</Link>
+          </Button>
+        </div>
+      </div>
+    </section>
   );
 }

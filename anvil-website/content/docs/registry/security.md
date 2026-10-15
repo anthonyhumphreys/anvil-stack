@@ -90,4 +90,4 @@ Safe research guidelines:
 
 - [Policy model](/docs/registry/policy)
 - [Package decisions](/docs/registry/package-decisions)
-- [Open source posture](/docs/project/open-source)
+- [Open source](/docs/project/open-source)

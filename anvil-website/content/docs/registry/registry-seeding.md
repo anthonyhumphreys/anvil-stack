@@ -91,4 +91,4 @@ Treat seed lockfiles as operational input:
 - Keep audit logs for who ran warm-up jobs and when.
 - Review blocked or quarantined packages before enforcing strict install gates.
 
-If a package is risky during seeding, that is good news. It failed while nobody was blocked mid-install, which is the boring outcome security tools should aspire to.
+Review risky packages found during seeding before switching developer or CI traffic. This gives you time to resolve blocked dependencies without holding up an install.

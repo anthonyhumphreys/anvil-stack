@@ -1,7 +1,7 @@
 ---
 title: Anvil CLI
 navTitle: Anvil CLI
-description: Use the umbrella anvil command as the main entrypoint for Anvil Cloud and Anvil Registry.
+description: One anvil command for Anvil Cloud and Anvil Registry, and how it relates to the product CLIs.
 product: Start here
 section: Guides
 journey: build
@@ -10,8 +10,7 @@ order: 20
 
 # Anvil CLI
 
-Use `anvil` as the normal command-line entrypoint. It dispatches to the product
-CLI you need:
+`anvil` is the one command to remember. It hands off to whichever product CLI you need:
 
 ```bash
 anvil cloud check --json
@@ -20,21 +19,16 @@ anvil registry doctor
 anvil registry scan package-lock.json --queue-analysis
 ```
 
-The product binaries still exist:
+Behind it are two product commands:
 
-- `anvil-cloud` from `@anvilstack/cloud-cli`
-- `anvil-registry` from `@anvilstack/registry-cli`
+- `anvil-cloud`, from `@anvilstack/cloud-cli`
+- `anvil-registry`, from `@anvilstack/registry-cli`
 
-Those binaries are the implementation packages behind the wrapper. They are
-useful for package maintainers, direct scripting, and debugging dispatch
-problems. For normal docs and examples, start with `anvil cloud ...` or
-`anvil registry ...` so users learn one Anvil command shape instead of a small
-collection of related-but-different incantations. Computers love inconsistency;
-humans less so.
+You can call those directly, which is handy for scripts and for debugging. The docs use `anvil cloud …` and `anvil registry …` so there's one shape to learn.
 
 ## Install
 
-Install the umbrella CLI and whichever product CLIs you need:
+Install the `anvil` command, plus the product CLIs you need:
 
 ```bash
 npm install --global @anvilstack/cli
@@ -42,26 +36,23 @@ npm install --global @anvilstack/cloud-cli
 npm install --global @anvilstack/registry-cli
 ```
 
-`@anvilstack/cli` does not bundle every product CLI. The wrapper stays small,
-and Cloud deployment dependencies do not get installed just because someone
-wants Registry policy checks.
+`@anvilstack/cli` doesn't bundle the product CLIs. That keeps it small, and means you don't pull in Cloud's deployment dependencies just to check Registry policy.
 
-For one-off use without a global install, run the product package directly:
+To try something once without installing globally, run the product package with `npx`:
 
 ```bash
 npx @anvilstack/cloud-cli check --json
 npx @anvilstack/registry-cli doctor
 ```
 
-## Products
+## Which command does what
 
-| Job | Preferred command | Direct binary |
+| Job | With `anvil` | Direct |
 | --- | --- | --- |
 | Build and inspect an Anvil Cloud Cell | `anvil cloud ...` | `anvil-cloud ...` |
-| Inspect package decisions and registry reports | `anvil registry ...` | `anvil-registry ...` |
+| Check package decisions and registry reports | `anvil registry ...` | `anvil-registry ...` |
 
-The wrapper passes arguments through unchanged. These pairs are equivalent when
-the product CLI is installed:
+Arguments pass through unchanged, so these pairs do the same thing once the product CLI is installed:
 
 ```bash
 anvil cloud check --json
@@ -71,39 +62,31 @@ anvil registry explain react@latest
 anvil-registry explain react@latest
 ```
 
-`anvil-cloud` also carries the `mesh` family — `anvil-cloud mesh
-plan|apply|connection|remove` deploys and manages the Sync & Mesh backend on
-your own Cloudflare account. See [Self-deploy](/docs/sync/self-deploy).
+`anvil-cloud` also includes the `mesh` commands (`plan`, `apply`, `connection` and `remove`) for deploying and managing a Sync & Mesh backend on your own Cloudflare account. See [Run your own backend](/docs/sync/self-deploy).
 
-## Environment
+## Environment variables
 
-The wrapper does not invent a second configuration layer. Product environment
-variables still belong to the product command:
+`anvil` doesn't add its own configuration. Each product reads its own environment variables:
 
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry doctor
 ANVIL_ADMIN_URL=http://localhost:3000 ANVIL_ADMIN_TOKEN=local-dev-token anvil registry reports react@latest
 ```
 
-Cloud local commands usually read the Cell project and local `.anvil` state.
-AWS preview inspection still uses Cloud's AWS deployment metadata environment.
+Cloud's local commands read the Cell project and the local `.anvil` folder. AWS preview commands use Cloud's AWS deployment settings.
 
-## Legacy Registry aliases
+## Old Registry shortcuts
 
-Legacy Registry commands such as `anvil scan` and `anvil explain` still dispatch
-to `anvil-registry` with a deprecation warning. Prefer the explicit product
-namespace:
+The older shortcuts, such as `anvil scan` and `anvil explain`, still work but print a deprecation warning. Use the product name instead:
 
 ```bash
 anvil registry scan package-lock.json --queue-analysis
 anvil registry explain react@latest
 ```
 
-The explicit form matters because `anvil cloud ...` and `anvil registry ...`
-belong to different products with different runtime assumptions, tokens,
-failure modes, and release tags.
+Cloud and Registry use different tokens, fail in different ways and release separately, so naming the product keeps it clear which one you're talking to.
 
-## Read Next
+## Read next
 
 - [Cloud CLI reference](/docs/cloud/cli-reference)
 - [Registry CLI](/docs/registry/cli)

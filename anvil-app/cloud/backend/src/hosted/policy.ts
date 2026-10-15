@@ -39,6 +39,7 @@ export interface HostedPolicyInput {
   now: number;
   lifecycle: 'active' | 'deleting' | 'deleted';
   previewEligible: boolean;
+  betaAccessUntil?: number | null;
   revision: number;
   limits: HostedLimits;
   subscriptions: readonly HostedSubscriptionState[];
@@ -83,16 +84,99 @@ export function evaluateHostedEntitlement(input: HostedPolicyInput): HostedEntit
     graceUntil: null,
     checkedAt: new Date(now).toISOString(),
     revision: input.revision,
-    reason: 'account-deleted',
+    reason: input.lifecycle === 'active' ? 'subscription-required' : 'account-deleted',
   };
   if (input.lifecycle !== 'active') return base;
 
-  return {
+  const candidates = [
+    ...input.subscriptions.map((subscription) => ({ subscription, organizationId: null })),
+    ...(input.sponsorship?.subscriptions ?? []).map((subscription) => ({
+      subscription,
+      organizationId: input.sponsorship!.organizationId,
+    })),
+  ].filter(
+    ({ subscription }) =>
+      subscription.hasPaidInvoice &&
+      [subscription.paidThrough, subscription.verifiedAt].every(
+        (value) => Number.isSafeInteger(value) && value > 0 && value <= MAX_DATE_MS,
+      ) &&
+      subscription.verifiedAt <= now &&
+      ['active', 'past_due', 'canceled'].includes(subscription.status),
+  );
+  const paid = candidates
+    .filter(({ subscription }) => subscription.paidThrough > now)
+    .sort((left, right) => right.subscription.paidThrough - left.subscription.paidThrough)[0];
+  const grant = (candidate: (typeof candidates)[number], until: number): HostedEntitlement => ({
     ...base,
     state: 'active',
+    source: 'subscription',
+    planKey: candidate.subscription.planKey,
+    fundedBy: candidate.organizationId === null ? 'personal' : 'team',
+    organizationId: candidate.organizationId,
     capabilities: { syncWrite: true, meshSubmit: true },
-    reason: 'free',
-  };
+    accessUntil: new Date(until).toISOString(),
+    reason: 'paid',
+  });
+  if (paid !== undefined) return grant(paid, paid.subscription.paidThrough);
+
+  const betaUntil = input.betaAccessUntil;
+  if (
+    typeof betaUntil === 'number' &&
+    Number.isSafeInteger(betaUntil) &&
+    betaUntil > now &&
+    betaUntil <= MAX_DATE_MS
+  ) {
+    return {
+      ...base,
+      state: 'preview',
+      source: 'preview',
+      fundedBy: 'preview',
+      capabilities: { syncWrite: true, meshSubmit: true },
+      previewEndsAt: new Date(betaUntil).toISOString(),
+      accessUntil: new Date(betaUntil).toISOString(),
+      reason: 'preview',
+    };
+  }
+
+  for (const candidate of candidates) {
+    const { subscription } = candidate;
+    const failedAt = subscription.failedRenewalAt;
+    const renewalUntil = Math.min(
+      subscription.paidThrough + input.renewalGraceDays * 86_400_000,
+      (failedAt ?? 0) + input.renewalGraceDays * 86_400_000,
+    );
+    if (
+      subscription.status === 'past_due' &&
+      typeof failedAt === 'number' &&
+      Number.isSafeInteger(failedAt) &&
+      failedAt > 0 &&
+      failedAt <= now &&
+      renewalUntil > now
+    ) {
+      return {
+        ...grant(candidate, subscription.paidThrough),
+        state: 'grace',
+        source: 'renewal-grace',
+        reason: 'renewal-failed',
+        graceUntil: new Date(renewalUntil).toISOString(),
+      };
+    }
+    const outageUntil =
+      Math.min(subscription.paidThrough, subscription.verifiedAt) +
+      input.outageGraceHours * 3_600_000;
+    if (input.billingUnavailable && subscription.status === 'active' && outageUntil > now) {
+      return {
+        ...grant(candidate, subscription.paidThrough),
+        state: 'grace',
+        source: 'outage-grace',
+        reason: 'billing-outage',
+        graceUntil: new Date(outageUntil).toISOString(),
+      };
+    }
+  }
+  return input.billingUnavailable
+    ? { ...base, state: 'unknown', reason: 'billing-unavailable' }
+    : base;
 }
 
 export function freeHostedEntitlement(
@@ -101,7 +185,7 @@ export function freeHostedEntitlement(
   lifecycle: HostedPolicyInput['lifecycle'] = 'active',
   revision = 0,
 ): HostedEntitlement {
-  return evaluateHostedEntitlement({
+  const entitlement = evaluateHostedEntitlement({
     now,
     lifecycle,
     previewEligible: false,
@@ -112,4 +196,12 @@ export function freeHostedEntitlement(
     renewalGraceDays: 0,
     outageGraceHours: 0,
   });
+  return lifecycle === 'active'
+    ? {
+        ...entitlement,
+        state: 'active',
+        capabilities: { syncWrite: true, meshSubmit: true },
+        reason: 'free',
+      }
+    : entitlement;
 }

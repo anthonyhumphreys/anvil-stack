@@ -53,7 +53,7 @@ function actionFailure(error: unknown): ActionResult<never> {
       return {
         ok: false,
         message:
-          "This organisation has reached its limit of five allocated member seats. Ask the service operator whether a higher fair-use limit is available."
+          "This organisation has no available seats. The owner can review its paid seat capacity in billing."
       };
     }
     if (reason === "invitation-already-exists-or-user-sponsored") {

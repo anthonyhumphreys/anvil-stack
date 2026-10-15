@@ -10,14 +10,14 @@ order: 10
 
 # Sync & Mesh overview
 
-Sync & Mesh is the account layer for Anvil Desktop. Two halves:
+Sync & Mesh connects your Anvil installations:
 
-- **Sync** replicates account-owned entities — workspace definitions, workflow
-  templates, custom agents, and selected settings — only for workspaces where
-  you choose Sync. Entity payloads are sealed on-device before dispatch; the
-  backend stores and forwards ciphertext.
-- **Mesh** runs jobs — workspace preparation, diagnostics, provider sessions —
-  on machines you enrolled. Compute and credentials stay on those machines.
+- **Sync** keeps workspace definitions, workflow templates, custom agents and
+  selected settings in step across your machines. You choose which workspaces
+  sync. Content is encrypted on your device before the backend receives it.
+- **Mesh** runs jobs on machines you've connected to your account, including
+  workspace preparation, diagnostics and provider sessions. The jobs run on
+  those machines, and provider credentials stay there.
   Supported upgraded clients use an authenticated, encrypted host session for
   live traffic when a route is enabled and reachable. Managed HTTPS routes use
   an operator-configured provider proxy; they are not peer-to-peer. The account
@@ -30,14 +30,14 @@ desktop build talks to an Anvil-operated deployment, a Worker on your own
 Cloudflare account, or a third-party implementation that passes the
 conformance suite.
 
-Sync & Mesh are free. Authentication, account lifecycle, security
-policy, and fair-use limits still apply. The hosted backend is not broadly
-available while Anvil-hosted production access is being prepared.
+Hosted Sync & Mesh will be paid when it launches. The proposed plans start at
+£6 a month for one person. You can run your own backend without paying Anvil;
+your infrastructure costs still apply. See [pricing](/pricing).
 
 This is alpha infrastructure. The architecture, contract, and lifecycle are
 implemented and tested, and the system has been rehearsed on real Cloudflare
-deployments — but a physical multi-device demo has not happened yet. See
-[Status and limits](/docs/sync/status-and-limits) for the unvarnished list.
+deployments, but a physical multi-device demo has not happened yet. See
+[Status and limits](/docs/sync/status-and-limits) before relying on it.
 
 ## Account backend modes
 
@@ -47,7 +47,7 @@ service choices remain in **Advanced connection settings**:
 | Mode | Behavior |
 | --- | --- |
 | Local only | No account backend is connected. A remembered backend is paused, not forgotten. New workspaces default to Local. |
-| Anvil-hosted | **Sign in to Anvil** uses the hosted HTTPS service configured for this build. Production availability is still pending; Sync & Mesh remain free. See [Anvil-hosted sync](/docs/sync/hosted). |
+| Anvil-hosted | **Sign in to Anvil** uses the hosted service configured for this build. Paid plans are proposed, and public access hasn't launched. See [Anvil-hosted sync](/docs/sync/hosted). |
 | Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare service* in advanced settings). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
 | Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles — see [Backend conformance](/docs/sync/conformance). |
 

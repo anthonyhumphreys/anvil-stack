@@ -61,6 +61,7 @@ import {
   parseStripeSubscription,
   StripeApiError,
   stripeRequest,
+  stripeConfigured,
   verifyStripeWebhookSignature,
   type StripeCheckoutSession,
   type StripePortalSession,
@@ -502,22 +503,7 @@ export async function handleStripeWebhook(
   }
 }
 
-export function stripeConfigured(env: Env): boolean {
-  if (typeof env.STRIPE_SECRET_KEY !== 'string' || env.STRIPE_SECRET_KEY.length === 0) {
-    return false;
-  }
-  if (
-    env.HOSTED_BILLING_ENVIRONMENT === 'staging' &&
-    env.STRIPE_SECRET_KEY.startsWith('sk_test_')
-  ) {
-    return true;
-  }
-  return (
-    env.HOSTED_BILLING_ENVIRONMENT === 'production' &&
-    env.STRIPE_SECRET_KEY.startsWith('sk_live_') &&
-    (env.STRIPE_API_BASE === undefined || env.STRIPE_API_BASE.length === 0)
-  );
-}
+export { stripeConfigured } from './stripe';
 
 function identityFrom(body: HostedIdentity): HostedIdentity {
   return { workosClientId: body.workosClientId, workosUserId: body.workosUserId };
@@ -909,12 +895,7 @@ async function latestInvoicePaid(env: Env, rawSubscription: unknown): Promise<bo
   return isRecord(invoice) && invoice['status'] === 'paid';
 }
 
-/**
- * `POST /internal/hosted/checkout` — retired Sync subscription checkout.
- * Return before any provider or billing-account lookup so stale clients cannot
- * create a new Stripe customer, session, or subscription.
- */
-export async function handleCheckout(body: unknown, _env: Env, _db: D1Database): Promise<Response> {
+export async function handleCheckout(body: unknown, env: Env, db: D1Database): Promise<Response> {
   if (
     !isRecord(body) ||
     !validateHostedIdentity(body) ||
@@ -925,7 +906,158 @@ export async function handleCheckout(body: unknown, _env: Env, _db: D1Database):
   ) {
     return rpcErrorResponse(undefined, 'malformed-request');
   }
-  return syncCheckoutDisabled();
+  const now = Date.now();
+  if (!hostedCheckoutAvailable(env, now)) return syncCheckoutDisabled();
+  if (!stripeConfigured(env)) return rpcErrorResponse(undefined, 'unavailable');
+  const planKey = body['planKey'] ?? 'sync_personal';
+  const interval = body['interval'];
+  const organizationId = planKey === 'sync_team' ? body['organizationId'] : null;
+  const seats = planKey === 'sync_team' ? body['seats'] : 1;
+  if (
+    planKey === 'sync_team' &&
+    (typeof organizationId !== 'string' ||
+      organizationId.length === 0 ||
+      !Number.isSafeInteger(seats) ||
+      (seats as number) < 5 ||
+      (seats as number) > 50)
+  )
+    return rpcErrorResponse(undefined, 'malformed-request');
+  const successUrl = env.HOSTED_CHECKOUT_SUCCESS_URL;
+  const cancelUrl = env.HOSTED_CHECKOUT_CANCEL_URL;
+  if (
+    ![successUrl, cancelUrl].every((value) => {
+      try {
+        return typeof value === 'string' && new URL(value).protocol === 'https:';
+      } catch {
+        return false;
+      }
+    })
+  )
+    return rpcErrorResponse(undefined, 'unavailable');
+  const account = await getOrCreateAdmittedBillingAccount(env, db, identityFrom(body));
+  if (account === null)
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'waitlist-approval-required' });
+  if (account.lifecycle !== 'active')
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
+  const orgId = typeof organizationId === 'string' ? organizationId : null;
+  if (orgId !== null && (await activeOrganizationOwner(db, orgId, identityFrom(body))) === null) {
+    return rpcErrorResponse(undefined, 'forbidden', { reason: 'organization-owner-required' });
+  }
+  const existing =
+    orgId === null
+      ? await latestSubscriptionForAccount(db, account.id)
+      : await latestSubscriptionForOrganization(db, orgId);
+  if (
+    existing !== null &&
+    (!['canceled', 'incomplete_expired'].includes(existing.status) ||
+      (existing.paid_through ?? 0) > now)
+  )
+    return rpcErrorResponse(undefined, 'conflict', { reason: 'subscription-exists' });
+  const pending =
+    orgId === null
+      ? await latestOpenCheckout(db, account.id)
+      : await latestOpenOrganizationCheckout(db, orgId);
+  if (pending !== null) {
+    const session = parseStripeCheckoutSession(
+      await stripeRequest(
+        env,
+        `/v1/checkout/sessions/${encodeURIComponent(pending.stripe_session_id)}`,
+      ),
+    );
+    if (session === null) throw new StripeApiError(0, 'invalid checkout session');
+    if (session.status === 'open' && session.url !== null) {
+      if (
+        pending.plan_key !== planKey ||
+        pending.interval !== interval ||
+        pending.seat_quantity !== seats
+      ) {
+        return rpcErrorResponse(undefined, 'conflict', { reason: 'checkout-in-progress' });
+      }
+      return Response.json({ checkoutUrl: session.url, sessionId: session.id });
+    }
+    if (session.status !== 'expired')
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'checkout-in-progress' });
+    await markCheckoutExpired(db, pending.stripe_session_id);
+  }
+  const priceId =
+    planKey === 'sync_team'
+      ? interval === 'year'
+        ? env.STRIPE_PRICE_TEAM_ANNUAL
+        : env.STRIPE_PRICE_TEAM_MONTHLY
+      : interval === 'year'
+        ? env.STRIPE_PRICE_SYNC_ANNUAL
+        : env.STRIPE_PRICE_SYNC_MONTHLY;
+  if (typeof priceId !== 'string' || priceId.length === 0)
+    return rpcErrorResponse(undefined, 'unavailable');
+  const price = parseStripePrice(
+    await stripeRequest(env, `/v1/prices/${encodeURIComponent(priceId)}`),
+  );
+  const expectedAmount = (planKey === 'sync_team' ? 1200 : 600) * (interval === 'year' ? 10 : 1);
+  if (
+    price === null ||
+    price.id !== priceId ||
+    !price.active ||
+    price.currency !== 'gbp' ||
+    price.unit_amount !== expectedAmount ||
+    price.recurring?.interval !== interval ||
+    price.recurring.interval_count !== 1 ||
+    price.livemode !== (env.HOSTED_BILLING_ENVIRONMENT === 'production')
+  ) {
+    return rpcErrorResponse(undefined, 'unavailable');
+  }
+  let customerId =
+    orgId === null
+      ? (await getStripeCustomerForAccount(db, account.id))?.stripe_customer_id
+      : (await getStripeCustomerForOrganization(db, orgId))?.stripe_customer_id;
+  const ownerKey = orgId === null ? account.id : `organization:${orgId}`;
+  if (customerId === undefined) {
+    const customer = await stripeRequest<{ id: string }>(env, '/v1/customers', {
+      method: 'POST',
+      idempotencyKey: `customer:${ownerKey}`,
+      params: { 'metadata[billing_account_id]': account.id, 'metadata[organization_id]': orgId },
+    });
+    if (typeof customer.id !== 'string' || customer.id.length === 0)
+      throw new StripeApiError(0, 'missing customer');
+    customerId = customer.id;
+    if (orgId === null) await upsertStripeCustomer(db, account.id, customerId);
+    else await upsertStripeOrganizationCustomer(db, orgId, account.id, customerId);
+  }
+  const session = parseStripeCheckoutSession(
+    await stripeRequest(env, '/v1/checkout/sessions', {
+      method: 'POST',
+      idempotencyKey: `checkout:${ownerKey}:${Math.floor(now / 3_600_000)}`,
+      params: {
+        mode: 'subscription',
+        customer: customerId,
+        client_reference_id: account.id,
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        'line_items[0][price]': priceId,
+        'line_items[0][quantity]': seats as number,
+        'metadata[billing_account_id]': account.id,
+        'metadata[organization_id]': orgId,
+        'subscription_data[metadata][billing_account_id]': account.id,
+        'subscription_data[metadata][organization_id]': orgId,
+      },
+    }),
+  );
+  if (session?.url === null || session === null || session.status !== 'open')
+    throw new StripeApiError(0, 'missing checkout URL');
+  if (
+    !(await recordCheckoutSession(
+      db,
+      session.id,
+      account.id,
+      planKey,
+      interval,
+      now,
+      orgId,
+      seats as number,
+    ))
+  ) {
+    return rpcErrorResponse(undefined, 'conflict');
+  }
+  return Response.json({ checkoutUrl: session.url, sessionId: session.id });
 }
 
 /** `POST /internal/hosted/portal` — Stripe Customer Portal session. */
@@ -1315,14 +1447,9 @@ export async function handleOrganizationSeatConfirm(
   }
 }
 
-/**
- * `POST /internal/hosted/seats` — owner-controlled team quantity changes.
- * Increases take effect only after Stripe confirms an immediately invoiced
- * update; decreases are scheduled for the end of the current paid period.
- */
 export async function handleOrganizationSeatChange(
   body: unknown,
-  _env: Env,
+  env: Env,
   _db: D1Database,
 ): Promise<Response> {
   if (
@@ -1336,9 +1463,10 @@ export async function handleOrganizationSeatChange(
   ) {
     return rpcErrorResponse(undefined, 'malformed-request');
   }
-  // Team seats are part of the fixed free fair-use quota. Do not mutate old
-  // Stripe subscriptions or schedules through stale seat-management clients.
-  return syncCheckoutDisabled();
+  if (!hostedCheckoutAvailable(env, Date.now())) return syncCheckoutDisabled();
+  return rpcErrorResponse(undefined, 'conflict', {
+    reason: 'seat-change-requires-quote-or-portal',
+  });
 }
 
 export async function handleBillingOverview(

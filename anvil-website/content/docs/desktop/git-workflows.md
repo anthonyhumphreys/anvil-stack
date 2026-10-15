@@ -10,7 +10,7 @@ order: 100
 
 # Git workflows
 
-Anvil Desktop keeps Git operations close to the workspace so context does not leak across applications.
+Review diffs, manage branches, prepare commits and open pull requests from the active workspace in Anvil Desktop.
 
 ## Repository indexing
 

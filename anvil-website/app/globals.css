@@ -1,66 +1,70 @@
 @import "../../anvil-app/src/renderer/styles/chat-theme.css";
+@import "./workbench.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  /* Cool steel neutrals (hue ~250) with one forge accent. Light is primary. */
   :root {
-    --background: 0.991 0.006 205;
-    --foreground: 0.18 0.014 205;
-    --card: 0.991 0.006 205;
-    --card-foreground: 0.18 0.014 205;
-    --popover: 0.991 0.006 205;
-    --popover-foreground: 0.18 0.014 205;
-    --primary: 0.18 0.014 205;
-    --primary-foreground: 0.991 0.006 205;
-    --secondary: 0.955 0.008 205;
-    --secondary-foreground: 0.18 0.014 205;
-    --muted: 0.955 0.008 205;
-    --muted-foreground: 0.49 0.025 205;
-    --accent: 0.74 0.18 58;
-    --accent-foreground: 0.18 0.014 205;
-    --destructive: 0.58 0.21 27;
-    --destructive-foreground: 0.991 0.006 205;
-    --border: 0.895 0.013 205;
-    --input: 0.895 0.013 205;
-    --ring: 0.74 0.18 58;
-    --radius: 0.5rem;
-    /* Forge-dark artifact surfaces — fixed regardless of site theme */
-    --forge-bg: 0.145 0.015 205;
-    --forge-raised: 0.185 0.016 205;
-    --forge-line: 0.34 0.02 205;
-    --forge-faint: 0.42 0.022 205;
-    --forge-text: 0.9 0.01 205;
-    --forge-dim: 0.68 0.02 205;
-    --forge-ember: 0.78 0.17 58;
+    --background: 0.986 0.004 245;
+    --foreground: 0.2 0.016 255;
+    --card: 0.997 0.002 245;
+    --card-foreground: 0.2 0.016 255;
+    --popover: 0.997 0.002 245;
+    --popover-foreground: 0.2 0.016 255;
+    --primary: 0.68 0.19 48;
+    --primary-foreground: 0.18 0.016 255;
+    --secondary: 0.955 0.006 250;
+    --secondary-foreground: 0.2 0.016 255;
+    --muted: 0.958 0.006 250;
+    --muted-foreground: 0.47 0.02 255;
+    --accent: 0.66 0.19 46;
+    --accent-foreground: 0.18 0.016 255;
+    --destructive: 0.56 0.21 27;
+    --destructive-foreground: 0.986 0.004 245;
+    --border: 0.9 0.009 252;
+    --input: 0.88 0.01 252;
+    --ring: 0.66 0.19 46;
+    --radius: 0.625rem;
+    /* Forge-dark artifact surfaces: the app window, terminals, code, schematics.
+       Matched to Anvil Desktop's navy canvas and fixed in both site themes. */
+    --forge-bg: 0.17 0.03 265;
+    --forge-raised: 0.215 0.032 262;
+    --forge-line: 0.34 0.035 262;
+    --forge-faint: 0.44 0.035 260;
+    --forge-text: 0.95 0.008 255;
+    --forge-dim: 0.72 0.025 255;
+    --forge-ember: 0.76 0.17 52;
+    --forge-ok: 0.8 0.15 158;
     color-scheme: light;
   }
 
   .dark {
-    --background: 0.17 0.014 205;
-    --foreground: 0.935 0.008 205;
-    --card: 0.215 0.014 205;
-    --card-foreground: 0.935 0.008 205;
-    --popover: 0.215 0.014 205;
-    --popover-foreground: 0.935 0.008 205;
-    --primary: 0.935 0.008 205;
-    --primary-foreground: 0.17 0.014 205;
-    --secondary: 0.275 0.018 205;
-    --secondary-foreground: 0.935 0.008 205;
-    --muted: 0.275 0.018 205;
-    --muted-foreground: 0.74 0.018 205;
-    --accent: 0.78 0.17 58;
-    --accent-foreground: 0.17 0.014 205;
-    --destructive: 0.63 0.2 27;
-    --destructive-foreground: 0.935 0.008 205;
-    --border: 0.34 0.018 205;
-    --input: 0.34 0.018 205;
-    --ring: 0.78 0.17 58;
-    --forge-bg: 0.115 0.014 205;
-    --forge-raised: 0.16 0.015 205;
-    --forge-line: 0.36 0.02 205;
-    --forge-faint: 0.46 0.022 205;
+    --background: 0.165 0.014 258;
+    --foreground: 0.94 0.006 250;
+    --card: 0.2 0.016 258;
+    --card-foreground: 0.94 0.006 250;
+    --popover: 0.205 0.016 258;
+    --popover-foreground: 0.94 0.006 250;
+    --primary: 0.76 0.17 54;
+    --primary-foreground: 0.17 0.016 258;
+    --secondary: 0.245 0.017 258;
+    --secondary-foreground: 0.94 0.006 250;
+    --muted: 0.235 0.017 258;
+    --muted-foreground: 0.73 0.016 252;
+    --accent: 0.76 0.17 54;
+    --accent-foreground: 0.17 0.016 258;
+    --destructive: 0.66 0.19 25;
+    --destructive-foreground: 0.165 0.014 258;
+    --border: 0.31 0.018 258;
+    --input: 0.34 0.018 258;
+    --ring: 0.76 0.17 54;
+    --forge-bg: 0.13 0.025 265;
+    --forge-raised: 0.175 0.028 262;
+    --forge-line: 0.32 0.032 262;
+    --forge-faint: 0.43 0.032 260;
     color-scheme: dark;
   }
 
@@ -89,7 +93,9 @@
 
   body {
     @apply bg-background text-foreground antialiased;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    font-size: 1.0625rem;
+    line-height: 1.65;
+    font-variation-settings: "wdth" 100;
   }
 
   ::selection {
@@ -157,6 +163,81 @@
 @layer components {
   .skip-link {
     @apply fixed left-4 top-3 z-50 -translate-y-20 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-transform focus:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2;
+  }
+
+  /* The display voice: Archivo set wide and heavy, like a maker's mark struck
+     into steel. Headings only. */
+  .font-display {
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    font-variation-settings: "wdth" 116;
+    font-weight: 720;
+    letter-spacing: -0.028em;
+    line-height: 0.98;
+  }
+
+  .text-display-1 {
+    font-size: clamp(2.6rem, 1.4rem + 5.2vw, 5.6rem);
+  }
+
+  .text-display-2 {
+    font-size: clamp(2rem, 1.35rem + 2.4vw, 3.25rem);
+    line-height: 1.02;
+  }
+
+  .text-display-3 {
+    font-size: clamp(1.45rem, 1.15rem + 1vw, 1.95rem);
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+
+  /* Lede paragraphs under display headings. */
+  .lede {
+    @apply text-muted-foreground;
+    font-size: clamp(1.0625rem, 0.98rem + 0.4vw, 1.25rem);
+    line-height: 1.6;
+    max-width: 62ch;
+  }
+
+  .page-shell {
+    @apply mx-auto w-full max-w-[76rem] px-5 sm:px-8;
+  }
+
+  /* A maker's plate: the few facts a newcomer checks first, ruled like the
+     stamped spec plate on a tool. */
+  .spec-plate {
+    @apply grid rounded-xl border bg-card text-[0.9375rem];
+    box-shadow: 0 1px 0 oklch(var(--border)) inset;
+  }
+
+  .spec-plate > div {
+    @apply grid grid-cols-[6.5rem_minmax(0,1fr)] gap-4 border-b px-5 py-3.5 last:border-b-0;
+  }
+
+  .spec-plate dt {
+    @apply text-muted-foreground;
+  }
+
+  .spec-plate dd {
+    @apply font-medium;
+  }
+
+  /* The mark's spark strikes once when you point at the logo. */
+  .anvil-mark-spark {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a:hover .anvil-mark-spark,
+    a:focus-visible .anvil-mark-spark {
+      animation: spark-strike 520ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+  }
+
+  @keyframes spark-strike {
+    0% { transform: scale(1) rotate(0deg); }
+    35% { transform: scale(1.7) rotate(45deg); filter: brightness(1.35); }
+    100% { transform: scale(1) rotate(90deg); }
   }
 
   /* --- Forge-dark artifact surfaces ------------------------------------ */
@@ -345,33 +426,6 @@
     50% { opacity: 0; }
   }
 
-  /* --- Sealed packet chip ------------------------------------------------ */
-
-  .sealed-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    border: 1px solid color-mix(in oklch, oklch(var(--forge-ember)) 45%, transparent);
-    border-radius: 999px;
-    background: color-mix(in oklch, oklch(var(--forge-ember)) 10%, transparent);
-    padding: 0.15rem 0.65rem;
-    font-family: var(--font-mono), ui-monospace, monospace;
-    font-size: 0.6875rem;
-    letter-spacing: 0.03em;
-    color: oklch(var(--forge-ember));
-    white-space: nowrap;
-  }
-
-  /* --- Section structure -------------------------------------------------- */
-
-  .section-shell {
-    @apply border-b;
-  }
-
-  .section-inner {
-    @apply mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8 lg:py-20;
-  }
-
   .proof-check {
     @apply mt-0.5 size-4 shrink-0 text-accent;
   }
@@ -379,27 +433,61 @@
   /* --- Documentation markdown --------------------------------------------- */
 
   .doc-markdown {
-    @apply text-base leading-7 text-foreground;
+    --doc-text: color-mix(in oklch, oklch(var(--foreground)) 84%, oklch(var(--background)));
+    font-size: 1.0625rem;
+    line-height: 1.75;
+    color: var(--doc-text);
+  }
+
+  .doc-markdown > :first-child {
+    margin-top: 0;
   }
 
   .doc-markdown h1 {
-    @apply mb-5 text-4xl font-semibold leading-[1.08] tracking-[-0.025em] sm:text-5xl;
+    @apply mb-6 text-foreground;
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    font-variation-settings: "wdth" 114;
+    font-weight: 720;
+    font-size: clamp(2.1rem, 1.6rem + 2vw, 3rem);
+    line-height: 1.04;
+    letter-spacing: -0.028em;
+  }
+
+  /* The paragraph straight after the title reads as the page's summary. */
+  .doc-markdown h1 + p {
+    @apply text-muted-foreground;
+    font-size: 1.1875rem;
+    line-height: 1.7;
   }
 
   .doc-markdown h2 {
-    @apply mt-14 scroll-mt-24 border-t pt-8 text-2xl font-semibold tracking-[-0.015em];
+    @apply mt-16 scroll-mt-24 text-foreground;
+    font-size: 1.625rem;
+    font-weight: 680;
+    line-height: 1.2;
+    letter-spacing: -0.018em;
   }
 
   .doc-markdown h3 {
-    @apply mt-9 scroll-mt-24 text-xl font-semibold tracking-[-0.01em];
+    @apply mt-10 scroll-mt-24 text-foreground;
+    font-size: 1.25rem;
+    font-weight: 650;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
   }
 
   .doc-markdown h4 {
-    @apply mt-7 scroll-mt-24 text-base font-semibold;
+    @apply mt-8 scroll-mt-24 text-base font-semibold text-foreground;
   }
 
   .doc-markdown p {
-    @apply mt-4 text-muted-foreground;
+    @apply mt-5;
+  }
+
+  .doc-markdown h2 + p,
+  .doc-markdown h3 + p,
+  .doc-markdown h4 + p {
+    @apply mt-3;
   }
 
   .doc-markdown strong {
@@ -408,31 +496,64 @@
 
   .doc-markdown ul,
   .doc-markdown ol {
-    @apply mt-4 flex flex-col gap-2 pl-5 text-muted-foreground;
+    @apply mt-5 flex flex-col gap-2.5 pl-6;
+  }
+
+  .doc-markdown li > ul,
+  .doc-markdown li > ol {
+    @apply mt-2.5;
+  }
+
+  .doc-markdown li > p {
+    @apply mt-0;
+  }
+
+  .doc-markdown li > p + p,
+  .doc-markdown li > .doc-code,
+  .doc-markdown li > .doc-callout {
+    @apply mt-3;
   }
 
   .doc-markdown ul {
-    @apply list-disc;
+    list-style: none;
+  }
+
+  .doc-markdown ul > li {
+    position: relative;
+  }
+
+  .doc-markdown ul > li::before {
+    content: "";
+    position: absolute;
+    left: -1.05rem;
+    top: 0.78em;
+    width: 0.4rem;
+    height: 2px;
+    border-radius: 2px;
+    background: oklch(var(--accent));
   }
 
   .doc-markdown ol {
     @apply list-decimal;
   }
 
-  .doc-markdown li::marker {
+  .doc-markdown ol > li::marker {
     color: oklch(var(--muted-foreground));
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
   }
 
   .doc-markdown a {
-    @apply font-medium text-foreground underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground;
+    @apply font-medium text-foreground underline decoration-accent/50 underline-offset-[5px] transition-colors hover:decoration-foreground;
+    text-decoration-thickness: 1.5px;
   }
 
   .doc-markdown .doc-heading-anchor {
-    @apply no-underline;
+    @apply font-[inherit] no-underline;
   }
 
   .doc-markdown .doc-heading-anchor > span {
-    @apply ml-2 text-muted-foreground opacity-0 transition-opacity;
+    @apply ml-2 font-normal text-muted-foreground opacity-0 transition-opacity;
   }
 
   .doc-markdown h2:hover .doc-heading-anchor > span,
@@ -441,41 +562,125 @@
     @apply opacity-100;
   }
 
-  .doc-markdown code {
-    @apply rounded-md border bg-muted px-1.5 py-0.5 font-mono text-[13px] text-foreground;
+  .doc-markdown :not(pre) > code {
+    @apply rounded-md border bg-muted px-1.5 py-0.5 font-mono text-foreground;
+    font-size: 0.85em;
+    overflow-wrap: anywhere;
+  }
+
+  .doc-code {
+    @apply mt-6 overflow-hidden rounded-xl;
+    border: 1px solid color-mix(in oklch, oklch(var(--forge-line)) 70%, transparent);
+    background: oklch(var(--forge-bg));
+  }
+
+  .doc-code-bar {
+    @apply flex h-10 items-center justify-between px-4 text-xs;
+    border-bottom: 1px solid color-mix(in oklch, oklch(var(--forge-line)) 60%, transparent);
+    color: oklch(var(--forge-dim));
+  }
+
+  .doc-code-copy {
+    @apply rounded-md px-2 py-1 font-medium transition-colors;
+    color: oklch(var(--forge-dim));
+  }
+
+  .doc-code-copy:hover,
+  .doc-code-copy:focus-visible {
+    background: color-mix(in oklch, oklch(var(--forge-text)) 10%, transparent);
+    color: oklch(var(--forge-text));
+  }
+
+  .doc-code-copy[data-state="copied"] {
+    color: oklch(var(--forge-ok));
   }
 
   .doc-markdown pre {
-    @apply mt-5 overflow-x-auto rounded-lg border bg-[oklch(0.16_0.014_205)] p-5 text-sm text-[oklch(0.96_0.006_205)];
+    @apply overflow-x-auto p-5 font-mono;
+    font-size: 0.8125rem;
+    line-height: 1.75;
+    color: oklch(var(--forge-text));
   }
 
   .doc-markdown pre code {
-    @apply border-0 bg-transparent p-0 text-[oklch(0.96_0.006_205)];
+    @apply border-0 bg-transparent p-0;
+    font-size: inherit;
+    color: inherit;
   }
 
   .doc-markdown blockquote {
-    @apply mt-5 rounded-md border bg-muted px-4 py-3 text-muted-foreground;
+    @apply mt-6 border-l pl-5 italic text-muted-foreground;
+  }
+
+  .doc-callout {
+    @apply mt-6 rounded-xl border px-5 py-4;
+    font-size: 0.96875rem;
+  }
+
+  .doc-markdown .doc-callout > :first-child {
+    @apply mt-0;
+  }
+
+  .doc-markdown .doc-callout-title + p {
+    @apply mt-1;
+  }
+
+  .doc-markdown .doc-callout p + p {
+    @apply mt-3;
+  }
+
+  .doc-callout-title {
+    @apply font-semibold text-foreground;
+  }
+
+  .doc-callout--note {
+    background: color-mix(in oklch, oklch(0.62 0.12 245) 7%, oklch(var(--card)));
+    border-color: color-mix(in oklch, oklch(0.62 0.12 245) 30%, oklch(var(--border)));
+  }
+
+  .doc-callout--tip {
+    background: color-mix(in oklch, oklch(0.65 0.13 158) 8%, oklch(var(--card)));
+    border-color: color-mix(in oklch, oklch(0.65 0.13 158) 30%, oklch(var(--border)));
+  }
+
+  .doc-callout--warning {
+    background: color-mix(in oklch, oklch(var(--accent)) 9%, oklch(var(--card)));
+    border-color: color-mix(in oklch, oklch(var(--accent)) 40%, oklch(var(--border)));
   }
 
   .doc-markdown hr {
-    @apply mt-10 border-t;
+    @apply my-12 border-t;
   }
 
   .doc-markdown table {
-    @apply mt-6 block w-full max-w-full border-collapse overflow-x-auto rounded-lg border text-sm md:table md:overflow-hidden;
+    @apply mt-6 block w-full max-w-full border-separate border-spacing-0 overflow-x-auto rounded-xl border md:table md:overflow-hidden;
+    font-size: 0.9375rem;
+    line-height: 1.6;
   }
 
   .doc-markdown th,
   .doc-markdown td {
-    @apply border p-3 text-left align-top;
+    @apply border-b px-4 py-3 text-left align-top;
+  }
+
+  .doc-markdown tr:last-child td {
+    @apply border-b-0;
   }
 
   .doc-markdown th {
     @apply bg-muted font-semibold text-foreground;
   }
 
+  .doc-markdown td:first-child {
+    @apply font-medium text-foreground;
+  }
+
   .doc-markdown kbd {
-    @apply rounded border bg-muted px-1.5 py-0.5 font-mono text-[0.8125em] text-foreground;
+    @apply rounded border border-b-2 bg-card px-1.5 py-0.5 font-mono text-[0.8125em] text-foreground;
+  }
+
+  .doc-markdown img {
+    @apply mt-6 rounded-xl border;
   }
 
   .docs-search-dialog[open] {
@@ -493,28 +698,6 @@
 @keyframes docs-dialog-in {
   from { opacity: 0; transform: translateY(0.5rem) scale(0.99); }
   to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-@keyframes rise-in {
-  from { opacity: 0; transform: translateY(14px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes pulse-seal {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-/* Scroll-driven section entrances — only where supported, always with a
-   fully-visible default state. */
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .reveal-block {
-      animation: rise-in 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
-      animation-timeline: view();
-      animation-range: entry 0% entry 32%;
-    }
-  }
 }
 
 /* The workspace uses the desktop palette; the public website keeps its own theme. */

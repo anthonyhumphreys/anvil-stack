@@ -16,7 +16,7 @@ Observed mode is for packages that require lifecycle scripts. It enables scripts
 anvil-npm-ci-observed
 ```
 
-Observed mode is explicit because install scripts are code execution. This is the mode for "we need to run it, but we are not closing our eyes."
+Choose observed mode only when you need lifecycle scripts to run. It records their activity for review; it does not make those scripts safe.
 
 ## What it captures
 
@@ -81,4 +81,4 @@ ANVIL_PROJECT_NAME=my-project \
   anvil-npm-ci-observed
 ```
 
-Use project names that match the repo or CI job. Future you will appreciate the breadcrumb. Future you is already tired.
+Use the repository or CI job name so reviewers can identify where the report came from.

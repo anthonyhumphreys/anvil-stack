@@ -10,7 +10,7 @@ order: 190
 
 # Cloud and mobile workbenches
 
-The Cloud and Argent views are opt-in specialist tools. They wrap local CLIs and runtime checks in a workspace-aware interface while keeping command execution in the Electron main process.
+Enable the Cloud view to run Anvil Cloud commands from Desktop. Use Argent to inspect the Expo companion app with simulators and runtime checks. Both tools run commands through the Electron main process against the active workspace.
 
 ## Cloud Workbench
 

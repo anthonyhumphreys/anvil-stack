@@ -1,7 +1,7 @@
 ---
 title: Status and limits
 navTitle: Status and limits
-description: Every known gap, hard limit, and unfinished edge in Sync & Mesh — alpha status, unproven surfaces, functional limits, and tracked follow-ups, in one place.
+description: What works in Sync & Mesh, what still needs testing, current limits and planned hosted access.
 product: Anvil Sync & Mesh
 section: Reference
 journey: reference
@@ -10,9 +10,8 @@ order: 120
 
 # Status and limits
 
-Everything on this page is stated plainly because it is the page the rest of
-the docs point at when they say "alpha." If a claim anywhere else in
-[Sync & Mesh](/docs/sync) sounds better than what is written here, here wins.
+Sync & Mesh is alpha software. This page lists its current limits and the
+testing still needed before wider use.
 
 ## Maturity
 
@@ -44,15 +43,16 @@ the docs point at when they say "alpha." If a claim anywhere else in
   host to be reachable.
 - **Production provisioning is pending**: the production WorkOS app, D1
   database id, secrets bundle, and live-account verification are not recorded
-  here. Stripe is not required for Sync & Mesh access.
-- **Sync & Mesh are free.** Production availability of the
-  Anvil-hosted backend remains gated while WorkOS, production D1, secrets, and
-  live-account verification are completed. See [Anvil-hosted sync](/docs/sync/hosted).
+  here. Stripe is not required for code-only beta access.
+- **Hosted plans are proposed, not available to buy.** Hosted Sync & Mesh will
+  require a subscription or a redeemed beta code. Checkout stays closed during
+  the invite-only beta. Invited testers receive a time-limited code. Running
+  your own backend remains free of Anvil charges. See [pricing](/pricing) and
+  [Anvil-hosted sync](/docs/sync/hosted).
 
 ## Known gaps
 
-These are the sharp edges. Each is a real behavior difference, not a wording
-choice:
+These limitations affect how the current implementation behaves:
 
 - **Website revocation rotates on survivor reconciliation.** Revoking a
   device from `/account` severs its session immediately. A surviving trusted
@@ -121,7 +121,8 @@ Work that is known, named, and not yet done:
   upgraded wrap bindings and mutual SAS confirmation.
 - Physical multi-device acceptance demo — the market-readiness gate.
 - Production provisioning for hosted mode (WorkOS, production D1, secrets,
-  and live-account verification).
+  and live-account verification), plus billing and access enforcement for
+  the proposed paid plans.
 
 ## Where each topic lives
 

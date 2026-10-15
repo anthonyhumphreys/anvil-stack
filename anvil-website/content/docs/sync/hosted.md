@@ -1,7 +1,7 @@
 ---
 title: Anvil-hosted sync
 navTitle: Anvil-hosted sync
-description: The operated Sync & Mesh backend — WorkOS identity, free hosted sync and mesh access, account and device controls, legacy billing records, and the /account surface.
+description: Availability and planned pricing for hosted Sync & Mesh, plus sign-in, account controls and current billing behaviour.
 product: Anvil Sync & Mesh
 section: Reference
 journey: reference
@@ -10,12 +10,14 @@ order: 110
 
 # Anvil-hosted sync
 
-Anvil-hosted is the operated deployment of the same backend source you can run
-yourself — the worker in `anvil-app/cloud/backend`, with managed identity and
-account and device controls on top. Sync & Mesh are free. This
-page also documents the compatibility path for old billing records; new Sync
-& Mesh access does not require a subscription. A self-deployed backend does not
-use the hosted billing database or website service channel.
+With Anvil-hosted Sync & Mesh, we run the backend for you. The planned price is
+£6 a month for one person or £12 per member for teams. Hosted access is invite-only.
+Join the [waitlist](/waitlist); invited beta testers receive a code to redeem without
+a payment method. See [pricing](/pricing) for the proposed plans.
+
+You can also run the same backend yourself, from `anvil-app/cloud/backend`,
+without paying Anvil. Your infrastructure provider bills you for the resources
+you use. A self-deployed backend handles its own identity and account controls.
 
 The desktop has a hosted mode when `ANVIL_HOSTED_BACKEND_URL` is configured
 with an HTTPS backend origin. The development spike is a separate fixture and
@@ -78,34 +80,33 @@ configured hosted account origin.
 
 ## Cost and availability
 
-Sync & Mesh are free. An Anvil subscription or billing account is
-not required for sync writes, mesh jobs, session handoff, device management,
-or artifact sharing. Authentication, account lifecycle, backend security
-rules, and fair-use limits still apply.
+Anvil Desktop stays free and open source. Hosted Sync & Mesh will be paid when
+it launches; the proposed plans are on the [pricing page](/pricing). There is
+no launch date yet. You can [join the waitlist](/waitlist) or
+[deploy your own backend](/docs/sync/self-deploy).
 
-Free policy and service availability are separate. Production provisioning of
-the Anvil-hosted backend is still in progress, so hosted access remains gated
-while that work is completed. Local use, self-hosting, and conformant backends
-remain available paths.
+Anvil-hosted writes require a paid subscription, an assigned paid team seat, or
+an unexpired redeemed beta code. Paid signup stays disabled until the operator
+opens checkout. Waitlist approval lets you sign in; the code grants access until
+the date in your invitation.
 
-## Entitlement and write enforcement
+## Hosted access states
 
-Access state resolves on the backend and is cached on the account object.
+Access state resolves on the backend for each hosted mutation.
 Authentication, account lifecycle, security policy, and fair-use limits remain
-enforced by the backend. Subscription or billing health does not grant or
-remove Sync & Mesh access. States:
+enforced by the backend. Self-hosted deployments do not require Anvil billing.
 
 | State | Meaning |
 | --- | --- |
-| `active` | Sync & Mesh access is active. A subscription is not required. |
-| `preview` | Legacy preview state retained for older account records. It does not set a free-period end date. |
-| `grace` | Legacy billing grace state. Billing health does not determine Sync & Mesh access. |
-| `restricted` | The backend has restricted this account. The reason may be a security, lifecycle, or policy decision; it is not a subscription paywall. |
+| `active` | A confirmed paid invoice covers the current period. A paid team seat can fund access instead of a personal subscription. |
+| `preview` | A redeemed beta code grants time-limited access. The wire name remains `preview` for client compatibility. |
+| `grace` | Access continues during bounded renewal or billing-outage grace. Renewal retries cannot restart the clock. |
+| `restricted` | No current paid or beta access, or an account, device-limit, security or policy restriction. |
 | `unknown` | The backend could not resolve the access state. The website preserves this result and does not assume access. |
 
-Old renewal-grace and billing-outage records may remain visible for historical
-accounts. They do not suspend free Sync & Mesh access. Local-only mode does
-not use the hosted access state.
+The old global preview deadline and `preview_eligible` flag grant no access.
+When access ends, local work, pulls, exports, revocation and account deletion
+remain available. New hosted writes, Mesh job submissions and handoffs stop.
 
 ## Limits
 
@@ -117,10 +118,15 @@ advertised product limits.
 
 ## Billing plumbing
 
-New Sync & Mesh checkout is disabled. The account site keeps a portal link for
-people with old subscription records so they can review invoices or cancel.
-Webhooks and reconciliation keep those records in step with the payment
-provider. They do not change Sync & Mesh access.
+During beta, `/account/billing` accepts invitation codes. Each code is single-use
+across accounts, retryable by its redeemer, and has an operator-set access expiry.
+The backend stores only a hash of the code. Codes can be revoked.
+
+Paid checkout opens only with `HOSTED_CHECKOUT_ENABLED=true` and configured Stripe
+prices and return URLs. Confirmed paid invoices grant access, not checkout redirects
+or subscription status alone. Webhooks and reconciliation update the payment evidence.
+The portal supports invoice review and cancellation. Team checkout requires an
+organisation owner and at least five seats; unpaid seat increases do not grant access.
 
 ## The `/account` surface
 
@@ -130,8 +136,8 @@ The website's account area (requires WorkOS env on the site deployment):
 | --- | --- |
 | `/account` | Current backend-reported access state and enforced fair-use limits. |
 | `/account` devices | Full device roster — rename and revoke. |
-| `/account/billing` | Legacy subscription state, Stripe portal link, and reconcile status. |
-| `/account/organizations` | Membership, invitations, roles, and legacy billing records. It does not share workspaces, devices, or Sync & Mesh data; each person's access stays independent. |
+| `/account/billing` | Beta-code redemption, personal checkout when open, subscription state, portal and refresh controls. |
+| `/account/organizations` | Membership, invitations, roles and team billing. It does not share workspaces, devices or Sync & Mesh data. |
 | `/account/data` | Export/deletion status — the deletion state machine's visible progress. |
 
 New organisations have five allocated member seats, including the owner. Older
@@ -156,4 +162,4 @@ production status.
 - The same backend on your own account: [Self-deploy the
   backend](/docs/sync/self-deploy).
 - The contract it implements: [Backend conformance](/docs/sync/conformance).
-- The full honesty list: [Status and limits](/docs/sync/status-and-limits).
+- Known gaps: [Status and limits](/docs/sync/status-and-limits).

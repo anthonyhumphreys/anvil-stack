@@ -74,7 +74,7 @@ LLM review can be useful for summarizing messy evidence:
 - Whether a package resembles a typo-squat.
 - What a reviewer should verify manually.
 
-LLM review is not the enforcement authority. It can recommend caution; it cannot make an unsafe package safe by sounding confident. We already have enough software that does that.
+LLM review can help explain the evidence, but it cannot allow a package or override deterministic policy.
 
 ## Overrides
 

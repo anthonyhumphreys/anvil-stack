@@ -15,6 +15,7 @@ import type { VerifiedAuth } from '../auth';
 import { isRecord } from '../rpc';
 import { machineEndpointStub, type MachineEndpointAllocationView } from './machine-endpoints';
 import { normalizeLoopbackService } from './cloudflare-tunnel';
+import { checkHostedAccess } from './enforcement';
 
 const MAX_REQUEST_BYTES = 16 * 1024;
 const MACHINE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -37,6 +38,8 @@ export async function handleMachineApiRequest(
     return listMachineHosts(env, auth.accountId, auth.enrollmentId);
   }
   if (url.pathname === '/v1/mesh/admission-tickets/consume' && request.method === 'POST') {
+    const denial = await machineAccessDenial(env, auth.accountId);
+    if (denial !== null) return denial;
     const body = await readJson(request);
     if (!isRecord(body) || typeof body['ticket'] !== 'string') return apiError(400, 'malformed-request');
     const presence = await readPresence(env, auth);
@@ -77,6 +80,10 @@ export async function handleMachineApiRequest(
   if (request.method !== 'POST') return apiError(405, 'method-not-allowed');
   const body = await readJson(request);
   if (!isRecord(body)) return apiError(400, 'malformed-request');
+  if (action !== 'endpoint' || body['action'] !== 'release') {
+    const denial = await machineAccessDenial(env, auth.accountId);
+    if (denial !== null) return denial;
+  }
   const presence = await readPresence(env, auth);
   if (presence === null) return apiError(503, 'unavailable');
   if (action === 'admission-tickets') {
@@ -350,6 +357,8 @@ export async function issueHostedMachineAdmission(
     requestId: string;
   },
 ): Promise<Response> {
+  const denial = await machineAccessDenial(env, accountId);
+  if (denial !== null) return denial;
   const hosts = await listHostedMachineHosts(env, accountId);
   const target = hosts?.hosts.find(
     (host) => host.machineId === input.machineId && host.endpointGeneration === input.endpointGeneration,
@@ -541,6 +550,11 @@ function endpointUrlFor(host: string, port: number): string | null {
   } catch {
     return null;
   }
+}
+
+async function machineAccessDenial(env: Env, accountId: string): Promise<Response | null> {
+  const access = await checkHostedAccess(env, accountId, Date.now());
+  return access.allowed ? null : apiError(access.reason === 'billing-unavailable' ? 503 : 403, access.reason);
 }
 
 function apiError(status: number, code: string): Response {

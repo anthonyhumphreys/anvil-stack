@@ -10,10 +10,9 @@ order: 80
 
 # Data portability and deletion
 
-Your synced data is yours in both directions: out as a portable document,
-back in through a staged import, and off the backend entirely when you delete
-the account. One honest caveat up front: **exports are currently sealed
-ciphertext**, so they round-trip but are not human-readable. Details below.
+You can export synced data, preview an import before applying it, or delete
+the hosted copies. Exports are currently encrypted backups. Restoring them
+requires the account data key; you can't read their contents as plain JSON.
 
 ## Export
 
@@ -45,9 +44,8 @@ ciphertext the backend stores. Consequences:
 
 - The file **round-trips correctly**: import it into an account that holds
   the ADK and every entity restores exactly.
-- The file is **not human-readable**: you cannot open it and read your
-  workspace definitions as JSON. There is no accidental plaintext leak in
-  your downloads folder either — the trade is honest in both directions.
+- The file is **not human-readable**. Workspace definitions remain encrypted
+  in the downloaded file.
 - Unsealing at export time is a **known follow-up**. When it lands, exports
   become real portability documents rather than encrypted backups.
 

@@ -10,7 +10,7 @@ order: 160
 
 # Knowledge tools
 
-Knowledge tools keep project explanations close to the repositories they describe. Their job is to expose drift and decisions, not create a second source of truth by accident.
+Use the Knowledge tools to read and update Confluence pages, review architecture decisions and edit Draw.io diagrams alongside your code. Link each document to the repository it describes so you can spot outdated guidance.
 
 ## Documentation provider
 

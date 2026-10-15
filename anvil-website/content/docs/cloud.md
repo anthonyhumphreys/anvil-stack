@@ -1,7 +1,7 @@
 ---
 title: Anvil Cloud
 navTitle: Cloud overview
-description: The open-source local-first runtime for Cells and Agents. Anvil Cloud Agents hosted compute is planned, unavailable, disabled by default, and will be paid when released.
+description: A local-first runtime and CLI for small typed apps (Cells) and agents with declared permissions.
 product: Anvil Cloud
 section: Overview
 journey: learn

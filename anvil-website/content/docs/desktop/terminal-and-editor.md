@@ -57,9 +57,9 @@ The embedded editor is a VS Code server instance that Anvil Desktop can start fo
 - Debugging features depend on the language server and debug adapter setup.
 - The embedded editor is a convenience, not a replacement for a full IDE when heavy refactoring or multi-repo navigation is needed.
 
-## Security posture
+## Process access
 
-The terminal and editor are privileged surfaces:
+The terminal and editor can access local files and run commands:
 
 - They run shell commands and file writes directly.
 - They do not go through the preload bridge like renderer components.

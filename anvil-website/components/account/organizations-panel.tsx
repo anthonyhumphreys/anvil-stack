@@ -6,6 +6,7 @@ import { useState, useTransition, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { formatDate } from "@/lib/format";
 import type { ActionResult } from "@/app/account/actions";
+import { createCheckoutAction } from "@/app/account/actions";
 import type { HostedOrganization, HostedOrganizationRole } from "@/lib/hosted/types";
 import {
   createOrganizationAction,
@@ -51,7 +52,7 @@ export function OrganizationsPanel({
   return (
     <div className="grid gap-6">
       <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
-        Organisations provide membership, role, invitation, and legacy billing administration.
+        Organisations manage membership, invitations and paid hosted team seats.
         They do not share workspaces, devices, or Sync &amp; Mesh data; each person&apos;s Sync &amp;
         Mesh access is independent.
       </p>
@@ -145,6 +146,8 @@ function OrganizationRecord({
   const owner = organization.membership.role === "owner";
   const closed = organization.status === "closed" || organization.billingRecoveryOnly === true;
   const hasLegacyBilling = organization.billing.status !== null;
+  const [interval, setInterval] = useState<"month" | "year">("month");
+  const [seats, setSeats] = useState(5);
 
   function openBillingPortal() {
     run(async () => {
@@ -163,12 +166,12 @@ function OrganizationRecord({
             {organization.name}
           </h2>
           <p className="text-sm text-muted-foreground">
-            {closed ? "Closed organisation record" : `${owner ? "Owner" : "Member"} · membership only`}
+            {closed ? "Closed organisation record" : `${owner ? "Owner" : "Member"} · ${organization.billing.seatCapacity} seat capacity`}
           </p>
         </div>
         {owner && hasLegacyBilling ? (
           <Button type="button" variant="outline" onClick={openBillingPortal} disabled={pending}>
-            {pending ? "Opening…" : "Review or cancel legacy billing"}
+            {pending ? "Opening…" : "Manage subscription"}
           </Button>
         ) : null}
       </header>
@@ -177,10 +180,10 @@ function OrganizationRecord({
         <section className="grid gap-3 rounded-md border bg-muted/20 p-4" aria-labelledby={`billing-${organization.id}`}>
           <div>
             <h3 id={`billing-${organization.id}`} className="font-medium">
-              Legacy subscription record
+              Hosted team subscription
             </h3>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
-              Sync &amp; Mesh are free. This record does not change anyone&apos;s access.
+              Assigned paid seats fund each member&apos;s own hosted Sync &amp; Mesh access. Membership alone does not grant access to their data.
             </p>
           </div>
           <dl className="grid gap-3 text-sm sm:grid-cols-3">
@@ -208,8 +211,33 @@ function OrganizationRecord({
           </dl>
         </section>
       ) : (
-        <p className="text-sm text-muted-foreground">No legacy subscription record is on file.</p>
+        <p className="text-sm text-muted-foreground">No team subscription is on file. Members need their own subscription or beta access until a paid seat is assigned.</p>
       )}
+
+      {owner && !closed && organization.billing.checkoutAvailable &&
+        (organization.billing.status === null || ["canceled", "incomplete_expired"].includes(organization.billing.status)) ? (
+        <form className="flex flex-wrap items-end gap-3" onSubmit={(event) => {
+          event.preventDefault();
+          run(async () => {
+            const result = await createCheckoutAction(interval, organization.id, seats);
+            if (!result.ok) return { ok: false, message: result.message };
+            window.location.assign(result.data.checkoutUrl);
+            return { ok: true, message: "Opening team checkout…" };
+          }, false);
+        }}>
+          <label className="grid gap-1 text-sm">Paid seats, minimum 5
+            <input type="number" min={5} max={50} required value={seats} disabled={pending}
+              onChange={(event) => setSeats(Number(event.target.value))} className="min-h-11 w-28 rounded-md border bg-background px-3" />
+          </label>
+          <label className="grid gap-1 text-sm">Billing interval
+            <select value={interval} disabled={pending} onChange={(event) => setInterval(event.target.value as "month" | "year")}
+              className="min-h-11 rounded-md border bg-background px-3">
+              <option value="month">£12 per seat monthly</option><option value="year">£120 per seat annually</option>
+            </select>
+          </label>
+          <Button type="submit" disabled={pending}>Subscribe for {seats} seats</Button>
+        </form>
+      ) : null}
 
       {!closed ? (
         <section className="grid gap-3" aria-labelledby={`members-${organization.id}`}>

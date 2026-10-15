@@ -1,7 +1,7 @@
 ---
 title: Operating guide
 navTitle: Operating guide
-description: Set up Anvil Desktop and run delivery workflows with real evidence.
+description: Set up a workspace, implement a change, review it and hand over the results in Anvil Desktop.
 product: Anvil Desktop
 section: Guides
 journey: build
@@ -13,15 +13,15 @@ order: 210
 ## Set up the workspace
 
 1. Install and launch Anvil Desktop.
-2. Choose a role so the navigation starts from the surfaces you actually use.
-3. Choose the primary agent for new chats and app-level AI work, then activate any additional providers you want workflows to use. Anvil currently supports Codex CLI, Cursor CLI, OpenAI API, and Azure AI Foundry. On supported Macs, optionally enable Apple Foundation Models for short on-device helper prompts.
+2. Choose a role to show the tools you use most.
+3. Choose a primary agent for new chats, then activate any additional providers you want workflows to use. See [Chat, personas and models](/docs/desktop/chat-personas-and-llm) for provider setup and optional on-device helper models.
 4. Connect delivery providers such as GitHub, Azure DevOps, Linear, Jira, Confluence, Notion, Draw.io, Figma, or Repobase.
 5. Create a workspace.
 6. Add and index local repositories.
-7. Start a conversation from Chat; it is the primary workspace surface.
+7. Start a conversation in Chat.
 8. Start read-only before asking for edits.
 
-The read-only step is not ceremony. Ask Anvil to explain the current code path with file references before asking it to change code. Ambition is cheaper after context exists.
+Ask Anvil to explain the current code path with file references before making edits. Check that it has found the right part of the code.
 
 ## Developer playbook: implement a scoped change
 
@@ -59,4 +59,4 @@ Closing a terminal tab stops that terminal process. Switching workspaces or hidi
 
 Use Security for implementation risks, Dependencies for package risk, CI/CD for release gates, and Data and Compliance when the change touches personal data, retention, accessibility, audit, or policy.
 
-Put unverified steps in the handover. Silence is not a test strategy.
+Record skipped and unverified checks in the handover so the next person knows what still needs attention.

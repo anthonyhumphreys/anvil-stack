@@ -132,4 +132,4 @@ Keep scopes tied to the component: `gateway`, `worker`, `admin`, `cli`, `policy-
 ## Read next
 
 - [Security](/docs/registry/security)
-- [Open source posture](/docs/project/open-source)
+- [Open source](/docs/project/open-source)

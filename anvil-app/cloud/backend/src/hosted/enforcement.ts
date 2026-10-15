@@ -1,36 +1,22 @@
-// Hosted device-limit enforcement and the current Sync/Mesh access snapshot.
-// Sync and Mesh are free for active hosted accounts; subscription state is
-// billing history and never authorizes or denies their writes. Account
-// lifecycle, device limits, operation auth, quotas, and fair-use restrictions
-// remain enforced at their existing boundaries.
-
 import type { HostedEntitlement } from '../../../contract/entitlements';
-import { resolveHostedLimits } from './billing';
-import { freeHostedEntitlement } from './policy';
+import { getEntitlement, resolveHostedLimits } from './billing';
+import { evaluateHostedEntitlement, freeHostedEntitlement } from './policy';
 import { findBillingBySyncAccount } from './store';
+import { stripeConfigured } from './stripe';
 
-/** Retained export for existing enforcement tests and consumers during rollout. */
 export const ENTITLEMENT_CACHE_TTL_MS = 60 * 1000;
 export const TEAM_ENTITLEMENT_CACHE_TTL_MS = ENTITLEMENT_CACHE_TTL_MS;
 
 export type HostedAccess =
-  | { allowed: true; entitlement: null }
-  | { allowed: false; entitlement: null; reason: string };
+  | { allowed: true; entitlement: HostedEntitlement | null }
+  | { allowed: false; entitlement: HostedEntitlement | null; reason: string };
 
-/**
- * This legacy switch now controls the hosted device-limit preflight. It does
- * not gate Sync or Mesh on billing and is inert for self-hosted deployments.
- */
 export function hostedEnforcementEnabled(env: Env): boolean {
-  return env.HOSTED_BILLING_ENFORCEMENT === 'true' && env.HOSTED_DB !== undefined;
+  return env.HOSTED_BILLING_ENFORCEMENT === 'true';
 }
 
-/**
- * Sanity check for deployments that enable the hosted device-limit preflight:
- * billing identity and the service surface must both be configured.
- */
 export function hostedConfigIssues(env: Env): string[] {
-  if (env.HOSTED_BILLING_ENFORCEMENT !== 'true') return [];
+  if (!hostedEnforcementEnabled(env)) return [];
   const missing: string[] = [];
   if (env.HOSTED_DB === undefined) missing.push('HOSTED_DB');
   if (typeof env.HOSTED_SERVICE_KEYS !== 'string' || env.HOSTED_SERVICE_KEYS.length === 0) {
@@ -39,35 +25,57 @@ export function hostedConfigIssues(env: Env): string[] {
   return missing;
 }
 
-/**
- * Resolve the free capability snapshot. The hosted account row is consulted
- * only for its deletion lifecycle; subscription, preview, and Stripe state
- * do not affect Sync or Mesh capabilities.
- */
+export function unavailableHostedEntitlement(env: Env, now: number): HostedEntitlement {
+  return evaluateHostedEntitlement({
+    now,
+    lifecycle: 'active',
+    previewEligible: false,
+    revision: 0,
+    limits: resolveHostedLimits(env),
+    subscriptions: [],
+    billingUnavailable: true,
+    renewalGraceDays: 0,
+    outageGraceHours: 0,
+  });
+}
+
 export async function resolveAccountEntitlement(
   env: Env,
   accountId: string,
   now: number,
 ): Promise<HostedEntitlement> {
   const limits = resolveHostedLimits(env);
+  if (!hostedEnforcementEnabled(env)) return freeHostedEntitlement(now, limits);
   const db = env.HOSTED_DB;
-  if (db === undefined) return freeHostedEntitlement(now, limits);
+  if (db === undefined) return unavailableHostedEntitlement(env, now);
   const billing = await findBillingBySyncAccount(db, accountId);
-  return freeHostedEntitlement(now, limits, billing?.lifecycle ?? 'active', billing?.updated_at ?? 0);
+  if (billing === null)
+    return evaluateHostedEntitlement({
+      now,
+      lifecycle: 'active',
+      previewEligible: false,
+      revision: 0,
+      limits,
+      subscriptions: [],
+      billingUnavailable: false,
+      renewalGraceDays: 0,
+      outageGraceHours: 0,
+    });
+  return getEntitlement(db, billing, now, limits, !stripeConfigured(env));
 }
 
-/**
- * Sync and Mesh writes are always free for an authenticated account. This
- * check intentionally does not read the billing database, so an absent
- * subscription, a canceled legacy subscription, preview expiration, or a
- * Stripe/D1 outage cannot deny them. Hosted device limits are checked by the
- * caller through the session coordinator.
- */
 export async function checkHostedAccess(
-  _storage: DurableObjectStorage,
-  _env: Env,
-  _accountId: string,
-  _now: number,
+  env: Env,
+  accountId: string,
+  now: number,
 ): Promise<HostedAccess> {
-  return { allowed: true, entitlement: null };
+  if (!hostedEnforcementEnabled(env)) return { allowed: true, entitlement: null };
+  try {
+    const entitlement = await resolveAccountEntitlement(env, accountId, now);
+    return entitlement.capabilities.syncWrite && entitlement.capabilities.meshSubmit
+      ? { allowed: true, entitlement }
+      : { allowed: false, entitlement, reason: entitlement.reason };
+  } catch {
+    return { allowed: false, entitlement: null, reason: 'billing-unavailable' };
+  }
 }

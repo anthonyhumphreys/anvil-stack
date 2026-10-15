@@ -10,10 +10,9 @@ order: 50
 
 # Devices and sign-in
 
-Every device on an account is an independent enrollment. There is no
-"logged-in account" shared between machines — each device holds its own
-credential, its own X25519 identity, and its own copy of the key material,
-and each can be revoked without touching the others.
+Sign in on each device you want to connect. Every device gets its own
+credential and X25519 identity, plus a copy of the account encryption key.
+You can revoke one device while keeping the others connected.
 
 ## The enrollment model
 

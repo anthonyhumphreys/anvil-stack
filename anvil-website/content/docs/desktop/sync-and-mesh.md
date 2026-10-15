@@ -1,7 +1,7 @@
 ---
 title: Sync and Mesh
 navTitle: Sync and Mesh
-description: The Settings → Sync & Mesh panel in Anvil Desktop — connection modes, sign-in and device enrollment, remote executions, the mesh worker, session handoff, and your data.
+description: Connect your machines, choose what syncs, run remote jobs and move sessions in Settings → Sync & Mesh.
 product: Anvil Desktop
 section: Guides
 journey: build
@@ -10,12 +10,11 @@ order: 200
 
 # Sync and Mesh
 
-Sync & Mesh is the account layer of Anvil Desktop: end-to-end encrypted sync
-of account-owned entities, remote job execution on your own machines, and
-checkpointed session handoff between devices. **Settings → Sync & Mesh** is
-where you connect, enroll, and supervise all of it. This page describes the
-panel; the contract, encryption, and backend mechanics live in the
-[Sync & Mesh docs](/docs/sync/overview).
+Open **Settings → Sync & Mesh** to connect your machines, choose which
+workspace settings sync, run remote jobs and move sessions between devices.
+Synced content is encrypted before it leaves your device. Jobs run on your
+own machines, where provider credentials stay. For the technical details,
+see the [Sync & Mesh docs](/docs/sync/overview).
 
 Everything here is optional — new workspaces default to Local. It is also
 alpha: the lifecycle is implemented and tested and has been rehearsed against
@@ -29,7 +28,7 @@ The panel offers four account backend modes:
 | Mode | Behavior |
 | --- | --- |
 | Local only | No account backend is connected. A remembered backend is paused, not forgotten. |
-| Anvil-hosted | Free Sync & Mesh on the operated backend when available. Production provisioning is still in progress. |
+| Anvil-hosted | We run the backend for you. Paid plans are proposed; public access hasn't launched. |
 | Your Cloudflare | A backend you deploy to your own Cloudflare account with `anvil-cloud mesh`. |
 | Compatible backend | Any URL implementing the Sync v2 and Mesh v2 profiles. |
 
@@ -37,8 +36,9 @@ Pinning a backend stores the association only — no data uploads until you
 sign in and choose Sync for a workspace. See [Self-deploy](/docs/sync/self-deploy)
 for the deploy path, [Conformance](/docs/sync/conformance) for proving a
 third-party backend, and [Hosted](/docs/sync/hosted) for the state of the
-operated service. Sync & Mesh do not require a subscription. Authentication,
-account lifecycle, security rules, and fair-use limits still apply.
+operated service. Hosted Sync & Mesh will be paid when it launches; running
+your own backend remains free of Anvil charges. See [pricing](/pricing).
+Authentication, account security and deployment limits still apply.
 
 ### Workspace scope
 

@@ -1,7 +1,7 @@
 ---
 title: Services
 navTitle: Services
-description: Long-running supervised service handlers in Anvil Cells, with restart policies, abort-signal stop semantics, and local status routes.
+description: Run a handler continuously with your Cell, configure restarts, stop it cleanly and inspect its status.
 product: Anvil Cloud
 section: Concepts
 journey: learn
@@ -10,7 +10,7 @@ order: 110
 
 # Services
 
-A service is a long-running handler that the platform starts, supervises, and stops with the app: pollers, queue consumers, socket listeners, or any loop that should run continuously rather than per request. Where a job is a single background invocation and a workflow is a durable multi-step run, a service is process-shaped and stays up until it is stopped.
+A service runs continuously with your app. Use one for a poller, queue consumer or socket listener. Anvil starts it, restarts it according to your policy and stops it when the app stops. For a single background task, use a job; for a sequence of resumable steps, use a workflow.
 
 ## Definition
 

@@ -1,7 +1,7 @@
 ---
 title: Artifacts and share links
 navTitle: Artifacts and share links
-description: Sealed artifact upload and download, share links whose keys live in the URL fragment, share bundles and interactive shares, stable-link updates, in-browser decryption, and revocation semantics.
+description: Upload encrypted files, create share links, preview shared content in a browser and revoke access.
 product: Anvil Sync & Mesh
 section: Guides
 journey: build
@@ -10,9 +10,9 @@ order: 70
 
 # Artifacts and share links
 
-Mesh jobs produce artifacts — files, outputs, captures. Like everything else
-in sync, the bytes are sealed on-device before upload; storage holds
-ciphertext. Share links add a deliberately different key model on top.
+Mesh jobs can produce files, reports and captures. These artifacts are
+encrypted on your device before upload. Share links use a separate key for
+each share, so a recipient can open that item without access to your account.
 
 ## Upload: reserve, PUT, finalize
 

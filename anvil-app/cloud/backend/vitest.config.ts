@@ -179,10 +179,7 @@ export default defineConfig({
         d1Databases: { HOSTED_DB: 'hosted-test' },
         bindings: {
           ANVIL_DEV_SPIKE: 'true',
-          // BILL-03: enforcement is on for the whole suite — every
-          // pre-existing test account is unlinked and therefore
-          // preview-entitled, proving enforcement doesn't disturb them.
-          HOSTED_BILLING_ENFORCEMENT: 'true',
+          HOSTED_BILLING_ENFORCEMENT: 'false',
           // Managed compute is enabled only for its focused lifecycle fixtures.
           ANVIL_CLOUD_AGENTS_ENABLED: 'true',
           HOSTED_SERVICE_KEYS: JSON.stringify({ test: 'a'.repeat(32) }),

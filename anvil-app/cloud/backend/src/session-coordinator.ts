@@ -38,9 +38,8 @@ import {
   type VerifiedAuth,
 } from './auth';
 import { sha256Hex } from './hash';
-import { hostedEnforcementEnabled, resolveAccountEntitlement } from './hosted/enforcement';
+import { hostedEnforcementEnabled, resolveAccountEntitlement, unavailableHostedEntitlement } from './hosted/enforcement';
 import { resolveHostedLimits } from './hosted/billing';
-import { freeHostedEntitlement, PREVIEW_END_MS } from './hosted/policy';
 import type {
   ShareCreateResult,
   ShareFinalizeResult,
@@ -1490,7 +1489,7 @@ export class SessionCoordinator extends DurableObject<Env> {
   ): { overLimit: boolean; limit: number; activeCount: number } {
     const { limit, activeCount } = this.readHostedDeviceCount(accountId);
     const overLimit =
-      hostedEnforcementEnabled(this.env) && now >= PREVIEW_END_MS && activeCount > limit;
+      hostedEnforcementEnabled(this.env) && activeCount > limit;
     return { overLimit, limit, activeCount };
   }
 
@@ -1921,14 +1920,11 @@ export class SessionCoordinator extends DurableObject<Env> {
       return authError('unauthenticated');
     }
     const meta = await this.accountMeta(row.account_id);
-    // Hosted deployments surface the free capability snapshot. If D1 is
-    // unavailable, the account's local deletion tombstone remains the
-    // lifecycle authority, so billing failure falls back to active/free.
     const resolvedEntitlement =
       this.env.HOSTED_DB === undefined
         ? null
         : await resolveAccountEntitlement(this.env, row.account_id, Date.now()).catch(() =>
-            freeHostedEntitlement(Date.now(), resolveHostedLimits(this.env)),
+            unavailableHostedEntitlement(this.env, Date.now()),
           );
     const entitlement =
       resolvedEntitlement !== null &&

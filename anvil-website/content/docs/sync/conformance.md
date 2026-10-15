@@ -10,11 +10,10 @@ order: 100
 
 # Backend conformance
 
-The desktop does not talk to "the Anvil backend" — it talks to a frozen wire
-contract. A compatible backend must implement the profiles needed by the
-surfaces you use. The conformance suite checks Sync compatibility against the
-official Cloudflare worker or an implementation you wrote yourself; Mesh
-compatibility is not yet covered here.
+Anvil Desktop can connect to any backend that implements the required
+protocols. Run the conformance suite to check Sync compatibility with the
+official Cloudflare Worker or your own implementation. The suite does not
+yet check Mesh jobs, session handoff or direct host sessions.
 
 ## The frozen contract
 

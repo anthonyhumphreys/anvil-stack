@@ -1,7 +1,7 @@
 ---
 title: Anvil Node Base
 navTitle: Node Base overview
-description: A hardened Node devcontainer image with safe and observed install modes for unfamiliar repositories.
+description: A Node container image for installing dependencies from repos you don't trust yet.
 product: Anvil Node Base
 section: Overview
 journey: learn

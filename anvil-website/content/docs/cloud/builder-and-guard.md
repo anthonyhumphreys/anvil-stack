@@ -165,8 +165,8 @@ await fetch(target);
 await fetch("/internal");
 ```
 
-That is intentionally boring. Dynamic network targets make preview policy
-review vague, and vague deploy plans are how infrastructure starts doing improv.
+Literal URLs let Guard check every destination before deployment. Dynamic
+network targets cannot be verified this way.
 
 ## Typecheck
 
@@ -207,9 +207,8 @@ Before preview deploy, inspect:
 - `.anvil/dist/build-meta.json`
 - deployment plan and CloudFormation template from `anvil cloud deploy --preview --json`
 
-If these disagree, stop and fix the contract first. A preview deploy should be
-the boring part.
+If these disagree, fix the discrepancy before deploying.
 
 ## Practical rule
 
-If a Cell needs a new capability, declare it and teach the runtime/adapters how to provide it. Do not smuggle provider access through imports. Smuggling is exciting right up until the first deploy plan looks like a ransom note.
+If a Cell needs a new capability, declare it and add support in the runtime and adapters. Keep provider-specific access in the adapter so the deployment plan can account for it.

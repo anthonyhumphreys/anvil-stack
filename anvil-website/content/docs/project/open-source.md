@@ -1,18 +1,18 @@
 ---
-title: Open source posture
-navTitle: OSS posture
-description: How to read Anvil's scope, claims, and security posture.
+title: Open source
+navTitle: Open source
+description: Find Anvil's source code, understand its MIT licence and check the limits of each project.
 product: Project
 section: Concepts
 journey: reference
 order: 10
 ---
 
-# Open source posture
+# Open source
 
-Anvil is open source infrastructure for developers who want local control, inspectable decisions, and fewer mystery boxes in the delivery path.
+Anvil Desktop, Registry, Node Base, Cloud and this website are open source. You can read the code, run the tools on your own infrastructure and contribute changes.
 
-The site should be read as product documentation first and marketing second. Claims need receipts: commands, architecture, policy inputs, lifecycle evidence, package reports, or explicit limits.
+The docs link to setup commands, source files and known limits so you can check how a feature works before relying on it.
 
 ## Repository
 
@@ -23,26 +23,22 @@ Everything lives in the [`anvil-stack`](https://github.com/anthonyhumphreys/anvi
 - `anvil-cloud/`: Anvil Cloud, the alpha Cell runtime and adapter platform.
 - `anvil-website/`: this public docs site.
 
-Read the [monorepo map](/docs/project/repositories) before assuming a feature belongs in a particular project.
+The [monorepo map](/docs/project/repositories) explains what each directory owns and how to build it.
 
 ## License
 
 Everything in the monorepo is [MIT licensed](https://github.com/anthonyhumphreys/anvil-stack/blob/main/LICENSE).
 
-## What to expect
+## Check the current status
 
-- Practical setup paths.
-- Plain-language security reasoning.
-- Sharp scope boundaries.
-- Markdown docs that can be reviewed in Git.
-- Honest alpha notes where a feature is early.
+Several parts of Anvil are in alpha. Start with the status page for the tool you want to use:
 
-## What not to expect
+- [Registry alpha status](/docs/registry/alpha-status)
+- [Cloud status and limits](/docs/cloud/status-and-limits)
+- [Sync & Mesh status and limits](/docs/sync/status-and-limits)
 
-- Glossy cybersecurity vendor theatre.
-- SaaS dashboard language grafted onto local tools.
-- Fake metrics with no source.
-- Claims that agents, LLMs, or heuristics remove human review.
-- Hosted-platform claims that go beyond the current Cloud adapter and operations work.
+Agents and automated checks help you inspect work. You still need to review changes, validate findings and decide what to run or deploy.
 
-Anvil is allowed to have a point of view. It is not allowed to pretend uncertainty does not exist.
+## Contribute
+
+Documentation lives in Markdown alongside the code. Report an unclear guide or suggest a correction through the [contribution guide](/docs/project/contributing).

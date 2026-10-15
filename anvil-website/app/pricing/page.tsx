@@ -1,186 +1,115 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { ArrowRight, Check } from "lucide-react";
+import { Check } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
+import { cn } from "@/lib/utils";
+import { plans, pricingFaqs } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Pricing | Anvil",
   description:
-    "Anvil Sync & Mesh are free. Existing provider integrations use your own accounts. Anvil Cloud Agents hosted compute will be paid when available; no price or release date is set."
+    "Anvil Desktop is free and open source. Hosted Sync & Mesh is planned at £6 a month for one person or £12 per member for teams. Self-hosting stays free."
 };
-
-const syncPoints = [
-  "Encrypted sync for workspace definitions, templates, agents, and approved settings",
-  "Mesh jobs and session handoff across machines you control",
-  "Use local, Anvil-hosted, self-hosted, or compatible backends",
-  "No Anvil subscription or billing account required"
-];
-
-const providerPoints = [
-  "Run on machines you own, or VMs in provider accounts you configure",
-  "Use supported AWS, Cloudflare, and Vercel sandbox integrations",
-  "Anvil does not charge for these integrations",
-  "Cloud providers and model providers bill your account directly"
-];
-
-const faqs = [
-  {
-    q: "Does Sync & Mesh have an Anvil subscription?",
-    a: "No. Sync & Mesh are free, including the Anvil-hosted service when it is available. You can also run the backend yourself or use a compatible implementation."
-  },
-  {
-    q: "Can I run agents through my machines and provider accounts?",
-    a: "Yes. Run on machines you own, VMs in accounts you configure, or supported AWS, Cloudflare, and Vercel sandbox integrations. Anvil does not charge for these integrations. Cloud and model providers bill you directly."
-  },
-  {
-    q: "What is Anvil Cloud Agents?",
-      a: "Anvil Cloud is the open-source runtime and CLI. Anvil Cloud Agents is the planned hosted compute service for running agents on Anvil-managed infrastructure. It is not yet available, and hosted compute will be paid when it launches."
-  },
-  {
-    q: "Are model and cloud provider charges included?",
-    a: "No. You connect your own provider accounts and credentials. Any charges for models, VMs, storage, or other provider resources go directly to those providers."
-  }
-];
 
 export default function PricingPage() {
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader active="pricing" />
       <main id="main-content">
-        <section className="border-b">
-          <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8 lg:py-24">
-            <div className="max-w-3xl">
-              <p className="font-mono text-xs uppercase tracking-[0.12em] text-accent">
-                Pricing and provider costs
-              </p>
-              <h1 className="mt-4 text-4xl font-semibold leading-[1.02] tracking-[-0.03em] sm:text-5xl lg:text-6xl">
-                Sync &amp; Mesh are free. Hosted agent compute is a separate product.
-              </h1>
-              <p className="mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
-                Sync &amp; Mesh are free. You can run agent work on your own machines
-                and provider accounts. Anvil Cloud Agents will charge for Anvil-managed hosted
-                compute when that service is available. There is no price or release date yet.
-              </p>
-              <div className="mt-7 flex flex-wrap gap-3">
-                <Button asChild>
-                  <Link href="/docs/sync/overview">
-                    Read about Sync &amp; Mesh
-                    <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                  </Link>
-                </Button>
-                <Button asChild variant="outline">
-                  <Link href="/docs/cloud/agent-sandboxes">Read agent execution documentation</Link>
-                </Button>
-              </div>
-            </div>
-          </div>
+        <section className="page-shell pb-14 pt-16 sm:pt-24">
+          <h1 className="font-display text-display-1 max-w-[16ch]">Free to use. £6 a month to take it everywhere.</h1>
+          <p className="lede mt-8">
+            Anvil Desktop is free and open source. You only pay if you want us to host Sync &amp; Mesh,
+            so your work follows you from one machine to the next.
+          </p>
+          <p className="mt-8 inline-flex max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-accent/40 bg-accent/[0.07] px-4 py-3 text-[0.9375rem]">
+            <span className="font-semibold">Hosted Sync &amp; Mesh is invite-only.</span>
+            <span className="text-muted-foreground">Planned launch prices below. Invited beta testers receive a code to redeem without a payment method.</span>
+            <Link href="/waitlist" className="font-medium underline decoration-accent/50 underline-offset-4 hover:decoration-foreground">
+              Join the waitlist
+            </Link>
+          </p>
+          <p className="mt-3 text-sm text-muted-foreground">Already invited? <Link href="/account/billing" className="underline underline-offset-4">Redeem your beta code</Link>.</p>
         </section>
 
-        <section className="py-14 lg:py-16" aria-labelledby="pricing-model-heading">
-          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="mb-8 max-w-2xl">
-              <h2 id="pricing-model-heading" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                What costs money
-              </h2>
-              <p className="mt-3 text-base leading-7 text-muted-foreground">
-                Anvil charges only for future compute that Anvil operates. Your own infrastructure
-                and provider accounts stay under your control.
-              </p>
-            </div>
-
-            <div className="grid gap-5 lg:grid-cols-3">
-              <article className="flex flex-col rounded-lg border border-accent/50 bg-card p-6">
-                <h3 className="text-xl font-semibold">Anvil Sync &amp; Mesh</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Free</p>
-                <p className="mt-5 text-3xl font-semibold">£0</p>
-                <p className="mt-1 text-sm text-muted-foreground">No subscription required</p>
-                <ul className="mt-5 grid flex-1 gap-2 text-sm text-muted-foreground">
-                  {syncPoints.map((point) => (
-                    <li key={point} className="flex items-start gap-2">
-                      <Check className="proof-check" aria-hidden="true" />
-                      <span>{point}</span>
+        <section className="page-shell pb-20 lg:pb-28" aria-label="Plans">
+          <div className="grid overflow-hidden rounded-2xl border bg-card md:grid-cols-2 xl:grid-cols-4">
+            {plans.map((plan, index) => (
+              <article
+                key={plan.id}
+                className={cn(
+                  "relative flex flex-col p-7 sm:p-8",
+                  index > 0 && "border-t md:border-t-0",
+                  index % 2 === 1 && "md:border-l",
+                  index >= 2 && "md:border-t xl:border-t-0",
+                  index === 2 && "xl:border-l",
+                  index === 3 && "xl:border-l",
+                  plan.featured && "bg-[color-mix(in_oklch,oklch(var(--accent))_6%,oklch(var(--card)))]"
+                )}
+                aria-labelledby={`plan-${plan.id}`}
+              >
+                {plan.featured ? <span className="absolute inset-x-0 top-0 h-1 bg-accent" aria-hidden="true" /> : null}
+                <h2 id={`plan-${plan.id}`} className="text-lg font-semibold">
+                  {plan.name}
+                </h2>
+                <p className="mt-1 text-[0.9375rem] text-muted-foreground">{plan.summary}</p>
+                <p className="mt-7 flex flex-wrap items-baseline gap-x-2">
+                  <span className="font-display text-[2.75rem] leading-none">{plan.price}</span>
+                  <span className="text-sm text-muted-foreground">{plan.cadence}</span>
+                </p>
+                <p className="mt-2 h-5 text-sm text-muted-foreground">{plan.annual ?? ""}</p>
+                <ul className="mt-7 grid flex-1 content-start gap-3">
+                  {plan.features.map((feature) => (
+                    <li key={feature} className="flex gap-3 text-[0.9375rem] leading-6">
+                      <Check className="mt-1 size-4 shrink-0 text-accent" aria-hidden="true" />
+                      {feature}
                     </li>
                   ))}
                 </ul>
-                <p className="mt-5 border-t pt-4 text-xs leading-5 text-muted-foreground">
-                  Anvil-hosted Sync &amp; Mesh is not yet available. The hosted service is being
-                  prepared for launch.
-                </p>
-              </article>
-
-              <article className="flex flex-col rounded-lg border bg-card p-6">
-                <h3 className="text-xl font-semibold">Your machines and providers</h3>
-                <p className="mt-1 text-sm text-muted-foreground">No Anvil integration fee</p>
-                <p className="mt-5 text-3xl font-semibold">Your account</p>
-                <p className="mt-1 text-sm text-muted-foreground">You pay the provider directly</p>
-                <ul className="mt-5 grid flex-1 gap-2 text-sm text-muted-foreground">
-                  {providerPoints.map((point) => (
-                    <li key={point} className="flex items-start gap-2">
-                      <Check className="proof-check" aria-hidden="true" />
-                      <span>{point}</span>
-                    </li>
-                  ))}
-                </ul>
-              </article>
-
-              <article className="flex flex-col rounded-lg border bg-card p-6">
-                <h3 className="text-xl font-semibold">Anvil Cloud Agents</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Anvil-managed hosted compute</p>
-                <p className="mt-5 text-2xl font-semibold">Paid when available</p>
-                <p className="mt-1 text-sm text-muted-foreground">Not yet available</p>
-                <p className="mt-5 flex-1 text-sm leading-6 text-muted-foreground">
-                  This future service will run agent compute on infrastructure operated by Anvil.
-                  It is separate from Sync &amp; Mesh and from provider integrations you configure
-                  yourself.
-                </p>
-                <p className="mt-5 border-t pt-4 text-xs leading-5 text-muted-foreground">
-                  Model and provider charges are separate and billed by those providers.
-                </p>
-              </article>
-            </div>
-
-            <div className="mt-8 grid gap-8 border-y py-6 md:grid-cols-[0.7fr_1.3fr]">
-              <div>
-                <h3 className="font-semibold">Run the backend yourself</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Sync &amp; Mesh software is open source. Your infrastructure provider may charge
-                  for resources in your account.
-                </p>
-                <Button asChild variant="outline" className="mt-4">
-                  <Link href="/docs/sync/self-deploy">
-                    Self-deploy guide
-                    <ArrowRight data-icon="inline-end" aria-hidden="true" />
-                  </Link>
+                {plan.note ? <p className="mt-6 text-sm leading-6 text-muted-foreground">{plan.note}</p> : null}
+                <Button asChild className="mt-9 w-full" variant={plan.featured ? "default" : "outline"}>
+                  <Link href={plan.cta.href}>{plan.cta.label}</Link>
                 </Button>
-              </div>
-              <p className="text-sm leading-6 text-muted-foreground">
-                Anvil Cloud is the open-source runtime and CLI. The paid service described here is
-                only the future hosted compute operated by Anvil under the Anvil Cloud Agents name.
-                Cloud deployment plans report resource counts and cost drivers; they are not a bill
-                or an estimate from Anvil.
+              </article>
+            ))}
+          </div>
+          <p className="mt-5 text-sm text-muted-foreground">
+            Prices are in pounds sterling. If they change before launch, this page changes first.
+          </p>
+        </section>
+
+        <section id="hosted-compute" className="scroll-mt-24 border-t bg-muted/40 py-20 lg:py-24" aria-labelledby="compute-title">
+          <div className="page-shell grid gap-10 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
+            <h2 id="compute-title" className="font-display text-display-2 max-w-[12ch]">
+              Machines we run for you, later.
+            </h2>
+            <div className="grid max-w-[60ch] gap-5 text-lg leading-8 text-muted-foreground">
+              <p>
+                We&apos;re building Anvil Cloud Agents: hosted machines your workflows can borrow, billed
+                by what you use. It isn&apos;t available yet, and it doesn&apos;t have a price.
+              </p>
+              <p>
+                When you use your own model or cloud account, that provider bills you directly.
+                Anvil doesn&apos;t add anything on top. You can keep using those accounts without
+                waiting for hosted agents.
               </p>
             </div>
           </div>
         </section>
 
-        <section className="border-t bg-muted/20 py-14 lg:py-16" aria-labelledby="pricing-faq">
-          <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[0.7fr_1.3fr] lg:px-8">
-            <div>
-              <h2 id="pricing-faq" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
-                Asked, answered
-              </h2>
-              <p className="mt-3 text-base leading-7 text-muted-foreground">
-                The distinction is who operates and pays for the compute.
-              </p>
-            </div>
-            <dl className="grid gap-0">
-              {faqs.map((item) => (
-                <div key={item.q} className="border-t py-5">
-                  <dt className="font-semibold">{item.q}</dt>
-                  <dd className="mt-2 text-sm leading-6 text-muted-foreground">{item.a}</dd>
+        <section className="border-t py-20 lg:py-28" aria-labelledby="faq-title">
+          <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
+            <h2 id="faq-title" className="font-display text-display-2 max-w-[10ch]">
+              Questions people ask.
+            </h2>
+            <dl className="divide-y border-y">
+              {pricingFaqs.map((item) => (
+                <div key={item.q} className="grid gap-2 py-6 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] sm:gap-10">
+                  <dt className="text-lg font-semibold">{item.q}</dt>
+                  <dd className="text-[0.9375rem] leading-7 text-muted-foreground">{item.a}</dd>
                 </div>
               ))}
             </dl>

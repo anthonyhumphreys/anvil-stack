@@ -37,9 +37,6 @@ declare namespace Cloudflare {
     HOSTED_DB?: D1Database;
     /** JSON `{"keyId":"secret"}` map for /internal/hosted/* HMAC auth. */
     HOSTED_SERVICE_KEYS?: string;
-    /** Optional Stripe integration retained for existing billing cleanup and
-     * history. Sync checkout and Sync/Mesh entitlement do not depend on it.
-     */
     STRIPE_SECRET_KEY?: string;
     /** Endpoint secret for `Stripe-Signature` on /v1/hosted/stripe-webhook. */
     STRIPE_WEBHOOK_SECRET?: string;
@@ -49,11 +46,8 @@ declare namespace Cloudflare {
     STRIPE_PRICE_SYNC_ANNUAL?: string;
     STRIPE_PRICE_TEAM_MONTHLY?: string;
     STRIPE_PRICE_TEAM_ANNUAL?: string;
-    /** Required Stripe account mode when optional legacy billing is configured. */
     HOSTED_BILLING_ENVIRONMENT?: 'staging' | 'production';
-    /** Legacy staging checkout rehearsal switch; Sync checkout is retired. */
     HOSTED_ALLOW_EARLY_CHECKOUT?: string;
-    /** Legacy Sync checkout switch; requests are rejected regardless of value. */
     HOSTED_CHECKOUT_ENABLED?: string;
     HOSTED_CHECKOUT_SUCCESS_URL?: string;
     HOSTED_CHECKOUT_CANCEL_URL?: string;
@@ -62,7 +56,6 @@ declare namespace Cloudflare {
     HOSTED_SYNC_LIMITS?: string;
     /** Optional operator-only HMAC key map for billing administration endpoints. */
     HOSTED_OPERATOR_KEYS?: string;
-    /** Legacy hosted device-limit enforcement switch. Does not gate Sync/Mesh billing. */
     HOSTED_BILLING_ENFORCEMENT?: string;
     /**
      * ENV-09: service binding to the `anvil-mesh-provisioner` worker that

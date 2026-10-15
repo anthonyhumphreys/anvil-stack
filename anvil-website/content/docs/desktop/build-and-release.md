@@ -1,7 +1,7 @@
 ---
 title: Build and release
 navTitle: Build and release
-description: Development, testing, packaging, signing, and distribution notes for Anvil Desktop.
+description: Develop, test, package and release Anvil Desktop on macOS, Windows and Linux.
 product: Anvil Desktop
 section: Guides
 journey: build
@@ -10,7 +10,7 @@ order: 230
 
 # Build and release
 
-Anvil Desktop is an Electron app with native dependencies. Build and release work should respect that reality instead of treating it like a static website with delusions of grandeur.
+Anvil Desktop is an Electron app with native dependencies, so building and releasing it takes a little more care than a website.
 
 ## Local development
 
@@ -62,7 +62,7 @@ Typical release concerns:
 - update and distribution strategy
 - release notes and verification evidence
 
-The unsigned internal path and the signed/notarized path are different release modes. Do not treat a local DMG that opens on one machine as release validation.
+Unsigned internal builds and signed, notarised builds are different release paths. A DMG that opens on your machine isn't proof a release works.
 
 ## Tag-triggered packages
 
@@ -107,4 +107,4 @@ For a release candidate, keep:
 - known limitations
 - rollback or rebuild notes
 
-Release notes should tell maintainers what changed and how it was verified. They do not need to pretend every build was a spiritual event.
+Release notes should say what changed and how it was checked. Keep them plain.

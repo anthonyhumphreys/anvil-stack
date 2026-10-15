@@ -1,7 +1,7 @@
 ---
 title: Self-deploy the backend
 navTitle: Self-deploy the backend
-description: Deploy the official Sync & Mesh backend to your own Cloudflare account with the anvil-cloud mesh commands — plan, apply, connection, remove.
+description: Plan, deploy, connect to and remove a Sync & Mesh backend in your own Cloudflare account.
 product: Anvil Sync & Mesh
 section: Guides
 journey: build
@@ -10,10 +10,9 @@ order: 90
 
 # Self-deploy the backend
 
-The backend is provider-neutral and the deployment story is honest about it:
-you run the same worker the Anvil-hosted option runs, on your own Cloudflare
-account, with the `anvil-cloud` CLI. Backend source lives in the desktop repo
-at `anvil-app/cloud/backend`; the CLI that deploys it lives in `anvil-cloud`.
+Run the Sync & Mesh backend in your own Cloudflare account with the
+`anvil-cloud` CLI. It uses the same Worker source as Anvil-hosted, from
+`anvil-app/cloud/backend`. The CLI lives in `anvil-cloud`.
 
 Four commands cover the lifecycle: `plan`, `apply`, `connection`, `remove`.
 All accept `--json` for automation.

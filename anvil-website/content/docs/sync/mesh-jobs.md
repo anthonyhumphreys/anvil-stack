@@ -68,7 +68,7 @@ Routes are selected automatically. Managed HTTPS endpoints use an operator-
 configured provider proxy, not a peer-to-peer connection. They are off by
 default and not available to every host or deployment.
 
-The activity view keeps an honesty contract:
+The activity view combines saved history and live output:
 
 - durable replay fills the history up to the point you joined;
 - live frames append as they journal;
@@ -83,7 +83,7 @@ permitted to decide. An approval pinned to another device, or raised by this
 device's own worker, shows what it is waiting on instead of offering buttons
 that would no-op.
 
-## Honest states
+## Job status
 
 Job states are labeled by what is actually known:
 

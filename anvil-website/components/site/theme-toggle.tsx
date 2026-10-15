@@ -59,11 +59,13 @@ export function ThemeToggle() {
     window.dispatchEvent(new Event(preferenceChangeEvent));
   }
 
-  const label = `Theme: ${preference}`;
+  const next = preferences[(preferences.indexOf(preference) + 1) % preferences.length];
+  const names: Record<ThemePreference, string> = { system: "match system", dark: "dark", light: "light" };
+  const label = `Theme: ${names[preference]}. Switch to ${names[next]}`;
   const Icon = preference === "dark" ? Moon : preference === "light" ? Sun : Monitor;
 
   return (
-    <Button type="button" variant="outline" size="icon" aria-label={label} title={label} onClick={cyclePreference}>
+    <Button type="button" variant="ghost" size="icon" aria-label={label} title={label} onClick={cyclePreference}>
       <Icon aria-hidden="true" />
     </Button>
   );

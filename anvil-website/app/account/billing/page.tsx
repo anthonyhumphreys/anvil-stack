@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
-import { BillingActions } from "@/components/account/billing-actions";
+import { BetaCodeForm, BillingActions } from "@/components/account/billing-actions";
 import { EntitlementStateBadge, entitlementSummary } from "@/components/account/entitlement";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDate, hostedFailureMessage, loadAccountContext, tryHosted } from "@/lib/account";
 import { getBilling } from "@/lib/hosted";
 import type { HostedIdentity } from "@/lib/hosted/types";
 
-export const metadata: Metadata = { title: "Billing history | Anvil" };
+export const metadata: Metadata = { title: "Hosted Sync & Mesh billing | Anvil" };
 
 export default async function BillingPage() {
   const ctx = await loadAccountContext();
@@ -24,11 +24,11 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
   return (
     <div className="grid gap-6">
       <header className="grid gap-2">
-        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Billing history</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Hosted Sync &amp; Mesh</h1>
         <p className="max-w-3xl text-sm leading-6 text-muted-foreground">
-          Sync &amp; Mesh are free. Old subscriptions do not unlock additional Sync or
-          Mesh features. If a legacy subscription still renews, use its payment portal to review or
-          cancel it.
+          A subscription pays for Anvil-hosted Sync &amp; Mesh, not the desktop app.
+          Invited beta testers can redeem a code below without a payment method.
+          Desktop and self-hosting stay free. View <Link href="/pricing" className="underline underline-offset-4">pricing</Link>.
         </p>
       </header>
 
@@ -49,8 +49,7 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
             </p>
           ) : billing.code === "not-found" ? (
             <p className="text-sm text-muted-foreground">
-              No hosted account exists yet. Pair a device to create one. Sync &amp; Mesh do not
-              require a billing account.
+              No hosted account exists yet. Redeem your beta invitation or connect a device after waitlist approval.
             </p>
           ) : (
             <p className="text-sm text-muted-foreground">
@@ -60,13 +59,17 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader><CardTitle>Have a beta invitation?</CardTitle></CardHeader>
+        <CardContent><BetaCodeForm /></CardContent>
+      </Card>
+
       {billing.ok && billing.data.teamSponsorship !== null ? (
         <Card>
           <CardHeader>
-            <CardTitle>Legacy organisation subscription</CardTitle>
+            <CardTitle>Organisation subscription</CardTitle>
             <CardDescription>
-              Historical billing record for {billing.data.teamSponsorship.organizationName}.
-              Sync &amp; Mesh access does not depend on it.
+              Hosted access funded by {billing.data.teamSponsorship.organizationName}.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
@@ -95,7 +98,7 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
               ) : null}
             </dl>
             <p className="text-xs leading-5 text-muted-foreground">
-              Organisation owners can review or cancel legacy billing on the{" "}
+              Organisation owners can manage billing on the{" "}
               <Link href="/account/organizations" className="underline underline-offset-4">
                 organisation account page
               </Link>
@@ -108,11 +111,11 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
       {billing.ok ? (
         <Card>
           <CardHeader>
-            <CardTitle>Legacy personal subscription</CardTitle>
+            <CardTitle>Personal subscription</CardTitle>
             <CardDescription>
               {billing.data.subscription === null
                 ? "No personal subscription record is on file."
-                : "Existing payment-provider record. It does not change Sync & Mesh access."}
+                : "Manage your Anvil-hosted Sync & Mesh subscription."}
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4">
@@ -145,20 +148,24 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
               </dl>
             ) : (
               <p className="text-sm text-muted-foreground">
-                No subscription is needed to use Sync &amp; Mesh.
+                You don&apos;t have a personal subscription. A beta code or an assigned paid team seat can also grant hosted access.
               </p>
             )}
             {billing.data.pendingCheckout !== null ? (
               <p className="text-sm text-muted-foreground">
-                An unfinished legacy checkout is still on file. It does not affect your Sync &amp;
-                Mesh access.
+                A checkout is unfinished. Access starts only after payment is confirmed.
               </p>
             ) : null}
             <BillingActions
+              checkoutAvailable={billing.data.checkoutAvailable}
+              hasSubscription={billing.data.subscription !== null &&
+                (!["canceled", "incomplete_expired"].includes(billing.data.subscription.status) ||
+                  billing.data.entitlement.fundedBy === "personal")}
               hasStripeCustomer={
                 billing.data.subscription !== null || billing.data.pendingCheckout !== null
               }
             />
+            {!billing.data.checkoutAvailable ? <p className="text-sm text-muted-foreground">Paid signup is not open yet. <Link href="/waitlist" className="underline underline-offset-4">Join the waitlist</Link>; invited testers receive a beta code.</p> : null}
             {billing.data.lastReconcileAt !== null || billing.data.lastWebhookAt !== null ? (
               <p className="text-xs text-muted-foreground">
                 Billing history refreshed: {formatDate(billing.data.lastReconcileAt) ?? "never"} ·

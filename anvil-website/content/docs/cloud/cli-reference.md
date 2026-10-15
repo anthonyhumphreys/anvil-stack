@@ -458,8 +458,7 @@ anvil cloud destroy --preview --app notes --name branch --yes --json
 ```
 
 Deletes the computed AWS preview CloudFormation stack for a Cell. The command
-requires `--app` and `--yes` because accidental cleanup commands are how preview
-environments become a small billing-themed mystery novel.
+requires `--app` to identify the Cell and `--yes` to confirm deletion.
 
 Before deleting the stack, destroy empties stack-owned S3 buckets exposed by
 CloudFormation outputs, including client assets and Cell files when present. If

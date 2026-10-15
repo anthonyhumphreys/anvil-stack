@@ -95,20 +95,17 @@ export function MeshSchematic({ className }: { className?: string }) {
   return (
     <figure className={className} aria-labelledby="mesh-schematic-title" role="group">
       <figcaption id="mesh-schematic-title" className="sr-only">
-        Diagram of Anvil sync topology: three devices exchange sealed envelopes through a backend relay
-        that sees the shape of traffic but never the content. Jobs dispatch to a workstation worker;
-        a checkpoint crosses between laptop and workstation during session handoff.
+        A MacBook, a Mac Studio and an iPhone exchange encrypted changes through a relay that can see
+        their sizes but never their contents. Jobs are sent to the Mac Studio to run, and a checkpoint
+        moves between the MacBook and the Mac Studio when a session is handed over.
       </figcaption>
       <div className="forge-panel forge-grid">
         <div className="forge-window-bar" aria-hidden="true">
           <span className="dot dot--ember" />
           <span className="dot" />
           <span className="dot" />
-          <span className="ml-2 font-mono text-[0.6875rem] text-[oklch(var(--forge-dim))]">
-            sync topology — live
-          </span>
-          <span className="ml-auto font-mono text-[0.6875rem] text-[oklch(var(--forge-dim))]">
-            anvil sync v1
+          <span className="ml-2 text-[0.75rem] text-[oklch(var(--forge-dim))]">
+            Three of your devices, one relay
           </span>
         </div>
         <svg
@@ -142,10 +139,10 @@ export function MeshSchematic({ className }: { className?: string }) {
               transform="translate(0 2)"
             />
             <text x="320" y="272" textAnchor="middle" className="schematic-node-title">
-              backend relay
+              relay
             </text>
             <text x="320" y="286" textAnchor="middle" className="schematic-node-label">
-              sees shape, not content
+              sees sizes, never contents
             </text>
           </g>
 
@@ -153,7 +150,7 @@ export function MeshSchematic({ className }: { className?: string }) {
           <g>
             <DeviceGlyph x={112} y={72} kind="laptop" />
             <text x="140" y="140" textAnchor="middle" className="schematic-node-title">
-              macbook
+              MacBook
             </text>
             <text x="140" y="154" textAnchor="middle" className="schematic-node-label">
               this device
@@ -162,16 +159,16 @@ export function MeshSchematic({ className }: { className?: string }) {
           <g>
             <DeviceGlyph x={472} y={58} kind="tower" />
             <text x="492" y="134" textAnchor="middle" className="schematic-node-title">
-              workstation
+              Mac Studio
             </text>
             <text x="492" y="148" textAnchor="middle" className="schematic-node-label">
-              mesh worker
+              runs your jobs
             </text>
           </g>
           <g>
             <DeviceGlyph x={487} y={318} kind="phone" />
             <text x="502" y="392" textAnchor="middle" className="schematic-node-title">
-              iphone
+              iPhone
             </text>
             <text x="502" y="406" textAnchor="middle" className="schematic-node-label">
               companion
@@ -187,32 +184,29 @@ export function MeshSchematic({ className }: { className?: string }) {
 
           {/* annotations */}
           <text x="212" y="112" className="schematic-annotation schematic-annotation--ember">
-            sealed · aes-256-gcm
+            sealed, AES-256-GCM
           </text>
           <text x="452" y="96" textAnchor="end" className="schematic-annotation">
-            job · prepare-workspace
+            job: run the tests
           </text>
           <text x="440" y="300" className="schematic-annotation">
-            pull · unseal
+            pull, then decrypt
           </text>
-          <text x="320" y="48" textAnchor="middle" className="schematic-annotation">
-            checkpoint · handoff
+          <text x="320" y="34" textAnchor="middle" className="schematic-annotation">
+            session handoff
           </text>
           <text x="168" y="176" className="schematic-annotation">
-            outbox → seal → push
+            save, seal, send
           </text>
 
           {/* legend */}
           <g transform="translate(24 396)">
             <rect x="0" y="-5" width="14" height="10" rx="2.5" className="schematic-packet" />
-            <text x="20" y="3" className="schematic-caption">sealed envelope</text>
-            <rect x="130" y="-3" width="9" height="9" transform="rotate(45 134.5 1.5)" className="schematic-packet-job" />
-            <text x="152" y="3" className="schematic-caption">job dispatch</text>
-            <rect x="246" y="-3" width="8" height="8" rx="1.5" className="schematic-packet-checkpoint" />
-            <text x="262" y="3" className="schematic-caption">checkpoint</text>
-            <text x="592" y="3" textAnchor="end" className="schematic-caption">
-              fig. 01
-            </text>
+            <text x="20" y="3" className="schematic-caption">encrypted change</text>
+            <rect x="150" y="-3" width="9" height="9" transform="rotate(45 154.5 1.5)" className="schematic-packet-job" />
+            <text x="168" y="3" className="schematic-caption">job</text>
+            <rect x="216" y="-3" width="8" height="8" rx="1.5" className="schematic-packet-checkpoint" />
+            <text x="232" y="3" className="schematic-caption">checkpoint</text>
           </g>
         </svg>
       </div>

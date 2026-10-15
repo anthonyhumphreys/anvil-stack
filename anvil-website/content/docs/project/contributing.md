@@ -10,7 +10,7 @@ order: 20
 
 # Contributing
 
-Anvil lives in the [`anvil-stack`](https://github.com/anthonyhumphreys/anvil-stack) monorepo. Contributions should land in the project directory that owns the surface being changed.
+Anvil lives in the [`anvil-stack`](https://github.com/anthonyhumphreys/anvil-stack) monorepo. Make changes in the project directory that owns the feature.
 
 ## Project boundaries
 
@@ -83,9 +83,9 @@ test(worker): add name-squatting check for hyphen variants
 
 ## Code of conduct
 
-Be precise, be honest, and do not optimise for theatre over substance.
+Include the commands you ran, their results and anything you couldn't verify.
 
 ## Read next
 
-- [Open source posture](/docs/project/open-source)
+- [Open source](/docs/project/open-source)
 - [Monorepo map](/docs/project/repositories)

@@ -1,278 +1,184 @@
-import { env, runInDurableObject } from 'cloudflare:test';
-import { describe, expect, it, vi } from 'vitest';
-
-import type { HostedEntitlement } from '../../contract/entitlements';
-import type { ExecutionManifest, JobCreateParams, JobCreateResult } from '../../contract/jobs';
-import type { SyncPushResult } from '../../contract/sync';
-import type { AccountCoordinator } from '../src/account-coordinator';
-import { checkHostedAccess, hostedConfigIssues, resolveAccountEntitlement } from '../src/hosted/enforcement';
-import { PREVIEW_END_MS } from '../src/hosted/policy';
-import { expectSuccess, hashedChange, postRpc, spikeBearer, uniqueIds } from './helpers';
+import { env } from 'cloudflare:test';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  checkHostedAccess,
+  hostedConfigIssues,
+  resolveAccountEntitlement,
+} from '../src/hosted/enforcement';
+import { betaCodeHash, handleBetaRedeem } from '../src/hosted/beta';
+import { getOrCreateBillingAccount } from '../src/hosted/store';
+import { handleMachineApiRequest, issueHostedMachineAdmission } from '../src/hosted/machine-api';
+import { hashedChange, postRpc, spikeBearer, uniqueIds } from './helpers';
 
 const DAY = 86_400_000;
+const db = env.HOSTED_DB!;
+beforeEach(() => {
+  env.HOSTED_BILLING_ENFORCEMENT = 'true';
+});
+afterEach(() => {
+  env.HOSTED_BILLING_ENFORCEMENT = 'false';
+});
 
-function hostedDb(): D1Database {
-  const db = env.HOSTED_DB;
-  if (db === undefined) throw new Error('HOSTED_DB binding missing in test env');
-  return db;
-}
-
-function fixture(label: string) {
-  const ids = uniqueIds(label);
-  const enrollmentId = `${ids.enrollmentId}-source`;
-  return {
-    accountId: ids.accountId,
-    enrollmentId,
-    auth: spikeBearer(ids.accountId, enrollmentId),
+async function fixture() {
+  const ids = uniqueIds('paid-hosted');
+  const identity = {
+    workosClientId: 'client_hosted_test',
+    workosUserId: `user_${crypto.randomUUID()}`,
   };
-}
-
-async function linkBillingAccount(accountId: string, lifecycle = 'active'): Promise<string> {
-  const now = Date.now();
-  const id = `ba_${crypto.randomUUID().replaceAll('-', '')}`;
-  await hostedDb()
-    .prepare(
-      `INSERT INTO billing_accounts
-         (id, workos_client_id, workos_user_id, sync_account_id, generation,
-          lifecycle, preview_eligible, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 1, ?, 0, ?, ?)`,
-    )
-    .bind(id, `client_${id}`, `user_${id}`, accountId, lifecycle, now, now)
+  const account = await getOrCreateBillingAccount(db, identity);
+  await db
+    .prepare('UPDATE billing_accounts SET sync_account_id = ? WHERE id = ?')
+    .bind(ids.accountId, account.id)
     .run();
-  return id;
+  return { ...ids, identity, account, auth: spikeBearer(ids.accountId, ids.enrollmentId) };
 }
-
-async function addLegacySubscription(
-  billingAccountId: string,
-  status: 'active' | 'past_due' | 'canceled' | 'unpaid' | 'incomplete',
-): Promise<void> {
-  const now = Date.now();
-  await hostedDb()
+async function issueCode(accessUntil = Date.now() + DAY, redeemUntil = Date.now() + DAY) {
+  const code = `anvil_beta_${crypto.randomUUID().replaceAll('-', '')}`;
+  const hash = await betaCodeHash(code);
+  await db
     .prepare(
-      `INSERT INTO stripe_subscriptions
-         (stripe_subscription_id, stripe_customer_id, billing_account_id, status,
-          plan_key, interval, current_period_end, paid_through, paid_seat_quantity,
-          cancel_at_period_end, has_paid_invoice, first_failed_renewal_at,
-          verified_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'sync_personal', 'month', ?, ?, 1, 0, 1, NULL, ?, ?, ?)`,
+      'INSERT INTO hosted_beta_codes (code_hash, redeem_until, access_until, created_at) VALUES (?, ?, ?, ?)',
     )
-    .bind(
-      `sub_${crypto.randomUUID().replaceAll('-', '')}`,
-      `cus_${crypto.randomUUID().replaceAll('-', '')}`,
-      billingAccountId,
-      status,
-      now - DAY,
-      now - DAY,
-      now,
-      now,
-      now,
-    )
+    .bind(hash, redeemUntil, accessUntil, Date.now())
     .run();
+  return { code, hash };
+}
+async function redeem(identity: { workosClientId: string; workosUserId: string }, code: string) {
+  return handleBetaRedeem({ ...identity, code }, env, db);
 }
 
-function manifest(): ExecutionManifest {
-  return {
-    workspaceDefinitionRevision: 'wsdef-rev-1',
-    repositories: [{ repositoryId: 'repo-1', commit: '0123456789abcdef' }],
-    bootstrapDigest: 'sha256:bootstrap-1',
-    provider: 'codex',
-    model: 'gpt-5',
-    configVersions: { 'agent-settings': 'v3' },
-    inputs: { workspaceId: 'ws-1' },
-  };
-}
-
-function expectForbidden(response: { status: number; body: unknown }, reason: string): void {
-  expect(response.status).toBe(403);
-  expect(response.body).toMatchObject({ error: { code: 'forbidden', details: { reason } } });
-}
-
-describe('hosted Sync and Mesh access', () => {
-  it('allows writes after preview expiry with a canceled legacy Sync subscription', async () => {
-    const f = fixture('free-after-preview');
-    const billingAccountId = await linkBillingAccount(f.accountId);
-    await addLegacySubscription(billingAccountId, 'canceled');
-    const now = PREVIEW_END_MS + DAY;
-    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      const change = await hashedChange({ enrollmentSequence: 1, entityId: 'ws-free' });
-      const pushed = expectSuccess<SyncPushResult>(
-        await postRpc('sync.push', { changes: [change] }, f.auth),
+describe('paid hosted access and beta redemption', () => {
+  it('gates direct Mesh admission, managed endpoints and session renewal without blocking release', async () => {
+    const f = await fixture();
+    const auth = { accountId: f.accountId, enrollmentId: f.enrollmentId };
+    for (const path of [
+      '/v1/mesh/admission-tickets/consume',
+      '/v1/mesh/hosts/machine-1/admission-tickets',
+      '/v1/mesh/hosts/machine-1/endpoint',
+      '/v1/mesh/hosts/machine-1/connector-token',
+      '/v1/mesh/hosts/machine-1/presence',
+      '/v1/mesh/hosts/machine-1/sessions/revalidate',
+    ]) {
+      const response = await handleMachineApiRequest(
+        new Request(`https://example.test${path}`, {
+          method: 'POST',
+          body: JSON.stringify({ action: 'allocate', ticket: 'test' }),
+        }),
+        env,
+        auth,
       );
-      expect(pushed.results[0]?.status).toBe('accepted');
-
-      const params: JobCreateParams = {
-        requestId: crypto.randomUUID(),
-        payloadHash: 'a'.repeat(64),
-        kind: 'diagnostic',
-        requestedTarget: { kind: 'auto' },
-        inputManifest: manifest(),
-      };
-      const created = expectSuccess<JobCreateResult>(await postRpc('job.create', params, f.auth));
-      expect(created.job.state).toBe('queued');
-
-      const targetEnrollmentId = `${f.enrollmentId}-target`;
-      expectSuccess(
-        await postRpc(
-          'sync.push',
-          { changes: [] },
-          spikeBearer(f.accountId, targetEnrollmentId),
-        ),
-      );
-      expectSuccess(
-        await postRpc(
-          'handoff.create',
-          {
-            handoffId: crypto.randomUUID(),
-            sessionId: `session-${crypto.randomUUID()}`,
-            sourceEnrollmentId: f.enrollmentId,
-            targetEnrollmentId,
-            sourceGeneration: 1,
-          },
-          f.auth,
-        ),
-      );
-    } finally {
-      dateNow.mockRestore();
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ error: { code: 'subscription-required' } });
     }
+    const browserAdmission = await issueHostedMachineAdmission(env, f.accountId, {
+      machineId: 'machine-1',
+      endpointGeneration: 'a'.repeat(16),
+      clientPublicKey: 'key',
+      bootstrapChallenge: 'challenge',
+      grantId: 'grant',
+      origin: 'https://example.test',
+      requestId: 'request',
+    });
+    expect(browserAdmission.status).toBe(403);
+    expect(await browserAdmission.json()).toMatchObject({
+      error: { code: 'subscription-required' },
+    });
+    const release = await handleMachineApiRequest(
+      new Request('https://example.test/v1/mesh/hosts/machine-1/endpoint', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'release' }),
+      }),
+      env,
+      auth,
+    );
+    expect(await release.json()).not.toMatchObject({ error: { code: 'subscription-required' } });
   });
 
-  it.each(['active', 'past_due', 'canceled', 'unpaid', 'incomplete'] as const)(
-    'returns free capabilities for legacy subscription status %s',
-    async (status) => {
-      const ids = uniqueIds(`legacy-${status}`);
-      const billingAccountId = await linkBillingAccount(ids.accountId);
-      await addLegacySubscription(billingAccountId, status);
-      const future = PREVIEW_END_MS + DAY;
-      const entitlement = await resolveAccountEntitlement(env, ids.accountId, future);
-      expect(entitlement).toMatchObject({
-        state: 'active',
-        source: 'none',
-        planKey: null,
-        fundedBy: 'none',
-        capabilities: { syncWrite: true, meshSubmit: true },
-        accessUntil: null,
-        reason: 'free',
+  it('denies hosted Sync and Mesh mutations but keeps reads and export available', async () => {
+    const f = await fixture();
+    for (const [operation, params] of [
+      ['sync.push', { changes: [] }],
+      ['job.create', {}],
+      ['handoff.create', {}],
+    ] as const) {
+      const response = await postRpc(operation, params, f.auth);
+      expect(response.status).toBe(403);
+      expect(response.body).toMatchObject({
+        error: { details: { reason: 'subscription-required' } },
       });
-    },
-  );
-
-  it('keeps access available when billing storage is unavailable', async () => {
-    const unavailableDb = {
-      prepare: () => {
+    }
+    expect((await postRpc('sync.pull', { cursor: null, maxBytes: 16384 }, f.auth)).status).toBe(
+      200,
+    );
+    expect((await postRpc('data.export.begin', {}, f.auth)).status).toBe(200);
+  });
+  it('redeems a code once, retries idempotently, and grants both capabilities', async () => {
+    const f = await fixture();
+    const other = await fixture();
+    const { code } = await issueCode();
+    const responses = await Promise.all([redeem(f.identity, code), redeem(other.identity, code)]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 403]);
+    const winner = responses[0].status === 200 ? f : other;
+    expect((await redeem(winner.identity, code.toUpperCase())).status).toBe(200);
+    expect(await resolveAccountEntitlement(env, winner.accountId, Date.now())).toMatchObject({
+      state: 'preview',
+      capabilities: { syncWrite: true, meshSubmit: true },
+    });
+    const change = await hashedChange({ enrollmentSequence: 1, entityId: 'beta-workspace' });
+    expect((await postRpc('sync.push', { changes: [change] }, winner.auth)).status).toBe(200);
+  });
+  it('expires and revokes beta access without trusting the old preview flag', async () => {
+    const f = await fixture();
+    const until = Date.now() + DAY;
+    const { code, hash } = await issueCode(until, until);
+    expect((await redeem(f.identity, code)).status).toBe(200);
+    expect((await resolveAccountEntitlement(env, f.accountId, until)).state).toBe('restricted');
+    await db
+      .prepare('UPDATE hosted_beta_codes SET revoked_at = ? WHERE code_hash = ?')
+      .bind(Date.now(), hash)
+      .run();
+    expect((await resolveAccountEntitlement(env, f.accountId, Date.now())).state).toBe(
+      'restricted',
+    );
+    expect((await redeem(f.identity, code)).status).toBe(403);
+  });
+  it('rejects invalid and expired codes and deleted accounts', async () => {
+    const f = await fixture();
+    const { code } = await issueCode(Date.now() + DAY, Date.now() - 1);
+    expect((await redeem(f.identity, code)).status).toBe(403);
+    expect((await redeem(f.identity, 'not-a-code')).status).toBe(403);
+    const fresh = await issueCode();
+    await db
+      .prepare("UPDATE billing_accounts SET lifecycle = 'deleted' WHERE id = ?")
+      .bind(f.account.id)
+      .run();
+    expect((await redeem(f.identity, fresh.code)).status).toBe(403);
+  });
+  it('fails closed during a hosted billing database outage, but never bills self-hosted deployments', async () => {
+    const unavailable = {
+      prepare() {
         throw new Error('D1 unavailable');
       },
     } as unknown as D1Database;
-    const bindingEnv = env as unknown as Record<string, unknown>;
-    const originalDb = bindingEnv['HOSTED_DB'];
-    bindingEnv['HOSTED_DB'] = unavailableDb;
-    try {
-      const access = await checkHostedAccess(
-        {} as DurableObjectStorage,
-        { HOSTED_DB: unavailableDb, HOSTED_BILLING_ENFORCEMENT: 'true' } as unknown as Env,
-        'acct-billing-outage',
-        PREVIEW_END_MS + DAY,
-      );
-      expect(access).toEqual({ allowed: true, entitlement: null });
-
-      // Exercise the normal mutation gates too: they must not consult D1
-      // merely to authorize free Sync writes or provider-neutral Mesh jobs.
-      const ids = fixture('billing-outage-writes');
-      const change = await hashedChange({ enrollmentSequence: 1, entityId: 'ws-outage' });
-      const pushed = expectSuccess<SyncPushResult>(
-        await postRpc('sync.push', { changes: [change] }, ids.auth),
-      );
-      expect(pushed.results[0]?.status).toBe('accepted');
-
-      const created = expectSuccess<JobCreateResult>(
-        await postRpc(
-          'job.create',
-          {
-            requestId: crypto.randomUUID(),
-            payloadHash: 'b'.repeat(64),
-            kind: 'diagnostic',
-            requestedTarget: { kind: 'auto' },
-            inputManifest: manifest(),
-          } satisfies JobCreateParams,
-          ids.auth,
-        ),
-      );
-      expect(created.job.state).toBe('queued');
-    } finally {
-      bindingEnv['HOSTED_DB'] = originalDb;
-    }
+    expect(
+      await checkHostedAccess({ ...env, HOSTED_DB: unavailable }, 'missing', Date.now()),
+    ).toMatchObject({ allowed: false, reason: 'billing-unavailable' });
+    expect(
+      await checkHostedAccess({ ...env, HOSTED_DB: undefined }, 'missing', Date.now()),
+    ).toMatchObject({ allowed: false, reason: 'billing-unavailable' });
+    expect(
+      await checkHostedAccess(
+        { ...env, HOSTED_BILLING_ENFORCEMENT: 'false', HOSTED_DB: unavailable },
+        'missing',
+        Date.now(),
+      ),
+    ).toEqual({ allowed: true, entitlement: null });
   });
-
-  it('keeps operator fair-use restrictions and deletion recovery in force', async () => {
-    const ids = fixture('fair-use');
-    const first = await hashedChange({ enrollmentSequence: 1, entityId: 'workspace-to-delete' });
-    expectSuccess<SyncPushResult>(await postRpc('sync.push', { changes: [first] }, ids.auth));
-    const now = Date.now();
-    await runInDurableObject(
-      env.ACCOUNT.get(env.ACCOUNT.idFromName(ids.accountId)),
-      (_instance: AccountCoordinator, state) => {
-        state.storage.sql.exec(
-          `INSERT INTO sync_meta (key, value) VALUES ('fair_use_restriction', ?)
-           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          JSON.stringify({
-            code: 'storage-usage',
-            message: 'Reduce retained data or contact support.',
-            noticeAt: new Date(now - DAY).toISOString(),
-            restrictAt: new Date(now - 1_000).toISOString(),
-            emergency: false,
-          }),
-        );
-      },
-    );
-
-    const blocked = await postRpc(
-      'sync.push',
-      { changes: [await hashedChange({ enrollmentSequence: 2, entityId: 'new-workspace' })] },
-      ids.auth,
-    );
-    expectForbidden(blocked, 'fair-use-restricted');
-
-    const deletion = await hashedChange({
-      enrollmentSequence: 2,
-      entityId: 'workspace-to-delete',
-      operation: 'delete',
-    });
-    const removed = expectSuccess<SyncPushResult>(
-      await postRpc('sync.push', { changes: [deletion] }, ids.auth),
-    );
-    expect(removed.results[0]?.status).toBe('accepted');
-    expect((await postRpc('sync.pull', { cursor: null, maxBytes: 16384 }, ids.auth)).status).toBe(
-      200,
-    );
-  });
-
-  it('preserves lifecycle denial when the billing account is deleting or deleted', async () => {
-    for (const lifecycle of ['deleting', 'deleted'] as const) {
-      const ids = uniqueIds(`lifecycle-${lifecycle}`);
-      const billingAccountId = await linkBillingAccount(ids.accountId, lifecycle);
-      const entitlement = await resolveAccountEntitlement(env, ids.accountId, Date.now());
-      expect(entitlement).toMatchObject({
-        state: 'restricted',
-        capabilities: { syncWrite: false, meshSubmit: false },
-        reason: 'account-deleted',
-      } satisfies Partial<HostedEntitlement>);
-      expect(billingAccountId).toBeTruthy();
-    }
-  });
-});
-
-describe('hostedConfigIssues', () => {
-  it('is quiet when device-limit enforcement is off and requires its hosted bindings when on', () => {
-    expect(hostedConfigIssues({} as unknown as Env)).toEqual([]);
-    expect(hostedConfigIssues({ HOSTED_BILLING_ENFORCEMENT: 'true' } as unknown as Env)).toEqual([
+  it('requires the hosted bindings when enforcement is enabled', () => {
+    expect(hostedConfigIssues({} as Env)).toEqual([]);
+    expect(hostedConfigIssues({ HOSTED_BILLING_ENFORCEMENT: 'true' } as Env)).toEqual([
       'HOSTED_DB',
       'HOSTED_SERVICE_KEYS',
     ]);
-    expect(
-      hostedConfigIssues({
-        HOSTED_BILLING_ENFORCEMENT: 'true',
-        HOSTED_DB: hostedDb(),
-      } as unknown as Env),
-    ).toEqual(['HOSTED_SERVICE_KEYS']);
   });
 });

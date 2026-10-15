@@ -181,7 +181,15 @@ function validateHostedConfig(hosted, base, rawHostedText = '') {
     );
   }
   if (vars.HOSTED_CHECKOUT_ENABLED === 'true') {
-    issues.push('vars.HOSTED_CHECKOUT_ENABLED must not enable retired Sync subscriptions');
+    for (const key of ['STRIPE_PRICE_SYNC_MONTHLY', 'STRIPE_PRICE_SYNC_ANNUAL', 'STRIPE_PRICE_TEAM_MONTHLY', 'STRIPE_PRICE_TEAM_ANNUAL']) {
+      if (typeof vars[key] !== 'string' || !/^price_[A-Za-z0-9_]+$/.test(vars[key]))
+        issues.push(`vars.${key} is required for hosted checkout`);
+    }
+    for (const key of ['HOSTED_CHECKOUT_SUCCESS_URL', 'HOSTED_CHECKOUT_CANCEL_URL', 'HOSTED_PORTAL_RETURN_URL']) {
+      let valid = false;
+      try { valid = new URL(vars[key]).protocol === 'https:'; } catch {}
+      if (!valid) issues.push(`vars.${key} must be an HTTPS URL for hosted checkout`);
+    }
   }
   if (!['true', 'false'].includes(vars.ANVIL_CLOUD_AGENTS_ENABLED)) {
     issues.push("vars.ANVIL_CLOUD_AGENTS_ENABLED must be the literal string 'true' or 'false'");
@@ -447,7 +455,7 @@ function runSelfCheck() {
   for (const expected of [
     'placeholder',
     'HOSTED_BILLING_ENFORCEMENT',
-    'HOSTED_CHECKOUT_ENABLED',
+    'STRIPE_PRICE_SYNC_MONTHLY',
     'ANVIL_CLOUD_AGENTS_ENABLED',
     'ANVIL_DEV_SPIKE',
     'migrations',

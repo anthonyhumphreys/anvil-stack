@@ -10,7 +10,7 @@ order: 40
 
 # Node Base reports
 
-Anvil Node Base reports are designed for humans and automation. JSON files drive gates and dashboards; Markdown files help reviewers read the evidence without spelunking through raw logs.
+Node Base writes JSON reports for CI checks and Markdown reports for reviewers. Use them to inspect what an install did and decide whether a finding needs attention.
 
 ## Report directory
 

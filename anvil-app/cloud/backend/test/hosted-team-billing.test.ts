@@ -31,7 +31,7 @@ function testEnv(): Env {
   return {
     ...env,
     HOSTED_BILLING_ENVIRONMENT: 'staging',
-    HOSTED_CHECKOUT_ENABLED: 'true',
+    HOSTED_CHECKOUT_ENABLED: 'false',
     HOSTED_ALLOW_EARLY_CHECKOUT: 'true',
     STRIPE_SECRET_KEY: 'sk_test_fake',
     STRIPE_WEBHOOK_SECRET: 'whsec_testfake0123456789',
@@ -289,7 +289,7 @@ describe('hosted team seat billing', () => {
 
     await recordInvoicePaid(hostedDb(), fixture.subscriptionId, Date.now());
     expect(await getOrganizationTeamCapacity(hostedDb(), fixture.organizationId, Date.now())).toBe(
-      5,
+      8,
     );
   });
 
@@ -402,7 +402,7 @@ describe('hosted team seat billing', () => {
     expect(state).toEqual({
       preview_seat_capacity: 5,
       effective_seat_capacity: 5,
-      scheduled_seat_capacity: null,
+      scheduled_seat_capacity: 9,
     });
   });
 

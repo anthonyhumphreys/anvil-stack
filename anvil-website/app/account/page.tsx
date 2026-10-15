@@ -29,6 +29,9 @@ export default async function AccountOverviewPage() {
         <p className="text-sm text-muted-foreground">
           Your sign-in, Sync &amp; Mesh status, and paired devices.
         </p>
+        <Link href="/account/billing" className="mt-2 w-fit text-sm font-medium underline underline-offset-4">
+          Redeem a beta code or manage hosted Sync &amp; Mesh
+        </Link>
       </header>
 
       <Card>
@@ -114,25 +117,25 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-xs font-medium text-muted-foreground">Legacy billing record</dt>
+                  <dt className="text-xs font-medium text-muted-foreground">Access funded by</dt>
                   <dd className="mt-0.5 text-sm">
                     {entitlement.data.fundedBy === "team" ? (
                       <Link href="/account/organizations" className="underline underline-offset-4">
-                        Legacy organisation subscription
+                        Organisation subscription
                       </Link>
                     ) : entitlement.data.fundedBy === "personal" ? (
-                      "Legacy personal subscription"
+                      "Personal subscription"
                     ) : entitlement.data.fundedBy === "preview" ? (
-                      "Preview record"
+                      "Beta invitation"
                     ) : (
-                      "No subscription required"
+                      <Link href="/account/billing" className="underline underline-offset-4">Subscribe or redeem a beta code</Link>
                     )}
                   </dd>
                 </div>
               </dl>
               {entitlement.data.planKey ? (
                 <p className="text-sm text-muted-foreground">
-                  Legacy plan key: <span className="font-mono text-xs">{entitlement.data.planKey}</span>
+                  Plan: <span className="font-mono text-xs">{entitlement.data.planKey}</span>
                 </p>
               ) : null}
             </>

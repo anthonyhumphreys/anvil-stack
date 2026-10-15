@@ -56,7 +56,7 @@ It handles:
 - `GET /@:scope/:packageName/-/:tarballName`
 - Anvil-specific explain, policy, report, and override routes.
 
-Metadata responses are normalized, filtered, and rewritten so tarball URLs continue to point through Anvil. If tarballs escape back to upstream, the gateway is doing theatre with extra latency.
+Metadata responses are normalized, filtered and rewritten so tarball URLs point through Anvil. A direct upstream tarball URL would let the install bypass gateway policy.
 
 ## Worker
 

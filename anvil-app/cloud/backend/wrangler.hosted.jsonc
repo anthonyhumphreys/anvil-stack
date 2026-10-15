@@ -16,24 +16,21 @@
   // See docs/runbooks/hosted-sync/deploy.md in anvil-app for the complete
   // branch-testing sequence and per-target generated configuration.
   //
-  // Hosted identity and legacy billing cleanup. WorkOS and the service keys
-  // are required for the hosted surface. Stripe remains optional for existing
-  // billing history/portal cleanup; Sync checkout is retired and never opens
-  // a new subscription. Secrets via `wrangler secret put`, never in vars:
+  // Hosted identity and billing. Stripe is optional during code-only beta.
+  // Secrets via `wrangler secret put`, never in vars:
   //   WORKOS_API_KEY          WorkOS environment key for org + invite APIs
   //   WORKOS_WEBHOOK_SECRET   signing secret for /v1/hosted/workos-webhook
   //   HOSTED_SERVICE_KEYS     website -> backend HMAC map (BILL-01)
   //   HOSTED_OPERATOR_KEYS    separate operator-only HMAC map (optional)
   // Vars:
-  //   HOSTED_CHECKOUT_ENABLED       always false; legacy purchase endpoints reject
+  //   HOSTED_CHECKOUT_ENABLED       false during beta; explicit true opens paid signup
   //   HOSTED_PORTAL_RETURN_URL      fixed portal return target for existing billing
   //   HOSTED_BILLING_ENVIRONMENT    generated as 'staging' or 'production'
   //   HOSTED_ADMITTED_WORKOS_USER_IDS JSON array of reviewed existing user_... IDs, if needed
   //   STRIPE_API_BASE               test-only override; forbidden in production
   //   HOSTED_SYNC_LIMITS            JSON partial override of default quotas
   //
-  // HOSTED_BILLING_ENFORCEMENT enables the hosted device-limit preflight.
-  // It never gates Sync or Mesh on subscriptions or billing-provider state.
+  // HOSTED_BILLING_ENFORCEMENT gates hosted writes on paid or redeemed beta access.
   //
   // ENV-09: MANAGED_PROVISIONER binds the anvil-mesh-provisioner worker
   // (cloud/provisioner) so `anvil-managed` environments run on Anvil-operated

@@ -1,7 +1,7 @@
 ---
 title: Anvil Cloud
 navTitle: Overview
-description: Build Anvil Cells with typed contracts, local runtime, generated manifests, and adapter-based deployment. Anvil Cloud Agents hosted compute is planned and unavailable.
+description: Build small TypeScript apps called Cells, run them locally, inspect the generated output and try the AWS preview adapter.
 product: Anvil Cloud
 section: Start here
 journey: learn
@@ -10,19 +10,17 @@ order: 10
 
 # Anvil Cloud
 
-Anvil Cloud is the project in `anvil-cloud`: a local-first TypeScript platform
-for small app units called Anvil Cells.
+Anvil Cloud lets you build and run small TypeScript apps called Cells. Its
+runtime and CLI live in the `anvil-cloud` directory.
 
-Anvil Cloud is the open-source runtime and CLI. Anvil Cloud Agents is the
-planned hosted compute service for running agents on infrastructure operated
-by Anvil. That service is unavailable and disabled by default; it will be paid
-when released, but no price or release date has been set. Existing integrations
-run on machines or provider accounts you configure, and those providers bill
-you directly.
+The runtime and CLI are open source. You run them on your own machines or
+provider accounts, and providers bill you directly. Anvil Cloud Agents will
+offer machines we host for running agents. That paid service hasn't launched
+and has no price or release date yet.
 
 A Cell declares app behavior, data shape, and required capabilities. Anvil runs it locally through the same request boundary used by deployment adapters, then emits manifests, generated client metadata, and deploy artifacts that can be inspected before anything reaches a provider.
 
-The goal is not to make AWS easier to spray around. The goal is to give developers and coding agents a smaller app contract that is easier to understand, test, review, and deploy through controlled adapters.
+Cell definitions give developers and coding agents a consistent way to describe behaviour, test it locally and review the deployment plan before creating cloud resources.
 
 ## Current package layout
 

@@ -12,7 +12,7 @@ order: 180
 
 This is the first public version of Anvil Registry and Anvil Node Base. It is an alpha release: useful for review, local trials, CI experiments, and early operator feedback, but not something to drop in front of every production install path without a careful rollout.
 
-The project is intentionally open about its edges. Dependency security tools are not helped by pretending a young system has been forged in the fires of ten thousand incident reports. It has not. Use it with that context.
+Start with a local trial and inspect its package decisions before changing team or CI configuration. The sections below describe what has been tested and what still needs work.
 
 ## Good alpha use cases
 

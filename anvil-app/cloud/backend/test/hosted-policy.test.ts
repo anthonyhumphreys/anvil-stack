@@ -1,22 +1,20 @@
 import { describe, expect, it } from 'vitest';
-
 import {
   evaluateHostedEntitlement,
   PREVIEW_END_MS,
-  PREVIEW_ENDS_AT,
   type HostedPolicyInput,
   type HostedSubscriptionState,
 } from '../src/hosted/policy';
 
 const DAY = 86_400_000;
-
+const NOW = PREVIEW_END_MS + 30 * DAY;
 function input(overrides: Partial<HostedPolicyInput> = {}): HostedPolicyInput {
   return {
-    now: PREVIEW_END_MS - DAY,
+    now: NOW,
     lifecycle: 'active',
     previewEligible: true,
     revision: 1,
-    limits: { devices: 3, artifactBytes: 1024, historyBytes: 1024 },
+    limits: { devices: 5, artifactBytes: null, historyBytes: null },
     subscriptions: [],
     billingUnavailable: false,
     renewalGraceDays: 7,
@@ -24,79 +22,123 @@ function input(overrides: Partial<HostedPolicyInput> = {}): HostedPolicyInput {
     ...overrides,
   };
 }
-
 function sub(overrides: Partial<HostedSubscriptionState> = {}): HostedSubscriptionState {
   return {
     planKey: 'sync_personal',
     status: 'active',
     hasPaidInvoice: true,
-    paidThrough: PREVIEW_END_MS + 30 * DAY,
+    paidThrough: NOW + DAY,
     failedRenewalAt: null,
     cancelAtPeriodEnd: false,
-    verifiedAt: PREVIEW_END_MS - DAY,
+    verifiedAt: NOW - DAY,
     ...overrides,
   };
 }
 
-describe('evaluateHostedEntitlement', () => {
-  it.each([PREVIEW_END_MS - 1, PREVIEW_END_MS, PREVIEW_END_MS + 365 * DAY])(
-    'grants the free Sync/Mesh capabilities at %s regardless of the preview deadline',
+describe('hosted entitlement policy', () => {
+  it.each([PREVIEW_END_MS - 1, PREVIEW_END_MS, NOW])(
+    'never grants a blanket preview at %s',
     (now) => {
-      const result = evaluateHostedEntitlement(input({ now, previewEligible: false }));
-      expect(result).toMatchObject({
-        state: 'active',
-        source: 'none',
-        planKey: null,
-        fundedBy: 'none',
-        organizationId: null,
-        capabilities: { syncWrite: true, meshSubmit: true },
-        accessUntil: null,
-        graceUntil: null,
-        reason: 'free',
+      expect(evaluateHostedEntitlement(input({ now }))).toMatchObject({
+        state: 'restricted',
+        reason: 'subscription-required',
+        capabilities: { syncWrite: false, meshSubmit: false },
       });
-      expect(result.previewEndsAt).toBe(PREVIEW_ENDS_AT);
-      expect(result.checkedAt).toBe(new Date(now).toISOString());
-      expect(result.limits).toEqual({ devices: 3, artifactBytes: 1024, historyBytes: 1024 });
     },
   );
-
-  it.each([
-    'active',
-    'past_due',
-    'incomplete',
-    'incomplete_expired',
-    'canceled',
-    'unpaid',
-    'paused',
-    'trialing',
-  ] as const)('does not let a legacy %s Sync subscription alter free capabilities', (status) => {
-    const result = evaluateHostedEntitlement(
-      input({
-        now: PREVIEW_END_MS + DAY,
-        subscriptions: [sub({ status })],
-        billingUnavailable: true,
-      }),
-    );
-    expect(result.state).toBe('active');
-    expect(result.reason).toBe('free');
-    expect(result.capabilities).toEqual({ syncWrite: true, meshSubmit: true });
-    expect(result.accessUntil).toBeNull();
+  it('grants paid access through the paid period, including scheduled cancellation', () => {
+    expect(
+      evaluateHostedEntitlement(input({ subscriptions: [sub({ cancelAtPeriodEnd: true })] })),
+    ).toMatchObject({
+      state: 'active',
+      source: 'subscription',
+      fundedBy: 'personal',
+      reason: 'paid',
+      accessUntil: new Date(NOW + DAY).toISOString(),
+    });
   });
-
-  it.each(['deleting', 'deleted'] as const)(
-    'denies capabilities when account lifecycle is %s',
-    (lifecycle) => {
-      const result = evaluateHostedEntitlement(
-        input({ now: PREVIEW_END_MS + DAY, lifecycle }),
+  it.each(['incomplete', 'incomplete_expired', 'unpaid', 'paused', 'trialing'] as const)(
+    'does not grant access for %s',
+    (status) => {
+      expect(evaluateHostedEntitlement(input({ subscriptions: [sub({ status })] })).state).toBe(
+        'restricted',
       );
-      expect(result.state).toBe('restricted');
-      expect(result.reason).toBe('account-deleted');
-      expect(result.capabilities).toEqual({ syncWrite: false, meshSubmit: false });
-      expect(result.accessUntil).toBeNull();
     },
   );
-
-  it('rejects malformed time, revision, and quota input', () => {
+  it('requires a confirmed invoice even for an active subscription', () => {
+    expect(
+      evaluateHostedEntitlement(input({ subscriptions: [sub({ hasPaidInvoice: false })] })).state,
+    ).toBe('restricted');
+  });
+  it('grants beta access only until the redeemed code expires', () => {
+    expect(evaluateHostedEntitlement(input({ betaAccessUntil: NOW + 1 }))).toMatchObject({
+      state: 'preview',
+      source: 'preview',
+      reason: 'preview',
+      accessUntil: new Date(NOW + 1).toISOString(),
+    });
+    expect(evaluateHostedEntitlement(input({ betaAccessUntil: NOW })).state).toBe('restricted');
+  });
+  it('bounds renewal grace by both the paid period and first failed renewal', () => {
+    const subscription = sub({
+      status: 'past_due',
+      paidThrough: NOW - DAY,
+      failedRenewalAt: NOW - DAY,
+    });
+    expect(evaluateHostedEntitlement(input({ subscriptions: [subscription] }))).toMatchObject({
+      state: 'grace',
+      source: 'renewal-grace',
+      graceUntil: new Date(NOW + 6 * DAY).toISOString(),
+    });
+    expect(
+      evaluateHostedEntitlement(input({ now: NOW + 6 * DAY, subscriptions: [subscription] })).state,
+    ).toBe('restricted');
+    expect(
+      evaluateHostedEntitlement(
+        input({ subscriptions: [sub({ ...subscription, failedRenewalAt: NOW - 8 * DAY })] }),
+      ).state,
+    ).toBe('restricted');
+  });
+  it('does not revive stale paid records during an outage', () => {
+    expect(
+      evaluateHostedEntitlement(
+        input({ billingUnavailable: true, subscriptions: [sub({ paidThrough: NOW - DAY })] }),
+      ),
+    ).toMatchObject({ state: 'unknown', reason: 'billing-unavailable' });
+    expect(
+      evaluateHostedEntitlement(
+        input({
+          billingUnavailable: true,
+          subscriptions: [sub({ paidThrough: NOW - 1, verifiedAt: NOW - 1 })],
+        }),
+      ),
+    ).toMatchObject({ state: 'grace', source: 'outage-grace' });
+  });
+  it('uses a paid team seat when no personal subscription exists', () => {
+    expect(
+      evaluateHostedEntitlement(
+        input({
+          sponsorship: { organizationId: 'org-1', subscriptions: [sub({ planKey: 'sync_team' })] },
+        }),
+      ),
+    ).toMatchObject({
+      state: 'active',
+      fundedBy: 'team',
+      organizationId: 'org-1',
+      planKey: 'sync_team',
+    });
+  });
+  it.each(['deleting', 'deleted'] as const)('never grants access to a %s account', (lifecycle) => {
+    expect(
+      evaluateHostedEntitlement(
+        input({ lifecycle, betaAccessUntil: NOW + DAY, subscriptions: [sub()] }),
+      ),
+    ).toMatchObject({ state: 'restricted', reason: 'account-deleted' });
+  });
+  it('fails closed on invalid subscription timestamps and rejects invalid policy input', () => {
+    expect(
+      evaluateHostedEntitlement(input({ subscriptions: [sub({ paidThrough: Number.NaN })] })).state,
+    ).toBe('restricted');
     expect(() => evaluateHostedEntitlement(input({ now: Number.NaN }))).toThrow(
       'Invalid hosted policy input',
     );
@@ -104,7 +146,9 @@ describe('evaluateHostedEntitlement', () => {
       'Invalid hosted policy input',
     );
     expect(() =>
-      evaluateHostedEntitlement(input({ limits: { devices: 0, artifactBytes: null, historyBytes: null } })),
+      evaluateHostedEntitlement(
+        input({ limits: { devices: 0, artifactBytes: null, historyBytes: null } }),
+      ),
     ).toThrow('Invalid hosted policy input');
   });
 });

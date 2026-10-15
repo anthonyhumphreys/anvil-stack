@@ -1,7 +1,7 @@
 ---
 title: Desktop architecture
 navTitle: Architecture
-description: How Anvil Desktop separates Electron main process services, preload IPC, shared contracts, renderer UI, SQLite, and companion packages.
+description: How the desktop app's main process, preload bridge, interface, database and companion packages fit together.
 product: Anvil Desktop
 section: Concepts
 journey: learn
@@ -10,7 +10,7 @@ order: 240
 
 # Desktop architecture
 
-Anvil Desktop follows the standard Electron split, with a deliberately narrow bridge between privileged services and renderer UI.
+Anvil Desktop uses the standard Electron split: a privileged main process, an interface in the renderer, and a deliberately narrow bridge between them. This page is for contributors.
 
 ```txt
 src/main
@@ -39,7 +39,7 @@ Typical feature shape:
 4. Handler translates the result into the shared IPC shape.
 5. Renderer receives data through `window.anvil`.
 
-Keep business logic in services. IPC files should not become tiny untested product managers.
+Keep business logic in services. IPC handlers should validate, delegate and translate, nothing more.
 
 ## Preload bridge
 
@@ -53,11 +53,11 @@ When adding a capability:
 4. Expose the method in preload.
 5. Call it from renderer code.
 
-If a renderer component can bypass that path, the architecture has stopped being an architecture and started being a suggestion.
+If a renderer component can get around that path, the boundary isn't doing its job.
 
 ## Shared contracts
 
-`src/shared` is where process-boundary types live. Keep anything crossing IPC explicit and serializable.
+`src/shared` is where process-boundary types live. Anything that crosses IPC should be explicit and serialisable.
 
 Good shared types:
 
@@ -94,7 +94,7 @@ Renderer code should focus on:
 - invoking preload methods
 - rendering results and evidence
 
-It should not quietly run shell commands, write repository files, or manage secrets. Decorative privilege escalation is still privilege escalation.
+It shouldn't run shell commands, write repository files or handle secrets, even when that would be convenient.
 
 ## Persistence
 
@@ -134,4 +134,4 @@ Renderer review button
   -> renderer review panel
 ```
 
-That shape is the default. When a new feature needs privileged behavior, extend the same chain rather than inventing a side path.
+That's the default shape. When a new feature needs privileged access, extend the same chain rather than adding a shortcut.

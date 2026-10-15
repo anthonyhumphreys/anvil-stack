@@ -130,6 +130,46 @@ function readHeadings(content: string): DocHeading[] {
   }));
 }
 
+function escapeHtml(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+const codeLanguageLabels: Record<string, string> = {
+  bash: "Terminal",
+  sh: "Terminal",
+  shell: "Terminal",
+  zsh: "Terminal",
+  console: "Terminal",
+  ts: "TypeScript",
+  typescript: "TypeScript",
+  tsx: "TypeScript",
+  js: "JavaScript",
+  javascript: "JavaScript",
+  json: "JSON",
+  jsonc: "JSON",
+  yaml: "YAML",
+  yml: "YAML",
+  toml: "TOML",
+  sql: "SQL",
+  dockerfile: "Dockerfile",
+  http: "HTTP",
+  text: "Text",
+  txt: "Text"
+};
+
+// Callouts: GitHub-style `> [!NOTE]` or a blockquote that opens with a bold
+// "Note:", "Info:", "Tip:", "Warning:" or "Important:" label.
+const calloutKinds: Record<string, "note" | "tip" | "warning"> = {
+  note: "note",
+  info: "note",
+  tip: "tip",
+  important: "warning",
+  warning: "warning",
+  caution: "warning"
+};
+
+const calloutTitles = { note: "Note", tip: "Tip", warning: "Warning" } as const;
+
 async function renderMarkdown(content: string) {
   const slug = createSlugger();
   const renderer = new Renderer();
@@ -137,7 +177,34 @@ async function renderMarkdown(content: string) {
     const html = this.parser.parseInline(tokens);
     const text = tokens.map((token) => "text" in token ? String(token.text) : "").join("");
     const id = slug(text || html);
-    return `<h${depth} id="${id}" class="group/doc-heading"><a class="doc-heading-anchor" href="#${id}" aria-label="Link to ${stripMarkdown(text || html)}">${html}<span aria-hidden="true">#</span></a></h${depth}>`;
+    return `<h${depth} id="${id}" class="group/doc-heading"><a class="doc-heading-anchor" href="#${id}" aria-label="Link to ${escapeHtml(stripMarkdown(text || html))}">${html}<span aria-hidden="true">#</span></a></h${depth}>`;
+  };
+  renderer.code = function ({ text, lang }) {
+    const language = (lang ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+    const label = codeLanguageLabels[language] ?? (language ? language.toUpperCase() : "Code");
+    const className = language ? ` class="language-${escapeHtml(language)}"` : "";
+    return `<div class="doc-code"><div class="doc-code-bar"><span>${escapeHtml(label)}</span><button type="button" class="doc-code-copy" data-copy-code>Copy</button></div><pre><code${className}>${escapeHtml(text)}</code></pre></div>`;
+  };
+  renderer.blockquote = function ({ tokens }) {
+    let body = this.parser.parse(tokens);
+    const marker = body.match(/^<p>\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
+    const label = body.match(/^<p><strong>(Note|Info|Tip|Important|Warning|Caution)\b:?\s*([^<]*)<\/strong>/i);
+    const kind = marker
+      ? calloutKinds[marker[1].toLowerCase()]
+      : label
+        ? calloutKinds[label[1].toLowerCase()]
+        : undefined;
+    if (!kind) return `<blockquote>${body}</blockquote>`;
+    // Already-rendered HTML from marked; the label match excludes tags.
+    let titleHtml: string = calloutTitles[kind];
+    if (marker) {
+      body = body.replace(marker[0], "<p>").replace(/^<p>\s*<\/p>/, "");
+    } else if (label) {
+      const rest = label[2].trim().replace(/^[:\s]+/, "");
+      titleHtml = rest || titleHtml;
+      body = body.replace(label[0], "<p>").replace(/^<p>\s*<\/p>/, "");
+    }
+    return `<aside class="doc-callout doc-callout--${kind}"><p class="doc-callout-title">${titleHtml}</p>${body}</aside>`;
   };
   return marked.parse(content, { renderer });
 }

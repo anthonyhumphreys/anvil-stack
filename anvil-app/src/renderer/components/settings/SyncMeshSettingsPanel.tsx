@@ -318,7 +318,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
       />
 
       {runtime?.auth.state === 'signed-in' && (
-        <details className="rounded-lg border border-border bg-bg-secondary">
+        <details
+          open={hosted?.restricted || undefined}
+          className="rounded-lg border border-border bg-bg-secondary"
+        >
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-text-primary [&::-webkit-details-marker]:hidden">
             <span>Account, devices, and browser access</span>
             <span className="text-xs font-normal text-text-tertiary">
@@ -333,7 +336,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                   fairUse.notice !== undefined)) && (
                 <Panel
                   title="Sync service status"
-                  description="Sync and Mesh are free. Service protections may temporarily pause hosted writes while leaving your local data available."
+                  description="Anvil-hosted Sync and Mesh requires a subscription or beta invitation. Self-hosted backends stay free. Local work remains available."
                 >
                   {hosted.restricted && (
                     <div className="rounded-md border border-error/30 bg-error/5 p-2" role="status">
@@ -341,8 +344,25 @@ export function SyncMeshSettingsPanel(): ReactNode {
                         <AlertTriangle size={13} className="mt-0.5 shrink-0 text-error" />
                         {hosted.reason === 'device-limit-exceeded'
                           ? 'Sync writes are paused because this account is over its configured device allowance. Revoke a device you no longer use or ask your service operator to review the limit, then retry.'
-                          : 'Sync writes are paused by account or service policy. Your local changes remain on this device; you can still pull and export data, manage devices, and delete the account.'}
+                          : hosted.reason === 'subscription-required' ||
+                              hosted.reason === 'preview-ended'
+                            ? 'Redeem your beta invitation or manage your subscription in your Anvil account to resume hosted Sync and Mesh. You can still pull and export data, manage devices, and delete the account.'
+                            : 'Sync writes are paused by account or service policy. Your local changes remain on this device; you can still pull and export data, manage devices, and delete the account.'}
                       </p>
+                      {(hosted.reason === 'subscription-required' ||
+                        hosted.reason === 'preview-ended') && (
+                        <button
+                          type="button"
+                          className="mt-2 rounded-md border border-border px-3 py-2 text-xs text-text-primary hover:bg-bg-tertiary"
+                          onClick={() =>
+                            void window.anvil.syncRuntime
+                              .openHostedAccount()
+                              .catch((error) => setError(toErrorMessage(error)))
+                          }
+                        >
+                          Open Anvil account
+                        </button>
+                      )}
                     </div>
                   )}
                   {fairUse !== null &&

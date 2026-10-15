@@ -1,7 +1,7 @@
 ---
 title: Agent Sandboxes
 navTitle: Agent Sandboxes
-description: The Agent Sandbox contract and current local and provider-backed execution paths. Anvil Cloud Agents hosted compute is planned, paid, unavailable, and disabled by default.
+description: Run agents in isolated workspaces, follow their progress, pause for approval and resume from saved state.
 product: Anvil Cloud
 section: Concepts
 journey: learn
@@ -10,24 +10,19 @@ order: 130
 
 # Agent Sandboxes
 
-Agent Sandboxes are the runtime shape for serious Anvil Agent execution: isolated,
-inspectable, sessionful workspaces where an agent can run tools, operate a repo,
-wait for approval, resume with state, and leave evidence behind.
+An Agent Sandbox gives an agent an isolated workspace to run tools and work on
+a repository. You can inspect its activity, pause for approval and resume from
+saved state.
 
-The execution foundation now exists: Anvil has provider-neutral sandbox and
-execution contracts, resumable cursor events, durable local lease storage, a
-deterministic conformance provider, an authenticated HTTP boundary,
-content-addressed source snapshots, a provider-neutral worker boundary, a
-runnable CLI service, an opt-in Desktop workbench, and an AWS Lambda MicroVM
-read-only transport. Anvil Cloud Agents is the planned Anvil-operated hosted
-compute service for this runtime. It is unavailable and disabled by default,
-and will be paid when released. No price or release date has been set. The
-hosted service still needs a compatible deployed worker image, provider login
-runners, production persistence, Lens topology, and real-account verification.
+The alpha includes local execution, persisted events, source snapshots, a CLI
+service and an optional Desktop view. The AWS Lambda MicroVM adapter supports
+read-only execution. The sections below describe the contracts and their limits.
 
-This hosted service is separate from running agents on your machines or in
-cloud accounts you configure. Anvil does not charge for those existing
-provider integrations; your cloud and model providers bill you directly.
+Anvil Cloud Agents will let you run this work on machines we host. It hasn't
+launched, and no price or release date has been set. It still needs a deployed
+worker image, provider login runners, production storage, Lens integration and
+testing with real accounts. Existing integrations use your own machines or
+provider accounts; those providers bill you directly.
 
 ## Why sandboxes exist
 

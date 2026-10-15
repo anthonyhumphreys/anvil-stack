@@ -1,42 +1,50 @@
 # Intent
 
-Anvil should feel like a precise workshop: calm, inspectable, and built for real engineering work. The interface uses proof and structure to create confidence, with small moments of forge-orange warmth.
+Anvil should feel like a precise workshop: calm, inspectable, and built for real engineering work. The site earns trust by showing the tools working, not by describing them.
 
-The signature visual language is the **living schematic**: technical diagrams of the real mechanism — devices, sealed envelopes, jobs, keys — drawn with hairline rules, monospace annotations, and motion that reads as the system actually running. Marketing pages show the mechanism working, not illustrations of the mechanism. If a visual could not be mistaken for something in the repo's own docs, it is too glossy.
+The signature is **the workbench**: an authored, scroll-built view of Anvil Desktop doing a real job — open a repo, hand an agent a task, review the change, hand it on. Everything else on a page stays quiet so that one moment carries the story. Secondary visuals are **living schematics**: hairline diagrams of the real mechanism (devices, sealed envelopes, jobs) whose motion reads as the system running. If a visual could not be mistaken for something in the repo's own docs or app, it is too glossy.
 
 # Colors
 
+Light is the primary theme; dark follows the system or the toggle. Both use a cool steel neutral (hue ~250), never warm cream.
+
 ```yaml
-background: oklch(0.991 0.006 205)
-foreground: oklch(0.18 0.014 205)
-muted: oklch(0.955 0.008 205)
-muted-foreground: oklch(0.49 0.025 205)
-accent: oklch(0.74 0.18 58)
-border: oklch(0.895 0.013 205)
+paper: oklch(0.986 0.004 240)      # page ground
+ink: oklch(0.2 0.015 250)          # text, headings
+steel: oklch(0.5 0.02 250)         # secondary text
+rule: oklch(0.9 0.008 250)         # borders and dividers
+forge: oklch(0.72 0.18 52)         # primary action, live state, orientation
+forge-dark: oklch(0.16 0.014 250)  # bounded artifacts: app window, terminals, code, schematics
 ```
 
-Use orange for orientation, state, and the primary action. Do not spread it across large backgrounds or decorative gradients. Sealed/encrypted state in diagrams is marked with the accent plus a word — `sealed`, `AES-256-GCM` — never colour alone.
+Forge orange is the primary action fill (with ink text) and the live/working state. It never fills large backgrounds or decorative gradients. Encrypted or sealed state is marked with forge plus a word, never colour alone.
 
-Deep forge-dark surfaces (`oklch ~0.14–0.17`) are reserved for bounded artifacts: terminal windows, code panels, and schematic canvases. They are content, not page backgrounds; both site themes keep the same artifact treatment so a code window looks like a code window in light and dark mode alike.
+Forge-dark surfaces are reserved for bounded artifacts: the workbench window, terminals, code panels and schematics. They are content, not page backgrounds, and look the same in both site themes.
 
 # Typography
 
-Archivo is the interface and editorial face. JetBrains Mono marks commands, repositories, paths, measurements, and machine output — it is not used as a decorative "technical" costume. Headings are compact and balanced. Documentation body copy stays at 16px or larger with a readable line length.
+One family, two voices. **Archivo** set wide and heavy (`wdth` 112–118, weight 700, tracking −0.025em) is the display voice for page and section headings only — like a maker's mark struck into steel. Archivo at normal width (400/500/600) is the text and interface voice. **JetBrains Mono** marks commands, code, paths and machine output only; it is never a decorative "technical" label.
 
-Headings carry their own weight: no eyebrow, kicker, or section-number labels above them. Orientation comes from copy, not from a label strip.
+Body copy is 17px with 1.65 line height and a measure under 70ch. Headings carry their own weight: no eyebrows, kickers, all-caps labels, section numbers, or middle-dot meta strings. Orientation comes from copy.
 
-# Spacing
+# Layout
 
-Use an 8px base rhythm with 4px adjustments for compact controls. Public sections use generous vertical space; documentation navigation remains dense enough to scan. Touch targets are at least 44px.
+Left-aligned throughout. Content sits on a 12-column grid with a 76rem max width. Section headings hang in a left column (about a third) with the content to their right on large screens; on small screens they stack. Lists and divided rows carry comparisons; cards are reserved for bounded interactive objects. Borders do more work than shadows. Product pages include status, ownership, working proof and task paths.
+
+Use an 8px rhythm with 4px adjustments for compact controls. Public sections get generous vertical space; documentation navigation stays dense enough to scan. Touch targets are at least 44px.
 
 # Components
 
-Navigation uses active states, `aria-current`, linked breadcrumbs, and product-local grouping. Cards are reserved for bounded interactive objects; lists and divided rows carry most comparisons. Borders do more work than shadows. Product pages must include status, ownership, working proof, and task paths.
-
-**Schematic diagrams** are authored inline SVG: hairline strokes, node glyphs drawn at one consistent weight, dashed routes for in-flight work, mono annotations pinned to the elements they describe. Envelopes in flight render as small sealed packets; the backend is drawn as what it is — a relay that sees shapes, not content.
-
-**Terminal panels** render real command output with honest status words (`pass`, `valid`, `sealed`), never stock ticker theatre.
+- **Workbench stage**: a forge-dark app window built in HTML/CSS, labelled as an illustration. Its states change with scroll on large screens and render as a sequence of stills on small screens.
+- **Schematic diagrams**: authored inline SVG with hairline strokes, one glyph weight, dashed routes for in-flight work and mono annotations pinned to what they describe.
+- **Terminal panels**: real commands with honest status words (`pass`, `ready`), never ticker theatre.
+- **Buttons**: primary is forge-filled with ink text; secondary is a ruled outline. Arrows appear only on links that move you forward to a new place, not on every button.
+- **Docs**: code blocks are forge-dark with a copy button; notes and warnings are tinted callouts with a word label; every page links to its source on GitHub.
 
 # Interaction
 
-Motion is brief and functional — with two authored exceptions: the schematic's in-flight envelopes and the terminal's typed output may loop gently, because a system at rest tells the truth about being a system. Everything else animates once or not at all. Search opens with `/` or Command/Ctrl-K. Respect reduced-motion preferences: ambient loops stop entirely, nothing essential is conveyed by motion alone. Every action must have a visible keyboard focus state.
+Motion is brief and functional, with three authored exceptions: the workbench's step transitions and its live heat edge, the schematic's in-flight envelopes, and the terminal's typed output. Ambient loops pause off-screen and stop entirely under reduced motion; nothing essential is conveyed by motion alone. Search opens with `/` or Command/Ctrl-K. Every action has a visible keyboard focus state.
+
+# Voice
+
+Write for a developer deciding whether to try this today. Plain verbs, second person, short sentences, sentence case. Say what the thing does and what it costs. Be honest about what is alpha or not yet available, in one clear sentence rather than a pile of qualifiers. If a sentence could appear on any SaaS site, rewrite it.

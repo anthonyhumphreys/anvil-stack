@@ -1,7 +1,7 @@
 ---
 title: Encryption and keys
 navTitle: Encryption and keys
-description: How Sync & Mesh seals entities — AES-256-GCM envelopes, the versioned account data key, X25519 device identities, key distribution, rotation, and exactly what the server can read.
+description: How Sync & Mesh encrypts content, shares keys between devices, rotates them and limits what the server can read.
 product: Anvil Sync & Mesh
 section: Concepts
 journey: learn
@@ -10,9 +10,9 @@ order: 20
 
 # Encryption and keys
 
-Synced content is end-to-end encrypted. This page documents the implemented
-mechanism — not the intent, the code path — including the part most encryption
-marketing skips: the exact metadata the backend can still read.
+Sync & Mesh encrypts synced content on your device. This page explains the
+algorithms, device keys and key rotation used by the implementation, along
+with the metadata the backend can still read.
 
 ## The sealing model
 
