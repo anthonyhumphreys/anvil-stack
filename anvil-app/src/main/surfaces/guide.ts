@@ -3,6 +3,7 @@
 import { listAgentTools, type AgentToolSessionContext } from '../agent-tools/dispatch.js';
 
 const TOOL_GROUPS: ReadonlyArray<{ intent: string; prefixes: readonly string[] }> = [
+  { intent: 'Ask the user a question', prefixes: ['question_'] },
   { intent: 'Code review (turn, working tree, PR)', prefixes: ['review_'] },
   { intent: 'Security or audit findings', prefixes: ['findings_', 'security_'] },
   { intent: 'Dependencies, licences, SBOM', prefixes: ['deps_'] },
@@ -26,6 +27,7 @@ const SELECTION = [
 ];
 
 const TOOL_RULES = [
+  'When you need the user to choose or clarify, use `question_ask`. It works across providers and modes, pauses until the user answers, and returns their answers. Ask only what you need to proceed. Do not duplicate the question in prose. If cancelled or expired, continue only where their answer is not required.',
   'Tool results return a compact digest plus ids, not the payload. Use `surface_read` for detail. Patch tools need the `baseRevision` you last saw; a conflict means re-read, then retry.',
   'Publish with `streaming: true` when items will follow, patch them in, then call `surface_complete`.',
   'User actions and anchored comments arrive as JSON messages of type `anvil.surface.feedback`. Act on them, then patch the surface.',

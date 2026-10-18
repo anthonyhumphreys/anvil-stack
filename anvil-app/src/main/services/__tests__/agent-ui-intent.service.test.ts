@@ -268,6 +268,8 @@ describe('Agent UI intent service', () => {
     expect(() => validateAgentUIQuestionResolution(question, resolution)).not.toThrow();
     const resolved = recordAgentUIQuestionResolution(question, resolution);
     expect(resolved.lifecycle).toBe('resolved');
+    expect(JSON.stringify(resolved)).not.toContain('never-store-this');
+    expect(resolved.payload.response?.answers.secret).toBe('[redacted]');
 
     const row = database
       .prepare('SELECT response_json FROM agent_ui_intent_responses WHERE intent_id = ?')

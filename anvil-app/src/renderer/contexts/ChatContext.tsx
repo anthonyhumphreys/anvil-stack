@@ -4322,8 +4322,10 @@ function getThreadAttentionUpdate(
     };
   }
   if (event.type === 'agent_ui_intent' && event.agentUIIntent?.kind === 'question') {
+    const pending =
+      event.agentUIIntent.lifecycle === 'pending' || event.agentUIIntent.lifecycle === 'presented';
     return {
-      attentionState: 'input',
+      attentionState: pending ? 'input' : 'working',
       attentionUpdatedAt: now,
       activeTurnStartedAt: undefined,
       settledAt: undefined,

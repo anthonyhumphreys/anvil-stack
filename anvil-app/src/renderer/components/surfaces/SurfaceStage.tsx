@@ -66,14 +66,14 @@ function SurfaceStageFrame({
       aria-modal="false"
       aria-labelledby={titleId}
       tabIndex={-1}
-      className="surface-stage absolute inset-0 z-30 flex min-h-0 flex-col bg-bg-primary focus:outline-none"
+      className="surface-stage @container/preview absolute inset-0 z-30 flex min-h-0 flex-col bg-bg-primary focus:outline-none"
     >
       {intent ? (
         <StageContent intent={intent} titleId={titleId} onClose={onClose} />
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
           <h2 id={titleId} className="text-sm font-semibold text-text-primary">
-            Surface not found
+            Output unavailable
           </h2>
           <p className="max-w-sm text-xs text-text-secondary">
             “{surfaceId}” isn’t part of this conversation, or it hasn’t loaded yet.
@@ -101,8 +101,16 @@ function StageContent({
   const actions = useSurfaceActions(intent);
   const comments = useSurfaceComments(intent.id, true);
   const share = useSurfaceShare(intent);
-  const [railOpen, setRailOpen] = useState(true);
+  const [railOpen, setRailOpen] = useState(false);
   const [anchor, setAnchor] = useState<SurfaceAnchor | null>(null);
+  const addCommentRef = useRef<HTMLButtonElement>(null);
+
+  const finishComment = () => {
+    setAnchor(null);
+    window.requestAnimationFrame(() => {
+      if (document.activeElement === document.body) addCommentRef.current?.focus();
+    });
+  };
 
   const startComment = (next: SurfaceAnchor) => {
     if (!comments.supported) return;
@@ -152,7 +160,7 @@ function StageContent({
           onCommentSurface={() => startComment({ type: 'surface' })}
           share={share}
         />
-        <IconButton icon={X} label="Close stage (Esc)" onClick={onClose} />
+        <IconButton icon={X} label="Close preview (Esc)" onClick={onClose} />
       </header>
       {(actions.notice || share.error) && (
         <p
@@ -162,8 +170,8 @@ function StageContent({
           {share.error ?? actions.notice?.text}
         </p>
       )}
-      <div className="flex min-h-0 flex-1">
-        <main className="min-w-0 flex-1 overflow-auto px-6 py-5">
+      <div className="flex min-h-0 flex-1 flex-col @min-[900px]/preview:flex-row">
+        <main className="min-h-0 min-w-0 flex-1 overflow-auto px-4 py-5 @min-[900px]/preview:px-6">
           <SurfaceKindRenderer
             intent={intent}
             presentation="stage"
@@ -173,17 +181,22 @@ function StageContent({
             focusTargetId={context.stageTargetId ?? undefined}
           />
         </main>
-        {comments.supported && railOpen && (
+        {comments.supported && (
           <aside
             aria-label="Comments"
-            className="flex w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l border-border/60 bg-bg-secondary/40 p-3"
+            className={`${railOpen ? 'flex' : 'hidden'} max-h-[45%] w-full shrink-0 flex-col gap-3 overflow-y-auto border-t border-border/60 bg-bg-secondary/40 p-3 @min-[900px]/preview:max-h-none @min-[900px]/preview:w-80 @min-[900px]/preview:border-l @min-[900px]/preview:border-t-0`}
           >
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-xs font-semibold text-text-primary">
                 Comments{comments.comments.length > 0 ? ` (${comments.comments.length})` : ''}
               </h3>
               {!anchor && (
-                <Button variant="ghost" size="sm" onClick={() => setAnchor({ type: 'surface' })}>
+                <Button
+                  ref={addCommentRef}
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setAnchor({ type: 'surface' })}
+                >
                   Add comment
                 </Button>
               )}
@@ -191,10 +204,10 @@ function StageContent({
             {anchor && (
               <SurfaceCommentComposer
                 anchor={anchor}
-                onCancel={() => setAnchor(null)}
+                onCancel={finishComment}
                 onSubmit={async (body, sendToAgent) => {
                   await comments.add(anchor, body, sendToAgent);
-                  setAnchor(null);
+                  finishComment();
                 }}
               />
             )}

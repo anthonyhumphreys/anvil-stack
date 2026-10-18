@@ -1,3 +1,4 @@
+import type { AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
 import { describe, expect, it } from 'vitest';
 import type { ChatThread, Persona } from '../../../shared/types';
 import {
@@ -612,3 +613,62 @@ function buildThread(overrides: Partial<ChatThread> = {}): ChatThread {
     ...overrides,
   };
 }
+
+describe('saved answer receipt', () => {
+  it('restores one answered question at its original position with the saved answer', () => {
+    const timestamp = '2026-10-18T16:00:00.000Z';
+    const question: AgentUIQuestionIntent = {
+      protocolVersion: 1,
+      id: 'saved-question',
+      kind: 'question',
+      revision: 1,
+      scope: { threadId: 'thread-1' },
+      lifecycle: 'pending',
+      presentation: { collapsed: false, hidden: false },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      payload: {
+        questions: [
+          { id: 'layout', kind: 'yes_no', question: 'Compact?', required: true, allowCancel: true },
+        ],
+      },
+    };
+    const entries = chatMessagesToEntries([
+      {
+        id: 'q1',
+        role: 'system',
+        content: 'Question',
+        timestamp,
+        event: { type: 'agent_ui_intent', agentUIIntent: question },
+      },
+      {
+        id: 'q2',
+        role: 'system',
+        content: 'Answered',
+        timestamp,
+        event: {
+          type: 'agent_ui_intent',
+          agentUIIntent: {
+            ...question,
+            revision: 2,
+            lifecycle: 'resolved',
+            payload: {
+              ...question.payload,
+              response: { action: 'submit', answers: { layout: false } },
+            },
+          },
+        },
+      },
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: 'event',
+      event: {
+        agentUIIntent: {
+          lifecycle: 'resolved',
+          payload: { response: { answers: { layout: false } } },
+        },
+      },
+    });
+  });
+});

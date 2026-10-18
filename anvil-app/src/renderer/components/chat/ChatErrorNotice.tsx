@@ -37,7 +37,6 @@ export function ChatErrorNotice({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-text-primary">{classification.title}</p>
           <p className="mt-0.5 text-xs leading-5 text-text-tertiary">{classification.hint}</p>
-          <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-error">{error}</p>
         </div>
       </div>
 
@@ -68,15 +67,23 @@ export function ChatErrorNotice({
               ))}
             </Menu>
           )}
-        <Button variant="ghost" size="sm" onClick={() => navigate('/diagnostics')}>
-          <Stethoscope size={12} />
-          Open diagnostics
-        </Button>
         <Button variant="ghost" size="sm" onClick={() => navigate(classification.settingsPath)}>
           <Settings size={12} />
           {classification.settingsLabel}
         </Button>
       </div>
+      <details className="mt-3 pl-6 text-xs text-text-secondary">
+        <summary className="w-fit cursor-pointer rounded-sm underline-offset-4 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70">
+          Error details
+        </summary>
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg-primary/60 p-3 text-xs leading-5 text-text-secondary">
+          {error}
+        </pre>
+        <Button className="mt-2" variant="ghost" size="sm" onClick={() => navigate('/diagnostics')}>
+          <Stethoscope size={12} />
+          Open diagnostics
+        </Button>
+      </details>
     </div>
   );
 }

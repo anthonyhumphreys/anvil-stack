@@ -430,3 +430,45 @@ describe('shouldJoinAssistantSegments', () => {
     ).toBe(true);
   });
 });
+
+describe('question receipts', () => {
+  it('keeps answered questions in the conversation rather than the work log', () => {
+    const timestamp = '2026-10-18T16:00:00.000Z';
+    const [turn] = composeChatTurns([
+      { kind: 'user', content: 'Choose a layout' },
+      {
+        kind: 'event',
+        event: {
+          type: 'agent_ui_intent',
+          agentUIIntent: {
+            protocolVersion: 1,
+            id: 'question-1',
+            kind: 'question',
+            revision: 2,
+            scope: { threadId: 'thread-1' },
+            lifecycle: 'resolved',
+            presentation: { collapsed: true, hidden: false },
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            payload: {
+              questions: [
+                {
+                  id: 'layout',
+                  kind: 'yes_no',
+                  question: 'Compact?',
+                  required: true,
+                  allowCancel: true,
+                },
+              ],
+              response: { action: 'submit', answers: { layout: false } },
+            },
+          },
+        },
+      },
+      { kind: 'assistant', content: 'Roomy it is.', phase: 'final' },
+    ]);
+    expect(turn.work).toEqual([]);
+    expect(turn.questionReceipts?.[0].payload.response?.answers.layout).toBe(false);
+    expect(turn.answer?.content).toBe('Roomy it is.');
+  });
+});

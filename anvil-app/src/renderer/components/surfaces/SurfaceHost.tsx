@@ -124,7 +124,7 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
           onClick={() => context.scrollToSurface(supersedingId)}
           className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-text-secondary hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
-          Superseded by a newer version below
+          Updated version below
           <ArrowDown size={12} aria-hidden="true" />
         </button>
       </div>
@@ -151,7 +151,7 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
           disabled={!openStage}
           onClick={() => handleOpenStage()}
           className="flex min-w-0 flex-1 items-start gap-2 rounded-md text-left disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-primary"
-          aria-label={`${intent.payload.title}${openStage ? ', open stage' : ''}`}
+          aria-label={`${intent.payload.title}${openStage ? ', expand' : ''}`}
         >
           <SurfaceKindIcon
             kind={intent.payload.surfaceKind}
@@ -179,7 +179,7 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
             type="button"
             onClick={() => setSeenRevision(intent.revision)}
             className="mt-0.5 shrink-0 rounded-full border border-info/30 px-2 py-0.5 text-xs font-medium text-info hover:bg-info/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-            title="The agent updated this surface. Dismiss"
+            title="The agent updated this output. Dismiss"
           >
             Updated · v{intent.revision}
           </button>
@@ -189,7 +189,7 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
             {openStage && (
               <IconButton
                 icon={Maximize2}
-                label="Expand to stage"
+                label="Expand preview"
                 onClick={() => handleOpenStage()}
               />
             )}
@@ -242,7 +242,7 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
           >
             {!mounted || (streaming && isEmptySurfaceData(intent.payload.data)) ? (
               <SurfaceSkeleton
-                label={streaming ? 'The agent is writing this surface' : undefined}
+                label={streaming ? 'The agent is preparing this output' : undefined}
               />
             ) : (
               <SurfaceKindRenderer
@@ -259,7 +259,7 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
 
       {context.blockedWindowId === intent.id && (
         <p role="status" className="text-xs text-warning">
-          Anvil couldn’t open a window for this surface. Use Expand to view it on the stage.
+          This window couldn’t be opened. Use Expand preview to view it here.
         </p>
       )}
       {(actions.notice || share.error) && (
@@ -280,6 +280,9 @@ export function SurfaceHost({ intent: incoming }: { intent: AgentUISurfaceIntent
           onSubmit={async (body, sendToAgent) => {
             await comments.add(composerAnchor, body, sendToAgent);
             setComposerAnchor(null);
+            window.requestAnimationFrame(() => {
+              if (document.activeElement === document.body) handleRef.current?.focus();
+            });
           }}
         />
       )}

@@ -1,4 +1,4 @@
-import type { AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
+import type { AgentUIQuestionIntent, AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
 import type { CodexEvent } from '../../../shared/types';
 import type { ChatEntry } from '../../contexts/ChatContext';
 
@@ -59,6 +59,8 @@ export interface ComposedChatTurn {
   trailingWork: ChatTurnWorkItem[];
   /** Surfaces in publish order; compare `sourceIndex` with `answer` to place them. */
   surfaces: ChatTurnSurface[];
+  /** Answer receipts remain visible after their composer prompt closes. */
+  questionReceipts?: AgentUIQuestionIntent[];
   usage?: ChatTurnUsage;
   /** Provider-reported turn lifecycle. Missing means the provider supplied no terminal outcome. */
   runOutcome?: NonNullable<CodexEvent['turnOutcome']>;
@@ -191,6 +193,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
   const work: ChatTurnWorkItem[] = [];
   const trailingWork: ChatTurnWorkItem[] = [];
   const surfaces: ChatTurnSurface[] = [];
+  const questionReceipts: AgentUIQuestionIntent[] = [];
   const usage = emptyTurnUsage();
   const seenUsageIds = new Set<string>();
   let sawUsage = false;
@@ -220,6 +223,16 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     // activity list. Providers that do not report it leave it undefined.
     if (entry.kind === 'event' && entry.event.type === 'turn_outcome') {
       runOutcome = entry.event.turnOutcome;
+      continue;
+    }
+
+    if (
+      entry.kind === 'event' &&
+      entry.event.type === 'agent_ui_intent' &&
+      entry.event.agentUIIntent?.kind === 'question' &&
+      ['resolved', 'dismissed', 'expired'].includes(entry.event.agentUIIntent.lifecycle)
+    ) {
+      questionReceipts.push(entry.event.agentUIIntent);
       continue;
     }
 
@@ -278,6 +291,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     answer: answerSegment?.entry ?? null,
     trailingWork,
     surfaces,
+    ...(questionReceipts.length ? { questionReceipts } : {}),
     usage: sawUsage ? usage : undefined,
     runOutcome,
   };

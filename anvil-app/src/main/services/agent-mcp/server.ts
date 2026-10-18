@@ -3,7 +3,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import type { AgentToolSessionContext } from '../../agent-tools/dispatch.js';
+import { callAgentTool, type AgentToolSessionContext } from '../../agent-tools/dispatch.js';
 import { handleMcpPayload, jsonRpcError, JSON_RPC, type McpProtocolOptions } from './protocol.js';
 
 export const AGENT_MCP_PATH = '/mcp';
@@ -113,6 +113,10 @@ export function startAgentMcpServer(options: AgentMcpServerOptions): Promise<Age
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   /** Mcp-Session-Id → owning agent session. */
   const mcpSessions = new Map<string, string>();
+  const activeCalls = new Map<
+    string,
+    { sessionId: string; mcpSessionId?: string; abort: AbortController }
+  >();
   let port = 0;
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -146,6 +150,10 @@ export function startAgentMcpServer(options: AgentMcpServerOptions): Promise<Age
         return;
       }
       mcpSessions.delete(mcpSessionId);
+      for (const call of activeCalls.values()) {
+        if (call.sessionId === auth.sessionId && call.mcpSessionId === mcpSessionId)
+          call.abort.abort();
+      }
       send(res, 200);
       return;
     }
@@ -166,7 +174,31 @@ export function startAgentMcpServer(options: AgentMcpServerOptions): Promise<Age
       return;
     }
 
-    const outcome = await handleMcpPayload(auth.context, payload, options);
+    const keyFor = (id: string | number) =>
+      JSON.stringify([auth.sessionId, mcpSessionId ?? '', id]);
+    const outcome = await handleMcpPayload(auth.context, payload, {
+      ...options,
+      onCancelRequest: (id) => activeCalls.get(keyFor(id))?.abort.abort(),
+      runTool: async (ctx, id, name, args) => {
+        const key = keyFor(id);
+        if (activeCalls.has(key))
+          throw new Error('A tool call with this request ID is already active.');
+        const abort = new AbortController();
+        const onClose = () => {
+          if (!res.writableEnded) abort.abort();
+        };
+        activeCalls.set(key, { sessionId: auth.sessionId, mcpSessionId, abort });
+        res.once('close', onClose);
+        if (res.destroyed) abort.abort();
+        try {
+          return await callAgentTool(ctx, name, args, abort.signal);
+        } finally {
+          res.off('close', onClose);
+          activeCalls.delete(key);
+        }
+      },
+    });
+    if (res.destroyed) return;
     const headers: Record<string, string> = {};
     if (outcome.initialized) {
       const id = randomUUID();
@@ -206,6 +238,7 @@ export function startAgentMcpServer(options: AgentMcpServerOptions): Promise<Age
         url: `http://127.0.0.1:${port}${AGENT_MCP_PATH}`,
         close: () =>
           new Promise<void>((done) => {
+            for (const call of activeCalls.values()) call.abort.abort();
             server.closeAllConnections?.();
             server.close(() => done());
           }),

@@ -6,6 +6,7 @@ fixPath();
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session } from 'electron';
 import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { expirePendingAgentUIQuestions } from './services/agent-ui-intent.service.js';
 import { initDatabase } from './db/database.js';
 import { registerSettingsHandlers } from './ipc/settings.ipc.js';
 import { registerSyncBackendHandlers } from './ipc/sync-backend.ipc.js';
@@ -137,6 +138,7 @@ app.setName(
 );
 configureUserDataPath();
 initDatabase(brand.defaultTheme);
+expirePendingAgentUIQuestions();
 // The spike enrollment fixture is deliberately opt-in. Development builds
 // may enable it for a focused local fixture run, but unpackaged status alone
 // must never expose the enrollment path in the normal desktop UI.

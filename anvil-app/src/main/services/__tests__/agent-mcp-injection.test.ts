@@ -15,6 +15,8 @@ describe('Codex MCP spawn args', () => {
       'mcp_servers.anvil.url="http://127.0.0.1:43123/mcp"',
       '-c',
       'mcp_servers.anvil.bearer_token_env_var="ANVIL_MCP_TOKEN"',
+      '-c',
+      'mcp_servers.anvil.tool_timeout_sec=660',
     ]);
   });
 

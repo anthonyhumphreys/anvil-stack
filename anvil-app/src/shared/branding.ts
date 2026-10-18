@@ -9,6 +9,7 @@ export interface Brand {
   organisation: string;
   division: string;
   accentColor: string;
+  accentForeground: string;
   accentGlow: string;
   accentGradientEnd: string;
   appId: string;
@@ -25,6 +26,7 @@ const anvilBrand: Brand = {
   organisation: 'anthonyhumphreys.dev',
   division: 'Anvil',
   accentColor: '#fd7e14',
+  accentForeground: '#0b1020',
   accentGlow: 'rgba(253, 126, 20, 0.18)',
   accentGradientEnd: '#ffd43b',
   appId: 'dev.anthonyhumphreys.anvil',

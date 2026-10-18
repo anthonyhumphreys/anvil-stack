@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { app } from 'electron';
 import { registerAgentToolProvider } from '../../agent-tools/dispatch.js';
+import { questionToolProvider } from '../../agent-tools/question-tools.js';
 import { browserToolProvider } from '../../agent-tools/browser-tools.js';
 import { buildSurfaceGuide } from '../../surfaces/guide.js';
 import {
@@ -21,6 +22,7 @@ import { startAgentMcpServer, type AgentMcpServer } from './server.js';
 
 let server: AgentMcpServer | undefined;
 let startup: Promise<AgentMcpEndpointState | undefined> | undefined;
+let unregisterQuestionTools: (() => void) | undefined;
 let unregisterBrowserTools: (() => void) | undefined;
 let lastError: string | undefined;
 
@@ -37,6 +39,7 @@ export function resolveAnvilMcpShimPath(): string | undefined {
 
 export function startAgentMcpEndpoint(): Promise<AgentMcpEndpointState | undefined> {
   if (startup) return startup;
+  unregisterQuestionTools ??= registerAgentToolProvider(questionToolProvider);
   unregisterBrowserTools ??= registerAgentToolProvider(browserToolProvider);
   startup = startAgentMcpServer({
     serverVersion: app.getVersion(),
@@ -76,6 +79,8 @@ export async function stopAgentMcpEndpoint(): Promise<void> {
   startup = undefined;
   setAgentMcpEndpoint(undefined);
   setAgentMcpEndpointStartup(undefined);
+  unregisterQuestionTools?.();
+  unregisterQuestionTools = undefined;
   unregisterBrowserTools?.();
   unregisterBrowserTools = undefined;
   await current?.close();

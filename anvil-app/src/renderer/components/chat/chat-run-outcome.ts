@@ -227,6 +227,8 @@ export function summarizeChatTurnRun(
  * for every other state, and for completions that hide a failed command.
  */
 export function shouldShowRunOutcomeFooter(summary: ChatRunSummary): boolean {
+  // Live status and pending decisions already have their own controls in the turn.
+  if (summary.state === 'running' || summary.state === 'awaiting-user') return false;
   if (summary.state !== 'completed') return true;
   return summary.commands.some(
     (command) => typeof command.exitCode === 'number' && command.exitCode !== 0,

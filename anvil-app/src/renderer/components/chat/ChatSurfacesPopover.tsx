@@ -118,20 +118,21 @@ export function ChatSurfacesPopover() {
         aria-haspopup="dialog"
         aria-expanded={open}
         className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        title="Surfaces in this thread"
+        title="Outputs in this chat"
+        aria-label={`Outputs in this chat: ${entries.length}`}
       >
         <Layers size={13} aria-hidden="true" />
-        <span className="hidden min-[900px]:inline">Surfaces</span>
+        <span className="hidden min-[900px]:inline">Outputs</span>
         <span className="tabular-nums text-text-tertiary">{entries.length}</span>
       </button>
       {open && (
         <div
           role="dialog"
-          aria-label="Surfaces in this thread"
+          aria-label="Outputs in this chat"
           className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-border bg-bg-elevated p-1.5 shadow-2xl ring-1 ring-overlay"
         >
           <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-1">
-            <h3 className="text-xs font-semibold text-text-primary">Surfaces</h3>
+            <h3 className="text-xs font-semibold text-text-primary">Outputs</h3>
             <button
               type="button"
               onClick={() => {
@@ -139,7 +140,7 @@ export function ChatSurfacesPopover() {
                 triggerRef.current?.focus();
               }}
               className="rounded-md p-1 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              aria-label="Close surfaces list"
+              aria-label="Close outputs list"
             >
               <X size={13} aria-hidden="true" />
             </button>
@@ -152,11 +153,7 @@ export function ChatSurfacesPopover() {
                   data-surface-entry
                   onClick={(event) => activate(entry, event.altKey)}
                   className={`flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${entry.superseded ? 'opacity-70' : ''}`}
-                  title={
-                    entry.inTranscript
-                      ? 'Click to scroll to it · ⌥-click to open the stage'
-                      : 'Open'
-                  }
+                  title={entry.inTranscript ? 'Show in chat. Alt-click to expand.' : 'Open'}
                 >
                   {entry.artifact ? (
                     <ArtifactIcon
@@ -180,7 +177,7 @@ export function ChatSurfacesPopover() {
                     type="button"
                     onClick={() => activate(entry, true)}
                     className="rounded-md p-1.5 text-text-tertiary opacity-0 hover:bg-bg-tertiary hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 group-hover:opacity-100"
-                    aria-label={`Open ${entry.title} on the stage`}
+                    aria-label={`Expand ${entry.title}`}
                   >
                     <Maximize2 size={13} aria-hidden="true" />
                   </button>

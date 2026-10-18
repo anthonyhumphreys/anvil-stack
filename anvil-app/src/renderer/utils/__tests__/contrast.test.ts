@@ -2,6 +2,16 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { contrastRatio, parseColor, relativeLuminance } from '../contrast';
+import { listBrands } from '../../../shared/branding';
+
+it('keeps each runtime brand accent paired with an AA foreground in every theme', () => {
+  for (const brand of listBrands()) {
+    expect(
+      contrastRatio(brand.accentForeground, brand.accentColor),
+      brand.id,
+    ).toBeGreaterThanOrEqual(4.5);
+  }
+});
 
 describe('parseColor', () => {
   it('parses six-digit hex', () => {

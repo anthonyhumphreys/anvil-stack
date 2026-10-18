@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Code2, Laptop } from 'lucide-react';
 import type { AgentProvider, CodexEvent, CodexMode } from '../../../../shared/types';
+import { isAcpAgentProvider } from '../../../../shared/agent-providers';
 import type { ChatEntry } from '../../../contexts/ChatContext';
 import { ChatInput } from '../ChatInput';
 import { ChatTranscript } from '../ChatTranscript';
 import { composeChatTurns } from '../chat-turns';
+import { chatAccessOptionsForProvider } from '../thread-access';
+import { ChatInteractionPreview } from './ChatInteractionPreview';
 
 const providers: AgentProvider[] = ['codex', 'openai', 'azure', 'llmgateway', 'cursor', 'devin'];
 const states = [
@@ -55,6 +58,7 @@ const LIVE_STEPS: LiveStep[] = [
 
 /** Development-only fixtures rendered with the real Electron shell and preload. */
 export default function ProcessingPreview() {
+  const [interactions, setInteractions] = useState(false);
   const [provider, setProvider] = useState<AgentProvider>('codex');
   const [state, setState] = useState<FixtureState>('working');
   const [width, setWidth] = useState<'wide' | 'narrow'>('wide');
@@ -181,10 +185,19 @@ export default function ProcessingPreview() {
     return composeChatTurns(entries, { active: busy });
   }, [provider, state, busy, tick, liveFinished]);
 
+  if (interactions) return <ChatInteractionPreview embedded />;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-3 text-xs text-text-secondary">
         <span className="mr-auto">Processing fixtures · isolated desktop preview</span>
+        <button
+          type="button"
+          onClick={() => setInteractions(true)}
+          className="rounded-md border border-border px-2.5 py-1.5 hover:bg-bg-tertiary"
+        >
+          Chat interactions
+        </button>
         <label className="flex items-center gap-2">
           Provider
           <select
@@ -254,20 +267,25 @@ export default function ProcessingPreview() {
           onStop={noop}
           disabled={false}
           busy={busy}
-          followUpCapabilities={{ guide: true, queue: true }}
+          followUpCapabilities={{ guide: !isAcpAgentProvider(provider), queue: true }}
           onFollowUp={async (intent, _message, _attachments, requestId) => ({
             requestId,
             intent,
-            status: 'delivered',
+            status: intent === 'queue' ? 'queued' : 'delivered',
             queueDepth: intent === 'queue' ? 1 : 0,
           })}
-          sideQuestionAvailable
+          sideQuestionAvailable={!isAcpAgentProvider(provider)}
           onSideQuestion={async () => true}
           personaColour="var(--color-accent)"
-          modelProvider="codex"
+          modelProvider={provider}
+          model={isAcpAgentProvider(provider) ? 'auto' : 'gpt-5.6-sol'}
           onModelChange={noop}
           codexMode={accessMode}
+          accessOptions={chatAccessOptionsForProvider(provider).filter(
+            (option) => option.level !== null,
+          )}
           onCodexModeChange={setAccessMode}
+          setupSummary="Coder · This device"
           leadingControls={
             <>
               <FixtureChip icon={<Code2 size={13} />} label="Coder" />

@@ -38,7 +38,7 @@ class SurfaceErrorBoundary extends Component<
       <div role="alert" className="flex items-start gap-2.5 py-2 text-sm text-text-secondary">
         <AlertTriangle size={14} aria-hidden="true" className="mt-1 shrink-0 text-warning" />
         <div className="min-w-0 flex-1">
-          <p>This surface couldn’t be shown. The agent’s summary is still available below.</p>
+          <p>This preview couldn’t be shown. The agent’s summary is still available below.</p>
           <Button
             variant="secondary"
             size="sm"
@@ -68,7 +68,7 @@ export function SurfaceKindRenderer({
     return (
       <div className="space-y-1 text-sm text-text-secondary">
         <p className="text-xs text-text-tertiary">
-          This version of Anvil can’t display “{intent.payload.surfaceKind}” surfaces.
+          This version of Anvil can’t display this output type: {intent.payload.surfaceKind}.
         </p>
         <p className="whitespace-pre-wrap break-words">{intent.payload.digest}</p>
       </div>
@@ -154,21 +154,21 @@ export function SurfaceOverflowMenu({
       align="end"
       className={className}
       trigger={(props) => (
-        <IconButton {...props} icon={Ellipsis} label="More surface actions" size="sm" />
+        <IconButton {...props} icon={Ellipsis} label="More output actions" size="sm" />
       )}
     >
       <MenuItem
         icon={<Copy size={14} aria-hidden="true" />}
         onSelect={() => void copyTextToClipboard(intent.payload.digest)}
       >
-        Copy digest
+        Copy summary
       </MenuItem>
       {canComment && (
         <MenuItem
           icon={<MessageSquarePlus size={14} aria-hidden="true" />}
           onSelect={onCommentSurface}
         >
-          Comment on surface
+          Add comment
         </MenuItem>
       )}
       {share.canShare && (

@@ -31,8 +31,7 @@ export interface AgentToolDefinition {
 }
 
 export type AgentToolContent =
-  | { type: 'text'; text: string }
-  | { type: 'image'; data: string; mimeType: string };
+  { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
 
 export interface AgentToolCallResult {
   content: AgentToolContent[];
@@ -48,6 +47,7 @@ export interface AgentToolProvider {
     ctx: AgentToolSessionContext,
     name: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<AgentToolCallResult | undefined>;
 }
 
@@ -94,11 +94,12 @@ export async function callAgentTool(
   ctx: AgentToolSessionContext,
   name: string,
   args: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<AgentToolCallResult> {
   const tool = listAgentTools(ctx).find((candidate) => candidate.name === name);
   if (!tool) throw new AgentToolError(`Unknown or unavailable tool: ${name}`, 'not-found');
   for (const provider of providers.values()) {
-    const result = await provider.call(ctx, name, args);
+    const result = await provider.call(ctx, name, args, signal);
     if (result) return result;
   }
   throw new AgentToolError(`No handler for tool: ${name}`, 'not-found');

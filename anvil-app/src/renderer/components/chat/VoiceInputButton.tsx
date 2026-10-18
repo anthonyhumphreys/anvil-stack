@@ -1,26 +1,13 @@
 import { Loader2, Mic, Square } from 'lucide-react';
-import { useVoiceInput, type VoiceStatus } from '../../hooks/useVoiceInput';
+import { useVoiceInput } from '../../hooks/useVoiceInput';
 
 interface VoiceInputButtonProps {
   onTranscript: (text: string) => void;
   disabled?: boolean;
-  colour?: string;
   onError?: (error: string) => void;
 }
 
-const STATUS_COLOURS: Record<VoiceStatus, string> = {
-  idle: '',
-  listening: '#e67a79',
-  processing: '#fd9029',
-  error: '#e67a79',
-};
-
-export function VoiceInputButton({
-  onTranscript,
-  disabled,
-  colour,
-  onError,
-}: VoiceInputButtonProps) {
+export function VoiceInputButton({ onTranscript, disabled, onError }: VoiceInputButtonProps) {
   const { status, isSupported, isListening, startListening, stopListening } = useVoiceInput({
     onResult: onTranscript,
     onError,
@@ -29,19 +16,18 @@ export function VoiceInputButton({
 
   if (!isSupported) return null;
 
-  const activeColour = STATUS_COLOURS[status] || colour || 'var(--color-accent)';
-
   return (
     <button
       type="button"
       onClick={() => void (isListening ? stopListening() : startListening())}
       disabled={(disabled && !isListening) || status === 'processing'}
-      className="flex h-9 w-9 items-center justify-center rounded-xl transition-[background-color,color,transform] duration-200 hover:bg-bg-tertiary disabled:opacity-30"
-      style={{
-        backgroundColor: isListening
-          ? activeColour
-          : `color-mix(in srgb, ${activeColour} 12.5%, transparent)`,
-      }}
+      className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40 ${
+        isListening
+          ? 'bg-error/15 text-error'
+          : status === 'error'
+            ? 'text-error hover:bg-error/10'
+            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+      }`}
       title={
         status === 'processing'
           ? 'Requesting microphone access'
@@ -51,15 +37,22 @@ export function VoiceInputButton({
               ? 'Voice input failed — click to try again'
               : 'Start voice input'
       }
-      aria-label={isListening ? 'Stop recording' : 'Start voice input'}
+      aria-label={
+        status === 'processing'
+          ? 'Requesting microphone access'
+          : isListening
+            ? 'Stop recording'
+            : 'Start voice input'
+      }
+      aria-busy={status === 'processing'}
       aria-pressed={isListening}
     >
       {status === 'processing' ? (
-        <Loader2 size={16} className="animate-spin" style={{ color: activeColour }} />
+        <Loader2 size={15} className="animate-spin motion-reduce:animate-none" />
       ) : isListening ? (
-        <Square size={14} className="voice-recording-pulse text-white" fill="currentColor" />
+        <Square size={13} className="motion-safe:animate-pulse" fill="currentColor" />
       ) : (
-        <Mic size={17} style={{ color: activeColour }} />
+        <Mic size={16} />
       )}
     </button>
   );

@@ -14,6 +14,23 @@ function event(event: CodexEvent) {
 }
 
 describe('chat run outcome', () => {
+  it('keeps pending decisions in the activity controls without a second status footer', () => {
+    const [turn] = composeChatTurns(
+      [
+        { kind: 'user', content: 'Run the checks' },
+        event({
+          type: 'approval_request',
+          approvalKind: 'command',
+          approvalRequestId: 1,
+          approvalCommand: 'pnpm test',
+        }),
+      ],
+      { active: true },
+    );
+    const summary = summarizeChatTurnRun(turn)!;
+    expect(summary.state).toBe('awaiting-user');
+    expect(shouldShowRunOutcomeFooter(summary)).toBe(false);
+  });
   it('shows a completed provider run and keeps command evidence separate from its answer', () => {
     const [turn] = composeChatTurns([
       { kind: 'user', content: 'Run the checks' },

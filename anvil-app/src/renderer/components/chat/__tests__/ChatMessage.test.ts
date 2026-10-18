@@ -1,5 +1,12 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { PendingQuestionPrompt } from '../ChatPromptOverlays';
+import type { AgentUIQuestionIntent } from '../../../../shared/agent-ui-intents';
+import { buildChatRequestTargetDomId } from '../chat-run-outcome';
+
 import { describe, expect, it } from 'vitest';
 import {
+  TurnWorkMessage,
   buildChatFileReference,
   formatTurnWorkItemSummary,
   shouldCollapseUserMessage,
@@ -91,5 +98,46 @@ describe('formatTurnWorkItemSummary', () => {
 
     expect(summary.length).toBeLessThanOrEqual(110);
     expect(summary.endsWith('…')).toBe(true);
+  });
+});
+
+describe('one place to answer questions', () => {
+  it('keeps the form in the composer panel and out of the work log', () => {
+    const timestamp = '2026-10-18T16:00:00.000Z';
+    const intent: AgentUIQuestionIntent = {
+      protocolVersion: 1,
+      id: 'question-only-once',
+      kind: 'question',
+      revision: 1,
+      scope: { threadId: 'thread-1' },
+      lifecycle: 'pending',
+      presentation: { collapsed: false, hidden: false },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      payload: {
+        questions: [
+          { id: 'layout', kind: 'yes_no', question: 'Compact?', required: true, allowCancel: true },
+        ],
+      },
+    };
+    const work = renderToStaticMarkup(
+      createElement(TurnWorkMessage, {
+        items: [
+          {
+            kind: 'event',
+            sourceIndex: 1,
+            event: { type: 'agent_ui_intent', agentUIIntent: intent },
+          },
+        ],
+        active: true,
+        waiting: true,
+      }),
+    );
+    expect(work).not.toContain('<form');
+    const panel = renderToStaticMarkup(
+      createElement(PendingQuestionPrompt, { intent, additionalCount: 0 }),
+    );
+    expect(panel.match(/<form/g)).toHaveLength(1);
+    expect(panel).toContain(buildChatRequestTargetDomId(`intent:${intent.id}`));
   });
 });

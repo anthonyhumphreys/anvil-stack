@@ -6,6 +6,18 @@
 
 export type ChatErrorKind = 'auth' | 'rate-limit' | 'provider' | 'sandbox' | 'generic';
 
+/** Keep the actionable message, without Electron's transport framing. */
+export function presentChatRequestError(reason: unknown, fallback: string): string {
+  if (!(reason instanceof Error)) return fallback;
+  return (
+    reason.message
+      .replace(/^Error:\s*/i, '')
+      .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+      .replace(/^Error:\s*/i, '')
+      .trim() || fallback
+  );
+}
+
 export interface ChatErrorClassification {
   kind: ChatErrorKind;
   /** Short, calm headline for the notice. */

@@ -66,6 +66,10 @@ import {
   isTemporaryChatThread,
   updateChatThreadAttention,
 } from './chat-persistence.service.js';
+import {
+  cancelAgentQuestionsForSession,
+  hasPendingAgentQuestion,
+} from './agent-question.service.js';
 import { scheduleThreadMetadataRefresh } from './thread-assist.service.js';
 import {
   dismissAgentUIIntent,
@@ -392,7 +396,11 @@ export async function startSession(
   }
   const isSideQuestion =
     options?.threadId !== undefined && getChatThread(options.threadId)?.purpose === 'side-question';
-  const modeOverride = options?.temporaryChat ? 'read-only' : isSideQuestion ? 'read-only' : options?.codexMode;
+  const modeOverride = options?.temporaryChat
+    ? 'read-only'
+    : isSideQuestion
+      ? 'read-only'
+      : options?.codexMode;
   if (modeOverride === 'read-only' && isAcpAgentProvider(agentProvider)) {
     throw new Error(
       `${acpProviderLabel(agentProvider)} cannot guarantee a provider-enforced read-only session.`,
@@ -427,10 +435,10 @@ export async function startSession(
   const systemPrompt = options?.temporaryChat
     ? buildTemporaryChatSystemPrompt(personaId)
     : options?.scaffold
-    ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
-    : personaId === 'design'
-      ? buildDesignSystemPrompt(repoIds, options?.designMode ?? 'design', options?.figmaContext)
-      : buildSystemPrompt(personaId, repoIds, options?.workspace?.workspaceId);
+      ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
+      : personaId === 'design'
+        ? buildDesignSystemPrompt(repoIds, options?.designMode ?? 'design', options?.figmaContext)
+        : buildSystemPrompt(personaId, repoIds, options?.workspace?.workspaceId);
   const cwd = resolveSessionCwd(repoPaths, options, app.getPath('userData'));
 
   // Build environment — allowlisted, never a full process.env copy
@@ -563,6 +571,7 @@ export async function startSession(
   proc.stderr?.on('data', () => undefined);
 
   proc.on('exit', (code, signal) => {
+    cancelAgentQuestionsForSession(id);
     revokeAgentMcpToken(id);
     removeTemporaryChatDirectory(session);
     console.log(`[Codex:${id.slice(0, 8)}] exited with code=${code} signal=${signal}`);
@@ -593,6 +602,7 @@ export async function startSession(
   });
 
   proc.on('error', (err) => {
+    cancelAgentQuestionsForSession(id);
     console.error(`[Codex:${id.slice(0, 8)}] process error:`, err);
     session.status = 'error';
     clearPendingProviderResponses(id, `Provider process error: ${err.message}`);
@@ -978,10 +988,7 @@ export function resolveSessionTurnMode(input: {
 }): CodexMode {
   if (input.temporaryChat || input.sideQuestion) return 'read-only';
   return (
-    input.permissionMode ??
-    input.sessionModeOverride ??
-    input.configuredMode ??
-    input.currentMode
+    input.permissionMode ?? input.sessionModeOverride ?? input.configuredMode ?? input.currentMode
   );
 }
 
@@ -1410,10 +1417,12 @@ export function interruptTurn(sessionId: string): void {
     ) {
       throw new Error(`${acpProviderLabel(session.provider)} could not accept the cancel request.`);
     }
+    cancelAgentQuestionsForSession(sessionId);
     return;
   }
   if (!session.turnId) return;
 
+  cancelAgentQuestionsForSession(sessionId);
   sendProviderRequest(session, 'turn/interrupt', {
     threadId: session.threadId,
     turnId: session.turnId,
@@ -1424,6 +1433,7 @@ export function stopSession(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) return;
   session.stopping = true;
+  cancelAgentQuestionsForSession(sessionId);
   revokeAgentMcpToken(sessionId);
   failPendingFollowUps(session, 'The session stopped before this queued task could start.');
   session.rejectThreadReady?.(new Error('Session stopped before it became ready.'));
@@ -1659,6 +1669,11 @@ export function resolveAgentUIQuestion(
   if (!record || record.intent.kind !== 'question') {
     throw new Error(`Question intent not found: ${intentId}`);
   }
+  if (
+    (record.intent.lifecycle === 'resolved' || record.intent.lifecycle === 'dismissed') &&
+    resolution.intentId === intentId
+  )
+    return record.intent;
   validateAgentUIQuestionResolution(record.intent, resolution);
   const binding = record.binding;
   if (!binding?.sessionId || binding.requestId === undefined || !binding.responseKind) {
@@ -1683,7 +1698,7 @@ export function resolveAgentUIQuestion(
   pendingServerRequests.delete(requestKey);
   const resolved = recordAgentUIQuestionResolution(record.intent, resolution);
   setSessionThreadAttention(session, 'working');
-  broadcastEvent(session.id, { type: 'agent_ui_intent_resolved', agentUIIntentId: intentId });
+  broadcastAgentUIIntent(resolved, session.id);
   return resolved;
 }
 
@@ -1943,6 +1958,7 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       session.status = 'busy';
     },
     onTurnCompleted: (status) => {
+      cancelAgentQuestionsForSession(session.id);
       session.status = 'ready';
       setSessionThreadAttention(
         session,
@@ -2051,8 +2067,10 @@ function handleServerMessage(session: ManagedSession, line: string): void {
           setSessionThreadAttention(session, 'working');
         }
       } else if (event.type === 'error' || (event.type === 'status' && event.status === 'error')) {
+        cancelAgentQuestionsForSession(session.id);
         setSessionThreadAttention(session, 'failed');
       } else if (event.type === 'status' && event.status === 'complete') {
+        cancelAgentQuestionsForSession(session.id);
         setSessionThreadAttention(session, 'complete');
       } else if (event.type === 'status' && event.status === 'thinking') {
         setSessionThreadAttention(session, 'working');
@@ -2221,7 +2239,10 @@ function setSessionThreadAttention(
 ): void {
   if (!session.appThreadId) return;
   try {
-    updateChatThreadAttention(session.appThreadId, state);
+    updateChatThreadAttention(
+      session.appThreadId,
+      state === 'working' && hasPendingAgentQuestion(session.id) ? 'input' : state,
+    );
   } catch (error) {
     console.warn(
       `[Codex:${session.id.slice(0, 8)}] Failed to persist thread attention state:`,
@@ -2359,6 +2380,17 @@ export function broadcastAgentUIIntent(
   sessionId?: string,
 ): void {
   if (sessionId && sessions.has(sessionId)) {
+    const session = sessions.get(sessionId)!;
+    if (intent.kind === 'question') {
+      setSessionThreadAttention(
+        session,
+        intent.lifecycle === 'pending' || intent.lifecycle === 'presented'
+          ? 'input'
+          : session.status === 'busy'
+            ? 'working'
+            : 'idle',
+      );
+    }
     broadcastEvent(sessionId, { type: 'agent_ui_intent', agentUIIntent: intent });
     return;
   }

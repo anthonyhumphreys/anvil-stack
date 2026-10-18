@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowDown } from 'lucide-react';
 import type { AgentProvider, RepoInfo } from '../../../shared/types';
 import type { ChatTurnSurface, ComposedChatTurn } from './chat-turns';
 import { SurfaceHost } from '../surfaces/SurfaceHost';
+import { QuestionIntentSurface } from './AgentUIIntentSurface';
 import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
 import { ChatErrorNotice, type ChatErrorProviderOption } from './ChatErrorNotice';
 import { ChatPaneState, type ChatPaneKind } from './ChatPaneState';
@@ -212,6 +213,11 @@ export function ChatTranscript({
                         (surface) => !turn.answer || surface.sourceIndex < turn.answer.sourceIndex,
                       )}
                     />
+                    {turn.questionReceipts?.map((intent) => (
+                      <div key={intent.id} className="max-w-[72ch]">
+                        <QuestionIntentSurface intent={intent} />
+                      </div>
+                    ))}
                     {turn.answer && (
                       <AssistantMessage
                         content={turn.answer.content}
@@ -282,10 +288,10 @@ export function ChatTranscript({
         <button
           type="button"
           onClick={onJumpToLatest}
-          className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-bg-elevated/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-lg backdrop-blur transition-colors hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
+          className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-bg-elevated px-3 py-1.5 text-xs font-medium text-text-secondary shadow-lg transition-colors hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
         >
           <ArrowDown size={13} />
-          {busy ? 'Jump to live work' : 'Latest'}
+          {busy ? 'Jump to live work' : 'Jump to latest'}
         </button>
       )}
     </div>

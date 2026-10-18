@@ -80,11 +80,7 @@ export interface AgentUIQuestionOption {
 }
 
 export type AgentUIQuestionKind =
-  | 'single_choice'
-  | 'multiple_choice'
-  | 'yes_no'
-  | 'free_text'
-  | 'approval';
+  'single_choice' | 'multiple_choice' | 'yes_no' | 'free_text' | 'approval';
 
 export interface AgentUIQuestion {
   id: string;
@@ -102,6 +98,8 @@ export interface AgentUIQuestion {
 export interface AgentUIQuestionPayload {
   title?: string;
   questions: AgentUIQuestion[];
+  /** Saved receipt. Sensitive answers are redacted before persistence. */
+  response?: Pick<AgentUIQuestionResolution, 'action' | 'answers'>;
 }
 
 export type AgentUIQuestionIntent = AgentUIIntentBase<'question', AgentUIQuestionPayload>;

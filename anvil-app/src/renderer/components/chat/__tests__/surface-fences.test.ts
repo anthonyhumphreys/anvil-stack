@@ -115,7 +115,7 @@ describe('surface fences', () => {
       ),
     );
     expect(markup).toContain('data-surface-id="artifact:art-1"');
-    expect(markup).toContain('Expand to stage');
+    expect(markup).toContain('Expand preview');
     expect(markup).toContain('Open in window');
     expect(markup).not.toContain('Not saved to this thread');
   });

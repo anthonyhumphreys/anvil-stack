@@ -57,6 +57,27 @@ describe('Cursor model labels', () => {
 });
 
 describe('shouldSendChatMessageFromKey', () => {
+  it('requires an explicit modifier to send during an active run', () => {
+    expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, busy: true })).toBe(false);
+    expect(
+      shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, busy: true, metaKey: true }),
+    ).toBe(true);
+    expect(
+      shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, busy: true, ctrlKey: true }),
+    ).toBe(true);
+    expect(
+      shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: true, busy: true, metaKey: true }),
+    ).toBe(false);
+    expect(
+      shouldSendChatMessageFromKey({
+        key: 'Enter',
+        shiftKey: false,
+        busy: true,
+        metaKey: true,
+        isComposing: true,
+      }),
+    ).toBe(false);
+  });
   it('sends on Enter with or without command modifiers', () => {
     expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false })).toBe(true);
     expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, metaKey: true })).toBe(

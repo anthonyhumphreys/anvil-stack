@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { chatErrorSupportsProviderSwitch, classifyChatError } from '../chat-errors';
+import {
+  chatErrorSupportsProviderSwitch,
+  classifyChatError,
+  presentChatRequestError,
+} from '../chat-errors';
+
+describe('presentChatRequestError', () => {
+  it('keeps the recovery message without Electron transport details', () => {
+    expect(
+      presentChatRequestError(
+        new Error(
+          "Error invoking remote method 'chat:resolve': Error: The session ended. Start a new message.",
+        ),
+        'Try again.',
+      ),
+    ).toBe('The session ended. Start a new message.');
+  });
+
+  it('provides a recovery message for empty and unknown failures', () => {
+    expect(presentChatRequestError(new Error(' '), 'Try again.')).toBe('Try again.');
+    expect(presentChatRequestError(undefined, 'Try again.')).toBe('Try again.');
+  });
+});
 
 describe('classifyChatError', () => {
   it('classifies auth failures', () => {

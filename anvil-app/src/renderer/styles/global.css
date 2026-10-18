@@ -219,6 +219,9 @@ body,
   line-height: 1.65;
   letter-spacing: 0.008em;
   -webkit-font-smoothing: antialiased;
+}
+
+html {
   color-scheme: dark;
 }
 

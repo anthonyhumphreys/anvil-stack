@@ -184,6 +184,8 @@ describe('codex-session agent MCP wiring', () => {
       `mcp_servers.anvil.url="${URL}"`,
       '-c',
       'mcp_servers.anvil.bearer_token_env_var="ANVIL_MCP_TOKEN"',
+      '-c',
+      'mcp_servers.anvil.tool_timeout_sec=660',
     ]);
     expect(env.ANVIL_MCP_TOKEN).toBe(token);
     expect(args.join(' ')).not.toContain(token);

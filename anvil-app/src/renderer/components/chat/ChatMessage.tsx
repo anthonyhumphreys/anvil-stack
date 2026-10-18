@@ -42,6 +42,7 @@ import { isAbsoluteEditorPath } from '../../../shared/editor-file-link';
 import { buildApprovalAwareWorkSegments, type ChatTurnWorkItem } from './chat-turns';
 import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
+import { useChatRequest } from './useChatRequest';
 import { MessageStreamingContext } from './surface-fences';
 import { FileEditReviewGrid } from './TurnChangesFooter';
 import { LiveGlyph, ProcessingCard, useProcessingActive } from './ProcessingCard';
@@ -422,6 +423,13 @@ export function TurnWorkMessage({
       endedAt={endedAt}
     >
       {items.map((item, position) => {
+        // The composer owns question input. Completed receipts render in the conversation.
+        if (
+          item.kind === 'event' &&
+          item.event.type === 'agent_ui_intent' &&
+          item.event.agentUIIntent?.kind === 'question'
+        )
+          return null;
         if (
           item.kind === 'event' &&
           (['request_resolved', 'agent_ui_intent_resolved'].includes(item.event.type) ||
@@ -777,7 +785,7 @@ function useOpenEventFileInEditor(filePath: string, line?: number): () => void {
 
 function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
   const [resolved, setResolved] = useState<'accepted' | 'declined' | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { pending, error, run } = useChatRequest('Could not send your decision. Try again.');
   const isCommand = event.approvalKind === 'command';
   const isPermissions = event.approvalKind === 'permissions';
   const cursorOptions = isPermissions ? getCursorPermissionOptions(event.approvalPermissions) : [];
@@ -805,29 +813,27 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
         : `${label} wants permission to apply a change.`);
 
   const decide = async (decision: 'accept' | 'acceptForSession' | 'decline', optionId?: string) => {
-    if (!event.sessionId || event.approvalRequestId === undefined) return;
-    setError(null);
-    try {
-      await window.anvil.chat.resolveApproval(
-        event.sessionId,
-        event.approvalRequestId,
-        decision,
-        optionId,
-      );
+    const { sessionId, approvalRequestId } = event;
+    if (!sessionId || approvalRequestId === undefined || resolved) return;
+    await run(async () => {
+      await window.anvil.chat.resolveApproval(sessionId, approvalRequestId, decision, optionId);
       setResolved(decision === 'decline' ? 'declined' : 'accepted');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve approval');
-    }
+    });
   };
 
   return (
-    <div className="overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
+    <div
+      aria-busy={pending}
+      className="overflow-hidden rounded-xl border border-border bg-bg-secondary"
+    >
       <div className="flex items-start gap-2.5 px-4 py-3">
         <AlertCircle size={14} className="mt-0.5 shrink-0 text-warning" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-text-primary">{title}</p>
           {detail && (
-            <p className="mt-1 truncate font-mono text-xs text-text-secondary">{detail}</p>
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg-primary/60 p-3 font-mono text-xs leading-5 text-text-secondary">
+              {detail}
+            </pre>
           )}
           {isPermissions && event.toolInput && !toolInputSummary && (
             <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-bg-primary/60 p-2 font-mono text-xs text-text-secondary">
@@ -838,18 +844,25 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
             <p className="mt-1 text-xs text-text-tertiary">{event.approvalReason}</p>
           )}
           {event.approvalCwd && (
-            <p className="mt-1 truncate text-xs text-text-tertiary">cwd: {event.approvalCwd}</p>
+            <p className="mt-1 break-words text-xs text-text-secondary">In {event.approvalCwd}</p>
           )}
-          {error && <p className="mt-2 text-xs text-error">{error}</p>}
+          {error && (
+            <p role="alert" className="mt-2 text-xs text-error">
+              {error}
+            </p>
+          )}
           {resolved && (
-            <p className="mt-2 text-xs text-text-tertiary">
+            <p role="status" className="mt-2 text-xs text-text-secondary">
               {resolved === 'accepted' ? 'Approved' : 'Declined'}
             </p>
           )}
         </div>
       </div>
       {!resolved && (
-        <div className="flex flex-wrap gap-2 border-t border-border-subtle px-4 py-2.5">
+        <fieldset
+          disabled={pending || !event.sessionId || event.approvalRequestId === undefined}
+          className="flex flex-wrap items-center gap-2 border-t border-border-subtle px-4 py-2.5 disabled:opacity-60 [&_button]:focus-visible:outline-none [&_button]:focus-visible:ring-2 [&_button]:focus-visible:ring-accent/70 [&_button]:disabled:cursor-wait"
+        >
           {cursorOptions.length > 0 ? (
             cursorOptions.map((option) => (
               <button
@@ -857,8 +870,8 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
                 onClick={() => void decide(cursorPermissionDecision(option.kind), option.optionId)}
                 className={
                   option.kind.startsWith('reject')
-                    ? 'flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error transition-colors hover:bg-error/10'
-                    : 'flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/10'
+                    ? 'flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary'
+                    : 'flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground transition-colors hover:bg-accent/85'
                 }
               >
                 {option.kind.startsWith('reject') ? <X size={12} /> : <Check size={12} />}
@@ -869,25 +882,34 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
             <>
               <button
                 onClick={() => void decide('accept')}
-                className="flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/10"
+                className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground transition-colors hover:bg-accent/85"
               >
-                <Check size={12} /> Approve
+                <Check size={12} /> Approve once
               </button>
               <button
                 onClick={() => void decide('acceptForSession')}
-                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary"
+                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary"
               >
-                <Check size={12} /> Approve Session
+                Approve for this session
               </button>
               <button
                 onClick={() => void decide('decline')}
-                className="flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error transition-colors hover:bg-error/10"
+                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary"
               >
                 <X size={12} /> Decline
               </button>
             </>
           )}
-        </div>
+          {pending && (
+            <span
+              role="status"
+              className="inline-flex items-center gap-1.5 text-xs text-text-secondary"
+            >
+              <Loader2 size={12} className="animate-spin motion-reduce:animate-none" /> Sending
+              decision…
+            </span>
+          )}
+        </fieldset>
       )}
     </div>
   );
@@ -913,29 +935,27 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [activeIndex, setActiveIndex] = useState(0);
   const [resolved, setResolved] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    pending: submitting,
+    error,
+    run,
+  } = useChatRequest('Could not send your answers. Try again.');
   const activeQuestion = questions[activeIndex];
   const complete =
     questions.length > 0 && questions.every((question) => answers[question.id]?.trim());
 
   const submit = async () => {
-    if (!event.sessionId || event.inputRequestId === undefined || !complete) return;
-    setError(null);
-    setSubmitting(true);
-    try {
-      await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
+    const { sessionId, inputRequestId } = event;
+    if (!sessionId || inputRequestId === undefined || !complete || resolved) return;
+    await run(async () => {
+      await window.anvil.chat.resolveInputRequest(sessionId, inputRequestId, {
         kind: 'user_input',
         answers: Object.fromEntries(
           questions.map((question) => [question.id, [answers[question.id].trim()]]),
         ),
       });
       setResolved(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send answers');
-    } finally {
-      setSubmitting(false);
-    }
+    });
   };
 
   if (resolved) {
@@ -1126,7 +1146,7 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
   const questions = request?.questions ?? [];
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [resolved, setResolved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { pending, error, run } = useChatRequest('Could not send your answers. Try again.');
 
   const toggleOption = (questionId: string, optionId: string, allowMultiple: boolean) => {
     setAnswers((previous) => {
@@ -1142,10 +1162,10 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
   };
 
   const submit = async (action: 'submit' | 'cancel') => {
-    if (!event.sessionId || event.inputRequestId === undefined || !request) return;
-    setError(null);
-    try {
-      await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
+    const { sessionId, inputRequestId } = event;
+    if (!sessionId || inputRequestId === undefined || !request || resolved) return;
+    await run(async () => {
+      await window.anvil.chat.resolveInputRequest(sessionId, inputRequestId, {
         kind: 'cursor_ask_question',
         action,
         answers: questions.map((question) => ({
@@ -1154,18 +1174,19 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
         })),
       });
       setResolved(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send Cursor answers');
-    }
+    });
   };
 
   return (
-    <div className="overflow-hidden rounded-xl border border-warning/35 bg-bg-secondary">
+    <fieldset
+      disabled={pending || resolved}
+      aria-busy={pending}
+      className="overflow-hidden rounded-xl border border-border bg-bg-secondary [&_button]:focus-visible:outline-none [&_button]:focus-visible:ring-2 [&_button]:focus-visible:ring-accent/70 [&_button]:disabled:opacity-50"
+    >
       <div className="border-b border-border-subtle px-4 py-3">
         <p className="text-sm font-semibold text-text-primary">
           {request?.title ?? 'Cursor needs your input'}
         </p>
-        <p className="mt-1 text-xs text-text-tertiary">Choose the options Cursor requested.</p>
       </div>
       <div className="space-y-4 p-4">
         {questions.map((question) => (
@@ -1178,6 +1199,7 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
                   <button
                     key={option.id}
                     type="button"
+                    aria-pressed={selected}
                     onClick={() =>
                       toggleOption(question.id, option.id, question.allowMultiple === true)
                     }
@@ -1194,8 +1216,16 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
             </div>
           </fieldset>
         ))}
-        {error && <p className="text-xs text-error">{error}</p>}
-        {resolved && <p className="text-xs text-text-tertiary">Response sent.</p>}
+        {error && (
+          <p role="alert" className="text-xs text-error">
+            {error}
+          </p>
+        )}
+        {resolved && (
+          <p role="status" className="text-xs text-text-secondary">
+            Answers sent
+          </p>
+        )}
       </div>
       {!resolved && (
         <div className="flex gap-2 border-t border-border-subtle px-4 py-3">
@@ -1205,7 +1235,7 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
             disabled={questions.some((question) => (answers[question.id] ?? []).length === 0)}
             className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Send answer
+            {pending ? 'Sending…' : questions.length === 1 ? 'Send answer' : 'Send answers'}
           </button>
           <button
             type="button"
@@ -1216,31 +1246,33 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
           </button>
         </div>
       )}
-    </div>
+    </fieldset>
   );
 }
 
 function CursorPlanRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
   const request = event.inputRequest?.kind === 'cursor_create_plan' ? event.inputRequest : null;
   const [resolved, setResolved] = useState<'accepted' | 'rejected' | 'cancelled' | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { pending, error, run } = useChatRequest('Could not send your decision. Try again.');
 
   const decide = async (action: 'submit' | 'skip' | 'cancel') => {
-    if (!event.sessionId || event.inputRequestId === undefined || !request) return;
-    setError(null);
-    try {
-      await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
+    const { sessionId, inputRequestId } = event;
+    if (!sessionId || inputRequestId === undefined || !request || resolved) return;
+    await run(async () => {
+      await window.anvil.chat.resolveInputRequest(sessionId, inputRequestId, {
         kind: 'cursor_create_plan',
         action,
       });
       setResolved(action === 'submit' ? 'accepted' : action === 'skip' ? 'rejected' : 'cancelled');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve Cursor plan');
-    }
+    });
   };
 
   return (
-    <div className="overflow-hidden rounded-xl border border-warning/35 bg-bg-secondary">
+    <fieldset
+      disabled={pending || !!resolved}
+      aria-busy={pending}
+      className="overflow-hidden rounded-xl border border-border bg-bg-secondary [&_button]:focus-visible:outline-none [&_button]:focus-visible:ring-2 [&_button]:focus-visible:ring-accent/70 [&_button]:disabled:opacity-50"
+    >
       <div className="border-b border-border-subtle px-4 py-3">
         <p className="text-sm font-semibold text-text-primary">
           {request?.title ?? 'Cursor plan approval'}
@@ -1251,22 +1283,35 @@ function CursorPlanRequestEvent({ event }: { event: CodexEvent & { sessionId?: s
       </div>
       <div className="max-h-80 overflow-auto p-4">
         <MarkdownRenderer content={request?.plan ?? ''} />
-        {error && <p className="mt-3 text-xs text-error">{error}</p>}
-        {resolved && <p className="mt-3 text-xs text-text-tertiary">Plan {resolved}.</p>}
+        {error && (
+          <p role="alert" className="mt-3 text-xs text-error">
+            {error}
+          </p>
+        )}
+        {resolved && (
+          <p role="status" className="mt-3 text-xs text-text-secondary">
+            Plan {resolved}.
+          </p>
+        )}
+        {pending && (
+          <p role="status" className="mt-3 text-xs text-text-secondary">
+            Sending decision…
+          </p>
+        )}
       </div>
       {!resolved && (
         <div className="flex flex-wrap gap-2 border-t border-border-subtle px-4 py-3">
           <button
             type="button"
             onClick={() => void decide('submit')}
-            className="rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success hover:bg-success/10"
+            className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
           >
             <Check size={12} className="mr-1 inline" /> Accept plan
           </button>
           <button
             type="button"
             onClick={() => void decide('skip')}
-            className="rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error hover:bg-error/10"
+            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-bg-tertiary"
           >
             <X size={12} className="mr-1 inline" /> Reject plan
           </button>
@@ -1279,7 +1324,7 @@ function CursorPlanRequestEvent({ event }: { event: CodexEvent & { sessionId?: s
           </button>
         </div>
       )}
-    </div>
+    </fieldset>
   );
 }
 
@@ -1287,23 +1332,22 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
   const request = event.inputRequest?.kind === 'mcp_elicitation' ? event.inputRequest : undefined;
   const [content, setContent] = useState('{}');
   const [resolved, setResolved] = useState<'accepted' | 'declined' | 'cancelled' | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { pending, error, run } = useChatRequest('Could not send your response. Try again.');
   const [copied, setCopied] = useState(false);
 
   const decide = async (action: 'accept' | 'decline' | 'cancel') => {
-    if (!event.sessionId || event.inputRequestId === undefined) return;
-    setError(null);
-    let parsedContent: unknown;
-    if (action === 'accept' && request?.mode !== 'url') {
-      try {
-        parsedContent = JSON.parse(content);
-      } catch {
-        setError('Enter valid JSON before continuing.');
-        return;
+    const { sessionId, inputRequestId } = event;
+    if (!sessionId || inputRequestId === undefined || resolved) return;
+    await run(async () => {
+      let parsedContent: unknown;
+      if (action === 'accept' && request?.mode !== 'url') {
+        try {
+          parsedContent = JSON.parse(content);
+        } catch {
+          throw new Error('Enter valid JSON before continuing.');
+        }
       }
-    }
-    try {
-      await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
+      await window.anvil.chat.resolveInputRequest(sessionId, inputRequestId, {
         kind: 'mcp_elicitation',
         action,
         ...(parsedContent === undefined ? {} : { content: parsedContent }),
@@ -1311,9 +1355,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
       setResolved(
         action === 'accept' ? 'accepted' : action === 'decline' ? 'declined' : 'cancelled',
       );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve request');
-    }
+    });
   };
 
   const copyUrl = () => {
@@ -1325,7 +1367,11 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
   };
 
   return (
-    <div className="overflow-hidden rounded-lg border border-warning/30 bg-warning/5">
+    <fieldset
+      disabled={pending || !!resolved}
+      aria-busy={pending}
+      className="overflow-hidden rounded-xl border border-border bg-bg-secondary [&_button]:focus-visible:outline-none [&_button]:focus-visible:ring-2 [&_button]:focus-visible:ring-accent/70 [&_button]:disabled:opacity-50"
+    >
       <div className="flex items-start gap-2.5 px-4 py-3">
         <ShieldAlert size={14} className="mt-0.5 shrink-0 text-warning" />
         <div className="min-w-0 flex-1">
@@ -1339,7 +1385,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
           )}
           {request?.mode === 'url' && request.url ? (
             <div className="mt-2 flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-primary/50 p-2">
-              <code className="min-w-0 flex-1 truncate text-xs text-text-secondary">
+              <code className="min-w-0 flex-1 break-all text-xs text-text-secondary">
                 {request.url}
               </code>
               <button
@@ -1356,6 +1402,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
                 Response JSON
               </label>
               <textarea
+                aria-label="Response JSON"
                 value={content}
                 disabled={resolved !== null}
                 onChange={(inputEvent) => setContent(inputEvent.target.value)}
@@ -1371,8 +1418,21 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
               )}
             </div>
           )}
-          {error && <p className="mt-2 text-xs text-error">{error}</p>}
-          {resolved && <p className="mt-2 text-xs text-text-tertiary">Request {resolved}</p>}
+          {error && (
+            <p role="alert" className="mt-2 text-xs text-error">
+              {error}
+            </p>
+          )}
+          {resolved && (
+            <p role="status" className="mt-2 text-xs text-text-secondary">
+              Request {resolved}
+            </p>
+          )}
+          {pending && (
+            <p role="status" className="mt-2 text-xs text-text-secondary">
+              Sending response…
+            </p>
+          )}
         </div>
       </div>
       {!resolved && (
@@ -1380,14 +1440,14 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
           <button
             type="button"
             onClick={() => void decide('accept')}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success hover:bg-success/10"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
           >
             <Check size={12} /> Continue
           </button>
           <button
             type="button"
             onClick={() => void decide('decline')}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error hover:bg-error/10"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-bg-tertiary"
           >
             <X size={12} /> Decline
           </button>
@@ -1400,7 +1460,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
           </button>
         </div>
       )}
-    </div>
+    </fieldset>
   );
 }
 

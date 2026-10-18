@@ -33,6 +33,13 @@ export interface McpProtocolOptions {
   serverVersion: string;
   instructions?: (ctx: AgentToolSessionContext) => string;
   onToolCall?: (ctx: AgentToolSessionContext, name: string, ok: boolean) => void;
+  runTool?: (
+    ctx: AgentToolSessionContext,
+    id: string | number,
+    name: string,
+    args: Record<string, unknown>,
+  ) => Promise<AgentToolCallResult>;
+  onCancelRequest?: (id: string | number) => void;
 }
 
 export interface McpPayloadOutcome {
@@ -88,13 +95,16 @@ function errorMessage(error: unknown): string {
 
 async function callTool(
   ctx: AgentToolSessionContext,
+  id: string | number,
   params: Record<string, unknown>,
   options: McpProtocolOptions,
 ): Promise<AgentToolCallResult> {
   const name = params.name as string;
   const args = isRecord(params.arguments) ? params.arguments : {};
   try {
-    const result = await callAgentTool(ctx, name, args);
+    const result = await (options.runTool
+      ? options.runTool(ctx, id, name, args)
+      : callAgentTool(ctx, name, args));
     options.onToolCall?.(ctx, name, !result.isError);
     return result;
   } catch (error) {
@@ -138,7 +148,7 @@ async function handleRequest(
       if (!listAgentTools(ctx).some((tool) => tool.name === params.name)) {
         return jsonRpcError(id, JSON_RPC.invalidParams, `Unknown tool: ${params.name}`);
       }
-      return { jsonrpc: '2.0', id, result: await callTool(ctx, params, options) };
+      return { jsonrpc: '2.0', id, result: await callTool(ctx, id, params, options) };
     }
     default:
       return jsonRpcError(id, JSON_RPC.methodNotFound, `Method not found: ${method}`);
@@ -160,7 +170,16 @@ async function handleMessage(
   const { id, method } = message;
   // Responses to server requests (we send none) and notifications get no reply.
   if (typeof method !== 'string') return { initialized: false };
-  if (id === undefined) return { initialized: false };
+  if (id === undefined) {
+    if (
+      method === 'notifications/cancelled' &&
+      isRecord(message.params) &&
+      isId(message.params.requestId)
+    ) {
+      options.onCancelRequest?.(message.params.requestId);
+    }
+    return { initialized: false };
+  }
   if (!isId(id)) {
     return {
       response: jsonRpcError(null, JSON_RPC.invalidRequest, 'Invalid request id'),

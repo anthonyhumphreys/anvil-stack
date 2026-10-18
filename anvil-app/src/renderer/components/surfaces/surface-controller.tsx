@@ -158,7 +158,7 @@ export function useSurfaceComments(surfaceId: string, enabled: boolean) {
 
 export function describeAnchor(anchor: SurfaceAnchor): string {
   if (anchor.label) return anchor.label;
-  if (anchor.type === 'surface') return 'Whole surface';
+  if (anchor.type === 'surface') return 'Whole output';
   if (anchor.filePath) {
     const lines =
       anchor.lineStart !== undefined
@@ -206,7 +206,7 @@ export function SurfaceCommentComposer({
   return (
     <form
       className="space-y-2 rounded-lg border border-border bg-bg-secondary p-3"
-      aria-label="Comment on surface"
+      aria-label="Comment on output"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -215,7 +215,7 @@ export function SurfaceCommentComposer({
         if (event.key === 'Escape') {
           event.preventDefault();
           event.stopPropagation();
-          onCancel();
+          if (!submitting) onCancel();
         }
       }}
     >
@@ -226,10 +226,16 @@ export function SurfaceCommentComposer({
         id={fieldId}
         ref={textareaRef}
         value={body}
+        disabled={submitting}
         rows={3}
         onChange={(event) => setBody(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+          if (
+            event.key === 'Enter' &&
+            (event.metaKey || event.ctrlKey) &&
+            !event.nativeEvent.isComposing &&
+            event.keyCode !== 229
+          ) {
             event.preventDefault();
             void submit();
           }
@@ -247,6 +253,7 @@ export function SurfaceCommentComposer({
           <input
             type="checkbox"
             checked={sendToAgent}
+            disabled={submitting}
             onChange={(event) => setSendToAgent(event.target.checked)}
             className="accent-accent"
           />
@@ -274,7 +281,7 @@ export function SurfaceCommentList({
   if (comments.length === 0) {
     return (
       <p className="px-1 text-xs leading-5 text-text-tertiary">
-        No comments yet. Comment on the whole surface or point at a part of it.
+        No comments yet. Add one here or select part of the preview to discuss it.
       </p>
     );
   }

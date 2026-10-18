@@ -12,8 +12,6 @@ import { app } from 'electron';
 import {
   AGENT_UI_PROTOCOL_VERSION,
   type AgentUIIntentBinding,
-  type AgentUIQuestionIntent,
-  type AgentUIQuestionResolution,
   type AgentUISurfaceIntent,
 } from '../../shared/agent-ui-intents.js';
 import { getSurfaceKind } from '../../shared/surfaces/registry.js';
@@ -30,7 +28,6 @@ import { getDb } from '../db/database.js';
 import {
   getAgentUIIntentRecord,
   listAgentUISurfaces,
-  recordAgentUIQuestionResolution,
   upsertAgentUIIntent,
 } from '../services/agent-ui-intent.service.js';
 import {
@@ -39,6 +36,7 @@ import {
   getCodexSession,
   listActiveCodexSessions,
 } from '../services/codex-session.service.js';
+import { askAgentQuestion } from '../services/agent-question.service.js';
 import { listSurfaceComments } from './comments.js';
 import { formatSchemaErrors, validateJsonSchema } from './validate.js';
 
@@ -189,132 +187,31 @@ export async function deliverSurfaceFeedback(surfaceId: string, message: string)
   return deliverStructuredAgentFeedback(sessionId, payload);
 }
 
-interface PendingApproval {
-  sessionId: string;
-  settle: (approved: boolean) => void;
-}
+/** Shared question lifecycle; kept here for existing surface action callers. */
+export { resolveAnvilOwnedQuestion } from '../services/agent-question.service.js';
 
-const pendingApprovals = new Map<string, PendingApproval>();
-const APPROVAL_TIMEOUT_MS = 10 * 60_000;
-const APPROVAL_SESSION_POLL_MS = 2_000;
-const APPROVAL_QUESTION_ID = 'approve';
-
-/**
- * Asks the user to approve an Anvil-side mutation requested by an agent tool
- * (create work items, post to PR, write & commit…). Publishes an approval
- * question in the thread and resolves when the user answers. Resolves false
- * on reject, dismiss, or session end. User-initiated surface actions do not
- * need this: the click (plus the renderer's confirm) is the approval.
- */
 export async function requestUserApproval(
   ctx: AgentToolSessionContext,
   request: { title: string; detail: string; consequences?: string },
 ): Promise<boolean> {
-  const threadId = ctx.appThreadId;
-  if (!threadId) return false;
-  const now = new Date().toISOString();
-  const context = [
-    request.detail.trim(),
-    request.consequences?.trim() ? `Consequences: ${request.consequences.trim()}` : '',
-  ]
+  if (!ctx.appThreadId) return false;
+  const context = [request.detail.trim(), request.consequences?.trim()]
     .filter(Boolean)
     .join('\n\n');
-  const intent: AgentUIQuestionIntent = {
-    protocolVersion: AGENT_UI_PROTOCOL_VERSION,
-    id: `approval:${randomUUID()}`,
-    kind: 'question',
-    revision: 1,
-    scope: {
-      threadId,
-      ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}),
-      ...providerThreadScope(threadId),
-    },
-    lifecycle: 'pending',
-    presentation: { collapsed: false, hidden: false },
-    payload: {
-      title: normaliseTitle(request.title),
-      questions: [
-        {
-          id: APPROVAL_QUESTION_ID,
-          kind: 'approval',
-          question: normaliseTitle(request.title),
-          ...(context ? { context } : {}),
-          required: true,
-          allowCancel: true,
-        },
-      ],
-    },
-    createdAt: now,
-    updatedAt: now,
-  };
-  const saved = upsertAgentUIIntent({
-    intent,
-    binding: { provider: 'anvil', sessionId: ctx.sessionId },
-  });
-
-  return new Promise<boolean>((resolve) => {
-    const finish = (approved: boolean) => {
-      clearTimeout(timeout);
-      clearInterval(poll);
-      pendingApprovals.delete(saved.id);
-      resolve(approved);
-    };
-    const expire = () => {
-      expireApproval(saved.id, ctx.sessionId);
-      finish(false);
-    };
-    const timeout = setTimeout(expire, APPROVAL_TIMEOUT_MS);
-    const poll = setInterval(() => {
-      if (!getCodexSession(ctx.sessionId)) expire();
-    }, APPROVAL_SESSION_POLL_MS);
-    timeout.unref?.();
-    poll.unref?.();
-    pendingApprovals.set(saved.id, { sessionId: ctx.sessionId, settle: finish });
-    broadcastAgentUIIntent(saved, ctx.sessionId);
-  });
-}
-
-/**
- * Resolves an Anvil-owned question (binding.provider === 'anvil'). Returns null
- * when the intent belongs to a provider, so the caller can delegate.
- */
-export function resolveAnvilOwnedQuestion(
-  intentId: string,
-  resolution: AgentUIQuestionResolution,
-): AgentUIQuestionIntent | null {
-  const record = getAgentUIIntentRecord(intentId);
-  if (!record || record.intent.kind !== 'question' || record.binding?.provider !== 'anvil') {
-    return null;
-  }
-  const resolved = recordAgentUIQuestionResolution(record.intent, resolution);
-  const pending = pendingApprovals.get(intentId);
-  broadcastAgentUIIntent(resolved, record.binding.sessionId);
-  pending?.settle(
-    resolution.action === 'submit' && resolution.answers[APPROVAL_QUESTION_ID] === true,
-  );
-  return resolved;
-}
-
-function expireApproval(intentId: string, sessionId: string): void {
-  const record = getAgentUIIntentRecord(intentId);
-  if (!record || record.intent.kind !== 'question') return;
-  if (record.intent.lifecycle !== 'pending' && record.intent.lifecycle !== 'presented') return;
-  const now = new Date().toISOString();
-  try {
-    const expired = upsertAgentUIIntent({
-      intent: {
-        ...record.intent,
-        revision: record.intent.revision + 1,
-        lifecycle: 'expired',
-        updatedAt: now,
-        resolvedAt: now,
+  const result = await askAgentQuestion(ctx, {
+    title: normaliseTitle(request.title),
+    questions: [
+      {
+        id: 'approve',
+        kind: 'approval',
+        question: normaliseTitle(request.title),
+        ...(context ? { context } : {}),
+        required: true,
+        allowCancel: true,
       },
-      binding: record.binding,
-    });
-    broadcastAgentUIIntent(expired, sessionId);
-  } catch (error) {
-    console.error('[Surfaces] Failed to expire approval:', error);
-  }
+    ],
+  });
+  return result.status === 'answered' && result.answers.approve === true;
 }
 
 // ---------------------------------------------------------------------------

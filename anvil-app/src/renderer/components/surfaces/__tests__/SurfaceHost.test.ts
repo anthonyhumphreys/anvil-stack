@@ -60,22 +60,22 @@ describe('SurfaceHost', () => {
     expect(markup).toContain('data-surface-handle');
     expect(markup).toContain('Dependency audit');
     expect(markup).toContain('v2');
-    expect(markup).toContain('aria-label="Expand to stage"');
+    expect(markup).toContain('aria-label="Expand preview"');
     expect(markup).toContain('aria-label="Open in window"');
-    expect(markup).toContain('aria-label="More surface actions"');
+    expect(markup).toContain('aria-label="More output actions"');
     expect(markup).toContain('3 critical advisories');
   });
 
   it('collapses superseded surfaces to one line', () => {
     const markup = render(intent({ supersededBy: 'surface:2' }));
-    expect(markup).toContain('Superseded by a newer version below');
-    expect(markup).not.toContain('Expand to stage');
+    expect(markup).toContain('Updated version below');
+    expect(markup).not.toContain('Expand preview');
   });
 
   it('shows a skeleton while streaming with no data yet', () => {
     const markup = render(intent({ streaming: true, data: {} }));
     expect(markup).toContain('aria-busy="true"');
-    expect(markup).toContain('The agent is writing this surface');
+    expect(markup).toContain('The agent is preparing this output');
   });
 
   it('offers bring-to-front while a window is open', () => {

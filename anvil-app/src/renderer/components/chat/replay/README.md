@@ -4,7 +4,9 @@ Run the actual Anvil Electron app with a disposable profile from `anvil-app/`:
 
 ```sh
 ANVIL_DEV_USER_DATA_PATH=/tmp/anvil-processing-preview \
-ANVIL_DEV_PROCESSING_PREVIEW=1 pnpm dev
+ANVIL_DEV_PROCESSING_PREVIEW=1 pnpm dev -- \
+  --disable-background-timer-throttling \
+  --disable-renderer-backgrounding --disable-backgrounding-occluded-windows
 ```
 
 Complete the welcome flow with **Continue without Sync** if prompted. The app
@@ -20,9 +22,31 @@ individual operations to check tool inputs, outputs, and command output. Approva
 buttons exercise real IPC against a synthetic session, so inspect their layout
 without submitting them.
 
-The provider selector changes display attribution. Protocol normalization for
-the six supported providers is covered by `codex-protocol.service.test.ts`;
-turn state and replay behavior are covered by `processing-state.test.ts`.
+**Chat interactions** opens a second native fixture with the production composer,
+questions, approvals, provider input, plan decisions, tool requests and recovery
+notices. **Compact pane** constrains the conversation to 740px. Dark and light
+themes use the real application tokens. Sending and stopping use in-memory fixture
+callbacks; decision forms use the real preload against synthetic request IDs, so
+they return an error and retain the user's answers. No agent is started by a fixture.
+
+The provider selector also applies the composer's provider rules. Codex, OpenAI,
+Azure and LLMGateway offer Guide, Queue and a read-only side question. Cursor and
+Devin offer Queue while work continues, with their own access options. These
+fixtures do not connect to a provider or verify its credentials or plan.
+
+Protocol normalization is covered by `codex-protocol.service.test.ts` and
+`codex-agent-ui.adapter.test.ts`; turn state and replay behavior are covered by
+`processing-state.test.ts`. Saved local chats also expose Anvil's `question_ask`
+MCP tool across all providers and permission modes. It waits for the question
+panel's response and returns structured answers directly. Native provider
+questions continue through the same form when the provider emits them.
+
+`agent-question.service.test.ts` covers provider contexts, answer types,
+validation, duplicate submissions, cancellation, timeout and restart cleanup.
+`agent-mcp-server.test.ts` covers request cancellation, disconnects and MCP
+session deletion. Answer receipts persist in the conversation, with sensitive
+native answers redacted. These checks verify the shared bridge; live provider
+availability and end-to-end rendering still need a desktop check.
 
 # Chat replay and inline surface fixtures
 

@@ -17,6 +17,8 @@ export function buildCodexMcpArgs(input: { temporaryChat?: boolean; url?: string
     `mcp_servers.${ANVIL_MCP_SERVER_NAME}.url=${JSON.stringify(input.url)}`,
     '-c',
     `mcp_servers.${ANVIL_MCP_SERVER_NAME}.bearer_token_env_var="${ANVIL_MCP_TOKEN_ENV}"`,
+    '-c',
+    `mcp_servers.${ANVIL_MCP_SERVER_NAME}.tool_timeout_sec=660`,
   ];
 }
 

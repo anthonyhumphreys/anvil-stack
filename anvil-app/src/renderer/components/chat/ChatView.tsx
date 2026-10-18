@@ -1031,6 +1031,15 @@ export function ChatView({ userRole }: ChatViewProps) {
             fastModeAvailable={!runTarget.remote && fastModeTarget.available}
             onFastModeChange={scaffoldModeActive || runTarget.remote ? undefined : setFastMode}
             showSyntaxHint={isEmpty}
+            setupSummary={[
+              activePersona?.name ?? 'Agent',
+              runTarget.hosted
+                ? 'Anvil Cloud Agents'
+                : runTarget.remote
+                  ? (runTarget.devices.find((device) => device.enrollmentId === runTarget.target)
+                      ?.displayName ?? 'Remote device')
+                  : 'This device',
+            ].join(' · ')}
             leadingControls={
               !scaffoldModeActive && !isTemporaryChat ? (
                 <>
@@ -1051,12 +1060,12 @@ export function ChatView({ userRole }: ChatViewProps) {
                   <RepoSelector
                     variant="dropdown"
                     mode="multi"
-                    placement="bottom"
+                    placement="top"
                     selectedRepoIds={activeRepos.map((repo) => repo.id)}
                     onMultiSelect={setActiveRepos}
                   />
                   <GovernanceSelector
-                    placement="bottom"
+                    placement="top"
                     selectedDocIds={selectedGovernanceDocs.map((document) => document.id)}
                     onSelectionChange={setSelectedGovernanceDocs}
                   />

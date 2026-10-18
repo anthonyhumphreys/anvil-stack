@@ -1,4 +1,3 @@
-import type { CSSProperties } from 'react';
 import { Check, ChevronDown, Loader2, Square, type LucideIcon } from 'lucide-react';
 import { Menu, MenuItem, MenuLabel, cx } from '../ui';
 
@@ -19,41 +18,35 @@ export interface ComposerSendOption<Id extends string = string> {
 
 /**
  * One primary send action plus, when there are alternatives, a menu of the
- * other ways to send. Choosing from the menu sends with that option and makes
- * it the default for the next message.
+ * other ways to send. Choosing a mode never submits the draft.
  */
 export function ComposerSendControl<Id extends string>({
   options,
   selectedId,
   onSelect,
-  colour,
   hasContent,
   menuLabel,
 }: {
   options: ComposerSendOption<Id>[];
   selectedId: Id;
   onSelect: (id: Id) => void;
-  colour: string;
   hasContent: boolean;
   menuLabel: string;
 }) {
   const selected = options.find((option) => option.id === selectedId) ?? options[0];
   if (!selected) return null;
   const Icon = selected.icon;
-  const tint: CSSProperties = {
-    backgroundColor: hasContent ? colour : `color-mix(in srgb, ${colour} 25%, transparent)`,
-  };
+  const pending = options.some((option) => option.pending);
 
   return (
     <div
-      className="composer-send-control flex h-8 items-stretch overflow-hidden rounded-lg"
-      style={tint}
+      className={`composer-send-control flex h-8 items-stretch overflow-hidden rounded-lg bg-accent text-accent-foreground ${hasContent ? '' : 'opacity-50'}`}
     >
       <button
         type="button"
         onClick={selected.run}
         disabled={selected.disabled}
-        className="composer-send flex items-center justify-center gap-1.5 px-2.5 text-xs font-semibold text-bg-primary transition-[filter,opacity] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bg-primary/70 disabled:cursor-not-allowed disabled:opacity-40"
+        className="composer-send flex items-center justify-center gap-1.5 px-2.5 text-xs font-semibold transition-[filter,opacity] duration-150 hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-foreground/70 disabled:cursor-not-allowed disabled:opacity-50"
         aria-label={selected.pending ? `${selected.label}: sending` : selected.ariaLabel}
         aria-busy={selected.pending}
         title={selected.description}
@@ -63,7 +56,7 @@ export function ComposerSendControl<Id extends string>({
         ) : (
           <Icon size={13} />
         )}
-        {selected.shortLabel}
+        {selected.pending ? 'Sending…' : selected.shortLabel}
       </button>
       {options.length > 1 && (
         <Menu
@@ -75,7 +68,8 @@ export function ComposerSendControl<Id extends string>({
             <button
               {...props}
               type="button"
-              className="flex w-7 items-center justify-center border-l border-bg-primary/25 text-bg-primary transition-[filter] duration-200 hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bg-primary/70"
+              disabled={pending}
+              className="flex w-7 items-center justify-center border-l border-accent-foreground/20 transition-[filter] duration-150 hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-foreground/70 disabled:opacity-50"
               aria-label={menuLabel}
               title={menuLabel}
             >
@@ -83,18 +77,15 @@ export function ComposerSendControl<Id extends string>({
             </button>
           )}
         >
-          <MenuLabel>Send as</MenuLabel>
+          <MenuLabel>Choose how to send</MenuLabel>
           {options.map((option) => {
             const OptionIcon = option.icon;
             const active = option.id === selected.id;
             return (
               <MenuItem
                 key={option.id}
-                disabled={option.disabled}
-                onSelect={() => {
-                  onSelect(option.id);
-                  option.run();
-                }}
+                disabled={pending}
+                onSelect={() => onSelect(option.id)}
                 className="items-start"
                 icon={<OptionIcon size={14} className="mt-0.5 shrink-0" aria-hidden="true" />}
               >
@@ -129,7 +120,7 @@ export function ComposerStopButton({ onStop }: { onStop?: () => void }) {
       type="button"
       onClick={onStop}
       disabled={!onStop}
-      className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-error/35 bg-error/10 px-2.5 text-xs font-semibold text-error transition-colors duration-200 hover:bg-error/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error/60 disabled:cursor-not-allowed disabled:opacity-50"
+      className="flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border px-2.5 text-xs font-medium text-text-secondary transition-colors duration-150 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50"
       title="Stop the current run"
       aria-label="Stop current run"
     >

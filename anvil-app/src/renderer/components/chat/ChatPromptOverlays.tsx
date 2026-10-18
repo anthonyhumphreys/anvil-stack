@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -12,6 +12,7 @@ import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/a
 import type { ChatPlanSnapshot } from '../../../shared/types';
 import type { WorkflowChatIntent } from '../../utils/workflow-chat-intent';
 import { PlanIntentSurface, QuestionIntentSurface } from './AgentUIIntentSurface';
+import { buildChatRequestTargetDomId } from './chat-run-outcome';
 
 /**
  * Composer-level prompt overlays — extracted from ChatView (Phase 5 split).
@@ -36,37 +37,50 @@ export function PendingQuestionPrompt({
   additionalCount: number;
 }) {
   const [expanded, setExpanded] = useState(true);
+  const panelId = useId();
+  const approval = intent.payload.questions.some((question) => question.kind === 'approval');
 
   return (
-    <div className="border-t border-warning/25 bg-warning/[0.035]">
+    <div
+      id={buildChatRequestTargetDomId(`intent:${intent.id}`)}
+      tabIndex={-1}
+      className={`border-t ${approval ? 'border-warning/25 bg-warning/[0.035]' : 'border-border bg-bg-secondary'}`}
+    >
       <button
         type="button"
         onClick={() => setExpanded((current) => !current)}
-        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
+        className="mx-auto flex w-full max-w-[760px] items-center gap-2.5 px-4 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
         aria-expanded={expanded}
+        aria-controls={panelId}
       >
-        <MessageSquare size={14} className="shrink-0 text-warning" />
+        <MessageSquare
+          size={14}
+          className={`shrink-0 ${approval ? 'text-warning' : 'text-text-secondary'}`}
+        />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs font-semibold text-text-primary">
-            {intent.payload.title ?? 'Agent needs your input'}
+            {intent.payload.title ?? 'A question for you'}
           </span>
-          <span className="block truncate text-xs text-text-tertiary">
-            {intent.payload.questions[0]?.question}
-            {additionalCount > 0
-              ? ` · ${additionalCount} more request${additionalCount === 1 ? '' : 's'}`
-              : ''}
-          </span>
+          {(!expanded || additionalCount > 0) && (
+            <span className="block truncate text-xs text-text-secondary">
+              {!expanded && intent.payload.questions[0]?.question}
+              {additionalCount > 0
+                ? `${expanded ? '' : ' · '}${additionalCount} more request${additionalCount === 1 ? '' : 's'}`
+                : ''}
+            </span>
+          )}
         </span>
-        <span className="rounded-md bg-warning/10 px-2 py-1 text-xs font-semibold text-warning">
+        <span className="px-2 py-1 text-xs font-medium text-text-secondary">
           {expanded ? 'Hide' : 'Answer'}
         </span>
         {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
       </button>
       <div
+        id={panelId}
         hidden={!expanded}
-        className="max-h-[min(60vh,560px)] overflow-y-auto border-t border-warning/20 p-2"
+        className="mx-auto max-h-[min(50vh,480px)] max-w-[760px] overflow-y-auto border-t border-border-subtle"
       >
-        <QuestionIntentSurface intent={intent} />
+        <QuestionIntentSurface intent={intent} compact />
       </div>
     </div>
   );
@@ -194,8 +208,8 @@ export function WorkflowActionConfirmation({
     intent.kind === 'run'
       ? `This starts the saved workflow in ${pending.workspaceName}.`
       : intent.kind === 'draft'
-        ? 'Anvil detected a request to create a workflow.'
-        : 'Anvil detected a request to start a workflow.';
+        ? 'Review the steps in the builder before saving your workflow.'
+        : 'Choose a saved workflow to start in this workspace.';
   const confirmLabel =
     intent.kind === 'run'
       ? 'Run workflow'
@@ -205,7 +219,7 @@ export function WorkflowActionConfirmation({
 
   return (
     <div
-      className="flex items-center gap-3 border-t border-accent/25 bg-accent/[0.045] px-4 py-3"
+      className="flex flex-wrap items-center gap-3 border-t border-border bg-bg-secondary px-4 py-3"
       role="region"
       aria-live="polite"
       aria-label="Confirm workflow action"
@@ -213,9 +227,9 @@ export function WorkflowActionConfirmation({
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
         <ListChecks size={15} />
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-48 flex-1">
         <p className="text-xs font-semibold text-text-primary">{title}</p>
-        <p className="mt-0.5 truncate text-xs text-text-tertiary">{detail}</p>
+        <p className="mt-0.5 text-xs leading-5 text-text-secondary">{detail}</p>
         {error && (
           <p role="alert" className="mt-1 text-xs text-error">
             {error}
@@ -226,7 +240,7 @@ export function WorkflowActionConfirmation({
         type="button"
         onClick={onKeepInChat}
         disabled={confirming}
-        className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+        className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50"
       >
         Keep in chat
       </button>
@@ -234,7 +248,7 @@ export function WorkflowActionConfirmation({
         type="button"
         onClick={onConfirm}
         disabled={confirming}
-        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
+        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {confirming && <Loader2 size={13} className="animate-spin" />}
         {confirmLabel}

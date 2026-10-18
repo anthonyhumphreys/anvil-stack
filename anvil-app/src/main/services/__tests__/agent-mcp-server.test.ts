@@ -1,5 +1,5 @@
 import { request } from 'node:http';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AgentToolError,
   registerAgentToolProvider,
@@ -34,6 +34,7 @@ interface HttpResult {
 function http(
   server: AgentMcpServer,
   options: {
+    signal?: AbortSignal;
     method?: string;
     token?: string | null;
     body?: unknown;
@@ -46,6 +47,7 @@ function http(
   return new Promise((resolve, reject) => {
     const req = request(
       {
+        signal: options.signal,
         host: '127.0.0.1',
         port: server.port,
         path: options.path ?? '/mcp',
@@ -439,5 +441,96 @@ describe('agent MCP token registry', () => {
       inputSchema: { type: 'object' },
       annotations: { readOnlyHint: true },
     });
+  });
+});
+
+describe('waiting tool cancellation', () => {
+  function waitingTool() {
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let cancelled = false;
+    registerAgentToolProvider({
+      id: 'waiting',
+      tools: () => [
+        {
+          name: 'question_wait',
+          description: 'Wait for an answer',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async call(_ctx, name, _args, signal) {
+        if (name !== 'question_wait') return undefined;
+        started();
+        await new Promise<void>((resolve) => {
+          const abort = () => {
+            cancelled = true;
+            resolve();
+          };
+          if (signal?.aborted) abort();
+          else signal?.addEventListener('abort', abort, { once: true });
+        });
+        return textResult('cancelled');
+      },
+    });
+    return { ready, cancelled: () => cancelled };
+  }
+  it('cancels only the authenticated MCP client request', async () => {
+    const initialized = await http(server, { token, body: rpc(80, 'initialize') });
+    const headers = { 'Mcp-Session-Id': initialized.headers['mcp-session-id'] as string };
+    const wait = waitingTool();
+    const pending = http(server, {
+      token,
+      headers,
+      body: rpc('waiting', 'tools/call', { name: 'question_wait' }),
+    });
+    await wait.ready;
+    const other = await http(server, { token, body: rpc(81, 'initialize') });
+    await http(server, {
+      token,
+      headers: { 'Mcp-Session-Id': other.headers['mcp-session-id'] as string },
+      body: { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'waiting' } },
+    });
+    expect(wait.cancelled()).toBe(false);
+    const cancelled = await http(server, {
+      token,
+      headers,
+      body: { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'waiting' } },
+    });
+    expect(cancelled.status).toBe(202);
+    expect(wait.cancelled()).toBe(true);
+    expect((await pending).body).toMatchObject({
+      id: 'waiting',
+      result: { content: [{ text: 'cancelled' }] },
+    });
+  });
+  it('cancels active calls when the MCP client deletes its session', async () => {
+    const initialized = await http(server, { token, body: rpc(82, 'initialize') });
+    const headers = { 'Mcp-Session-Id': initialized.headers['mcp-session-id'] as string };
+    const wait = waitingTool();
+    const pending = http(server, {
+      token,
+      headers,
+      body: rpc(83, 'tools/call', { name: 'question_wait' }),
+    });
+    await wait.ready;
+    expect((await http(server, { token, headers, method: 'DELETE' })).status).toBe(200);
+    await pending;
+    expect(wait.cancelled()).toBe(true);
+  });
+  it('cancels the tool when its HTTP connection goes away', async () => {
+    const wait = waitingTool();
+    const client = new AbortController();
+    const pending = http(server, {
+      token,
+      signal: client.signal,
+      body: rpc(84, 'tools/call', { name: 'question_wait' }),
+    });
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await wait.ready;
+    client.abort();
+    await rejected;
+    await vi.waitFor(() => expect(wait.cancelled()).toBe(true));
   });
 });

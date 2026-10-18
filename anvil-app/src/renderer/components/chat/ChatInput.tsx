@@ -70,6 +70,8 @@ const FILE_MENTION_MENU_ID = 'chat-file-mention-menu';
 const SLASH_COMMAND_MENU_ID = 'chat-slash-command-menu';
 const SKILL_MENTION_MENU_ID = 'chat-skill-mention-menu';
 const COMPACT_FOOTER_MAX_WIDTH = 760;
+const SEND_SHORTCUT =
+  typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘ Enter' : 'Ctrl Enter';
 
 interface ActiveFileMention {
   start: number;
@@ -110,6 +112,7 @@ export interface ChatSlashCommand {
 }
 
 interface ChatComposerKeyEvent {
+  busy?: boolean;
   key: string;
   shiftKey: boolean;
   metaKey?: boolean;
@@ -170,8 +173,10 @@ interface ChatInputProps {
   fastModeAvailable?: boolean;
   onFastModeChange?: (enabled: boolean) => void;
   contextControls?: ReactNode;
-  /** Leading controls rendered in the composer footer before attachments. */
+  /** Agent and destination controls, grouped with conversation context. */
   leadingControls?: ReactNode;
+  /** The selected agent and destination stay visible while setup is closed. */
+  setupSummary?: string;
   prefill?: { id: string; text: string; attachments?: ChatAttachment[] } | null;
   draftKey?: string;
   allowAttachments?: boolean;
@@ -195,7 +200,6 @@ export function ChatInput({
   onFollowUp,
   sideQuestionAvailable = false,
   onSideQuestion,
-  personaColour,
   model = 'gpt-5.6-sol',
   modelProvider = 'codex',
   modelOptions = [],
@@ -219,6 +223,7 @@ export function ChatInput({
   onFastModeChange,
   contextControls,
   leadingControls,
+  setupSummary = 'Chat setup',
   prefill,
   draftKey,
   allowAttachments = true,
@@ -271,6 +276,7 @@ export function ChatInput({
   const [compactFooter, setCompactFooter] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerWidthRef = useRef<HTMLDivElement>(null);
+  const contextTriggerRef = useRef<HTMLButtonElement>(null);
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
   const draftRevisionRef = useRef(0);
@@ -335,8 +341,18 @@ export function ChatInput({
       if (!contextMenuRef.current?.contains(event.target as Node)) setContextMenuOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setContextMenuOpen(false);
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        event.preventDefault();
+        setContextMenuOpen(false);
+        contextTriggerRef.current?.focus();
+      }
     };
+
+    contextMenuRef.current
+      ?.querySelector<HTMLElement>(
+        '[role="dialog"] button:not(:disabled), [role="dialog"] select:not(:disabled)',
+      )
+      ?.focus();
 
     document.addEventListener('mousedown', handlePointerDown);
     window.addEventListener('keydown', handleKeyDown);
@@ -955,6 +971,7 @@ export function ChatInput({
 
     if (
       shouldSendChatMessageFromKey({
+        busy,
         key: e.key,
         shiftKey: e.shiftKey,
         metaKey: e.metaKey,
@@ -964,7 +981,7 @@ export function ChatInput({
       })
     ) {
       e.preventDefault();
-      handleSend();
+      if (selectedSendOption && !selectedSendOption.disabled) selectedSendOption.run();
     }
   };
 
@@ -1288,6 +1305,9 @@ export function ChatInput({
         },
         ...(canAskSideQuestion ? [sideQuestionOption] : []),
       ];
+  const selectedSendOption =
+    sendOptions.find((option) => option.id === (busy ? busySendChoice : idleSendChoice)) ??
+    sendOptions[0];
   const showQuickPrompts =
     !busy &&
     !disabled &&
@@ -1457,43 +1477,45 @@ export function ChatInput({
                 ? 'Chat is not ready yet...'
                 : !allowAttachments
                   ? 'Ask anything in this text-only temporary chat...'
-                  : mentionRepoIds.length > 0
-                  ? 'Ask anything, or type /, @, or $...'
-                  : 'Ask anything, paste images, or drop files here...'
+                  : 'Ask anything…'
           }
           rows={1}
         />
 
         <ChatComposerFooter compact={compactFooter}>
           <div className="flex min-w-0 flex-wrap items-center gap-1">
-            {leadingControls}
-            {allowAttachments && <button
-              type="button"
-              onClick={() => void handleSelectAttachments()}
-              disabled={disabled || preparingAttachments}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
-              title={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
-              aria-label={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
-              aria-busy={preparingAttachments}
-            >
-              {preparingAttachments ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : (
-                <Paperclip size={15} />
-              )}
-            </button>}
+            {allowAttachments && (
+              <button
+                type="button"
+                onClick={() => void handleSelectAttachments()}
+                disabled={disabled || preparingAttachments}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
+                title={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
+                aria-label={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
+                aria-busy={preparingAttachments}
+              >
+                {preparingAttachments ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Paperclip size={15} />
+                )}
+              </button>
+            )}
 
-            {contextControls && (
-              <div ref={contextMenuRef} className="relative">
+            {(leadingControls || contextControls) && (
+              <div ref={contextMenuRef} className="relative min-w-0">
                 <button
+                  ref={contextTriggerRef}
                   type="button"
                   onClick={() => setContextMenuOpen((open) => !open)}
-                  className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                  className="flex h-8 min-w-0 max-w-64 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                  aria-label={`Chat setup: ${setupSummary}`}
+                  title="Choose an agent, destination and conversation context"
                   aria-haspopup="dialog"
                   aria-expanded={contextMenuOpen}
                   aria-controls={contextMenuOpen ? 'chat-context-menu' : undefined}
                 >
-                  Context
+                  <span className="truncate">{setupSummary}</span>
                   <ChevronDown
                     size={11}
                     className={`transition-transform ${contextMenuOpen ? 'rotate-180' : ''}`}
@@ -1504,12 +1526,22 @@ export function ChatInput({
                     id="chat-context-menu"
                     role="dialog"
                     aria-label="Conversation context"
-                    className="absolute bottom-full left-0 z-50 mb-2 min-w-64 rounded-xl border border-border bg-bg-elevated p-2 shadow-lg ring-1 ring-overlay"
+                    className="absolute bottom-full left-0 z-50 mb-2 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-bg-elevated p-3 shadow-lg"
                   >
-                    <p className="px-2 pb-2 text-xs leading-4 text-text-tertiary">
-                      Choose repositories and documents for this conversation.
-                    </p>
-                    <div className="flex flex-wrap items-center gap-1">{contextControls}</div>
+                    <p className="mb-2 text-xs font-semibold text-text-primary">Chat setup</p>
+                    {leadingControls && (
+                      <div className="flex flex-wrap items-center gap-1">{leadingControls}</div>
+                    )}
+                    {contextControls && (
+                      <div
+                        className={leadingControls ? 'mt-3 border-t border-border-subtle pt-3' : ''}
+                      >
+                        <p className="mb-1.5 text-xs text-text-tertiary">
+                          Repositories and documents
+                        </p>
+                        <div className="flex flex-wrap items-center gap-1">{contextControls}</div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1579,32 +1611,30 @@ export function ChatInput({
                 }}
                 onError={setVoiceError}
                 disabled={disabled}
-                colour={personaColour}
               />
               {busy && <ComposerStopButton onStop={onStop} />}
-              {busy && !canGuide && !canQueue && !canAskSideQuestion
-                ? hasContent && (
-                    <span className="px-1 text-xs text-text-tertiary">
-                      Follow-ups are unavailable for this session.
-                    </span>
-                  )
-                : (!busy || hasContent) && (
-                    <ComposerSendControl
-                      key={busy ? 'busy' : 'idle'}
-                      options={sendOptions}
-                      selectedId={busy ? busySendChoice : idleSendChoice}
-                      onSelect={(id) =>
-                        busy
-                          ? setBusySendChoice(id as BusySendChoice)
-                          : setIdleSendChoice(id as IdleSendChoice)
-                      }
-                      colour={personaColour}
-                      hasContent={hasContent}
-                      menuLabel={
-                        busy ? 'More ways to send while the run continues' : 'More ways to send'
-                      }
-                    />
-                  )}
+              {busy && !canGuide && !canQueue && !canAskSideQuestion ? (
+                hasContent && (
+                  <span className="px-1 text-xs text-text-tertiary">
+                    Follow-ups are unavailable for this session.
+                  </span>
+                )
+              ) : (
+                <ComposerSendControl
+                  key={busy ? 'busy' : 'idle'}
+                  options={sendOptions}
+                  selectedId={busy ? busySendChoice : idleSendChoice}
+                  onSelect={(id) =>
+                    busy
+                      ? setBusySendChoice(id as BusySendChoice)
+                      : setIdleSendChoice(id as IdleSendChoice)
+                  }
+                  hasContent={hasContent}
+                  menuLabel={
+                    busy ? 'More ways to send while the run continues' : 'More ways to send'
+                  }
+                />
+              )}
             </div>
           </div>
         </ChatComposerFooter>
@@ -1660,17 +1690,17 @@ export function ChatInput({
         ))}
       </ChatComposerSurface>
 
+      {hasContent && selectedSendOption && (
+        <p className="mt-1.5 px-1 text-right text-xs text-text-tertiary">
+          {busy
+            ? `Enter adds a line · ${SEND_SHORTCUT} to ${selectedSendOption.shortLabel.toLowerCase()}`
+            : 'Enter to send · Shift Enter for a new line'}
+        </p>
+      )}
+
       <p id="chat-composer-keyboard-hint" className="sr-only">
         {busy
-          ? `Enter does not send while the agent is working. Choose ${
-              [
-                canGuide ? 'Guide current run' : null,
-                canQueue ? 'Queue next' : null,
-                sideQuestionAvailable ? 'Side question' : null,
-              ]
-                .filter(Boolean)
-                .join(', ') || 'Stop or wait'
-            }. Shift plus Enter adds a line.`
+          ? `Enter adds a line while the agent is working. ${selectedSendOption ? `Control or Command plus Enter sends using ${selectedSendOption.label}.` : 'Stop the run or wait to send.'}`
           : 'Enter sends. Shift plus Enter adds a line.'}
         {mentionRepoIds.length > 0
           ? ' Type slash for commands, at for files, or dollar for skills.'
@@ -1726,17 +1756,7 @@ export function ChatInput({
                   </li>
                   <li>
                     <span className="font-mono text-text-primary">Enter</span>{' '}
-                    {busy
-                      ? `does not send; choose ${
-                          [
-                            canGuide ? 'Guide current run' : null,
-                            canQueue ? 'Queue next' : null,
-                            sideQuestionAvailable ? 'Side question' : null,
-                          ]
-                            .filter(Boolean)
-                            .join(', ') || 'wait'
-                        },`
-                      : 'sends,'}{' '}
+                    {busy ? `adds a line while working; ${SEND_SHORTCUT} sends,` : 'sends,'}{' '}
                     <span className="font-mono text-text-primary">Shift+Enter</span> adds a line
                   </li>
                 </ul>
@@ -2257,7 +2277,13 @@ export function getSkillMentionResults(
 }
 
 export function shouldSendChatMessageFromKey(event: ChatComposerKeyEvent): boolean {
-  return event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229;
+  return (
+    event.key === 'Enter' &&
+    !event.shiftKey &&
+    !event.isComposing &&
+    event.keyCode !== 229 &&
+    (!event.busy || event.metaKey === true || event.ctrlKey === true)
+  );
 }
 
 export function buildFileMentionOptionId(result: ChatFileMentionSearchResult): string {

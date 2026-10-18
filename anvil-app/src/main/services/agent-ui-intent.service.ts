@@ -422,17 +422,23 @@ export function recordAgentUIQuestionResolution(
   intent: AgentUIQuestionIntent,
   resolution: AgentUIQuestionResolution,
 ): AgentUIQuestionIntent {
-  validateAgentUIQuestionResolution(intent, resolution);
   const db = getDb();
   const existing = db
     .prepare('SELECT id FROM agent_ui_intent_responses WHERE intent_id = ?')
     .get(intent.id) as { id: string } | undefined;
-  if (existing) return requireIntentRecord(intent.id).intent as AgentUIQuestionIntent;
+  if (existing && resolution.intentId === intent.id) {
+    return requireIntentRecord(intent.id).intent as AgentUIQuestionIntent;
+  }
+  validateAgentUIQuestionResolution(intent, resolution);
 
   const safeAnswers = Object.fromEntries(
     intent.payload.questions.map((question) => [
       question.id,
-      question.sensitive ? '[redacted]' : (resolution.answers[question.id] ?? null),
+      resolution.action !== 'submit' || !hasAnswer(resolution.answers[question.id])
+        ? null
+        : question.sensitive
+          ? '[redacted]'
+          : (resolution.answers[question.id] ?? null),
     ]),
   );
   const now = new Date().toISOString();
@@ -440,6 +446,10 @@ export function recordAgentUIQuestionResolution(
     ...intent,
     revision: intent.revision + 1,
     lifecycle: resolution.action === 'submit' ? 'resolved' : 'dismissed',
+    payload: {
+      ...intent.payload,
+      response: { action: resolution.action, answers: safeAnswers },
+    },
     presentation: { ...intent.presentation, collapsed: true },
     updatedAt: now,
     resolvedAt: now,
@@ -463,6 +473,34 @@ export function recordAgentUIQuestionResolution(
   });
   tx();
   return resolved;
+}
+
+/** Provider processes cannot survive an app restart. Retain their questions as history. */
+export function expirePendingAgentUIQuestions(): number {
+  const rows = getDb()
+    .prepare(
+      "SELECT id, intent_json, binding_json FROM agent_ui_intents WHERE kind = 'question' AND lifecycle IN ('pending', 'presented')",
+    )
+    .all() as AgentUIIntentRow[];
+  let count = 0;
+  for (const row of rows) {
+    const record = parseRow(row);
+    if (!record) continue;
+    const now = new Date().toISOString();
+    persistIntent(
+      {
+        ...record.intent,
+        revision: record.intent.revision + 1,
+        lifecycle: 'expired',
+        updatedAt: now,
+        resolvedAt: now,
+      },
+      record.binding,
+    );
+    recordIntentEvent(record.intent.id, 'agent', 'expired', { reason: 'app_restart' });
+    count += 1;
+  }
+  return count;
 }
 
 export function expireAgentUIIntentsForSession(sessionId: string): AgentUIIntent[] {

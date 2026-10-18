@@ -15,6 +15,7 @@ export function BrandProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty('--color-accent', brand.accentColor);
+    root.style.setProperty('--color-accent-foreground', brand.accentForeground);
     root.style.setProperty('--color-accent-glow', brand.accentGlow);
     root.style.setProperty('--color-accent-gradient-end', brand.accentGradientEnd);
     document.title = brand.appName;
