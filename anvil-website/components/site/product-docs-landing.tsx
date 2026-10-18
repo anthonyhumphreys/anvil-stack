@@ -156,16 +156,20 @@ function ProductProof({ productId }: { productId: Exclude<ProductId, "start" | "
           <span className="ml-2 font-mono text-[0.6875rem] text-[oklch(var(--forge-dim))]">src/cells/orders.cell.ts</span>
         </div>
         <pre className="overflow-x-auto p-5 font-mono text-[0.8125rem] leading-7 sm:p-6">
-          <code>{`export const Orders = cell({
-  queries: { listOrders },
-  mutations: { createOrder },
-  capabilities: ["database"]
-});
+          <code>{`import { app, query, table, text } from "@anvil-cloud/runtime";
 
-$ anvil-cloud check --json
-{ "buildReady": true }`}</code>
+export default app({
+  schema: { orders: table({ title: text() }) },
+  capabilities: { database: true },
+  queries: {
+    listOrders: query({
+      auth: "required",
+      handler: async (ctx) => ctx.db.orders.page({ limit: 25 })
+    })
+  }
+});`}</code>
         </pre>
-        <figcaption className="sr-only">An example Cell definition and a passing check.</figcaption>
+        <figcaption className="sr-only">An example backend with a data table and a signed-in query returning up to 25 orders.</figcaption>
       </figure>
     );
   }

@@ -10,17 +10,27 @@ order: 10
 
 # Anvil Cloud
 
-Anvil Cloud lets you build and run small TypeScript apps called Cells. Its
-runtime and CLI live in the `anvil-cloud` directory.
+Anvil Cloud is a TypeScript framework for app backends. Define the data your app stores, the API routes it exposes, its background jobs, and who can use them. Run it on your machine before creating any cloud resources. Anvil calls each app a **Cell**.
 
-The runtime and CLI are open source. You run them on your own machines or
-provider accounts, and providers bill you directly. Anvil Cloud Agents will
-offer machines we host for running agents. That paid service hasn't launched
-and has no price or release date yet.
+For example, a catalogue app can import records on a schedule, expose a search API, and store private import files. A team tool can add sign-in and restrict who may update records. Your application owns the business rules; the framework supplies the runtime and deployment tools.
 
-A Cell declares app behavior, data shape, and required capabilities. Anvil runs it locally through the same request boundary used by deployment adapters, then emits manifests, generated client metadata, and deploy artifacts that can be inspected before anything reaches a provider.
+## Start with a working app
 
-Cell definitions give developers and coding agents a consistent way to describe behaviour, test it locally and review the deployment plan before creating cloud resources.
+Follow the [Notes quickstart](/docs/cloud/quickstart) to add and read records, test sign-in, and inspect logs in your browser. You do not need a cloud account for local development. The command-line tools also produce JSON output for scripts and coding agents.
+
+Before deploying, review which resources your app needs and whether the chosen deployment target supports them. AWS is in preview. Cloudflare support is still experimental; a resource appearing in a plan does not mean the runtime can use it. Read [data and background work](/docs/cloud/app-backends) for the shared AWS and Cloudflare backend contract. See [status and limits](/docs/cloud/status-and-limits) before choosing a target for a live app.
+
+The framework is open source and runs in your own provider accounts. Your hosting and model providers bill you directly. **Anvil Cloud Agents**, the planned service that would run agents on machines hosted by Anvil, has not launched. It is separate from this framework and from Desktop Sync.
+
+## Terms used in the guides
+
+- **Cell**: your app, including its data, handlers and permissions.
+- **Runtime**: the code that receives requests and runs your handlers.
+- **Deployment adapter**: the part that creates and connects resources in a hosting provider.
+- **Manifest**: the generated list of your app's routes, data and required permissions.
+- **Lens**: the local dashboard for inspecting data, logs and background work.
+
+The API and architecture references below describe those parts in detail.
 
 ## Current package layout
 

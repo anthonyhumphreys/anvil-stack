@@ -30,30 +30,30 @@ const neverSyncs = [
 const journey = [
   { title: "Saved here first", body: "Your change lands on this machine straight away, online or not." },
   {
-    title: "Sealed",
-    body: "Before it leaves, it's encrypted with your account key. If the key isn't there, it waits. It never falls back to plain text."
+    title: "Encrypted",
+    body: "Your device encrypts the change before sending it. If your encryption key is unavailable, the change waits on your device."
   },
   {
     title: "Stored",
-    body: "The server checks the envelope is well formed and stores it. It sees sizes and timings, never contents."
+    body: "The server stores the encrypted change. It can see metadata such as its size and timing, but cannot read its contents."
   },
   {
     title: "Delivered",
-    body: "Your other machines pick it up over a live connection and decrypt it on arrival."
+    body: "Your connected devices receive the change and decrypt it with your account key."
   },
   {
-    title: "Settled",
-    body: "If two machines changed the same thing, you see the conflict rather than silently losing one side."
+    title: "Conflicts resolved",
+    body: "If two devices change the same setting, Anvil shows the conflict so you can choose what to keep."
   }
 ];
 
 const handoff = [
   "Requested",
-  "Target prepared",
-  "Source paused",
-  "Checkpoint sealed",
-  "Ownership moved",
-  "Target started",
+  "Other machine checks it can continue",
+  "Current session pauses",
+  "Session progress is encrypted",
+  "Session moves to the other machine",
+  "Other machine resumes the session",
   "Done"
 ];
 
@@ -61,7 +61,7 @@ const leaving = [
   {
     icon: Share2,
     title: "Share links that stay private",
-    body: "Each link carries its own key after the #, which browsers never send to a server. The page downloads ciphertext and decrypts it on the reader's machine. Revoke a link and the ciphertext is deleted."
+    body: "The person with the complete link can open the shared content. Their browser decrypts it locally. Revoke the link to remove the hosted copy and prevent future downloads."
   },
   {
     icon: FileDown,
@@ -85,9 +85,9 @@ export default function SyncPage() {
           <div className="mt-10 grid gap-14 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start">
             <div>
               <p className="lede">
-                Sync &amp; Mesh moves your Anvil setup between machines and lets them share work. It&apos;s
-                all encrypted on your device first, so the server in the middle only ever handles
-                sealed envelopes.
+                Sync &amp; Mesh moves your Anvil setup between machines and lets them share work. Your synced setup
+                is encrypted on your device before it reaches the server. Repository files stay on
+                your own machines.
               </p>
               <div className="mt-8 flex flex-wrap gap-3">
                 <Button asChild size="lg">
@@ -134,7 +134,7 @@ export default function SyncPage() {
                 </ul>
               </div>
               <div className="bg-card p-7">
-                <h3 className="text-lg font-semibold">Never leaves the machine</h3>
+                <h3 className="text-lg font-semibold">Not included in workspace Sync</h3>
                 <ul className="mt-5 grid gap-3">
                   {neverSyncs.map((item) => (
                     <li key={item} className="flex gap-3 text-[0.9375rem] leading-7">
@@ -180,14 +180,14 @@ export default function SyncPage() {
               </h2>
               <p className="mt-5 max-w-[48ch] text-lg leading-8 text-muted-foreground">
                 Each machine says what it can run. Send a job and a suitable machine picks it up, checks
-                out the exact commit you pinned, and runs it in its own worktree. You watch the
+                out the exact commit you pinned, and runs it in a separate working copy. You watch the
                 output from wherever you are.
               </p>
               <ul className="mt-8 grid gap-4 text-[0.9375rem] leading-7">
                 <li className="flex gap-3">
                   <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
-                  The work, the credentials and the model calls stay on your machines. Our side only
-                  keeps track of jobs; it never runs them.
+                  Your chosen machine runs the job and uses its own credentials. Model calls go to
+                  your chosen provider. The Sync server routes jobs between your machines.
                 </li>
                 <li className="flex gap-3">
                   <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
@@ -205,8 +205,8 @@ export default function SyncPage() {
               <h3 className="text-xl font-semibold">Move a running session</h3>
               <p className="mt-3 text-[0.9375rem] leading-7 text-muted-foreground">
                 Hand a session from your laptop to your desktop, or back. The other machine prepares the
-                same workspace, this one pauses and seals a checkpoint, and the session carries on
-                over there. Processes don&apos;t migrate; the session resumes from the checkpoint.
+                workspace and checks it can continue. Anvil then pauses the current session, encrypts
+                its saved progress, and resumes it on the other machine.
               </p>
               <ol className="mt-7 grid gap-0" aria-label="Handoff steps">
                 {handoff.map((state, index) => (

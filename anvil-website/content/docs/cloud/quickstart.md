@@ -1,7 +1,7 @@
 ---
 title: Quickstart
 navTitle: Quickstart
-description: Create a Cell, run local checks, inspect output, and produce deployable artifacts.
+description: Run the Notes example locally, add and read data, and inspect the app before trying a deployment.
 product: Anvil Cloud
 section: Start here
 journey: build
@@ -10,13 +10,9 @@ order: 20
 
 # Quickstart
 
-Use this flow to run the checked-in Notes Cell, inspect the generated output,
-and understand what is safe to trust before a preview deploy.
+Run the Notes example to see a working app before setting up cloud hosting. You will start a local server, test sign-in, add and read notes, and inspect the app in your browser.
 
-Anvil Cloud is alpha. The intended published command is `anvil cloud ...`
-through the umbrella `@anvilstack/cli` wrapper. The Cloud product package is
-`@anvilstack/cloud-cli`, and from a local checkout you run the same command
-contract through `pnpm anvil-cloud` or the built CLI entrypoint.
+These instructions use the checked-out source, so the commands work without a published package or a cloud account. Build the command-line tool once, then run it from the example folder.
 
 Coding agents can read the short contract at `/llms.txt` or the full authoring
 guide at `/llms-full.txt`. The same files are bundled under `docs/` in the

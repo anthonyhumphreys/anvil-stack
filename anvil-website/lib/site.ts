@@ -30,7 +30,7 @@ export const latestDesktopDmgUrl =
   "https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg";
 
 /** Agent providers Anvil Desktop can drive today (anvil-app/src/shared/agent-providers.ts). */
-export const desktopProviders = ["Codex", "Cursor", "Devin", "OpenAI", "Azure OpenAI"] as const;
+export const desktopProviders = ["Codex", "Cursor", "Devin", "OpenAI", "Azure OpenAI", "LLMGateway"] as const;
 
 export type ProductId = "desktop" | "sync" | "registry" | "node-base" | "cloud";
 
@@ -64,7 +64,7 @@ export const desktop: Product = {
   repoName: "anvil-app/",
   tagline: "A desktop app for running coding agents on your own repos.",
   description:
-    "Anvil Desktop gives each repo a workspace where you plan with an agent, watch it work, and review every change before you keep it. The app runs locally and connects to Codex, Cursor, Devin, OpenAI or Azure OpenAI with your own account.",
+    "Anvil Desktop gives each repo a workspace where you plan with an agent, watch it work, and review every change before you keep it. The app runs locally and connects to Codex, Cursor, Devin, OpenAI, Azure OpenAI or LLMGateway with your own provider account. No Anvil account is needed for local use.",
   boundary:
     "Runs your local workflow: repositories, agent sessions, terminals, reviews and the notes you hand on with finished work.",
   status: "In active development. Builds for macOS (Apple silicon), Windows and Linux ship from GitHub releases.",
@@ -76,7 +76,7 @@ export const desktop: Product = {
   repoHref: desktopRepositoryUrl,
   command: "pnpm dev",
   points: [
-    "Run Codex, Cursor, Devin, OpenAI or Azure OpenAI against a real checkout",
+    "Run Codex, Cursor, Devin, OpenAI, Azure OpenAI or LLMGateway against a real checkout",
     "Review diffs, test runs and security findings before you accept a change",
     "Threads and terminals keep running while you switch workspaces",
     "Work items, automations and multi-agent workflows with a human sign-off",
@@ -111,10 +111,10 @@ export const sync: Product = {
   command: "anvil-cloud mesh apply",
   points: [
     "Workspaces stay local until you turn Sync on for them",
-    "Everything is encrypted on your device; the server never has the key",
-    "Repository files, credentials and chat transcripts never sync",
+    "Synced workspace contents are encrypted on your device; the server never has the key",
+    "Workspace Sync excludes repository files, credentials and chat transcripts",
     "Send a job to another machine; it runs there at the exact commit you pinned",
-    "Hand a session to another machine through an encrypted checkpoint",
+    "Move a session to another machine with its progress encrypted in transit",
     "Share links decrypt in the recipient's browser"
   ],
   links: [
@@ -191,11 +191,11 @@ export const cloud: Product = {
   title: "Anvil Cloud",
   shortTitle: "Cloud",
   repoName: "anvil-cloud/",
-  tagline: "Small TypeScript apps and agents, built and tested locally.",
+  tagline: "Build an app backend in TypeScript, then choose where it runs.",
   description:
-    "Anvil Cloud is a local-first runtime and CLI for Cells, small typed apps, and Agents with declared permissions. You build and inspect everything on your machine, then deploy through an adapter. AWS is in preview.",
+    "Define your app's data, API routes, background jobs and permissions in TypeScript. Run it locally without a cloud account, then review the resources it needs before deploying. Anvil calls each app a Cell. AWS deployment is in preview.",
   boundary:
-    "Defines the Cell and Agent contracts and owns the runtime, local server, builder, CLI and deployment adapters.",
+    "Provides the backend tools for your own apps. It is separate from Desktop and the optional hosted Sync service.",
   status:
     "Alpha. The runtime, CLI and AWS preview work today. Hosted Anvil Cloud Agents isn't available yet.",
   statusLabel: "Alpha",
@@ -206,10 +206,10 @@ export const cloud: Product = {
   repoHref: cloudRepositoryUrl,
   command: "anvil-cloud check --json",
   points: [
-    "Queries, mutations, endpoints, jobs, workflows and services in one Cell",
-    "Agents declare what they may do, and ask before risky steps",
-    "Real auth locally: a built-in identity provider that signs real tokens",
-    "Anvil Lens: a local UI for your manifest, logs and data",
+    "Read and update app data, expose API routes, and run background work",
+    "Give agents explicit permissions and choose which actions need approval",
+    "Test sign-in and access rules locally before connecting a hosted identity provider",
+    "Inspect your app's configuration, logs and data in the local Lens dashboard",
     "Deploy plans you can read before anything is created"
   ],
   links: [
@@ -315,7 +315,7 @@ export const plans: Plan[] = [
     cadence: "forever",
     summary: "The whole app, on your machine.",
     features: [
-      "Codex, Cursor, Devin, OpenAI and Azure OpenAI agents",
+      "Codex, Cursor, Devin, OpenAI, Azure OpenAI and LLMGateway agents",
       "Review every change before you keep it",
       "Terminals, editor, work items and automations",
       "Repos and chat history stored locally",
@@ -367,7 +367,7 @@ export const plans: Plan[] = [
     features: [
       "The same open-source backend we run",
       "Deploys to your Cloudflare account with one command",
-      "Your data never touches our servers",
+      "Your Sync data stays on the server you choose",
       "Community support on GitHub"
     ],
     cta: { label: "Read the self-host guide", href: "/docs/sync/self-deploy" }
@@ -389,7 +389,7 @@ export const pricingFaqs = [
   },
   {
     q: "Do you see my code or chats?",
-    a: "No. Repository files, credentials and chat transcripts never sync. What does sync is encrypted on your device with a key the server never has."
+    a: "No. Workspace Sync excludes repository files, credentials and chat transcripts. What does sync is encrypted on your device with a key the server never has."
   },
   {
     q: "What about model and cloud costs?",
@@ -431,7 +431,7 @@ export const docsHighlights = [
     label: "Mesh jobs",
     href: "/docs/sync/mesh-jobs",
     icon: Cpu,
-    description: "Send work from one machine to another, pinned to an exact commit."
+    description: "Run a job on another machine using the same saved version of your code."
   },
   {
     label: "Run your own backend",

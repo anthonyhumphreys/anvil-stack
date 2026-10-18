@@ -50,7 +50,7 @@ Each release also includes Windows x64 installers and portable executables, and 
 
 You'll need:
 
-- Node.js 22.12.0 or later
+- Node.js 22.13.0 or later
 - pnpm 10 (run `corepack enable` to get it)
 - A C/C++ toolchain for the native modules (`better-sqlite3` and `node-pty`):
   - macOS: Xcode Command Line Tools (`xcode-select --install`)
@@ -77,18 +77,25 @@ The result lands in `dist/`.
 
 ## First launch
 
-The first time you open Anvil, it walks you through setup:
+You can start locally without an Anvil account. Setup has three short steps:
 
-1. **Connect an agent.** Choose one or more:
-   - LLMGateway, with its Codex coding engine (see the note above).
-   - Codex, signed in with your ChatGPT account.
-   - An OpenAI API key, added in Settings. Keys you enter there are encrypted before they're saved.
-   - Azure AI Foundry, configured in `~/.codex/config.toml` with the API key in the environment variable it names.
-2. **Apple's on-device model (optional).** On macOS 26 or later with Apple Intelligence turned on, set Apple Foundation Models to **Prefer simple** and run **Test Apple Models** in Settings. On macOS 27, run `sudo fm license` once to enable the faster `fm` backend and image prompts. Only short, self-contained helper prompts go to the on-device model; real coding work still uses the agent you connected.
-3. **Add repositories.** Point Anvil at local checkouts or clone from GitHub or Azure DevOps, and let indexing finish.
-4. **Other connections (optional).** Add an Azure DevOps token, a Linear API key or a Jira token for work items, and a Confluence token, Notion, or your Linear connection for docs.
+1. **Choose your starting tools.** Pick the kind of work you do. This changes the initial navigation, not what you are allowed to use. Change your role or show all tools in Settings later.
+2. **Connect a coding agent, or choose Set up later.** Use your Codex, Cursor or Devin subscription, or connect OpenAI, Azure AI Foundry or LLMGateway. A coding agent is needed for chat and coding tasks; you can browse repositories before connecting one. Any API keys you save are encrypted on your machine.
+3. **Choose whether to use Sync.** Select **Continue without Sync** to work on this device. Sync is optional and has separate hosting and account setup.
 
-Everything is stored on your machine and there's no required server. Deleting the app's data folder resets it completely. If you turn on the optional Cloud Workbench, Anvil connects to the Anvil Cloud endpoint you set up; its token is encrypted locally, and the remote run state lives on that service.
+Next, create a workspace and add a local repository or clone one. A workspace groups the repositories and conversations for a piece of work. Let indexing finish, then try a small task on a repository you know.
+
+### Connect more tools when you need them
+
+You do not need to configure everything before your first task. Settings lets you add more agent accounts, choose models, and connect Azure DevOps, Linear or Jira for work items. Connect Confluence, Notion or Linear for documents when your work needs them.
+
+For LLMGateway, Anvil offers **Install coding engine** during setup. It uses Codex to edit files and run commands, while LLMGateway supplies and bills for the models. A ChatGPT subscription is not required.
+
+### Optional on-device helpers
+
+On macOS 26 or later with Apple Intelligence enabled, **Settings → AI connections & models → Local model** can route short helper prompts to Apple Foundation Models. Coding work still uses your chosen agent. Leave this off to start; the settings panel explains the platform requirements and test options.
+
+Your repositories, settings and chat history are stored locally. Coding agents send the context they need to your chosen model provider, and optional integrations contact their services. Deleting the app's data folder resets it completely. If you turn on the optional Cloud Workbench, Anvil connects to the Anvil Cloud endpoint you set up; its token is encrypted locally, and the remote run state lives on that service.
 
 ## Nice to have
 

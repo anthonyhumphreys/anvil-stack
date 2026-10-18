@@ -21,6 +21,18 @@ Use it for local development, demos, tests and contribution work. Before a
 preview deployment, check which features your adapter supports and inspect
 the generated plan. Production hosting is not ready.
 
+## AWS and Cloudflare app backends
+
+Both adapters now have conditional database commits, bounded record pages,
+private file storage, queue dispatch and bearer-token verification. Cloudflare
+also has a queue consumer and Cron Trigger bridge. Its experimental artifact
+builder accepts existing resources and generates a database migration. Normal
+Cell deployment remains gated. Automatic provisioning and live lifecycle evidence
+are still incomplete. AWS remains a preview adapter.
+
+Read [data and background work](/docs/cloud/app-backends) for failure behavior
+and the release checks required on each provider.
+
 ## Implemented surfaces
 
 | Surface           | Current state                                                                                                                                                                                                                                                                                                                                                                                                          |

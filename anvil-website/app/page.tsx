@@ -43,7 +43,7 @@ const capabilities = [
   {
     icon: Workflow,
     title: "Automations",
-    body: "Schedule recurring checks and multi-agent workflows. Each run gets its own throwaway worktree."
+    body: "Schedule recurring checks and multi-agent workflows. Each run uses a separate working copy of your repo."
   },
   {
     icon: KeyRound,
@@ -103,9 +103,9 @@ function Hero() {
           <p className="mt-5 text-sm leading-6 text-muted-foreground">
             Want to pick it up on another machine?{" "}
             <Link href="/sync" className="font-medium text-foreground underline decoration-accent/60 underline-offset-4">
-              Add hosted Sync &amp; Mesh
+              Use Anvil across your machines
             </Link>
-            . Paid hosting, free self-hosting. Beta access by invitation.
+            . Use your own server today, or join the hosted beta waitlist.
           </p>
           <p className="mt-5 max-w-[56ch] text-sm leading-6 text-muted-foreground">
             Also on{" "}
@@ -191,15 +191,15 @@ function SyncBand() {
           <ul className="mt-7 grid gap-3 text-[0.9375rem] leading-7">
             <li className="flex gap-3">
               <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-              Encrypted on your device. The server only ever sees sealed envelopes.
+              Your synced setup is encrypted before it leaves your device.
             </li>
             <li className="flex gap-3">
               <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-              Your code, keys and chat history never sync.
+              Workspace Sync excludes repository files, provider credentials and chat history.
             </li>
             <li className="flex gap-3">
               <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-              Paid Anvil hosting from £6 a month, or free if you run the backend yourself.
+              Planned Anvil hosting starts at £6 a month. Self-hosting has no Anvil fee; your hosting provider may charge.
             </li>
           </ul>
           <div className="mt-8 flex flex-wrap gap-3">
@@ -226,7 +226,7 @@ function Workshop() {
       <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
         <div>
           <h2 id="workshop-title" className="font-display text-display-2 max-w-[11ch]">
-            The rest of the workshop.
+            Tools you can use on their own.
           </h2>
           <p className="mt-5 max-w-[38ch] text-muted-foreground">
             Separate open-source tools for the jobs around agent work. Use any of them on their own;
@@ -368,8 +368,8 @@ function Closing() {
       <div className="page-shell">
         <h2 className="font-display text-display-1 max-w-[16ch]">Try it on a repo you know well.</h2>
         <p className="lede mt-6">
-          You&apos;ll know within an hour whether it fits how you work. It&apos;s free, it needs no
-          account, and it sends us nothing unless you switch on crash reports.
+          Download the free app, add a local repository, and try a small task. No Anvil account is
+          needed for local work. Connect your own coding-agent account when you are ready.
         </p>
         <div className="mt-9 flex flex-wrap gap-3">
           <Button asChild size="lg">
