@@ -69,6 +69,15 @@ vi.mock('electron', () => ({
   app: { getPath: () => '/tmp/anvil-test', getVersion: () => '0.0.0-test' },
   BrowserWindow: { getAllWindows: () => [] },
 }));
+vi.mock('../chat-continuation.service.js', () => ({
+  captureThreadContinuation: () => ({
+    context: 'Saved conversation checkpoint',
+    messages: [],
+    artifactRefs: [],
+  }),
+  prependThreadContinuation: (context: string | undefined, message: string) =>
+    context ? `${context}\nNewest user request:\n${message}` : message,
+}));
 vi.mock('../settings.service.js', () => ({ getSettings: () => mocks.settings }));
 vi.mock('../persona.service.js', () => ({
   getPersonaById: () => ({
@@ -89,7 +98,9 @@ vi.mock('../chat-persistence.service.js', () => ({
   getChatThread: (id: string) => mocks.threads.get(id) ?? null,
   isTemporaryChatThread: (id: string) => mocks.threads.get(id)?.temporary === true,
   updateChatThreadAttention: () => undefined,
+  setChatThreadProviderThreadId: vi.fn(),
 }));
+import { setChatThreadProviderThreadId } from '../chat-persistence.service.js';
 vi.mock('../chat-evidence.service.js', () => ({ saveChatEvent: vi.fn() }));
 vi.mock('../agent-ui-intent.service.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../agent-ui-intent.service.js')>()),
@@ -110,6 +121,8 @@ vi.mock('../codex-runtime.service.js', () => ({ resolveCodexRuntime: async () =>
 import { spawn } from 'node:child_process';
 import {
   getAgentToolSessionContext,
+  sendMessage,
+  emitLocalAssistantTurnEnd,
   startSession,
   stopAllSessions,
   stopSession,
@@ -303,5 +316,55 @@ describe('codex-session agent MCP wiring', () => {
       mcpServers: [{ type: 'http', name: 'anvil', url: URL }],
     });
     expect(getAgentMcpTokenForSession(session.id)).toBeDefined();
+  });
+});
+
+describe('provider continuation', () => {
+  afterEach(() => {
+    stopAllSessions();
+    vi.clearAllMocks();
+    mocks.threads.clear();
+  });
+  it('seeds a fresh provider from the conversation exactly once', async () => {
+    mocks.threads.set('thread-1', {});
+    const { proc, session } = await startCodex({ threadId: 'thread-1' });
+    expect(session.continuity).toBe('transcript-seeded');
+    await sendMessage(session.id, 'Continue');
+    expect(JSON.stringify(requests(proc, 'turn/start').at(-1))).toContain(
+      'Saved conversation checkpoint',
+    );
+    await sendMessage(session.id, 'Next');
+    expect(JSON.stringify(requests(proc, 'turn/start').at(-1))).not.toContain(
+      'Saved conversation checkpoint',
+    );
+  });
+  it('keeps native resume without duplicating the transcript', async () => {
+    mocks.threads.set('thread-1', {});
+    const { proc, session } = await startCodex({
+      threadId: 'thread-1',
+      providerThreadId: 'native-thread',
+    });
+    expect(session.continuity).toBe('resumed');
+    await sendMessage(session.id, 'Continue');
+    expect(JSON.stringify(requests(proc, 'turn/start').at(-1))).not.toContain(
+      'Saved conversation checkpoint',
+    );
+  });
+  it('refreshes a native provider after an on-device reply exactly once', async () => {
+    mocks.threads.set('thread-1', {});
+    const { proc, session } = await startCodex({
+      threadId: 'thread-1',
+      providerThreadId: 'native-thread',
+    });
+    emitLocalAssistantTurnEnd(session.id);
+    expect(setChatThreadProviderThreadId).toHaveBeenCalledWith('thread-1', null, 'codex');
+    await sendMessage(session.id, 'Continue after the on-device answer');
+    expect(JSON.stringify(requests(proc, 'turn/start').at(-1))).toContain(
+      'Saved conversation checkpoint',
+    );
+    await sendMessage(session.id, 'Next');
+    expect(JSON.stringify(requests(proc, 'turn/start').at(-1))).not.toContain(
+      'Saved conversation checkpoint',
+    );
   });
 });

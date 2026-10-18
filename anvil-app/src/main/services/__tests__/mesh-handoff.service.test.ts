@@ -863,7 +863,8 @@ describe('captureSessionCheckpoint', () => {
     expect(checkpoint.permissionMode).toBe('workspace-auto');
     expect(checkpoint.repositories).toEqual([{ repositoryId: repoId, commit: head }]);
     expect(checkpoint.messages?.length).toBeLessThanOrEqual(20);
-    expect(checkpoint.summary).toBe('message 29');
+    expect(checkpoint.summary).toContain('message 29');
+    expect(checkpoint.model).toBe('model-test');
     expect(checkpoint.provider).toBe('codex');
     rmSync(join(repoDir, '..'), { recursive: true, force: true });
   });

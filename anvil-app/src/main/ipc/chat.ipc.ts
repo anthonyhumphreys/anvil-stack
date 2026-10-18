@@ -52,11 +52,13 @@ import {
   steerTurn,
   followUpTurn,
   stopSession,
+  stopSessionAndWait,
   interruptTurn,
   emitLocalAssistantTurnStart,
   emitLocalAssistantText,
   emitLocalAssistantTurnEnd,
   getSessionStatus,
+  getCodexSession,
   isTemporaryChatSession,
   stopAllSessions,
   getSessionForRepo,
@@ -123,6 +125,10 @@ import {
 } from '../services/chat-artifact-annotation.service.js';
 import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
 import { resolveAnvilOwnedQuestion } from '../surfaces/core.js';
+import {
+  captureThreadContinuation,
+  prependThreadContinuation,
+} from '../services/chat-continuation.service.js';
 
 const LOCAL_LLM_CHAT_MAX_PROMPT_CHARS = 8_000;
 // Hold back this many streamed characters so early refusals never reach the UI.
@@ -200,6 +206,14 @@ async function tryLocalLlmChatReply(
 
   const route = await classifyPromptForLocalModel(message, (imagePaths?.length ?? 0) > 0);
   if (route !== 'local') return false;
+  const threadId = isTemporaryChatSession(sessionId)
+    ? undefined
+    : getCodexSession(sessionId)?.appThreadId;
+  const localPrompt = prependThreadContinuation(
+    threadId ? captureThreadContinuation(threadId).context : undefined,
+    message,
+  );
+  if (localPrompt.length > LOCAL_LLM_CHAT_MAX_PROMPT_CHARS) return false;
 
   let started = false;
   let emittedChars = 0;
@@ -210,7 +224,7 @@ async function tryLocalLlmChatReply(
       started = true;
     }
   };
-  const result = await callPreferredLocalModel(message, 4096, {
+  const result = await callPreferredLocalModel(localPrompt, 4096, {
     images: imagePaths,
     onPartial: (delta) => {
       pending += delta;
@@ -419,9 +433,7 @@ export function registerChatHandlers(): void {
     },
   );
 
-  ipcMain.handle('chat:stop-session', (_event, sessionId: string): void => {
-    stopSession(sessionId);
-  });
+  ipcMain.handle('chat:stop-session', (_event, sessionId: string) => stopSessionAndWait(sessionId));
 
   ipcMain.handle('chat:interrupt', (_event, sessionId: string): void => {
     interruptTurn(sessionId);

@@ -193,24 +193,29 @@ export { resolveAnvilOwnedQuestion } from '../services/agent-question.service.js
 export async function requestUserApproval(
   ctx: AgentToolSessionContext,
   request: { title: string; detail: string; consequences?: string },
+  signal?: AbortSignal,
 ): Promise<boolean> {
   if (!ctx.appThreadId) return false;
   const context = [request.detail.trim(), request.consequences?.trim()]
     .filter(Boolean)
     .join('\n\n');
-  const result = await askAgentQuestion(ctx, {
-    title: normaliseTitle(request.title),
-    questions: [
-      {
-        id: 'approve',
-        kind: 'approval',
-        question: normaliseTitle(request.title),
-        ...(context ? { context } : {}),
-        required: true,
-        allowCancel: true,
-      },
-    ],
-  });
+  const result = await askAgentQuestion(
+    ctx,
+    {
+      title: normaliseTitle(request.title),
+      questions: [
+        {
+          id: 'approve',
+          kind: 'approval',
+          question: normaliseTitle(request.title),
+          ...(context ? { context } : {}),
+          required: true,
+          allowCancel: true,
+        },
+      ],
+    },
+    signal,
+  );
   return result.status === 'answered' && result.answers.approve === true;
 }
 

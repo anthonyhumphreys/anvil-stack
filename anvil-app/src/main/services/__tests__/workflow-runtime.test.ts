@@ -384,3 +384,38 @@ describe('contextual workflow presets', () => {
     expect(isContextualWorkflowPreset(null)).toBe(false);
   });
 });
+
+describe('cross-environment delegation', () => {
+  it('keeps an approved specialist target and bounds remote children to one task', () => {
+    const current = run(['parent']);
+    current.nodes[0].teamStrategy = 'autonomous';
+    current.nodes[0].permissionMode = 'on-request';
+    current.orchestration!.profiles[0].target = { kind: 'device', enrollmentId: 'fleet-worker' };
+    expandWorkflowTeam(current, current.nodes[0], [
+      { profileId: 'reviewer', name: 'Review', prompt: 'Inspect' },
+    ]);
+    expect(current.nodes[1].target).toEqual({ kind: 'device', enrollmentId: 'fleet-worker' });
+    expect(current.nodes[1].teamStrategy).toBe('manual');
+    expect(current.nodes[1].permissionMode).toBe('on-request');
+  });
+  it('supplies the same kickoff, upstream reports and retry context to each executor', async () => {
+    const { workflowTaskPrompt } = await import('../workflow-runtime');
+    const current = run(['a', 'b']);
+    current.edges = [{ id: 'ab', source: 'a', target: 'b' }];
+    current.nodeRuns[0].output = 'Evidence from upstream';
+    current.nodeRuns[1].output = 'Earlier attempt';
+    const prompt = workflowTaskPrompt(current, current.nodes[1]);
+    expect(prompt).toContain('Deliver');
+    expect(prompt).toContain('Do b');
+    expect(prompt).toContain('Evidence from upstream');
+    expect(prompt).toContain('Earlier attempt');
+  });
+  it('supports LLMGateway locally and rejects unsupported remote profile providers', () => {
+    const current = run(['a']);
+    const profile = current.orchestration!.profiles[0];
+    profile.provider = 'llmgateway';
+    expect(() => validateOrchestration(current.orchestration)).not.toThrow();
+    profile.target = { kind: 'device', enrollmentId: 'fleet' };
+    expect(() => validateOrchestration(current.orchestration)).toThrow('cannot run remotely');
+  });
+});

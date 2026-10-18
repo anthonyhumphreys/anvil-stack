@@ -690,6 +690,8 @@ export interface WorkflowAgentProfile {
   model: string;
   reasoningEffort: ReasoningEffort;
   capabilities: string[];
+  /** Approved placement for tasks delegated to this specialist. */
+  target?: WorkflowTargetPolicy;
 }
 
 export type WorkflowTeamStrategy = 'manual' | 'map-reduce' | 'review' | 'debate' | 'autonomous';

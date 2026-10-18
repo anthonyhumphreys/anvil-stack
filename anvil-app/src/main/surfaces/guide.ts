@@ -3,6 +3,7 @@
 import { listAgentTools, type AgentToolSessionContext } from '../agent-tools/dispatch.js';
 
 const TOOL_GROUPS: ReadonlyArray<{ intent: string; prefixes: readonly string[] }> = [
+  { intent: 'Delegate tracked work across local agents, fleet and cloud', prefixes: ['workflow_'] },
   { intent: 'Ask the user a question', prefixes: ['question_'] },
   { intent: 'Code review (turn, working tree, PR)', prefixes: ['review_'] },
   { intent: 'Security or audit findings', prefixes: ['findings_', 'security_'] },
@@ -27,6 +28,7 @@ const SELECTION = [
 ];
 
 const TOOL_RULES = [
+  'For tracked delegation use workflow_list, workflow_start and workflow_read. Use a saved workflow’s approved specialist pool and targets. The local chat remains the coordinator. Cloud and fleet workers use pinned isolated workspaces; returned code is not integrated until the user explicitly converges it. Read failed or waiting results honestly; do not treat an agent handoff as verification.',
   'When you need the user to choose or clarify, use `question_ask`. It works across providers and modes, pauses until the user answers, and returns their answers. Ask only what you need to proceed. Do not duplicate the question in prose. If cancelled or expired, continue only where their answer is not required.',
   'Tool results return a compact digest plus ids, not the payload. Use `surface_read` for detail. Patch tools need the `baseRevision` you last saw; a conflict means re-read, then retry.',
   'Publish with `streaming: true` when items will follow, patch them in, then call `surface_complete`.',

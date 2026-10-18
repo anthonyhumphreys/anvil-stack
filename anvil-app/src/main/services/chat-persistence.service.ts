@@ -922,12 +922,12 @@ export function getChatThreadProviderBinding(
 
 export function setChatThreadProviderThreadId(
   threadId: string,
-  providerThreadId: string,
+  providerThreadId: string | null,
   provider: AgentProvider = 'codex',
 ): void {
   const temporary = temporaryChats.get(threadId);
   if (temporary) {
-    temporary.thread.providerThreadId = providerThreadId;
+    temporary.thread.providerThreadId = providerThreadId ?? undefined;
     temporary.thread.updatedAt = new Date().toISOString();
     return;
   }

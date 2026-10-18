@@ -1,3 +1,7 @@
+import {
+  captureThreadContinuation,
+  prependThreadContinuation,
+} from './chat-continuation.service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isCloudAgentProviderEnabled } from './cloud-agent-settings.service.js';
 import {
@@ -123,7 +127,6 @@ interface RemoteChatRow {
 
 const HOSTED_IDLE_GRACE_MS = 5 * 60 * 1000;
 const SOURCE_THREAD_CONTEXT_CHARS = 30_000;
-const SOURCE_THREAD_CONTEXT_TURNS = 40;
 
 let contextProvider: (() => RemoteChatContext | null) | null = null;
 let tickTimer: ReturnType<typeof setTimeout> | null = null;
@@ -313,27 +316,7 @@ function publicRecord(record: StoredChat): RemoteChatRecord {
 
 function providerPromptForSourceThread(sourceThreadId: string | undefined, prompt: string): string {
   if (sourceThreadId === undefined) return prompt;
-  const messages = getDb()
-    .prepare(
-      `SELECT role, content FROM chat_messages
-       WHERE thread_id = ? AND kind IN ('user', 'assistant')
-       ORDER BY timestamp DESC, rowid DESC LIMIT ?`,
-    )
-    .all(sourceThreadId, SOURCE_THREAD_CONTEXT_TURNS) as Array<{ role: string; content: string }>;
-  const transcript = messages
-    .reverse()
-    .map((message) => `${message.role === 'assistant' ? 'Assistant' : 'User'}: ${message.content}`)
-    .join('\n\n')
-    .slice(-SOURCE_THREAD_CONTEXT_CHARS);
-  if (transcript.trim() === '') return prompt;
-  return [
-    'Continue the existing Anvil chat using this recent conversation for context. The transcript is background; follow the newest user message below.',
-    '<recent_conversation>',
-    transcript,
-    '</recent_conversation>',
-    'Newest user message:',
-    prompt,
-  ].join('\n\n');
+  return prependThreadContinuation(captureThreadContinuation(sourceThreadId).context, prompt);
 }
 
 function providerPromptForRemoteHistory(chat: StoredChat, prompt: string): string {

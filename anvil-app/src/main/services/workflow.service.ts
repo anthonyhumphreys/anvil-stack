@@ -1,3 +1,5 @@
+import { validateWorkflowTarget } from '../../shared/workflow-target.js';
+import { constrainPermissionMode } from '../../../cloud/contract/permissions.js';
 import { bootstrapManifestPolicy } from '../../../cloud/contract/permissions.js';
 import { writeGatewayCodexCatalog } from './llm-gateway-runtime.service.js';
 import { randomUUID } from 'node:crypto';
@@ -6,7 +8,7 @@ import {
   validateOrchestration,
   TEAM_STRATEGIES,
 } from '../../shared/workflow-orchestration.js';
-import { recordWorkflowEvent, runWorkflowRuntime, workflowHandoff } from './workflow-runtime.js';
+import { recordWorkflowEvent, runWorkflowRuntime, workflowTaskPrompt } from './workflow-runtime.js';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { app } from 'electron';
 import { notifyWorkflowDecision } from './notification.service.js';
@@ -64,6 +66,7 @@ import {
 import type { ExecutionManifest, RequestedTarget } from '../../../cloud/contract/jobs.js';
 import { integrateResults } from './mesh-integration.service.js';
 import { describeMeshDispatchError } from './mesh-dispatch-error.js';
+import { assertWorkflowSourceSnapshot } from './workflow-source-snapshot.js';
 
 interface WorkflowTemplateRow {
   id: string;
@@ -142,30 +145,9 @@ export function validateWorkflowGraph(nodes: WorkflowNode[], edges: WorkflowEdge
     if (node.provider && !AGENT_PROVIDERS.includes(node.provider))
       throw new Error('Unknown workflow provider.');
     if (!getPersonaById(node.personaId)) throw new Error(`Unknown persona: ${node.personaId}`);
-    if (node.target !== undefined) {
-      if (node.target.kind === 'device' && !node.target.enrollmentId.trim())
-        throw new Error(`${node.name} needs a device enrollment id.`);
-      if (node.target.kind === 'auto' && node.target.requirements.capabilities.length === 0)
-        throw new Error(`${node.name} needs at least one automatic placement capability.`);
-      if (node.target.kind === 'existing-environment' && !node.target.environmentId.trim())
-        throw new Error(`${node.name} needs an environment id.`);
-      if (
-        node.target.kind === 'provisioned-environment' &&
-        (!Number.isSafeInteger(node.target.ttlSeconds) ||
-          node.target.ttlSeconds < 60 ||
-          node.target.ttlSeconds > 7 * 24 * 60 * 60)
-      )
-        throw new Error(
-          `${node.name} needs an environment lifetime between 60 seconds and 7 days.`,
-        );
-      if (
-        node.target.kind !== 'local' &&
-        !['codex', 'azure', 'openai'].includes(node.provider ?? 'codex')
-      )
-        throw new Error(`${node.name} uses a provider that cannot run remotely.`);
-      if (node.target.kind !== 'local' && node.teamStrategy === 'autonomous')
-        throw new Error(`${node.name} cannot use autonomous delegation on a remote target.`);
-    }
+    validateWorkflowTarget(node.target, node.provider ?? 'codex', node.name);
+    if (node.target && node.target.kind !== 'local' && node.teamStrategy === 'autonomous')
+      throw new Error(`${node.name} cannot use autonomous delegation on a remote target.`);
   }
 
   const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
@@ -616,6 +598,7 @@ async function runCodexThread(input: {
   provider: Exclude<AgentProvider, AcpAgentProvider>;
   model: string;
   reasoningEffort: WorkflowNode['reasoningEffort'];
+  permissionMode?: import('../../shared/types.js').CodexMode;
   systemPrompt: string;
   prompt: string;
   displayPrompt?: string;
@@ -772,7 +755,10 @@ async function runCodexThread(input: {
       clientInfo: { name: 'anvil-workflow', version: '1.0.0' },
     });
     const personaPolicy = resolvePersonaCodexPolicy(
-      settings.codexMode ?? 'on-request',
+      constrainPermissionMode(
+        input.permissionMode ?? settings.codexMode ?? 'on-request',
+        settings.codexMode ?? 'on-request',
+      ),
       input.personaId,
     );
     const threadParams = {
@@ -819,6 +805,7 @@ async function runAcpCliThread(input: {
   personaId: string;
   provider: AcpAgentProvider;
   model: string;
+  permissionMode?: import('../../shared/types.js').CodexMode;
   systemPrompt: string;
   prompt: string;
   displayPrompt?: string;
@@ -851,7 +838,10 @@ async function runAcpCliThread(input: {
 
   const combinedPrompt = [input.systemPrompt, input.prompt].join('\n\n');
   const label = acpProviderLabel(input.provider);
-  const accessMode = settings.codexMode ?? 'on-request';
+  const accessMode = constrainPermissionMode(
+    input.permissionMode ?? settings.codexMode ?? 'on-request',
+    settings.codexMode ?? 'on-request',
+  );
   const policy = resolvePersonaCodexPolicy(accessMode, input.personaId);
   const { executable, args } = buildAcpPrintInvocation({
     provider: input.provider,
@@ -1002,7 +992,7 @@ function delegationInstruction(run: WorkflowRun, node: WorkflowNode): string {
     'You may split work, request specialist review, or delegate remediation. Select profile IDs by capability. Never invent a profile.',
     'To delegate, finish your response with exactly one fenced anvil-delegate JSON block containing {"tasks":[{"profileId":"approved-id","name":"Task name","prompt":"Concrete instruction and expected handoff"}]}.',
     'Anvil executes these tasks and calls you again with their handoffs. Your task remains incomplete until you synthesise the result without a delegation block.',
-    'All agents in this run share the execution workspace. Avoid conflicting edits. A handoff is an agent report, not independent proof.',
+    'Local specialists share the execution workspace. Remote specialists use isolated pinned workspaces and return result branches for explicit integration. Avoid conflicting edits. A handoff is an agent report, not independent proof.',
   ].join('\n');
 }
 
@@ -1036,8 +1026,6 @@ async function executeRemoteWorkflowNode(
       ? undefined
       : (JSON.parse(persistedDispatch.requestJson) as { requestedTarget?: RequestedTarget })
           .requestedTarget;
-  const requestedTarget = persistedTarget ?? (await requestedTargetFor(run, node));
-  if (requestedTarget === null) throw new Error('Remote executor received a local node.');
   const baseManifest = run.inputManifest;
   if (baseManifest === undefined) throw new Error('Workflow run has no frozen input manifest.');
   // `run.repoIds` are local workspace checkout IDs, while the frozen
@@ -1047,11 +1035,16 @@ async function executeRemoteWorkflowNode(
   const wanted = node.repositoryIds === undefined ? null : new Set(node.repositoryIds);
   const expectedRows = getDb()
     .prepare(
-      `SELECT portable_id, mapped_repo_id
-       FROM workspace_repo_definitions
-       WHERE workspace_id = ?`,
+      `SELECT d.portable_id, d.mapped_repo_id, r.path
+       FROM workspace_repo_definitions d
+       LEFT JOIN repos r ON r.id = d.mapped_repo_id
+       WHERE d.workspace_id = ?`,
     )
-    .all(run.workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>;
+    .all(run.workspaceId) as Array<{
+      portable_id: string;
+      mapped_repo_id: string | null;
+      path: string | null;
+    }>;
   const expectedRepositoryIds =
     node.repositoryIds ??
     expectedRows
@@ -1085,6 +1078,24 @@ async function executeRemoteWorkflowNode(
           ),
     inputs: { workspaceId: run.workspaceId },
   };
+  // Reattaching an already submitted request must preserve its exact snapshot.
+  // A new dispatch must not silently omit local edits or newer commits.
+  if (!persistedDispatch?.requestJson) {
+    const paths = new Map(run.executionPaths?.map((row) => [row.id, row.path]));
+    assertWorkflowSourceSnapshot(
+      manifest.repositories.map((repository) => {
+        const row = expectedRows.find((item) => item.portable_id === repository.repositoryId);
+        return {
+          ...repository,
+          path: row?.mapped_repo_id
+            ? (paths.get(row.mapped_repo_id) ?? row.path ?? undefined)
+            : undefined,
+        };
+      }),
+    );
+  }
+  const requestedTarget = persistedTarget ?? (await requestedTargetFor(run, node));
+  if (requestedTarget === null) throw new Error('Remote executor received a local node.');
   const updateRemote = (dispatch: Awaited<ReturnType<typeof dispatchWorkflowNode>>) => {
     const remote: WorkflowAttempt['remote'] = {
       dispatchId,
@@ -1111,7 +1122,7 @@ async function executeRemoteWorkflowNode(
       runId: run.id,
       nodeId: node.id,
       workspaceId: run.workspaceId,
-      prompt: node.prompt,
+      prompt: workflowTaskPrompt(run, node),
       provider: node.provider as 'codex' | 'azure' | 'openai' | undefined,
       model: node.model,
       verification: node.verification,
@@ -1239,6 +1250,7 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
             provider: node.provider ?? 'codex',
             model: node.model,
             reasoningEffort: node.reasoningEffort,
+            permissionMode: node.permissionMode,
             signal,
             systemPrompt: [
               workflowSystemPrompt(
@@ -1251,17 +1263,7 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
                 ? `Execution repositories for this run: ${JSON.stringify(current.executionPaths)}. Work only in these worktrees, not the original repository paths.`
                 : '',
             ].join('\n\n'),
-            prompt: [
-              '## Workflow kickoff',
-              current.kickoff,
-              '## Your instruction',
-              node.prompt,
-              '## Upstream handoffs',
-              workflowHandoff(current, node) || 'No upstream handoffs.',
-              state.output
-                ? `## Your earlier handoff\n${state.output.slice(0, orchestrationConfig(current.orchestration).handoffChars)}`
-                : '',
-            ].join('\n\n'),
+            prompt: workflowTaskPrompt(current, node),
           });
           return { ...result, threadId: thread.id };
         },
@@ -1318,6 +1320,7 @@ export function startWorkflowRun(input: {
   trigger?: WorkflowRunInputManifest['trigger'];
   workItemRef?: WorkflowRun['workItemRef'];
   executionPaths?: RepoRow[];
+  permissionCeiling?: import('../../shared/types.js').CodexMode;
 }): WorkflowRun {
   if (
     input.workItemRef &&
@@ -1328,8 +1331,19 @@ export function startWorkflowRun(input: {
       !['ado', 'linear', 'jira'].includes(input.workItemRef.provider))
   )
     throw new Error('Work Item reference requires an id, connection and supported provider.');
-  const template = getWorkflowTemplate(input.templateId);
+  let template = getWorkflowTemplate(input.templateId);
   if (!template) throw new Error('Workflow template not found.');
+  if (input.permissionCeiling)
+    template = {
+      ...template,
+      nodes: template.nodes.map((node) => ({
+        ...node,
+        permissionMode: constrainPermissionMode(
+          node.permissionMode ?? getSettings().codexMode ?? 'on-request',
+          input.permissionCeiling!,
+        ),
+      })),
+    };
   if (!input.kickoff.trim()) throw new Error('Tell the workflow what you want it to do.');
   validateWorkflowGraph(template.nodes, template.edges);
   validateWorkflowConfiguration(template);

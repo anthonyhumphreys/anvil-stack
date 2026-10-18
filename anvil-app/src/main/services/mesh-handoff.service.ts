@@ -1,3 +1,4 @@
+import { captureThreadContinuation } from './chat-continuation.service.js';
 import { isCloudAgentProviderEnabled } from './cloud-agent-settings.service.js';
 import type { RemoteCodexAccountAuthChoice } from '../../shared/remote-chat.js';
 // Session handoff orchestration (SESSION-03, spec §11).
@@ -403,19 +404,16 @@ export async function evaluateHandoffReadiness(
 // ---- checkpoint capture ----------------------------------------------------
 
 const CHECKPOINT_MAX_MESSAGES = 20;
-const CHECKPOINT_MESSAGE_CHARS = 4_000;
 
 function sessionCheckpointContext(sessionId: string): {
   threadId: string;
   workspaceId: string | null;
   provider: string;
   model: string | null;
-  planGoal: string | null;
 } | null {
   const row = getDb()
     .prepare(
-      `SELECT s.thread_id, s.provider, t.workspace_id, t.provider_thread_id, t.provider_thread_provider,
-              t.active_plan_json, t.active_goal_json
+      `SELECT s.thread_id, s.provider, t.workspace_id, t.provider_thread_provider
        FROM chat_sessions s JOIN chat_threads t ON t.id = s.thread_id
        WHERE s.id = ?`,
     )
@@ -425,8 +423,6 @@ function sessionCheckpointContext(sessionId: string): {
         workspace_id: string | null;
         provider: string | null;
         provider_thread_provider: string | null;
-        active_plan_json: string | null;
-        active_goal_json: string | null;
       }
     | undefined;
   if (row === undefined) return null;
@@ -435,7 +431,6 @@ function sessionCheckpointContext(sessionId: string): {
     workspaceId: row.workspace_id,
     provider: row.provider_thread_provider ?? row.provider ?? 'codex',
     model: null,
-    planGoal: row.active_goal_json ?? row.active_plan_json,
   };
 }
 
@@ -461,31 +456,19 @@ export async function captureSessionCheckpoint(
     }
     repositories.push({ repositoryId: repo.repositoryId, commit: head });
   }
-  const messages = (
-    getDb()
-      .prepare(
-        `SELECT role, content FROM chat_messages
-         WHERE thread_id = ? ORDER BY timestamp DESC LIMIT ?`,
-      )
-      .all(context.threadId, CHECKPOINT_MAX_MESSAGES) as Array<{ role: string; content: string }>
-  )
-    .reverse()
-    .map((m) => ({ role: m.role, content: m.content.slice(0, CHECKPOINT_MESSAGE_CHARS) }));
+  const continuation = captureThreadContinuation(context.threadId, CHECKPOINT_MAX_MESSAGES);
   return {
     sessionId,
     schemaVersion: 1,
     sourceGeneration,
     repositories,
     provider: context.provider,
-    model: context.model ?? 'default',
+    model: getCodexSessionModel(sessionId) ?? context.model ?? 'default',
     permissionMode: permissionMode ?? getCodexSession(sessionId)?.mode ?? 'on-request',
-    messages,
-    summary: messages
-      .filter((m) => m.role === 'assistant')
-      .map((m) => m.content)
-      .pop(),
-    ...(context.planGoal === null ? {} : { planGoalState: context.planGoal }),
-    artifactRefs: [],
+    messages: continuation.messages,
+    summary: continuation.context,
+    ...(continuation.planGoalState ? { planGoalState: continuation.planGoalState } : {}),
+    artifactRefs: continuation.artifactRefs,
     unresolvedApprovals: [],
   };
 }
@@ -715,7 +698,11 @@ async function initiateHandoffWithId(input: {
     interruptTurn(input.sessionId);
     await stopSessionAndWait(input.sessionId);
 
-    const checkpoint = await captureSessionCheckpoint(input.sessionId, generation, permissionMode);
+    const checkpoint = {
+      ...(await captureSessionCheckpoint(input.sessionId, generation, permissionMode)),
+      provider,
+      model,
+    };
     assertCheckpointPins(checkpoint, sourcePins);
     journalSourceCheckpoint(handoffId, checkpoint);
     const activationRequestId = `handoff-start:${handoffId}`;

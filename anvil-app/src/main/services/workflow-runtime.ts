@@ -71,7 +71,12 @@ export function expandWorkflowTeam(
       ...specialistNode(profiles[index], id, task.name, task.prompt),
       parentNodeId: parent.id,
       depth: (parent.depth ?? 0) + 1,
-      teamStrategy: parent.teamStrategy === 'autonomous' ? 'autonomous' : 'manual',
+      teamStrategy:
+        parent.teamStrategy === 'autonomous' &&
+        (!profiles[index].target || profiles[index].target?.kind === 'local')
+          ? 'autonomous'
+          : 'manual',
+      permissionMode: parent.permissionMode,
       teamProfileIds: parent.teamProfileIds,
       position: { x: parent.position.x - 330, y: parent.position.y + (index + 1) * 190 },
     };
@@ -347,4 +352,23 @@ export async function runWorkflowRuntime(
     recordWorkflowEvent(run, 'run', `Run ${run.status}.`);
     hooks.persist(run);
   }
+}
+
+/** One instruction envelope for local and remote execution. */
+export function workflowTaskPrompt(run: WorkflowRun, node: WorkflowNode): string {
+  const state = run.nodeRuns.find((item) => item.nodeId === node.id);
+  return [
+    '## Workflow kickoff',
+    run.kickoff,
+    '## Your instruction',
+    node.prompt,
+    '## Upstream handoffs',
+    workflowHandoff(run, node) || 'No upstream handoffs.',
+    'Handoffs are agent reports. Verify their claims against the supplied repository and evidence.',
+    state?.output
+      ? `## Your earlier handoff\n${state.output.slice(0, orchestrationConfig(run.orchestration).handoffChars)}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }

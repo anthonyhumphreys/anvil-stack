@@ -63,6 +63,7 @@ import { resolveCodexRuntime } from './codex-runtime.service.js';
 import { saveChatEvent } from './chat-evidence.service.js';
 import {
   getChatThread,
+  setChatThreadProviderThreadId,
   isTemporaryChatThread,
   updateChatThreadAttention,
 } from './chat-persistence.service.js';
@@ -70,6 +71,10 @@ import {
   cancelAgentQuestionsForSession,
   hasPendingAgentQuestion,
 } from './agent-question.service.js';
+import {
+  captureThreadContinuation,
+  prependThreadContinuation,
+} from './chat-continuation.service.js';
 import { scheduleThreadMetadataRefresh } from './thread-assist.service.js';
 import {
   dismissAgentUIIntent,
@@ -155,6 +160,8 @@ interface ManagedSession {
   acpResumeFailed?: boolean;
   /** Honest lifecycle: how this provider thread came to be. */
   continuity?: CodexSessionContinuity;
+  continuationContext?: string;
+  continuationNeedsRefresh?: boolean;
   /** Provider-side mode id applied for the current turn (H9 honest labelling). */
   appliedMode?: string;
   status: CodexSession['status'];
@@ -688,9 +695,22 @@ export async function startSession(
     await waitForThreadReady(threadReady, id);
   } catch (error) {
     if (session.headless) await stopHeadlessSession(id);
+    else await stopSessionAndWait(id);
     throw error;
   }
 
+  if (
+    !session.headless &&
+    !session.temporaryChat &&
+    session.appThreadId &&
+    session.continuity !== 'resumed' &&
+    session.continuity !== 'forked' &&
+    getChatThread(session.appThreadId)
+  ) {
+    session.continuationContext =
+      captureThreadContinuation(session.appThreadId).context || undefined;
+    if (session.continuationContext) session.continuity = 'transcript-seeded';
+  }
   session.status = 'ready';
   broadcastEvent(id, { type: 'status', status: 'executing' });
 
@@ -758,6 +778,10 @@ export async function sendMessage(
     currentMode: session.mode,
   });
 
+  if (session.continuationNeedsRefresh && session.appThreadId && !session.temporaryChat)
+    session.continuationContext =
+      captureThreadContinuation(session.appThreadId).context || undefined;
+  const providerMessage = prependThreadContinuation(session.continuationContext, message);
   session.status = 'busy';
   setSessionThreadAttention(session, 'working');
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
@@ -815,11 +839,13 @@ export async function sendMessage(
         'session/prompt',
         {
           sessionId: session.threadId,
-          prompt: buildAcpPrompt(session, message, attachments),
+          prompt: buildAcpPrompt(session, providerMessage, attachments),
         },
         followUpTracking,
       );
       session.acpSystemPromptDelivered = true;
+      session.continuationContext = undefined;
+      session.continuationNeedsRefresh = false;
       return;
     }
 
@@ -832,7 +858,7 @@ export async function sendMessage(
       'turn/start',
       {
         threadId: session.threadId,
-        input: buildUserInput(message, attachments),
+        input: buildUserInput(providerMessage, attachments),
         approvalPolicy: codexPolicy.approvalPolicy,
         sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
         model,
@@ -842,6 +868,8 @@ export async function sendMessage(
       },
       followUpTracking,
     );
+    session.continuationContext = undefined;
+    session.continuationNeedsRefresh = false;
   } catch (error) {
     if (isCurrentSession(session)) {
       const message =
@@ -1398,6 +1426,11 @@ export function emitLocalAssistantTurnEnd(
 ): void {
   const session = sessions.get(sessionId);
   if (!session) return;
+  // The provider did not see this on-device turn. Refresh from saved visible
+  // history on its next accepted turn, after renderer persistence has flushed.
+  session.continuationNeedsRefresh = true;
+  if (session.appThreadId && !session.temporaryChat)
+    setChatThreadProviderThreadId(session.appThreadId, null, session.provider);
   session.status = 'ready';
   setSessionThreadAttention(session, outcome === 'completed' ? 'complete' : 'idle');
   broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: outcome, model: 'on-device' });

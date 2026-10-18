@@ -336,6 +336,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const sessionRef = useRef<CodexSession | null>(null);
   sessionRef.current = session;
   reasoningLevelRef.current = reasoningLevel;
+  const threadSessionStops = useRef(new Map<string, Promise<void>>());
   const entriesRef = useRef<ChatEntry[]>([]);
   entriesRef.current = entries;
   const threadsRef = useRef<ChatThread[]>([]);
@@ -984,25 +985,36 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const stopThreadLiveSession = useCallback(
     async (threadId: string) => {
+      const existing = threadSessionStops.current.get(threadId);
+      if (existing) return existing;
       const liveSession = liveSessionsByThreadIdRef.current[threadId];
       if (!liveSession) return;
-      discardPendingStreamEntry();
-      forgetLiveSession(liveSession.id);
-      await window.anvil.chat.stopSession(liveSession.id).catch(console.error);
-      if (sessionRef.current?.id === liveSession.id) {
-        setSession(null);
-        setBusy(false);
-        // H2 — pending queued sends die with the session; mark them not sent.
-        setEntries((prev) =>
-          prev.map((entry) =>
-            entry.kind === 'user' && entry.delivery === 'queued'
-              ? { ...entry, delivery: 'failed' as const }
-              : entry,
-          ),
-        );
+      const stopping = (async () => {
+        flushPendingStreamEntry();
+        persistAssistantForSession(liveSession.id);
+        await livePersistQueueBySessionIdRef.current[liveSession.id];
+        forgetLiveSession(liveSession.id);
+        await window.anvil.chat.stopSession(liveSession.id);
+        if (sessionRef.current?.id === liveSession.id) {
+          setSession(null);
+          setBusy(false);
+          setEntries((prev) =>
+            prev.map((entry) =>
+              entry.kind === 'user' && entry.delivery === 'queued'
+                ? { ...entry, delivery: 'failed' as const }
+                : entry,
+            ),
+          );
+        }
+      })();
+      threadSessionStops.current.set(threadId, stopping);
+      try {
+        await stopping;
+      } finally {
+        threadSessionStops.current.delete(threadId);
       }
     },
-    [discardPendingStreamEntry, forgetLiveSession],
+    [flushPendingStreamEntry, persistAssistantForSession, forgetLiveSession],
   );
 
   const stopSessionLive = useCallback(
@@ -1097,7 +1109,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const currentSession = sessionRef.current;
       if (currentSession?.provider && currentSession.provider !== provider) {
         const threadId = findThreadIdForSession(currentSession.id);
-        if (threadId) void stopThreadLiveSession(threadId);
+        if (threadId) await stopThreadLiveSession(threadId);
       }
       setModelState(model);
       setModelProvider(provider);
@@ -1133,7 +1145,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           ? candidateReasoning
           : (option?.defaultReasoningEffort ?? 'medium');
       if (nextProvider !== modelProvider && activeThreadId) {
-        void stopThreadLiveSession(activeThreadId);
+        void stopThreadLiveSession(activeThreadId).catch((error) =>
+          setError(
+            error instanceof Error ? error.message : 'Could not stop the previous provider.',
+          ),
+        );
       }
       setModelState(nextModel);
       setModelProvider(nextProvider);
@@ -2034,6 +2050,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       if (!thread) return false;
 
+      const pendingStop = threadSessionStops.current.get(thread.id);
+      if (pendingStop) {
+        await pendingStop;
+        if (activeThreadRef.current?.id !== thread.id) return false;
+      }
       const primaryRepo = activeRepoState ?? activeReposState[0] ?? null;
       const selectedRepoIds = activeReposState.map((repo) => repo.id);
       if (
@@ -2077,9 +2098,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const liveOrRenderedSessionForThread =
         threadLiveSession ?? (renderedSessionBelongsToThread ? session : null);
       const currentSessionForThread =
-        liveOrRenderedSessionForThread?.personaId === activePersona.id
+        liveOrRenderedSessionForThread?.personaId === activePersona.id &&
+        liveOrRenderedSessionForThread.provider === modelProvider
           ? liveOrRenderedSessionForThread
           : null;
+      if (currentSessionForThread) {
+        await livePersistQueueBySessionIdRef.current[currentSessionForThread.id];
+        if (activeThreadRef.current?.id !== thread.id) return false;
+      }
       const providerMessage =
         isTemporaryChat && !currentSessionForThread
           ? buildTemporaryHistoryPrompt(entriesRef.current, enriched)

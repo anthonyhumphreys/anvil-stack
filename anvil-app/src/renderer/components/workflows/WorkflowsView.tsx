@@ -1,4 +1,5 @@
 import { isPermissionMode } from '../../../../cloud/contract/permissions';
+import { supportsRemoteWorkflowProvider } from '../../../shared/workflow-target';
 import { WorkflowLaunchpad } from './WorkflowLaunchpad';
 import {
   OrchestrationPanel,
@@ -1185,6 +1186,7 @@ function Inspector({
                   const nextProvider = event.target.value as AgentProvider;
                   onChange({
                     provider: nextProvider,
+                    ...(!supportsRemoteWorkflowProvider(nextProvider) ? { target: undefined } : {}),
                     model: isAcpAgentProvider(nextProvider)
                       ? 'auto'
                       : nextProvider === 'llmgateway'
