@@ -1,5 +1,10 @@
+import type {
+  MessageBatch,
+  ScheduledController,
+} from "@cloudflare/workers-types";
 import {
   handleRuntimeRequest,
+  RuntimeError,
   type AppDefinition,
   type RuntimeHost,
   type RuntimeRequest,
@@ -9,6 +14,16 @@ import {
 import type { CloudflareWorkerBindings } from "./host.js";
 
 export type CloudflareWorkerHandler = {
+  queue(
+    batch: MessageBatch<unknown>,
+    env: CloudflareWorkerBindings,
+    context: ExecutionContext,
+  ): Promise<void>;
+  scheduled(
+    event: ScheduledController,
+    env: CloudflareWorkerBindings,
+    context: ExecutionContext,
+  ): Promise<void>;
   fetch(
     request: Request,
     env: CloudflareWorkerBindings,
@@ -30,6 +45,41 @@ export function createCloudflareWorkerHandler(
   options: CreateCloudflareWorkerHandlerOptions,
 ): CloudflareWorkerHandler {
   return {
+    async queue(batch, env) {
+      const host = options.createHost(env);
+      for (const message of batch.messages) {
+        const body = message.body;
+        if (
+          !isObject(body) ||
+          body.kind !== "job" ||
+          typeof body.name !== "string" ||
+          typeof body.id !== "string"
+        ) {
+          message.retry();
+          continue;
+        }
+        const response = await handleRuntimeRequest(app, host, {
+          kind: "job",
+          name: body.name,
+          payload: body.payload,
+          requestId: body.id,
+        });
+        if (response.ok) message.ack();
+        else message.retry();
+      }
+    },
+    async scheduled(event, env) {
+      const host = options.createHost(env);
+      for (const [name, job] of Object.entries(app.jobs ?? {})) {
+        if (job.schedule === event.cron) {
+          await host.jobs.enqueue(
+            name,
+            {},
+            { id: `${name}:${event.scheduledTime}` },
+          );
+        }
+      }
+    },
     async fetch(request, env) {
       const requestId =
         request.headers.get("x-anvil-request-id") ?? crypto.randomUUID();
@@ -70,6 +120,7 @@ export function createCloudflareWorkerHandler(
             );
       }
 
+      const host = options.createHost(env);
       let runtimeRequest: RuntimeRequest;
 
       try {
@@ -77,8 +128,34 @@ export function createCloudflareWorkerHandler(
           request,
           requestId,
         );
+        const authorization = request.headers.get("authorization");
+        if (authorization !== null) {
+          const token = /^Bearer ([^\s]+)$/i.exec(authorization)?.[1];
+          if (!token || !host.auth.verifyToken)
+            throw new RuntimeError(
+              "AUTH_REQUIRED",
+              "A valid bearer token is required.",
+              401,
+            );
+          try {
+            runtimeRequest.auth = await host.auth.verifyToken(token);
+            if (!runtimeRequest.auth) throw new Error("Token identity missing");
+          } catch {
+            throw new RuntimeError(
+              "AUTH_REQUIRED",
+              "Your access token is invalid or expired. Sign in again.",
+              401,
+            );
+          }
+        }
       } catch (error) {
-        if (error instanceof SyntaxError) {
+        if (error instanceof RuntimeError)
+          return jsonResponse(
+            error.status,
+            { ok: false, error: { code: error.code, message: error.message } },
+            requestId,
+          );
+        if (error instanceof SyntaxError || error instanceof URIError) {
           return jsonResponse(
             400,
             {
@@ -95,11 +172,7 @@ export function createCloudflareWorkerHandler(
         throw error;
       }
 
-      const response = await handleRuntimeRequest(
-        app,
-        options.createHost(env),
-        runtimeRequest,
-      );
+      const response = await handleRuntimeRequest(app, host, runtimeRequest);
 
       return runtimeResponseToCloudflareResponse(response, requestId);
     },
@@ -109,7 +182,9 @@ export function createCloudflareWorkerHandler(
 export async function cloudflareRequestToRuntimeRequest(
   request: Request,
   requestId: string = crypto.randomUUID(),
-): Promise<RuntimeRequest> {
+): Promise<
+  Extract<RuntimeRequest, { kind: "query" | "mutation" | "endpoint" }>
+> {
   const method = request.method.toUpperCase();
   const path = new URL(request.url).pathname;
 
@@ -140,7 +215,7 @@ export async function cloudflareRequestToRuntimeRequest(
   const body =
     method === "GET" || method === "HEAD"
       ? null
-      : new Uint8Array(await request.arrayBuffer());
+      : await readBoundedBody(request);
 
   return {
     kind: "endpoint",
@@ -201,7 +276,7 @@ function isRuntimeRoute(
 }
 
 async function readJsonBody(request: Request): Promise<unknown> {
-  const text = await request.text();
+  const text = new TextDecoder().decode(await readBoundedBody(request));
 
   return text.length === 0 ? {} : (JSON.parse(text) as unknown);
 }
@@ -251,4 +326,43 @@ function applyRuntimeHeaders(headers: Headers, requestId: string): void {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const MAX_REQUEST_BYTES = 1024 * 1024;
+async function readBoundedBody(request: Request): Promise<Uint8Array> {
+  if (Number(request.headers.get("content-length")) > MAX_REQUEST_BYTES)
+    throw new RuntimeError(
+      "VALIDATION_ERROR",
+      "Request body exceeds 1 MiB.",
+      413,
+    );
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > MAX_REQUEST_BYTES) {
+        await reader.cancel();
+        throw new RuntimeError(
+          "VALIDATION_ERROR",
+          "Request body exceeds 1 MiB.",
+          413,
+        );
+      }
+      chunks.push(chunk.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
 }

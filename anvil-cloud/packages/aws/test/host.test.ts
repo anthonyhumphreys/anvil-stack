@@ -58,6 +58,61 @@ describe("createAwsRuntimeHostFromEnv", () => {
     await expect(notes.get(String(inserted.id))).resolves.toBeNull();
   });
 
+  it("commits related DynamoDB records atomically and detects concurrent changes", async () => {
+    const dynamodb = new FakeDynamoDbClient();
+    const host = createAwsRuntimeHostFromEnv({
+      dynamodb,
+      env: { ANVIL_CELL_DATA_TABLE: "data" },
+    });
+    await host.db.table("quota").insert({ used: 1, id: "user" });
+    await host.db.commit?.([
+      {
+        table: "quota",
+        id: "user",
+        expected: { id: "user", used: 1 },
+        record: { id: "user", used: 2 },
+      },
+    ]);
+    await expect(
+      host.db.commit?.([
+        {
+          table: "pending",
+          id: "batch",
+          expected: null,
+          record: { id: "batch" },
+        },
+        {
+          table: "quota",
+          id: "user",
+          expected: { id: "user", used: 1 },
+          record: null,
+        },
+      ]),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await host.db.table("pending").get("batch")).toBeNull();
+    const write = {
+      table: "leases",
+      id: "one",
+      expected: null,
+      record: { id: "one" },
+    };
+    const results = await Promise.allSettled([
+      host.db.commit?.([write]),
+      host.db.commit?.([write]),
+    ]);
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    for (const id of ["c", "a", "b"])
+      await host.db.table("paged").insert({ id });
+    const first = await host.db.table("paged").page({ limit: 2 });
+    expect(first).toEqual({ records: [{ id: "a" }, { id: "b" }], cursor: "b" });
+    expect(
+      (await host.db.table("paged").page({ cursor: first.cursor!, limit: 2 }))
+        .records,
+    ).toEqual([{ id: "c" }]);
+  });
+
   it("stores files through the S3 adapter", async () => {
     const s3 = new FakeS3Client();
     const host = createAwsRuntimeHostFromEnv({
@@ -366,6 +421,40 @@ class FakeDynamoDbClient {
     const input = command.input as Record<string, unknown>;
 
     switch (command.constructor.name) {
+      case "TransactWriteItemsCommand": {
+        const entries = input.TransactItems as Array<{
+          Put?: Record<string, unknown>;
+          Delete?: Record<string, unknown>;
+        }>;
+        for (const entry of entries) {
+          const write = entry.Put ?? entry.Delete!;
+          const key = entry.Put
+            ? itemKey(write.Item as DynamoDbItem)
+            : keyFromParts(write.Key as DynamoDbKeyParts);
+          const current = this.items.get(key);
+          const expected = write.ExpressionAttributeValues as
+            Record<string, { S: string }> | undefined;
+          if (
+            write.ConditionExpression === "attribute_not_exists(pk)"
+              ? current !== undefined
+              : current?.data?.S !== expected?.[":expected"]?.S
+          ) {
+            throw Object.assign(new Error("Transaction cancelled"), {
+              CancellationReasons: [{ Code: "ConditionalCheckFailed" }],
+            });
+          }
+        }
+        for (const entry of entries) {
+          if (entry.Put) {
+            const item = entry.Put.Item as DynamoDbItem;
+            this.items.set(itemKey(item), cloneItem(item));
+          } else
+            this.items.delete(
+              keyFromParts(entry.Delete!.Key as DynamoDbKeyParts),
+            );
+        }
+        return {};
+      }
       case "PutItemCommand": {
         const item = input.Item as DynamoDbItem;
         this.items.set(itemKey(item), cloneItem(item));
@@ -391,10 +480,23 @@ class FakeDynamoDbClient {
         >;
         const pk = expressionValues[":pk"]?.S;
 
+        const ordered = Array.from(this.items.values())
+          .filter(
+            (item) =>
+              item.pk?.S === pk &&
+              (expressionValues[":cursor"]?.S === undefined ||
+                String(item.sk?.S) > expressionValues[":cursor"]!.S!),
+          )
+          .sort((a, b) => (String(a.sk?.S) < String(b.sk?.S) ? -1 : 1));
+        const page = ordered.slice(
+          0,
+          typeof input.Limit === "number" ? input.Limit : ordered.length,
+        );
         return {
-          Items: Array.from(this.items.values())
-            .filter((item) => item.pk?.S === pk)
-            .map(cloneItem),
+          Items: page.map(cloneItem),
+          ...(page.length < ordered.length
+            ? { LastEvaluatedKey: page.at(-1) }
+            : {}),
         };
       }
       case "ScanCommand":

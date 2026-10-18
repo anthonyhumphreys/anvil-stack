@@ -51,6 +51,7 @@ describe("createAwsLambdaRuntimeHandler", () => {
           handler: async (ctx, payload) => {
             await ctx.db.runs.insert({
               source: "sqs",
+              logicalId: ctx.request.id,
               force: payload.force,
             });
           },
@@ -66,6 +67,7 @@ describe("createAwsLambdaRuntimeHandler", () => {
             messageId: "msg_1",
             eventSource: "aws:sqs",
             body: JSON.stringify({
+              id: "outbox-logical-id",
               name: "refreshNotes",
               payload: {
                 force: true,
@@ -81,6 +83,7 @@ describe("createAwsLambdaRuntimeHandler", () => {
       {
         id: "runs_1",
         source: "sqs",
+        logicalId: "outbox-logical-id",
         force: true,
       },
     ]);

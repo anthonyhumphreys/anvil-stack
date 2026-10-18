@@ -1,3 +1,19 @@
+export type { JobOutboxDispatchOptions } from "./job-outbox.js";
+export {
+  jobOutboxWrite,
+  dispatchJobOutbox,
+  JOB_OUTBOX_TABLE,
+} from "./job-outbox.js";
+export { databasePageLimit, pageDatabaseRecords } from "./database-page.js";
+export type { DatabasePage, DatabasePageOptions } from "./host.js";
+export {
+  applyDatabaseWrites,
+  databaseConflict,
+  databaseRecordJson,
+  validateDatabaseWrites,
+  MAX_DATABASE_COMMIT_WRITES,
+} from "./database-commit.js";
+export type { DatabaseWrite } from "./host.js";
 export {
   AGENT_EXECUTION_SCHEMA_VERSION,
   type AgentExecutionApprovalDecision,

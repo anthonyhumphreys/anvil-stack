@@ -265,7 +265,7 @@ describe("createAwsPreviewCloudFormationTemplate", () => {
       jobs: [
         {
           name: "refreshNotes",
-          schedule: "rate(1 hour)",
+          schedule: "*/20 * * * *",
         },
         {
           name: "sendDigest",
@@ -307,7 +307,7 @@ describe("createAwsPreviewCloudFormationTemplate", () => {
       ScheduledJobRefreshNotesRule: {
         Type: "AWS::Events::Rule",
         Properties: {
-          ScheduleExpression: "rate(1 hour)",
+          ScheduleExpression: "cron(*/20 * * * ? *)",
           Targets: [
             {
               Input: JSON.stringify({

@@ -16,9 +16,16 @@ The package now contains the experimental verification seam behind that gate:
   credentials and redacts bearer claim URLs;
 - an opt-in live smoke verifier for permanent or temporary accounts.
 
-Database, files, events, jobs, workflows, services, agent sandboxes, provider
-auth verification, and secret provisioning still fail closed. Their planned
-Cloudflare mappings are not runtime support claims.
+The experimental host now implements D1 records and conditional commits, private
+R2 files, queue producers and consumers, Cron Trigger dispatch, and OIDC bearer
+verification. Artifacts can bind existing stage-specific resources and emit the
+D1 migration, retry/dead-letter configuration and observability settings.
+
+Normal Cell deployment remains gated. Automatic resource and secret provisioning,
+live lifecycle evidence, events, durable workflows, services and agent sandboxes
+are incomplete. See [portable app backends](../../docs/architecture/application-backends.md)
+for the shared AWS/Cloudflare contract, outbox behavior and release evidence still
+required. Planned resources remain distinct from verified deployments.
 
 Temporary Account planning is available through the CLI:
 

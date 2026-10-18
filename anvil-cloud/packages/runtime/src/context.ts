@@ -1,3 +1,7 @@
+import {
+  dispatchJobOutbox,
+  type JobOutboxDispatchOptions,
+} from "./job-outbox.js";
 import { RuntimeError } from "./errors.js";
 import type {
   AuthIdentity,
@@ -51,6 +55,14 @@ export type RequestContext = {
 };
 
 export type RuntimeContext = {
+  /** Publish one bounded page of committed pending jobs. Use from a scheduled recovery job. */
+  dispatchPendingJobs: (
+    options?: JobOutboxDispatchOptions,
+  ) => ReturnType<typeof dispatchJobOutbox>;
+  /** Conditional writes across tables. External HTTP and file effects are not part of this commit. */
+  commit: (
+    writes: readonly import("./host.js").DatabaseWrite[],
+  ) => Promise<void>;
   auth: AuthContext;
   db: DatabaseClient;
   files: FileClient;
@@ -75,6 +87,30 @@ export async function createRuntimeContext(
         : await host.auth.current();
 
   return {
+    dispatchPendingJobs: async (options) => {
+      if (request.kind === "query")
+        throw new RuntimeError(
+          "FORBIDDEN",
+          "Queries cannot publish pending jobs.",
+          403,
+        );
+      return dispatchJobOutbox(host, options);
+    },
+    commit: async (writes) => {
+      if (request.kind === "query")
+        throw new RuntimeError(
+          "FORBIDDEN",
+          "Queries cannot commit database changes.",
+          403,
+        );
+      if (!host.db.commit)
+        throw new RuntimeError(
+          "ADAPTER_ERROR",
+          "This database adapter does not support atomic commits.",
+          501,
+        );
+      await host.db.commit(writes);
+    },
     auth: createAuthContext(identity),
     db: createDatabaseClient(host.db),
     files: host.files,

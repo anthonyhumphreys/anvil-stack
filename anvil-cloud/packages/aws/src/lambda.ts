@@ -54,10 +54,7 @@ export type AwsWorkflowStepResult = {
 };
 
 export type AwsLambdaRuntimeEvent =
-  | AwsHttpEvent
-  | AwsSqsEvent
-  | AwsScheduledJobEvent
-  | AwsWorkflowStepEvent;
+  AwsHttpEvent | AwsSqsEvent | AwsScheduledJobEvent | AwsWorkflowStepEvent;
 
 export type AwsLambdaRuntimeResult =
   | AwsHttpResponse
@@ -105,8 +102,7 @@ export function createAwsLambdaRuntimeHandler(
 export function installOutboundFetchPolicy(rawAllowList: string | undefined) {
   const allowList = parseOutboundFetchAllowList(rawAllowList);
   const currentFetch = globalThis.fetch as
-    | (typeof fetch & { __anvilOriginalFetch?: typeof fetch })
-    | undefined;
+    (typeof fetch & { __anvilOriginalFetch?: typeof fetch }) | undefined;
 
   if (allowList.length === 0) {
     if (currentFetch?.__anvilOriginalFetch) {
@@ -253,7 +249,7 @@ async function handleSqsEvent(
       await runJob(app, host, {
         name: message.name,
         payload: message.payload,
-        requestId: record.messageId ?? randomUUID(),
+        requestId: message.id ?? record.messageId ?? randomUUID(),
       });
     } catch {
       if (record.messageId) {
@@ -298,7 +294,11 @@ async function runJob(
   return response;
 }
 
-function parseJobMessage(body: string): { name: unknown; payload: unknown } {
+function parseJobMessage(body: string): {
+  id?: string;
+  name: unknown;
+  payload: unknown;
+} {
   const parsed = JSON.parse(body) as unknown;
 
   if (!isObject(parsed)) {
@@ -306,6 +306,7 @@ function parseJobMessage(body: string): { name: unknown; payload: unknown } {
   }
 
   return {
+    ...(typeof parsed.id === "string" ? { id: parsed.id } : {}),
     name: parsed.name,
     payload: "payload" in parsed ? parsed.payload : null,
   };

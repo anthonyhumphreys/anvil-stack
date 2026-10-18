@@ -6,6 +6,7 @@ import {
   copyFile,
   mkdir,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
@@ -31,6 +32,9 @@ import {
   executeWorkflowRun,
   handleRuntimeRequest,
   RuntimeError,
+  applyDatabaseWrites,
+  validateDatabaseWrites,
+  pageDatabaseRecords,
   ServiceSupervisor,
   summarizeWorkflowRun,
   type ServiceStatus,
@@ -42,7 +46,9 @@ import {
   type DatabaseQueryClient,
   type DatabaseRecord,
   type DatabaseTableClient,
+  type DatabasePageOptions,
   type DatabaseWhereOperator,
+  type DatabaseWrite,
   type EnvAdapter,
   type EventAdapter,
   type FileAdapter,
@@ -889,6 +895,8 @@ export class JsonDatabaseBranchManager {
   }
 }
 
+const databaseWrites = new Map<string, Promise<void>>();
+
 export class JsonDatabaseAdapter implements DatabaseAdapter {
   static async open(options: {
     stateDir: string;
@@ -914,6 +922,38 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
 
   table(name: string): DatabaseTableClient {
     return new JsonDatabaseTableClient(name, this);
+  }
+
+  async commit(writes: readonly DatabaseWrite[]): Promise<void> {
+    validateDatabaseWrites(writes);
+    writes = structuredClone(writes);
+    await this.mutate((data) => {
+      const next = applyDatabaseWrites(data, writes);
+      for (const [name, records] of Object.entries(next)) data[name] = records;
+    });
+  }
+
+  async mutate<T>(
+    change: (data: Record<string, DatabaseRecord[]>) => T,
+  ): Promise<T> {
+    const key = path.resolve(this.filePath);
+    const previous = databaseWrites.get(key) ?? Promise.resolve();
+    const task = previous.then(async () => {
+      const data = await this.read();
+      const result = change(data);
+      await this.write(data);
+      return result;
+    });
+    const queued = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    databaseWrites.set(key, queued);
+    try {
+      return await task;
+    } finally {
+      if (databaseWrites.get(key) === queued) databaseWrites.delete(key);
+    }
   }
 
   async inspect(): Promise<DatabaseInspection> {
@@ -945,11 +985,13 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
 
   async write(data: Record<string, DatabaseRecord[]>): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(
-      this.filePath,
-      `${JSON.stringify(data, null, 2)}\n`,
-      "utf8",
-    );
+    const temporary = `${this.filePath}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+      await rename(temporary, this.filePath);
+    } finally {
+      await rm(temporary, { force: true });
+    }
   }
 }
 
@@ -958,6 +1000,10 @@ export class JsonDatabaseTableClient implements DatabaseTableClient {
     private readonly name: string,
     private readonly adapter: JsonDatabaseAdapter,
   ) {}
+
+  async page(options: DatabasePageOptions = {}) {
+    return pageDatabaseRecords(await this.all(), options);
+  }
 
   async all(): Promise<DatabaseRecord[]> {
     return this.adapter.dumpTable(this.name);
@@ -970,50 +1016,50 @@ export class JsonDatabaseTableClient implements DatabaseTableClient {
   }
 
   async insert(record: DatabaseRecord): Promise<DatabaseRecord> {
-    const data = await this.adapter.read();
-    const rows = data[this.name] ?? [];
-    const stored = {
-      ...cloneRecord(record),
-      id: record.id === undefined ? nextId(this.name, rows) : String(record.id),
-    };
+    return this.adapter.mutate((data) => {
+      const rows = data[this.name] ?? [];
+      const stored = {
+        ...cloneRecord(record),
+        id:
+          record.id === undefined ? nextId(this.name, rows) : String(record.id),
+      };
 
-    data[this.name] = [...rows, stored];
-    await this.adapter.write(data);
-
-    return cloneRecord(stored);
+      data[this.name] = [...rows, stored];
+      return cloneRecord(stored);
+    });
   }
 
   async update(id: string, patch: DatabaseRecord): Promise<DatabaseRecord> {
-    const data = await this.adapter.read();
-    const rows = data[this.name] ?? [];
-    const index = rows.findIndex((row) => String(row.id) === id);
+    return this.adapter.mutate((data) => {
+      const rows = data[this.name] ?? [];
+      const index = rows.findIndex((row) => String(row.id) === id);
 
-    if (index < 0) {
-      throw new Error(`Record '${id}' does not exist in table '${this.name}'.`);
-    }
+      if (index < 0) {
+        throw new Error(
+          `Record '${id}' does not exist in table '${this.name}'.`,
+        );
+      }
 
-    const updated = {
-      ...rows[index],
-      ...cloneRecord(patch),
-      id,
-    };
+      const updated = {
+        ...rows[index],
+        ...cloneRecord(patch),
+        id,
+      };
 
-    rows[index] = updated;
-    data[this.name] = rows;
-    await this.adapter.write(data);
-
-    return cloneRecord(updated);
+      rows[index] = updated;
+      data[this.name] = rows;
+      return cloneRecord(updated);
+    });
   }
 
   async delete(id: string): Promise<boolean> {
-    const data = await this.adapter.read();
-    const rows = data[this.name] ?? [];
-    const nextRows = rows.filter((row) => String(row.id) !== id);
+    return this.adapter.mutate((data) => {
+      const rows = data[this.name] ?? [];
+      const nextRows = rows.filter((row) => String(row.id) !== id);
 
-    data[this.name] = nextRows;
-    await this.adapter.write(data);
-
-    return rows.length !== nextRows.length;
+      data[this.name] = nextRows;
+      return rows.length !== nextRows.length;
+    });
   }
 
   where(
@@ -1349,9 +1395,13 @@ export class LocalEventAdapter implements EventAdapter {
 export class LocalJobAdapter implements JobAdapter {
   constructor(private readonly filePath: string) {}
 
-  async enqueue(name: string, payload: unknown): Promise<{ id: string }> {
+  async enqueue(
+    name: string,
+    payload: unknown,
+    options?: { id: string },
+  ): Promise<{ id: string }> {
     const entries = await this.entries();
-    const id = `job_${entries.length + 1}`;
+    const id = options?.id ?? `job_${entries.length + 1}`;
 
     entries.push({
       id,
@@ -3284,8 +3334,7 @@ async function inspectLocalRuntime(
 }
 
 type ResolvedRequestAuth =
-  | { kind: "resolved"; identity: AuthIdentity | null }
-  | { kind: "rejected" };
+  { kind: "resolved"; identity: AuthIdentity | null } | { kind: "rejected" };
 
 async function resolveRequestAuth(
   options: LocalRequestOptions,

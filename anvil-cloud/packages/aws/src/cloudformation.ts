@@ -313,7 +313,7 @@ export function createAwsPreviewCloudFormationTemplate(
             sanitizeName(`job-${job.name}`, 24) || "job",
             64,
           ),
-          ScheduleExpression: job.schedule,
+          ScheduleExpression: awsScheduleExpression(job.schedule),
           State: "ENABLED",
           Targets: [
             {
@@ -769,4 +769,23 @@ function outboundFetchAllowListFor(capability: unknown): string[] {
   }
 
   return allow.filter((value): value is string => typeof value === "string");
+}
+
+// EventBridge requires six cron fields and a ? in either day field.
+function awsScheduleExpression(schedule: string): string {
+  const fields = schedule.trim().split(/\s+/);
+  if (fields.length !== 5) return schedule;
+  const [minute, hour, day, month, weekday] = fields;
+  if (day !== "*" && weekday !== "*") {
+    throw new Error(
+      "Portable cron schedules cannot restrict both day of month and day of week on AWS.",
+    );
+  }
+  // POSIX weekdays use 0..6, EventBridge uses 1..7. Keep portable schedules explicit.
+  if (weekday !== "*") {
+    throw new Error(
+      "AWS five-field cron schedules currently require * for day of week. Use an explicit EventBridge cron expression for weekday schedules.",
+    );
+  }
+  return `cron(${minute} ${hour} ${day} ${month} ? *)`;
 }

@@ -1,3 +1,4 @@
+import { pageDatabaseRecords } from "./database-page.js";
 import type {
   AuthAdapter,
   AuthIdentity,
@@ -6,7 +7,9 @@ import type {
   DatabaseQueryClient,
   DatabaseRecord,
   DatabaseTableClient,
+  DatabasePageOptions,
   DatabaseWhereOperator,
+  DatabaseWrite,
   EnvAdapter,
   EventAdapter,
   FileAdapter,
@@ -17,6 +20,7 @@ import type {
   WorkflowAdapter,
   WorkflowRun,
 } from "./host.js";
+import { applyDatabaseWrites } from "./database-commit.js";
 import type {
   TraceAdapter,
   TraceCompleteInput,
@@ -79,6 +83,19 @@ export class InMemoryDatabaseAdapter implements DatabaseAdapter {
     return table;
   }
 
+  async commit(writes: readonly DatabaseWrite[]): Promise<void> {
+    const snapshot = Object.fromEntries(
+      [...this.tables].map(([name, table]) => [name, table.snapshot()]),
+    );
+    const next = applyDatabaseWrites(snapshot, writes);
+    for (const [name, records] of Object.entries(next)) {
+      const existing = this.tables.get(name);
+      if (existing) existing.replaceRows(records);
+      else
+        this.tables.set(name, new InMemoryDatabaseTableClient(name, records));
+    }
+  }
+
   async inspect(): Promise<DatabaseInspection> {
     const tables: DatabaseInspection["tables"] = {};
 
@@ -96,6 +113,17 @@ export class InMemoryDatabaseTableClient implements DatabaseTableClient {
   private readonly records = new Map<string, DatabaseRecord>();
   private nextId = 1;
 
+  snapshot(): DatabaseRecord[] {
+    return Array.from(this.records.values(), cloneRecord);
+  }
+
+  replaceRows(records: DatabaseRecord[]): void {
+    this.records.clear();
+    for (const record of records)
+      this.records.set(String(record.id), cloneRecord(record));
+    while (this.records.has(`${this.name}_${this.nextId}`)) this.nextId += 1;
+  }
+
   constructor(
     private readonly name: string,
     seed: DatabaseRecord[] = [],
@@ -104,6 +132,10 @@ export class InMemoryDatabaseTableClient implements DatabaseTableClient {
       const stored = this.prepareRecord(record);
       this.records.set(String(stored.id), stored);
     }
+  }
+
+  async page(options: DatabasePageOptions = {}) {
+    return pageDatabaseRecords(await this.all(), options);
   }
 
   async all(): Promise<DatabaseRecord[]> {
@@ -272,8 +304,12 @@ export class InMemoryJobAdapter implements JobAdapter {
   private nextId = 1;
   readonly entries: Array<{ id: string; name: string; payload: unknown }> = [];
 
-  async enqueue(name: string, payload: unknown): Promise<{ id: string }> {
-    const id = `job_${this.nextId}`;
+  async enqueue(
+    name: string,
+    payload: unknown,
+    options?: { id: string },
+  ): Promise<{ id: string }> {
+    const id = options?.id ?? `job_${this.nextId}`;
     this.nextId += 1;
     this.entries.push({ id, name, payload });
 

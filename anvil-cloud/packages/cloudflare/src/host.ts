@@ -1,3 +1,8 @@
+import { OidcTokenVerifier } from "@anvil-cloud/auth/dist/workerd.js";
+import type { D1Database, Queue, R2Bucket } from "@cloudflare/workers-types";
+import { CloudflareD1DatabaseAdapter } from "./database.js";
+import { CloudflareR2FileAdapter } from "./files.js";
+
 import {
   RuntimeError,
   type DatabaseAdapter,
@@ -8,21 +13,50 @@ import {
 } from "@anvil-cloud/runtime";
 
 export type CloudflareWorkerBindings = Record<string, unknown> & {
+  ANVIL_AUTH_ISSUER?: string;
+  ANVIL_AUTH_AUDIENCE?: string;
+  ANVIL_AUTH_JWKS_URI?: string;
+  ANVIL_DB?: D1Database;
+  ANVIL_FILES?: R2Bucket;
+  ANVIL_JOBS?: Queue<CloudflareJobMessage>;
   ANVIL_ASSETS?: {
     fetch(request: Request): Promise<Response>;
   };
 };
 
+export type CloudflareJobMessage = {
+  kind: "job";
+  id: string;
+  name: string;
+  payload: unknown;
+};
+
 export function createCloudflareRuntimeHost(
   bindings: CloudflareWorkerBindings,
 ): RuntimeHost {
+  const verifier =
+    bindings.ANVIL_AUTH_ISSUER && bindings.ANVIL_AUTH_AUDIENCE
+      ? new OidcTokenVerifier({
+          issuer: bindings.ANVIL_AUTH_ISSUER,
+          audience: bindings.ANVIL_AUTH_AUDIENCE.split(",").map((value) =>
+            value.trim(),
+          ),
+          ...(bindings.ANVIL_AUTH_JWKS_URI
+            ? { jwksUri: bindings.ANVIL_AUTH_JWKS_URI }
+            : {}),
+        })
+      : undefined;
   return {
-    db: new UnsupportedDatabaseAdapter(),
-    files: {
-      get: () => unsupported("files"),
-      put: () => unsupported("files"),
-      delete: () => unsupported("files"),
-    },
+    db: bindings.ANVIL_DB
+      ? new CloudflareD1DatabaseAdapter(bindings.ANVIL_DB)
+      : new UnsupportedDatabaseAdapter(),
+    files: bindings.ANVIL_FILES
+      ? new CloudflareR2FileAdapter(bindings.ANVIL_FILES)
+      : {
+          get: () => unsupported("files"),
+          put: () => unsupported("files"),
+          delete: () => unsupported("files"),
+        },
     env: {
       get(name) {
         const value = bindings[name];
@@ -32,6 +66,15 @@ export function createCloudflareRuntimeHost(
     },
     auth: {
       current: async () => null,
+      async verifyToken(token) {
+        if (!verifier)
+          throw new RuntimeError(
+            "AUTH_REQUIRED",
+            "Configure an OIDC issuer and audience before using bearer authentication.",
+            401,
+          );
+        return (await verifier.verifyToken(token)).identity;
+      },
     },
     logs: {
       async write(entry) {
@@ -57,7 +100,12 @@ export function createCloudflareRuntimeHost(
       publish: () => unsupported("events"),
     },
     jobs: {
-      enqueue: () => unsupported("jobs"),
+      async enqueue(name, payload, options) {
+        if (!bindings.ANVIL_JOBS) return unsupported("jobs");
+        const id = options?.id ?? crypto.randomUUID();
+        await bindings.ANVIL_JOBS.send({ kind: "job", id, name, payload });
+        return { id };
+      },
     },
     workflows: {
       start: () => unsupported("workflows"),
@@ -76,6 +124,7 @@ class UnsupportedDatabaseAdapter implements DatabaseAdapter {
 
     return {
       all: fail,
+      page: fail,
       get: fail,
       insert: fail,
       update: fail,

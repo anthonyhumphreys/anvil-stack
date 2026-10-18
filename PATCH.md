@@ -242,3 +242,37 @@ cd ../anvil-app && pnpm exec tsc --noEmit -p tsconfig.node.json && pnpm exec tsc
 - Enabling AWS writes before patch signing, result review, approval gates, and
   cleanup evidence are implemented is `adapt` or `reject` depending on whether
   it can be restored behind read-only policy.
+
+### C3: Portable application data and background work
+
+Status: active
+Owner project: `anvil-cloud`
+
+Keep conditional commits, bounded table pages and the job outbox provider-neutral.
+Local, in-memory, DynamoDB and D1 hosts share all-or-nothing compare-and-replace
+semantics. Reject stale conditions with `CONFLICT` and retain the original state.
+Keep the 25-write, 256-KiB record and 1-MiB total portable limits. JSON local
+writes serialize within one process and use atomic file replacement.
+
+Pending jobs can be committed with application records. Scheduled Cell jobs call
+`ctx.dispatchPendingJobs` without accessing a provider host. Publication uses bounded
+passes, conditional leases, stable logical ids and retained failures. Preserve
+those ids through AWS and Cloudflare queue delivery so applications can deduplicate
+with transaction receipts. Delivery remains at least once. Do not claim atomicity
+for HTTP calls, file storage or queue publication itself.
+
+Cloudflare D1, private R2, queue/Cron and OIDC support are experimental runtime
+implementations. Artifacts can refer to existing stage-specific resources and
+emit a D1 migration. Keep the normal Cell deployment gate until provisioning and
+live lifecycle evidence exist. Require the same release evidence on AWS and
+Cloudflare. Do not add consumer-specific matching, source formats or business rules.
+
+Owner modules are `packages/runtime/src/database-{commit,page}.ts`,
+`packages/runtime/src/job-outbox.ts`, the local/AWS hosts, the AWS queue bridge,
+and `packages/cloudflare/src/{database,files,host,http,resources,artifacts}.ts`.
+The behavior and open release checks are in
+`anvil-cloud/docs/architecture/application-backends.md`.
+
+Verify from `anvil-cloud/` with `pnpm lint`, `pnpm typecheck`, `pnpm test`, and
+`pnpm verify:cloudflare-preview`. Real local D1/R2 tests and AWS SDK tests are
+required; neither substitutes for live provider evidence.

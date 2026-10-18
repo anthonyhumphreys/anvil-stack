@@ -1,5 +1,6 @@
 export type RuntimeErrorCode =
   | "VALIDATION_ERROR"
+  | "CONFLICT"
   | "AUTH_REQUIRED"
   | "FORBIDDEN"
   | "NOT_FOUND"
