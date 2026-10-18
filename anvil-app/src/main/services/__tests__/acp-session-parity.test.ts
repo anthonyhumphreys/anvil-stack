@@ -175,6 +175,23 @@ async function acknowledgeLastRequest(proc: FakeAcpProcess, method: string): Pro
   await tick();
 }
 
+async function sendConfiguredMessage(
+  proc: FakeAcpProcess,
+  sessionId: string,
+  message: string,
+): Promise<void> {
+  const sending = sendMessage(sessionId, message, [], {});
+  expect(writtenRequests(proc, 'session/prompt')).toHaveLength(0);
+  await acknowledgeLastRequest(proc, 'session/set_mode');
+  expect(writtenRequests(proc, 'session/prompt')).toHaveLength(0);
+  await acknowledgeLastRequest(proc, 'session/set_config_option');
+  expect(writtenRequests(proc, 'session/set_config_option').at(-1)?.params).toMatchObject({
+    configId: 'model',
+    value: 'default',
+  });
+  await sending;
+}
+
 describe('ACP session parity (cursor/devin)', () => {
   let events: CodexEventSubscription[];
   let unsubscribe: () => void;
@@ -275,7 +292,7 @@ describe('ACP session parity (cursor/devin)', () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc, { provider: 'cursor' }, 'reader');
 
-    await sendMessage(session.id, 'look at this', [], {});
+    await sendConfiguredMessage(proc, session.id, 'look at this');
     const setMode = writtenRequests(proc, 'session/set_mode');
     expect(setMode[0].params).toMatchObject({ modeId: 'ask' });
   });
@@ -284,7 +301,7 @@ describe('ACP session parity (cursor/devin)', () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
 
-    await sendMessage(session.id, 'first message', [], {});
+    await sendConfiguredMessage(proc, session.id, 'first message');
     // The public session snapshot above is stale — internally the session is
     // now 'busy', which is what routes the steer into the queue.
 
@@ -313,7 +330,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('deduplicates explicit queue retries and rejects a reused requestId with changed content', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
-    await sendMessage(session.id, 'active work', [], {});
+    await sendConfiguredMessage(proc, session.id, 'active work');
 
     const request = {
       sessionId: session.id,
@@ -352,7 +369,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('fails queued work on interruption and does not start it automatically', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
-    await sendMessage(session.id, 'active work', [], {});
+    await sendConfiguredMessage(proc, session.id, 'active work');
     const request = {
       sessionId: session.id,
       requestId: 'follow-up-after-interrupt',
@@ -378,7 +395,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('fails queued follow-ups when the active ACP prompt is rejected', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
-    await sendMessage(session.id, 'active work', [], {});
+    await sendConfiguredMessage(proc, session.id, 'active work');
     const activePrompt = writtenRequests(proc, 'session/prompt').at(-1);
     expect(activePrompt?.id).toBeDefined();
     const request = {
@@ -407,7 +424,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('keeps queued work if an interrupt could not be sent and drains it after completion', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
-    await sendMessage(session.id, 'active work', [], {});
+    await sendConfiguredMessage(proc, session.id, 'active work');
     const request = {
       sessionId: session.id,
       requestId: 'follow-up-cancel-write-failed',
@@ -432,7 +449,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('fails queued follow-up without sending it when ACP rejects mode setup', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
-    await sendMessage(session.id, 'active work', [], {});
+    await sendConfiguredMessage(proc, session.id, 'active work');
     const request = {
       sessionId: session.id,
       requestId: 'follow-up-mode-rejected',
@@ -463,7 +480,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('settles a dequeued follow-up if the session stops while provider setup awaits an ack', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
-    await sendMessage(session.id, 'active work', [], {});
+    await sendConfiguredMessage(proc, session.id, 'active work');
     const request = {
       sessionId: session.id,
       requestId: 'follow-up-stop-race',
@@ -492,7 +509,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('updates a delivered receipt if the provider later rejects its prompt', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
-    await sendMessage(session.id, 'active work', [], {});
+    await sendConfiguredMessage(proc, session.id, 'active work');
     const request = {
       sessionId: session.id,
       requestId: 'follow-up-provider-error',
@@ -537,7 +554,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('persists terminal outcomes before the next queued task is dispatched', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc, { threadId: 'thread-terminal' });
-    await sendMessage(session.id, 'active work', [], {});
+    await sendConfiguredMessage(proc, session.id, 'active work');
     await followUpTurn({
       sessionId: session.id,
       requestId: 'follow-up-terminal-order',
@@ -576,7 +593,10 @@ describe('ACP session parity (cursor/devin)', () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
 
-    const result = await steerTurn(session.id, 'hello', []);
+    const sending = steerTurn(session.id, 'hello', []);
+    await acknowledgeLastRequest(proc, 'session/set_mode');
+    await acknowledgeLastRequest(proc, 'session/set_config_option');
+    const result = await sending;
     expect(result).toEqual({ disposition: 'sent', queueDepth: 0 });
     expect(writtenRequests(proc, 'session/prompt')).toHaveLength(1);
   });
@@ -584,7 +604,7 @@ describe('ACP session parity (cursor/devin)', () => {
   it('registers ACP permission requests as pending approvals for companion/statusbar (H8)', async () => {
     const proc = createFakeAcpProcess();
     const session = await startAcpSession(proc);
-    await sendMessage(session.id, 'run a thing', [], {});
+    await sendConfiguredMessage(proc, session.id, 'run a thing');
 
     emit(proc, {
       jsonrpc: '2.0',

@@ -53,7 +53,9 @@ export function useChatWorkflowAction({
         // Only discovery failures fall back to chat. A failed send must never be sent twice.
         const templates = await window.anvil.workflow.listTemplates().catch(() => null);
         const intent = templates ? parseWorkflowChatIntent(message, templates) : null;
-        if (intent) {
+        // A saved run is handled by the chat's agent tools so context, access
+        // and results stay in the conversation. Only authoring/choosing opens the builder.
+        if (intent && intent.kind !== 'run') {
           setWorkflowActionError(null);
           setPendingWorkflowAction({
             message,

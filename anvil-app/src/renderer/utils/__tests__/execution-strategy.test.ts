@@ -7,7 +7,11 @@ describe('buildExecutionStrategyPrompt', () => {
   });
 
   it('keeps work with the primary agent in focused mode', () => {
-    expect(buildExecutionStrategyPrompt('focused')).toContain('Do not use subagents');
+    const prompt = buildExecutionStrategyPrompt('focused');
+    expect(prompt).toContain('Keep work with the primary agent');
+    expect(prompt).toContain('propose chat-native delegation');
+    expect(prompt).toContain('waiting for user approval');
+    expect(prompt).toContain('Do not start provider-native subagents');
   });
 
   it('asks for bounded subagent work in adaptive mode', () => {

@@ -438,6 +438,7 @@ function QuestionForm({
   const canCancel = intent.payload.questions.every((question) => question.allowCancel);
   const canSkip = intent.payload.questions.every((question) => !question.required);
   const questions = intent.payload.questions;
+  const singleApproval = questions.length === 1 && questions[0].kind === 'approval';
   const activeQuestion = questions[Math.min(activeIndex, questions.length - 1)];
   const isLast = activeIndex >= questions.length - 1;
   const canContinue =
@@ -449,12 +450,12 @@ function QuestionForm({
     questionRef.current?.focus();
   };
 
-  const submit = async (action: 'submit' | 'skip' | 'cancel') => {
+  const submit = async (action: 'submit' | 'skip' | 'cancel', submittedAnswers = answers) => {
     await run(async () => {
       const resolved = await window.anvil.chat.resolveAgentUIQuestion(intent.id, {
         intentId: intent.id,
         action,
-        answers,
+        answers: submittedAnswers,
         answeredAt: new Date().toISOString(),
       });
       setIntent(resolved);
@@ -514,7 +515,7 @@ function QuestionForm({
         if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
         if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
           event.preventDefault();
-          if (!submitting && canContinue) {
+          if (!singleApproval && !submitting && canContinue) {
             if (!isLast) navigate(activeIndex + 1);
             else if (complete) void submit('submit');
           }
@@ -555,13 +556,13 @@ function QuestionForm({
       }}
       onSubmit={(event) => {
         event.preventDefault();
-        if (submitting || !canContinue) return;
+        if (singleApproval || submitting || !canContinue) return;
         if (!isLast) navigate(activeIndex + 1);
         else if (complete) void submit('submit');
       }}
       className={
         compact
-          ? 'bg-transparent'
+          ? 'flex max-h-[min(50vh,480px)] flex-col bg-transparent'
           : 'overflow-hidden rounded-xl border border-border bg-bg-secondary'
       }
     >
@@ -603,7 +604,7 @@ function QuestionForm({
       <div
         ref={questionRef}
         tabIndex={-1}
-        className="space-y-3 p-4 outline-none"
+        className={`space-y-3 p-4 outline-none ${compact ? 'min-h-0 overflow-y-auto' : ''}`}
         aria-live="polite"
       >
         {activeQuestion && (
@@ -611,6 +612,7 @@ function QuestionForm({
             key={activeQuestion.id}
             question={activeQuestion}
             disabled={submitting}
+            showApprovalChoices={!singleApproval}
             value={answers[activeQuestion.id]}
             customAnswer={customAnswers[activeQuestion.id] ?? ''}
             customSelected={
@@ -631,7 +633,7 @@ function QuestionForm({
             }}
           />
         )}
-        {isLast && !complete && (
+        {!singleApproval && isLast && !complete && (
           <p className="text-xs text-text-secondary">
             Answer each required question before sending.
           </p>
@@ -643,46 +645,74 @@ function QuestionForm({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border-subtle px-4 py-2.5">
-        <span className="mr-auto text-xs text-text-tertiary">{questionSubmitShortcut}</span>
-        {activeIndex > 0 && (
-          <button
-            type="button"
-            onClick={() => navigate(activeIndex - 1)}
-            disabled={submitting}
-            className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
-          >
-            Back
-          </button>
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border-subtle px-4 py-2.5">
+        {singleApproval ? (
+          <>
+            <button
+              type="button"
+              onClick={() => void submit('submit', { [questions[0].id]: false })}
+              disabled={submitting}
+              className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+            >
+              Reject
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit('submit', { [questions[0].id]: true })}
+              disabled={submitting}
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-secondary disabled:opacity-40"
+            >
+              {submitting && (
+                <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
+              )}
+              {submitting ? 'Sending…' : 'Approve'}
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="mr-auto text-xs text-text-tertiary">{questionSubmitShortcut}</span>
+            {activeIndex > 0 && (
+              <button
+                type="button"
+                onClick={() => navigate(activeIndex - 1)}
+                disabled={submitting}
+                className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+              >
+                Back
+              </button>
+            )}
+            {canCancel && (
+              <button
+                type="button"
+                onClick={() => void submit('cancel')}
+                disabled={submitting}
+                className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
+              >
+                Cancel
+              </button>
+            )}
+            {canSkip && (
+              <button
+                type="button"
+                onClick={() => void submit('skip')}
+                disabled={submitting}
+                className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
+              >
+                Skip
+              </button>
+            )}
+            <button
+              type="submit"
+              disabled={!canContinue || (isLast && !complete) || submitting}
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {submitting && (
+                <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
+              )}
+              {submitting ? 'Sending…' : isLast ? 'Send answer' : 'Next'}
+            </button>
+          </>
         )}
-        {canCancel && (
-          <button
-            type="button"
-            onClick={() => void submit('cancel')}
-            disabled={submitting}
-            className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
-          >
-            Cancel
-          </button>
-        )}
-        {canSkip && (
-          <button
-            type="button"
-            onClick={() => void submit('skip')}
-            disabled={submitting}
-            className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
-          >
-            Skip
-          </button>
-        )}
-        <button
-          type="submit"
-          disabled={!canContinue || (isLast && !complete) || submitting}
-          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {submitting && <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />}
-          {submitting ? 'Sending…' : isLast ? 'Send answer' : 'Next'}
-        </button>
       </div>
     </form>
   );
@@ -696,6 +726,7 @@ function QuestionField({
   customAnswer,
   customSelected,
   onCustomChange,
+  showApprovalChoices = true,
 }: {
   question: AgentUIQuestion;
   customAnswer: string;
@@ -704,6 +735,7 @@ function QuestionField({
   value: AgentUIAnswerValue | undefined;
   onChange: (value: AgentUIAnswerValue) => void;
   disabled: boolean;
+  showApprovalChoices?: boolean;
 }) {
   const fieldId = useId();
   const isCustom = customSelected;
@@ -809,7 +841,7 @@ function QuestionField({
         </div>
       )}
 
-      {(question.kind === 'yes_no' || question.kind === 'approval') && (
+      {(question.kind === 'yes_no' || (question.kind === 'approval' && showApprovalChoices)) && (
         <div className="mt-3 flex flex-wrap gap-2">
           <BooleanChoice
             selected={value === true}

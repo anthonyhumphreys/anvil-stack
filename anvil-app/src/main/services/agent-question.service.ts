@@ -23,6 +23,7 @@ export interface AgentQuestionResult {
 }
 interface PendingQuestion {
   sessionId: string;
+  keepAcrossTurns: boolean;
   finish: (result: AgentQuestionResult) => void;
   expire: () => void;
 }
@@ -36,6 +37,7 @@ export function askAgentQuestion(
   ctx: AgentToolSessionContext,
   payload: AgentUIQuestionPayload,
   signal?: AbortSignal,
+  options: { keepAcrossTurns?: boolean } = {},
 ): Promise<AgentQuestionResult> {
   if (!ctx.appThreadId) throw new AgentToolError('Questions need a saved chat.', 'unavailable');
   if (signal?.aborted) throw new AgentToolError('Question request was cancelled.', 'unavailable');
@@ -107,15 +109,21 @@ export function askAgentQuestion(
     }, 2_000);
     timeout.unref?.();
     poll.unref?.();
-    pendingQuestions.set(saved.id, { sessionId: ctx.sessionId, finish, expire });
+    pendingQuestions.set(saved.id, {
+      sessionId: ctx.sessionId,
+      keepAcrossTurns: options.keepAcrossTurns === true,
+      finish,
+      expire,
+    });
     signal?.addEventListener('abort', expire, { once: true });
     broadcastAgentUIIntent(saved, ctx.sessionId);
   });
 }
 
-export function cancelAgentQuestionsForSession(sessionId: string): void {
+export function cancelAgentQuestionsForSession(sessionId: string, completedTurn = false): void {
   for (const pending of [...pendingQuestions.values()]) {
-    if (pending.sessionId === sessionId) pending.expire();
+    if (pending.sessionId === sessionId && !(completedTurn && pending.keepAcrossTurns))
+      pending.expire();
   }
 }
 

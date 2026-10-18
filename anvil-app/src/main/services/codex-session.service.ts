@@ -354,13 +354,13 @@ export function resolveAcpSessionMode(
 
 /**
  * Translate Anvil's stored model value into the provider's configOption value.
- * 'auto' maps to Cursor's `default[]` option; for Devin it means "leave the
- * session default" (Adaptive), so no set_config_option call is made.
+ * Anvil advertises Cursor's parameterized model picker, whose Auto value is
+ * `default`. For Devin, Auto leaves the session default (Adaptive) unchanged.
  */
 export function resolveAcpModelValue(provider: AcpAgentProvider, model: string): string | null {
   const trimmed = model.trim();
   if (!trimmed || trimmed === 'auto') {
-    return provider === 'cursor' ? 'default[]' : null;
+    return provider === 'cursor' ? 'default' : null;
   }
   return trimmed;
 }
@@ -813,12 +813,10 @@ export async function sendMessage(
         sessionId: session.threadId,
         modeId: acpModeId,
       };
-      if (followUpTracking) {
-        await sendProviderRequestAndWait(session, 'session/set_mode', modeRequest);
-        assertSessionActive(session);
-      } else {
-        sendProviderRequest(session, 'session/set_mode', modeRequest);
-      }
+      // Apply controls before the prompt. ACP agents can reject a config
+      // change once the concurrent prompt has already started running.
+      await sendProviderRequestAndWait(session, 'session/set_mode', modeRequest);
+      assertSessionActive(session);
       const acpModel = resolveAcpModelValue(session.provider, model);
       if (acpModel) {
         const modelRequest = {
@@ -826,12 +824,8 @@ export async function sendMessage(
           configId: 'model',
           value: acpModel,
         };
-        if (followUpTracking) {
-          await sendProviderRequestAndWait(session, 'session/set_config_option', modelRequest);
-          assertSessionActive(session);
-        } else {
-          sendProviderRequest(session, 'session/set_config_option', modelRequest);
-        }
+        await sendProviderRequestAndWait(session, 'session/set_config_option', modelRequest);
+        assertSessionActive(session);
       }
       assertSessionActive(session);
       sendFollowUpAwareProviderRequest(
@@ -944,7 +938,16 @@ async function sendProviderRequestAndWait(
     }
     throw new Error(`${acpProcessLabel(session.provider)} could not accept ${method}.`);
   }
-  const result = await response;
+  const result = await response.catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : 'Invalid provider response';
+    const control =
+      method === 'session/set_config_option' && params.configId === 'model'
+        ? `model "${String(params.value)}"`
+        : method;
+    throw new Error(`${acpProviderLabel(session.provider)} rejected ${control}: ${detail}`, {
+      cause: error,
+    });
+  });
   assertSessionActive(session);
   return result;
 }
@@ -1991,11 +1994,17 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       session.status = 'busy';
     },
     onTurnCompleted: (status) => {
-      cancelAgentQuestionsForSession(session.id);
+      cancelAgentQuestionsForSession(session.id, status === 'completed');
       session.status = 'ready';
       setSessionThreadAttention(
         session,
-        status === 'failed' ? 'failed' : status === 'interrupted' ? 'idle' : 'complete',
+        status === 'failed'
+          ? 'failed'
+          : status === 'interrupted'
+            ? 'idle'
+            : hasPendingAgentQuestion(session.id)
+              ? 'input'
+              : 'complete',
       );
       if (status === 'completed') {
         void flushPendingAcpWork(session);
@@ -2103,8 +2112,11 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         cancelAgentQuestionsForSession(session.id);
         setSessionThreadAttention(session, 'failed');
       } else if (event.type === 'status' && event.status === 'complete') {
-        cancelAgentQuestionsForSession(session.id);
-        setSessionThreadAttention(session, 'complete');
+        cancelAgentQuestionsForSession(session.id, true);
+        setSessionThreadAttention(
+          session,
+          hasPendingAgentQuestion(session.id) ? 'input' : 'complete',
+        );
       } else if (event.type === 'status' && event.status === 'thinking') {
         setSessionThreadAttention(session, 'working');
       }
@@ -2253,7 +2265,10 @@ async function flushPendingPlanFeedback(session: ManagedSession): Promise<void> 
   if (!queued?.length || session.status !== 'ready') return;
   pendingPlanFeedback.delete(session.id);
   try {
-    await sendMessage(session.id, queued.join('\n'));
+    await sendMessage(session.id, queued.join('\n'), [], {
+      model: session.model,
+      permissionMode: session.mode,
+    });
   } catch (error) {
     pendingPlanFeedback.set(session.id, [
       ...queued,
@@ -2399,7 +2414,10 @@ export async function deliverStructuredAgentFeedback(
   if (delivery === 'steer') {
     await steerTurn(session.id, payload);
   } else if (delivery === 'prompt') {
-    await sendMessage(session.id, payload);
+    await sendMessage(session.id, payload, [], {
+      model: session.model,
+      permissionMode: session.mode,
+    });
   } else if (delivery === 'queue') {
     const queued = pendingPlanFeedback.get(session.id) ?? [];
     queued.push(payload);

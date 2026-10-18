@@ -4,36 +4,40 @@ Reviewed against the desktop implementation on 18 October 2026. This describes A
 
 ## Running Sol 6.1 locally and delegating elsewhere
 
-Yes, a local chat can coordinate work on other machines through a saved Anvil workflow. Select Sol 6.1 from the models available through your configured provider. The provider/model chooses the agent; the execution destination chooses where its tools and files live.
+Yes. A plain saved workspace chat can discover agents and delegate bounded tasks directly. No saved workflow is required. Select Sol 6.1 from the models available through your configured provider. The provider/model chooses the agent; the destination chooses where its tools and files live.
 
-In Workflows, configure a coordinating step with autonomous delegation and an approved specialist pool. Each specialist has a persona, provider, model, capabilities and execution destination. Destinations include this device, a trusted fleet device, automatic placement by capability, an existing cloud environment, or a new cloud environment with a lifetime. Save the workflow before asking the agent to use it.
+For example: "Delegate an independent review to Cursor on this Mac and a Linux compatibility check to my build machine. Keep coordinating here." You can also ask for a cloud destination. The agent first discovers configured providers, model IDs, trusted devices and cloud connections. It cannot invent a destination or provision an environment during discovery.
 
-For example, ask the local chat: "Use my Release checks workflow to delegate the Linux packaging check to my build machine and an independent review to the cloud specialist. Keep me updated and report their evidence."
+An agent may propose delegation itself when a discovered capability, another platform, isolation or independent review has a concrete benefit. It must explain that benefit and present the proposal. Simple or tightly coupled work stays with the coordinator.
 
-The agent calls `workflow_list`, then `workflow_start`. Anvil presents the saved workflow and its destinations for approval. The run receives the chat's selected repositories, bounded conversation context and access ceiling. It continues independently of the coordinating chat. The agent can use `workflow_read` to inspect durable status and results, including after reconnecting. Completion or a human decision is also reported to the originating live session when available. Stopping that chat does not cancel an already launched workflow; use the workflow's Stop control.
+The tools are `delegation_discover`, `delegation_propose`, `delegation_read` and `delegation_stop`. The proposal shows each task's instructions, destination, provider/model and access, plus the selected repositories. Approve or Reject submits the decision directly; the actions stay visible while long instructions scroll. The proposal call returns immediately while the inline approval stays available for up to ten minutes, including after the agent finishes its turn. This avoids provider tool-call timeouts while a person reviews the work. Anvil sends the decision back to the live coordinator. Approval starts only those tasks. Declining, cancelling, stopping the source session or changing its repository scope prevents launch. Each task defaults to read-only access. Requested write access remains capped by the source chat, persona and global policy.
+
+Status, bounded task reports, Stop, Retry and Resume stay in the source chat. Remote result branches have an explicit integration control. Advanced execution details remain available. Jobs continue if the coordinating session stops. Results are sent to the current live coordinator when available, including after a provider switch; otherwise the saved run remains readable when the chat resumes. A repeated proposal with the same request ID returns its original run, including after restart. Reusing that ID for different work fails.
 
 ```mermaid
 flowchart TD
     User[You] --> Chat[Local chat · Sol 6.1]
-    Chat --> Tools[Find, launch and inspect saved workflows]
-    Tools --> Approval[Review workflow and destinations]
+    Chat --> Tools[Discover agents and destinations]
+    Tools --> Proposal[Propose bounded tasks and explain the benefit]
+    Proposal --> Approval[Review instructions, destinations and access in chat]
     Approval --> Runner[Durable workflow scheduler]
-    Runner --> Coordinator[Local coordinating step]
-    Coordinator --> Pool[Approved specialist pool]
-    Pool --> Local[Local agent · shared run checkout]
-    Pool --> Fleet[Trusted fleet machine · pinned checkout]
-    Pool --> Cloud[Cloud environment · pinned checkout]
+    Runner --> Local[Local agent · shared checkout]
+    Runner --> Fleet[Trusted fleet machine · pinned checkout]
+    Runner --> Cloud[Cloud environment · pinned checkout]
     Local --> Reports[Bounded handoffs and recorded status]
     Fleet --> Reports
     Cloud --> Reports
-    Reports --> Coordinator
     Reports --> Chat
+    Chat --> Controls[Read reports, retry, resume or stop]
+    Controls --> Runner
     Fleet --> Branches[Returned Git result refs]
     Cloud --> Branches
     Branches --> Integration[Explicit integration and verification]
 ```
 
-The scheduler owns dependencies, concurrency, node count, delegation depth, attempts and the run deadline. A coordinating agent requests children by approved profile ID using an `anvil-delegate` response. Anvil validates the request, expands the graph, runs the children and resumes the coordinator with their handoffs. Remote children complete their assigned task; recursive coordination stays local. Fixed map/reduce, review and debate teams use the same runner. Chat's Parallel or Adaptive setting is provider-native execution within that session; it does not itself place jobs across the fleet.
+Chat proposals use the existing durable scheduler without saving or syncing a workflow template. Each proposal has 1–8 tasks, at most two concurrent read-only tasks, two attempts per task and a 30-minute deadline. Runs with write access execute one task at a time. Children cannot recursively delegate. A chat can have at most four active delegations. Deleting a source chat is blocked while its work is active or remote cancellation remains unconfirmed. A remote Stop request is shown as pending until the worker confirms a terminal state; a failed connection does not count as confirmation.
+
+Saved workflows remain useful for reusable teams and automatic placement by capability. Configure a coordinating step with an approved specialist pool in Workflows, then ask the chat to use it through `workflow_list`, `workflow_start` and `workflow_read`. These runs keep their existing workflow controls. Within a workflow, the coordinator requests children by approved profile ID using an `anvil-delegate` response; the runner validates the graph expansion and returns handoffs. Fixed map/reduce, review and debate teams use the same runner. Chat's Parallel or Adaptive setting alone does not place jobs across the fleet.
 
 Remote workflow steps currently support Codex, OpenAI and Azure. Local workflow steps support all six desktop providers. Remote chats have a broader provider matrix and support Codex, OpenAI, Azure, Cursor, Devin and LLMGateway. A remote destination needs trust, remote work enabled, repository access and provider credentials. A cloud destination also needs a configured environment provider and an enrolled worker. The destination's access ceiling can further restrict the requested mode.
 
@@ -60,7 +64,7 @@ sequenceDiagram
     Note over Chat,B: Same-provider native resume avoids replaying the transcript
 ```
 
-Fresh saved sessions receive up to 40 recent user/assistant messages, the saved summary, resolved question answers, active plan and goal, and artifact metadata. Sensitive question answers are redacted. The prompt checkpoint has a 32,000-character budget; each message is capped at 6,000 characters. It explicitly distinguishes prior conversation from current instructions and repository evidence. The first accepted turn consumes that checkpoint; subsequent turns use the provider's native context.
+Fresh saved sessions receive up to 40 recent user/assistant messages, the saved summary, resolved question answers, active plan and goal, artifact metadata and recent delegation IDs and statuses. Sensitive question answers are redacted. The prompt checkpoint has a 32,000-character budget; each message is capped at 6,000 characters. It explicitly distinguishes prior conversation from current instructions and repository evidence. The first accepted turn consumes that checkpoint; subsequent turns use the provider's native context.
 
 Activity and tool-log entries do not displace the visible conversation. Assistant responses stored as event entries are included by role. Temporary chats do not import saved history. Native resume and fork retain their provider history without an extra transcript replay. Switching back after a different provider has replaced the binding starts a fresh session from the current canonical chat.
 
@@ -101,10 +105,16 @@ Remote results are fetched into result refs, leaving the user's checkout untouch
 
 ## Verification and remaining limits
 
-The local suite covers context bounds, visible assistant history, saved and sensitive answers, native resume, on-device continuity, remote checkpoint capture, source snapshot checks, workflow handoffs, target validation, permission ceilings, scoped agent tools, launch approval and cancellation. The desktop suite passed 2,843 tests with 12 skipped during this review. Both TypeScript checks, lint, the Electron build and daemon build also passed.
+The local suite covers context bounds, visible assistant history, saved and sensitive answers, native resume, on-device continuity, remote checkpoint capture, source snapshot checks, workflow handoffs, target validation, permission ceilings, scoped agent tools, launch approval and cancellation. The desktop suite passed 2,873 tests with 12 skipped during this review. Both TypeScript checks, lint, the Electron build and daemon build also passed.
 
-An isolated native Electron session passed Sol 6.1 → Cursor → Sol 6.1. Cursor recalled the original synthetic project code and layout; Sol then recalled Cursor's updated layout and the earlier choice it replaced. Workflow discovery reached the saved template, and launch correctly refused an empty repository selection before approval or dispatch. Specialist destination persistence, multiple capability entry, unsupported-provider restrictions and cloud loading error/retry were also checked in the native app. Final light and dark captures passed independent review for the five destination-control fixes, including labels, focus and error recovery. These local checks do not exercise a real remote worker.
+An isolated native Electron session passed Sol 6.1 → Cursor → Sol 6.1. Cursor recalled the original synthetic project code and layout; Sol then recalled Cursor's updated layout and the earlier choice it replaced. Workflow discovery reached the saved template, and launch correctly refused an empty repository selection before approval or dispatch. Specialist destination persistence, multiple capability entry, unsupported-provider restrictions and cloud loading error/retry were also checked in the native app. Final light and dark captures passed independent review for the five destination-control fixes, including labels, focus and error recovery.
+
+Plain chats also passed discovery, approval, a read-only local Codex task and delivery of its README report back to the source chat. A Cursor coordinator kept its approval available for more than two minutes after its own turn finished, then launched Codex and received the result.
+
+Automatic follow-up answers remain visible after an earlier final reply and after reloading the saved transcript. ACP mode/model changes complete before a prompt starts, and automatic feedback retains the live coordinator's model and access.
+
+The final native pass confirmed single-click approval in light and dark layouts, a completed local Sol 6.1 task, and a readable task report. Cursor reached its account usage limit after proposing; switching the coordinator to Sol 6.1 retained the run, and the new coordinator read its report and returned the correct heading and line without rerunning the task. Cursor Auto selection was also corrected to match its advertised model-picker protocol. The final approval captures passed independent visual review in light and dark layouts. These local checks do not exercise a real remote worker.
 
 Remote interactive questions and mid-turn steering are still unsupported; workers fail explicitly when a provider requires an interactive question. Stop, approvals and ordinary follow-up controls have separate supported paths. There is no claim of a live fleet/cloud acceptance pass here. Two physical devices and the deployed cloud images still need the provider-by-provider acceptance matrix recorded in ANV-11, including authentication, disconnect/restart, cancellation and recovery.
 
-Implementation entry points: `chat-continuation.service.ts`, `codex-session.service.ts`, `mesh-handoff.service.ts`, `remote-chat.service.ts`, `workflow.service.ts`, `workflow-runtime.ts`, `workflow-source-snapshot.ts` and `agent-tools/workflow-tools.ts` under `src/main/`.
+Implementation entry points: `chat-delegation.service.ts`, `delegation-capabilities.service.ts`, `agent-tools/delegation-tools.ts`, `chat-continuation.service.ts`, `codex-session.service.ts`, `mesh-handoff.service.ts`, `remote-chat.service.ts`, `workflow.service.ts`, `workflow-runtime.ts`, `workflow-source-snapshot.ts` and `agent-tools/workflow-tools.ts` under `src/main/`.

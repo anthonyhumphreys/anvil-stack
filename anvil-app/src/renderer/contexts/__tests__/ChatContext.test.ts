@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatThread, Persona } from '../../../shared/types';
 import {
   chatMessagesToEntries,
+  resolveCompletedAssistantEntries,
   findPersonaForThread,
   planIntentToSnapshot,
   threadBelongsToChatList,
@@ -42,6 +43,49 @@ describe('findPersonaForThread', () => {
 });
 
 describe('chatMessagesToEntries', () => {
+  it('publishes an automatic follow-up as the latest answer after an earlier final reply', () => {
+    const entries = resolveCompletedAssistantEntries([
+      { kind: 'user', content: 'Delegate a review' },
+      { kind: 'assistant', content: 'Awaiting approval.', phase: 'final' },
+      { kind: 'event', event: { type: 'turn_outcome', turnOutcome: 'completed' } },
+      { kind: 'assistant', content: 'Review finished.' },
+    ]);
+    expect(entries.at(-1)).toMatchObject({ phase: 'final', content: 'Review finished.' });
+    const restored = chatMessagesToEntries([
+      { id: 'user', role: 'user', content: 'Delegate a review', timestamp: '1' },
+      {
+        id: 'first',
+        role: 'assistant',
+        content: 'Awaiting approval.',
+        timestamp: '2',
+        event: { type: 'text', text: 'Awaiting approval.', assistantPhase: 'final' },
+      },
+      {
+        id: 'done1',
+        role: 'system',
+        content: 'Complete',
+        timestamp: '3',
+        event: { type: 'turn_outcome', turnOutcome: 'completed' },
+      },
+      {
+        id: 'report',
+        role: 'assistant',
+        content: 'Review finished.',
+        timestamp: '4',
+        event: { type: 'text', text: 'Review finished.' },
+      },
+      {
+        id: 'done2',
+        role: 'system',
+        content: 'Complete',
+        timestamp: '5',
+        event: { type: 'turn_outcome', turnOutcome: 'completed' },
+      },
+    ]);
+    expect(
+      restored.find((entry) => entry.kind === 'assistant' && entry.content === 'Review finished.'),
+    ).toMatchObject({ phase: 'final' });
+  });
   it('restores segmented assistant output and persisted activity', () => {
     expect(
       chatMessagesToEntries([

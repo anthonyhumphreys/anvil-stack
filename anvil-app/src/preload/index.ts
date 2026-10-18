@@ -242,6 +242,10 @@ const api: AnvilAPI = {
   },
 
   chat: {
+    listDelegations: (threadId: string) => ipcRenderer.invoke('chat:list-delegations', threadId),
+    readDelegation: (threadId: string, runId: string) => ipcRenderer.invoke('chat:read-delegation', threadId, runId),
+    stopDelegation: (threadId: string, runId: string) => ipcRenderer.invoke('chat:stop-delegation', threadId, runId),
+    actOnDelegation: (threadId, runId, action, nodeId) => ipcRenderer.invoke('chat:act-on-delegation', threadId, runId, action, nodeId),
     createTemporaryThread: (personaId: string) =>
       ipcRenderer.invoke('chat:create-temporary-thread', personaId),
     endTemporaryThread: (threadId: string) =>
@@ -265,7 +269,7 @@ const api: AnvilAPI = {
       workspaceId: string,
       rootPath: string,
       personaId: string,
-      options?: Pick<import('../shared/types.js').ChatStartOptions, 'provider'>,
+      options?: Pick<import('../shared/types.js').ChatStartOptions, 'provider' | 'model'>,
     ) =>
       ipcRenderer.invoke('chat:start-scaffold-session', workspaceId, rootPath, personaId, options),
     send: (

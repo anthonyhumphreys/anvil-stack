@@ -194,6 +194,7 @@ export async function requestUserApproval(
   ctx: AgentToolSessionContext,
   request: { title: string; detail: string; consequences?: string },
   signal?: AbortSignal,
+  options?: { keepAcrossTurns?: boolean },
 ): Promise<boolean> {
   if (!ctx.appThreadId) return false;
   const context = [request.detail.trim(), request.consequences?.trim()]
@@ -215,6 +216,7 @@ export async function requestUserApproval(
       ],
     },
     signal,
+    options,
   );
   return result.status === 'answered' && result.answers.approve === true;
 }

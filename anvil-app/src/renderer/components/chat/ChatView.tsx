@@ -1060,6 +1060,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                   <RepoSelector
                     variant="dropdown"
                     mode="multi"
+                    indexedOnly={false}
                     placement="top"
                     selectedRepoIds={activeRepos.map((repo) => repo.id)}
                     onMultiSelect={setActiveRepos}

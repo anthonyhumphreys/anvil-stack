@@ -354,6 +354,21 @@ export interface AnvilAPI {
   };
 
   chat: {
+    listDelegations(threadId: string): Promise<import('./chat-delegation').ChatDelegationRun[]>;
+    readDelegation(
+      threadId: string,
+      runId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    stopDelegation(
+      threadId: string,
+      runId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    actOnDelegation(
+      threadId: string,
+      runId: string,
+      action: import('./chat-delegation').ChatDelegationAction,
+      nodeId?: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
     createTemporaryThread(personaId: string): Promise<ChatThread>;
     endTemporaryThread(threadId: string): Promise<boolean>;
     linkPullRequest(
@@ -377,7 +392,7 @@ export interface AnvilAPI {
       workspaceId: string,
       rootPath: string,
       personaId: string,
-      options?: Pick<ChatStartOptions, 'provider'>,
+      options?: Pick<ChatStartOptions, 'provider' | 'model'>,
     ) => Promise<CodexSession>;
     send: (
       sessionId: string,

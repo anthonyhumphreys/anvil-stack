@@ -8,7 +8,7 @@ export const EXECUTION_STRATEGIES: Array<{
   {
     id: 'auto',
     label: 'Auto',
-    description: 'Let Codex choose its normal execution strategy.',
+    description: 'Let the agent choose its normal execution strategy.',
   },
   {
     id: 'focused',
@@ -37,7 +37,7 @@ export function buildExecutionStrategyPrompt(strategy: ExecutionStrategy): strin
 
   const instructions: Record<Exclude<ExecutionStrategy, 'auto'>, string> = {
     focused:
-      'Keep work with the primary agent. Do not use subagents unless the user explicitly asks for delegation.',
+      'Keep work with the primary agent. You may propose chat-native delegation when a discovered capability or independent review materially helps, explaining the benefit and waiting for user approval. Do not start provider-native subagents unless the user explicitly asks for delegation.',
     adaptive:
       'Use subagents for concrete, bounded tasks when parallel work would materially improve speed or confidence. Keep tightly coupled work with the primary agent and consolidate delegated results before finishing.',
     parallel:

@@ -195,7 +195,10 @@ describe('codex session service', () => {
   });
 
   it('translates Anvil model values into ACP config option values', () => {
-    expect(resolveAcpModelValue('cursor', 'auto')).toBe('default[]');
+    expect(buildAcpClientCapabilities()).toMatchObject({
+      _meta: { parameterizedModelPicker: true },
+    });
+    expect(resolveAcpModelValue('cursor', 'auto')).toBe('default');
     expect(resolveAcpModelValue('cursor', 'claude-fable-5-thinking-high')).toBe(
       'claude-fable-5-thinking-high',
     );

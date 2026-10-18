@@ -18,6 +18,7 @@ import {
 } from './chat-run-outcome';
 import { stripFindingMarkers } from '../../utils/finding-parser';
 import type { StarterPrompt } from '../../utils/starter-prompts';
+import { ChatDelegations } from './ChatDelegations';
 
 /**
  * Scrollable transcript column — extracted from ChatView (Phase 5 split).
@@ -272,6 +273,7 @@ export function ChatTranscript({
             </div>
           )}
 
+          {activeThreadId && paneKind === 'transcript' && <ChatDelegations key={activeThreadId} threadId={activeThreadId} />}
           {error && (
             <ChatErrorNotice
               error={error}

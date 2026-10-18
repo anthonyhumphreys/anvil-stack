@@ -899,6 +899,7 @@ export interface WorkflowConvergence {
 }
 
 export interface WorkflowRun {
+  chatOrigin?: import('./chat-delegation').ChatDelegationOrigin;
   workItemRef?: WorkItemReference;
   runtimeOwnerPid?: number;
   executionPaths?: Array<{ id: string; path: string }>;

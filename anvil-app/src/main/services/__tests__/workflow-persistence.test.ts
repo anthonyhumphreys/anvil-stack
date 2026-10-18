@@ -19,6 +19,11 @@ vi.mock('../persona.service.js', () => ({
   buildSystemPrompt: () => '',
 }));
 vi.mock('../chat-persistence.service.js', () => ({
+  getChatThread: (id: string) => {
+    const row = db.prepare('SELECT id, workspace_id FROM chat_threads WHERE id = ?').get(id) as
+      { id: string; workspace_id: string } | undefined;
+    return row ? { id: row.id, workspaceId: row.workspace_id } : null;
+  },
   createChatThread: () => {
     const id = randomUUID();
     db.prepare(
@@ -42,6 +47,9 @@ import {
   retryWorkflowNode,
   saveWorkflowTemplate,
   startWorkflowRun,
+  startChatWorkflowRun,
+  listChatWorkflowRuns,
+  getChatWorkflowRunByRequest,
   waitForWorkflowRun,
 } from '../workflow.service';
 
@@ -89,6 +97,44 @@ function store(run: WorkflowRun) {
 }
 
 describe('workflow persistence and commands', () => {
+  it('persists chat-native work without saving a template or adding another supervisor chat', async () => {
+    const definition = template();
+    db.exec('DELETE FROM workflow_templates');
+    db.prepare(
+      "INSERT INTO chat_threads (id, workspace_id, persona_id, title) VALUES ('source', 'ws', 'coder', 'Original chat')",
+    ).run();
+    const origin = {
+      threadId: 'source',
+      requestId: 'request',
+      fingerprint: 'fingerprint',
+      reason: 'Independent review',
+      destinations: { gate: 'This device' },
+    };
+    const started = startChatWorkflowRun({
+      definition,
+      origin,
+      workspaceId: 'ws',
+      repoIds: [],
+      kickoff: 'Review this',
+      permissionCeiling: 'read-only',
+    });
+    const paused = await waitForWorkflowRun(started.id);
+    expect(paused.status).toBe('paused');
+    expect(paused.supervisorThreadId).toBe('source');
+    expect(paused.chatOrigin).toEqual(origin);
+    expect(paused.nodes[0].permissionMode).toBe('read-only');
+    expect(db.prepare('SELECT COUNT(*) AS count FROM workflow_templates').get()).toEqual({
+      count: 0,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM chat_threads').get()).toEqual({ count: 1 });
+    expect(getChatWorkflowRunByRequest('source', 'request')?.id).toBe(started.id);
+    expect(getChatWorkflowRunByRequest('another-chat', 'request')).toBeNull();
+    expect(listChatWorkflowRuns('source').map((run) => run.id)).toEqual([started.id]);
+    decideWorkflowNode(started.id, 'gate', true, 'Approved');
+    resumeWorkflowRun(started.id);
+    await waitForWorkflowRun(started.id);
+    expect(getWorkflowRun(started.id)?.chatOrigin).toEqual(origin);
+  });
   it('persists a frozen input manifest and target policy with the run', async () => {
     const saved = saveWorkflowTemplate({
       name: 'Remote package',

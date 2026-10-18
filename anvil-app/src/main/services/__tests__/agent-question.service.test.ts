@@ -22,6 +22,7 @@ vi.mock('../codex-session.service.js', () => session);
 import { questionToolProvider } from '../../agent-tools/question-tools.js';
 import {
   AGENT_QUESTION_TIMEOUT_MS,
+  askAgentQuestion,
   cancelAgentQuestionsForSession,
   resolveAnvilOwnedQuestion,
 } from '../agent-question.service.js';
@@ -81,6 +82,59 @@ afterEach(() => {
 afterAll(() => db.close());
 
 describe('shared question tool', () => {
+  it('keeps a deferred approval across completed turns and transport aborts, until the session stops', async () => {
+    vi.useFakeTimers();
+    const waiting = askAgentQuestion(
+      ctx,
+      {
+        title: 'Delegate?',
+        questions: [
+          {
+            id: 'approval',
+            kind: 'approval',
+            question: 'Delegate?',
+            required: true,
+            allowCancel: true,
+          },
+        ],
+      },
+      undefined,
+      { keepAcrossTurns: true },
+    );
+    const question = latest();
+    cancelAgentQuestionsForSession(ctx.sessionId, true);
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(getAgentUIIntent(question.id)?.lifecycle).toBe('pending');
+    resolveAnvilOwnedQuestion(question.id, {
+      intentId: question.id,
+      action: 'submit',
+      answers: { approval: true },
+      answeredAt: new Date().toISOString(),
+    });
+    await expect(waiting).resolves.toMatchObject({
+      status: 'answered',
+      answers: { approval: true },
+    });
+    const stopped = askAgentQuestion(
+      ctx,
+      {
+        title: 'Another?',
+        questions: [
+          {
+            id: 'approval',
+            kind: 'approval',
+            question: 'Another?',
+            required: true,
+            allowCancel: true,
+          },
+        ],
+      },
+      undefined,
+      { keepAcrossTurns: true },
+    );
+    cancelAgentQuestionsForSession(ctx.sessionId);
+    await expect(stopped).resolves.toMatchObject({ status: 'expired' });
+  });
   for (const provider of AGENT_PROVIDERS) {
     for (const mode of ['read-only', 'on-request', 'workspace-auto'] as const) {
       it(`waits for an answer in ${provider} ${mode}`, async () => {

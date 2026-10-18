@@ -33,6 +33,7 @@ import { getDb } from '../db/database.js';
 import { detectCodexCli } from './codex-bridge.service.js';
 import {
   createChatSession,
+  getChatThread,
   createChatThread,
   saveChatEntry,
   setChatThreadProviderThreadId,
@@ -200,6 +201,7 @@ function mapRun(row: WorkflowRunRow): WorkflowRun {
     events: graph.events ?? [],
     deadlineAt: graph.deadlineAt,
     sourceAutomationRunId: graph.sourceAutomationRunId,
+    chatOrigin: graph.chatOrigin,
     workItemRef: graph.workItemRef,
     runtimeOwnerPid: graph.runtimeOwnerPid,
     executionPaths: graph.executionPaths,
@@ -233,8 +235,7 @@ export function listWorkflowTemplates(): WorkflowTemplate[] {
 
 export function getWorkflowTemplate(id: string): WorkflowTemplate | null {
   const row = getDb().prepare('SELECT * FROM workflow_templates WHERE id = ?').get(id) as
-    | WorkflowTemplateRow
-    | undefined;
+    WorkflowTemplateRow | undefined;
   return row ? mapTemplate(row) : null;
 }
 
@@ -428,8 +429,7 @@ export function listWorkflowRuns(workspaceId: string): WorkflowRun[] {
 
 export function getWorkflowRun(id: string): WorkflowRun | null {
   const row = getDb().prepare('SELECT * FROM workflow_runs WHERE id = ?').get(id) as
-    | WorkflowRunRow
-    | undefined;
+    WorkflowRunRow | undefined;
   return row ? mapRun(row) : null;
 }
 
@@ -447,6 +447,7 @@ function persistRun(run: WorkflowRun): void {
         events: run.events,
         deadlineAt: run.deadlineAt,
         sourceAutomationRunId: run.sourceAutomationRunId,
+        chatOrigin: run.chatOrigin,
         workItemRef: run.workItemRef,
         runtimeOwnerPid: run.runtimeOwnerPid,
         executionPaths: run.executionPaths,
@@ -527,6 +528,28 @@ function captureRunInputManifest(
     configVersions: {},
     ...(trigger === undefined ? {} : { trigger }),
   };
+}
+
+export function assertChatDelegationSources(workspaceId: string, repoIds: readonly string[]): void {
+  const manifest = captureRunInputManifest(workspaceId, [...repoIds]);
+  const rows = getDb()
+    .prepare(
+      `SELECT d.portable_id, d.mapped_repo_id, r.path FROM workspace_repo_definitions d JOIN repos r ON r.id = d.mapped_repo_id WHERE d.workspace_id = ?`,
+    )
+    .all(workspaceId) as Array<{ portable_id: string; mapped_repo_id: string; path: string }>;
+  const selected = rows.filter((row) => repoIds.includes(row.mapped_repo_id));
+  if (new Set(selected.map((row) => row.mapped_repo_id)).size !== repoIds.length)
+    throw new Error(
+      'Remote delegation needs portable repository mappings. Connect the selected repositories in this workspace first.',
+    );
+  assertWorkflowSourceSnapshot(
+    selected.map((row) => ({
+      repositoryId: row.portable_id,
+      path: row.path,
+      commit:
+        manifest.repositories.find((pin) => pin.repositoryId === row.portable_id)?.commit ?? '',
+    })),
+  );
 }
 
 async function requestedTargetFor(
@@ -653,6 +676,7 @@ async function runCodexThread(input: {
     const state = { threadId: null, turnId: null, initialized: false };
     let buffer = '';
     let output = '';
+    let finalAnswer = '';
     let providerThreadId: string | undefined;
     let completed = false;
 
@@ -669,7 +693,8 @@ async function runCodexThread(input: {
         reject(error);
         return;
       }
-      const finalOutput = output.trim() || 'Step completed without a final message.';
+      const finalOutput =
+        finalAnswer.trim() || output.trim() || 'Step completed without a final message.';
       saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
         id: randomUUID(),
         role: 'assistant',
@@ -697,7 +722,10 @@ async function runCodexThread(input: {
         );
         return;
       }
-      if (event.type === 'text' && event.text) output += event.text;
+      if (event.type === 'text' && event.text) {
+        output += event.text;
+        if (event.assistantPhase === 'final') finalAnswer += event.text;
+      }
       if (event.type === 'thinking' || event.type === 'status' || event.type === 'text') return;
       saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
         id: randomUUID(),
@@ -1019,6 +1047,7 @@ async function executeRemoteWorkflowNode(
   error?: string;
   remote?: WorkflowAttempt['remote'];
 }> {
+  signal.throwIfAborted();
   const dispatchId = state.remote?.dispatchId ?? `${run.id}:${node.id}:${attemptId}`;
   const persistedDispatch = getWorkflowDispatch(dispatchId);
   const persistedTarget =
@@ -1041,10 +1070,10 @@ async function executeRemoteWorkflowNode(
        WHERE d.workspace_id = ?`,
     )
     .all(run.workspaceId) as Array<{
-      portable_id: string;
-      mapped_repo_id: string | null;
-      path: string | null;
-    }>;
+    portable_id: string;
+    mapped_repo_id: string | null;
+    path: string | null;
+  }>;
   const expectedRepositoryIds =
     node.repositoryIds ??
     expectedRows
@@ -1095,6 +1124,7 @@ async function executeRemoteWorkflowNode(
     );
   }
   const requestedTarget = persistedTarget ?? (await requestedTargetFor(run, node));
+  signal.throwIfAborted();
   if (requestedTarget === null) throw new Error('Remote executor received a local node.');
   const updateRemote = (dispatch: Awaited<ReturnType<typeof dispatchWorkflowNode>>) => {
     const remote: WorkflowAttempt['remote'] = {
@@ -1131,6 +1161,7 @@ async function executeRemoteWorkflowNode(
       pinnedManifest: manifest,
     });
   } catch (error) {
+    if (signal.aborted) void cancelNodeDispatch(dispatchId).catch(() => undefined);
     return {
       output: 'Remote dispatch could not be submitted.',
       outcome: 'attention',
@@ -1142,6 +1173,7 @@ async function executeRemoteWorkflowNode(
     void cancelNodeDispatch(dispatchId).catch(() => undefined);
   };
   signal.addEventListener('abort', cancelRemote, { once: true });
+  if (signal.aborted) cancelRemote();
   let remote = updateRemote(dispatch);
   runWorkflowPersistForRemote(run);
   try {
@@ -1280,6 +1312,17 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
     })
     .finally(() => {
       activeRuns.delete(run.id);
+      if (run.chatOrigin) {
+        // Lazy import keeps the scheduler independent of the chat tool entry point.
+        void import('./chat-delegation.service.js')
+          .then(({ notifyChatDelegationResult }) => notifyChatDelegationResult(run))
+          .catch((error) =>
+            console.warn(
+              '[Delegation] Live result notice unavailable:',
+              error instanceof Error ? error.message : String(error),
+            ),
+          );
+      }
       if (run.status === 'paused' && run.nodeRuns.some((node) => node.status === 'waiting')) {
         try {
           notifyWorkflowDecision({ workspaceId: run.workspaceId, runId: run.id }, run.templateName);
@@ -1311,7 +1354,7 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
   return completion;
 }
 
-export function startWorkflowRun(input: {
+interface WorkflowRunStartInput {
   templateId: string;
   workspaceId: string;
   repoIds: string[];
@@ -1321,7 +1364,62 @@ export function startWorkflowRun(input: {
   workItemRef?: WorkflowRun['workItemRef'];
   executionPaths?: RepoRow[];
   permissionCeiling?: import('../../shared/types.js').CodexMode;
-}): WorkflowRun {
+}
+
+export function startWorkflowRun(input: WorkflowRunStartInput): WorkflowRun {
+  const template = getWorkflowTemplate(input.templateId);
+  if (!template) throw new Error('Workflow template not found.');
+  return startPreparedWorkflowRun(input, template);
+}
+
+/** Chat tasks use the scheduler without creating or syncing a saved template. */
+export function startChatWorkflowRun(
+  input: Omit<WorkflowRunStartInput, 'templateId'> & {
+    definition: WorkflowTemplateInput;
+    origin: NonNullable<WorkflowRun['chatOrigin']>;
+  },
+): WorkflowRun {
+  const now = new Date().toISOString();
+  const template: WorkflowTemplate = {
+    ...input.definition,
+    description: input.definition.description ?? '',
+    id: `chat:${randomUUID()}`,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const thread = getChatThread(input.origin.threadId);
+  if (!thread || thread.workspaceId !== input.workspaceId || thread.temporary)
+    throw new Error('Delegation needs a saved chat in this workspace.');
+  return startPreparedWorkflowRun({ ...input, templateId: template.id }, template, input.origin);
+}
+
+export function listChatWorkflowRuns(threadId: string): WorkflowRun[] {
+  return (
+    getDb()
+      .prepare(
+        `SELECT * FROM workflow_runs WHERE json_extract(graph_json, '$.chatOrigin.threadId') = ? ORDER BY created_at DESC`,
+      )
+      .all(threadId) as WorkflowRunRow[]
+  ).map(mapRun);
+}
+
+export function getChatWorkflowRunByRequest(
+  threadId: string,
+  requestId: string,
+): WorkflowRun | null {
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM workflow_runs WHERE json_extract(graph_json, '$.chatOrigin.threadId') = ? AND json_extract(graph_json, '$.chatOrigin.requestId') = ? LIMIT 1`,
+    )
+    .get(threadId, requestId) as WorkflowRunRow | undefined;
+  return row ? mapRun(row) : null;
+}
+
+function startPreparedWorkflowRun(
+  input: WorkflowRunStartInput,
+  savedTemplate: WorkflowTemplate,
+  chatOrigin?: WorkflowRun['chatOrigin'],
+): WorkflowRun {
   if (
     input.workItemRef &&
     (typeof input.workItemRef.id !== 'string' ||
@@ -1331,8 +1429,7 @@ export function startWorkflowRun(input: {
       !['ado', 'linear', 'jira'].includes(input.workItemRef.provider))
   )
     throw new Error('Work Item reference requires an id, connection and supported provider.');
-  let template = getWorkflowTemplate(input.templateId);
-  if (!template) throw new Error('Workflow template not found.');
+  let template = savedTemplate;
   if (input.permissionCeiling)
     template = {
       ...template,
@@ -1356,12 +1453,14 @@ export function startWorkflowRun(input: {
     input.executionPaths,
     input.trigger,
   );
-  const supervisor = createChatThread({
-    workspaceId: input.workspaceId,
-    personaId: 'coder',
-    title: `${template.name} · Supervisor`,
-    repoIds: input.repoIds,
-  });
+  const supervisor = chatOrigin
+    ? { id: chatOrigin.threadId }
+    : createChatThread({
+        workspaceId: input.workspaceId,
+        personaId: 'coder',
+        title: `${template.name} · Supervisor`,
+        repoIds: input.repoIds,
+      });
   const nodeRuns: WorkflowNodeRun[] = template.nodes.map((node) => ({
     nodeId: node.id,
     status: 'queued',
@@ -1386,6 +1485,7 @@ export function startWorkflowRun(input: {
         orchestration: orchestrationConfig(template.orchestration),
         events: [],
         sourceAutomationRunId: input.sourceAutomationRunId,
+        chatOrigin,
         workItemRef: input.workItemRef,
         executionPaths: input.executionPaths,
         inputManifest,
@@ -1397,14 +1497,15 @@ export function startWorkflowRun(input: {
     );
 
   const run = getWorkflowRun(id)!;
-  saveChatEntry(supervisor.id, input.repoIds[0] ?? null, null, {
-    id: randomUUID(),
-    role: 'user',
-    content: input.kickoff.trim(),
-    timestamp: createdAt,
-    personaId: 'coder',
-    threadId: supervisor.id,
-  });
+  if (!chatOrigin)
+    saveChatEntry(supervisor.id, input.repoIds[0] ?? null, null, {
+      id: randomUUID(),
+      role: 'user',
+      content: input.kickoff.trim(),
+      timestamp: createdAt,
+      personaId: 'coder',
+      threadId: supervisor.id,
+    });
   void launchWorkflow(run);
   return run;
 }

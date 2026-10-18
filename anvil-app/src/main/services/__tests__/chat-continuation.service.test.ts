@@ -16,7 +16,7 @@ import type { AgentUIQuestionIntent } from '../../../shared/agent-ui-intents.js'
 
 beforeEach(() => {
   db.exec(
-    'DELETE FROM agent_ui_intent_responses; DELETE FROM agent_ui_intent_events; DELETE FROM agent_ui_intents; DELETE FROM chat_messages; DELETE FROM chat_artifacts; DELETE FROM chat_threads;',
+    'DELETE FROM workflow_runs; DELETE FROM agent_ui_intent_responses; DELETE FROM agent_ui_intent_events; DELETE FROM agent_ui_intents; DELETE FROM chat_messages; DELETE FROM chat_artifacts; DELETE FROM chat_threads;',
   );
   db.prepare(
     'INSERT INTO chat_threads(id,persona_id,title,active_plan_json,active_goal_json) VALUES(?,?,?,?,?)',
@@ -35,6 +35,31 @@ function message(id: string, role: string, content: string, kind = role) {
   ).run(id, 'thread', role, kind, content, `2026-10-18T10:00:${id.padStart(2, '0')}.000Z`);
 }
 describe('portable chat context', () => {
+  it('preserves delegation identities across provider changes and bounds their metadata', () => {
+    db.prepare(
+      "INSERT INTO workspaces (id, name, created_at, updated_at) VALUES ('ws', 'Test', datetime('now'), datetime('now')) ON CONFLICT DO NOTHING",
+    ).run();
+    db.prepare(
+      "INSERT INTO workflow_runs (id, template_id, template_name, workspace_id, repo_ids_json, graph_json, kickoff, status, supervisor_thread_id, node_runs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+    ).run(
+      'delegated-run',
+      'chat:adhoc',
+      'Independent review',
+      'ws',
+      '[]',
+      JSON.stringify({ chatOrigin: { threadId: 'thread' } }),
+      'Review',
+      'running',
+      'thread',
+      '[]',
+    );
+    const state = captureThreadContinuation('thread').context;
+    expect(state).toContain('delegated-run');
+    expect(state).toContain('Independent review');
+    expect(state).toContain('running');
+    db.prepare('UPDATE workflow_runs SET template_name = ?').run('x'.repeat(100000));
+    expect(captureThreadContinuation('thread').context.length).toBeLessThan(32000);
+  });
   it('retains final assistant text events and excludes activity noise', () => {
     message('01', 'user', 'Use a compact layout');
     message('02', 'assistant', 'Compact chosen', 'event');

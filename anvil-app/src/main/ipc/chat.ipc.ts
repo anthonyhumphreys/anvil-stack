@@ -126,6 +126,14 @@ import {
 import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
 import { resolveAnvilOwnedQuestion } from '../surfaces/core.js';
 import {
+  actOnChatDelegation,
+  assertChatDelegationsFinished,
+  describeChatDelegation,
+  listChatDelegations,
+  requireChatDelegation,
+  stopChatDelegation,
+} from '../services/chat-delegation.service.js';
+import {
   captureThreadContinuation,
   prependThreadContinuation,
 } from '../services/chat-continuation.service.js';
@@ -258,6 +266,25 @@ async function tryLocalLlmChatReply(
 }
 
 export function registerChatHandlers(): void {
+  ipcMain.handle('chat:list-delegations', (_event, threadId: string) =>
+    listChatDelegations(threadId),
+  );
+  ipcMain.handle('chat:read-delegation', (_event, threadId: string, runId: string) =>
+    describeChatDelegation(requireChatDelegation(threadId, runId)),
+  );
+  ipcMain.handle('chat:stop-delegation', (_event, threadId: string, runId: string) =>
+    stopChatDelegation(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:act-on-delegation',
+    (
+      _event,
+      threadId: string,
+      runId: string,
+      action: import('../../shared/chat-delegation.js').ChatDelegationAction,
+      nodeId?: string,
+    ) => actOnChatDelegation(threadId, runId, action, nodeId),
+  );
   ipcMain.handle(
     'chat:link-pull-request',
     (_event, threadId: string, input: ChatThreadPullRequestInput) =>
@@ -302,7 +329,9 @@ export function registerChatHandlers(): void {
           options?.providerThreadId ||
           options?.forkFromProviderThreadId
         ) {
-          throw new Error('Temporary chat cannot use workspace, repository, or resumed-thread context.');
+          throw new Error(
+            'Temporary chat cannot use workspace, repository, or resumed-thread context.',
+          );
         }
       } else if (temporaryThread?.temporary) {
         throw new Error('Temporary chat sessions must use the isolated temporary session mode.');
@@ -313,8 +342,7 @@ export function registerChatHandlers(): void {
       const repoPaths: string[] = [];
       for (const rid of repoIds) {
         const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(rid) as
-          | { path: string }
-          | undefined;
+          { path: string } | undefined;
         if (row) repoPaths.push(row.path);
       }
       if (repoPaths.length === 0 && !options?.scaffold && !options?.workspace && !temporaryFlag) {
@@ -336,9 +364,8 @@ export function registerChatHandlers(): void {
       const storedBinding = temporaryFlag ? null : getChatThreadProviderBinding(options?.threadId);
       const providerThreadId = temporaryFlag
         ? undefined
-        :
-        options?.providerThreadId ??
-        (storedBinding?.provider === provider ? storedBinding.providerThreadId : undefined);
+        : (options?.providerThreadId ??
+          (storedBinding?.provider === provider ? storedBinding.providerThreadId : undefined));
       const codexSession = await startSession(repoPaths, repoIds, personaId, {
         ...options,
         providerThreadId: options?.forkFromProviderThreadId
@@ -367,13 +394,14 @@ export function registerChatHandlers(): void {
       workspaceId: string,
       rootPath: string,
       personaId: string,
-      options?: Pick<ChatStartOptions, 'provider'>,
+      options?: Pick<ChatStartOptions, 'provider' | 'model'>,
     ): Promise<CodexSession> => {
       const provider = options?.provider ?? getSettings().llmProvider;
       await assertChatProviderAvailable(provider);
 
       const codexSession = await startSession([rootPath], [], personaId, {
         provider,
+        model: options?.model,
         scaffold: { workspaceId, rootPath },
       });
 
@@ -473,8 +501,7 @@ export function registerChatHandlers(): void {
       const repoPaths: string[] = [];
       for (const rid of targetThread.repoIds) {
         const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(rid) as
-          | { path: string }
-          | undefined;
+          { path: string } | undefined;
         if (row) repoPaths.push(row.path);
       }
 
@@ -572,8 +599,7 @@ export function registerChatHandlers(): void {
       // Get repo path
       const db = getDb();
       const repoRow = db.prepare('SELECT path FROM repos WHERE id = ?').get(repoId) as
-        | { path: string }
-        | undefined;
+        { path: string } | undefined;
       if (!repoRow) throw new Error(`Repo not found: ${repoId}`);
 
       return startSession([repoRow.path], [repoId], personaId);
@@ -666,7 +692,8 @@ export function registerChatHandlers(): void {
     },
   );
 
-  ipcMain.handle('chat:delete-thread', (_event, threadId: string): void => {
+  ipcMain.handle('chat:delete-thread', async (_event, threadId: string): Promise<void> => {
+    await assertChatDelegationsFinished(threadId);
     deleteChatThread(threadId);
   });
 

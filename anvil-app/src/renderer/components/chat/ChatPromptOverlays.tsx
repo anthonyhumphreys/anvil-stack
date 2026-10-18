@@ -78,7 +78,7 @@ export function PendingQuestionPrompt({
       <div
         id={panelId}
         hidden={!expanded}
-        className="mx-auto max-h-[min(50vh,480px)] max-w-[760px] overflow-y-auto border-t border-border-subtle"
+        className="mx-auto max-w-[760px] border-t border-border-subtle"
       >
         <QuestionIntentSurface intent={intent} compact />
       </div>

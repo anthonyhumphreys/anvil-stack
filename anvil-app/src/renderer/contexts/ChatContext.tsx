@@ -2121,6 +2121,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             ? {
                 threadId: thread.id,
                 provider: modelProvider,
+                model: turnModel,
                 codexMode: 'read-only' as const,
                 temporaryChat: true,
               }
@@ -2134,9 +2135,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   },
                   threadId: thread.id,
                   provider: modelProvider,
+                  model: turnModel,
                   ...designOptions,
                 }
-              : { threadId: thread.id, provider: modelProvider, ...designOptions };
+              : {
+                  threadId: thread.id,
+                  provider: modelProvider,
+                  model: turnModel,
+                  ...designOptions,
+                };
           startedSession = isTemporaryChat
             ? await window.anvil.chat.startSession([], activePersona.id, workspaceOptions)
             : scaffoldModeActive && activeWorkspace && activeScaffoldSession
@@ -2144,7 +2151,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   activeWorkspace.id,
                   activeScaffoldSession.rootPath,
                   activePersona.id,
-                  { provider: modelProvider },
+                  { provider: modelProvider, model: turnModel },
                 )
               : activeReposState.length > 0
                 ? await window.anvil.chat.startSession(
@@ -2160,6 +2167,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                       },
                       threadId: thread.id,
                       provider: modelProvider,
+                      model: turnModel,
                       ...designOptions,
                     })
                   : null;
@@ -3267,8 +3275,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     async (threadId: string) => {
       navigationRequests.current.invalidate();
       const remainingThreads = threadsRef.current.filter((thread) => thread.id !== threadId);
-      await stopThreadLiveSession(threadId);
-      await window.anvil.chat.deleteThread(threadId);
+      try {
+        const delegated = await window.anvil.chat.listDelegations(threadId);
+        if (
+          delegated.some(
+            (run) =>
+              ['queued', 'running', 'paused'].includes(run.status) || run.cancellationPending,
+          )
+        )
+          throw new Error(
+            'Stop the delegated work and wait for its workers to finish before deleting this chat.',
+          );
+        await stopThreadLiveSession(threadId);
+        await window.anvil.chat.deleteThread(threadId);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Could not delete this chat. Try again.');
+        return;
+      }
       setThreads(remainingThreads);
 
       if (activeThreadRef.current?.id !== threadId) {
@@ -4119,6 +4142,10 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
       continue;
     }
 
+    if (event?.type === 'turn_outcome' && event.turnOutcome === 'completed') {
+      const completed = resolveCompletedAssistantEntries(entries);
+      entries.splice(0, entries.length, ...completed);
+    }
     if (event) entries.push({ kind: 'event', event, timestamp: message.timestamp });
   }
 
@@ -4227,15 +4254,16 @@ function resolveAssistantSegmentPhases(
   }));
 }
 
-function resolveCompletedAssistantEntries(entries: ChatEntry[]): ChatEntry[] {
+export function resolveCompletedAssistantEntries(entries: ChatEntry[]): ChatEntry[] {
   let turnStart = entries.length - 1;
   while (turnStart >= 0 && entries[turnStart].kind !== 'user') turnStart -= 1;
 
   const turnEntries = entries.slice(turnStart + 1);
-  const hasFinal = turnEntries.some(
-    (entry) => entry.kind === 'assistant' && entry.phase === 'final',
+  const firstUnknown = turnEntries.findIndex((entry) => entry.kind === 'assistant' && !entry.phase);
+  if (firstUnknown < 0) return entries;
+  const hasLaterFinal = turnEntries.some(
+    (entry, index) => index > firstUnknown && entry.kind === 'assistant' && entry.phase === 'final',
   );
-  if (hasFinal) return entries;
 
   const lastAssistantOffset = turnEntries.findLastIndex((entry) => entry.kind === 'assistant');
   if (lastAssistantOffset < 0) return entries;
@@ -4244,7 +4272,7 @@ function resolveCompletedAssistantEntries(entries: ChatEntry[]): ChatEntry[] {
     if (index <= turnStart || entry.kind !== 'assistant' || entry.phase) return entry;
     return {
       ...entry,
-      phase: index === turnStart + 1 + lastAssistantOffset ? 'final' : 'progress',
+      phase: !hasLaterFinal && index === turnStart + 1 + lastAssistantOffset ? 'final' : 'progress',
     };
   });
 }
