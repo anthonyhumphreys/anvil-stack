@@ -34,6 +34,8 @@ type ConnectorSection = 'llm' | 'sync' | 'workitems' | 'git' | 'confluence';
 
 interface ConnectorSetupOverlayProps {
   onContinue: () => void;
+  /** Continue first-run setup without saving an unfinished connection form. */
+  onSetUpLater?: () => void;
   /** O3: Back button, rendered beside Continue when provided. */
   onBack?: () => void;
   preview?: boolean;
@@ -53,15 +55,16 @@ interface ConnectorSetupOverlayProps {
 
 export function ConnectorSetupOverlay({
   onContinue,
+  onSetUpLater,
   onBack,
   preview = false,
   onExitPreview,
   sections,
   stepLabel,
-  title = 'Connect Your Tools',
+  title = 'Connect your tools',
   subtitle = (
     <>
-      Configure each service or skip to{' '}
+      Choose the connections you need, or{' '}
       <SettingsLink to="providers#agent-providers">set up later in Settings</SettingsLink>.
     </>
   ),
@@ -73,7 +76,9 @@ export function ConnectorSetupOverlay({
   const llmProviderRef = useRef<AgentProvider>(llmProvider);
   llmProviderRef.current = llmProvider;
   const credentialStorage = useCredentialStorage({ preview });
-  const [expandedCard, setExpandedCard] = useState<string | null>(null);
+  const [expandedCard, setExpandedCard] = useState<string | null>(() =>
+    sections?.length === 1 ? sections[0] : null,
+  );
   const [llmStatus, setLlmStatus] = useState<TestStatus>('idle');
   const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
   const gatewayConnectIntent = useRef(false);
@@ -448,9 +453,10 @@ export function ConnectorSetupOverlay({
           {showSection('llm') && (
             <ConnectorCard
               id="llm"
+              showSkip={!onSetUpLater}
               icon={BrainCircuit}
-              title="Primary agent"
-              description="Choose who starts new chats and app-level AI work"
+              title="Your coding agent"
+              description="Use an existing subscription or connect with an API key"
               expanded={expandedCard === 'llm'}
               status={llmStatus}
               isConfigured={configured.has('llm')}
@@ -462,24 +468,23 @@ export function ConnectorSetupOverlay({
             >
               <div className="space-y-3">
                 <p className="text-xs text-text-secondary">
-                  Choose the primary agent for new chats. You can activate more providers in
-                  Settings.
+                  Choose one to start. You can add more accounts and switch models in Settings.
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   <ProviderButton
-                    label="Codex CLI"
+                    label="Codex"
                     active={llmProvider === 'codex'}
                     disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('codex')}
                   />
                   <ProviderButton
-                    label="Cursor CLI"
+                    label="Cursor"
                     active={llmProvider === 'cursor'}
                     disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('cursor')}
                   />
                   <ProviderButton
-                    label="Devin CLI"
+                    label="Devin"
                     active={llmProvider === 'devin'}
                     disabled={inputsDisabled}
                     onClick={() => selectLlmProvider('devin')}
@@ -505,12 +510,14 @@ export function ConnectorSetupOverlay({
                 </div>
                 {llmProvider === 'codex' && (
                   <p className="text-xs text-text-tertiary">
-                    Uses your local Codex CLI — no API key needed.
+                    Uses Codex installed on this machine and your ChatGPT sign-in. No API key
+                    needed.
                   </p>
                 )}
                 {llmProvider === 'cursor' && (
                   <p className="text-xs text-text-tertiary">
-                    Uses your local Cursor CLI login. Run <code>cursor-agent login</code> first.
+                    Uses your Cursor account. If you have not signed in on this machine, open a
+                    terminal and run <code>cursor-agent login</code>.
                   </p>
                 )}
                 {llmProvider === 'devin' && (
@@ -1018,7 +1025,13 @@ export function ConnectorSetupOverlay({
           </div>
         )}
 
-        <div className="flex items-center justify-center gap-3">
+        {onSetUpLater && (
+          <p className="text-center text-xs leading-5 text-text-secondary">
+            You can browse repositories before connecting an agent. Connect one in Settings when you
+            are ready to chat or run a coding task.
+          </p>
+        )}
+        <div className="flex flex-wrap items-center justify-center gap-3">
           {onBack && (
             <button
               type="button"
@@ -1027,6 +1040,16 @@ export function ConnectorSetupOverlay({
               className="rounded-lg border border-border px-6 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
             >
               Back
+            </button>
+          )}
+          {onSetUpLater && (
+            <button
+              type="button"
+              onClick={onSetUpLater}
+              disabled={inputsDisabled}
+              className="rounded-lg border border-border px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+            >
+              Set up later
             </button>
           )}
           <button
@@ -1038,7 +1061,7 @@ export function ConnectorSetupOverlay({
             }}
             className="rounded-lg bg-accent px-8 py-2.5 text-sm font-semibold text-accent-foreground transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Continue
+            {savingSettings ? 'Saving…' : 'Save and continue'}
           </button>
         </div>
       </div>
@@ -1060,6 +1083,7 @@ function ConnectorCard({
   isConfigured,
   onToggle,
   onSkip,
+  showSkip = true,
   children,
 }: {
   id: string;
@@ -1071,6 +1095,7 @@ function ConnectorCard({
   isConfigured: boolean;
   onToggle: () => void;
   onSkip: () => void;
+  showSkip?: boolean;
   children: React.ReactNode;
 }) {
   const contentId = `${id}-connector-content`;
@@ -1109,15 +1134,17 @@ function ConnectorCard({
       {expanded && (
         <div id={contentId} className="border-t border-border px-4 pb-4 pt-3">
           {children}
-          <div className="mt-3 text-right">
-            <button
-              type="button"
-              onClick={onSkip}
-              className="text-xs text-text-tertiary hover:text-text-secondary"
-            >
-              Skip for now
-            </button>
-          </div>
+          {showSkip && (
+            <div className="mt-3 text-right">
+              <button
+                type="button"
+                onClick={onSkip}
+                className="text-xs text-text-tertiary hover:text-text-secondary"
+              >
+                Skip for now
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

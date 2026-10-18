@@ -2865,6 +2865,9 @@ export interface AppSettings {
   codexMode: CodexMode;
   chatLayout: ChatLayout;
 
+  /** Composer control and named provider/model/reasoning presets. */
+  modelPicker?: import('./model-picker.js').ModelPickerPreferences;
+
   // Work Item Provider
   workItemProvider: WorkItemProvider | 'none';
   workItemConnections: WorkItemConnection[];

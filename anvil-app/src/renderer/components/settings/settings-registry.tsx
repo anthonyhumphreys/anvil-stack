@@ -142,6 +142,13 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
     keywords: ['ai', 'llm', 'model', 'codex', 'cursor', 'devin', 'openai', 'azure', 'llmgateway'],
     panels: [
       {
+        id: 'model-picker',
+        title: 'Model picker',
+        description:
+          'Searchable dropdown or a slider with custom provider, model, and reasoning presets.',
+        keywords: ['slider', 'dropdown', 'search', 'preset', 'picker'],
+      },
+      {
         id: 'agent-providers',
         title: 'Agent providers',
         description: 'Primary agent and active providers.',

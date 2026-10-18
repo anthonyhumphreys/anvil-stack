@@ -143,6 +143,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     model,
     modelProvider,
     modelOptions,
+    modelPickerPreferences,
     reasoningLevel,
     reasoningOptions,
     threads,
@@ -469,9 +470,9 @@ export function ChatView({ userRole }: ChatViewProps) {
   );
 
   const handleModelChange = useCallback(
-    (nextModel: string, nextProvider: AgentProvider) => {
+    (nextModel: string, nextProvider: AgentProvider, reasoningEffort?: ReasoningEffort) => {
       setFastMode(false);
-      setModel(nextModel, nextProvider);
+      setModel(nextModel, nextProvider, reasoningEffort);
     },
     [setModel],
   );
@@ -999,6 +1000,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             model={runTarget.record?.model ?? model}
             modelProvider={runTarget.record?.provider ?? modelProvider}
             modelOptions={availableChatModelOptions}
+            modelPickerPreferences={modelPickerPreferences}
             onModelChange={runTarget.record ? undefined : handleModelChange}
             reasoningLevel={reasoningLevel}
             reasoningOptions={reasoningOptions}

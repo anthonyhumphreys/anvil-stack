@@ -22,7 +22,12 @@ import {
 import { useBrand } from '../../../contexts/BrandContext';
 import { dispatchCodexSelectionChanged } from '../../../utils/codex-selection';
 import { selectPrimaryAgentProvider } from '../../../utils/agent-provider-settings';
-import { buildProviderModelOptions } from '../../../utils/chat-model-options';
+import {
+  buildChatModelOptions,
+  buildProviderModelOptions,
+} from '../../../utils/chat-model-options';
+import { DEFAULT_MODEL_PICKER_PREFERENCES } from '../../../../shared/model-picker';
+import { ModelPickerPreferencesEditor } from '../ModelPickerPreferencesEditor';
 import { Button } from '../../ui';
 import { CodexRuntimeSetup } from '../CodexRuntimeSetup';
 import { useSettingsContext } from '../SettingsContext';
@@ -168,11 +173,11 @@ function AgentProviderManager({
       </p>
       <details className="border-b border-border-subtle pb-3">
         <summary className="cursor-pointer text-sm font-medium text-text-primary">
-          Additional workflow providers
+          Additional providers
         </summary>
         <p className="my-3 text-xs text-text-secondary">
-          Enabling a provider makes it available to workflows. It does not verify installation,
-          sign-in or connection. The primary provider stays enabled.
+          Enabling a provider makes it available to the model picker and workflows. It does not
+          verify installation, sign-in or connection. The primary provider stays enabled.
         </p>
         <div className="space-y-3">
           {AGENT_PROVIDER_OPTIONS.map((option) => (
@@ -540,9 +545,32 @@ export function ProvidersCategory() {
   return (
     <>
       <SettingsPanel
+        panelId="model-picker"
+        title="Model picker"
+        description="Choose how you switch models in the chat composer."
+        saveKeys={['modelPicker']}
+        autosave
+      >
+        <ModelPickerPreferencesEditor
+          preferences={settings.modelPicker ?? DEFAULT_MODEL_PICKER_PREFERENCES}
+          options={buildChatModelOptions(
+            enabledProviders,
+            provider,
+            selectedModelId,
+            codexStatus,
+            cursorStatus,
+            llmGatewayStatus,
+            devinStatus,
+          )}
+          provider={provider}
+          model={selectedModelId}
+          onChange={(preferences) => draft.update('modelPicker', preferences)}
+        />
+      </SettingsPanel>
+      <SettingsPanel
         panelId="agent-providers"
         title="AI connections"
-        description="Choose the primary agent for new chats, then activate any additional providers that workflows may use."
+        description="Choose the primary agent for new chats, then enable additional providers for the model picker and workflows."
         saveKeys={['llmProvider', 'enabledLlmProviders', ...PROVIDER_CREDENTIAL_KEYS]}
       >
         <AgentProviderManager

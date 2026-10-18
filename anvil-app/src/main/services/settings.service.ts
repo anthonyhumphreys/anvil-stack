@@ -23,6 +23,7 @@ import {
   SYNC_SETTINGS_ENTITY_ID,
 } from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
+import { normaliseModelPickerPreferences } from '../../shared/model-picker.js';
 import { decryptSecret, encryptSecret, readStoredSecret } from './auth.service.js';
 import { testLlmConnection } from './llm.service.js';
 import { buildEntityPayload, SYNCED_SETTINGS_KEYS } from './sync-entity-domain.js';
@@ -53,6 +54,7 @@ interface SettingsRow {
   reasoning_level: string | null;
   codex_mode: string | null;
   chat_layout: string | null;
+  model_picker: string | null;
   ado_org_url: string | null;
   ado_project: string | null;
   ado_team: string | null;
@@ -390,6 +392,7 @@ export function getSettings(): AppSettings {
     reasoningLevel: normaliseReasoningEffort(row.reasoning_level),
     codexMode: normaliseCodexMode(row.codex_mode),
     chatLayout: normaliseChatLayout(row.chat_layout),
+    modelPicker: normaliseModelPickerPreferences(row.model_picker),
     adoOrganizationUrl: row.ado_org_url ?? '',
     adoProject: row.ado_project ?? '',
     adoTeam: row.ado_team ?? undefined,
@@ -542,6 +545,10 @@ export function updateSettings(partial: Partial<AppSettings>): void {
   if (partial.chatLayout !== undefined) {
     setClauses.push('chat_layout = ?');
     values.push(normaliseChatLayout(partial.chatLayout));
+  }
+  if (partial.modelPicker !== undefined) {
+    setClauses.push('model_picker = ?');
+    values.push(JSON.stringify(normaliseModelPickerPreferences(partial.modelPicker)));
   }
   if (partial.adoOrganizationUrl !== undefined) {
     setClauses.push('ado_org_url = ?');
@@ -783,6 +790,7 @@ function defaultSettings(): AppSettings {
     reasoningLevel: DEFAULT_CODEX_REASONING_EFFORT,
     codexMode: 'on-request',
     chatLayout: 'classic',
+    modelPicker: normaliseModelPickerPreferences(undefined),
     workItemProvider: 'ado',
     workItemConnections: [],
     activeWorkItemConnectionId: undefined,

@@ -9,6 +9,7 @@ import { Button, ConfirmDialog, cx } from '../ui';
 import { SettingsContextProvider, type PendingSettingsEdit } from './SettingsContext';
 import { useSettingsDraft } from './useSettingsDraft';
 import { SETTINGS_CATEGORIES, getSettingsCategory } from './settings-registry';
+import { CODEX_SELECTION_CHANGED_EVENT } from '../../utils/codex-selection';
 import { parseSettingsLocation, settingsPanelDomId } from './settings-route';
 import { searchSettings } from './settings-search';
 
@@ -72,8 +73,21 @@ export function SettingsView({
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const draft = useSettingsDraft({
-    onSaved: () => {
+    onSaved: (keys) => {
       setStatusError(null);
+      if (
+        keys.some((key) =>
+          [
+            'llmProvider',
+            'enabledLlmProviders',
+            'openaiModel',
+            'reasoningLevel',
+            'modelPicker',
+          ].includes(key),
+        )
+      ) {
+        window.dispatchEvent(new Event(CODEX_SELECTION_CHANGED_EVENT));
+      }
       onSettingsSaved?.();
     },
     onError: (message) => setStatusError(message),

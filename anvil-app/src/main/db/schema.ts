@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 110;
+export const SCHEMA_VERSION = 111;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -407,6 +407,7 @@ CREATE TABLE IF NOT EXISTS settings (
   reasoning_level TEXT DEFAULT 'medium',
   codex_mode TEXT DEFAULT 'on-request',
   chat_layout TEXT DEFAULT 'classic',
+  model_picker TEXT,
   apple_foundation_models_mode TEXT DEFAULT 'off',
   local_llm_mode TEXT DEFAULT 'off',
   local_llm_provider TEXT DEFAULT 'apple',
@@ -3917,6 +3918,9 @@ SELECT lower(hex(randomblob(16))), 'artifact', id, version, share_id, 'applicati
   title, NULL, COALESCE(shared_at, updated_at), COALESCE(shared_at, updated_at), NULL
 FROM chat_artifacts
 WHERE share_id IS NOT NULL;
+`,
+  111: `
+ALTER TABLE settings ADD COLUMN model_picker TEXT;
 `,
 };
 

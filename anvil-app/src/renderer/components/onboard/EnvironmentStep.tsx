@@ -74,12 +74,16 @@ export function EnvironmentStep({ detection, onNext }: EnvironmentStepProps) {
     <div className="flex gap-6">
       {/* Main content */}
       <div className="flex-1 space-y-4">
-        <h3 className="text-base font-semibold text-text-primary">Environment & Artifact Check</h3>
+        <h3 className="text-base font-semibold text-text-primary">Check your repository setup</h3>
+        <p className="text-sm text-text-secondary">
+          Review what is already installed. You can add missing tools and setup files now or return
+          to them later.
+        </p>
 
         {/* Artifact status */}
         <div className="space-y-2">
           <h4 className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
-            Repository Artifacts
+            Setup files
           </h4>
 
           <ArtifactRow

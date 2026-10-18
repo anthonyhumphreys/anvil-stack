@@ -47,7 +47,7 @@ interface WelcomeOverlayProps {
 }
 
 /**
- * First-run Welcome keeps the required role and primary-agent setup together,
+ * First-run Welcome offers starting tools and an optional agent connection,
  * then offers Sync as a separate optional step. Work Items, Git provider and
  * Confluence surface at point of need (WorkItemsView, the Clone tab, and
  * DocsView) per O2/3.2.
@@ -111,7 +111,7 @@ export function WelcomeOverlay({
               <p className="mt-1 text-eyebrow font-semibold uppercase tracking-wider text-text-tertiary">
                 Step 1 of 3
               </p>
-              <p className="mt-1 text-sm text-text-secondary">What best describes your role?</p>
+              <p className="mt-2 text-sm text-text-secondary">Choose your starting tools.</p>
             </div>
 
             <RoleOptionList onSelect={(role) => void handleRole(role)} />
@@ -124,9 +124,14 @@ export function WelcomeOverlay({
             onExitPreview={onExitPreview}
             sections={['llm']}
             stepLabel="Step 2 of 3"
-            title="Set up your primary agent"
-            subtitle="The agent powers chat and repo work. Work items, Git providers, and docs connect later — Anvil asks when you reach for them."
+            title="Connect a coding agent"
+            subtitle="Choose the account you want to use for chat and coding. You can add work items and documents later, when you need them."
             onBack={() => move('agent', 'back')}
+            onSetUpLater={() => {
+              if (!preview)
+                trackActivation('onboarding_step_completed', { step: 'agent', choice: 'later' });
+              move('agent', 'continue');
+            }}
             onContinue={() => {
               if (!preview) trackActivation('onboarding_step_completed', { step: 'agent' });
               move('agent', 'continue');
@@ -148,10 +153,12 @@ export function WelcomeOverlay({
               <p className="text-eyebrow font-semibold uppercase tracking-wider text-text-tertiary">
                 Step 3 of 3
               </p>
-              <h1 className="mt-1 text-2xl font-bold text-text-primary">Sync across devices</h1>
+              <h1 className="mt-1 text-2xl font-bold text-text-primary">
+                Use more than one device?
+              </h1>
               <p className="mt-2 text-sm leading-relaxed text-text-secondary">
-                Connect your Anvil account to bring your workspaces to your other devices. Each
-                workspace starts local; you choose what to sync.
+                Sync is optional. Keep working on this device without an Anvil account, or connect
+                an account to share your workspace setup with your other devices.
               </p>
             </div>
 

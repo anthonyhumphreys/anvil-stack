@@ -54,6 +54,10 @@ import {
   type CodexSelectionChangedDetail,
 } from '../utils/codex-selection';
 import { buildChatModelOptions, type ChatModelOption } from '../utils/chat-model-options';
+import {
+  DEFAULT_MODEL_PICKER_PREFERENCES,
+  type ModelPickerPreferences,
+} from '../../shared/model-picker';
 import { resolveChatFastModeTarget } from '../utils/chat-fast-mode';
 import { isAcpAgentProvider } from '../../shared/agent-providers';
 import { agentEventLabel } from '../utils/agent-display';
@@ -104,6 +108,7 @@ interface ChatContextValue {
   model: string;
   modelProvider: AgentProvider;
   modelOptions: ChatModelOption[];
+  modelPickerPreferences: ModelPickerPreferences;
   reasoningLevel: ReasoningEffort;
   reasoningOptions: ReasoningEffort[];
   threads: ChatThread[];
@@ -158,7 +163,7 @@ interface ChatContextValue {
   ensureChatThread: (firstPrompt?: string) => Promise<string>;
   loadHistory: () => Promise<void>;
   clearHistory: () => Promise<void>;
-  setModel: (model: string, provider: AgentProvider) => void;
+  setModel: (model: string, provider: AgentProvider, reasoningEffort?: ReasoningEffort) => void;
   setReasoningLevel: (level: ReasoningEffort) => void;
   selectThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
@@ -266,6 +271,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     buildChatModelOptions(['codex'], 'codex', DEFAULT_CODEX_MODEL, null, null),
   );
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningEffort>('medium');
+  const [modelPickerPreferences, setModelPickerPreferences] = useState(
+    DEFAULT_MODEL_PICKER_PREFERENCES,
+  );
+  const modelSelectionRequestRef = useRef(0);
   const [reasoningOptions, setReasoningOptions] =
     useState<ReasoningEffort[]>(CODEX_REASONING_EFFORTS);
   const reasoningLevelRef = useRef<ReasoningEffort>('medium');
@@ -1043,6 +1052,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const applySelection = async (selection?: CodexSelectionChangedDetail) => {
+      const requestId = ++modelSelectionRequestRef.current;
       const settings = await window.anvil.settings.get();
       const enabledProviders = [
         ...new Set<AgentProvider>([settings.llmProvider, ...(settings.enabledLlmProviders ?? [])]),
@@ -1061,6 +1071,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           ? window.anvil.settings.getLlmGatewayStatus().catch(() => null)
           : Promise.resolve(null),
       ]);
+      if (requestId !== modelSelectionRequestRef.current) return;
       const model = selection?.model ?? settings.openaiModel ?? DEFAULT_CODEX_MODEL;
       const provider = settings.llmProvider;
       const options = buildChatModelOptions(
@@ -1091,6 +1102,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setModelState(model);
       setModelProvider(provider);
       setModelOptions(options);
+      setModelPickerPreferences(settings.modelPicker ?? DEFAULT_MODEL_PICKER_PREFERENCES);
       setReasoningOptions(reasoning);
       setReasoningLevel(effort);
     };
@@ -1102,18 +1114,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     void applySelection().catch(console.error);
     window.addEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
-    return () => window.removeEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
+    return () => {
+      modelSelectionRequestRef.current += 1;
+      window.removeEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
+    };
   }, [findThreadIdForSession, stopThreadLiveSession]);
 
   const updateModel = useCallback(
-    (nextModel: string, nextProvider: AgentProvider) => {
+    (nextModel: string, nextProvider: AgentProvider, requestedReasoning?: ReasoningEffort) => {
+      modelSelectionRequestRef.current += 1;
       const option = modelOptions.find(
         (candidate) => candidate.provider === nextProvider && candidate.id === nextModel,
       );
+      const candidateReasoning = requestedReasoning ?? reasoningLevelRef.current;
       const nextReasoning = isAcpAgentProvider(nextProvider)
         ? reasoningLevelRef.current
-        : option?.supportedReasoningEfforts.includes(reasoningLevelRef.current)
-          ? reasoningLevelRef.current
+        : option?.supportedReasoningEfforts.includes(candidateReasoning)
+          ? candidateReasoning
           : (option?.defaultReasoningEffort ?? 'medium');
       if (nextProvider !== modelProvider && activeThreadId) {
         void stopThreadLiveSession(activeThreadId);
@@ -3575,6 +3592,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         model,
         modelProvider,
         modelOptions,
+        modelPickerPreferences,
         reasoningLevel,
         reasoningOptions,
         threads: scopedThreads,

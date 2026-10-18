@@ -2,6 +2,38 @@
 @import './chat-theme.css';
 @import './processing-card.css';
 
+.model-preset-range {
+  appearance: none;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+  accent-color: var(--color-accent);
+}
+.model-preset-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--color-border);
+}
+.model-preset-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 3px solid var(--color-bg-elevated);
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+.model-preset-range:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.model-preset-range:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 @theme {
   --color-bg-primary: var(--anvil-chat-bg-primary);
   --color-bg-secondary: var(--anvil-chat-bg-secondary);

@@ -21,22 +21,22 @@ const ROLES: RoleOption[] = [
   },
   {
     role: 'ba-brm',
-    label: 'BA / BRM',
-    description: 'Shape delivery work and decisions',
+    label: 'Business analysis & planning',
+    description: 'Turn requirements into work the team can deliver',
     strengths: 'Work items · docs · diagrams',
     icon: Workflow,
   },
   {
     role: 'design',
     label: 'Design',
-    description: 'Explore and communicate product intent',
-    strengths: 'Chat · diagrams · governance',
+    description: 'Explore ideas and explain how a product should work',
+    strengths: 'Chat · diagrams · design decisions',
     icon: PenTool,
   },
   {
     role: 'itsm',
-    label: 'ITSM',
-    description: 'Coordinate service work and improvement',
+    label: 'IT service management',
+    description: 'Manage incidents, service changes and improvements',
     strengths: 'Incidents · risk · compliance',
     icon: LifeBuoy,
   },
@@ -80,7 +80,7 @@ export function RolePickerOverlay({
       <div className="w-full max-w-md space-y-6 px-6">
         <div className="text-center">
           <h1 className="text-2xl font-bold text-accent">{brand.appName}</h1>
-          <p className="mt-1 text-sm text-text-secondary">What best describes your role?</p>
+          <p className="mt-1 text-sm text-text-secondary">Choose your starting tools.</p>
         </div>
 
         <RoleOptionList onSelect={(role) => void handleSelect(role)} />
@@ -116,6 +116,9 @@ export function RoleOptionList({ onSelect }: { onSelect: (role: UserRole) => voi
           </button>
         );
       })}
+      <p className="pt-1 text-sm leading-6 text-text-secondary">
+        This sets which tools you see first. You can change your role or show all tools in Settings.
+      </p>
     </div>
   );
 }

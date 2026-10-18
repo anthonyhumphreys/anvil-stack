@@ -60,6 +60,23 @@ it('defaults workspaces to Local and preserves existing workspace Sync bindings'
 });
 
 describe('fresh database schema', () => {
+  it('adds model picker preferences to existing settings without changing their model', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE settings (id INTEGER PRIMARY KEY, openai_model TEXT);
+        INSERT INTO settings VALUES (1, 'custom-model');
+      `);
+      db.exec(MIGRATIONS[111]!);
+      expect(db.prepare('SELECT openai_model, model_picker FROM settings').get()).toEqual({
+        openai_model: 'custom-model',
+        model_picker: null,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it('migrates existing dashboard grants to add remembered browser trust storage', () => {
     const db = new Database(':memory:');
     try {
@@ -319,7 +336,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(110);
+      expect(SCHEMA_VERSION).toBe(111);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',

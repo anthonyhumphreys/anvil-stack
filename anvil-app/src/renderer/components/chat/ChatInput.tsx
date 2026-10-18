@@ -28,6 +28,9 @@ import type {
   ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
+import { ModelPicker } from './ModelPicker';
+import type { ModelPickerPreferences } from '../../../shared/model-picker';
+import type { ChatModelOption } from '../../utils/chat-model-options';
 import {
   ComposerSendControl,
   ComposerStopButton,
@@ -140,8 +143,13 @@ interface ChatInputProps {
   personaColour: string;
   model?: string;
   modelProvider?: AgentProvider;
-  modelOptions?: ChatInputModelOption[];
-  onModelChange?: (model: string, provider: AgentProvider) => void;
+  modelOptions?: ChatModelOption[];
+  modelPickerPreferences?: ModelPickerPreferences;
+  onModelChange?: (
+    model: string,
+    provider: AgentProvider,
+    reasoningEffort?: ReasoningEffort,
+  ) => void;
   reasoningLevel?: ReasoningEffort;
   reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
@@ -178,13 +186,6 @@ interface ChatInputProps {
   showSyntaxHint?: boolean;
 }
 
-interface ChatInputModelOption {
-  provider: AgentProvider;
-  id: string;
-  label: string;
-  description: string;
-}
-
 export function ChatInput({
   onSend,
   onStop,
@@ -198,6 +199,7 @@ export function ChatInput({
   model = 'gpt-5.6-sol',
   modelProvider = 'codex',
   modelOptions = [],
+  modelPickerPreferences,
   onModelChange,
   reasoningLevel = 'medium',
   reasoningOptions,
@@ -1536,16 +1538,24 @@ export function ChatInput({
                 />
               )}
 
-              {(onModelChange ||
-                onExecutionStrategyChange ||
+              {onModelChange && (
+                <ModelPicker
+                  model={model}
+                  provider={modelProvider}
+                  options={modelOptions}
+                  preferences={modelPickerPreferences}
+                  reasoningEffort={reasoningLevel}
+                  onChange={onModelChange}
+                />
+              )}
+
+              {(onExecutionStrategyChange ||
                 onReasoningChange ||
                 onCollaborationModeChange ||
                 onFastModeChange) && (
                 <RunSettingsDropdown
                   model={model}
                   modelProvider={modelProvider}
-                  modelOptions={modelOptions}
-                  onModelChange={onModelChange}
                   executionStrategy={executionStrategy}
                   onExecutionStrategyChange={onExecutionStrategyChange}
                   reasoningLevel={reasoningLevel}
@@ -2336,8 +2346,6 @@ export function getRunSettingsLabel(
 function RunSettingsDropdown({
   model,
   modelProvider,
-  modelOptions,
-  onModelChange,
   executionStrategy,
   onExecutionStrategyChange,
   reasoningLevel,
@@ -2352,8 +2360,6 @@ function RunSettingsDropdown({
 }: {
   model: string;
   modelProvider: AgentProvider;
-  modelOptions: ChatInputModelOption[];
-  onModelChange?: (model: string, provider: AgentProvider) => void;
   executionStrategy: ExecutionStrategy;
   onExecutionStrategyChange?: (strategy: ExecutionStrategy) => void;
   reasoningLevel: ReasoningEffort;
@@ -2369,15 +2375,6 @@ function RunSettingsDropdown({
   const availableOptions = REASONING_EFFORT_OPTIONS.filter((option) =>
     reasoningOptions.includes(option.level),
   );
-  const selectedModel = modelOptions.find(
-    (option) => option.provider === modelProvider && option.id === model,
-  );
-  const modelOptionsByProvider = modelOptions.reduce((groups, option) => {
-    const group = groups.get(option.provider) ?? [];
-    group.push(option);
-    groups.set(option.provider, group);
-    return groups;
-  }, new Map<AgentProvider, ChatInputModelOption[]>());
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -2401,19 +2398,20 @@ function RunSettingsDropdown({
     }
   };
 
-  const modelLabel = getCompactModelLabel(model, selectedModel?.label ?? model, modelProvider);
-  const label = getRunSettingsLabel(
-    modelLabel,
-    collaborationMode,
-    isAcpAgentProvider(modelProvider) ? getCursorModelReasoningEffort(model) : reasoningLevel,
-  );
+  const effort = isAcpAgentProvider(modelProvider)
+    ? getCursorModelReasoningEffort(model)
+    : reasoningOptions.includes(reasoningLevel)
+      ? reasoningLevel
+      : undefined;
+  const label = [
+    collaborationMode === 'plan' ? 'Plan' : 'Build',
+    effort ? formatReasoningLabel(effort) : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
-    <div
-      ref={containerRef}
-      className="relative min-w-0"
-      onKeyDown={handleKeyDown}
-    >
+    <div ref={containerRef} className="relative min-w-0" onKeyDown={handleKeyDown}>
       <button
         ref={triggerRef}
         type="button"
@@ -2479,37 +2477,6 @@ function RunSettingsDropdown({
                   </button>
                 </div>
               </div>
-            )}
-
-            {onModelChange && modelOptions.length > 0 && (
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-text-muted">Model</span>
-                <select
-                  value={encodeModelSelection(modelProvider, model)}
-                  onChange={(event) => {
-                    const selection = decodeModelSelection(event.target.value);
-                    if (selection) onModelChange(selection.model, selection.provider);
-                  }}
-                  className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
-                >
-                  {[...modelOptionsByProvider].map(([provider, options]) => (
-                    <optgroup key={provider} label={formatProviderLabel(provider)}>
-                      {options.map((option) => (
-                        <option
-                          key={`${option.provider}:${option.id}`}
-                          value={encodeModelSelection(option.provider, option.id)}
-                        >
-                          {option.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-                <span className="mt-1 block text-xs leading-4 text-text-tertiary">
-                  {selectedModel?.description ??
-                    `Selected for new turns through the ${modelProvider} provider.`}
-                </span>
-              </label>
             )}
 
             {isAcpAgentProvider(modelProvider) ? (
@@ -2603,27 +2570,4 @@ function RunSettingsDropdown({
       )}
     </div>
   );
-}
-
-function encodeModelSelection(provider: AgentProvider, model: string): string {
-  return `${provider}:${model}`;
-}
-
-function decodeModelSelection(value: string): { provider: AgentProvider; model: string } | null {
-  const separator = value.indexOf(':');
-  if (separator < 1) return null;
-  const provider = value.slice(0, separator) as AgentProvider;
-  const model = value.slice(separator + 1);
-  if (!['azure', 'openai', 'codex', 'cursor', 'devin', 'llmgateway'].includes(provider) || !model)
-    return null;
-  return { provider, model };
-}
-
-function formatProviderLabel(provider: AgentProvider): string {
-  if (provider === 'codex') return 'Codex CLI';
-  if (provider === 'cursor') return 'Cursor CLI';
-  if (provider === 'devin') return 'Devin CLI';
-  if (provider === 'llmgateway') return 'LLMGateway';
-  if (provider === 'openai') return 'OpenAI';
-  return 'Azure Foundry';
 }

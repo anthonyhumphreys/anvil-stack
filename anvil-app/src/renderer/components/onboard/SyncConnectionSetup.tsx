@@ -508,8 +508,8 @@ export function SyncConnectionSetup({
             Sync &amp; Mesh
           </h2>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-text-secondary">
-            Free Sync for selected settings and workspace definitions. Repository files stay on this
-            device. Mesh lets your connected machines run jobs when you allow it.
+            Keep your workspace setup and selected settings in sync across devices. Repository files
+            stay on each machine. You choose whether a device can run jobs sent from another.
           </p>
         </div>
 

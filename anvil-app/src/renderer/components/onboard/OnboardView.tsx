@@ -12,21 +12,15 @@ import { Button } from '../ui';
 import { ViewHeader } from '../layout/ViewScaffold';
 
 type WizardStep =
-  | 'select'
-  | 'detect'
-  | 'environment'
-  | 'agents-md'
-  | 'devcontainer'
-  | 'connectors'
-  | 'done';
+  'select' | 'detect' | 'environment' | 'agents-md' | 'devcontainer' | 'connectors' | 'done';
 
 const STEP_LABELS: Record<WizardStep, string> = {
-  select: 'Select Repo',
-  detect: 'Detect State',
+  select: 'Choose repository',
+  detect: 'Check setup',
   environment: 'Environment',
-  'agents-md': 'AGENTS.md',
-  devcontainer: 'Devcontainer',
-  connectors: 'Connectors',
+  'agents-md': 'Agent instructions',
+  devcontainer: 'Development container',
+  connectors: 'Connections',
   done: 'Complete',
 };
 
@@ -171,7 +165,7 @@ export function OnboardView({ repoId }: { repoId?: string } = {}) {
       <RepoFeatureEmptyState
         icon={Compass}
         featureLabel="Repo setup"
-        description="Prepare a repository for reliable agent work and connected delivery tools."
+        description="Check your development tools and choose any setup files or connections to add."
       />
     );
   }
