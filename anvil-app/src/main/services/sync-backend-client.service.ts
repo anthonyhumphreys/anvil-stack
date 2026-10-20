@@ -141,6 +141,7 @@ export function toPublicDescriptor(descriptor: BackendDescriptor): BackendDescri
     apiPath: descriptor.apiPath,
     socketPath: descriptor.socketPath,
     authModes: [...descriptor.authModes],
+    ...(descriptor.features === undefined ? {} : { features: [...descriptor.features] }),
     auth: {
       issuer: descriptor.auth.issuer,
       publicClientId: descriptor.auth.publicClientId,

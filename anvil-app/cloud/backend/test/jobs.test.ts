@@ -19,6 +19,7 @@ import type {
   DevicePolicyPublishResult,
   WorkerCapabilities,
   WorkerConnectResult,
+  WorkerDescribeResult,
 } from '../../contract/workers';
 import type { AccountCoordinator } from '../src/account-coordinator';
 import type { SealedTaskPayload } from '../../contract/sealed';
@@ -419,6 +420,119 @@ describe('claim gating', () => {
     if (isRpcError(denied.body)) {
       expect(denied.body.error.details?.['reason']).toBe('target-not-eligible');
     }
+  });
+
+  it('rejects an explicit target that lacks declared capabilities at creation', async () => {
+    const f = fixture('explicit-requirements-create');
+    const requiredCapability = 'remote-review-candidate/v1';
+    await publishPolicy(f.workerAuth);
+    await connectWorker(f.workerAuth);
+    await publishCapabilities(f.workerAuth);
+
+    const denied = await postRpc(
+      'job.create',
+      createParams({
+        requestedTarget: {
+          kind: 'device',
+          enrollmentId: f.workerEnrollmentId,
+          requirements: { capabilities: [requiredCapability] },
+        },
+      }),
+      f.sourceAuth,
+    );
+    expect(denied.status).toBe(409);
+    if (isRpcError(denied.body)) {
+      expect(denied.body.error.details?.['reason']).toBe('target-requirements-not-satisfied');
+    }
+    expect(JSON.stringify(denied.body)).not.toContain(requiredCapability);
+  });
+
+  it('rejects explicit targets and retries when current capabilities miss requirements', async () => {
+    const f = fixture('explicit-requirements');
+    const requiredCapability = 'remote-review-candidate/v1';
+    await publishPolicy(f.workerAuth);
+    const originalConnection = await connectWorker(f.workerAuth);
+    await publishCapabilities(f.workerAuth, {
+      capabilities: ['git', 'node22', requiredCapability],
+    });
+    const currentWorker = expectSuccess<WorkerDescribeResult>(
+      await postRpc('worker.describe', {}, f.workerAuth),
+    );
+    expect(currentWorker.capabilities).toMatchObject({
+      capabilities: ['git', 'node22', requiredCapability],
+    });
+    expect(JSON.stringify(currentWorker.capabilities)).not.toContain('publishedForIncarnation');
+    const created = await createJob(f.sourceAuth, {
+      retryPolicy: 'safe',
+      requestedTarget: {
+        kind: 'device',
+        enrollmentId: f.workerEnrollmentId,
+        requirements: { capabilities: [requiredCapability] },
+      },
+    });
+
+    await publishCapabilities(f.workerAuth);
+    const firstClaim = await postRpc('job.claim', { jobId: created.job.id }, f.workerAuth);
+    expect(firstClaim.status).toBe(409);
+    if (isRpcError(firstClaim.body)) {
+      expect(firstClaim.body.error.details?.['reason']).toBe('target-requirements-not-satisfied');
+    }
+    expect(JSON.stringify(firstClaim.body)).not.toContain(requiredCapability);
+
+    await publishCapabilities(f.workerAuth, {
+      capabilities: ['git', 'node22', requiredCapability],
+    });
+    await runInDurableObject(accountStub(f.accountId), (_i: AccountCoordinator, state) => {
+      state.storage.sql.exec(
+        'UPDATE workers SET lease_expires_at = ? WHERE enrollment_id = ?',
+        Date.now() - 1,
+        f.workerEnrollmentId,
+      );
+    });
+    const reconnected = await connectWorker(f.workerAuth);
+    expect(reconnected.workerIncarnation).not.toBe(originalConnection.workerIncarnation);
+    expect(
+      expectSuccess<WorkerDescribeResult>(await postRpc('worker.describe', {}, f.workerAuth))
+        .capabilities,
+    ).toBeNull();
+    const staleCapabilityClaim = await postRpc(
+      'job.claim',
+      { jobId: created.job.id },
+      f.workerAuth,
+    );
+    expect(staleCapabilityClaim.status).toBe(409);
+    if (isRpcError(staleCapabilityClaim.body)) {
+      expect(staleCapabilityClaim.body.error.details?.['reason']).toBe(
+        'target-requirements-not-satisfied',
+      );
+    }
+    await publishCapabilities(f.workerAuth, {
+      capabilities: ['git', 'node22', requiredCapability],
+    });
+    const claimed = expectSuccess<JobClaimResult>(
+      await postRpc('job.claim', { jobId: created.job.id }, f.workerAuth),
+    );
+    expectSuccess<AttemptReportResult>(
+      await postRpc(
+        'attempt.report',
+        {
+          attemptId: claimed.attempt.id,
+          incarnation: claimed.attempt.workerIncarnation,
+          fence: claimed.fence,
+          outcome: 'failed',
+          error: 'retry requested',
+        },
+        f.workerAuth,
+      ),
+    );
+    await publishCapabilities(f.workerAuth);
+
+    const retryClaim = await postRpc('job.claim', { jobId: created.job.id }, f.workerAuth);
+    expect(retryClaim.status).toBe(409);
+    if (isRpcError(retryClaim.body)) {
+      expect(retryClaim.body.error.details?.['reason']).toBe('target-requirements-not-satisfied');
+    }
+    expect((await getJob(f.sourceAuth, created.job.id)).job.state).toBe('queued');
   });
 
   it("never targets or exposes another account's worker and jobs", async () => {

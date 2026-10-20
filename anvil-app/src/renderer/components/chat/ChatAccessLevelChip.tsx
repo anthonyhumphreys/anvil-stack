@@ -40,6 +40,7 @@ export function ChatAccessLevelChip({
   options,
   appliedMode,
   onSelectOption,
+  compact = false,
 }: {
   value: CodexMode;
   onChange?: (mode: CodexMode) => void;
@@ -53,6 +54,7 @@ export function ChatAccessLevelChip({
    * through the collaboration-mode transport instead of a CodexMode.
    */
   onSelectOption?: (option: ChatAccessOption) => void;
+  compact?: boolean;
 }) {
   const [confirmTarget, setConfirmTarget] = useState<ChatAccessOption | null>(null);
   const resolvedOptions = options ?? chatAccessOptionsForProvider(undefined);
@@ -91,12 +93,12 @@ export function ChatAccessLevelChip({
             type="button"
             disabled={disabled}
             className={cx(
-              'flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-colors',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70',
+              `flex h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition-colors ${compact ? 'max-w-36' : 'max-w-48'}`,
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55',
               'disabled:cursor-not-allowed disabled:opacity-50',
               elevated
-                ? 'border-warning/40 bg-warning/10 text-warning'
-                : 'border-border-subtle text-text-secondary hover:bg-bg-tertiary hover:text-text-primary',
+                ? 'bg-warning/10 text-warning'
+                : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary',
             )}
             title={
               disabled

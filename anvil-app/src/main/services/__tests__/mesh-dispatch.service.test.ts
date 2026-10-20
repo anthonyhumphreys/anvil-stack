@@ -62,6 +62,7 @@ import {
   resetMeshDispatchForTests,
 } from '../mesh-dispatch.service';
 import { configureMeshWorkerContext, resetMeshWorkerForTests } from '../mesh-worker.service';
+import * as meshWorker from '../mesh-worker.service';
 import type { SyncScope } from '../../../shared/sync-mesh';
 import { mintTaskKey, sealTaskResult, storeTaskKey } from '../sync-keyring.service';
 
@@ -327,83 +328,104 @@ describe('dispatchWorkflowNode', () => {
 });
 
 describe('refreshDispatch result import', () => {
-  it('fetches the worker bundle into the local repo as a result ref', async () => {
-    const { workspaceId, portableId, parentRepo, sourceRepo, base } = seedDispatchFixture('import');
-    try {
-      // Worker side: a result commit on its attempt branch, thin-bundled
-      // against the base the parent provably holds.
-      const branch = 'mesh/attempt/att-1';
-      git(sourceRepo, 'checkout', '-b', branch);
-      writeFileSync(join(sourceRepo, 'out.ts'), 'export const done = true;');
-      git(sourceRepo, 'add', 'out.ts');
-      git(sourceRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'node result');
-      const resultCommit = git(sourceRepo, 'rev-parse', 'HEAD');
-      const bundlePath = join(tmpdir(), `anvil-disp-bundle-${Date.now()}.bundle`);
-      git(sourceRepo, 'bundle', 'create', bundlePath, `${base}..${branch}`);
-      downloadMock.mockImplementation(async () => new Uint8Array(readFileSync(bundlePath)));
+  it.each(['valid', 'wrong-result', 'wrong-base'] as const)(
+    'validates the fetched bundle and its dispatched source before adopting it: %s',
+    async (scenario) => {
+      const { workspaceId, portableId, parentRepo, sourceRepo, base } =
+        seedDispatchFixture('import');
+      try {
+        // Worker side: a result commit on its attempt branch, thin-bundled
+        // against the base the parent provably holds.
+        const branch = 'mesh/attempt/att-1';
+        git(sourceRepo, 'checkout', '-b', branch);
+        writeFileSync(join(sourceRepo, 'out.ts'), 'export const done = true;');
+        git(sourceRepo, 'add', 'out.ts');
+        git(sourceRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'node result');
+        const resultCommit = git(sourceRepo, 'rev-parse', 'HEAD');
+        const bundlePath = join(tmpdir(), `anvil-disp-bundle-${Date.now()}.bundle`);
+        git(sourceRepo, 'bundle', 'create', bundlePath, `${base}..${branch}`);
+        downloadMock.mockImplementation(async () => new Uint8Array(readFileSync(bundlePath)));
 
-      db.prepare(
-        `INSERT INTO mesh_node_dispatches
+        db.prepare(
+          `INSERT INTO mesh_node_dispatches
          (dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
           manifest_json, state, cancel_requested, output_json, created_at, updated_at)
-         VALUES ('disp-1', 'run-1', 'node-1', 'job-1', 'node-dispatch/disp-1', ?, '{}', 'running', 0, NULL, datetime('now'), datetime('now'))`,
-      ).run(workspaceId);
-      rpcHandler = (op) =>
-        op === 'job.get'
-          ? {
-              job: { id: 'job-1', state: 'completed' },
-              attempts: [
-                {
-                  id: 'att-1',
-                  jobId: 'job-1',
-                  workerIncarnation: 'inc-1',
-                  fence: 1,
-                  leaseExpiresAt: '',
-                  state: 'completed',
-                  result: {
-                    resultManifest: {
-                      schemaVersion: 1,
-                      jobId: 'job-1',
-                      attemptId: 'att-1',
-                      repositories: [
-                        {
-                          repositoryId: portableId,
-                          baseCommit: base,
-                          resultCommit,
-                          branch,
-                          changed: true,
+         VALUES ('disp-1', 'run-1', 'node-1', 'job-1', 'node-dispatch/disp-1', ?, ?, 'running', 0, NULL, datetime('now'), datetime('now'))`,
+        ).run(
+          workspaceId,
+          JSON.stringify({ repositories: [{ repositoryId: portableId, commit: base }] }),
+        );
+        rpcHandler = (op) =>
+          op === 'job.get'
+            ? {
+                job: { id: 'job-1', state: 'completed' },
+                attempts: [
+                  {
+                    id: 'att-1',
+                    jobId: 'job-1',
+                    workerIncarnation: 'inc-1',
+                    fence: 1,
+                    leaseExpiresAt: '',
+                    state: 'completed',
+                    result: {
+                      resultManifest: {
+                        schemaVersion: 1,
+                        jobId: 'job-1',
+                        attemptId: 'att-1',
+                        repositories: [
+                          {
+                            repositoryId: portableId,
+                            baseCommit: scenario === 'wrong-base' ? 'a'.repeat(40) : base,
+                            resultCommit:
+                              scenario === 'wrong-result' ? 'b'.repeat(40) : resultCommit,
+                            branch,
+                            changed: true,
+                          },
+                        ],
+                        verification: [],
+                        artifacts: [{ artifactId: 'art-bundle', label: `bundle:${portableId}` }],
+                        provenance: {
+                          workerEnrollmentId: 'enr-2',
+                          workerIncarnation: 'inc-1',
+                          cliVersion: '0.44.0',
+                          startedAt: '',
+                          completedAt: '',
                         },
-                      ],
-                      verification: [],
-                      artifacts: [{ artifactId: 'art-bundle', label: `bundle:${portableId}` }],
-                      provenance: {
-                        workerEnrollmentId: 'enr-2',
-                        workerIncarnation: 'inc-1',
-                        cliVersion: '0.44.0',
-                        startedAt: '',
-                        completedAt: '',
                       },
                     },
                   },
-                },
-              ],
-            }
-          : {};
+                ],
+              }
+            : {};
 
-      const record = await refreshDispatch('disp-1');
-      expect(record.state).toBe('completed');
-      expect(record.output).not.toBeNull();
-      const adopted = record.output!.adoptedRefs[0]!;
-      expect(adopted.repositoryId).toBe(portableId);
-      expect(adopted.commit).toBe(resultCommit);
-      // The result commit landed in the parent's object store via the
-      // bundle — inspectable as a ref without touching the working tree.
-      expect(git(parentRepo, 'rev-parse', adopted.ref)).toBe(resultCommit);
-      expect(git(parentRepo, 'status', '--porcelain')).toBe('');
-    } finally {
-      cleanup(parentRepo, sourceRepo);
-    }
-  });
+        if (scenario !== 'valid') {
+          await expect(refreshDispatch('disp-1')).rejects.toThrow(
+            scenario === 'wrong-base' ? 'dispatched source revision' : 'declared result revision',
+          );
+          expect(git(parentRepo, 'for-each-ref', '--format=%(refname)', 'refs/mesh/result/')).toBe(
+            '',
+          );
+          expect(git(parentRepo, 'for-each-ref', '--format=%(refname)', 'refs/mesh/import/')).toBe(
+            '',
+          );
+          expect(git(parentRepo, 'status', '--porcelain')).toBe('');
+          return;
+        }
+        const record = await refreshDispatch('disp-1');
+        expect(record.state).toBe('completed');
+        expect(record.output).not.toBeNull();
+        const adopted = record.output!.adoptedRefs[0]!;
+        expect(adopted.repositoryId).toBe(portableId);
+        expect(adopted.commit).toBe(resultCommit);
+        // The result commit landed in the parent's object store via the
+        // bundle — inspectable as a ref without touching the working tree.
+        expect(git(parentRepo, 'rev-parse', adopted.ref)).toBe(resultCommit);
+        expect(git(parentRepo, 'status', '--porcelain')).toBe('');
+      } finally {
+        cleanup(parentRepo, sourceRepo);
+      }
+    },
+  );
 });
 
 describe('cancelNodeDispatch', () => {
@@ -429,6 +451,58 @@ describe('cancelNodeDispatch', () => {
 });
 
 describe('dispatch durability', () => {
+  it('retains the approved backend and exact sealed request when replay is blocked', async () => {
+    const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('bound-replay');
+    let restoreSubmit: (() => void) | undefined;
+    try {
+      rpcHandler = () => {
+        throw new Error('connection lost');
+      };
+      await expect(
+        dispatchWorkflowNode({
+          dispatchId: 'disp-bound',
+          runId: 'run-1',
+          nodeId: 'node-1',
+          workspaceId,
+          prompt: 'private reviewed work',
+        }),
+      ).rejects.toThrow('connection lost');
+      const row = db
+        .prepare('SELECT request_json FROM mesh_node_dispatches WHERE dispatch_id = ?')
+        .get('disp-bound') as { request_json: string };
+      const params = JSON.parse(row.request_json);
+      const remoteReviewBackend = {
+        ...SCOPE,
+        baseUrl: 'https://backend.test',
+        apiUrl: CTX.apiUrl,
+      };
+      const stored = JSON.stringify({ version: 1, params, remoteReviewBackend });
+      db.prepare('UPDATE mesh_node_dispatches SET request_json = ? WHERE dispatch_id = ?').run(
+        stored,
+        'disp-bound',
+      );
+      // The worker service owns live backend validation. This boundary must
+      // forward the original approval and ciphertext without resealing either.
+      const submitSpy = vi
+        .spyOn(meshWorker, 'submitPreparedJob')
+        .mockImplementation(async (...args) => {
+          expect(args).toEqual([params, remoteReviewBackend]);
+          throw new Error('approved backend changed');
+        });
+      restoreSubmit = () => submitSpy.mockRestore();
+      await expect(refreshDispatch('disp-bound')).rejects.toThrow('approved backend changed');
+      expect(submitSpy).toHaveBeenCalledOnce();
+      expect(rpcCalls.filter((call) => call.operation === 'job.create')).toHaveLength(1);
+      const retained = db
+        .prepare('SELECT request_json, job_id FROM mesh_node_dispatches WHERE dispatch_id = ?')
+        .get('disp-bound') as { request_json: string; job_id: string | null };
+      expect(retained).toEqual({ request_json: stored, job_id: null });
+    } finally {
+      restoreSubmit?.();
+      cleanup(parentRepo, sourceRepo);
+    }
+  });
+
   it('replays the persisted job.create after a crash between persist and submit', async () => {
     const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('replay');
     try {

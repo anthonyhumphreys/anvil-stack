@@ -111,6 +111,17 @@ async function envConnect(fx: ReturnType<typeof fixture>) {
   expectSuccess<WorkerConnectResult>(await stubRpc(fx.accountId, fx.envAuth, 'worker.connect', {}));
 }
 
+async function publishEnvCapabilities(fx: ReturnType<typeof fixture>, capabilities: string[]) {
+  return expectSuccess(
+    await stubRpc(fx.accountId, fx.envAuth, 'worker.capabilities.publish', {
+      os: 'linux',
+      arch: 'x64',
+      memoryMb: 4096,
+      capabilities,
+    }),
+  );
+}
+
 function manifest(): ExecutionManifest {
   return {
     workspaceDefinitionRevision: 'wsdef-rev-1',
@@ -246,6 +257,59 @@ describe('environment lifecycle', () => {
     );
     expect(claim.job.id).toBe(created.job.id);
     expect(claim.attempt.jobId).toBe(created.job.id);
+  });
+
+  it('keeps environment jobs queued until the enrolled worker satisfies requirements', async () => {
+    const fx = fixture('resolve-requirements');
+    await publishPolicy(fx.provisionerAuth);
+    await connectWorker(fx.provisionerAuth);
+    await envConnect(fx);
+    await publishEnvCapabilities(fx, ['git', 'node22']);
+    await reportEnvironment(fx.provisionerAuth, {
+      environmentId: fx.environmentId,
+      provider: 'aws-lambda-microvm',
+      state: 'provisioning',
+    });
+    const enrolled = expectSuccess<EnvironmentReportResult>(
+      await stubRpc(fx.accountId, fx.envAuth, 'environment.report', {
+        environmentId: fx.environmentId,
+        provider: 'aws-lambda-microvm',
+        state: 'enrolled',
+        enrollmentId: fx.envEnrollmentId,
+      }),
+    );
+    expect(enrolled.environment.enrollmentId).toBe(fx.envEnrollmentId);
+
+    const created = await createJob(fx.provisionerAuth, {
+      requestedTarget: {
+        kind: 'environment',
+        environmentId: fx.environmentId,
+        requirements: { capabilities: ['remote-review-candidate/v1'] },
+      },
+    });
+    expect(created.job.targetEnrollmentId).toBeUndefined();
+
+    await publishEnvCapabilities(fx, ['git', 'node22', 'remote-review-candidate/v1']);
+    const resolved = expectSuccess<JobGetResult>(
+      await postRpc('job.get', { jobId: created.job.id }, fx.provisionerAuth),
+    );
+    expect(resolved.job.targetEnrollmentId).toBe(fx.envEnrollmentId);
+
+    await publishEnvCapabilities(fx, ['git', 'node22']);
+    const deniedClaim = await stubRpc(fx.accountId, fx.envAuth, 'job.claim', {
+      jobId: created.job.id,
+    });
+    expect(deniedClaim.status).toBe(409);
+    if (isRpcError(deniedClaim.body)) {
+      expect(deniedClaim.body.error.details?.['reason']).toBe('target-requirements-not-satisfied');
+    }
+    expect(JSON.stringify(deniedClaim.body)).not.toContain('remote-review-candidate/v1');
+
+    await publishEnvCapabilities(fx, ['git', 'node22', 'remote-review-candidate/v1']);
+    const claimed = expectSuccess<JobClaimResult>(
+      await stubRpc(fx.accountId, fx.envAuth, 'job.claim', { jobId: created.job.id }),
+    );
+    expect(claimed.job.targetEnrollmentId).toBe(fx.envEnrollmentId);
   });
 
   it('rejects an env report bound to a different environment', async () => {

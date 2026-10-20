@@ -50,6 +50,7 @@ import type {
   CodexSession,
   RepoInfo,
   WorkflowRun,
+  PublicWorkflowRun,
   GitStatusResult,
 } from '../../shared/types.js';
 import {
@@ -108,6 +109,7 @@ import {
   listWorkflowTemplates,
   startWorkflowRun,
 } from './workflow.service.js';
+import { publicWorkflowRun } from './workflow-public.js';
 
 // Text can expand substantially when JSON-encoded (for example, each LF is
 // represented by two bytes and other controls by six). Keep reads well below
@@ -1069,8 +1071,8 @@ function sanitizeChatMessage(message: ChatMessage): ChatMessage {
   };
 }
 
-function sanitizeWorkflowRun(run: WorkflowRun): Omit<WorkflowRun, 'executionPaths'> {
-  const safeRun = { ...run } as WorkflowRun & { executionPaths?: WorkflowRun['executionPaths'] };
+function sanitizeWorkflowRun(run: WorkflowRun): Omit<PublicWorkflowRun, 'executionPaths'> {
+  const safeRun = publicWorkflowRun(run);
   delete safeRun.executionPaths;
   return safeRun;
 }

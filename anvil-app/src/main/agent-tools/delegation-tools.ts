@@ -41,6 +41,12 @@ const tools: AgentToolDefinition[] = [
         requestId: { type: 'string', minLength: 1, maxLength: 100 },
         title: { type: 'string', minLength: 1, maxLength: 160 },
         reason: { type: 'string', minLength: 1, maxLength: 1000 },
+        source: {
+          type: 'string',
+          enum: ['committed', 'current-tracked'],
+          description:
+            'Defaults to committed. Use current-tracked only when the user explicitly asks for a read-only review of tracked working-copy changes; untracked files are excluded.',
+        },
         tasks: {
           type: 'array',
           maxItems: 8,

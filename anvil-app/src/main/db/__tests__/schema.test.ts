@@ -60,6 +60,71 @@ it('defaults workspaces to Local and preserves existing workspace Sync bindings'
 });
 
 describe('fresh database schema', () => {
+  it('preserves integration receipts while adding a durable combination state', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE mesh_integrations (
+          integration_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+          dispatch_ids_json TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('integrated', 'conflicted', 'failed')),
+          result_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        INSERT INTO mesh_integrations VALUES ('old', 'run', 'ws', '[]', 'integrated', '{"receipt":true}', 'before', 'before');
+      `);
+      db.exec(MIGRATIONS[113]!);
+      expect(
+        db
+          .prepare('SELECT state, result_json FROM mesh_integrations WHERE integration_id = ?')
+          .get('old'),
+      ).toEqual({ state: 'integrated', result_json: '{"receipt":true}' });
+      db.prepare('INSERT INTO mesh_integrations VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+        'new',
+        'run',
+        'ws',
+        '[]',
+        'integrating',
+        '{}',
+        'now',
+        'now',
+      );
+      expect(db.prepare('SELECT COUNT(*) AS count FROM mesh_integrations').get()).toEqual({
+        count: 2,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('preserves legacy activation events without inventing journey identities', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE activation_events (
+          id INTEGER PRIMARY KEY, event TEXT NOT NULL, payload TEXT, created_at TEXT NOT NULL
+        );
+        INSERT INTO activation_events VALUES (1, 'onboarding_started', NULL, '2026-10-18T12:00:00Z');
+      `);
+      db.exec(MIGRATIONS[112]!);
+      expect(db.prepare('SELECT * FROM activation_events').get()).toEqual({
+        id: 1,
+        event: 'onboarding_started',
+        payload: null,
+        created_at: '2026-10-18T12:00:00Z',
+        app_run_id: null,
+        journey_id: null,
+      });
+      const indexes = db.prepare("PRAGMA index_list('activation_events')").all() as Array<{
+        name: string;
+      }>;
+      expect(indexes.map((index) => index.name)).toEqual(
+        expect.arrayContaining(['idx_activation_events_app_run', 'idx_activation_events_journey']),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it('adds model picker preferences to existing settings without changing their model', () => {
     const db = new Database(':memory:');
     try {
@@ -336,7 +401,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(111);
+      expect(SCHEMA_VERSION).toBe(113);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -982,7 +1047,11 @@ describe('inline surfaces and shares migrations (v109, v110)', () => {
       applyMigration(db, MIGRATIONS[110]!);
 
       expect(
-        db.prepare('SELECT artifact_id, version, content FROM chat_artifact_revisions ORDER BY artifact_id').all(),
+        db
+          .prepare(
+            'SELECT artifact_id, version, content FROM chat_artifact_revisions ORDER BY artifact_id',
+          )
+          .all(),
       ).toEqual([
         { artifact_id: 'a1', version: 3, content: '# v3' },
         { artifact_id: 'a2', version: 1, content: 'hi' },

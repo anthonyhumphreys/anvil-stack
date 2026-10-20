@@ -130,6 +130,10 @@ import {
   assertChatDelegationsFinished,
   describeChatDelegation,
   listChatDelegations,
+  prepareDelegationIntegration,
+  integrateDelegation,
+  retryDelegationVerification,
+  applyDelegationIntegration,
   requireChatDelegation,
   stopChatDelegation,
 } from '../services/chat-delegation.service.js';
@@ -284,6 +288,26 @@ export function registerChatHandlers(): void {
       action: import('../../shared/chat-delegation.js').ChatDelegationAction,
       nodeId?: string,
     ) => actOnChatDelegation(threadId, runId, action, nodeId),
+  );
+  ipcMain.handle('chat:prepare-delegation-integration', (_event, threadId: string, runId: string) =>
+    prepareDelegationIntegration(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:integrate-delegation',
+    (
+      _event,
+      threadId: string,
+      runId: string,
+      selectedChecks: import('../../shared/chat-delegation.js').ChatDelegationVerificationSelection[],
+    ) => integrateDelegation(threadId, runId, selectedChecks),
+  );
+  ipcMain.handle('chat:retry-delegation-verification', (_event, threadId: string, runId: string) =>
+    retryDelegationVerification(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:apply-delegation-integration',
+    (_event, threadId: string, runId: string, repositoryId: string) =>
+      applyDelegationIntegration(threadId, runId, repositoryId),
   );
   ipcMain.handle(
     'chat:link-pull-request',

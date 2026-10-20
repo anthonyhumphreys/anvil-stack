@@ -26,6 +26,9 @@ export function ModelPicker({
   placement = 'top',
   settingsLink = true,
   fullWidth = false,
+  variant = 'default',
+  compact = false,
+  hideProvider = false,
 }: {
   model: string;
   provider: AgentProvider;
@@ -36,6 +39,10 @@ export function ModelPicker({
   placement?: 'top' | 'bottom';
   settingsLink?: boolean;
   fullWidth?: boolean;
+  /** Inline treatment for compact toolbars; the default preserves existing callers. */
+  variant?: 'default' | 'inline';
+  compact?: boolean;
+  hideProvider?: boolean;
 }) {
   const id = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -112,17 +119,25 @@ export function ModelPicker({
           setBrowse(false);
           setOpen(!open);
         }}
-        className={`flex min-w-0 items-center gap-2 rounded-lg border border-border-subtle bg-bg-secondary px-2.5 text-left text-xs text-text-primary transition-colors hover:border-border hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${fullWidth ? 'min-h-10 w-full' : 'h-8 max-w-64'}`}
+        className={`flex min-w-0 items-center gap-2 text-left text-xs text-text-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+          variant === 'inline'
+            ? `h-9 min-w-0 rounded-full px-2 text-text-secondary hover:bg-bg-tertiary hover:text-text-primary ${compact ? 'w-full max-w-none flex-1' : 'max-w-52'}`
+            : `rounded-lg border border-border-subtle bg-bg-secondary px-2.5 hover:border-border hover:bg-bg-hover ${fullWidth ? 'min-h-10 w-full' : 'h-8 max-w-64'}`
+        }`}
       >
         {preferences.style === 'slider' ? (
           <SlidersHorizontal size={13} className="shrink-0 text-text-secondary" />
         ) : null}
-        <span className="shrink-0 text-text-secondary">
-          {MODEL_PROVIDER_LABELS[provider].replace(' CLI', '')}
-        </span>
-        <span aria-hidden="true" className="text-text-secondary">
-          ·
-        </span>
+        {!hideProvider && (
+          <>
+            <span className="shrink-0 text-text-secondary">
+              {MODEL_PROVIDER_LABELS[provider].replace(' CLI', '')}
+            </span>
+            <span aria-hidden="true" className="text-text-secondary">
+              ·
+            </span>
+          </>
+        )}
         <span className="min-w-0 flex-1 truncate">
           {preferences.style === 'slider' && active >= 0 ? `${presets[active].label} · ` : ''}
           {selected?.label ?? (model || 'Choose model')}

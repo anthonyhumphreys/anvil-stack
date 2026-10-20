@@ -276,3 +276,59 @@ The behavior and open release checks are in
 Verify from `anvil-cloud/` with `pnpm lint`, `pnpm typecheck`, `pnpm test`, and
 `pnpm verify:cloudflare-preview`. Real local D1/R2 tests and AWS SDK tests are
 required; neither substitutes for live provider evidence.
+
+### C4: Reviewed Desktop delivery and read-only Mesh candidates
+
+Status: active
+Owner project: `anvil-app`
+
+Turn-level delivery captures an immutable main-process review of the current
+changes in explicitly selected files. Provider edit events identify the files;
+they do not establish the files' final contents. Display the exact candidate
+before confirmation and reject stale branch, HEAD, index, file, origin or PR
+base state. Preserve unrelated staged and working changes. Create commits with
+normal Git hooks and signing in an isolated checkout, then verify the reviewed
+tree, parent and message before updating the source branch. PRs use a dedicated
+branch whose complete diff against its pinned remote base has been reviewed.
+Failed external delivery retains a recoverable local or pushed branch.
+
+Mesh branch combination, verification and application are independent facts.
+Empty checks mean verification did not run. Persist reviewed commands and their
+tested commit/tree, cap execution by the originating run and current policy,
+and invalidate evidence if the checkout changes. Retrying verification never
+replays branch combination. Applying a verified repository is an explicit
+fast-forward from its recorded base in a clean checkout, with a separate
+receipt for each repository. Never force, discard local changes or push as
+part of application. Hold real Git index and ref/HEAD locks, persist application
+intent before changing the checkout, and reconcile an exact clean destination
+match after restart. Retain ambiguous outcomes for inspection.
+
+Current-tracked source candidates are a bounded read-only Mesh feature. Capture
+selected tracked text files before approval, preserve source Git state, reject
+secret paths and secrets in both removed and added patch content, and freeze
+the base, candidate commit/tree, included paths and digest. Carry candidate
+bytes only in task-key-sealed inputs. Never publish them in a public manifest,
+status result or synced workflow template. Enforce the 128-KiB aggregate
+candidate payload, file/count limits and full sealed request limits. Require
+backend `mesh-job-capability-requirements/1` and worker
+`remote-review-candidate/v1`; an older backend or worker must fail closed.
+Freeze every selected repository's base and the approved backend/account scope
+before approval. Recheck that identity and backend support before submission
+or replay, retaining the original sealed request bytes.
+Materialize and validate the candidate in an isolated worker checkout before
+provider execution. Read-only review must not report the input candidate as
+worker-produced changes. Untracked files, binary patches and write-capable
+candidate tasks remain unsupported. Workflow edges continue to carry reports,
+not predecessor working directories.
+
+This entry concerns Desktop Mesh. Do not weaken C2's separate Cloud execution
+source, authentication or read-only boundaries.
+
+Owner modules: `scoped-git.service.ts`, `remote-review-candidate.service.ts`,
+`chat-delegation.service.ts`, `workflow.service.ts`, `mesh-dispatch.service.ts`,
+`mesh-integration.service.ts`, `mesh-worker.service.ts`, their shared contracts
+and typed IPC/UI paths, and backend worker placement/claim capability checks.
+
+Verify Desktop Node/web TypeScript checks, lint, service/real-Git tests and the
+full Desktop suite; run backend tests and typecheck for capability changes.
+Native UI and physical-device acceptance remain separate evidence.

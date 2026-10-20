@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowRun } from '../../../shared/types.js';
 import type { ChatDelegationInput } from '../../../shared/chat-delegation.js';
@@ -30,9 +34,23 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   cancelDispatch: vi.fn(),
   validate: vi.fn(),
+  activeBackend: vi.fn(),
+  captureBackend: vi.fn(),
+  assertBackend: vi.fn(),
+  repoRows: [] as Array<{
+    portable_id: string;
+    mapped_repo_id: string;
+    path: string;
+    name: string;
+  }>,
 }));
 vi.mock('../../db/database.js', () => ({
-  getDb: () => ({ prepare: () => ({ get: () => ({ name: 'Repository' }) }) }),
+  getDb: () => ({
+    prepare: (query: string) => ({
+      get: () => (query.includes('FROM mesh_integrations') ? undefined : { name: 'Repository' }),
+      all: () => (query.includes('workspace_repo_definitions') ? mocks.repoRows : []),
+    }),
+  }),
 }));
 vi.mock('../../surfaces/core.js', () => ({ requestUserApproval: mocks.approval }));
 vi.mock('../delegation-capabilities.service.js', () => ({
@@ -56,6 +74,11 @@ vi.mock('../mesh-dispatch.service.js', () => ({
   cancelNodeDispatch: mocks.cancelDispatch,
   getWorkflowDispatch: mocks.dispatch,
   refreshDispatch: mocks.refresh,
+}));
+vi.mock('../sync-backend.service.js', () => ({ getActiveBackend: mocks.activeBackend }));
+vi.mock('../mesh-worker.service.js', () => ({
+  captureRemoteReviewBackendBinding: mocks.captureBackend,
+  assertRemoteReviewBackendBinding: mocks.assertBackend,
 }));
 vi.mock('../workflow.service.js', () => ({
   startChatWorkflowRun: mocks.start,
@@ -100,10 +123,45 @@ const proposal = (): ChatDelegationInput & Record<string, unknown> => ({
     },
   ],
 });
+
+function git(repoPath: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd: repoPath, encoding: 'utf8' }).trim();
+}
+
+function createRepository(name: string): { path: string; baseCommit: string } {
+  const path = mkdtempSync(join(tmpdir(), `anvil-delegation-${name}-`));
+  git(path, 'init', '-b', 'main');
+  writeFileSync(join(path, 'tracked.txt'), 'base\n');
+  git(path, 'add', '-A');
+  git(path, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'base');
+  return { path, baseCommit: git(path, 'rev-parse', 'HEAD') };
+}
+
 let run: WorkflowRun;
 beforeEach(async () => {
   await new Promise((resolve) => setImmediate(resolve));
   vi.resetAllMocks();
+  mocks.repoRows = [];
+  mocks.captureBackend.mockImplementation(() => {
+    const backend = mocks.activeBackend();
+    if (
+      !backend ||
+      backend.state !== 'active' ||
+      backend.identityReviewRequired ||
+      !backend.descriptor.features?.includes('mesh-job-capability-requirements/1')
+    )
+      throw new Error(
+        'Current tracked review needs a backend that supports job capability requirements.',
+      );
+    return {
+      backendId: backend.id ?? 'reviewed-backend',
+      baseUrl: backend.baseUrl ?? 'https://mesh.example/',
+      apiUrl: backend.apiUrl ?? 'https://mesh.example/api/',
+      accountId: 'account-1',
+      datasetEpoch: 'epoch-1',
+    };
+  });
+  mocks.assertBackend.mockResolvedValue(undefined);
   resetAgentToolProvidersForTests();
   registerAgentToolProvider(delegationToolProvider);
   mocks.source.mockReturnValue({ id: 'session', appThreadId: 'thread', personaId: 'architect' });
@@ -274,6 +332,162 @@ describe('chat-native delegation', () => {
     );
     expect(mocks.approval).not.toHaveBeenCalled();
     expect(mocks.start).not.toHaveBeenCalled();
+  });
+  it('requires a reviewed Mesh capability before preparing current tracked source', async () => {
+    const input = proposal();
+    input.source = 'current-tracked';
+    Object.assign(input.tasks[0], {
+      provider: 'codex',
+      destinationId: 'device:worker',
+      access: 'read-only',
+    });
+    mocks.activeBackend.mockReturnValue({
+      state: 'active',
+      identityReviewRequired: false,
+      descriptor: { features: [] },
+    });
+
+    await expect(callAgentTool(ctx, 'delegation_propose', input)).rejects.toThrow(
+      'supports job capability requirements',
+    );
+    expect(mocks.approval).not.toHaveBeenCalled();
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+  it('freezes dirty candidates and clean repository base pins before approval', async () => {
+    const dirty = createRepository('tracked-dirty');
+    const clean = createRepository('tracked-clean');
+    try {
+      writeFileSync(join(dirty.path, 'tracked.txt'), 'review this change\n');
+      mocks.repoRows = [
+        {
+          portable_id: 'portable-a',
+          mapped_repo_id: 'repo-a',
+          path: dirty.path,
+          name: 'Dirty repository',
+        },
+        {
+          portable_id: 'portable-b',
+          mapped_repo_id: 'repo-b',
+          path: clean.path,
+          name: 'Clean repository',
+        },
+      ];
+      mocks.activeBackend.mockReturnValue({
+        state: 'active',
+        identityReviewRequired: false,
+        descriptor: { features: ['mesh-job-capability-requirements/1'] },
+      });
+      const scoped = { ...ctx, repoIds: ['repo-a', 'repo-b'] };
+      mocks.scope.mockReturnValue(scoped);
+      const input = proposal();
+      input.source = 'current-tracked';
+      Object.assign(input.tasks[0], {
+        provider: 'codex',
+        destinationId: 'device:worker',
+        access: 'read-only',
+      });
+      mocks.approval.mockImplementation(async (_session, request) => {
+        expect(request.detail).toContain(`Frozen base for portable-b: ${clean.baseCommit}`);
+        expect(request.detail).toContain('No tracked changes to include.');
+        expect(request.detail).toContain(`Base: ${dirty.baseCommit}`);
+        writeFileSync(join(clean.path, 'later.txt'), 'committed after proposal\n');
+        git(clean.path, 'add', '-A');
+        git(
+          clean.path,
+          '-c',
+          'user.email=test@example.com',
+          '-c',
+          'user.name=Test',
+          'commit',
+          '-m',
+          'move after approval',
+        );
+        return true;
+      });
+
+      const response = await callAgentTool(scoped, 'delegation_propose', input);
+
+      const started = mocks.start.mock.calls[0]![0];
+      expect(started.origin.sourceBaseCommits).toEqual({
+        'portable-a': dirty.baseCommit,
+        'portable-b': clean.baseCommit,
+      });
+      expect(started.remoteReviewCandidates).toHaveLength(1);
+      expect(started.remoteReviewCandidates[0]).toMatchObject({
+        repositoryId: 'portable-a',
+        baseCommit: dirty.baseCommit,
+        includedPaths: ['tracked.txt'],
+      });
+      expect(started.remoteReviewCandidates[0].patch).toContain('review this change');
+      expect(started.origin.sourceBackend).toMatchObject({
+        backendId: 'reviewed-backend',
+        accountId: 'account-1',
+        datasetEpoch: 'epoch-1',
+      });
+      expect(started.remoteReviewBackend).toEqual(started.origin.sourceBackend);
+      expect(JSON.stringify(response.structuredContent)).not.toContain('account-1');
+      expect(JSON.stringify(response.structuredContent)).not.toContain('review this change');
+    } finally {
+      rmSync(dirty.path, { recursive: true, force: true });
+      rmSync(clean.path, { recursive: true, force: true });
+    }
+  });
+  it('stops after approval if the reviewed Mesh backend changed', async () => {
+    const source = createRepository('backend-binding');
+    try {
+      writeFileSync(join(source.path, 'tracked.txt'), 'review candidate\n');
+      mocks.repoRows = [
+        {
+          portable_id: 'portable-a',
+          mapped_repo_id: 'repo',
+          path: source.path,
+          name: 'Repository',
+        },
+      ];
+      mocks.activeBackend.mockReturnValue({
+        id: 'backend-before',
+        baseUrl: 'https://mesh.example/',
+        state: 'active',
+        identityReviewRequired: false,
+        descriptor: { features: ['mesh-job-capability-requirements/1'] },
+      });
+      mocks.assertBackend.mockImplementation(async (binding) => {
+        if (mocks.activeBackend().id !== binding.backendId)
+          throw new Error('remote-review-backend-binding-invalid');
+      });
+      mocks.approval.mockImplementation(async (_session, request) => {
+        expect(request.detail).toContain('Reviewed Mesh backend: backend-before');
+        mocks.activeBackend.mockReturnValue({
+          id: 'backend-after',
+          baseUrl: 'https://other-mesh.example/',
+          state: 'active',
+          identityReviewRequired: false,
+          descriptor: { features: ['mesh-job-capability-requirements/1'] },
+        });
+        return true;
+      });
+      const input = proposal();
+      input.source = 'current-tracked';
+      Object.assign(input.tasks[0], {
+        provider: 'codex',
+        destinationId: 'device:worker',
+        access: 'read-only',
+      });
+
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const response = await callAgentTool(ctx, 'delegation_propose', input);
+      expect(response.structuredContent).toMatchObject({ status: 'awaiting-approval' });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(warning).toHaveBeenCalledWith(
+        '[Delegation] Proposal could not start:',
+        expect.stringContaining('reviewed Mesh backend changed before delegation could start'),
+      );
+      warning.mockRestore();
+      expect(mocks.assertBackend).toHaveBeenCalledTimes(2);
+      expect(mocks.start).not.toHaveBeenCalled();
+    } finally {
+      rmSync(source.path, { recursive: true, force: true });
+    }
   });
   it('rejects invented targets, models and unsupported remote providers', async () => {
     for (const task of [

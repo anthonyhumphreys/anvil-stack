@@ -4,6 +4,10 @@ import { buildDescriptor } from '../src/descriptor';
 import { WORKOS_AUTHKIT_ISSUER } from '../../contract/auth';
 
 describe('backend discovery descriptor', () => {
+  it('advertises worker capability requirement enforcement for Mesh jobs', () => {
+    expect(buildDescriptor().features).toContain('mesh-job-capability-requirements/1');
+  });
+
   it('advertises WorkOS device authorization only for the fixed AuthKit issuer', () => {
     const descriptor = buildDescriptor({
       OIDC_ISSUER: WORKOS_AUTHKIT_ISSUER,

@@ -10,6 +10,11 @@ import type {
 import type { SurfacesApi } from '../../../../../shared/surfaces/ipc';
 import type { SurfaceComment } from '../../../../../shared/surfaces/types';
 import { ChatReplayPreview } from '../ChatReplayPreview';
+import { ComposerPreview } from '../ComposerPreview';
+import {
+  DeliveryReadinessPreview,
+  installDeliveryPreviewBridge,
+} from '../DeliveryReadinessPreview';
 import {
   REPLAY_SURFACE_ARTIFACTS,
   REPLAY_SURFACE_ARTIFACT_REVISIONS,
@@ -177,9 +182,9 @@ const localAnvilBridge = {
     }),
     stopListening: async () => ({ success: true }),
     getStatus: async () => ({ isListening: false }),
-    onResult: noopUnsubscribe,
-    onError: noopUnsubscribe,
-    onStatus: noopUnsubscribe,
+    onResult: () => noopUnsubscribe,
+    onError: () => noopUnsubscribe,
+    onStatus: () => noopUnsubscribe,
   },
   metrics: {
     track: async () => ({ ok: true }),
@@ -208,11 +213,20 @@ Object.defineProperty(window, 'anvil', {
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('Chat replay root element is missing.');
+const deliveryPreview = new URLSearchParams(window.location.search).has('delivery');
+const composerPreview = new URLSearchParams(window.location.search).has('composer');
+if (deliveryPreview) installDeliveryPreviewBridge();
 
 createRoot(rootElement).render(
   <StrictMode>
     <MemoryRouter>
-      <ChatReplayPreview />
+      {composerPreview ? (
+        <ComposerPreview />
+      ) : deliveryPreview ? (
+        <DeliveryReadinessPreview />
+      ) : (
+        <ChatReplayPreview />
+      )}
     </MemoryRouter>
   </StrictMode>,
 );

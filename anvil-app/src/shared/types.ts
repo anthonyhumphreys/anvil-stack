@@ -883,10 +883,22 @@ export interface WorkflowRunInputManifest {
 export interface WorkflowConvergence {
   integrationId: string;
   state: 'integrated' | 'conflicted' | 'failed';
+  /** Branch combination is separate from verification and checkout application. */
+  combined: boolean;
+  verificationState: 'not-run' | 'running' | 'passed' | 'failed' | 'blocked' | 'stale';
+  verificationAttempt: number;
+  verificationSelections: Array<{ repositoryId: string; commands: string[] }>;
+  appliedAt: string | null;
   repositories: Array<{
     repositoryId: string;
     baseCommit: string;
     integratedCommit: string | null;
+    branch: string;
+    worktreePath: string;
+    appliedAt: string | null;
+    destinationBranch: string | null;
+    appliedCommit: string | null;
+    applyError?: string;
     conflicts: Array<{ dispatchId: string; ref: string; conflictedFiles: string[] }>;
   }>;
   verification: Array<{
@@ -895,11 +907,19 @@ export interface WorkflowConvergence {
     exitCode: number | null;
     timedOut: boolean;
     durationMs: number;
+    approvalGranted: boolean;
+    logTail: string;
+    testedHead: string | null;
+    testedTree: string | null;
   }>;
 }
 
 export interface WorkflowRun {
   chatOrigin?: import('./chat-delegation').ChatDelegationOrigin;
+  /** Private, frozen inputs for read-only remote review; never sync as a workflow template. */
+  remoteReviewCandidates?: import('./remote-review-candidate').RemoteReviewCandidate[];
+  /** Approved Mesh identity; a candidate cannot move to another backend or account on replay. */
+  remoteReviewBackend?: import('./remote-review-candidate').RemoteReviewBackendBinding;
   workItemRef?: WorkItemReference;
   runtimeOwnerPid?: number;
   executionPaths?: Array<{ id: string; path: string }>;
@@ -925,6 +945,14 @@ export interface WorkflowRun {
   inputManifest?: WorkflowRunInputManifest;
   convergence?: WorkflowConvergence;
 }
+
+/** Renderer/browser view; source bytes and approved account authority stay in main. */
+export type PublicWorkflowRun = Omit<
+  WorkflowRun,
+  'remoteReviewCandidates' | 'remoteReviewBackend' | 'chatOrigin'
+> & {
+  chatOrigin?: Omit<NonNullable<WorkflowRun['chatOrigin']>, 'sourceBackend'>;
+};
 
 export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;

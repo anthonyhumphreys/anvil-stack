@@ -17,6 +17,7 @@ import {
   formatTurnChangeSummary,
   repoRelativePath,
   resolveChangesRepoId,
+  resolveTurnDeliveryRepo,
   sameTurnChangeSummary,
   summarizeTurnChanges,
   type TurnFileChange,
@@ -148,6 +149,16 @@ export function TurnChangesFooter({
     [preferredRepoId, repos, summary],
   );
   const repo = repos.find((item) => item.id === repoId) ?? null;
+  const deliveryScope = useMemo(
+    () =>
+      resolveTurnDeliveryRepo(
+        summary?.files.map((file) => file.filePath) ?? [],
+        repos,
+        preferredRepoId,
+      ),
+    [preferredRepoId, repos, summary],
+  );
+  const deliveryRepo = repos.find((item) => item.id === deliveryScope.repoId) ?? null;
 
   useEffect(() => {
     if (!reviewRequest || appliedReviewRequestRef.current === reviewRequest.requestId) return;
@@ -168,19 +179,21 @@ export function TurnChangesFooter({
     });
   }, [panelId, reviewRequest, summary]);
 
-  // §7 funnel — a rendered change summary means the agent produced a diff.
-  const diffProposedTrackedRef = useRef(false);
+  // The settled turn summary is shown in its collapsed row as well as expanded.
+  const changeSummaryViewedTrackedRef = useRef(false);
   useEffect(() => {
-    if (!summary || diffProposedTrackedRef.current) return;
-    diffProposedTrackedRef.current = true;
+    if (!summary || changeSummaryViewedTrackedRef.current) return;
+    changeSummaryViewedTrackedRef.current = true;
     void window.anvil.metrics
-      .track('diff_proposed', {
+      .track('change_summary_viewed', {
+        threadId: threadId ?? null,
+        turnId,
         files: summary.files.length,
         additions: summary.additions,
         deletions: summary.deletions,
       })
       .catch(() => {});
-  }, [summary]);
+  }, [summary, threadId, turnId]);
 
   const agentLabel = workItems.find(
     (item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> =>
@@ -305,7 +318,8 @@ export function TurnChangesFooter({
           />
           <TurnChangesActions
             summary={summary}
-            repo={repo}
+            repo={deliveryRepo}
+            scopeError={deliveryScope.reason}
             readOnly={readOnly}
             laterTurnEditedPaths={laterTurnEditedPaths}
             checkUndo={expanded}

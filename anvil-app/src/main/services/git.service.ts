@@ -628,12 +628,15 @@ function sanitiseCommitScope(scope: string): string {
     .slice(0, 30);
 }
 
-async function getOriginRemoteUrl(git: SimpleGit): Promise<string | undefined> {
+export async function getOriginRemoteUrl(git: SimpleGit): Promise<string | undefined> {
   const remotes = await git.getRemotes(true);
   return remotes.find((remote) => remote.name === 'origin')?.refs.fetch;
 }
 
-async function resolveDefaultBaseBranch(git: SimpleGit, currentBranch: string): Promise<string> {
+export async function resolveDefaultBaseBranch(
+  git: SimpleGit,
+  currentBranch: string,
+): Promise<string> {
   const originHead = await git
     .raw(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
     .catch(() => '');
@@ -650,11 +653,12 @@ async function resolveDefaultBaseBranch(git: SimpleGit, currentBranch: string): 
   throw new Error('Could not determine a target branch for the pull request.');
 }
 
-async function createProviderPullRequest(
+export async function createProviderPullRequest(
   remoteUrl: string,
   branch: string,
   baseBranch: string,
   title: string,
+  description = 'Created from workspace changes in Anvil.',
 ): Promise<string | undefined> {
   const github = parseGitHubRemoteUrl(remoteUrl);
   if (github) {
@@ -672,7 +676,7 @@ async function createProviderPullRequest(
       '--title',
       title,
       '--body',
-      'Created from workspace changes in Anvil.',
+      description,
     ];
     const { stdout } = await execFileAsync('gh', args, { encoding: 'utf-8', timeout: 60_000 });
     return stdout.trim() || undefined;
@@ -700,7 +704,7 @@ async function createProviderPullRequest(
           sourceRefName: `refs/heads/${branch}`,
           targetRefName: `refs/heads/${baseBranch}`,
           title,
-          description: 'Created from workspace changes in Anvil.',
+          description,
         }),
       },
     );

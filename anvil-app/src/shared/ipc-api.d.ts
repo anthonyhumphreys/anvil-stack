@@ -154,7 +154,7 @@ import type {
   SecurityAudit,
   SecurityFinding,
   WorkItem,
-  WorkflowRun,
+  PublicWorkflowRun,
   WorkflowTemplate,
   WorkflowTemplateInput,
   WorkItemCreateInput,
@@ -369,6 +369,24 @@ export interface AnvilAPI {
       action: import('./chat-delegation').ChatDelegationAction,
       nodeId?: string,
     ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    prepareDelegationIntegration(
+      threadId: string,
+      runId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationIntegrationPlan>;
+    integrateDelegation(
+      threadId: string,
+      runId: string,
+      selectedChecks: import('./chat-delegation').ChatDelegationVerificationSelection[],
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    retryDelegationVerification(
+      threadId: string,
+      runId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    applyDelegationIntegration(
+      threadId: string,
+      runId: string,
+      repositoryId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
     createTemporaryThread(personaId: string): Promise<ChatThread>;
     endTemporaryThread(threadId: string): Promise<boolean>;
     linkPullRequest(
@@ -520,32 +538,32 @@ export interface AnvilAPI {
   };
 
   workflow: {
-    pauseRun: (runId: string) => Promise<WorkflowRun>;
-    resumeRun: (runId: string) => Promise<WorkflowRun>;
-    retryNode: (runId: string, nodeId: string) => Promise<WorkflowRun>;
-    inspectNode: (runId: string, nodeId: string) => Promise<WorkflowRun>;
-    convergeRun: (runId: string, verification?: string[]) => Promise<WorkflowRun>;
+    pauseRun: (runId: string) => Promise<PublicWorkflowRun>;
+    resumeRun: (runId: string) => Promise<PublicWorkflowRun>;
+    retryNode: (runId: string, nodeId: string) => Promise<PublicWorkflowRun>;
+    inspectNode: (runId: string, nodeId: string) => Promise<PublicWorkflowRun>;
+    convergeRun: (runId: string, verification?: string[]) => Promise<PublicWorkflowRun>;
     decideNode: (
       runId: string,
       nodeId: string,
       approved: boolean,
       note: string,
-    ) => Promise<WorkflowRun>;
+    ) => Promise<PublicWorkflowRun>;
     listTemplates: () => Promise<WorkflowTemplate[]>;
     draftTemplate: (request: string) => Promise<WorkflowTemplateInput>;
     saveTemplate: (input: WorkflowTemplateInput, id?: string) => Promise<WorkflowTemplate>;
     deleteTemplate: (id: string) => Promise<void>;
-    listRuns: (workspaceId: string) => Promise<WorkflowRun[]>;
-    getRun: (id: string) => Promise<WorkflowRun | null>;
+    listRuns: (workspaceId: string) => Promise<PublicWorkflowRun[]>;
+    getRun: (id: string) => Promise<PublicWorkflowRun | null>;
     startRun: (input: {
       templateId: string;
       workspaceId: string;
       repoIds: string[];
       kickoff: string;
       workItemRef?: import('./change-review-types').WorkItemReference;
-    }) => Promise<WorkflowRun>;
+    }) => Promise<PublicWorkflowRun>;
     askSupervisor: (runId: string, question: string) => Promise<string>;
-    cancelRun: (runId: string) => Promise<WorkflowRun | null>;
+    cancelRun: (runId: string) => Promise<PublicWorkflowRun | null>;
   };
 
   dbInsights: {
@@ -744,12 +762,33 @@ export interface AnvilAPI {
   };
 
   docs: {
-    listProjects: (context: import('./types.js').DocsRequestContext) => Promise<import('./types.js').LinearDocProject[]>;
-    listPages: (spaceKey: string | undefined, context: import('./types.js').DocsRequestContext) => Promise<DocPage[]>;
-    listChildren: (pageId: string, context: import('./types.js').DocsRequestContext) => Promise<DocPage[]>;
-    checkStaleness: (pageId: string, repoId: string, context: import('./types.js').DocsRequestContext) => Promise<DocPage['staleness']>;
-    generateUpdate: (pageId: string, repoId: string, context: import('./types.js').DocsRequestContext) => Promise<string>;
-    createPage: (spaceKey: string, title: string, repoId: string, context: import('./types.js').DocsRequestContext) => Promise<string>;
+    listProjects: (
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<import('./types.js').LinearDocProject[]>;
+    listPages: (
+      spaceKey: string | undefined,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<DocPage[]>;
+    listChildren: (
+      pageId: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<DocPage[]>;
+    checkStaleness: (
+      pageId: string,
+      repoId: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<DocPage['staleness']>;
+    generateUpdate: (
+      pageId: string,
+      repoId: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<string>;
+    createPage: (
+      spaceKey: string,
+      title: string,
+      repoId: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<string>;
     updatePage: (
       pageId: string,
       title: string,
@@ -1189,6 +1228,21 @@ export interface AnvilAPI {
     commit(repoId: string, message: string): Promise<string>;
     generateCommitMessage(repoId: string): Promise<string>;
     createPullRequest(repoId: string): Promise<GitPullRequestCreateResult>;
+    prepareTurnDelivery(
+      repoId: string,
+      paths: string[],
+      mode: import('./scoped-git').TurnDeliveryMode,
+    ): Promise<import('./scoped-git').PreparedTurnDelivery>;
+    commitTurnDelivery(
+      repoId: string,
+      reviewId: string,
+      message: string,
+    ): Promise<import('./scoped-git').TurnDeliveryCommitResult>;
+    createTurnPullRequest(
+      repoId: string,
+      reviewId: string,
+      message: string,
+    ): Promise<import('./scoped-git').TurnPullRequestResult>;
     push(repoId: string, remote?: string, branch?: string, setUpstream?: boolean): Promise<string>;
     pull(repoId: string, remote?: string, branch?: string): Promise<string>;
     fetch(repoId: string, remote?: string): Promise<void>;

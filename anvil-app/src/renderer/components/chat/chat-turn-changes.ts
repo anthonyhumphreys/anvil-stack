@@ -21,6 +21,37 @@ export type TurnFileStatus = 'added' | 'modified' | 'deleted';
  */
 export type TurnPatchKind = 'unified' | 'raw' | 'truncated' | 'missing';
 
+/** Rejects results from a review request after the dialog is closed or refreshed. */
+export interface TurnDeliveryReviewRequestGuard {
+  begin(): number;
+  cancel(): boolean;
+  isCurrent(requestId: number): boolean;
+  finish(requestId: number): boolean;
+}
+
+export function createTurnDeliveryReviewRequestGuard(): TurnDeliveryReviewRequestGuard {
+  let nextRequestId = 0;
+  let pendingRequestId: number | null = null;
+  return {
+    begin: () => {
+      pendingRequestId = ++nextRequestId;
+      return pendingRequestId;
+    },
+    cancel: () => {
+      const hadPendingRequest = pendingRequestId !== null;
+      pendingRequestId = null;
+      nextRequestId += 1;
+      return hadPendingRequest;
+    },
+    isCurrent: (requestId) => requestId === pendingRequestId,
+    finish: (requestId) => {
+      if (requestId !== pendingRequestId) return false;
+      pendingRequestId = null;
+      return true;
+    },
+  };
+}
+
 export interface TurnFileChange {
   filePath: string;
   /** Concatenated patch text for every edit event touching this path. */
@@ -311,6 +342,125 @@ export function repoRelativePath(filePath: string, repoPath: string): string | n
   if (filePath.startsWith(`${repoPath}/`)) return filePath.slice(repoPath.length + 1);
   if (!filePath.startsWith('/')) return filePath.replace(/^\.\//, '');
   return null;
+}
+
+export interface TurnDeliveryRepoResolution {
+  repoId: string | null;
+  reason?: string;
+}
+
+function normalizeAbsolutePath(value: string): string {
+  const parts: string[] = [];
+  for (const part of value.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
+/**
+ * Resolves a turn's Git scope only when every file points to one known repo.
+ * Relative event paths need an explicit preferred repo unless the workspace
+ * contains only one repo.
+ */
+export function resolveTurnDeliveryRepo(
+  filePaths: readonly string[],
+  repos: readonly RepoInfo[],
+  preferredRepoId?: string | null,
+): TurnDeliveryRepoResolution {
+  if (filePaths.length === 0) return { repoId: null, reason: 'This turn changed no files.' };
+  const preferred = repos.find((repo) => repo.id === preferredRepoId);
+  const absoluteRepoIds = new Set<string>();
+  let hasRelativePath = false;
+
+  for (const filePath of filePaths) {
+    if (!filePath || filePath.includes('\0')) {
+      return { repoId: null, reason: 'The turn includes an invalid file path.' };
+    }
+    if (!filePath.startsWith('/')) {
+      const normalized = filePath.replace(/^\.\//, '');
+      if (normalized === '..' || normalized.startsWith('../')) {
+        return { repoId: null, reason: `${filePath} is outside the selected repository.` };
+      }
+      hasRelativePath = true;
+      continue;
+    }
+
+    const absolutePath = normalizeAbsolutePath(filePath);
+    const matches = repos
+      .filter((repo) => {
+        const root = normalizeAbsolutePath(repo.path);
+        return absolutePath === root || absolutePath.startsWith(`${root}/`);
+      })
+      .sort(
+        (left, right) =>
+          normalizeAbsolutePath(right.path).length - normalizeAbsolutePath(left.path).length,
+      );
+    if (matches.length === 0) {
+      return { repoId: null, reason: `${filePath} is outside the known repositories.` };
+    }
+    const deepestLength = normalizeAbsolutePath(matches[0]!.path).length;
+    const deepest = matches.filter(
+      (repo) => normalizeAbsolutePath(repo.path).length === deepestLength,
+    );
+    const ids = new Set(deepest.map((repo) => repo.id));
+    if (ids.size !== 1) {
+      return { repoId: null, reason: `${filePath} matches more than one repository.` };
+    }
+    absoluteRepoIds.add(deepest[0]!.id);
+  }
+
+  if (absoluteRepoIds.size > 1) {
+    return { repoId: null, reason: 'This turn changed files in more than one repository.' };
+  }
+  const absoluteRepoId = [...absoluteRepoIds][0] ?? null;
+  if (absoluteRepoId && preferred && preferred.id !== absoluteRepoId) {
+    return {
+      repoId: null,
+      reason: 'The thread repository does not match the repository containing these changes.',
+    };
+  }
+  if (hasRelativePath) {
+    if (preferred) {
+      if (absoluteRepoId && preferred.id !== absoluteRepoId) {
+        return { repoId: null, reason: 'The turn mixes files from different repositories.' };
+      }
+      return { repoId: preferred.id };
+    }
+    if (!absoluteRepoId && repos.length === 1) return { repoId: repos[0]!.id };
+    return {
+      repoId: null,
+      reason:
+        'Relative file paths need a single, explicit repository before Git actions are available.',
+    };
+  }
+  if (absoluteRepoId) return { repoId: absoluteRepoId };
+  return { repoId: null, reason: 'No repository is attached to these changes.' };
+}
+
+/** Adds a rename source path to the exact delivery scope when the provider recorded one. */
+export function turnDeliveryPaths(
+  files: readonly TurnFileChange[],
+  repoPath: string,
+): { paths: string[]; reason?: string } {
+  const paths = new Set<string>();
+  for (const file of files) {
+    const currentPath = repoRelativePath(file.filePath, repoPath);
+    if (!currentPath) {
+      return { paths: [], reason: `${file.filePath} is outside the selected repository.` };
+    }
+    paths.add(currentPath);
+    const renameFrom = /^rename from (.+)$/m.exec(file.diff)?.[1]?.trim();
+    if (renameFrom) {
+      const previousPath = repoRelativePath(renameFrom, repoPath);
+      if (!previousPath || previousPath === repoPath) {
+        return { paths: [], reason: `${renameFrom} is outside the selected repository.` };
+      }
+      paths.add(previousPath);
+    }
+  }
+  return { paths: [...paths] };
 }
 
 // ---------------------------------------------------------------------------

@@ -2,13 +2,20 @@ import { bootstrapManifestPolicy } from '../../../../cloud/contract/permissions'
 import { computeBootstrapDigest, setWorkspaceBootstrap } from '../bootstrap-policy.service';
 import Database from 'better-sqlite3';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
+import {
+  DEFAULT_LIMITS,
+  DESCRIPTOR_VERSION,
+  PROFILES,
+  PROTOCOL,
+} from '../../../../cloud/contract/version';
 import type { ExecutionAttempt, MeshJob } from '../../../../cloud/contract/jobs';
 import type { AgentProvider } from '../../../shared/types';
+import { REMOTE_REVIEW_CAPABILITY_REQUIREMENTS_FEATURE } from '../../../shared/remote-review-candidate';
 
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
@@ -18,6 +25,11 @@ const meshVerificationDialog = vi.hoisted(() => ({
 }));
 const browserSessionOwnership = vi.hoisted(() => ({
   interruptBrowserWorkspaceTurnsAbove: vi.fn(),
+}));
+const remoteReviewBackendState = vi.hoisted(() => ({
+  activeBackend: undefined as unknown,
+  discoveredBackend: undefined as unknown,
+  onDiscover: undefined as (() => void) | undefined,
 }));
 
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
@@ -51,6 +63,10 @@ vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../sync-backend-client.service.js')>();
   return {
     ...original,
+    discover: async () => {
+      remoteReviewBackendState.onDiscover?.();
+      return remoteReviewBackendState.discoveredBackend;
+    },
     rpc: async (
       _connection: unknown,
       operation: string,
@@ -72,6 +88,9 @@ vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
     },
   };
 });
+vi.mock('../sync-backend.service.js', () => ({
+  getActiveBackend: () => remoteReviewBackendState.activeBackend,
+}));
 
 vi.mock('../mesh-artifact.service.js', () => ({
   uploadAttemptArtifact: vi.fn(async () => ({ id: 'art-test' })),
@@ -117,6 +136,11 @@ import {
   setMeshWorkerEnabled,
   setMeshMaximumPermissionMode,
   buildDevicePolicy,
+  assertRemoteReviewBackendBinding,
+  captureRemoteReviewBackendBinding,
+  prepareSealedJob,
+  submitPreparedJob,
+  workflowNodeJobRequest,
 } from '../mesh-worker.service';
 import { BackendRpcError } from '../sync-backend-client.service';
 import {
@@ -129,14 +153,49 @@ import { workspaceDefinitionRevision } from '../sync-entity-domain';
 import { unsealCredentialGrant } from '../sync-keyring.service';
 import { probeSessionCli, runRemoteSessionTurn } from '../mesh-session.service';
 import type { RemoteSessionHooks, RemoteSessionSpec } from '../mesh-session.service';
+import { captureRemoteReviewCandidate } from '../remote-review-candidate.service';
 
 const SCOPE = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' } as const;
 const CTX = {
   apiUrl: 'https://backend.test/v1',
+  backendUrl: 'https://backend.test/',
   accessToken: 'tok',
   enrollmentId: 'enr-1',
   scope: SCOPE,
 };
+
+function resetRemoteReviewBackendFixture(
+  features = [REMOTE_REVIEW_CAPABILITY_REQUIREMENTS_FEATURE],
+) {
+  const descriptor = {
+    descriptorVersion: DESCRIPTOR_VERSION,
+    deploymentId: 'backend-1',
+    displayName: 'Test backend',
+    protocols: [PROTOCOL],
+    profiles: [...PROFILES],
+    apiPath: 'v1',
+    socketPath: 'socket',
+    authModes: ['enrollment-code'],
+    auth: { issuer: 'https://auth.test', publicClientId: 'test-client', scopes: ['openid'] },
+    limits: { ...DEFAULT_LIMITS },
+    features: [...features],
+  };
+  remoteReviewBackendState.activeBackend = {
+    id: 'backend-1',
+    baseUrl: CTX.backendUrl,
+    descriptor,
+    state: 'active',
+    identityReviewRequired: false,
+  };
+  remoteReviewBackendState.discoveredBackend = {
+    baseUrl: CTX.backendUrl,
+    apiUrl: CTX.apiUrl,
+    socketUrl: 'wss://backend.test/socket',
+    descriptor,
+    limits: { ...DEFAULT_LIMITS },
+  };
+  remoteReviewBackendState.onDiscover = undefined;
+}
 
 function makeJob(id: string, kind = 'diagnostic'): MeshJob {
   return {
@@ -180,6 +239,7 @@ beforeEach(() => {
   meshVerificationDialog.showMessageBox.mockClear().mockResolvedValue({ response: 0 });
   resetMeshWorkerForTests();
   configureMeshWorkerContext(() => CTX);
+  resetRemoteReviewBackendFixture();
 });
 
 describe('node permission ceiling', () => {
@@ -242,6 +302,8 @@ describe('mesh worker opt-in', () => {
     expect(ops).toEqual(['device.policy.publish', 'worker.connect', 'worker.capabilities.publish']);
     const policy = rpcCalls[0].params as { worker: { allowJobs: boolean } };
     expect(policy.worker.allowJobs).toBe(true);
+    const advertised = rpcCalls[2].params as { capabilities: string[] };
+    expect(advertised.capabilities).toContain('remote-review-candidate/v1');
   });
 
   it('keeps a retryable failed opt-in enabled and reconnects on heartbeat', async () => {
@@ -420,8 +482,7 @@ describe('job claim + diagnostic execution', () => {
     let state: string | null = null;
     while (Date.now() < deadline) {
       const row = db.prepare('SELECT state FROM mesh_attempts WHERE job_id = ?').get('job-rec') as
-        | { state: string }
-        | undefined;
+        { state: string } | undefined;
       state = row?.state ?? null;
       if (state === 'completed') break;
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -548,9 +609,7 @@ describe('attempt heartbeat', () => {
     rpcHandler = (op) => {
       if (op === 'attempt.renew') {
         return {
-          results: [
-            { attemptId: 'att-live', status: 'renewed', cancelRequested: true },
-          ],
+          results: [{ attemptId: 'att-live', status: 'renewed', cancelRequested: true }],
         };
       }
       return {};
@@ -2216,6 +2275,330 @@ describe('code-task executor (FLOW-01)', () => {
         : {};
     await setMeshWorkerEnabled(true);
     rpcCalls.length = 0;
+  });
+
+  async function captureReviewCandidate(
+    repoDir: string,
+    repositoryId: string,
+  ): Promise<{
+    baseCommit: string;
+    candidate: Awaited<ReturnType<typeof captureRemoteReviewCandidate>>;
+  }> {
+    mkdirSync(join(repoDir, 'src'), { recursive: true });
+    writeFileSync(join(repoDir, 'src', 'review.ts'), 'export const review = "base";\n');
+    execFileSync('git', ['add', 'src/review.ts'], { cwd: repoDir });
+    execFileSync(
+      'git',
+      ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'review base'],
+      { cwd: repoDir },
+    );
+    const baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir })
+      .toString()
+      .trim();
+    writeFileSync(
+      join(repoDir, 'src', 'review.ts'),
+      'export const review = "candidate-only-source-marker";\n',
+    );
+    const candidate = await captureRemoteReviewCandidate({
+      repositoryId,
+      repositoryPath: repoDir,
+      selectedPaths: ['src/review.ts'],
+      baseCommit,
+    });
+    return { baseCommit, candidate };
+  }
+
+  it('captures a backend binding only from a reviewed requirements-capable descriptor', () => {
+    resetRemoteReviewBackendFixture([]);
+    expect(() => captureRemoteReviewBackendBinding()).toThrow(
+      'remote-review-backend-binding-invalid',
+    );
+    resetRemoteReviewBackendFixture();
+    expect(captureRemoteReviewBackendBinding()).toEqual({
+      backendId: 'backend-1',
+      baseUrl: 'https://backend.test/',
+      apiUrl: 'https://backend.test/v1',
+      accountId: 'account-1',
+      datasetEpoch: '1',
+    });
+  });
+
+  it('seals candidate bytes, adds the worker capability requirement, and enforces both size bounds', async () => {
+    const { workspaceId, portableId, repoDir } = seedTaskWorkspace('review-sealed');
+    try {
+      const backendBinding = captureRemoteReviewBackendBinding();
+      const { baseCommit, candidate } = await captureReviewCandidate(repoDir, portableId);
+      const baseJob = makeCodeTaskJob('job-review-sealed', workspaceId, portableId, baseCommit);
+      const requestBuilder = workflowNodeJobRequest({
+        dispatchId: 'disp-review-sealed',
+        runId: 'run-review-sealed',
+        nodeId: 'review',
+        workspaceId,
+        prompt: 'Review the selected source snapshot.',
+        permissionMode: 'read-only',
+        sandbox: 'read-only',
+        pinnedManifest: { ...baseJob.inputManifest, inputs: { workspaceId } },
+        requestedTarget: {
+          kind: 'device',
+          enrollmentId: 'enr-1',
+          requirements: { capabilities: ['workflow-node'] },
+        },
+        remoteReviewCandidates: [candidate],
+      });
+      const request = await requestBuilder.build();
+      expect(() => prepareSealedJob(request)).toThrow('remote-review-backend-binding-required');
+      expect(taskKeyFor(SCOPE, `req:${request.requestId}`)).toBeNull();
+      expect(request.requestedTarget.requirements?.capabilities).toEqual([
+        'workflow-node',
+        'remote-review-candidate/v1',
+      ]);
+      const prepared = prepareSealedJob(request, backendBinding);
+      expect(Buffer.byteLength(JSON.stringify(prepared.sealedInputs), 'utf8')).toBeLessThanOrEqual(
+        512 * 1024,
+      );
+      expect(prepared.inputManifest.inputs).toEqual({ workspaceId });
+      expect(JSON.stringify(prepared.inputManifest)).not.toContain('candidate-only-source-marker');
+
+      const taskKey = taskKeyFor(SCOPE, `req:${request.requestId}`);
+      expect(taskKey).not.toBeNull();
+      const opened = unsealTaskInputs(SCOPE, request.requestId, taskKey!, prepared.sealedInputs);
+      expect(opened['remoteReviewCandidates']).toEqual([candidate]);
+      expect(JSON.stringify(opened['remoteReviewCandidates'])).toContain(
+        'candidate-only-source-marker',
+      );
+
+      expect(() =>
+        prepareSealedJob(
+          {
+            ...request,
+            privateInputs: { ...request.privateInputs, prompt: 'x'.repeat(450 * 1024) },
+          },
+          backendBinding,
+        ),
+      ).toThrow('remote-review-candidate-sealed-inputs-too-large');
+      expect(() =>
+        prepareSealedJob(
+          {
+            ...request,
+            resultRecipients: ['x'.repeat(650 * 1024)],
+          },
+          backendBinding,
+        ),
+      ).toThrow('remote-review-candidate-rpc-body-too-large');
+      expect(() =>
+        prepareSealedJob(
+          {
+            ...request,
+            requestedTarget: { kind: 'device', enrollmentId: 'enr-1' },
+          },
+          backendBinding,
+        ),
+      ).toThrow('remote-review-candidate-capability-unsupported');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes a sealed review candidate before a read-only provider turn and reports its exact base', async () => {
+    const {
+      workspaceId,
+      portableId,
+      repoDir,
+      head: initialHead,
+    } = seedTaskWorkspace('review-execution');
+    try {
+      const backendBinding = captureRemoteReviewBackendBinding();
+      const { baseCommit, candidate } = await captureReviewCandidate(repoDir, portableId);
+      const baseJob = makeCodeTaskJob('job-review-execution', workspaceId, portableId, baseCommit);
+      const request = await workflowNodeJobRequest({
+        dispatchId: 'disp-review-execution',
+        runId: 'run-review-execution',
+        nodeId: 'review',
+        workspaceId,
+        prompt: 'Review the candidate source snapshot.',
+        permissionMode: 'read-only',
+        sandbox: 'read-only',
+        pinnedManifest: { ...baseJob.inputManifest, inputs: { workspaceId } },
+        requestedTarget: { kind: 'device', enrollmentId: 'enr-1' },
+        remoteReviewCandidates: [candidate],
+      }).build();
+      const prepared = prepareSealedJob(request, backendBinding);
+      const job: MeshJob = {
+        ...baseJob,
+        kind: 'workflow-node',
+        requestId: prepared.requestId,
+        requestedTarget: prepared.requestedTarget,
+        inputManifest: prepared.inputManifest,
+        sealedInputs: prepared.sealedInputs,
+      };
+      const taskKey = taskKeyFor(SCOPE, `req:${prepared.requestId}`);
+      expect(taskKey).not.toBeNull();
+      // Mirrors successful taskkey delivery from the source after job.create.
+      storeTaskKey(SCOPE, job.id, taskKey!);
+      runTurnMock.mockImplementation(async (spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
+        hooks.onThreadStarted('thr-review');
+        expect(spec.permissionMode).toBe('read-only');
+        expect(spec.sandbox).toBe('read-only');
+        expect(readFileSync(join(spec.cwd, 'src', 'review.ts'), 'utf8')).toContain(
+          'candidate-only-source-marker',
+        );
+        return {
+          providerThreadId: 'thr-review',
+          turnId: 'turn-review',
+          turnStatus: 'completed',
+          cliVersion: '0.44.0',
+          cancelled: false,
+          assistantOutput: 'reviewed',
+          resumeHandle: 'thr-review',
+        };
+      });
+      claimWith(job);
+      await handleJobAvailable(job.id);
+
+      const row = db
+        .prepare('SELECT state, result_json, journal_json FROM mesh_attempts WHERE id = ?')
+        .get(`att-${job.id}`) as { state: string; result_json: string; journal_json: string };
+      const result = JSON.parse(row.result_json) as {
+        resultManifest: {
+          repositories: Array<{ baseCommit: string; resultCommit: string; changed: boolean }>;
+        };
+      };
+      expect(row.journal_json).toContain('review-candidate-materialized');
+      expect(row.state).toBe('completed');
+      expect(runTurnMock).toHaveBeenCalledOnce();
+      expect(result.resultManifest.repositories[0]).toEqual({
+        repositoryId: portableId,
+        baseCommit: candidate.candidateCommit,
+        resultCommit: candidate.candidateCommit,
+        branch: `mesh/attempt/att-${job.id}`,
+        changed: false,
+      });
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim()).toBe(
+        baseCommit,
+      );
+      expect(execFileSync('git', ['status', '--porcelain'], { cwd: repoDir }).toString()).toBe(
+        ' M src/review.ts\n',
+      );
+      expect(initialHead).not.toBe(baseCommit);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an approval replay after the active backend changes without resealing the request', async () => {
+    const { workspaceId, portableId, repoDir } = seedTaskWorkspace('review-backend-switch');
+    try {
+      const binding = captureRemoteReviewBackendBinding();
+      const { baseCommit, candidate } = await captureReviewCandidate(repoDir, portableId);
+      const baseJob = makeCodeTaskJob(
+        'job-review-backend-switch',
+        workspaceId,
+        portableId,
+        baseCommit,
+      );
+      const request = await workflowNodeJobRequest({
+        dispatchId: 'disp-review-backend-switch',
+        runId: 'run-review-backend-switch',
+        nodeId: 'review',
+        workspaceId,
+        prompt: 'Review this snapshot.',
+        permissionMode: 'read-only',
+        sandbox: 'read-only',
+        pinnedManifest: { ...baseJob.inputManifest, inputs: { workspaceId } },
+        requestedTarget: { kind: 'device', enrollmentId: 'enr-1' },
+        remoteReviewCandidates: [candidate],
+      }).build();
+      const prepared = prepareSealedJob(request, binding);
+      const frozen = {
+        requestId: prepared.requestId,
+        payloadHash: prepared.payloadHash,
+        sealedInputs: prepared.sealedInputs,
+      };
+
+      configureMeshWorkerContext(() => ({
+        ...CTX,
+        scope: { ...SCOPE, backendId: 'backend-switched' },
+      }));
+      await expect(submitPreparedJob(prepared, binding)).rejects.toThrow(
+        'remote-review-backend-binding-invalid',
+      );
+      expect(rpcCalls.some((call) => call.operation === 'job.create')).toBe(false);
+
+      configureMeshWorkerContext(() => CTX);
+      remoteReviewBackendState.onDiscover = () =>
+        configureMeshWorkerContext(() => ({
+          ...CTX,
+          scope: { ...SCOPE, accountId: 'account-switched' },
+        }));
+      await expect(submitPreparedJob(prepared, binding)).rejects.toThrow(
+        'remote-review-backend-binding-invalid',
+      );
+      expect(rpcCalls.some((call) => call.operation === 'job.create')).toBe(false);
+
+      remoteReviewBackendState.onDiscover = undefined;
+      configureMeshWorkerContext(() => CTX);
+      rpcHandler = (operation) =>
+        operation === 'job.create'
+          ? {
+              job: {
+                id: 'job-review-backend-switch',
+                requestId: prepared.requestId,
+                keyDelivery: 'none',
+              },
+            }
+          : {};
+      await assertRemoteReviewBackendBinding(binding);
+      await submitPreparedJob(prepared, binding);
+      const created = rpcCalls.find((call) => call.operation === 'job.create')?.params;
+      expect(created).toEqual(prepared);
+      expect(prepared).toMatchObject(frozen);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects refreshed backend capability loss before job.create', async () => {
+    const { workspaceId, portableId, repoDir } = seedTaskWorkspace('review-feature-loss');
+    try {
+      const binding = captureRemoteReviewBackendBinding();
+      const { baseCommit, candidate } = await captureReviewCandidate(repoDir, portableId);
+      const baseJob = makeCodeTaskJob(
+        'job-review-feature-loss',
+        workspaceId,
+        portableId,
+        baseCommit,
+      );
+      const request = await workflowNodeJobRequest({
+        dispatchId: 'disp-review-feature-loss',
+        runId: 'run-review-feature-loss',
+        nodeId: 'review',
+        workspaceId,
+        prompt: 'Review this snapshot.',
+        permissionMode: 'read-only',
+        sandbox: 'read-only',
+        pinnedManifest: { ...baseJob.inputManifest, inputs: { workspaceId } },
+        requestedTarget: { kind: 'device', enrollmentId: 'enr-1' },
+        remoteReviewCandidates: [candidate],
+      }).build();
+      const prepared = prepareSealedJob(request, binding);
+      const discovered = remoteReviewBackendState.discoveredBackend as {
+        descriptor: { features?: string[] };
+        [key: string]: unknown;
+      };
+      remoteReviewBackendState.discoveredBackend = {
+        ...discovered,
+        descriptor: { ...discovered.descriptor, features: [] },
+      };
+
+      await expect(submitPreparedJob(prepared, binding)).rejects.toThrow(
+        'remote-review-backend-binding-invalid',
+      );
+      expect(rpcCalls.some((call) => call.operation === 'job.create')).toBe(false);
+      expect(taskKeyFor(SCOPE, `req:${request.requestId}`)).not.toBeNull();
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 
   it.each(['full-access', 'on-request'] as const)(

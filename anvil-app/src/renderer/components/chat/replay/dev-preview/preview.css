@@ -12,6 +12,10 @@ body {
   color-scheme: dark;
 }
 
+html[data-theme='light'] body {
+  color-scheme: light;
+}
+
 ::selection {
   color: var(--color-text-primary);
   background: color-mix(in srgb, var(--color-accent) 34%, transparent);

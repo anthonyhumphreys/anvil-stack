@@ -65,4 +65,18 @@ Sketch, and a 30-surface heavy thread for the performance budget in
 update in place, and the **Theme** selector for the dark, light and flavour
 visual check. The preview entry (`dev-preview/main.tsx`) serves artifacts,
 revisions, sketches and comments from memory; actions and sharing are inert.
+
+Open `http://127.0.0.1:4179/?delivery` for the reviewed-delivery fixture. It uses
+the production Git review and delegated-result components with labelled synthetic
+responses. Review a captured diff, exercise stale-candidate and PR failure
+messages, select verification checks, and inspect separate combination,
+verification and application receipts. No Git command, provider request or
+verification command runs from this fixture. It is layout and interaction
+evidence only; service tests use real temporary Git repositories.
 `chat-replay.test.ts` validates every fixture payload against its kind schema.
+
+Open `http://127.0.0.1:4179/?composer` to try the production chat input with local
+callbacks. Switch themes, pane widths, and ready/working/unavailable states; use
+the sample draft to check wrapping, model selection, access controls, and send
+modes. Sending only updates the fixture state. No provider requests or file
+operations run.

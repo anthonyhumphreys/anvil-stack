@@ -409,6 +409,10 @@ interface WorkerRow {
   [key: string]: string | number | null;
 }
 
+interface StoredWorkerCapabilities extends WorkerCapabilities {
+  publishedForIncarnation?: string;
+}
+
 interface WorkerReplicaRow {
   workspace_id: string;
   definition_revision: string;
@@ -4492,8 +4496,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       workerIncarnation: row.incarnation,
       available: isLeaseLive(row, now),
       policy,
-      capabilities:
-        row.capabilities === null ? null : (JSON.parse(row.capabilities) as WorkerCapabilities),
+      capabilities: this.currentWorkerCapabilities(row),
       replicas,
       connectedAt: row.connected_at === null ? null : new Date(row.connected_at).toISOString(),
       lastSeenAt: row.last_seen_at === null ? null : new Date(row.last_seen_at).toISOString(),
@@ -4518,11 +4521,21 @@ export class AccountCoordinator extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       `UPDATE workers SET capabilities = ?, last_seen_at = ?, lease_expires_at = ?
        WHERE enrollment_id = ?`,
-      JSON.stringify(capabilities),
+      JSON.stringify({ ...capabilities, publishedForIncarnation: row.incarnation }),
       now,
       now + WORKER_LEASE_MS,
       auth.enrollmentId,
     );
+    const linkedEnvironments = this.ctx.storage.sql
+      .exec<{ environment_id: string }>(
+        `SELECT environment_id FROM environments
+         WHERE enrollment_id = ? AND reaped_at IS NULL`,
+        auth.enrollmentId,
+      )
+      .toArray();
+    for (const { environment_id: environmentId } of linkedEnvironments) {
+      this.resolveEnvironmentTargets(environmentId, auth.enrollmentId);
+    }
     this.bumpCounter('capability_publishes', 1);
     const result: WorkerCapabilitiesPublishResult = { published: true };
     return rpcSuccessResponse(requestId, result);
@@ -4574,6 +4587,23 @@ export class AccountCoordinator extends DurableObject<Env> {
       .exec<WorkerRow>('SELECT * FROM workers WHERE enrollment_id = ?', enrollmentId)
       .toArray();
     return rows[0] ?? null;
+  }
+
+  /** The wire view omits the private incarnation stamp on persisted capabilities. */
+  private currentWorkerCapabilities(row: WorkerRow): WorkerCapabilities | null {
+    const capabilities = parseStoredCapabilities(row.capabilities);
+    if (capabilities === null || capabilities.publishedForIncarnation !== row.incarnation) {
+      return null;
+    }
+    return {
+      os: capabilities.os,
+      arch: capabilities.arch,
+      ...(capabilities.memoryMb === undefined ? {} : { memoryMb: capabilities.memoryMb }),
+      capabilities: capabilities.capabilities,
+      ...(capabilities.maxConcurrentJobs === undefined
+        ? {}
+        : { maxConcurrentJobs: capabilities.maxConcurrentJobs }),
+    };
   }
 
   /**
@@ -4785,6 +4815,18 @@ export class AccountCoordinator extends DurableObject<Env> {
           targetEnrollmentId: enrollmentId,
         });
       }
+      if (
+        !capabilitiesSatisfy(
+          parseStoredCapabilities(row.capabilities),
+          requested.requirements,
+          row.incarnation,
+        )
+      ) {
+        throw new RpcFailure('conflict', {
+          reason: 'target-requirements-not-satisfied',
+          targetEnrollmentId: enrollmentId,
+        });
+      }
       return {
         targetEnrollmentId: enrollmentId,
         explanation: `device: explicit target; live worker with allowing policy`,
@@ -4807,6 +4849,19 @@ export class AccountCoordinator extends DurableObject<Env> {
         throw new RpcFailure('conflict', { reason: 'environment-terminal' });
       }
       if (environment.enrollment_id !== null) {
+        const worker = this.readWorker(environment.enrollment_id);
+        if (
+          !capabilitiesSatisfy(
+            worker === null ? null : parseStoredCapabilities(worker.capabilities),
+            requested.requirements,
+            worker?.incarnation ?? undefined,
+          )
+        ) {
+          return {
+            targetEnrollmentId: null,
+            explanation: `environment: ${targetEnvironmentId} awaiting required worker capabilities`,
+          };
+        }
         return {
           targetEnrollmentId: environment.enrollment_id,
           explanation: `environment: ${targetEnvironmentId} already enrolled`,
@@ -4858,7 +4913,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         continue;
       }
       const capabilities = parseStoredCapabilities(row.capabilities);
-      if (!capabilitiesSatisfy(capabilities, requested.requirements)) {
+      if (!capabilitiesSatisfy(capabilities, requested.requirements, row.incarnation)) {
         continue;
       }
       const capacity = effectiveConcurrencyCap(policy, capabilities);
@@ -5014,11 +5069,11 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (!policyAllowsSource(policy, job.source_enrollment_id, auth.enrollmentId)) {
         throw new RpcFailure('forbidden', { reason: 'source-not-allowed' });
       }
+      const requestedTarget = JSON.parse(job.requested_target) as RequestedTarget;
       if (job.target_enrollment_id === null) {
         if (!isJobKind(job.kind)) {
           throw new RpcFailure('unavailable', { reason: 'corrupt-job' });
         }
-        const requestedTarget = JSON.parse(job.requested_target) as RequestedTarget;
         if (requestedTarget.kind !== 'auto') {
           if (requestedTarget.kind === 'environment') {
             // An environment target is resolved by environment.report after
@@ -5056,6 +5111,21 @@ export class AccountCoordinator extends DurableObject<Env> {
         job.target_enrollment_id = placement.targetEnrollmentId;
         job.placement_explanation = placement.explanation;
         job.updated_at = now;
+      }
+      // Recheck against the current live worker incarnation at claim time.
+      // Placement can predate a capability change, and retries preserve their
+      // target while acquiring a new attempt.
+      if (
+        !capabilitiesSatisfy(
+          parseStoredCapabilities(worker.capabilities),
+          requestedTarget.requirements,
+          worker.incarnation,
+        )
+      ) {
+        throw new RpcFailure('conflict', {
+          reason: 'target-requirements-not-satisfied',
+          targetEnrollmentId: auth.enrollmentId,
+        });
       }
       const capacity = effectiveConcurrencyCap(
         policy,
@@ -8406,9 +8476,11 @@ export class AccountCoordinator extends DurableObject<Env> {
    * device-targeted jobs.
    */
   private resolveEnvironmentTargets(environmentId: string, enrollmentId: string): void {
+    const worker = this.readWorker(enrollmentId);
+    const capabilities = worker === null ? null : parseStoredCapabilities(worker.capabilities);
     const pending = this.ctx.storage.sql
-      .exec<{ job_id: string }>(
-        `SELECT job_id FROM jobs
+      .exec<{ job_id: string; requested_target: string }>(
+        `SELECT job_id, requested_target FROM jobs
          WHERE state = 'queued' AND target_enrollment_id IS NULL
            AND json_extract(requested_target, '$.kind') = 'environment'
            AND json_extract(requested_target, '$.environmentId') = ?`,
@@ -8416,6 +8488,16 @@ export class AccountCoordinator extends DurableObject<Env> {
       )
       .toArray();
     for (const job of pending) {
+      const requestedTarget = JSON.parse(job.requested_target) as RequestedTarget;
+      if (
+        !capabilitiesSatisfy(
+          capabilities,
+          requestedTarget.requirements,
+          worker?.incarnation ?? undefined,
+        )
+      ) {
+        continue;
+      }
       this.ctx.storage.sql.exec(
         'UPDATE jobs SET target_enrollment_id = ? WHERE job_id = ?',
         enrollmentId,
@@ -13129,13 +13211,21 @@ function effectiveConcurrencyCap(
  * declared requirement.
  */
 function capabilitiesSatisfy(
-  capabilities: WorkerCapabilities | null,
+  capabilities: StoredWorkerCapabilities | null,
   requirements: CapabilityRequirements | undefined,
+  workerIncarnation: string | null | undefined,
 ): boolean {
   if (requirements === undefined) {
     return true;
   }
   if (capabilities === null) {
+    return false;
+  }
+  if (
+    workerIncarnation === null ||
+    workerIncarnation === undefined ||
+    capabilities.publishedForIncarnation !== workerIncarnation
+  ) {
     return false;
   }
   for (const required of requirements.capabilities) {
@@ -13162,12 +13252,12 @@ function capabilitiesSatisfy(
  * Reads a stored capabilities document. Rows are written only by
  * parseWorkerCapabilitiesParams output; a shape violation is corruption.
  */
-function parseStoredCapabilities(raw: string | null): WorkerCapabilities | null {
+function parseStoredCapabilities(raw: string | null): StoredWorkerCapabilities | null {
   if (raw === null) {
     return null;
   }
   try {
-    return JSON.parse(raw) as WorkerCapabilities;
+    return JSON.parse(raw) as StoredWorkerCapabilities;
   } catch {
     throw new RpcFailure('unavailable', { reason: 'corrupt-worker-capabilities' });
   }

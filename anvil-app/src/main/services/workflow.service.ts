@@ -27,6 +27,10 @@ import type {
   WorkflowRunInputManifest,
   WorkflowConvergence,
 } from '../../shared/types.js';
+import type {
+  ChatDelegationIntegrationPlan,
+  ChatDelegationVerificationSelection,
+} from '../../shared/chat-delegation.js';
 import { resolveCodexReasoningEffort } from '../../shared/codex-models.js';
 import { SYNC_ENTITY_WORKFLOW_TEMPLATE } from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
@@ -65,9 +69,23 @@ import {
   requestWorkflowEnvironment,
 } from './mesh-dispatch.service.js';
 import type { ExecutionManifest, RequestedTarget } from '../../../cloud/contract/jobs.js';
-import { integrateResults } from './mesh-integration.service.js';
+import {
+  applyIntegrationRepository,
+  getIntegration,
+  integrateResults,
+  prepareIntegrationVerification,
+  prepareExistingIntegrationVerification,
+  runIntegrationVerification,
+  retryIntegrationVerification,
+} from './mesh-integration.service.js';
+import { getMeshMaximumPermissionMode } from './mesh-permissions.service.js';
 import { describeMeshDispatchError } from './mesh-dispatch-error.js';
 import { assertWorkflowSourceSnapshot } from './workflow-source-snapshot.js';
+import {
+  validateRemoteReviewCandidates,
+  type RemoteReviewBackendBinding,
+  type RemoteReviewCandidate,
+} from '../../shared/remote-review-candidate.js';
 
 interface WorkflowTemplateRow {
   id: string;
@@ -194,8 +212,79 @@ function mapTemplate(row: WorkflowTemplateRow): WorkflowTemplate {
   };
 }
 
+function normaliseWorkflowConvergence(value: WorkflowConvergence): WorkflowConvergence {
+  const legacy = value as WorkflowConvergence & {
+    combined?: boolean;
+    verificationState?: WorkflowConvergence['verificationState'];
+    verificationAttempt?: number;
+    verificationSelections?: WorkflowConvergence['verificationSelections'];
+    appliedAt?: string | null;
+  };
+  const persisted = getIntegration(value.integrationId);
+  const repositoryById = new Map(
+    (persisted?.repositories ?? []).map((repository) => [repository.repositoryId, repository]),
+  );
+  const repositories = value.repositories.map((repository) => {
+    const integrationRepository = repositoryById.get(repository.repositoryId);
+    return {
+      ...repository,
+      branch: repository.branch ?? integrationRepository?.branch ?? '',
+      worktreePath: repository.worktreePath ?? integrationRepository?.worktreePath ?? '',
+      appliedAt: repository.appliedAt ?? integrationRepository?.appliedAt ?? null,
+      destinationBranch:
+        repository.destinationBranch ?? integrationRepository?.destinationBranch ?? null,
+      appliedCommit: repository.appliedCommit ?? integrationRepository?.appliedCommit ?? null,
+      ...((repository.applyError ?? integrationRepository?.applyError)
+        ? { applyError: repository.applyError ?? integrationRepository?.applyError }
+        : {}),
+    };
+  });
+  const verification = value.verification.map((result) => {
+    const persistedResult = persisted?.verification.find(
+      (candidate) =>
+        candidate.repositoryId === result.repositoryId && candidate.command === result.command,
+    );
+    return {
+      ...result,
+      approvalGranted: result.approvalGranted ?? persistedResult?.approvalGranted ?? true,
+      logTail: result.logTail ?? persistedResult?.logTail ?? '',
+      testedHead: result.testedHead ?? persistedResult?.testedHead ?? null,
+      testedTree: result.testedTree ?? persistedResult?.testedTree ?? null,
+    };
+  });
+  const verificationState =
+    legacy.verificationState ??
+    persisted?.verificationState ??
+    (verification.length === 0
+      ? 'not-run'
+      : verification.some((result) => !result.approvalGranted)
+        ? 'blocked'
+        : verification.some((result) => result.exitCode !== 0 || result.timedOut)
+          ? 'failed'
+          : 'passed');
+  return {
+    ...value,
+    combined:
+      legacy.combined ??
+      persisted?.combined ??
+      (value.state === 'integrated' &&
+        repositories.length > 0 &&
+        repositories.every((repository) => repository.integratedCommit !== null)),
+    verificationState,
+    verificationAttempt: legacy.verificationAttempt ?? persisted?.verificationAttempt ?? 0,
+    verificationSelections:
+      legacy.verificationSelections ?? persisted?.verificationSelections ?? [],
+    appliedAt: legacy.appliedAt ?? persisted?.appliedAt ?? null,
+    repositories,
+    verification,
+  };
+}
+
 function mapRun(row: WorkflowRunRow): WorkflowRun {
   const graph = JSON.parse(row.graph_json) as WorkflowRun;
+  const convergence = graph.convergence
+    ? normaliseWorkflowConvergence(graph.convergence)
+    : undefined;
   return {
     id: row.id,
     events: graph.events ?? [],
@@ -206,7 +295,9 @@ function mapRun(row: WorkflowRunRow): WorkflowRun {
     runtimeOwnerPid: graph.runtimeOwnerPid,
     executionPaths: graph.executionPaths,
     inputManifest: graph.inputManifest,
-    convergence: graph.convergence,
+    remoteReviewCandidates: graph.remoteReviewCandidates,
+    remoteReviewBackend: graph.remoteReviewBackend,
+    convergence,
     templateId: row.template_id,
     templateName: row.template_name,
     workspaceId: row.workspace_id,
@@ -452,6 +543,8 @@ function persistRun(run: WorkflowRun): void {
         runtimeOwnerPid: run.runtimeOwnerPid,
         executionPaths: run.executionPaths,
         inputManifest: run.inputManifest,
+        remoteReviewCandidates: run.remoteReviewCandidates,
+        remoteReviewBackend: run.remoteReviewBackend,
         convergence: run.convergence,
       }),
       run.status,
@@ -528,6 +621,94 @@ function captureRunInputManifest(
     configVersions: {},
     ...(trigger === undefined ? {} : { trigger }),
   };
+}
+
+function assertCurrentTrackedBaseSnapshots(
+  repositories: Array<{ repositoryId: string; commit: string; path: string | undefined }>,
+  candidateRepositoryIds: ReadonlySet<string>,
+): void {
+  for (const repository of repositories) {
+    if (candidateRepositoryIds.has(repository.repositoryId)) continue;
+    if (!repository.path)
+      throw new Error(
+        `Current tracked review has no source checkout for ${repository.repositoryId}.`,
+      );
+    try {
+      const gitOptions = {
+        cwd: repository.path,
+        encoding: 'utf8' as const,
+        timeout: 10_000,
+        stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      };
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], gitOptions).trim();
+      const trackedStatus = execFileSync(
+        'git',
+        ['status', '--porcelain=v1', '--untracked-files=no'],
+        gitOptions,
+      ).trim();
+      if (head !== repository.commit || trackedStatus)
+        throw new Error(
+          `Current tracked review stopped because ${repository.repositoryId} changed after approval. Start a new review from the current checkout.`,
+        );
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Current tracked review stopped'))
+        throw error;
+      throw new Error(
+        `Could not verify the current tracked source for ${repository.repositoryId}.`,
+      );
+    }
+  }
+}
+
+function assertCurrentTrackedRunSources(
+  workspaceId: string,
+  repoIds: string[],
+  executionPaths: RepoRow[] | undefined,
+  baseCommits: Record<string, string>,
+  candidateRepositoryIds: ReadonlySet<string>,
+): void {
+  const pathByRepoId = new Map((executionPaths ?? []).map((row) => [row.id, row.path]));
+  const rows = getDb()
+    .prepare(
+      `SELECT d.portable_id, d.mapped_repo_id, r.path
+       FROM workspace_repo_definitions d
+       LEFT JOIN repos r ON r.id = d.mapped_repo_id
+       WHERE d.workspace_id = ?`,
+    )
+    .all(workspaceId) as Array<{
+    portable_id: string;
+    mapped_repo_id: string | null;
+    path: string | null;
+  }>;
+  const selected = rows.filter(
+    (row) => row.mapped_repo_id !== null && repoIds.includes(row.mapped_repo_id),
+  );
+  if (new Set(selected.map((row) => row.mapped_repo_id)).size !== repoIds.length)
+    throw new Error(
+      'Current tracked review needs portable mappings for every selected repository.',
+    );
+  const expected = new Map(Object.entries(baseCommits));
+  const sourceIds = new Set(selected.map((row) => row.portable_id));
+  if ([...expected.keys()].some((repositoryId) => !sourceIds.has(repositoryId)))
+    throw new Error('Current tracked review contains a source pin outside this workspace scope.');
+  for (const row of selected) {
+    if (!expected.has(row.portable_id))
+      throw new Error(`Current tracked review is missing a frozen base for ${row.portable_id}.`);
+    if (!row.mapped_repo_id) continue;
+    if (row.path === null && !pathByRepoId.has(row.mapped_repo_id))
+      throw new Error(`Current tracked review has no source checkout for ${row.portable_id}.`);
+  }
+  assertCurrentTrackedBaseSnapshots(
+    selected.map((row) => ({
+      repositoryId: row.portable_id,
+      commit: expected.get(row.portable_id)!,
+      path: row.mapped_repo_id
+        ? (pathByRepoId.get(row.mapped_repo_id) ?? row.path ?? undefined)
+        : undefined,
+    })),
+    candidateRepositoryIds,
+  );
 }
 
 export function assertChatDelegationSources(workspaceId: string, repoIds: readonly string[]): void {
@@ -1111,21 +1292,32 @@ async function executeRemoteWorkflowNode(
   // A new dispatch must not silently omit local edits or newer commits.
   if (!persistedDispatch?.requestJson) {
     const paths = new Map(run.executionPaths?.map((row) => [row.id, row.path]));
-    assertWorkflowSourceSnapshot(
-      manifest.repositories.map((repository) => {
-        const row = expectedRows.find((item) => item.portable_id === repository.repositoryId);
-        return {
-          ...repository,
-          path: row?.mapped_repo_id
-            ? (paths.get(row.mapped_repo_id) ?? row.path ?? undefined)
-            : undefined,
-        };
-      }),
-    );
+    const pinnedSources = manifest.repositories.map((repository) => {
+      const row = expectedRows.find((item) => item.portable_id === repository.repositoryId);
+      return {
+        ...repository,
+        path: row?.mapped_repo_id
+          ? (paths.get(row.mapped_repo_id) ?? row.path ?? undefined)
+          : undefined,
+      };
+    });
+    if (run.chatOrigin?.source === 'current-tracked') {
+      assertCurrentTrackedBaseSnapshots(
+        pinnedSources,
+        new Set(run.remoteReviewCandidates?.map((candidate) => candidate.repositoryId)),
+      );
+    } else if (!run.remoteReviewCandidates) {
+      assertWorkflowSourceSnapshot(pinnedSources);
+    }
   }
   const requestedTarget = persistedTarget ?? (await requestedTargetFor(run, node));
   signal.throwIfAborted();
   if (requestedTarget === null) throw new Error('Remote executor received a local node.');
+  const remoteReviewCandidates = run.remoteReviewCandidates?.filter((candidate) =>
+    manifest.repositories.some((repository) => repository.repositoryId === candidate.repositoryId),
+  );
+  if (remoteReviewCandidates?.length && node.permissionMode !== 'read-only')
+    throw new Error('Current tracked review cannot run with write permissions.');
   const updateRemote = (dispatch: Awaited<ReturnType<typeof dispatchWorkflowNode>>) => {
     const remote: WorkflowAttempt['remote'] = {
       dispatchId,
@@ -1159,6 +1351,8 @@ async function executeRemoteWorkflowNode(
       permissionMode: node.permissionMode ?? getSettings().codexMode,
       requestedTarget,
       pinnedManifest: manifest,
+      ...(remoteReviewCandidates?.length ? { remoteReviewCandidates } : {}),
+      ...(run.remoteReviewBackend ? { remoteReviewBackend: run.remoteReviewBackend } : {}),
     });
   } catch (error) {
     if (signal.aborted) void cancelNodeDispatch(dispatchId).catch(() => undefined);
@@ -1366,6 +1560,12 @@ interface WorkflowRunStartInput {
   permissionCeiling?: import('../../shared/types.js').CodexMode;
 }
 
+interface ChatWorkflowRunStartInput extends Omit<WorkflowRunStartInput, 'templateId'> {
+  remoteReviewCandidates?: RemoteReviewCandidate[];
+  remoteReviewBaseCommits?: Record<string, string>;
+  remoteReviewBackend?: RemoteReviewBackendBinding;
+}
+
 export function startWorkflowRun(input: WorkflowRunStartInput): WorkflowRun {
   const template = getWorkflowTemplate(input.templateId);
   if (!template) throw new Error('Workflow template not found.');
@@ -1374,7 +1574,7 @@ export function startWorkflowRun(input: WorkflowRunStartInput): WorkflowRun {
 
 /** Chat tasks use the scheduler without creating or syncing a saved template. */
 export function startChatWorkflowRun(
-  input: Omit<WorkflowRunStartInput, 'templateId'> & {
+  input: ChatWorkflowRunStartInput & {
     definition: WorkflowTemplateInput;
     origin: NonNullable<WorkflowRun['chatOrigin']>;
   },
@@ -1390,7 +1590,16 @@ export function startChatWorkflowRun(
   const thread = getChatThread(input.origin.threadId);
   if (!thread || thread.workspaceId !== input.workspaceId || thread.temporary)
     throw new Error('Delegation needs a saved chat in this workspace.');
-  return startPreparedWorkflowRun({ ...input, templateId: template.id }, template, input.origin);
+  return startPreparedWorkflowRun(
+    {
+      ...input,
+      templateId: template.id,
+      remoteReviewBaseCommits: input.origin.sourceBaseCommits,
+      remoteReviewBackend: input.origin.sourceBackend,
+    },
+    template,
+    input.origin,
+  );
 }
 
 export function listChatWorkflowRuns(threadId: string): WorkflowRun[] {
@@ -1416,7 +1625,11 @@ export function getChatWorkflowRunByRequest(
 }
 
 function startPreparedWorkflowRun(
-  input: WorkflowRunStartInput,
+  input: WorkflowRunStartInput & {
+    remoteReviewCandidates?: RemoteReviewCandidate[];
+    remoteReviewBaseCommits?: Record<string, string>;
+    remoteReviewBackend?: RemoteReviewBackendBinding;
+  },
   savedTemplate: WorkflowTemplate,
   chatOrigin?: WorkflowRun['chatOrigin'],
 ): WorkflowRun {
@@ -1453,6 +1666,58 @@ function startPreparedWorkflowRun(
     input.executionPaths,
     input.trigger,
   );
+  if (input.remoteReviewCandidates) {
+    validateRemoteReviewCandidates(input.remoteReviewCandidates, { readOnly: true });
+    if (
+      template.nodes.some(
+        (node) => node.target?.kind === 'local' || node.permissionMode !== 'read-only',
+      )
+    )
+      throw new Error('Current tracked review requires every task to remain remote and read-only.');
+    const candidateBases = new Map(
+      input.remoteReviewCandidates.map((candidate) => [
+        candidate.repositoryId,
+        candidate.baseCommit,
+      ]),
+    );
+    const manifestPins = new Set(inputManifest.repositories.map((pin) => pin.repositoryId));
+    if ([...candidateBases.keys()].some((repositoryId) => !manifestPins.has(repositoryId)))
+      throw new Error('A tracked review candidate is outside the selected repository scope.');
+    inputManifest.repositories = inputManifest.repositories.map((pin) => ({
+      ...pin,
+      commit: candidateBases.get(pin.repositoryId) ?? pin.commit,
+    }));
+  }
+  if (input.remoteReviewCandidates?.length && !input.remoteReviewBackend)
+    throw new Error('Current tracked review needs its approved Mesh backend binding.');
+  if (input.remoteReviewBackend && !input.remoteReviewCandidates?.length)
+    throw new Error(
+      'A Mesh backend binding is only valid with a frozen current tracked candidate.',
+    );
+  if (input.remoteReviewBaseCommits) {
+    assertCurrentTrackedRunSources(
+      input.workspaceId,
+      input.repoIds,
+      input.executionPaths,
+      input.remoteReviewBaseCommits,
+      new Set(input.remoteReviewCandidates?.map((candidate) => candidate.repositoryId)),
+    );
+    const baseCommits = new Map(Object.entries(input.remoteReviewBaseCommits));
+    const manifestRepositoryIds = new Set(
+      inputManifest.repositories.map((repository) => repository.repositoryId),
+    );
+    if ([...baseCommits.keys()].some((repositoryId) => !manifestRepositoryIds.has(repositoryId)))
+      throw new Error('Current tracked review has a source pin outside the frozen run manifest.');
+    for (const candidate of input.remoteReviewCandidates ?? [])
+      if (baseCommits.get(candidate.repositoryId) !== candidate.baseCommit)
+        throw new Error(
+          `Current tracked candidate ${candidate.repositoryId} does not match its frozen base.`,
+        );
+    inputManifest.repositories = inputManifest.repositories.map((repository) => ({
+      ...repository,
+      commit: baseCommits.get(repository.repositoryId) ?? repository.commit,
+    }));
+  }
   const supervisor = chatOrigin
     ? { id: chatOrigin.threadId }
     : createChatThread({
@@ -1489,6 +1754,8 @@ function startPreparedWorkflowRun(
         workItemRef: input.workItemRef,
         executionPaths: input.executionPaths,
         inputManifest,
+        remoteReviewCandidates: input.remoteReviewCandidates,
+        remoteReviewBackend: input.remoteReviewBackend,
       }),
       input.kickoff.trim(),
       supervisor.id,
@@ -1697,33 +1964,98 @@ function remoteDispatchOrder(run: WorkflowRun): string[] {
   return [...new Set(ordered)];
 }
 
-export async function convergeWorkflowRun(
-  runId: string,
-  verification: string[] = [],
-): Promise<WorkflowRun> {
-  const run = mutableRun(runId);
-  if (activeRuns.has(runId)) throw new Error('Wait for workflow execution to finish first.');
-  if (run.convergence !== undefined) return run;
+function integrationPermissionMode(
+  run: WorkflowRun,
+): import('../../../cloud/contract/permissions.js').PermissionMode {
+  const requested = run.nodes
+    .filter((node) => node.target !== undefined && node.target.kind !== 'local')
+    .map((node) => node.permissionMode ?? 'read-only')
+    .reduce(
+      (maximum, mode) =>
+        ['read-only', 'on-request', 'workspace-auto', 'full-access'].indexOf(mode) >
+        ['read-only', 'on-request', 'workspace-auto', 'full-access'].indexOf(maximum)
+          ? mode
+          : maximum,
+      'read-only' as import('../../../cloud/contract/permissions.js').PermissionMode,
+    );
+  const appAndMeshCeiling = constrainPermissionMode(
+    getSettings().codexMode ?? 'on-request',
+    getMeshMaximumPermissionMode(),
+  );
+  return constrainPermissionMode(requested, appAndMeshCeiling);
+}
+
+function integrationPermissionExplanation(
+  mode: import('../../../cloud/contract/permissions.js').PermissionMode,
+): string {
+  return mode === 'read-only'
+    ? 'Checks use a read-only sandbox because the delegated tasks were limited to read-only access.'
+    : mode === 'on-request'
+      ? 'Each command needs one-time approval. App and Mesh permission settings still cap its access.'
+      : mode === 'workspace-auto'
+        ? 'Checks are capped to the originating delegation and current app and Mesh permission settings.'
+        : 'Checks are capped to the originating delegation and current app and Mesh permission settings.';
+}
+
+export function workflowRunCanApplyIntegration(run: WorkflowRun): boolean {
+  return integrationPermissionMode(run) !== 'read-only';
+}
+
+function assertReadyToIntegrate(run: WorkflowRun): string[] {
+  if (activeRuns.has(run.id)) throw new Error('Wait for workflow execution to finish first.');
+  if (run.convergence !== undefined)
+    throw new Error('These result branches already have an integration checkout.');
   const dispatchIds = remoteDispatchOrder(run);
   if (dispatchIds.length === 0)
-    throw new Error('This workflow has no remote dispatches to converge.');
+    throw new Error('This workflow has no remote dispatches to integrate.');
   if (run.nodeRuns.some((state) => state.status !== 'completed'))
-    throw new Error('All workflow steps must complete before convergence.');
-  const integrationId = `workflow-convergence:${run.id}`;
-  const result = await integrateResults({
-    integrationId,
-    runId: run.id,
-    workspaceId: run.workspaceId,
-    dispatchIds,
-    verification,
-  });
-  const convergence: WorkflowConvergence = {
-    integrationId,
-    state: result.state,
+    throw new Error('All workflow steps must complete before integration.');
+  return dispatchIds;
+}
+
+export async function prepareWorkflowRunIntegration(
+  runId: string,
+): Promise<ChatDelegationIntegrationPlan> {
+  const run = mutableRun(runId);
+  const repositories = run.convergence?.combined
+    ? await prepareExistingIntegrationVerification(run.convergence.integrationId)
+    : await prepareIntegrationVerification({
+        workspaceId: run.workspaceId,
+        dispatchIds: assertReadyToIntegrate(run),
+      });
+  const permissionMode = integrationPermissionMode(run);
+  return {
+    repositories,
+    permissionMode,
+    permissionExplanation: integrationPermissionExplanation(permissionMode),
+  };
+}
+
+function workflowConvergenceFromIntegration(
+  run: WorkflowRun,
+  result: Awaited<ReturnType<typeof integrateResults>>,
+): WorkflowConvergence {
+  const state: WorkflowConvergence['state'] =
+    result.state === 'integrating' ? 'failed' : result.state;
+  return {
+    integrationId: `workflow-convergence:${run.id}`,
+    state,
+    combined: result.combined,
+    verificationState:
+      result.verificationState === 'running' ? 'not-run' : result.verificationState,
+    verificationAttempt: result.verificationAttempt,
+    verificationSelections: result.verificationSelections,
+    appliedAt: result.appliedAt,
     repositories: result.repositories.map((repository) => ({
       repositoryId: repository.repositoryId,
       baseCommit: repository.baseCommit,
       integratedCommit: repository.integratedCommit,
+      branch: repository.branch,
+      worktreePath: repository.worktreePath,
+      appliedAt: repository.appliedAt,
+      destinationBranch: repository.destinationBranch,
+      appliedCommit: repository.appliedCommit,
+      ...(repository.applyError ? { applyError: repository.applyError } : {}),
       conflicts: repository.conflicts.map((conflict) => ({
         dispatchId: conflict.dispatchId,
         ref: conflict.ref,
@@ -1732,17 +2064,124 @@ export async function convergeWorkflowRun(
     })),
     verification: result.verification,
   };
-  run.convergence = convergence;
-  if (result.state === 'integrated') {
-    recordWorkflowEvent(run, 'completed', 'Mesh results converged in an integration worktree.');
+}
+
+function attachWorkflowIntegration(
+  run: WorkflowRun,
+  result: Awaited<ReturnType<typeof integrateResults>>,
+): WorkflowRun {
+  run.convergence = workflowConvergenceFromIntegration(run, result);
+  const state = run.convergence.state;
+
+  const verificationNeedsAttention = ['failed', 'blocked', 'stale'].includes(
+    run.convergence.verificationState,
+  );
+  if (state === 'integrated' && !verificationNeedsAttention) {
+    const nodesFinished = run.nodeRuns.every((nodeRun) => nodeRun.status === 'completed');
+    if (nodesFinished && !activeRuns.has(run.id)) run.status = 'completed';
+    recordWorkflowEvent(
+      run,
+      'completed',
+      result.verificationState === 'passed'
+        ? 'Mesh results were combined and the selected verification checks passed.'
+        : 'Mesh results were combined in a retained integration checkout. Verification was not run.',
+    );
+    if (run.error?.startsWith('Integration verification ')) run.error = undefined;
   } else {
     run.status = 'paused';
     run.error =
-      result.state === 'conflicted'
-        ? 'Mesh convergence found conflicts. Inspect the integration worktree before applying it.'
-        : 'Mesh convergence verification needs attention. Inspect the retained integration worktree.';
+      state === 'conflicted'
+        ? 'Mesh integration found conflicts. Inspect the retained integration checkout.'
+        : state === 'failed'
+          ? (result.error ?? 'Mesh integration could not finish. Inspect the retained checkout.')
+          : run.convergence.verificationState === 'blocked'
+            ? 'Integration verification needs approval. Review the command and retry verification.'
+            : run.convergence.verificationState === 'stale'
+              ? 'Integration verification changed or could not confirm its pinned checkout. Inspect the retained checkout.'
+              : 'Integration verification failed. Inspect the command output and retry verification.';
+    if (state === 'integrated' && !run.error.startsWith('Integration verification '))
+      run.error = `Integration verification ${run.convergence.verificationState}: ${run.error}`;
     recordWorkflowEvent(run, 'decision', run.error);
   }
+  persistRun(run);
+  return run;
+}
+
+async function integrateWorkflowRun(
+  runId: string,
+  verificationSelections?: ChatDelegationVerificationSelection[],
+  legacyVerification?: string[],
+): Promise<WorkflowRun> {
+  const run = mutableRun(runId);
+  if (run.convergence?.combined && verificationSelections !== undefined) {
+    const result = await runIntegrationVerification({
+      integrationId: run.convergence.integrationId,
+      runId: run.id,
+      permissionMode: integrationPermissionMode(run),
+      selections: verificationSelections,
+    });
+    return attachWorkflowIntegration(run, result);
+  }
+  const dispatchIds = assertReadyToIntegrate(run);
+  const integrationId = `workflow-convergence:${run.id}`;
+  const result = await integrateResults({
+    integrationId,
+    runId: run.id,
+    workspaceId: run.workspaceId,
+    dispatchIds,
+    ...(verificationSelections === undefined ? {} : { verificationSelections }),
+    ...(legacyVerification === undefined ? {} : { verification: legacyVerification }),
+    permissionMode: integrationPermissionMode(run),
+  });
+  return attachWorkflowIntegration(run, result);
+}
+
+/** Legacy workflow action. An omitted command list combines results without claiming verification. */
+export async function convergeWorkflowRun(
+  runId: string,
+  verification: string[] = [],
+): Promise<WorkflowRun> {
+  const run = getWorkflowRun(runId);
+  if (run?.convergence) return run;
+  return integrateWorkflowRun(runId, undefined, verification);
+}
+
+export async function integrateWorkflowRunWithChecks(
+  runId: string,
+  verificationSelections: ChatDelegationVerificationSelection[],
+): Promise<WorkflowRun> {
+  return integrateWorkflowRun(runId, verificationSelections);
+}
+
+export async function retryWorkflowRunVerification(runId: string): Promise<WorkflowRun> {
+  const run = mutableRun(runId);
+  if (activeRuns.has(runId)) throw new Error('Wait for workflow execution to finish first.');
+  if (!run.convergence?.combined) throw new Error('There is no combined integration to verify.');
+  if (!run.convergence.verificationSelections.length)
+    throw new Error('No saved verification checks are available to retry.');
+  const result = await retryIntegrationVerification({
+    integrationId: run.convergence.integrationId,
+    runId: run.id,
+    permissionMode: integrationPermissionMode(run),
+  });
+  return attachWorkflowIntegration(run, result);
+}
+
+/** Applies one verified repository without rerunning integration or verification. */
+export async function applyWorkflowRunIntegrationRepository(
+  runId: string,
+  repositoryId: string,
+): Promise<WorkflowRun> {
+  const run = mutableRun(runId);
+  if (activeRuns.has(runId)) throw new Error('Wait for workflow execution to finish first.');
+  if (!run.convergence?.combined) throw new Error('There is no combined integration to apply.');
+  const result = await applyIntegrationRepository({
+    integrationId: run.convergence.integrationId,
+    runId: run.id,
+    repositoryId,
+    permissionMode: integrationPermissionMode(run),
+  });
+  run.convergence = workflowConvergenceFromIntegration(run, result);
   persistRun(run);
   return run;
 }

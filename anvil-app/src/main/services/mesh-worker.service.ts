@@ -65,6 +65,7 @@ import type {
   SessionCheckpoint,
 } from '../../../cloud/contract/handoff.js';
 import { isSealedCheckpoint } from '../../../cloud/contract/handoff.js';
+import { resolveBackendPaths } from '../../../cloud/contract/discovery.js';
 import {
   listDeviceIdentities,
   mintTaskKey,
@@ -96,9 +97,15 @@ import {
   startBootstrapRun,
   workspaceCheckoutRoot,
 } from './bootstrap-policy.service.js';
-import { LEASE_RENEW_INTERVAL_MS } from '../../../cloud/contract/version.js';
+import { LEASE_RENEW_INTERVAL_MS, PROTOCOL } from '../../../cloud/contract/version.js';
 import { canonicalJson } from './sync-persistence.service.js';
-import { rpc as backendRpc, BackendRpcError } from './sync-backend-client.service.js';
+import {
+  discover as discoverBackend,
+  rpc as backendRpc,
+  shouldAllowLoopbackHttp,
+  BackendRpcError,
+} from './sync-backend-client.service.js';
+import { getActiveBackend } from './sync-backend.service.js';
 import type {
   DevicePolicy,
   WorkerCapabilities,
@@ -140,6 +147,18 @@ import {
   reapExpiredEnvironments,
   type ProvisionerScope,
 } from './cloud-environment.service.js';
+import {
+  REMOTE_REVIEW_CANDIDATE_CAPABILITY,
+  REMOTE_REVIEW_CAPABILITY_REQUIREMENTS_FEATURE,
+  isRemoteReviewBackendBinding,
+  requireRemoteReviewCandidateCapability,
+  requireRemoteReviewCandidateReadOnly,
+  remoteReviewBackendBindingsEqual,
+  validateRemoteReviewCandidates,
+  type RemoteReviewCandidate,
+  type RemoteReviewBackendBinding,
+} from '../../shared/remote-review-candidate.js';
+import { materializeRemoteReviewCandidate } from './remote-review-candidate.service.js';
 
 export type { MeshWorkerStatus } from '../../shared/sync-runtime.js';
 import type { MeshWorkerStatus } from '../../shared/sync-runtime.js';
@@ -220,6 +239,7 @@ const WORKER_CAPABILITIES = [
   'start-session',
   'code-task',
   'workflow-node',
+  REMOTE_REVIEW_CANDIDATE_CAPABILITY,
 ];
 
 export function configureMeshWorkerContext(provider: () => MeshWorkerContext | null): void {
@@ -228,6 +248,106 @@ export function configureMeshWorkerContext(provider: () => MeshWorkerContext | n
 
 function workerContext(): MeshWorkerContext | null {
   return contextProvider?.() ?? null;
+}
+
+function reviewedRemoteReviewBackendContext(): {
+  context: MeshWorkerContext;
+  binding: RemoteReviewBackendBinding;
+} {
+  const context = workerContext();
+  const backend = getActiveBackend();
+  if (
+    context === null ||
+    context.scope === undefined ||
+    context.backendUrl === undefined ||
+    backend === null ||
+    backend.state !== 'active' ||
+    backend.identityReviewRequired ||
+    backend.id !== context.scope.backendId ||
+    context.backendUrl !== backend.baseUrl ||
+    !backend.descriptor.features?.includes(REMOTE_REVIEW_CAPABILITY_REQUIREMENTS_FEATURE)
+  ) {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+  let apiUrl: string;
+  try {
+    apiUrl = resolveBackendPaths(backend.baseUrl, backend.descriptor, {
+      allowLoopbackHttp: shouldAllowLoopbackHttp(backend.baseUrl),
+    }).apiUrl;
+  } catch {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+  if (context.apiUrl !== apiUrl) {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+  return {
+    context,
+    binding: {
+      backendId: backend.id,
+      baseUrl: backend.baseUrl,
+      apiUrl,
+      accountId: context.scope.accountId,
+      datasetEpoch: context.scope.datasetEpoch,
+    },
+  };
+}
+
+/** Captures the currently reviewed backend identity for an approval-bound review. */
+export function captureRemoteReviewBackendBinding(): RemoteReviewBackendBinding {
+  return { ...reviewedRemoteReviewBackendContext().binding };
+}
+
+function requirePinnedRemoteReviewBackendBinding(binding: RemoteReviewBackendBinding): void {
+  if (
+    !isRemoteReviewBackendBinding(binding) ||
+    !remoteReviewBackendBindingsEqual(reviewedRemoteReviewBackendContext().binding, binding)
+  ) {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+}
+
+async function validateRemoteReviewBackendBinding(
+  binding: RemoteReviewBackendBinding,
+): Promise<MeshWorkerContext> {
+  if (!isRemoteReviewBackendBinding(binding)) {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+  const initial = reviewedRemoteReviewBackendContext();
+  if (!remoteReviewBackendBindingsEqual(initial.binding, binding)) {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+
+  let refreshed: Awaited<ReturnType<typeof discoverBackend>>;
+  try {
+    refreshed = await discoverBackend(binding.baseUrl, {
+      allowLoopbackHttp: shouldAllowLoopbackHttp(binding.baseUrl),
+    });
+  } catch {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+  if (
+    refreshed.baseUrl !== binding.baseUrl ||
+    refreshed.apiUrl !== binding.apiUrl ||
+    refreshed.descriptor.deploymentId !== binding.backendId ||
+    !refreshed.descriptor.features?.includes(REMOTE_REVIEW_CAPABILITY_REQUIREMENTS_FEATURE)
+  ) {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+
+  // Re-read the session after network discovery. A backend or account switch
+  // during the read must not redirect this sealed request.
+  const current = reviewedRemoteReviewBackendContext();
+  if (!remoteReviewBackendBindingsEqual(current.binding, binding)) {
+    throw new Error('remote-review-backend-binding-invalid');
+  }
+  return current.context;
+}
+
+/** Rechecks the reviewed backend after approval and before dispatch/replay. */
+export async function assertRemoteReviewBackendBinding(
+  binding: RemoteReviewBackendBinding,
+): Promise<void> {
+  await validateRemoteReviewBackendBinding(binding);
 }
 
 /**
@@ -271,6 +391,14 @@ async function meshRpc<T>(operation: string, params: unknown): Promise<T> {
   if (ctx === null) {
     throw new Error('Mesh worker has no active sync session.');
   }
+  return meshRpcWithContext<T>(ctx, operation, params);
+}
+
+async function meshRpcWithContext<T>(
+  ctx: MeshWorkerContext,
+  operation: string,
+  params: unknown,
+): Promise<T> {
   const { result } = await backendRpc<T>(
     { apiUrl: ctx.apiUrl },
     operation,
@@ -289,8 +417,7 @@ function nowIso(): string {
 function readWorkerState(): WorkerStateRow {
   const db = getDb();
   const row = db.prepare('SELECT * FROM mesh_worker_state WHERE id = 1').get() as
-    | WorkerStateRow
-    | undefined;
+    WorkerStateRow | undefined;
   return (
     row ?? {
       enabled: 0,
@@ -332,8 +459,7 @@ function writeWorkerState(patch: Partial<WorkerStateRow>): void {
 function appendJournal(attemptId: string, event: string, detail?: Record<string, unknown>): void {
   const db = getDb();
   const row = db.prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?').get(attemptId) as
-    | { journal_json: string }
-    | undefined;
+    { journal_json: string } | undefined;
   if (!row) return;
   const journal = JSON.parse(row.journal_json) as unknown[];
   journal.push({ at: nowIso(), event, ...(detail !== undefined ? { detail } : {}) });
@@ -1638,8 +1764,7 @@ async function executePrepareWorkspace(
     if (def.mapped_repo_id !== null) {
       const checkoutPath = (
         getDb().prepare('SELECT path FROM repos WHERE id = ?').get(def.mapped_repo_id) as
-          | { path: string }
-          | undefined
+          { path: string } | undefined
       )?.path;
       const head = checkoutPath === undefined ? null : await gitHead(checkoutPath);
       if (head !== repo.commit) {
@@ -1802,8 +1927,7 @@ async function resolveSessionCheckout(
   if (def.mapped_repo_id !== null) {
     const path = (
       getDb().prepare('SELECT path FROM repos WHERE id = ?').get(def.mapped_repo_id) as
-        | { path: string }
-        | undefined
+        { path: string } | undefined
     )?.path;
     const head = path === undefined ? null : await gitHead(path);
     if (head !== commit) {
@@ -1881,8 +2005,7 @@ async function readRemoteSessionCheckouts(input: {
         'SELECT mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ? AND portable_id = ?',
       )
       .get(input.workspaceId, checkout.repositoryId) as
-      | { mapped_repo_id: string | null }
-      | undefined;
+      { mapped_repo_id: string | null } | undefined;
     if (def === undefined || def.mapped_repo_id !== checkout.mappedRepoId) {
       throw new Error('provider-session-checkout-mapping-changed');
     }
@@ -2596,6 +2719,37 @@ async function executeCodeTask(
     throw new Error(`result-transfer-unsupported: ${String(resultTransfer)}`);
   }
 
+  const rawReviewCandidates = manifest.inputs['remoteReviewCandidates'];
+  const reviewCandidates =
+    rawReviewCandidates === undefined
+      ? []
+      : Array.isArray(rawReviewCandidates)
+        ? (rawReviewCandidates as RemoteReviewCandidate[])
+        : null;
+  if (reviewCandidates === null) throw new Error('remote-review-candidate-invalid');
+  const permissionMode = effectiveMeshPermissionMode(manifest.inputs);
+  if (reviewCandidates.length > 0) {
+    requireRemoteReviewCandidateReadOnly(requestedMeshPermissionMode(manifest.inputs));
+    requireRemoteReviewCandidateReadOnly(permissionMode);
+    if (manifest.inputs['sandbox'] !== undefined && manifest.inputs['sandbox'] !== 'read-only') {
+      throw new Error('remote-review-candidate-read-only-required');
+    }
+    requireRemoteReviewCandidateCapability(WORKER_CAPABILITIES);
+    validateRemoteReviewCandidates(reviewCandidates, { readOnly: true });
+    const repositoryPins = new Map(
+      manifest.repositories.map((repo) => [repo.repositoryId, repo.commit]),
+    );
+    for (const candidate of reviewCandidates) {
+      if (repositoryPins.get(candidate.repositoryId) !== candidate.baseCommit) {
+        throw new Error('remote-review-candidate-base-pin-mismatch');
+      }
+    }
+    const verification = manifest.inputs['verification'];
+    if (Array.isArray(verification) && verification.length > 0) {
+      throw new Error('remote-review-candidate-verification-unsupported');
+    }
+  }
+
   const localRevision = workspaceDefinitionRevision(workspaceId);
   if (localRevision === null) {
     throw new Error(`workspace not replicated on this device: ${workspaceId}`);
@@ -2653,6 +2807,29 @@ async function executeCodeTask(
       emitActivity(attempt, `task: worktree ready for ${worktree.repositoryId}`);
     },
   });
+  if (reviewCandidates.length > 0) {
+    const candidatesByRepository = new Map(
+      reviewCandidates.map((candidate) => [candidate.repositoryId, candidate]),
+    );
+    for (const worktree of worktrees) {
+      const candidate = candidatesByRepository.get(worktree.repositoryId);
+      if (candidate === undefined) continue;
+      const materialized = await materializeRemoteReviewCandidate({
+        candidate,
+        repositoryPath: worktree.worktreePath,
+      });
+      // All later result pins and bundles use the snapshot the model saw.
+      // The public task manifest keeps the source's transport base commit.
+      worktree.baseCommit = materialized.candidateCommit;
+      appendJournal(attemptId, 'review-candidate-materialized', {
+        repositoryId: worktree.repositoryId,
+        transportBaseCommit: materialized.baseCommit,
+        executionBaseCommit: materialized.candidateCommit,
+        candidateTree: candidate.candidateTree,
+        patchSha256: candidate.patchSha256,
+      });
+    }
+  }
   const cwd = commonParentDir(worktrees.map((w) => w.worktreePath));
 
   const prior = priorSessionEvidence(job.id, attemptId);
@@ -2691,7 +2868,6 @@ async function executeCodeTask(
       : SESSION_TURN_DEFAULT_TIMEOUT_MS,
     SESSION_TURN_MAX_TIMEOUT_MS,
   );
-  const permissionMode = effectiveMeshPermissionMode(manifest.inputs);
   const sandbox = permissionSandbox(permissionMode);
   appendJournal(attemptId, 'execution-permissions', {
     requestedMode: manifest.inputs['permissionMode'] ?? manifest.inputs['sandbox'] ?? 'on-request',
@@ -2742,6 +2918,23 @@ async function executeCodeTask(
       return { ok: false, cancelled: true };
     }
     throw turnFailure.error ?? new Error('provider-turn-failed');
+  }
+
+  if (reviewCandidates.length > 0) {
+    for (const worktree of worktrees) {
+      const status = await execFileAsync(
+        'git',
+        ['status', '--porcelain', '--untracked-files=all'],
+        {
+          cwd: worktree.worktreePath,
+          timeout: 10_000,
+          env: { PATH: process.env['PATH'] ?? '', GIT_TERMINAL_PROMPT: '0' },
+        },
+      );
+      if (String(status.stdout).trim().length > 0) {
+        throw new Error('remote-review-candidate-read-only-worktree-modified');
+      }
+    }
   }
 
   // Commit residual changes onto each attempt branch and capture the
@@ -3107,8 +3300,12 @@ interface SealedJobRequest {
  * recipients whose device identity is not yet replicated are retried on
  * the next observation (`job.get`, dispatch refresh).
  */
-async function deliverTaskKeys(scope: SyncScope, job: JobSummary): Promise<void> {
-  const ctx = workerContext();
+async function deliverTaskKeys(
+  scope: SyncScope,
+  job: JobSummary,
+  rpcContext?: MeshWorkerContext,
+): Promise<void> {
+  const ctx = rpcContext ?? workerContext();
   const taskKey = taskKeyFor(scope, job.id) ?? taskKeyFor(scope, taskKeyStoreId(job.requestId));
   if (taskKey === null) return;
   storeTaskKey(scope, job.id, taskKey);
@@ -3131,7 +3328,14 @@ async function deliverTaskKeys(scope: SyncScope, job: JobSummary): Promise<void>
     );
   }
   if (wraps.length === 0) return;
-  await meshRpc<TaskKeyDeliverResult>('taskkey.deliver', { jobId: job.id, wraps });
+  if (ctx === null) {
+    await meshRpc<TaskKeyDeliverResult>('taskkey.deliver', { jobId: job.id, wraps });
+  } else {
+    await meshRpcWithContext<TaskKeyDeliverResult>(ctx, 'taskkey.deliver', {
+      jobId: job.id,
+      wraps,
+    });
+  }
 }
 
 /**
@@ -3152,20 +3356,57 @@ export async function ensureTaskKeyDelivery(job: JobSummary): Promise<void> {
  * stores the returned params so a crash before/after `job.create` replays
  * deterministically (same requestId + payloadHash → same job).
  */
-export function prepareSealedJob(request: SealedJobRequest): JobCreateParams {
+export function prepareSealedJob(
+  request: SealedJobRequest,
+  remoteReviewBackend?: RemoteReviewBackendBinding,
+): JobCreateParams {
   const scope = workerContext()?.scope;
   const privateInputs = request.privateInputs ?? {};
   const manifest = request.manifest;
+  const rawRemoteReviewCandidates = privateInputs['remoteReviewCandidates'];
+  const hasRemoteReviewCandidates = rawRemoteReviewCandidates !== undefined;
+  if (hasRemoteReviewCandidates) {
+    if (request.kind !== 'workflow-node' || !Array.isArray(rawRemoteReviewCandidates)) {
+      throw new Error('remote-review-candidate-job-kind-unsupported');
+    }
+    requireRemoteReviewCandidateReadOnly(privateInputs['permissionMode']);
+    if (remoteReviewBackend === undefined) {
+      throw new Error('remote-review-backend-binding-required');
+    }
+    requirePinnedRemoteReviewBackendBinding(remoteReviewBackend);
+    if (privateInputs['sandbox'] !== undefined && privateInputs['sandbox'] !== 'read-only') {
+      throw new Error('remote-review-candidate-read-only-required');
+    }
+    const candidates = rawRemoteReviewCandidates as RemoteReviewCandidate[];
+    validateRemoteReviewCandidates(candidates, { readOnly: true });
+    requireRemoteReviewCandidateCapability(
+      request.requestedTarget.requirements?.capabilities ?? [],
+    );
+    const repositoryPins = new Map(
+      manifest.repositories.map((repo) => [repo.repositoryId, repo.commit]),
+    );
+    for (const candidate of candidates) {
+      if (repositoryPins.get(candidate.repositoryId) !== candidate.baseCommit) {
+        throw new Error('remote-review-candidate-base-pin-mismatch');
+      }
+    }
+  }
   let sealedInputs: SealedTaskPayload | undefined;
+  let taskKey: Buffer | undefined;
   if (Object.keys(privateInputs).length > 0) {
     if (scope === undefined) {
       // Fail closed: private inputs never ride the coordinator-visible
       // manifest — without a sync scope there is no TCK to seal under.
       throw new Error('job has private inputs but no sync scope is available to seal them');
     }
-    const taskKey = mintTaskKey();
+    taskKey = mintTaskKey();
     sealedInputs = sealTaskInputs(scope, request.requestId, taskKey, privateInputs);
-    storeTaskKey(scope, taskKeyStoreId(request.requestId), taskKey);
+    if (
+      hasRemoteReviewCandidates &&
+      Buffer.byteLength(JSON.stringify(sealedInputs), 'utf8') > 512 * 1024
+    ) {
+      throw new Error('remote-review-candidate-sealed-inputs-too-large');
+    }
   }
   // The backend verifies the hash covers the canonical job payload — a
   // replay of the same requestId with a different payload is a conflict.
@@ -3183,7 +3424,7 @@ export function prepareSealedJob(request: SealedJobRequest): JobCreateParams {
       'utf8',
     )
     .digest('hex');
-  return {
+  const params: JobCreateParams = {
     requestId: request.requestId,
     payloadHash,
     kind: request.kind,
@@ -3195,14 +3436,51 @@ export function prepareSealedJob(request: SealedJobRequest): JobCreateParams {
       : { resultRecipients: request.resultRecipients }),
     retryPolicy: request.retryPolicy,
   };
+  if (
+    hasRemoteReviewCandidates &&
+    Buffer.byteLength(
+      JSON.stringify({
+        protocol: PROTOCOL,
+        // backendRpc creates a UUID with this exact encoded width.
+        requestId: '00000000-0000-4000-8000-000000000000',
+        operation: 'job.create',
+        params,
+      }),
+      'utf8',
+    ) >
+      640 * 1024
+  ) {
+    throw new Error('remote-review-candidate-rpc-body-too-large');
+  }
+  if (scope !== undefined && taskKey !== undefined) {
+    storeTaskKey(scope, taskKeyStoreId(request.requestId), taskKey);
+  }
+  return params;
 }
 
 /** Sends a prepared `job.create` and delivers TCK wraps. */
-export async function submitPreparedJob(params: JobCreateParams): Promise<JobSummary> {
-  const result = await meshRpc<{ job: JobSummary }>('job.create', params);
-  const scope = workerContext()?.scope;
+export async function submitPreparedJob(
+  params: JobCreateParams,
+  remoteReviewBackend?: RemoteReviewBackendBinding,
+): Promise<JobSummary> {
+  const requiresRemoteReviewCapability =
+    params.requestedTarget.requirements?.capabilities?.includes(
+      REMOTE_REVIEW_CANDIDATE_CAPABILITY,
+    ) ?? false;
+  let validatedContext: MeshWorkerContext | undefined;
+  if (requiresRemoteReviewCapability) {
+    if (remoteReviewBackend === undefined) {
+      throw new Error('remote-review-backend-binding-required');
+    }
+    validatedContext = await validateRemoteReviewBackendBinding(remoteReviewBackend);
+  }
+  const result =
+    validatedContext === undefined
+      ? await meshRpc<{ job: JobSummary }>('job.create', params)
+      : await meshRpcWithContext<{ job: JobSummary }>(validatedContext, 'job.create', params);
+  const scope = validatedContext?.scope ?? workerContext()?.scope;
   if (scope !== undefined) {
-    await deliverTaskKeys(scope, result.job).catch(() => undefined);
+    await deliverTaskKeys(scope, result.job, validatedContext).catch(() => undefined);
   }
   return result.job;
 }
@@ -3214,8 +3492,11 @@ export async function submitPreparedJob(params: JobCreateParams): Promise<JobSum
  * key wraps are delivered to the target/result recipients after the job
  * id exists.
  */
-export async function submitSealedJob(request: SealedJobRequest): Promise<JobSummary> {
-  return submitPreparedJob(prepareSealedJob(request));
+export async function submitSealedJob(
+  request: SealedJobRequest,
+  remoteReviewBackend?: RemoteReviewBackendBinding,
+): Promise<JobSummary> {
+  return submitPreparedJob(prepareSealedJob(request, remoteReviewBackend), remoteReviewBackend);
 }
 
 export interface DiagnosticJobInput {
@@ -3362,11 +3643,7 @@ export interface StartSessionJobInput {
   /** Controller-verified same-device provider session id for a follow-up. */
   resumeThreadId?: string;
   authMode?:
-    | 'target-local'
-    | 'codex-account'
-    | 'codex-host-auth'
-    | 'openai-api-key'
-    | 'cloud-provider';
+    'target-local' | 'codex-account' | 'codex-host-auth' | 'openai-api-key' | 'cloud-provider';
   /** Stable source-session identity for private Codex host-auth homes. */
   authSessionId?: string;
   /** Reuse the controller's original pins for a provider-thread follow-up. */
@@ -3599,6 +3876,8 @@ export interface WorkflowNodeJobInput extends Omit<CodeTaskJobInput, 'requestId'
   requestedTarget?: RequestedTarget;
   /** Durable trusted recipients for the sealed result. */
   resultRecipients?: string[];
+  /** Approval-bound, frozen tracked working-tree source for read-only review. */
+  remoteReviewCandidates?: RemoteReviewCandidate[];
 }
 
 /**
@@ -3665,6 +3944,26 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
             inputs: { workspaceId: input.workspaceId },
           };
         })());
+      const permissionMode =
+        input.permissionMode ??
+        (input.sandbox === undefined
+          ? getSettings().codexMode
+          : requestedMeshPermissionMode({ sandbox: input.sandbox }));
+      if (input.remoteReviewCandidates !== undefined) {
+        requireRemoteReviewCandidateReadOnly(permissionMode);
+        if (input.sandbox !== undefined && input.sandbox !== 'read-only') {
+          throw new Error('remote-review-candidate-read-only-required');
+        }
+        validateRemoteReviewCandidates(input.remoteReviewCandidates, { readOnly: true });
+        const repositoryPins = new Map(
+          manifest.repositories.map((repo) => [repo.repositoryId, repo.commit]),
+        );
+        for (const candidate of input.remoteReviewCandidates) {
+          if (repositoryPins.get(candidate.repositoryId) !== candidate.baseCommit) {
+            throw new Error('remote-review-candidate-base-pin-mismatch');
+          }
+        }
+      }
       const privateInputs: Record<string, unknown> = {
         prompt: input.prompt,
         refPolicy: 'local-branches',
@@ -3683,8 +3982,11 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
         ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
         ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
         ...(input.verification === undefined ? {} : { verification: input.verification }),
+        ...(input.remoteReviewCandidates === undefined
+          ? {}
+          : { remoteReviewCandidates: input.remoteReviewCandidates }),
       };
-      const requestedTarget: RequestedTarget =
+      const requestedTargetBase: RequestedTarget =
         input.requestedTarget ??
         (input.targetEnrollmentId !== undefined
           ? { kind: 'device', enrollmentId: input.targetEnrollmentId }
@@ -3692,6 +3994,21 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
               kind: 'auto',
               ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
             });
+      const requestedTarget: RequestedTarget =
+        input.remoteReviewCandidates === undefined
+          ? requestedTargetBase
+          : {
+              ...requestedTargetBase,
+              requirements: {
+                ...requestedTargetBase.requirements,
+                capabilities: [
+                  ...new Set([
+                    ...(requestedTargetBase.requirements?.capabilities ?? []),
+                    REMOTE_REVIEW_CANDIDATE_CAPABILITY,
+                  ]),
+                ],
+              },
+            };
       return {
         requestId,
         kind: 'workflow-node',

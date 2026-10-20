@@ -44,7 +44,7 @@ export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor 
     displayName: env?.ANVIL_DEPLOYMENT_NAME?.trim() || SPIKE_DEPLOYMENT_NAME,
     protocols: [PROTOCOL],
     profiles: ['sync/2', 'mesh/2'],
-    features: ['browser-workspace/1'],
+    features: ['browser-workspace/1', 'mesh-job-capability-requirements/1'],
     apiPath: 'v1',
     socketPath: 'v1/connect',
     authModes: [

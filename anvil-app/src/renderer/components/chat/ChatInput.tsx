@@ -10,6 +10,7 @@ import {
   ListChecks,
   Loader2,
   Paperclip,
+  Plus,
   Send,
   SlidersHorizontal,
   Sparkles,
@@ -69,7 +70,8 @@ const FILE_MENTION_SEARCH_LIMIT = 24;
 const FILE_MENTION_MENU_ID = 'chat-file-mention-menu';
 const SLASH_COMMAND_MENU_ID = 'chat-slash-command-menu';
 const SKILL_MENTION_MENU_ID = 'chat-skill-mention-menu';
-const COMPACT_FOOTER_MAX_WIDTH = 760;
+const COMPACT_FOOTER_MAX_WIDTH = 600;
+const VERY_COMPACT_FOOTER_MAX_WIDTH = 420;
 const SEND_SHORTCUT =
   typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘ Enter' : 'Ctrl Enter';
 
@@ -274,8 +276,10 @@ export function ChatInput({
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [syntaxHelpOpen, setSyntaxHelpOpen] = useState(false);
   const [compactFooter, setCompactFooter] = useState(true);
+  const [veryCompactFooter, setVeryCompactFooter] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composerWidthRef = useRef<HTMLDivElement>(null);
+  const previousComposerWidthRef = useRef<number | null>(null);
   const contextTriggerRef = useRef<HTMLButtonElement>(null);
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
@@ -317,21 +321,6 @@ export function ChatInput({
     const next = uncertainFollowUpsRef.current.filter((item) => item.requestId !== requestId);
     uncertainFollowUpsRef.current = next;
     setUncertainFollowUps(next);
-  }, []);
-
-  useEffect(() => {
-    const composer = composerWidthRef.current;
-    if (!composer) return;
-
-    const updateLayout = (width: number) => setCompactFooter(width < COMPACT_FOOTER_MAX_WIDTH);
-    updateLayout(composer.getBoundingClientRect().width);
-
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) updateLayout(entry.contentRect.width);
-    });
-    observer.observe(composer);
-    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -390,6 +379,29 @@ export function ChatInput({
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }, []);
+
+  useEffect(() => {
+    const composer = composerWidthRef.current;
+    if (!composer) return;
+
+    const updateLayout = (width: number) => {
+      setCompactFooter(width < COMPACT_FOOTER_MAX_WIDTH);
+      setVeryCompactFooter(width <= VERY_COMPACT_FOOTER_MAX_WIDTH);
+      const previousWidth = previousComposerWidthRef.current;
+      previousComposerWidthRef.current = width;
+      if (previousWidth !== null && Math.abs(width - previousWidth) > 0.5) {
+        window.requestAnimationFrame(resizeTextarea);
+      }
+    };
+
+    updateLayout(composer.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) updateLayout(entry.contentRect.width);
+    });
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, [resizeTextarea]);
 
   const clearComposer = useCallback(() => {
     markDraftChanged();
@@ -1482,14 +1494,18 @@ export function ChatInput({
           rows={1}
         />
 
-        <ChatComposerFooter compact={compactFooter}>
-          <div className="flex min-w-0 flex-wrap items-center gap-1">
+        <ChatComposerFooter>
+          <div
+            className={`flex min-w-0 max-w-full items-center gap-1 ${
+              compactFooter ? 'w-full flex-nowrap' : 'flex-wrap'
+            }`}
+          >
             {allowAttachments && (
               <button
                 type="button"
                 onClick={() => void handleSelectAttachments()}
                 disabled={disabled || preparingAttachments}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 disabled:opacity-30"
                 title={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
                 aria-label={preparingAttachments ? 'Preparing attachments' : 'Attach files'}
                 aria-busy={preparingAttachments}
@@ -1497,18 +1513,33 @@ export function ChatInput({
                 {preparingAttachments ? (
                   <Loader2 size={15} className="animate-spin" />
                 ) : (
-                  <Paperclip size={15} />
+                  <Plus size={21} strokeWidth={1.8} />
                 )}
               </button>
             )}
 
+            {(onCodexModeChange || onAccessOptionSelect) && (
+              <ChatAccessLevelChip
+                value={codexMode}
+                options={accessOptions}
+                appliedMode={accessAppliedMode}
+                onChange={onCodexModeChange}
+                onSelectOption={onAccessOptionSelect}
+                disabled={codexModeDisabled}
+                compact={compactFooter}
+              />
+            )}
+
             {(leadingControls || contextControls) && (
-              <div ref={contextMenuRef} className="relative min-w-0">
+              <div
+                ref={contextMenuRef}
+                className={`relative min-w-0 ${compactFooter ? 'flex-1' : ''}`}
+              >
                 <button
                   ref={contextTriggerRef}
                   type="button"
                   onClick={() => setContextMenuOpen((open) => !open)}
-                  className="flex h-8 min-w-0 max-w-64 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                  className={`flex h-9 min-w-0 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 ${compactFooter ? 'w-full' : 'max-w-44'}`}
                   aria-label={`Chat setup: ${setupSummary}`}
                   title="Choose an agent, destination and conversation context"
                   aria-haspopup="dialog"
@@ -1526,7 +1557,7 @@ export function ChatInput({
                     id="chat-context-menu"
                     role="dialog"
                     aria-label="Conversation context"
-                    className="absolute bottom-full left-0 z-50 mb-2 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-bg-elevated p-3 shadow-lg"
+                    className={`absolute bottom-full z-50 mb-2 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ${compactFooter ? 'right-0' : 'left-0'}`}
                   >
                     <p className="mb-2 text-xs font-semibold text-text-primary">Chat setup</p>
                     {leadingControls && (
@@ -1549,27 +1580,13 @@ export function ChatInput({
           </div>
 
           <div
-            className={`flex min-w-0 items-center gap-1.5 ${
-              compactFooter ? 'w-full' : 'ml-auto flex-wrap justify-end'
+            className={`ml-auto flex max-w-full min-w-0 items-center justify-end gap-1.5 ${
+              compactFooter ? 'w-full flex-nowrap' : 'flex-wrap'
             }`}
           >
             <div
-              className={`flex min-w-0 flex-wrap items-center gap-1.5 ${
-                compactFooter ? 'flex-1' : 'flex-none'
-              }`}
+              className={`flex min-w-0 items-center gap-1 ${compactFooter ? 'flex-1 flex-nowrap' : 'flex-wrap'}`}
             >
-              {/* CH1 — the thread's access level is always visible here. */}
-              {(onCodexModeChange || onAccessOptionSelect) && (
-                <ChatAccessLevelChip
-                  value={codexMode}
-                  options={accessOptions}
-                  appliedMode={accessAppliedMode}
-                  onChange={onCodexModeChange}
-                  onSelectOption={onAccessOptionSelect}
-                  disabled={codexModeDisabled}
-                />
-              )}
-
               {onModelChange && (
                 <ModelPicker
                   model={model}
@@ -1578,6 +1595,9 @@ export function ChatInput({
                   preferences={modelPickerPreferences}
                   reasoningEffort={reasoningLevel}
                   onChange={onModelChange}
+                  variant="inline"
+                  compact={compactFooter}
+                  hideProvider={veryCompactFooter}
                 />
               )}
 
@@ -1603,7 +1623,7 @@ export function ChatInput({
               )}
             </div>
 
-            <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+            <div className="ml-auto flex shrink-0 flex-nowrap items-center justify-end gap-1.5">
               <VoiceInputButton
                 onTranscript={(text) => {
                   setVoiceError(null);
@@ -2435,34 +2455,47 @@ function RunSettingsDropdown({
   ]
     .filter(Boolean)
     .join(' · ');
+  const accessibleSummary = [
+    getRunSettingsLabel(`${modelProvider} · ${model}`, collaborationMode, effort),
+    `Execution strategy: ${executionStrategy}`,
+    fastModeAvailable ? `Fast mode ${fastMode ? 'on' : 'off'}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
-    <div ref={containerRef} className="relative min-w-0" onKeyDown={handleKeyDown}>
+    <div
+      ref={containerRef}
+      className={`${compact ? 'static' : 'relative'} min-w-0`}
+      onKeyDown={handleKeyDown}
+    >
       <button
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className={`flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
-          compact ? 'max-w-56' : 'max-w-64'
+        className={`flex h-9 min-w-0 items-center gap-1.5 rounded-full text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 ${
+          compact ? 'h-9 w-9 shrink-0 justify-center px-0' : 'max-w-64 px-2.5'
         }`}
-        title={`Run settings: ${label}`}
-        aria-label={`Run settings: ${label}`}
+        title={`Run settings: ${accessibleSummary}`}
+        aria-label={`Run settings: ${accessibleSummary}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? RUN_SETTINGS_MENU_ID : undefined}
       >
         <SlidersHorizontal size={13} className="shrink-0 text-text-tertiary" />
-        <span className="truncate">{label}</span>
-        <ChevronDown
-          size={12}
-          className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
-        />
+        {!compact && <span className="truncate">{label}</span>}
+        {!compact && (
+          <ChevronDown
+            size={12}
+            className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        )}
       </button>
 
       {open && (
         <div
           id={RUN_SETTINGS_MENU_ID}
-          className="absolute bottom-full right-0 z-50 mb-2 max-h-[min(38rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ring-1 ring-overlay"
+          className={`absolute bottom-full right-0 z-50 mb-2 max-h-[min(38rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ring-1 ring-overlay ${compact ? 'max-w-full' : ''}`}
           role="dialog"
           aria-label="Run settings"
         >

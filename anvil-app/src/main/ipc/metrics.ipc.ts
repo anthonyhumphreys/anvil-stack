@@ -1,9 +1,10 @@
 import { ipcMain } from 'electron';
-import { ACTIVATION_EVENTS, trackActivationEvent } from '../services/metrics.service.js';
+import { isActivationEventName } from '../../shared/activation-measurement.js';
+import { trackActivationEvent } from '../services/metrics.service.js';
 
 export function registerMetricsHandlers(): void {
   ipcMain.handle('metrics:track', (_event, name: unknown, payload: unknown) => {
-    if (typeof name !== 'string' || !ACTIVATION_EVENTS.has(name)) {
+    if (!isActivationEventName(name)) {
       return { ok: false, error: 'unknown activation event' };
     }
     const safePayload =

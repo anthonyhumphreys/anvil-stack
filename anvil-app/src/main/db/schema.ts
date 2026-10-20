@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 111;
+export const SCHEMA_VERSION = 113;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -951,7 +951,7 @@ CREATE TABLE IF NOT EXISTS mesh_integrations (
   run_id TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
   dispatch_ids_json TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('integrated', 'conflicted', 'failed')),
+  state TEXT NOT NULL CHECK (state IN ('integrating', 'integrated', 'conflicted', 'failed')),
   result_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -1759,10 +1759,16 @@ CREATE TABLE IF NOT EXISTS activation_events (
   id INTEGER PRIMARY KEY,
   event TEXT NOT NULL,
   payload TEXT,
+  app_run_id TEXT,
+  journey_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_activation_events_event_created
   ON activation_events (event, created_at);
+CREATE INDEX IF NOT EXISTS idx_activation_events_app_run
+  ON activation_events (app_run_id, id);
+CREATE INDEX IF NOT EXISTS idx_activation_events_journey
+  ON activation_events (journey_id, id);
 `;
 
 /**
@@ -3921,6 +3927,32 @@ WHERE share_id IS NOT NULL;
 `,
   111: `
 ALTER TABLE settings ADD COLUMN model_picker TEXT;
+`,
+  112: `
+ALTER TABLE activation_events ADD COLUMN app_run_id TEXT;
+ALTER TABLE activation_events ADD COLUMN journey_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_activation_events_app_run ON activation_events (app_run_id, id);
+CREATE INDEX IF NOT EXISTS idx_activation_events_journey ON activation_events (journey_id, id);
+`,
+  113: `
+SAVEPOINT anvil_mesh_integrations_v113;
+CREATE TABLE mesh_integrations_v113 (
+  integration_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  dispatch_ids_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('integrating', 'integrated', 'conflicted', 'failed')),
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO mesh_integrations_v113
+  (integration_id, run_id, workspace_id, dispatch_ids_json, state, result_json, created_at, updated_at)
+SELECT integration_id, run_id, workspace_id, dispatch_ids_json, state, result_json, created_at, updated_at
+FROM mesh_integrations;
+DROP TABLE mesh_integrations;
+ALTER TABLE mesh_integrations_v113 RENAME TO mesh_integrations;
+RELEASE SAVEPOINT anvil_mesh_integrations_v113;
 `,
 };
 

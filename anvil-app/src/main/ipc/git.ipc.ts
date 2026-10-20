@@ -19,13 +19,19 @@ import {
   mergeBranch,
   createPullRequestFromChanges,
 } from '../services/git.service.js';
+import {
+  commitTurnDelivery,
+  createTurnPullRequest,
+  prepareTurnDelivery,
+} from '../services/scoped-git.service.js';
+import { TURN_DELIVERY_MAX_FILES, TURN_DELIVERY_MAX_PATH_LENGTH } from '../../shared/scoped-git.js';
+import type { TurnDeliveryMode } from '../../shared/scoped-git.js';
 
 /** Resolve a repoId to its disk path from the database. */
 function repoPath(repoId: string): string {
   const db = getDb();
   const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(repoId) as
-    | { path: string }
-    | undefined;
+    { path: string } | undefined;
   if (!row) throw new Error(`Repo not found: ${repoId}`);
   return row.path;
 }
@@ -91,11 +97,57 @@ export function registerGitHandlers(): void {
   ipcMain.handle('git:create-pull-request', (_e, repoId: string) => {
     const db = getDb();
     const repo = db.prepare('SELECT name, path FROM repos WHERE id = ?').get(repoId) as
-      | { name: string; path: string }
-      | undefined;
+      { name: string; path: string } | undefined;
     if (!repo) throw new Error(`Repo not found: ${repoId}`);
     return createPullRequestFromChanges(repoId, repo.name, repo.path);
   });
+
+  ipcMain.handle(
+    'git:prepare-turn-delivery',
+    (_e, repoId: string, paths: string[], mode: TurnDeliveryMode) => {
+      if (!Array.isArray(paths) || paths.some((filePath) => typeof filePath !== 'string')) {
+        throw new Error('Turn delivery requires a list of repository-relative file paths.');
+      }
+      if (
+        paths.length > TURN_DELIVERY_MAX_FILES ||
+        paths.some((filePath) => filePath.length > TURN_DELIVERY_MAX_PATH_LENGTH)
+      ) {
+        throw new Error('The selected turn scope exceeds Anvil’s file or path limits.');
+      }
+      if (mode !== 'commit' && mode !== 'pr') throw new Error('Unknown turn delivery mode.');
+      const db = getDb();
+      const repo = db.prepare('SELECT name, path FROM repos WHERE id = ?').get(repoId) as
+        { name: string; path: string } | undefined;
+      if (!repo) throw new Error(`Repo not found: ${repoId}`);
+      return prepareTurnDelivery({
+        repoId,
+        repoName: repo.name,
+        repoPath: repo.path,
+        paths,
+        mode,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    'git:commit-turn-delivery',
+    (_e, repoId: string, reviewId: string, message: string) => {
+      if (typeof reviewId !== 'string' || typeof message !== 'string') {
+        throw new Error('A reviewed change and commit message are required.');
+      }
+      return commitTurnDelivery(repoId, reviewId, message);
+    },
+  );
+
+  ipcMain.handle(
+    'git:create-turn-pull-request',
+    (_e, repoId: string, reviewId: string, message: string) => {
+      if (typeof reviewId !== 'string' || typeof message !== 'string') {
+        throw new Error('A reviewed change and commit message are required.');
+      }
+      return createTurnPullRequest(repoId, reviewId, message);
+    },
+  );
 
   ipcMain.handle(
     'git:push',

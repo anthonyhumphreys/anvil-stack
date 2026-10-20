@@ -6,6 +6,7 @@ import type {
   WorkflowNodeRunStatus,
   WorkflowTargetPolicy,
 } from './types';
+import type { RemoteReviewBackendBinding } from './remote-review-candidate';
 
 export interface ChatDelegationOrigin {
   threadId: string;
@@ -13,6 +14,11 @@ export interface ChatDelegationOrigin {
   fingerprint: string;
   reason: string;
   destinations: Record<string, string>;
+  source?: 'committed' | 'current-tracked';
+  /** Pre-approval source pins for current-tracked reviews, keyed by portable repository ID. */
+  sourceBaseCommits?: Record<string, string>;
+  /** Backend authority and account approved for a current-tracked review. */
+  sourceBackend?: RemoteReviewBackendBinding;
 }
 
 export interface ChatDelegationTaskInput {
@@ -31,6 +37,7 @@ export interface ChatDelegationInput {
   requestId: string;
   title: string;
   reason: string;
+  source?: 'committed' | 'current-tracked';
   tasks: ChatDelegationTaskInput[];
 }
 
@@ -41,6 +48,77 @@ export interface ChatDelegationDestination {
   capabilities: string[];
   providers: AgentProvider[];
   state: string;
+}
+
+export type ChatDelegationVerificationState =
+  'not-run' | 'running' | 'passed' | 'failed' | 'blocked' | 'stale';
+
+export interface ChatDelegationVerificationCandidate {
+  label: string;
+  command: string;
+  source: 'saved' | 'detected';
+}
+
+export interface ChatDelegationIntegrationRepositoryPlan {
+  repositoryId: string;
+  name: string;
+  candidates: ChatDelegationVerificationCandidate[];
+  recommendedCommands: string[];
+}
+
+export interface ChatDelegationIntegrationPlan {
+  repositories: ChatDelegationIntegrationRepositoryPlan[];
+  permissionMode: CodexMode;
+  permissionExplanation: string;
+}
+
+export interface ChatDelegationVerificationSelection {
+  repositoryId: string;
+  commands: string[];
+}
+
+export interface ChatDelegationIntegrationRepository {
+  repositoryId: string;
+  name: string;
+  baseCommit: string;
+  integratedCommit: string | null;
+  branch: string;
+  worktreePath: string;
+  appliedAt: string | null;
+  destinationBranch: string | null;
+  appliedCommit: string | null;
+  applyError?: string;
+  conflicts: Array<{
+    dispatchId: string;
+    ref: string;
+    conflictedFiles: string[];
+  }>;
+}
+
+export interface ChatDelegationVerificationResult {
+  repositoryId: string;
+  command: string;
+  approvalGranted: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  logTail: string;
+  testedHead: string | null;
+  testedTree: string | null;
+}
+
+export interface ChatDelegationIntegration {
+  integrationId: string;
+  mergeState: 'integrating' | 'integrated' | 'conflicted' | 'failed';
+  combined: boolean;
+  verificationState: ChatDelegationVerificationState;
+  verificationAttempt: number;
+  verificationSelections: ChatDelegationVerificationSelection[];
+  verification: ChatDelegationVerificationResult[];
+  appliedAt: string | null;
+  applyAllowed: boolean;
+  error?: string;
+  repositories: ChatDelegationIntegrationRepository[];
 }
 
 export interface ChatDelegationRun {
@@ -67,6 +145,7 @@ export interface ChatDelegationRun {
   }>;
   hasRemoteChanges: boolean;
   integrationState?: 'integrated' | 'conflicted' | 'failed';
+  integration?: ChatDelegationIntegration;
 }
 
 export type ChatDelegationAction = 'resume' | 'retry' | 'integrate';

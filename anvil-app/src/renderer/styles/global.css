@@ -1,4 +1,6 @@
 @import 'tailwindcss';
+/* Keep standalone replay and Electron builds on the same renderer utility set. */
+@source '../';
 @import './chat-theme.css';
 @import './processing-card.css';
 

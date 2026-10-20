@@ -627,27 +627,22 @@ export function ChatView({ userRole }: ChatViewProps) {
     activeThreadHasWorkItem: Boolean(activeThread?.workItemId),
   });
 
-  // §7 funnel — local-only activation events; never transmitted.
+  // Local-only activation events. The main process keeps only the first
+  // composer-enabled event for the active journey, so ChatView remounts do not
+  // create duplicate funnel steps.
   const composerEnabledWorkspacesRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (chatInputDisabled) return;
     const key = activeWorkspace?.id ?? 'no-workspace';
     if (composerEnabledWorkspacesRef.current.has(key)) return;
     composerEnabledWorkspacesRef.current.add(key);
-    void window.anvil.metrics
-      .track('chat_composer_enabled', { workspaceId: activeWorkspace?.id ?? null })
-      .catch(() => {});
+    void window.anvil.metrics.track('chat_composer_enabled').catch(() => {});
   }, [chatInputDisabled, activeWorkspace?.id]);
 
   const prevPaneKindRef = useRef<ChatPaneKind | null>(null);
   useEffect(() => {
     if (paneKind === 'blocked' && prevPaneKindRef.current !== 'blocked') {
-      void window.anvil.metrics
-        .track('chat_blocked_shown', {
-          workspaceId: activeWorkspace?.id ?? null,
-          reason: featureAvailability.repoFeatureReason ?? null,
-        })
-        .catch(() => {});
+      void window.anvil.metrics.track('chat_blocked_shown').catch(() => {});
     }
     prevPaneKindRef.current = paneKind;
   }, [paneKind, activeWorkspace?.id, featureAvailability.repoFeatureReason]);

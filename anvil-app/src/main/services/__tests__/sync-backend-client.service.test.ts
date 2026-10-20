@@ -44,6 +44,19 @@ function loadFixture<T>(name: string): T {
 const invalidDescriptor = loadFixture<unknown>('invalid-descriptor.json');
 const validDescriptor = loadFixture<BackendDescriptor>('valid-descriptor.json');
 
+it('preserves additive capability negotiation while excluding unknown descriptor fields', () => {
+  const features = ['mesh-job-capability-requirements/1'];
+  const descriptor = toPublicDescriptor({
+    ...validDescriptor,
+    features,
+    accessToken: 'must-not-cross-the-bridge',
+  } as BackendDescriptor);
+  expect(descriptor.features).toEqual(features);
+  features.push('later-mutation');
+  expect(descriptor.features).toEqual(['mesh-job-capability-requirements/1']);
+  expect(descriptor).not.toHaveProperty('accessToken');
+});
+
 function jsonStub(payload: unknown, status = 200): typeof fetch {
   return (async () =>
     new Response(JSON.stringify(payload), {

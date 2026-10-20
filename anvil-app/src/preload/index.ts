@@ -243,9 +243,20 @@ const api: AnvilAPI = {
 
   chat: {
     listDelegations: (threadId: string) => ipcRenderer.invoke('chat:list-delegations', threadId),
-    readDelegation: (threadId: string, runId: string) => ipcRenderer.invoke('chat:read-delegation', threadId, runId),
-    stopDelegation: (threadId: string, runId: string) => ipcRenderer.invoke('chat:stop-delegation', threadId, runId),
-    actOnDelegation: (threadId, runId, action, nodeId) => ipcRenderer.invoke('chat:act-on-delegation', threadId, runId, action, nodeId),
+    readDelegation: (threadId: string, runId: string) =>
+      ipcRenderer.invoke('chat:read-delegation', threadId, runId),
+    stopDelegation: (threadId: string, runId: string) =>
+      ipcRenderer.invoke('chat:stop-delegation', threadId, runId),
+    actOnDelegation: (threadId, runId, action, nodeId) =>
+      ipcRenderer.invoke('chat:act-on-delegation', threadId, runId, action, nodeId),
+    prepareDelegationIntegration: (threadId, runId) =>
+      ipcRenderer.invoke('chat:prepare-delegation-integration', threadId, runId),
+    integrateDelegation: (threadId, runId, selectedChecks) =>
+      ipcRenderer.invoke('chat:integrate-delegation', threadId, runId, selectedChecks),
+    retryDelegationVerification: (threadId, runId) =>
+      ipcRenderer.invoke('chat:retry-delegation-verification', threadId, runId),
+    applyDelegationIntegration: (threadId, runId, repositoryId) =>
+      ipcRenderer.invoke('chat:apply-delegation-integration', threadId, runId, repositoryId),
     createTemporaryThread: (personaId: string) =>
       ipcRenderer.invoke('chat:create-temporary-thread', personaId),
     endTemporaryThread: (threadId: string) =>
@@ -756,19 +767,8 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('docs:generate-update', pageId, repoId, context),
     createPage: (spaceKey: string, title: string, repoId: string, context: DocsRequestContext) =>
       ipcRenderer.invoke('docs:create', spaceKey, title, repoId, context),
-    updatePage: (
-      pageId: string,
-      title: string,
-      content: string,
-      context: DocsRequestContext,
-    ) =>
-      ipcRenderer.invoke(
-        'docs:update',
-        pageId,
-        title,
-        content,
-        context,
-      ),
+    updatePage: (pageId: string, title: string, content: string, context: DocsRequestContext) =>
+      ipcRenderer.invoke('docs:update', pageId, title, content, context),
   },
 
   settings: {
@@ -1321,6 +1321,12 @@ const api: AnvilAPI = {
     generateCommitMessage: (repoId: string) =>
       ipcRenderer.invoke('git:generate-commit-message', repoId),
     createPullRequest: (repoId: string) => ipcRenderer.invoke('git:create-pull-request', repoId),
+    prepareTurnDelivery: (repoId, paths, mode) =>
+      ipcRenderer.invoke('git:prepare-turn-delivery', repoId, paths, mode),
+    commitTurnDelivery: (repoId, reviewId, message) =>
+      ipcRenderer.invoke('git:commit-turn-delivery', repoId, reviewId, message),
+    createTurnPullRequest: (repoId, reviewId, message) =>
+      ipcRenderer.invoke('git:create-turn-pull-request', repoId, reviewId, message),
     push: (repoId: string, remote?: string, branch?: string, setUpstream?: boolean) =>
       ipcRenderer.invoke('git:push', repoId, remote, branch, setUpstream),
     pull: (repoId: string, remote?: string, branch?: string) =>

@@ -1,8 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type {
   ChatDelegationAction,
+  ChatDelegationIntegration,
   ChatDelegationInput,
   ChatDelegationRun,
+  ChatDelegationVerificationSelection,
 } from '../../shared/chat-delegation.js';
 import type { WorkflowEdge, WorkflowNode, WorkflowRun } from '../../shared/types.js';
 import { DEFAULT_ORCHESTRATION } from '../../shared/workflow-orchestration.js';
@@ -25,8 +28,11 @@ import { hasPendingAgentQuestion } from './agent-question.service.js';
 import { getChatThread } from './chat-persistence.service.js';
 import {
   assertChatDelegationSources,
+  applyWorkflowRunIntegrationRepository,
   cancelWorkflowRun,
-  convergeWorkflowRun,
+  integrateWorkflowRunWithChecks,
+  prepareWorkflowRunIntegration,
+  retryWorkflowRunVerification,
   getWorkflowRun,
   getChatWorkflowRunByRequest,
   listChatWorkflowRuns,
@@ -34,7 +40,23 @@ import {
   retryWorkflowNode,
   startChatWorkflowRun,
   validateWorkflowGraph,
+  workflowRunCanApplyIntegration,
 } from './workflow.service.js';
+import { getIntegration } from './mesh-integration.service.js';
+import {
+  RemoteReviewCandidateError,
+  captureRemoteReviewCandidate,
+} from './remote-review-candidate.service.js';
+import {
+  assertRemoteReviewBackendBinding,
+  captureRemoteReviewBackendBinding,
+} from './mesh-worker.service.js';
+import {
+  describeRemoteReviewCandidate,
+  validateRemoteReviewCandidates,
+  type RemoteReviewBackendBinding,
+  type RemoteReviewCandidate,
+} from '../../shared/remote-review-candidate.js';
 import {
   cancelNodeDispatch,
   getWorkflowDispatch,
@@ -50,6 +72,9 @@ interface PreparedProposal {
   edges: WorkflowEdge[];
   names: Record<string, string>;
   detail: string;
+  remoteReviewCandidates?: RemoteReviewCandidate[];
+  remoteReviewBaseCommits?: Record<string, string>;
+  remoteReviewBackend?: RemoteReviewBackendBinding;
 }
 const pending = new Map<
   string,
@@ -59,6 +84,64 @@ const pending = new Map<
 export function describeChatDelegation(run: WorkflowRun): ChatDelegationRun {
   if (!run.chatOrigin) throw new Error('This run is not a chat delegation.');
   const budget = Math.floor(24000 / Math.max(1, run.nodeRuns.length));
+  const integrationId = run.convergence?.integrationId ?? `workflow-convergence:${run.id}`;
+  const persistedIntegration = getIntegration(integrationId);
+  const integration: ChatDelegationIntegration | undefined = persistedIntegration
+    ? {
+        integrationId,
+        mergeState: persistedIntegration.state,
+        combined: persistedIntegration.combined,
+        verificationState: persistedIntegration.verificationState,
+        verificationAttempt: persistedIntegration.verificationAttempt,
+        verificationSelections: persistedIntegration.verificationSelections,
+        verification: persistedIntegration.verification,
+        appliedAt: persistedIntegration.appliedAt,
+        applyAllowed: workflowRunCanApplyIntegration(run),
+        ...(persistedIntegration.error ? { error: persistedIntegration.error } : {}),
+        repositories: persistedIntegration.repositories.map((repository) => ({
+          repositoryId: repository.repositoryId,
+          name: repository.name ?? repository.repositoryId,
+          baseCommit: repository.baseCommit,
+          integratedCommit: repository.integratedCommit,
+          branch: repository.branch,
+          worktreePath: repository.worktreePath,
+          appliedAt: repository.appliedAt ?? null,
+          destinationBranch: repository.destinationBranch ?? null,
+          appliedCommit: repository.appliedCommit ?? null,
+          ...(repository.applyError ? { applyError: repository.applyError } : {}),
+          conflicts: repository.conflicts.map((conflict) => ({
+            dispatchId: conflict.dispatchId,
+            ref: conflict.ref,
+            conflictedFiles: conflict.conflictedFiles,
+          })),
+        })),
+      }
+    : run.convergence
+      ? {
+          integrationId,
+          mergeState: run.convergence.state,
+          combined: run.convergence.combined,
+          verificationState: run.convergence.verificationState,
+          verificationAttempt: run.convergence.verificationAttempt,
+          verificationSelections: run.convergence.verificationSelections,
+          verification: run.convergence.verification,
+          appliedAt: run.convergence.appliedAt,
+          applyAllowed: workflowRunCanApplyIntegration(run),
+          repositories: run.convergence.repositories.map((repository) => ({
+            repositoryId: repository.repositoryId,
+            name: repository.repositoryId,
+            baseCommit: repository.baseCommit,
+            integratedCommit: repository.integratedCommit,
+            branch: repository.branch,
+            worktreePath: repository.worktreePath,
+            appliedAt: repository.appliedAt,
+            destinationBranch: repository.destinationBranch,
+            appliedCommit: repository.appliedCommit,
+            ...(repository.applyError ? { applyError: repository.applyError } : {}),
+            conflicts: repository.conflicts,
+          })),
+        }
+      : undefined;
   return {
     id: run.id,
     title: run.templateName,
@@ -96,6 +179,7 @@ export function describeChatDelegation(run: WorkflowRun): ChatDelegationRun {
       (node) => node.target && node.target.kind !== 'local' && node.permissionMode !== 'read-only',
     ),
     integrationState: run.convergence?.state,
+    ...(integration ? { integration } : {}),
   };
 }
 
@@ -124,6 +208,17 @@ export async function listChatDelegations(threadId: string): Promise<ChatDelegat
       const view = describeChatDelegation(run);
       return {
         ...view,
+        ...(view.integration
+          ? {
+              integration: {
+                ...view.integration,
+                verification: view.integration.verification.map((result) => ({
+                  ...result,
+                  logTail: '',
+                })),
+              },
+            }
+          : {}),
         tasks: view.tasks.map((task) => ({
           ...task,
           output: undefined,
@@ -198,12 +293,54 @@ export async function actOnChatDelegation(
       : action === 'retry' && nodeId
         ? retryWorkflowNode(runId, nodeId)
         : action === 'integrate'
-          ? await convergeWorkflowRun(runId)
+          ? null
           : null;
+  if (action === 'integrate')
+    throw new AgentToolError(
+      'Review the repository verification checks before integrating delegated code.',
+      'invalid-params',
+    );
   if (!run)
     throw new AgentToolError('Choose a supported delegation action and task.', 'invalid-params');
   if (action === 'retry' && !run.nodeRuns.some((task) => task.status === 'interrupted'))
     run = resumeWorkflowRun(runId);
+  return describeChatDelegation(run);
+}
+
+export async function prepareDelegationIntegration(
+  threadId: string,
+  runId: string,
+): Promise<import('../../shared/chat-delegation.js').ChatDelegationIntegrationPlan> {
+  requireChatDelegation(threadId, runId);
+  return prepareWorkflowRunIntegration(runId);
+}
+
+export async function integrateDelegation(
+  threadId: string,
+  runId: string,
+  selections: ChatDelegationVerificationSelection[],
+): Promise<ChatDelegationRun> {
+  requireChatDelegation(threadId, runId);
+  const run = await integrateWorkflowRunWithChecks(runId, selections);
+  return describeChatDelegation(run);
+}
+
+export async function retryDelegationVerification(
+  threadId: string,
+  runId: string,
+): Promise<ChatDelegationRun> {
+  requireChatDelegation(threadId, runId);
+  const run = await retryWorkflowRunVerification(runId);
+  return describeChatDelegation(run);
+}
+
+export async function applyDelegationIntegration(
+  threadId: string,
+  runId: string,
+  repositoryId: string,
+): Promise<ChatDelegationRun> {
+  requireChatDelegation(threadId, runId);
+  const run = await applyWorkflowRunIntegrationRepository(runId, repositoryId);
   return describeChatDelegation(run);
 }
 
@@ -215,6 +352,7 @@ function fingerprint(input: ChatDelegationInput, ctx: AgentToolSessionContext): 
         repoIds: [...ctx.repoIds].sort(),
         title: input.title,
         reason: input.reason,
+        source: input.source ?? 'committed',
         tasks: input.tasks.map((t) => ({
           id: t.id,
           name: t.name,
@@ -331,8 +469,8 @@ async function prepareProposal(
   signal?: AbortSignal,
 ): Promise<PreparedProposal | null> {
   const capabilities = await discoverDelegationCapabilities(ctx);
-  const source = getCodexSession(ctx.sessionId);
-  if (!source || signal?.aborted) return null;
+  const sourceSession = getCodexSession(ctx.sessionId);
+  if (!sourceSession || signal?.aborted) return null;
   const names: Record<string, string> = {};
   const nodes: WorkflowNode[] = input.tasks.map((task, index) => {
     const destination = capabilities.destinations.find((d) => d.id === task.destinationId);
@@ -351,7 +489,7 @@ async function prepareProposal(
       id: task.id,
       name: task.name,
       prompt: task.instruction,
-      personaId: source.personaId,
+      personaId: sourceSession.personaId,
       provider,
       model,
       reasoningEffort: task.reasoningEffort ?? 'medium',
@@ -366,8 +504,32 @@ async function prepareProposal(
     (task.dependsOn ?? []).map((id) => ({ id: `${id}:${task.id}`, source: id, target: task.id })),
   );
   validateWorkflowGraph(nodes, edges);
-  if (nodes.some((node) => node.target && node.target.kind !== 'local'))
+  const source = input.source ?? 'committed';
+  if (source !== 'committed' && source !== 'current-tracked')
+    throw new AgentToolError('Choose committed or current tracked source.', 'invalid-params');
+  if (source === 'current-tracked') {
+    if (nodes.some((node) => node.target === undefined || node.target.kind === 'local'))
+      throw new AgentToolError(
+        'Current tracked source is available for remote review tasks only.',
+        'invalid-params',
+      );
+    if (nodes.some((node) => node.permissionMode !== 'read-only'))
+      throw new AgentToolError(
+        'Current tracked source requires every delegated task to be read-only.',
+        'invalid-params',
+      );
+  }
+  if (
+    nodes.some((node) => node.target && node.target.kind !== 'local') &&
+    source !== 'current-tracked'
+  )
     assertChatDelegationSources(ctx.workspaceId!, ctx.repoIds);
+  const remoteReviewBackend =
+    source === 'current-tracked' ? captureRemoteReviewBackendBinding() : undefined;
+  const trackedReview =
+    source === 'current-tracked' ? await captureCurrentTrackedCandidates(ctx) : undefined;
+  if (remoteReviewBackend) await assertRemoteReviewBackendBinding(remoteReviewBackend);
+  const remoteReviewCandidates = trackedReview?.candidates;
   const repositoryNames = ctx.repoIds.map(
     (id) =>
       (
@@ -375,7 +537,7 @@ async function prepareProposal(
           { name: string } | undefined
       )?.name ?? id,
   );
-  const detail = [
+  const detailParts = [
     input.reason,
     `Repositories: ${repositoryNames.join(', ')}`,
     ...nodes.map(
@@ -384,13 +546,170 @@ async function prepareProposal(
     ),
     ...(nodes.some((node) => node.target?.kind !== 'local')
       ? [
-          'Remote tasks use committed snapshots. Dependencies pass reports, not code changes. Returned code needs explicit integration.',
+          source === 'current-tracked'
+            ? 'Remote tasks review the frozen tracked-source candidate shown below. Untracked files are excluded. Dependencies pass reports, not code changes.'
+            : 'Remote tasks use committed snapshots. Dependencies pass reports, not code changes. Returned code needs explicit integration.',
         ]
       : nodes.some((node) => node.permissionMode !== 'read-only')
         ? ['These tasks share your local checkout and will run one at a time.']
         : []),
-  ].join('\n\n');
-  return { nodes, edges, names, detail };
+  ];
+  if (remoteReviewCandidates) {
+    detailParts.push(`Reviewed Mesh backend: ${remoteReviewBackend?.backendId ?? 'unknown'}`);
+    for (const candidate of remoteReviewCandidates) {
+      const summary = describeRemoteReviewCandidate(candidate);
+      detailParts.push(
+        [
+          `Frozen candidate for ${candidate.repositoryId}`,
+          `Base: ${summary.baseCommit}`,
+          `Candidate commit: ${summary.candidateCommit}`,
+          `Candidate tree: ${summary.candidateTree}`,
+          `Patch SHA-256: ${summary.patchSha256}`,
+          `${summary.fileCount} tracked files · ${summary.totalFileBytes} bytes`,
+          `Included paths: ${summary.includedPaths.join(', ')}`,
+        ].join('\n'),
+      );
+    }
+  }
+  if (trackedReview) {
+    const candidateIds = new Set(
+      remoteReviewCandidates?.map((candidate) => candidate.repositoryId),
+    );
+    for (const [repositoryId, commit] of Object.entries(trackedReview.baseCommits))
+      if (!candidateIds.has(repositoryId))
+        detailParts.push(
+          `Frozen base for ${repositoryId}: ${commit}\nNo tracked changes to include. Untracked files are excluded.`,
+        );
+  }
+  const detail = detailParts.join('\n\n');
+  return {
+    nodes,
+    edges,
+    names,
+    detail,
+    ...(remoteReviewCandidates ? { remoteReviewCandidates } : {}),
+    ...(trackedReview ? { remoteReviewBaseCommits: trackedReview.baseCommits } : {}),
+    ...(remoteReviewBackend ? { remoteReviewBackend } : {}),
+  };
+}
+
+async function captureCurrentTrackedCandidates(
+  ctx: AgentToolSessionContext,
+): Promise<{ candidates: RemoteReviewCandidate[]; baseCommits: Record<string, string> }> {
+  const rows = getDb()
+    .prepare(
+      `SELECT d.portable_id, d.mapped_repo_id, r.path, r.name
+       FROM workspace_repo_definitions d
+       JOIN repos r ON r.id = d.mapped_repo_id
+       WHERE d.workspace_id = ?`,
+    )
+    .all(ctx.workspaceId) as Array<{
+    portable_id: string;
+    mapped_repo_id: string;
+    path: string;
+    name: string;
+  }>;
+  const selected = rows.filter((row) => ctx.repoIds.includes(row.mapped_repo_id));
+  if (new Set(selected.map((row) => row.mapped_repo_id)).size !== ctx.repoIds.length)
+    throw new AgentToolError(
+      'Current tracked review needs portable repository mappings in this workspace.',
+      'unavailable',
+    );
+
+  const candidates: RemoteReviewCandidate[] = [];
+  const baseCommits: Record<string, string> = {};
+  for (const repository of selected) {
+    let baseCommit: string;
+    try {
+      baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repository.path,
+        encoding: 'utf8',
+        timeout: 10_000,
+      }).trim();
+    } catch {
+      throw new AgentToolError(
+        `Could not pin the source commit in ${repository.name}. Check that its Git checkout is available.`,
+        'unavailable',
+      );
+    }
+    if (!/^[a-f0-9]{40,64}$/i.test(baseCommit))
+      throw new AgentToolError(
+        `Could not pin a valid source commit for ${repository.name}.`,
+        'unavailable',
+      );
+    baseCommits[repository.portable_id] = baseCommit;
+    let pathBytes: Buffer;
+    try {
+      pathBytes = execFileSync(
+        'git',
+        ['diff', '--no-renames', '--name-only', '-z', '--diff-filter=ACDMRT', 'HEAD', '--'],
+        { cwd: repository.path, encoding: 'buffer', timeout: 10_000, maxBuffer: 256 * 1024 },
+      );
+    } catch {
+      throw new AgentToolError(
+        `Could not inspect tracked changes in ${repository.name}. Check that its Git checkout is available.`,
+        'unavailable',
+      );
+    }
+    if (pathBytes.length > 0 && pathBytes[pathBytes.length - 1] !== 0)
+      throw new AgentToolError(
+        `Could not read the tracked path list for ${repository.name}.`,
+        'unavailable',
+      );
+    const decodedPaths = pathBytes.toString('utf8');
+    if (!Buffer.from(decodedPaths, 'utf8').equals(pathBytes))
+      throw new AgentToolError(
+        `${repository.name} has a tracked path that cannot be represented safely for review.`,
+        'invalid-params',
+      );
+    const paths = decodedPaths.split('\0').filter(Boolean);
+    if (paths.length > 64)
+      throw new AgentToolError(
+        `${repository.name} has more than 64 changed tracked paths. Narrow the review before delegating.`,
+        'invalid-params',
+      );
+    if (paths.length === 0) continue;
+    try {
+      candidates.push(
+        await captureRemoteReviewCandidate({
+          repositoryId: repository.portable_id,
+          repositoryPath: repository.path,
+          selectedPaths: paths,
+          baseCommit,
+        }),
+      );
+    } catch (error) {
+      const code = error instanceof RemoteReviewCandidateError ? error.code : 'capture-failed';
+      const details: Record<string, string> = {
+        'remote-review-candidate-invalid-selection': 'contains a path Git cannot review safely',
+        'remote-review-candidate-conflicted-index': 'has unresolved index conflicts',
+        'remote-review-candidate-binary-file': 'contains a binary file',
+        'remote-review-candidate-file-too-large': 'contains a file above the review size limit',
+        'remote-review-candidate-too-large': 'exceeds the bounded review size limit',
+        'remote-review-candidate-untracked-or-unsupported-file':
+          'contains a path that is not tracked at the pinned base',
+        'remote-review-candidate-unsupported-file-type': 'contains an unsupported file type',
+      };
+      throw new AgentToolError(
+        `Could not prepare ${repository.name} for remote review: ${details[code] ?? 'the tracked snapshot could not be captured safely'}.`,
+        'invalid-params',
+      );
+    }
+  }
+  if (candidates.length === 0)
+    throw new AgentToolError(
+      'No tracked changes were found in the selected repositories. Untracked files are not included.',
+      'invalid-params',
+    );
+  try {
+    validateRemoteReviewCandidates(candidates, { readOnly: true });
+  } catch {
+    throw new AgentToolError(
+      'The selected tracked changes exceed the bounded remote review limits.',
+      'invalid-params',
+    );
+  }
+  return { candidates, baseCommits };
 }
 
 async function approveAndStart(
@@ -418,6 +737,16 @@ async function approveAndStart(
     undefined,
     { keepAcrossTurns: true },
   );
+  if (prepared.remoteReviewBackend) {
+    try {
+      await assertRemoteReviewBackendBinding(prepared.remoteReviewBackend);
+    } catch (error) {
+      throw new AgentToolError(
+        `The reviewed Mesh backend changed before delegation could start: ${error instanceof Error ? error.message : String(error)}. Propose the current tracked review again.`,
+        'conflict',
+      );
+    }
+  }
   const live = getCodexSession(ctx.sessionId);
   if (!approved || !live || live.appThreadId !== ctx.appThreadId) return { status: 'cancelled' };
   const liveScope = getAgentToolSessionContext(ctx.sessionId);
@@ -453,7 +782,16 @@ async function approveAndStart(
       fingerprint: digest,
       reason: input.reason,
       destinations: names,
+      source: input.source ?? 'committed',
+      ...(prepared.remoteReviewBaseCommits
+        ? { sourceBaseCommits: prepared.remoteReviewBaseCommits }
+        : {}),
+      ...(prepared.remoteReviewBackend ? { sourceBackend: prepared.remoteReviewBackend } : {}),
     },
+    ...(prepared.remoteReviewCandidates
+      ? { remoteReviewCandidates: prepared.remoteReviewCandidates }
+      : {}),
+    ...(prepared.remoteReviewBackend ? { remoteReviewBackend: prepared.remoteReviewBackend } : {}),
     definition: {
       name: input.title,
       nodes,

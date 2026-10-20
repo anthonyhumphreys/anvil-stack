@@ -5,6 +5,7 @@ import {
   buildTurnReviewPrompt,
   checkTurnUndoTarget,
   collectTurnFileChanges,
+  createTurnDeliveryReviewRequestGuard,
   countDiffStats,
   countTurnStatuses,
   detectDiffFileStatus,
@@ -15,10 +16,12 @@ import {
   isLineLevelPatch,
   planTurnUndo,
   repoRelativePath,
+  resolveTurnDeliveryRepo,
   resolveChangesRepoId,
   sameTurnChangeSummary,
   splitDisplayPath,
   summarizeTurnChanges,
+  turnDeliveryPaths,
   tallyDiffLines,
   tallyEquals,
   tallyFileContent,
@@ -132,6 +135,67 @@ describe('repoRelativePath', () => {
 
   it('rejects absolute paths outside the repo', () => {
     expect(repoRelativePath('/elsewhere/a.ts', '/ws/one')).toBeNull();
+  });
+});
+
+describe('reviewed Git scope', () => {
+  const repos = [
+    { id: 'r1', path: '/ws/one' },
+    { id: 'r2', path: '/ws/two' },
+  ] as RepoInfo[];
+
+  it('requires every absolute turn path to resolve to the same known repository', () => {
+    expect(resolveTurnDeliveryRepo(['/ws/one/a.ts', '/ws/two/b.ts'], repos)).toEqual({
+      repoId: null,
+      reason: 'This turn changed files in more than one repository.',
+    });
+  });
+
+  it('requires an explicit repository for relative paths in a multi-repo workspace', () => {
+    expect(resolveTurnDeliveryRepo(['src/a.ts'], repos).repoId).toBeNull();
+    expect(resolveTurnDeliveryRepo(['src/a.ts'], repos, 'r2')).toEqual({ repoId: 'r2' });
+  });
+
+  it('includes the source path from a recorded rename in the selected scope', () => {
+    const [file] = changes([
+      '/ws/one/new-name.ts',
+      'diff --git a/old-name.ts b/new-name.ts\nsimilarity index 100%\nrename from old-name.ts\nrename to new-name.ts',
+    ]);
+
+    expect(turnDeliveryPaths([file], '/ws/one')).toEqual({
+      paths: ['new-name.ts', 'old-name.ts'],
+    });
+  });
+
+  it('rejects turn paths outside the chosen repository', () => {
+    expect(resolveTurnDeliveryRepo(['/elsewhere/file.ts'], repos).repoId).toBeNull();
+    expect(turnDeliveryPaths(changes(['/elsewhere/file.ts', '+x']), '/ws/one')).toMatchObject({
+      paths: [],
+      reason: expect.stringContaining('outside'),
+    });
+  });
+});
+
+describe('turn delivery review request guard', () => {
+  it('ignores a pending response after the review dialog is closed', () => {
+    const guard = createTurnDeliveryReviewRequestGuard();
+    const request = guard.begin();
+
+    expect(guard.isCurrent(request)).toBe(true);
+    expect(guard.cancel()).toBe(true);
+    expect(guard.isCurrent(request)).toBe(false);
+    expect(guard.finish(request)).toBe(false);
+  });
+
+  it('allows only the latest refreshed review request to update the dialog', () => {
+    const guard = createTurnDeliveryReviewRequestGuard();
+    const first = guard.begin();
+    const latest = guard.begin();
+
+    expect(guard.isCurrent(first)).toBe(false);
+    expect(guard.isCurrent(latest)).toBe(true);
+    expect(guard.finish(latest)).toBe(true);
+    expect(guard.isCurrent(latest)).toBe(false);
   });
 });
 

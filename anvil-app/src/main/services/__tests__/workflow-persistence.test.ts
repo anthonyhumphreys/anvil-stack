@@ -7,13 +7,19 @@ import type { WorkflowRun } from '../../../shared/types';
 
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
+const integrationMocks = vi.hoisted(() => ({ retry: vi.fn() }));
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('../notification.service.js', () => ({ notifyWorkflowDecision: vi.fn() }));
 import { notifyWorkflowDecision } from '../notification.service.js';
 import { integrateResults } from '../mesh-integration.service.js';
 
 vi.mock('../automation.service.js', () => ({ triggerWatchtowerEvent: vi.fn() }));
-vi.mock('../mesh-integration.service.js', () => ({ integrateResults: vi.fn() }));
+vi.mock('../mesh-integration.service.js', () => ({
+  integrateResults: vi.fn(),
+  getIntegration: vi.fn(() => null),
+  retryIntegrationVerification: integrationMocks.retry,
+  applyIntegrationRepository: vi.fn(),
+}));
 vi.mock('../persona.service.js', () => ({
   getPersonaById: (id: string) => (id === 'coder' ? { id } : null),
   buildSystemPrompt: () => '',
@@ -50,11 +56,13 @@ import {
   startChatWorkflowRun,
   listChatWorkflowRuns,
   getChatWorkflowRunByRequest,
+  retryWorkflowRunVerification,
   waitForWorkflowRun,
 } from '../workflow.service';
 
 beforeEach(() => {
   vi.mocked(notifyWorkflowDecision).mockClear();
+  integrationMocks.retry.mockReset();
   db.exec(
     "DELETE FROM workflow_runs; DELETE FROM workflow_templates; DELETE FROM chat_threads; DELETE FROM workspaces; INSERT INTO workspaces (id, name, created_at, updated_at) VALUES ('ws', 'Test', datetime('now'), datetime('now'));",
   );
@@ -134,6 +142,19 @@ describe('workflow persistence and commands', () => {
     resumeWorkflowRun(started.id);
     await waitForWorkflowRun(started.id);
     expect(getWorkflowRun(started.id)?.chatOrigin).toEqual(origin);
+  });
+  it('retains the approved remote-review backend binding across run reloads', async () => {
+    const current = await pausedRun();
+    current.remoteReviewBackend = {
+      backendId: 'deployment-1',
+      baseUrl: 'https://mesh.example/',
+      apiUrl: 'https://mesh.example/api/',
+      accountId: 'account-opaque',
+      datasetEpoch: 'epoch-opaque',
+    };
+    store(current);
+
+    expect(getWorkflowRun(current.id)?.remoteReviewBackend).toEqual(current.remoteReviewBackend);
   });
   it('persists a frozen input manifest and target policy with the run', async () => {
     const saved = saveWorkflowTemplate({
@@ -359,8 +380,14 @@ describe('workflow persistence and commands', () => {
     store(current);
     vi.mocked(integrateResults).mockResolvedValueOnce({
       state: 'integrated',
+      combined: true,
+      verificationState: 'not-run',
+      verificationAttempt: 0,
+      verificationSelections: [],
       repositories: [],
       verification: [],
+      verificationAttempts: [],
+      appliedAt: null,
     });
     const converged = await convergeWorkflowRun(current.id);
     expect(converged.convergence).toMatchObject({
@@ -370,6 +397,64 @@ describe('workflow persistence and commands', () => {
     expect(integrateResults).toHaveBeenCalledWith(
       expect.objectContaining({ dispatchIds: ['dispatch-converge'] }),
     );
+  });
+  it('restores a completed chat delegation after a saved verification retry passes', async () => {
+    const current = await pausedRun();
+    current.status = 'paused';
+    current.nodes[0].kind = 'agent';
+    current.nodeRuns[0].status = 'completed';
+    current.nodeRuns[0].remote = { dispatchId: 'dispatch-verify-retry', state: 'completed' };
+    store(current);
+    const selections = [{ repositoryId: 'portable-repo', commands: ['npm test'] }];
+    const verification = [
+      {
+        repositoryId: 'portable-repo',
+        command: 'npm test',
+        approvalGranted: true,
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 120,
+        logTail: 'passed',
+        testedHead: 'a'.repeat(40),
+        testedTree: 'b'.repeat(40),
+      },
+    ];
+    vi.mocked(integrateResults).mockResolvedValueOnce({
+      state: 'integrated',
+      combined: true,
+      verificationState: 'failed',
+      verificationAttempt: 1,
+      verificationSelections: selections,
+      repositories: [],
+      verification,
+      verificationAttempts: [],
+      appliedAt: null,
+    });
+    integrationMocks.retry.mockResolvedValueOnce({
+      state: 'integrated',
+      combined: true,
+      verificationState: 'passed',
+      verificationAttempt: 2,
+      verificationSelections: selections,
+      repositories: [],
+      verification,
+      verificationAttempts: [],
+      appliedAt: null,
+    });
+
+    const failed = await convergeWorkflowRun(current.id);
+    expect(failed.status).toBe('paused');
+    expect(failed.convergence?.verificationState).toBe('failed');
+
+    const recovered = await retryWorkflowRunVerification(current.id);
+    expect(recovered.status).toBe('completed');
+    expect(recovered.error).toBeUndefined();
+    expect(recovered.convergence?.verificationState).toBe('passed');
+    expect(integrationMocks.retry).toHaveBeenCalledWith({
+      integrationId: `workflow-convergence:${current.id}`,
+      runId: current.id,
+      permissionMode: 'read-only',
+    });
   });
   it('does not reclaim a run from a live owner', async () => {
     const current = await pausedRun();

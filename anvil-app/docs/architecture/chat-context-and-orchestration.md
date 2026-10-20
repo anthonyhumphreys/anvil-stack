@@ -2,6 +2,14 @@
 
 Reviewed against the desktop implementation on 18 October 2026. This describes Anvil Mesh and the desktop workflow runner. The separate `anvil-cloud` framework and its legacy execution connection have different contracts.
 
+The 19 October delivery changes are described in
+[reviewed-delivery.md](reviewed-delivery.md). They add exact candidate review for
+Git delivery, separate branch combination and verification evidence, explicit
+per-repository application, and bounded read-only review of frozen tracked
+changes on compatible backends and workers. The live checks below remain the
+18 October record; they do not establish physical-device acceptance of these
+later changes.
+
 ## Running Sol 6.1 locally and delegating elsewhere
 
 Yes. A plain saved workspace chat can discover agents and delegate bounded tasks directly. No saved workflow is required. Select Sol 6.1 from the models available through your configured provider. The provider/model chooses the agent; the destination chooses where its tools and files live.
@@ -97,11 +105,18 @@ Same-device remote follow-ups reuse a verified native provider handle. Cross-dev
 
 ## Repository and result boundaries
 
-Remote workflow jobs use the run's frozen repository commits. Before a new dispatch, Anvil checks that the source checkout still matches those commits and has no tracked or untracked edits. A mismatch stops the step with instructions to commit and start a new run, or keep the step local. This check happens before provisioning an environment. Reattaching an already submitted request retains its original snapshot.
+Committed-source remote workflow jobs use the run's frozen repository commits. Before a new dispatch, Anvil checks that the source checkout still matches those commits and has no tracked or untracked edits. A mismatch stops the step with instructions to commit and start a new run, or keep the step local. This check happens before provisioning an environment. Reattaching an already submitted request retains its original snapshot. Plain chat delegation can alternatively approve a bounded current-tracked candidate for read-only remote review. Every selected repository's base is frozen before approval, and candidate bytes stay in encrypted task inputs. That option requires the advertised backend and worker capability; it never silently falls back to committed source.
 
 Workflow edges transfer reports, not another worker's working directory. A downstream remote step does not automatically test an upstream worker's code changes. Keep code-dependent edits and tests within the same remote task, or integrate the result before starting the next run. Local concurrent agents share the run checkout and must avoid conflicting edits.
 
 Remote results are fetched into result refs, leaving the user's checkout untouched. Use the workflow's explicit integration action to combine those branches in an integration worktree and run the configured verification. Conflicts require attention. A completed worker report alone does not mean the changes were integrated, tests independently passed, or anything was pushed or deployed.
+
+Chat now offers the same result flow with reviewed checks per repository.
+Combining without checks records verification as not run. Verification retries
+reuse the retained candidate; changed checkouts invalidate its evidence. Apply
+is a separate confirmed fast-forward of a verified repository from its recorded
+base, with per-repository receipts and no push. Dirty or moved destination
+checkouts require attention.
 
 ## Verification and remaining limits
 

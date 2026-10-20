@@ -15,6 +15,7 @@
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/database.js';
 import { rpc as backendRpc } from './sync-backend-client.service.js';
 import { downloadMeshArtifact } from './mesh-artifact.service.js';
@@ -189,8 +190,12 @@ function writeDispatchState(dispatchId: string, state: string): void {
  * payloadHash, so replaying a stored request after a crash re-binds to the
  * same backend job rather than minting a second one.
  */
-async function submitDispatch(dispatchId: string, params: JobCreateParams): Promise<JobSummary> {
-  const job = await submitPreparedJob(params);
+async function submitDispatch(
+  dispatchId: string,
+  params: JobCreateParams,
+  remoteReviewBackend?: import('../../shared/remote-review-candidate.js').RemoteReviewBackendBinding,
+): Promise<JobSummary> {
+  const job = await submitPreparedJob(params, remoteReviewBackend);
   getDb()
     .prepare(
       `UPDATE mesh_node_dispatches
@@ -234,6 +239,10 @@ export async function dispatchWorkflowNode(input: {
   requestedTarget?: JobCreateParams['requestedTarget'];
   pinnedManifest?: JobCreateParams['inputManifest'];
   resultRecipients?: string[];
+  /** Frozen read-only candidate bytes are sealed by the worker request builder. */
+  remoteReviewCandidates?: import('../../shared/remote-review-candidate.js').RemoteReviewCandidate[];
+  /** Frozen approval context, retained outside the byte-exact RPC request. */
+  remoteReviewBackend?: import('../../shared/remote-review-candidate.js').RemoteReviewBackendBinding;
 }): Promise<NodeDispatchRecord> {
   const existing = readDispatch(input.dispatchId);
   if (existing !== null) {
@@ -258,10 +267,13 @@ export async function dispatchWorkflowNode(input: {
     ...(input.requestedTarget === undefined ? {} : { requestedTarget: input.requestedTarget }),
     ...(input.pinnedManifest === undefined ? {} : { pinnedManifest: input.pinnedManifest }),
     ...(input.resultRecipients === undefined ? {} : { resultRecipients: input.resultRecipients }),
+    ...(input.remoteReviewCandidates === undefined
+      ? {}
+      : { remoteReviewCandidates: input.remoteReviewCandidates }),
   });
   // Seals the sensitive inputs and persists the TCK under the request id;
   // the returned params are byte-stable for replay.
-  const params = prepareSealedJob(await prepared.build());
+  const params = prepareSealedJob(await prepared.build(), input.remoteReviewBackend);
   const now = new Date().toISOString();
   getDb()
     .prepare(
@@ -278,11 +290,15 @@ export async function dispatchWorkflowNode(input: {
       prepared.requestId,
       input.workspaceId,
       JSON.stringify(params.inputManifest),
-      JSON.stringify(params),
+      JSON.stringify(
+        input.remoteReviewBackend === undefined
+          ? params
+          : { version: 1, params, remoteReviewBackend: input.remoteReviewBackend },
+      ),
       now,
       now,
     );
-  await submitDispatch(input.dispatchId, params);
+  await submitDispatch(input.dispatchId, params, input.remoteReviewBackend);
   return readDispatch(input.dispatchId)!;
 }
 
@@ -304,7 +320,17 @@ export async function refreshDispatch(dispatchId: string): Promise<NodeDispatchR
     if (row.requestJson === null) {
       throw new Error(`dispatch ${dispatchId} has no persisted job.create request`);
     }
-    const job = await submitDispatch(dispatchId, JSON.parse(row.requestJson) as JobCreateParams);
+    const stored = JSON.parse(row.requestJson) as
+      | JobCreateParams
+      | {
+          version: 1;
+          params: JobCreateParams;
+          remoteReviewBackend: import('../../shared/remote-review-candidate.js').RemoteReviewBackendBinding;
+        };
+    const job =
+      'version' in stored
+        ? await submitDispatch(dispatchId, stored.params, stored.remoteReviewBackend)
+        : await submitDispatch(dispatchId, stored);
     // A cancel persisted while the job was unsubmitted still applies.
     if (!row.cancelRequested) {
       writeDispatchState(dispatchId, job.state);
@@ -445,8 +471,34 @@ async function importNodeResults(
     try {
       writeFileSync(bundlePath, bytes);
       const localRef = `refs/mesh/result/${dispatchId}/${repo.repositoryId}`;
+      const temporaryRef = `refs/mesh/import/${randomUUID()}`;
       await withRepoRefLock(repoPath, async () => {
-        await runGit(repoPath, ['fetch', bundlePath, `${repo.branch}:${localRef}`]);
+        if (!/^[a-f0-9]{40}$/.test(repo.resultCommit) || !/^[a-f0-9]{40}$/.test(repo.baseCommit))
+          throw new Error('The worker returned an invalid result revision.');
+        const stored = getDb()
+          .prepare('SELECT manifest_json FROM mesh_node_dispatches WHERE dispatch_id = ?')
+          .get(dispatchId) as { manifest_json: string } | undefined;
+        const pinned = stored
+          ? (
+              JSON.parse(stored.manifest_json) as {
+                repositories?: Array<{ repositoryId: string; commit: string }>;
+              }
+            ).repositories?.find((pin) => pin.repositoryId === repo.repositoryId)
+          : undefined;
+        if (!pinned || pinned.commit !== repo.baseCommit)
+          throw new Error('The worker result does not match the dispatched source revision.');
+        try {
+          await runGit(repoPath, ['fetch', bundlePath, `${repo.branch}:${temporaryRef}`]);
+          const fetched = (
+            await runGit(repoPath, ['rev-parse', '--verify', `${temporaryRef}^{commit}`])
+          ).trim();
+          if (fetched !== repo.resultCommit)
+            throw new Error('The returned bundle does not contain the declared result revision.');
+          await runGit(repoPath, ['merge-base', '--is-ancestor', repo.baseCommit, fetched]);
+          await runGit(repoPath, ['update-ref', localRef, fetched]);
+        } finally {
+          await runGit(repoPath, ['update-ref', '-d', temporaryRef]).catch(() => undefined);
+        }
       });
       adoptedRefs.push({
         repositoryId: repo.repositoryId,

@@ -51,13 +51,13 @@ export function ChatComposerSurface({
 }: ChatComposerSurfaceProps) {
   return (
     <div
-      className={`relative rounded-xl border bg-bg-secondary transition-[border-color,background-color] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
+      className={`relative rounded-[28px] border bg-bg-tertiary transition-[border-color,background-color] duration-200 focus-within:border-accent/55 ${
         disabled ? 'opacity-60' : ''
       } ${
         draggingFiles
           ? 'border-accent bg-accent/5'
           : hasContent
-            ? 'border-border bg-bg-secondary'
+            ? 'border-border bg-bg-tertiary'
             : 'border-border-subtle'
       } ${className}`}
       onDragEnter={onDragEnter}
@@ -66,7 +66,7 @@ export function ChatComposerSurface({
       onDrop={onDrop}
     >
       {draggingFiles && (
-        <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-xl border border-dashed border-accent bg-bg-primary/80 backdrop-blur-sm">
+        <div className="pointer-events-none absolute inset-2 z-40 flex items-center justify-center rounded-[22px] border border-dashed border-accent bg-bg-primary/80 backdrop-blur-sm">
           <div className="flex items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-4 py-2 text-sm font-medium text-text-primary">
             {draggingIcon}
             Drop files to attach
@@ -98,29 +98,22 @@ export function ChatComposerEditor({
     <textarea
       {...textareaProps}
       ref={inputRef}
-      className={`chat-composer-textarea block w-full resize-none bg-transparent px-4 pb-3 pt-4 text-sm leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50 ${className}`}
-      style={{ maxHeight: '200px', minHeight: '72px', ...style }}
+      className={`chat-composer-textarea block w-full resize-none bg-transparent px-5 pb-3 pt-[18px] text-base leading-[26px] text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50 ${className}`}
+      style={{ maxHeight: '200px', minHeight: '76px', ...style }}
     />
   );
 }
 
 export interface ChatComposerFooterProps {
   children: ReactNode;
-  compact?: boolean;
   className?: string;
 }
 
 /** Shared footer spacing; callers provide their own controls and behavior. */
-export function ChatComposerFooter({
-  children,
-  compact = false,
-  className = '',
-}: ChatComposerFooterProps) {
+export function ChatComposerFooter({ children, className = '' }: ChatComposerFooterProps) {
   return (
     <div
-      className={`flex min-h-12 flex-wrap items-center gap-x-2 gap-y-1 px-2.5 pb-2 pt-1 ${
-        compact ? 'flex-col items-stretch' : 'justify-between'
-      } ${className}`}
+      className={`flex min-h-12 flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 pb-3 pt-1.5 ${className}`}
     >
       {children}
     </div>

@@ -26,6 +26,7 @@
     "dist:mac:arm64:anvil": "node scripts/dist.mjs --mac dmg zip --arm64 --publish never --brand=anvil",
     "dist:mac:arm64:anvil:notarized": "bash scripts/build-macos-arm64-anvil-notarized.sh",
     "preview": "electron-vite preview",
+    "activation:report": "node scripts/activation-report.mjs",
     "pretest": "pnpm run rebuild:native:node",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -21,7 +21,7 @@ export function VoiceInputButton({ onTranscript, disabled, onError }: VoiceInput
       type="button"
       onClick={() => void (isListening ? stopListening() : startListening())}
       disabled={(disabled && !isListening) || status === 'processing'}
-      className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40 ${
+      className={`flex h-10 w-10 items-center justify-center rounded-full transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/55 disabled:opacity-40 ${
         isListening
           ? 'bg-error/15 text-error'
           : status === 'error'
