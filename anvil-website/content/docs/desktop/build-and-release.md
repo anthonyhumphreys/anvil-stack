@@ -70,11 +70,21 @@ Bump the desktop version in `anvil-app/package.json`, commit it, and push a matc
 
 | Target | Build command | Published artifacts |
 | --- | --- | --- |
-| macOS Apple Silicon | `pnpm run dist:mac:arm64` | Versioned DMG, stable `Anvil-latest-arm64.dmg`, and ZIP |
+| macOS Apple Silicon | `pnpm run dist:mac:arm64` | Versioned DMG, stable `Anvil-latest-arm64.dmg`, ZIP, and SHA-256 manifest |
 | Windows x64 | `pnpm run dist:win:x64` | NSIS installer and portable executable, with checksums |
 | Linux x64 | `pnpm run dist:linux:x64` | AppImage, deb, and pacman packages, with checksums |
 
-The macOS tag workflow explicitly disables signing discovery and builds without notarization. Auto-update publication stays disabled. The signed/notarized local script is a separate path and requires the appropriate credentials.
+Pushing an `app-v<version>` tag builds an unsigned, unnotarized macOS package. A manual dispatch of the same workflow offers a `signed-notarized` choice. That path runs `pnpm run dist:mac:arm64:anvil:notarized`, checks the Developer ID signature, Gatekeeper assessment and stapled ticket, then publishes the same installer names with a SHA-256 manifest. It requires a Developer ID Application certificate and one supported Apple notarization credential method in the `anvil-production` environment. The workflow currently has no signing secret names configured, so the signed path will fail its preflight until the credentials are added. Auto-update publication stays disabled for both paths.
+
+Manual dispatch builds the commit selected in GitHub Actions. The requested tag must match `anvil-app/package.json`; if it already exists, it must resolve to that exact commit before the build starts. A missing tag is created at the build commit, and the workflow checks the remote tag again before it creates a release or replaces release assets. A mismatch stops publication.
+
+The signed path can also build locally on Apple silicon with Xcode tools and the required credentials:
+
+```bash
+pnpm run dist:mac:arm64:anvil:notarized
+```
+
+The local script accepts `CSC_LINK` plus `CSC_KEY_PASSWORD`, or an installed identity named by `CSC_NAME`. It supports `APPLE_API_KEY_BASE64` with its key id and issuer, an Apple ID with app-specific password and team id, or a stored `APPLE_KEYCHAIN_PROFILE`. The GitHub workflow uses `CSC_LINK` and `CSC_KEY_PASSWORD` plus either the API-key secrets or Apple ID secrets in the `anvil-production` environment. It does not use a preinstalled keychain profile. The script validates the app signature, Gatekeeper result, stapled ticket and installer archive integrity. Never paste credential values into logs or release notes.
 
 Platform workflows upload to the same GitHub release and can finish at different times. Check all three jobs and the uploaded assets before declaring the release complete. Packaging success does not establish runtime feature parity across operating systems; the current browser change-review runner, for example, depends on POSIX process checks.
 

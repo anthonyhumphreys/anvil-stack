@@ -4,8 +4,12 @@ on:
   pull_request:
     paths:
       - ".github/workflows/app-ci.yml"
+      - ".github/workflows/app-release-macos-arm64.yml"
+      - ".github/scripts/app-release-target.test.mjs"
+      - ".github/scripts/ensure-app-release-target.sh"
       - ".github/scripts/publish-r2-immutable.mjs"
       - ".github/scripts/publish-r2-immutable.test.mjs"
+      - ".github/scripts/resolve-app-release-target.mjs"
       - "anvil-app/**"
   push:
     branches:
@@ -13,8 +17,12 @@ on:
       - develop
     paths:
       - ".github/workflows/app-ci.yml"
+      - ".github/workflows/app-release-macos-arm64.yml"
+      - ".github/scripts/app-release-target.test.mjs"
+      - ".github/scripts/ensure-app-release-target.sh"
       - ".github/scripts/publish-r2-immutable.mjs"
       - ".github/scripts/publish-r2-immutable.test.mjs"
+      - ".github/scripts/resolve-app-release-target.mjs"
       - "anvil-app/**"
   workflow_dispatch:
 
@@ -77,6 +85,10 @@ jobs:
       - name: Test immutable R2 publisher
         working-directory: .
         run: node --test .github/scripts/publish-r2-immutable.test.mjs
+
+      - name: Test macOS release candidate target
+        working-directory: .
+        run: node --test .github/scripts/app-release-target.test.mjs
 
       - name: Verify hosted config validator
         working-directory: anvil-app/cloud/backend

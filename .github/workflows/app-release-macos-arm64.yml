@@ -7,9 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create or update, for example app-v0.1.0. Defaults to app-v<package.json version>."
+        description: "Release tag matching package.json version. Existing tags must point to the selected workflow commit; missing tags are created there."
         required: false
         type: string
+      macos_signing:
+        description: "Select signed notarized output only when the anvil-production environment has Apple credentials configured."
+        required: true
+        type: choice
+        options:
+          - unsigned
+          - signed-notarized
+        default: unsigned
 
 permissions:
   contents: write
@@ -32,6 +40,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       ANVIL_DEPLOYMENT_ENV: production
       ANVIL_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.ANVIL_PRODUCTION_HOSTED_BACKEND_URL }}
+      ANVIL_MACOS_SIGNING_MODE: ${{ inputs.macos_signing || 'unsigned' }}
       # Auto-update publication stays parked until Developer ID signing is available.
       ANVIL_UPDATE_ORIGIN: ""
 
@@ -94,41 +103,36 @@ jobs:
           cache: pnpm
           cache-dependency-path: anvil-app/pnpm-lock.yaml
 
+      - name: Resolve release tag and build commit
+        if: steps.release_scope.outputs.should_release == 'true'
+        id: release
+        shell: bash
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.tag }}
+        run: node "${GITHUB_WORKSPACE}/.github/scripts/resolve-app-release-target.mjs"
+
       - name: Install dependencies
         if: steps.release_scope.outputs.should_release == 'true'
         run: pnpm install --frozen-lockfile
 
-      - name: Resolve release tag
-        if: steps.release_scope.outputs.should_release == 'true'
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          package_version="$(node -p "require('./package.json').version")"
-          expected_tag="app-v${package_version}"
-
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            release_tag="${GITHUB_REF_NAME}"
-          elif [[ -n "${{ inputs.tag }}" ]]; then
-            release_tag="${{ inputs.tag }}"
-          else
-            release_tag="${expected_tag}"
-          fi
-
-          if [[ "${release_tag}" != "${expected_tag}" ]]; then
-            echo "Release tag ${release_tag} does not match package.json version ${package_version} (${expected_tag})." >&2
-            exit 1
-          fi
-
-          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
-          echo "name=Anvil ${release_tag}" >> "${GITHUB_OUTPUT}"
-
       - name: Build unsigned macOS Apple Silicon artifacts
-        if: steps.release_scope.outputs.should_release == 'true'
+        if: steps.release_scope.outputs.should_release == 'true' && inputs.macos_signing != 'signed-notarized'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm run dist:mac:arm64
+
+      - name: Build signed and notarized macOS Apple Silicon artifacts
+        if: steps.release_scope.outputs.should_release == 'true' && inputs.macos_signing == 'signed-notarized'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm run dist:mac:arm64:anvil:notarized
 
       - name: Prepare stable download asset
         if: steps.release_scope.outputs.should_release == 'true'
@@ -138,25 +142,40 @@ jobs:
 
           shopt -s nullglob
           dmg_assets=(dist/Anvil-[0-9]*-arm64.dmg)
-          if [[ "${#dmg_assets[@]}" -ne 1 ]]; then
-            echo "Expected exactly one macOS Apple Silicon DMG, found ${#dmg_assets[@]}." >&2
+          zip_assets=(dist/Anvil-[0-9]*-arm64-mac.zip)
+          if [[ "${#dmg_assets[@]}" -ne 1 || "${#zip_assets[@]}" -ne 1 ]]; then
+            echo "Expected one versioned macOS Apple Silicon DMG and ZIP, found ${#dmg_assets[@]} DMGs and ${#zip_assets[@]} ZIPs." >&2
             printf 'DMG candidates:\n' >&2
             printf '  %s\n' "${dmg_assets[@]}" >&2
+            printf 'ZIP candidates:\n' >&2
+            printf '  %s\n' "${zip_assets[@]}" >&2
             exit 1
           fi
 
           cp "${dmg_assets[0]}" dist/Anvil-latest-arm64.dmg
+          (
+            cd dist
+            shasum -a 256 \
+              "${dmg_assets[0]##*/}" \
+              Anvil-latest-arm64.dmg \
+              "${zip_assets[0]##*/}" \
+              > Anvil-macos-arm64.sha256
+          )
 
       - name: Create or update GitHub Release
         if: steps.release_scope.outputs.should_release == 'true'
         shell: bash
+        env:
+          APP_RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          APP_RELEASE_NAME: ${{ steps.release.outputs.name }}
+          APP_RELEASE_TAG_EXISTED: ${{ steps.release.outputs.tag_exists }}
         run: |
           set -euo pipefail
 
-          release_tag="${{ steps.release.outputs.tag }}"
-          release_name="${{ steps.release.outputs.name }}"
+          release_tag="${APP_RELEASE_TAG}"
+          release_name="${APP_RELEASE_NAME}"
           release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
-          assets=(dist/Anvil-[0-9]*-arm64.dmg dist/Anvil-latest-arm64.dmg dist/*-arm64-mac.zip)
+          assets=(dist/Anvil-[0-9]*-arm64.dmg dist/Anvil-latest-arm64.dmg dist/*-arm64-mac.zip dist/Anvil-macos-arm64.sha256)
           notes_file="$(mktemp)"
           changelog_file="$(mktemp)"
           share_file="$(mktemp)"
@@ -184,17 +203,25 @@ jobs:
               > "${changelog_file}"
           fi
 
-          printf '%s\n' \
-            'Unsigned internal macOS Apple Silicon build.' \
-            '' \
-            'Automatic updates are disabled until Developer ID signing is available.' \
-            '' \
-            'This build is not notarized. macOS Gatekeeper may report that the app is damaged after download. For private testing, install it and remove the quarantine attribute:' \
-            '' \
-            '```bash' \
-            'xattr -dr com.apple.quarantine /Applications/Anvil.app' \
-            '```' \
-            > "${notes_file}"
+          if [[ "${ANVIL_MACOS_SIGNING_MODE}" == "signed-notarized" ]]; then
+            printf '%s\n' \
+              'Signed and notarized macOS Apple Silicon build.' \
+              '' \
+              'Verify the downloaded installer against Anvil-macos-arm64.sha256 before opening it.' \
+              'Automatic updates remain disabled.' \
+              > "${notes_file}"
+          else
+            printf '%s\n' \
+              'Unsigned internal macOS Apple Silicon build. This build is not notarized.' \
+              '' \
+              'macOS Gatekeeper may block the app after download. For private testing only, verify the checksum first, install it, then remove quarantine:' \
+              '' \
+              '```bash' \
+              'xattr -dr com.apple.quarantine /Applications/Anvil.app' \
+              '```' \
+              'Automatic updates remain disabled.' \
+              > "${notes_file}"
+          fi
 
           printf '\n## Changelog\n\n' >> "${notes_file}"
           cat "${changelog_file}" >> "${notes_file}"
@@ -213,11 +240,11 @@ jobs:
             cat "${share_file}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          if ! gh release view "${release_tag}" >/dev/null 2>&1; then
-            gh release create "${release_tag}" \
-              --title "${release_name}" \
-              --notes-file "${notes_file}" \
-              || gh release view "${release_tag}" >/dev/null
-          fi
+          bash "${GITHUB_WORKSPACE}/.github/scripts/ensure-app-release-target.sh" \
+            "${release_tag}" \
+            "${GITHUB_SHA}" \
+            "${APP_RELEASE_TAG_EXISTED}" \
+            "${release_name}" \
+            "${notes_file}"
           gh release upload "${release_tag}" "${assets[@]}" --clobber
           gh release edit "${release_tag}" --notes-file "${notes_file}"

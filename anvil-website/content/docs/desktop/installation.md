@@ -18,23 +18,24 @@ Builds are attached to the `app-v*` releases in the [anvil-stack repository](htt
 
 ### macOS
 
-1. Download the latest [DMG for Apple silicon](https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg), or pick the `.dmg` or `.zip` from the latest `app-v*` release.
-2. Open the disk image and drag Anvil into Applications.
-3. Before the first launch, open Terminal and run:
+1. Download the latest [DMG for Apple silicon](https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg) and `Anvil-macos-arm64.sha256` from the same release.
+2. In Terminal, move to the download folder and verify the DMG:
 
    ```bash
-   xattr -dr com.apple.quarantine /Applications/Anvil.app
+   grep '  Anvil-latest-arm64.dmg$' Anvil-macos-arm64.sha256 | shasum -a 256 -c -
    ```
 
+   Continue only if the result says `OK`.
+3. Open the disk image and drag Anvil into Applications.
 4. Open Anvil from Applications.
 
-> **Note: Why the Terminal step?**
+> **About signed builds**
 >
-> Anvil isn't signed or notarised by Apple yet, because the project doesn't have an Apple Developer account. That command removes the quarantine flag macOS adds to downloads so the app can open. Only run it on a copy you downloaded from the official GitHub releases.
+> Check the release notes. They state whether that build is signed and notarised. Unsigned internal builds may be blocked by Gatekeeper. For private testing only, follow the release note's quarantine-removal instruction after verifying the checksum. Removing quarantine does not sign or notarise the app. Never use that step to make an unverified download appear safe.
 >
 > [Sponsoring Anvil on GitHub](https://github.com/sponsors/anthonyhumphreys) helps pay for the Apple Developer membership.
 
-Automatic updates are switched off for the standard macOS build for now, so check the releases page for new versions.
+Automatic updates are switched off for macOS builds for now, so check the releases page for new versions.
 
 ### Windows and Linux
 
