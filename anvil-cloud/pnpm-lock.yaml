@@ -104,6 +104,16 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  examples/portable-backends:
+    dependencies:
+      '@anvil-cloud/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+    devDependencies:
+      '@anvilstack/cloud-cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
+
   packages/auth:
     dependencies:
       '@anvil-cloud/runtime':

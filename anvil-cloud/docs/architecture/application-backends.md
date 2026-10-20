@@ -94,10 +94,83 @@ create those resources or prove that a deployment succeeded. Temporary-account
 restrictions remain in place. Events and durable workflows remain unsupported
 on the Cloudflare host.
 
-Before promoting either adapter for this class of app, record a live rehearsal
-of authenticated HTTP, database conflicts, private file access, scheduled jobs,
-duplicate deliveries, poison messages, outbox crash recovery, secrets redaction,
-backup restore, migrations, rollback and cleanup. AWS SDK tests are not live AWS
-evidence. Local D1/R2 tests are not live Cloudflare evidence. Test production-scale
-indexed lookups and quotas against real data volumes. Review provider costs and
-limits before enabling public traffic. These release checks remain open.
+## Reference acceptance
+
+`examples/portable-backends` is the runnable local reference for one import
+path. From `anvil-cloud/`, run:
+
+```sh
+pnpm --filter portable-backends typecheck
+pnpm --filter portable-backends check
+pnpm --filter portable-backends build
+pnpm verify:application-backends
+```
+
+It starts Anvil Local with a real HTTP listener, JSON database and local file
+adapter. The verifier races two authenticated imports with the same quota
+snapshot and checks that the losing three-record commit leaves no partial
+database or outbox state. It reads a private source as its owner, dispatches the
+outbox from a scheduled Cell job, restarts the server, replays a queued message
+with its stable id, and checks receipt deduplication. It also confirms malformed
+source data leaves a failed batch record that survives a restart.
+
+The local job store is not a queue consumer. The verifier invokes the compiled
+Cell job handler with the persisted message id because the local
+`/_anvil/jobs/run` route creates a new request id. Local evidence does not prove
+SQS or Cloudflare Queue retries, dead-letter delivery, or live cloud behavior.
+The JSON output marks itself `local-acceptance` and sets `liveCloudEvidence` to
+false.
+
+The local integration does not replace the adapter checks. AWS tests exercise
+the SDK request and transaction contracts with fakes. Cloudflare backend tests
+run against real local D1 and R2 bindings. Neither result counts as evidence
+from a live provider account.
+
+## Live rehearsal record
+
+Before promoting either adapter for this class of app, run an operator-led
+rehearsal in a dedicated account and stage. The read-only identity check is:
+
+```sh
+pnpm preflight:application-backends -- --provider aws
+pnpm preflight:application-backends -- --provider cloudflare
+pnpm preflight:application-backends -- --provider cloudflare --account YOUR_ACCOUNT_ID
+```
+
+The preflight performs AWS STS `GetCallerIdentity`. For Cloudflare it runs the
+workspace-installed `wrangler whoami --json` command. The preflight does not
+read Wrangler's credential cache itself or print its email or credentials. A
+single accessible account is selected automatically. If several are available, pass
+`--account <account-id>` or set `CLOUDFLARE_ACCOUNT_ID`; the preflight will not
+guess. It creates no resources and does not exercise the Cell. Its output is
+`provider-preflight`, with `liveCloudEvidence: false`.
+
+Store the rehearsal output using
+[`application-backends-evidence.schema.json`](../../scripts/application-backends-evidence.schema.json).
+Each live provider record must list the account, region or stage, and every
+temporary resource by kind, logical name and provider id. Record a status,
+method, short result and artifact reference for each check:
+
+- authenticated HTTP and unauthenticated rejection;
+- conditional commit conflict with proof that the whole write set rolled back;
+- private file access and cross-user denial;
+- scheduled outbox dispatch, duplicate delivery receipt and poison failure
+  visibility;
+- crash recovery after publication, backup restore, migration apply and
+  rollback, and secret redaction;
+- resource cleanup.
+
+Use a unique temporary stage for each rehearsal. Record the exact resources
+created, delete them with the provider adapter or documented operator command,
+then query the provider to confirm each one is gone. A live record is complete
+only when `cleanup.status` is `verified`, `cleanup.resourcesRemaining` is empty,
+and every required check has a passing artifact. If an item must remain, record
+its resource id, reason and owner, and leave the rehearsal incomplete. Do not
+include credentials, bearer tokens, raw secret values or source records in the
+evidence file.
+
+The schema lists the required live checks, including production backup restore,
+migration rollback, and cleanup. The check remains open until a complete live
+record exists for each provider. Test indexed lookups and quotas against real
+data volumes, then review provider costs and limits before enabling public
+traffic.

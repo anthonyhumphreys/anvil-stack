@@ -65,6 +65,40 @@ fakes. Cloudflare database and file tests use real local D1 and R2 bindings.
 Neither proves production readiness. Cloudflare's normal Cell deploy command
 remains gated while provisioning and live lifecycle verification are incomplete.
 
+## Run the reference import
+
+The source project includes a small catalogue Cell that exercises this path on
+Anvil Local. From `anvil-cloud/`, run:
+
+```bash
+pnpm --filter portable-backends typecheck
+pnpm --filter portable-backends check
+pnpm --filter portable-backends build
+pnpm verify:application-backends
+```
+
+The verifier starts a local HTTP server with a JSON database and file adapter.
+It checks authenticated imports, conflict rollback, private source reads,
+scheduled outbox publication, persisted job ids, duplicate receipts, poison
+failure records, and restart recovery. Its output says `local-acceptance` and
+sets `liveCloudEvidence` to `false`. The local job store does not run a queue
+consumer, so this does not verify SQS or Cloudflare Queue retries or dead-letter
+handling.
+
+Before a live rehearsal, check provider identity and access with
+`pnpm preflight:application-backends -- --provider aws` or
+`pnpm preflight:application-backends -- --provider cloudflare`. The Cloudflare
+check delegates authentication to Wrangler. If more than one account is
+accessible, select one with `--account <account-id>` or
+`CLOUDFLARE_ACCOUNT_ID`; the preflight does not guess. It does not read
+Wrangler's credential cache itself or include its email or credentials in the
+report. These commands make read-only identity checks and create no resources;
+they do not test resource permissions or Cell behavior. Record a full rehearsal
+against the
+[evidence schema](https://github.com/anthonyhumphreys/anvil-stack/blob/main/anvil-cloud/scripts/application-backends-evidence.schema.json)
+and follow the source project's
+[live rehearsal and cleanup contract](https://github.com/anthonyhumphreys/anvil-stack/blob/main/anvil-cloud/docs/architecture/application-backends.md#live-rehearsal-record).
+
 See the source project's [backend contract and release checks](https://github.com/anthonyhumphreys/anvil-stack/blob/main/anvil-cloud/docs/architecture/application-backends.md)
 for configuration, failure behavior, schedule restrictions, and the live evidence
 still needed before public traffic.

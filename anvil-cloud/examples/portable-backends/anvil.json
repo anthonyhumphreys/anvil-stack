@@ -1,0 +1,12 @@
+{
+  "name": "portable-backends",
+  "client": {
+    "kind": "headless"
+  },
+  "entrypoints": {
+    "server": "src/cell.server.ts",
+    "client": "src/client/index.ts"
+  },
+  "runtime": "nodejs20",
+  "region": "eu-west-2"
+}
