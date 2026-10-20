@@ -2,8 +2,10 @@
 
 Use this after the backend and current desktop candidate are deployed. The
 deployment sequence starts in [staging-next-steps.md](staging-next-steps.md);
-this file defines the live acceptance gates. Sync and Mesh are free. Anvil
-Cloud Agents are a separate future paid feature and stay off by default.
+this file defines the live acceptance gates. Staging hosted writes require an
+admitted account and a redeemed beta code; checkout stays disabled. Local use
+and self-hosted deployments carry no Anvil subscription charge. Anvil Cloud
+Agents are separate and stay off by default.
 
 ## Record the candidate
 

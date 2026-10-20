@@ -1,6 +1,6 @@
 # Anvil FinOps projection
 
-Prepared 4 October 2026. Forecast: 4 October 2026 to 30 September 2027. Product boundary: free Sync and Mesh; future paid Anvil Cloud Agents. PR91's Cloud Agents flag remains off.
+Prepared 4 October 2026. Forecast: 4 October 2026 to 30 September 2027. This model assumes free hosted Sync and Mesh; current hosted write access instead requires paid or beta entitlement. Local use and self-hosting carry no Anvil subscription charge. Future Anvil Cloud Agents remain separate, and PR91's flag stays off.
 
 The [decision record](decisions.md) is the current authority for the product and rollout boundary.
 This model preserves scenario assumptions and calculations; it does not establish current usage or
@@ -147,7 +147,7 @@ The model uses 332.8m Worker requests, 709.9m backend-object requests, 3.33bn SQ
 
 Original PR91 is a reconstructed request budget, not a measured historical invoice. The earlier polling increment includes main-process job polls, per-attempt reads and approval polls that have since been replaced by push or slower catch-up for the described paths; its SQL, CPU and duration budgets still require measurement. Event and hybrid columns are prospective targets. None of these comparison columns is a current bill.
 
-The costs retain free hosted Sync, job acceptance, offline queues, lease fencing, approvals, cancellation and result recovery in every column. There is no paid gate on the user's own fleet or provider integrations. The $38 broker-and-compact-Sync estimate excludes much of that scope; the $434.82 host-local figure is the full modeled Cloudflare usage at 10,000 DAU in month 12 of a flat cohort. Tunnel costs are excluded from cases 4 and 5 because no Anvil-side supplier quote is available; zero in the input is only a calculation placeholder, not a free-infrastructure claim. The model lists three registered execution hosts per MAU but prices one exposed tunnel allocation per MAU as a separate unquoted sensitivity; it does not assume one paid tunnel per registered host.
+This cost scenario retains free hosted Sync, job acceptance, offline queues, lease fencing, approvals, cancellation and result recovery in every column. It does not represent the current hosted entitlement policy, which requires a paid subscription or beta code for writes. There is no Anvil subscription charge for local use or a user's self-hosted fleet; provider bills remain theirs. The $38 broker-and-compact-Sync estimate excludes much of that scope; the $434.82 host-local figure is the full modeled Cloudflare usage at 10,000 DAU in month 12 of a flat cohort. Tunnel costs are excluded from cases 4 and 5 because no Anvil-side supplier quote is available; zero in the input is only a calculation placeholder, not a free-infrastructure claim. The model lists three registered execution hosts per MAU but prices one exposed tunnel allocation per MAU as a separate unquoted sensitivity; it does not assume one paid tunnel per registered host.
 
 ## Assumed USD 10,000 credit burn-down: earlier polling baseline
 
@@ -314,7 +314,7 @@ These break-even figures apply only to the earlier transport-only hybrid; they d
 
 Profile materialised state versus journal history, job events, receipts, share objects and active Mesh artifacts separately. Keep required current entity state and authoritative job results. Use compaction/snapshot recovery for long-offline replicas before shortening historical journals. Do not delete active workspace definitions or checkpoints needed for recovery just to lower storage spend.
 
-An illustrative occupancy change from 21 MB to 11 MB SQLite and from 100 MB to 25 MB R2 per retained account saves **$69/month at 1,000 DAU** and **$688/month at 10,000 DAU**. That is a sensitivity, not evidence that these bytes are currently wasted. An inactive account's retained storage remains billable, so MAU alone cannot predict it. Reducing the retained-account factor from five to one, holding all other assumptions fixed, lowers the current 1,000-DAU Cloudflare estimate from $449 to about $322/month. Make free hosted fair-use/storage policy explicit before offering unbounded retention.
+An illustrative occupancy change from 21 MB to 11 MB SQLite and from 100 MB to 25 MB R2 per retained account saves **$69/month at 1,000 DAU** and **$688/month at 10,000 DAU**. That is a sensitivity, not evidence that these bytes are currently wasted. An inactive account's retained storage remains billable, so MAU alone cannot predict it. Reducing the retained-account factor from five to one, holding all other assumptions fixed, lowers the current 1,000-DAU Cloudflare estimate from $449 to about $322/month. Make hosted fair-use/storage policy explicit before offering unbounded retention.
 
 ### 5. Control retries, logs and write amplification
 
@@ -328,7 +328,7 @@ Moving the Next.js website/account surface onto a compatible Cloudflare deployme
 
 ### 7. Fully peered or user-hosted coordination
 
-A user-hosted coordinator shifts backend cost to the user and fits open-source Anvil. Pure peers can store their own Sync replicas and artifacts. Removing hosted coordination entirely changes all-machines-offline access, unattended queue acceptance, mobile/browser discovery and recovery. Preserving those functions requires an always-available peer or another server. There is no justified “same functionality for zero infrastructure” claim. Retain this as an optional deployment path rather than replacing hosted free service solely to save money.
+A user-hosted coordinator shifts backend cost to the user and fits open-source Anvil. Pure peers can store their own Sync replicas and artifacts. Removing hosted coordination entirely changes all-machines-offline access, unattended queue acceptance, mobile/browser discovery and recovery. Preserving those functions requires an always-available peer or another server. There is no justified “same functionality for zero infrastructure” claim. Retain this as an optional deployment path rather than replacing the hosted-service scenario in this model solely to save money.
 
 ## Sensitivities and failure cases
 

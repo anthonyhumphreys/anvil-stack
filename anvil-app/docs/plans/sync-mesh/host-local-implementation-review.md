@@ -90,8 +90,9 @@ establish signed-in staging or physical WAN acceptance.
   cancellation, handoff and recovery operations it supports. Live host-only reads still require a
   reachable host. Network retries and cursor recovery must not create duplicate mutations or hide
   data gaps.
-- Sync and Mesh remain free for personal accounts; no organization or shared fleet is required.
-  Only future Anvil Cloud Agents are planned as paid, and that feature stays disabled by default.
+- A personal account is enough for hosted Sync and Mesh; no organization or shared fleet is
+  required. Hosted writes use a paid entitlement or beta code. Local use and self-hosted deployments
+  carry no Anvil subscription charge. Anvil Cloud Agents remain separate and disabled by default.
 - The post-review application suite passed with 2,025 tests passing and 12 intentionally skipped.
   There were 247 passing files and four skipped files. Full application lint passed with no errors
   or warnings.

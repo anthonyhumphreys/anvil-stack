@@ -19,6 +19,7 @@ Anvil is the brain; your coding agents are the hands.
 - **Diagrams** — draw.io integration with AI-powered generation and an embedded editor
 - **Terminal** — built-in xterm.js terminal with PTY support and powerline font rendering
 - **Workspaces** — group repos, configure integrations per workspace, and export to VS Code
+- **Sync & Mesh (alpha)** — opt in to syncing selected workspace settings and run jobs on your own machines. Local and self-hosted use carry no Anvil subscription charge. Hosted beta writes require a paid entitlement or a time-limited beta code. Production hosting is not available yet.
 - **Governance** — document and board management for governance oversight
 - **Optional Cloud Workbench** — connect to an authenticated Anvil Cloud execution plane, upload committed read-only snapshots, request Codex/Cursor subscription auth without model API keys, and inspect remote evidence and approvals
 
@@ -103,6 +104,10 @@ Run the matching command on its target platform. Pushing an `app-v<version>` tag
 builds and publishes all three platforms to the same GitHub Release. Windows
 also uploads the installer, portable executable, update metadata, and SHA-256
 checksums as the `anvil-windows-x64` Actions artifact. Windows builds are unsigned.
+The macOS tag build is unsigned and not notarized; its release assets include a
+SHA-256 manifest. A manual dispatch offers signed/notarized macOS packaging when
+Developer ID and Apple notarization credentials are configured. Automatic updates
+remain disabled for macOS.
 
 ## Architecture
 

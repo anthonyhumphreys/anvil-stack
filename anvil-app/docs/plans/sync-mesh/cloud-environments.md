@@ -18,9 +18,10 @@ or an Anvil-operated Cloudflare environment (`anvil-managed`). It is not a
 new execution model — an environment boots the **anvil-worker** image,
 redeems an ephemeral-class enrollment code, and then claims jobs through
 the exact same `worker.connect` → `job.claim` → fenced attempt → artifact
-path a desktop or daemon worker uses. Observation and control from any
-device are free: the mesh journal, durable events, approvals, and activity
-frames already cover every claim.
+path a desktop or daemon worker uses. Observation and control from any device
+use the same mesh journal, durable events, approvals, and activity frames as
+ordinary claims. Hosted write and job access still follows the hosted
+entitlement policy.
 
 ## Architecture
 

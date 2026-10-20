@@ -1,7 +1,9 @@
 # Hosted Sync staging deployment
 
 Use the guarded staging workflow for the invite-only hosted Sync and Mesh beta.
-It deploys the existing staging backend and applies D1 migrations. It does not
+Staging grants write access through admitted accounts and redeemed beta codes;
+checkout stays disabled. The workflow deploys the existing staging backend
+and applies D1 migrations. It does not
 deploy the Anvil Cloud Agents provisioner or container image. Cloud Agents
 remain disabled by default. Start with
 [staging-next-steps.md](staging-next-steps.md) for the current

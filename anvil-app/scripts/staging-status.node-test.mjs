@@ -3,6 +3,9 @@ import test from 'node:test';
 
 import {
   candidateRelation,
+  parseArguments,
+  summarizeCheckoutCandidate,
+  summarizeRemoteCandidate,
   inspectWorkerFlags,
   inspectManagedDomain,
   summarizeChecks,
@@ -17,6 +20,57 @@ test('candidate relation distinguishes the current PR head from an older checkou
   assert.equal(candidateRelation(currentSha, currentSha), 'current');
   assert.equal(candidateRelation(oldSha, currentSha), 'different');
   assert.equal(candidateRelation(null, currentSha), 'unknown');
+});
+
+test('a modified checkout is reported separately from its commit SHA', () => {
+  const candidate = summarizeCheckoutCandidate({
+    branch: 'develop',
+    headSha: currentSha,
+    dirty: true,
+  });
+  assert.deepEqual(candidate, {
+    source: 'checkout',
+    ref: 'develop',
+    headSha: currentSha,
+    modified: true,
+    localCheckoutRelation: 'current',
+  });
+
+  const previewCandidate = summarizeRemoteCandidate('pull-request', '#91', oldSha, {
+    headSha: currentSha,
+    dirty: true,
+  });
+  assert.deepEqual(previewCandidate, {
+    source: 'pull-request',
+    ref: '#91',
+    headSha: oldSha,
+    modified: false,
+    localCheckoutRelation: 'different',
+  });
+});
+
+test('candidate selection accepts an explicit PR or remote ref and rejects ambiguous input', () => {
+  assert.deepEqual(parseArguments([]), {
+    json: false,
+    help: false,
+    pullRequestNumber: null,
+    ref: null,
+  });
+  assert.deepEqual(parseArguments(['--pr', '91', '--json']), {
+    json: true,
+    help: false,
+    pullRequestNumber: 91,
+    ref: null,
+  });
+  assert.deepEqual(parseArguments(['--ref', 'feature/sync-mesh']), {
+    json: false,
+    help: false,
+    pullRequestNumber: null,
+    ref: 'feature/sync-mesh',
+  });
+  assert.throws(() => parseArguments(['--pr', '91', '--ref', 'develop']));
+  assert.throws(() => parseArguments(['--pr', '0']));
+  assert.throws(() => parseArguments(['--ref', '--json']));
 });
 
 test('PR checks fail closed for failures, pending checks, and empty results', () => {
@@ -78,7 +132,7 @@ test('a workflow run only identifies the current candidate when its head matches
   assert.deepEqual([oldRun.state, oldRun.relation], ['passed', 'different']);
 });
 
-test('the public descriptor must match both protocol profiles and the manifest WorkOS client', () => {
+test('the public descriptor must match protocol, WorkOS target and disabled legacy auth', () => {
   const target = {
     desktopClientId: 'client_staging_desktop',
     issuer: 'https://api.workos.com/user_management',
@@ -98,10 +152,16 @@ test('the public descriptor must match both protocol profiles and the manifest W
   const mismatchedDescriptor = {
     ...currentDescriptor,
     profiles: ['sync/2'],
+    authModes: ['workos-device', 'enrollment-code'],
     auth: { issuer: 'https://issuer.stale', publicClientId: 'client_stale' },
   };
   assert.deepEqual(validatePublicDescriptor(mismatchedDescriptor, target), {
     state: 'failed',
-    missing: ['profile mesh/2', 'WorkOS issuer target', 'WorkOS desktop client target'],
+    missing: [
+      'profile mesh/2',
+      'legacy enrollment auth disabled',
+      'WorkOS issuer target',
+      'WorkOS desktop client target',
+    ],
   });
 });

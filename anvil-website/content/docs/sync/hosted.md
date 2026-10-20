@@ -10,10 +10,12 @@ order: 110
 
 # Anvil-hosted sync
 
-With Anvil-hosted Sync & Mesh, we run the backend for you. The planned price is
-£6 a month for one person or £12 per member for teams. Hosted access is invite-only.
-Join the [waitlist](/waitlist); invited beta testers receive a code to redeem without
-a payment method. See [pricing](/pricing) for the proposed plans.
+With Anvil-hosted Sync & Mesh, we run the backend for you. Hosted writes require
+a paid entitlement or a redeemed beta code. The current test path is invite-only
+and uses time-limited codes without a payment method; checkout stays closed.
+Production hosting is not yet available. Join the [waitlist](/waitlist) for
+updates. Proposed prices are £6 a month for one person or £12 per team member;
+see [pricing](/pricing) for the current proposal.
 
 You can also run the same backend yourself, from `anvil-app/cloud/backend`,
 without paying Anvil. Your infrastructure provider bills you for the resources
@@ -80,15 +82,12 @@ configured hosted account origin.
 
 ## Cost and availability
 
-Anvil Desktop stays free and open source. Hosted Sync & Mesh will be paid when
-it launches; the proposed plans are on the [pricing page](/pricing). There is
-no launch date yet. You can [join the waitlist](/waitlist) or
-[deploy your own backend](/docs/sync/self-deploy).
-
-Anvil-hosted writes require a paid subscription, an assigned paid team seat, or
-an unexpired redeemed beta code. Paid signup stays disabled until the operator
-opens checkout. Waitlist approval lets you sign in; the code grants access until
-the date in your invitation.
+Anvil Desktop stays free and open source. The Anvil-hosted beta accepts a paid
+subscription, an assigned paid team seat, or an unexpired redeemed beta code.
+Checkout stays closed, and there is no production hosted service or launch date
+yet. A waitlist approval permits sign-in; a beta code grants write access until
+the date in the invitation. You can also [deploy your own backend](/docs/sync/self-deploy)
+without paying Anvil. Proposed hosted plans are on the [pricing page](/pricing).
 
 ## Hosted access states
 

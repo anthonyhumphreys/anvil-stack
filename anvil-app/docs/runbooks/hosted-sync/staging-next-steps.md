@@ -19,8 +19,9 @@ checks on your current commit. A matching descriptor establishes protocol
 compatibility; the successful staging workflow establishes the candidate deployed.
 Neither establishes signed-in or physical-device acceptance.
 
-The core staging target uses existing Worker, D1 and R2 resources. Sync and Mesh
-are free, checkout is disabled, and Anvil Cloud Agents are disabled. It deploys
+The core staging target uses existing Worker, D1 and R2 resources. Hosted
+writes require an admitted account and redeemed beta code; checkout is
+disabled. Anvil Cloud Agents are disabled too. It deploys
 no Cloud Agent provisioner or container image. The managed endpoint pilot is
 enabled for `anvilstack.dev`; production remains off. Private routes are
 preferred where reachable, with the managed HTTPS tunnel available across
@@ -100,8 +101,8 @@ Use a disposable repository for commands that write files.
 
 Follow [staging acceptance](staging-acceptance.md) in order. The required results are:
 
-- [ ] Website and both machines sign in to the same personal account without a
-      purchase or organization.
+- [ ] Website and both machines sign in to the same admitted test account.
+      Redeem a time-limited beta code; no purchase or organization is required.
 - [ ] A new workspace starts Local. Opting it into Sync transfers its portable
       definition and preferences. The other machine links or clones its own
       checkout; repository files, Git history and uncommitted changes are not

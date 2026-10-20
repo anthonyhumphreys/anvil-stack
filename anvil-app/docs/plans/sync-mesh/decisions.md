@@ -1,15 +1,17 @@
 # Sync and Mesh decisions
 
-Current product, architecture, and rollout decisions, 6 October 2026. This record governs the
-feature. The [implementation plan](host-local-sync-mesh-implementation-plan.md) holds technical
+Current product, architecture, and rollout decisions, updated 19 October 2026. This record governs
+the feature. The [implementation plan](host-local-sync-mesh-implementation-plan.md) holds technical
 detail; the [implementation review](host-local-implementation-review.md) holds audit evidence and
 acceptance limits.
 
 ## Product boundary
 
-- Sync and Mesh are free. Sync is optional per workspace, and Local is the default for a new
-  workspace. Users choose when to sync portable workspace definitions, repository references,
-  preferences, templates, agent definitions, and bootstrap instructions.
+- Sync is optional per workspace, and Local is the default for a new workspace. Local use and
+  self-hosted deployments carry no Anvil subscription charge. The Anvil-hosted beta gates writes on
+  a paid entitlement or a redeemed beta code. Checkout stays closed in staging, and production
+  hosted access is not available. Users choose when to sync portable workspace definitions,
+  repository references, preferences, templates, agent definitions, and bootstrap instructions.
 - Workspace Sync does not copy repository contents, `.git`, dirty changes, or machine-local paths.
   The current workspace serializer includes `remoteUrl`, which may contain embedded credentials;
   do not promise that every synced metadata field is credential-free. Workspace chat transcripts
@@ -18,16 +20,17 @@ acceptance limits.
 - A personal account is enough for hosted Sync and Mesh. An organisation is not required. Existing
   organisation membership, roles, and invitations remain account management; shared organisation
   workspaces and fleets are outside this feature.
-- Users run Mesh work on their own machines or through providers they configure and pay. Anvil
-  Cloud Agents, meaning Anvil-supplied execution containers, are a separate paid service and stay
-  disabled by default. Container provisioning is not part of the free Sync/Mesh staging workflow.
+- Users run Mesh work on their own machines or through providers they configure and pay. Hosted
+  Mesh coordination uses the same entitlement as hosted Sync. Anvil Cloud Agents, meaning
+  Anvil-supplied execution containers, are a separate paid service and stay disabled by default.
+  Container provisioning is not part of the Sync/Mesh staging workflow.
 - Managed public reachability is included in the controlled staging rehearsal, approved on
   5 October 2026. From 6 October, host sessions and managed connectors are available by default
   in desktop and daemon builds. Explicit runtime `false` remains an operator disable switch.
   Availability does not enable workspace Sync or Mesh job execution without user opt-in.
   Automatic backend deployments preserve the saved staging provisioning setting; production
-  provisioning remains off. This is not general availability and does not make Sync or Mesh
-  billable. A separate
+  provisioning remains off. This is not general availability. The hosted backend still requires a
+  paid entitlement or beta code for writes. A separate
   private network is not a prerequisite for physical testing through managed tunnels.
 
 ## Device setup and trust

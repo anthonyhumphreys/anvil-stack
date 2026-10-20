@@ -80,6 +80,55 @@ export function candidateRelation(localHead, remoteHead) {
   return localHead.toLowerCase() === remoteHead.toLowerCase() ? 'current' : 'different';
 }
 
+export function parseArguments(args) {
+  const options = { json: false, help: false, pullRequestNumber: null, ref: null };
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === '--json') options.json = true;
+    else if (argument === '--help') options.help = true;
+    else if (argument === '--pr' || argument === '--ref') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) throw new Error('missing option value');
+      index += 1;
+      if (argument === '--pr') {
+        if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value)))
+          throw new Error('invalid pull request number');
+        if (options.pullRequestNumber !== null) throw new Error('duplicate pull request option');
+        options.pullRequestNumber = Number(value);
+      } else {
+        if (options.ref !== null || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(value))
+          throw new Error('invalid ref');
+        options.ref = value;
+      }
+    } else throw new Error('unknown option');
+  }
+  if (options.pullRequestNumber !== null && options.ref !== null)
+    throw new Error('choose either a pull request or a ref');
+  if (options.help && (options.json || options.pullRequestNumber !== null || options.ref !== null))
+    throw new Error('help cannot be combined with other options');
+  return options;
+}
+
+export function summarizeCheckoutCandidate(checkout) {
+  return {
+    source: 'checkout',
+    ref: checkout?.branch ?? null,
+    headSha: commitSha(checkout?.headSha) ? checkout.headSha.toLowerCase() : null,
+    modified: checkout?.dirty === true,
+    localCheckoutRelation: 'current',
+  };
+}
+
+export function summarizeRemoteCandidate(source, ref, headSha, checkout) {
+  return {
+    source,
+    ref: label(ref),
+    headSha: commitSha(headSha) ? headSha.toLowerCase() : null,
+    modified: false,
+    localCheckoutRelation: candidateRelation(checkout?.headSha, headSha),
+  };
+}
+
 export function summarizeChecks(checks, available = true) {
   const counts = { pass: 0, fail: 0, pending: 0, skipped: 0, cancelled: 0 };
   if (!available || !Array.isArray(checks) || checks.length === 0) {
@@ -130,6 +179,7 @@ export function validatePublicDescriptor(descriptor, target) {
     ['profile sync/2', has('profiles', 'sync/2')],
     ['profile mesh/2', has('profiles', 'mesh/2')],
     ['WorkOS device auth', has('authModes', 'workos-device')],
+    ['legacy enrollment auth disabled', !has('authModes', 'enrollment-code')],
     ['WorkOS issuer target', descriptor?.auth?.issuer === target?.issuer],
     ['WorkOS desktop client target', descriptor?.auth?.publicClientId === target?.desktopClientId],
   ];
@@ -330,14 +380,62 @@ async function workerFlagStatus() {
   };
 }
 
-async function pullRequest() {
-  const value = await ghJson(['pr', 'view', '91', '--json', 'headRefOid,headRefName,state']);
+async function pullRequestByNumber(number) {
+  const value = await ghJson([
+    'pr',
+    'view',
+    String(number),
+    '--json',
+    'number,headRefOid,headRefName,state',
+  ]);
   if (!record(value) || !commitSha(value.headRefOid)) return null;
   return {
+    number: Number.isSafeInteger(value.number) ? value.number : number,
     headSha: value.headRefOid.toLowerCase(),
     branch: label(value.headRefName),
     state: label(value.state, 20)?.toLowerCase() ?? null,
   };
+}
+
+async function pullRequestForBranch(branch, localHead) {
+  if (!branch) return { pullRequest: null, reason: 'local branch unavailable' };
+  const values = await ghJson([
+    'pr',
+    'list',
+    '--state',
+    'open',
+    '--head',
+    branch,
+    '--json',
+    'number,headRefOid,headRefName,state',
+    '--limit',
+    '20',
+  ]);
+  if (!Array.isArray(values))
+    return { pullRequest: null, reason: 'pull request lookup unavailable' };
+  const candidates = values
+    .filter((value) => record(value) && commitSha(value.headRefOid))
+    .map((value) => ({
+      number: Number.isSafeInteger(value.number) ? value.number : null,
+      headSha: value.headRefOid.toLowerCase(),
+      branch: label(value.headRefName),
+      state: label(value.state, 20)?.toLowerCase() ?? null,
+    }));
+  if (candidates.length === 1) return { pullRequest: candidates[0], reason: null };
+  const exact = candidates.filter((value) => value.headSha === localHead);
+  if (exact.length === 1) return { pullRequest: exact[0], reason: null };
+  return {
+    pullRequest: null,
+    reason: candidates.length ? 'multiple open pull requests; select one with --pr' : null,
+  };
+}
+
+async function remoteRef(ref) {
+  const repository = await ghJson(['repo', 'view', '--json', 'nameWithOwner']);
+  const nameWithOwner = label(repository?.nameWithOwner, 200);
+  if (!nameWithOwner || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(nameWithOwner)) return null;
+  const value = await ghJson(['api', `repos/${nameWithOwner}/commits/${encodeURIComponent(ref)}`]);
+  return record(value) && commitSha(value.sha) ? value.sha.toLowerCase() : null;
 }
 
 async function workflowRun(workflow, sha = null) {
@@ -361,53 +459,92 @@ function formatRun(run) {
   const id = run.id === null ? 'run ID unavailable' : `run #${run.id}`;
   const branch = run.headBranch ? ` on ${run.headBranch}` : '';
   const outcome = run.conclusion ?? run.status ?? 'unknown status';
-  const relation = run.relation ? `, ${run.relation} candidate head` : '';
+  const relation =
+    run.relation === 'current'
+      ? ', same commit as selected candidate'
+      : run.relation === 'different'
+        ? ', different commit from selected candidate'
+        : '';
   return `${id}${branch}, head ${run.headSha ?? 'unknown'}, ${outcome}${relation}`;
 }
 
 export async function buildStagingStatusReport() {
+  return buildStagingStatusReportFor({});
+}
+
+export async function buildStagingStatusReportFor(options = {}) {
   const target = await targetFromManifest();
-  const [checkout, pr, latestRaw, secrets, workerFlags, descriptor] = await Promise.all([
-    localCheckout(),
-    pullRequest(),
-    workflowRun('sync-backend-staging.yml'),
-    secretStatus(),
-    workerFlagStatus(),
-    publicDescriptor(target),
-  ]);
-  const [checksRaw, previewRaw, prAfter] = pr?.headSha
-    ? await Promise.all([
-        ghJson(['pr', 'checks', '91', '--json', 'bucket,name,state,workflow'], {
+  const [checkout, latestRaw, latestPreviewRaw, secrets, workerFlags, descriptor] =
+    await Promise.all([
+      localCheckout(),
+      workflowRun('sync-backend-staging.yml'),
+      workflowRun('app-candidate-preview.yml'),
+      secretStatus(),
+      workerFlagStatus(),
+      publicDescriptor(target),
+    ]);
+  let pr = null;
+  let prLookupReason = null;
+  if (options.pullRequestNumber !== null && options.pullRequestNumber !== undefined) {
+    pr = await pullRequestByNumber(options.pullRequestNumber);
+    if (!pr) prLookupReason = 'selected pull request unavailable';
+  } else if (options.ref === undefined || options.ref === null) {
+    ({ pullRequest: pr, reason: prLookupReason } = await pullRequestForBranch(
+      checkout.branch,
+      checkout.headSha,
+    ));
+  }
+
+  const candidate = options.ref
+    ? summarizeRemoteCandidate('ref', options.ref, await remoteRef(options.ref), checkout)
+    : pr && options.pullRequestNumber !== null && options.pullRequestNumber !== undefined
+      ? summarizeRemoteCandidate('pull-request', `#${pr.number}`, pr.headSha, checkout)
+      : summarizeCheckoutCandidate(checkout);
+  const [checksRaw, prAfter, candidateBackendRaw, candidatePreviewRaw] = await Promise.all([
+    pr
+      ? ghJson(['pr', 'checks', String(pr.number), '--json', 'bucket,name,state,workflow'], {
           acceptNonzeroJson: true,
-        }),
-        workflowRun('app-candidate-preview.yml', pr.headSha),
-        pullRequest(),
-      ])
-    : [null, null, null];
+        })
+      : Promise.resolve(null),
+    pr ? pullRequestByNumber(pr.number) : Promise.resolve(null),
+    candidate.headSha ? workflowRun('sync-backend-staging.yml', candidate.headSha) : null,
+    candidate.headSha ? workflowRun('app-candidate-preview.yml', candidate.headSha) : null,
+  ]);
   const samePrHead = Boolean(pr?.headSha && prAfter?.headSha === pr.headSha);
-  const checks = samePrHead ? summarizeChecks(checksRaw, true) : summarizeChecks(null, false);
-  const relation = candidateRelation(checkout.headSha, pr?.headSha);
-  const latestRun = summarizeWorkflowRun(latestRaw, pr?.headSha ?? null);
-  const preview = summarizeWorkflowRun(previewRaw, pr?.headSha ?? null);
+  const checks = pr
+    ? samePrHead
+      ? summarizeChecks(checksRaw, true)
+      : summarizeChecks(null, false)
+    : {
+        state: 'not_applicable',
+        counts: { pass: 0, fail: 0, pending: 0, skipped: 0, cancelled: 0 },
+      };
+  const latestRun = summarizeWorkflowRun(latestRaw, candidate.headSha);
+  const candidateBackend = summarizeWorkflowRun(candidateBackendRaw, candidate.headSha);
+  const latestPreview = summarizeWorkflowRun(latestPreviewRaw, candidate.headSha);
+  const candidatePreview = summarizeWorkflowRun(candidatePreviewRaw, candidate.headSha);
   const report = {
     preflight: { state: 'blocked', blockers: [] },
+    candidate,
     checkout,
     pullRequest: {
-      number: 91,
+      number: pr?.number ?? null,
       headSha: pr?.headSha ?? null,
       branch: pr?.branch ?? null,
-      state: pr?.state ?? 'unavailable',
-      relation,
+      state: pr?.state ?? (prLookupReason ? 'unavailable' : 'none selected'),
+      relation: candidateRelation(checkout.headSha, pr?.headSha),
       checks,
       headStayedCurrent: samePrHead,
+      lookupReason: prLookupReason,
     },
     backend: {
       targetName: target?.workerName ?? null,
       targetUrl: target?.url ?? null,
       latestRun,
+      candidateRun: candidateBackend,
       descriptor,
     },
-    preview: { candidateRun: preview },
+    preview: { latestRun: latestPreview, candidateRun: candidatePreview },
     secrets,
     workerFlags,
     manualAcceptance: 'not verified',
@@ -417,15 +554,24 @@ export async function buildStagingStatusReport() {
     if (!ok) blockers.push(reason);
   };
   block(checkout.available, 'local checkout status unavailable');
+  block(candidate.headSha !== null, 'selected candidate commit is unavailable');
+  if (candidate.source === 'checkout')
+    block(checkout.dirty === false, 'selected checkout candidate has uncommitted changes');
   block(
-    relation === 'current' && checkout.dirty === false,
-    'checkout is old, dirty, or PR head unavailable',
+    pr?.state === 'open',
+    pr
+      ? `selected PR #${pr.number} is ${pr.state ?? 'not open'}`
+      : 'no open PR is associated with the selected candidate',
   );
-  block(pr?.state === 'open', 'PR #91 is unavailable or not open');
-  block(samePrHead, 'PR #91 head changed while status was read');
-  block(checks.state === 'passed', 'PR checks are not all passing');
-  block(readyRun(latestRun), 'latest staging workflow is not successful on the current PR head');
-  block(readyRun(preview), 'desktop previews have not succeeded for the current PR head');
+  block(!prLookupReason, prLookupReason ?? 'pull request lookup was ambiguous');
+  block(
+    !pr || candidate.headSha === pr.headSha,
+    'pull request head differs from the selected candidate',
+  );
+  block(!pr || samePrHead, 'pull request head changed while status was read');
+  if (pr) block(checks.state === 'passed', 'PR checks are not all passing');
+  block(readyRun(candidateBackend), 'staging workflow has not succeeded on the selected candidate');
+  block(readyRun(candidatePreview), 'desktop preview has not succeeded on the selected candidate');
   block(descriptor.state === 'passed', 'public descriptor does not match the staging target');
   block(secrets.state === 'passed', 'required staging secrets are missing or unavailable');
   block(
@@ -441,11 +587,15 @@ export async function buildStagingStatusReport() {
     'Read `docs/runbooks/hosted-sync/staging-next-steps.md` before changing staging or starting acceptance.',
     'Rerun `pnpm staging:status` from `anvil-app/` after each setup or workflow change.',
   ];
-  if (pr?.headSha && pr.branch && relation === 'current' && !readyRun(preview)) {
+  if (pr?.headSha && pr.branch && candidate.headSha === pr.headSha && !readyRun(candidatePreview)) {
     report.nextCommands.push(
-      `Build the exact macOS and Linux previews with: gh workflow run app-candidate-preview.yml --ref ${shellQuote(pr.branch)} -f pull_request=91 -f head_sha=${pr.headSha}`,
+      `Build the exact macOS and Linux previews with: gh workflow run app-candidate-preview.yml --ref ${shellQuote(pr.branch)} -f pull_request=${pr.number} -f head_sha=${pr.headSha}`,
     );
   }
+  if (!pr && !prLookupReason)
+    report.nextCommands.push(
+      'Select an open PR explicitly with `pnpm staging:status --pr <number>` to check PR gates.',
+    );
   if (report.preflight.state === 'ready_for_manual_acceptance') {
     report.nextCommands.push(
       'Start the signed-in and physical-device gates in `docs/runbooks/hosted-sync/staging-acceptance.md`.',
@@ -455,15 +605,25 @@ export async function buildStagingStatusReport() {
 }
 
 function render(report) {
+  const candidateTree =
+    report.candidate.source === 'checkout'
+      ? report.candidate.modified
+        ? 'modified local tree; edits are not represented by the SHA'
+        : 'clean local tree'
+      : `local checkout ${report.candidate.localCheckoutRelation}${report.checkout.dirty ? ' and modified' : ''}`;
   const lines = [
     `Automated preflight: ${report.preflight.state === 'ready_for_manual_acceptance' ? 'PASS, ready for manual acceptance' : 'BLOCKED'}`,
+    ...report.preflight.blockers.map((reason) => `Blocked: ${reason}`),
     `Checkout: ${report.checkout.branch ?? 'branch unavailable'} ${report.checkout.headSha ?? 'HEAD unavailable'} (${report.checkout.dirty === null ? 'dirty state unavailable' : report.checkout.dirty ? 'dirty' : 'clean'})`,
     report.pullRequest.headSha
-      ? `PR #91: ${report.pullRequest.headSha}, local checkout ${report.pullRequest.relation}; checks ${report.pullRequest.checks.state} (${report.pullRequest.checks.counts.pass} pass, ${report.pullRequest.checks.counts.fail} fail, ${report.pullRequest.checks.counts.pending} pending, ${report.pullRequest.checks.counts.skipped} skipped)`
-      : 'PR #91: BLOCKED (remote head unavailable)',
+      ? `PR #${report.pullRequest.number}: ${report.pullRequest.headSha}, local checkout ${report.pullRequest.relation}; checks ${report.pullRequest.checks.state} (${report.pullRequest.checks.counts.pass} pass, ${report.pullRequest.checks.counts.fail} fail, ${report.pullRequest.checks.counts.pending} pending, ${report.pullRequest.checks.counts.skipped} skipped)`
+      : `PR: ${report.pullRequest.state}${report.pullRequest.lookupReason ? ` (${report.pullRequest.lookupReason})` : ''}`,
+    `Selected candidate: ${report.candidate.source}${report.candidate.ref ? ` ${report.candidate.ref}` : ''} ${report.candidate.headSha ?? 'SHA unavailable'} (${candidateTree})`,
     `Latest staging workflow: ${formatRun(report.backend.latestRun)}`,
-    'The staging workflow head identifies the deployed candidate; descriptor profiles do not prove commit identity.',
-    `Candidate macOS and Linux previews: ${formatRun(report.preview.candidateRun)}`,
+    `Staging workflow for selected candidate: ${formatRun(report.backend.candidateRun)}`,
+    'A successful staging workflow identifies its commit; it does not prove signed-in or physical-device acceptance.',
+    `Latest desktop preview: ${formatRun(report.preview.latestRun)}`,
+    `Desktop preview for selected candidate: ${formatRun(report.preview.candidateRun)}`,
     `Staging backend target: ${report.backend.targetName ?? 'unavailable'} at ${report.backend.targetUrl ?? 'unavailable'}`,
     report.backend.descriptor.state === 'passed'
       ? 'Public backend descriptor: PASS'
@@ -480,21 +640,24 @@ function render(report) {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.length > 1 || (args.length && !['--json', '--help'].includes(args[0]))) {
-    process.stderr.write('Usage: pnpm staging:status [--json]\n');
+  let options;
+  try {
+    options = parseArguments(args);
+  } catch {
+    process.stderr.write('Usage: pnpm staging:status [--json] [--pr <number> | --ref <branch>]\n');
     process.exitCode = 2;
     return;
   }
-  if (args[0] === '--help') {
+  if (options.help) {
     process.stdout.write(
-      'Read-only staging preflight for PR #91. Use `pnpm --silent staging:status --json` for sanitized output.\n',
+      'Read-only staging preflight for the current checkout. Use --pr <number> to select a PR or --ref <branch> to select a remote branch. Use `pnpm --silent staging:status --json` for sanitized output.\n',
     );
     return;
   }
   try {
-    const report = await buildStagingStatusReport();
+    const report = await buildStagingStatusReportFor(options);
     process.stdout.write(
-      args[0] === '--json' ? `${JSON.stringify(report, null, 2)}\n` : `${render(report)}\n`,
+      options.json ? `${JSON.stringify(report, null, 2)}\n` : `${render(report)}\n`,
     );
     if (report.preflight.state !== 'ready_for_manual_acceptance') process.exitCode = 1;
   } catch {

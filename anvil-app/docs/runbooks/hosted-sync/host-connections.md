@@ -11,9 +11,11 @@ the operator-controlled rollout, not production availability.
 ## User flow
 
 Anvil connects trusted devices that belong to the same personal account. An
-organization, shared fleet or paid Sync plan is not required. Sync and Mesh are
-free. Anvil Cloud Agents are a separate future paid feature and remain
-default-off.
+organization or shared fleet is not required. Hosted writes require a paid
+entitlement or a redeemed beta code while hosted billing enforcement is on;
+this staging beta uses codes and keeps checkout disabled. Local use and
+self-hosted deployments carry no Anvil subscription charge. Anvil Cloud Agents
+are separate and remain default-off.
 
 When a host has an active signed-in Sync scope, the Sync runtime discovers
 trusted hosts on that account and maintains sessions over a valid route. Host

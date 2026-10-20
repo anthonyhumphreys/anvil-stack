@@ -18,10 +18,11 @@ This is a greenfield protocol for current clients. Test hosted state may be rese
 repository files, local credentials and unrelated local work remain outside those resets. Preserve
 the security and recovery guarantees for new data.
 
-This plan describes the host-local implementation for free Sync and Mesh. The
-[decision record](decisions.md) is the single authority for product and rollout boundaries. The
-[FinOps projection](finops-projection.md) and workbook retain the assumptions, calculations, and
-scenarios used to estimate costs. Treat them as forecasts until actual usage and invoices are
+This plan describes host-local Sync and Mesh. Local use and self-hosted deployments carry no Anvil
+subscription charge. The Anvil-hosted beta gates writes on paid or beta access; see the
+[decision record](decisions.md) for the current product and rollout boundary. The [FinOps
+projection](finops-projection.md) and workbook retain their earlier assumptions, calculations, and
+scenarios for estimating costs. Treat them as forecasts until actual usage and invoices are
 measured.
 
 ## Outcome and boundaries
@@ -32,11 +33,11 @@ compact workspace Sync, and the durable decisions that let Mesh survive disconne
 between machines. Routine live traffic should bypass Anvil's application Worker and account
 coordinator once the client has connected to its execution host.
 
-Sync and Mesh stay free. Users can run work on their own desktops, servers and machines in their
-cloud accounts, or use supported provider cloud agents. Provider bills remain theirs. Only future
-Anvil Cloud Agents, the execution machines supplied by Anvil, are a separate paid offering and stay
-disabled by default. Container provisioning is outside the free Sync/Mesh staging workflow. Anvil
-Cloud remains the framework's name.
+Users can run work on their own desktops, servers and machines in their cloud accounts, or use
+supported provider cloud agents. Provider bills remain theirs. Only future Anvil Cloud Agents, the
+execution machines supplied by Anvil, are a separate paid offering and stay disabled by default.
+Container provisioning is outside the Sync/Mesh staging workflow. Anvil Cloud remains the
+framework's name.
 
 The cost objective is a small fixed hosting bill at low adoption and low marginal cost as usage
 grows. It is not a promise of zero infrastructure cost. Preserving offline delivery, revocation,
@@ -222,7 +223,7 @@ publishes its recoverable reference before ownership transfers. The target activ
 generation changes. Provider adapters still declare native resume, checkpoint import or summary
 continuation; a connection redesign does not make an arbitrary provider process portable.
 
-## Compact free Sync
+## Compact workspace Sync
 
 Use the existing encrypted entity format and conflict semantics. Add a versioned snapshot manifest
 containing account/dataset epoch, key epoch, schema version, committed cursor, object digests and
@@ -450,7 +451,8 @@ Measure Worker CPU, actual billable DO duration, rows including indexes/deletes/
 session-hours, batch occupancy, retained stock, R2 calls and bytes, retries and fallback minutes.
 Do not substitute elapsed HTTP latency for billed CPU or object duration. Keep website, identity,
 other tools, support and engineering costs in the overall projection. Tunnel costs belong to
-Anvil's operating bill; they do not change the free Sync/Mesh offering.
+Anvil's operating bill; they do not change the no-charge local and self-hosted options or hosted
+entitlement policy.
 
 Set spend and forecast-variance alerts before rollout. If measured costs exceed the projection,
 inspect unnecessary polls, active session count, renewal amplification, fallback and retention.
@@ -461,9 +463,9 @@ safety or delete recoverable data to meet a budget.
 ## Documentation, copy and completion
 
 Keep the [decision record](decisions.md), transport/runbooks, daemon/companion guidance and website
-setup/status pages aligned with the integrated routes. Keep the public pricing boundary unchanged:
+setup/status pages aligned with the integrated routes. Keep the public pricing boundary clear:
 
-- "Anvil Sync and Mesh are free. Sync workspace configuration and run agents on your own machines."
+- "Local use and self-hosted Sync and Mesh carry no Anvil subscription charge. Anvil-hosted access uses a paid entitlement or a time-limited beta code."
 - "Choose which workspaces to sync. Anvil syncs workspace metadata, not repository contents."
 - "Connect to an online execution host for live work. Required results remain available for their stated retention period."
 - "Anvil Cloud Agents will provide paid hosted execution. They are not available in this release."

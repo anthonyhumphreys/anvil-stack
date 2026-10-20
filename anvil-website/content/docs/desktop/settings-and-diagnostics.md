@@ -58,8 +58,10 @@ Cloud features are off by default. Enabling them reveals the Cloud Workbench; it
 
 In **Settings → Sync & Mesh**, choose a backend and sign in to connect a device.
 You can use your own Cloudflare deployment or a compatible third-party backend.
-Anvil-hosted access hasn't launched yet; its proposed paid plans are on the
-[pricing page](/pricing). Running your own backend is free of Anvil charges.
+Anvil-hosted production access has not launched. Its invite-only test path
+requires paid or beta access, and checkout is closed. Proposed paid plans are
+on the [pricing page](/pricing). Running your own backend carries no Anvil
+subscription charge.
 
 Choose Local or Sync separately for each workspace. New workspaces start Local.
 Sync carries workspace definitions, templates, custom agents and selected

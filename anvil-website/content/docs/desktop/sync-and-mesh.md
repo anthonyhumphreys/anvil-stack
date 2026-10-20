@@ -28,7 +28,7 @@ The panel offers four account backend modes:
 | Mode | Behavior |
 | --- | --- |
 | Local only | No account backend is connected. A remembered backend is paused, not forgotten. |
-| Anvil-hosted | We run the backend for you. Paid plans are proposed; public access hasn't launched. |
+| Anvil-hosted | We run the backend for you. The invite-only test path requires paid or beta access. Checkout and production hosting are not available yet. |
 | Your Cloudflare | A backend you deploy to your own Cloudflare account with `anvil-cloud mesh`. |
 | Compatible backend | Any URL implementing the Sync v2 and Mesh v2 profiles. |
 
@@ -36,8 +36,8 @@ Pinning a backend stores the association only — no data uploads until you
 sign in and choose Sync for a workspace. See [Self-deploy](/docs/sync/self-deploy)
 for the deploy path, [Conformance](/docs/sync/conformance) for proving a
 third-party backend, and [Hosted](/docs/sync/hosted) for the state of the
-operated service. Hosted Sync & Mesh will be paid when it launches; running
-your own backend remains free of Anvil charges. See [pricing](/pricing).
+operated service. Hosted writes require paid or beta access. Running your own
+backend carries no Anvil subscription charge. See [pricing](/pricing).
 Authentication, account security and deployment limits still apply.
 
 ### Workspace scope

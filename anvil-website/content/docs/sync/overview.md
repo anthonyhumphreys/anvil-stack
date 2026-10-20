@@ -30,9 +30,11 @@ desktop build talks to an Anvil-operated deployment, a Worker on your own
 Cloudflare account, or a third-party implementation that passes the
 conformance suite.
 
-Hosted Sync & Mesh will be paid when it launches. The proposed plans start at
-£6 a month for one person. You can run your own backend without paying Anvil;
-your infrastructure costs still apply. See [pricing](/pricing).
+Anvil-hosted writes require a paid entitlement or a redeemed beta code. The
+invite-only test path uses time-limited codes, checkout is closed, and
+production hosting is not available yet. Proposed paid plans start at £6 a
+month for one person. You can run your own backend without paying Anvil; your
+infrastructure costs still apply. See [pricing](/pricing).
 
 This is alpha infrastructure. The architecture, contract, and lifecycle are
 implemented and tested, and the system has been rehearsed on real Cloudflare
@@ -47,7 +49,7 @@ service choices remain in **Advanced connection settings**:
 | Mode | Behavior |
 | --- | --- |
 | Local only | No account backend is connected. A remembered backend is paused, not forgotten. New workspaces default to Local. |
-| Anvil-hosted | **Sign in to Anvil** uses the hosted service configured for this build. Paid plans are proposed, and public access hasn't launched. See [Anvil-hosted sync](/docs/sync/hosted). |
+| Anvil-hosted | **Sign in to Anvil** uses the hosted service configured for this build. The test path is invite-only; hosted writes require paid or beta access. Checkout and production hosting are not available yet. See [Anvil-hosted sync](/docs/sync/hosted). |
 | Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare service* in advanced settings). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
 | Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles — see [Backend conformance](/docs/sync/conformance). |
 

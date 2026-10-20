@@ -13,14 +13,16 @@ managed staging pilot was enabled. These are historical local-preparation result
 revisions, not verification of the current source or deployment. Record current-candidate CI and
 live acceptance separately.
 
-Sync is free and opt-in per workspace. Local is the default for new workspaces. Sync carries
-portable workspace definitions, repository references, preferences, templates, agent definitions,
-and bootstrap instructions. It does not copy repository contents, `.git`, dirty changes, or
-machine-local paths. The current serializer includes `remoteUrl`, which may contain embedded
-credentials, so synced metadata is not guaranteed to be credential-free. Workspace chat transcripts
-are not Sync entities; encrypted Mesh job/result archives may contain prompts or chat output under
-their separate retention rules. Personal hosted use needs no organisation; shared organisation
-fleets and workspaces are not included.
+Sync is opt-in per workspace, with Local as the default for new workspaces. Local use and
+self-hosted deployments carry no Anvil subscription charge. The Anvil-hosted beta gates writes on a
+paid entitlement or a redeemed beta code; checkout stays closed in staging, and production hosted
+access is not yet available. Sync carries portable workspace definitions, repository references,
+preferences, templates, agent definitions, and bootstrap instructions. It does not copy repository
+contents, `.git`, dirty changes, or machine-local paths. The current serializer includes `remoteUrl`,
+which may contain embedded credentials, so synced metadata is not guaranteed to be credential-free.
+Workspace chat transcripts are not Sync entities; encrypted Mesh job/result archives may contain
+prompts or chat output under their separate retention rules. Personal hosted use needs no
+organisation; shared organisation fleets and workspaces are not included.
 
 Mesh runs live work on an execution host. An encrypted WebSocket connects clients to that host over
 an authorised private route or, during the approved staging rehearsal, a managed tunnel. The broker
@@ -30,7 +32,7 @@ host-only reads. Anvil application services do not relay encrypted machine-sessi
 managed tunnel still proxies network traffic through its provider. Verified encrypted Sync
 snapshots, a bounded change journal, and bounded Mesh archives support recovery. Anvil Cloud Agents
 are separate paid execution containers and remain disabled by default. Container provisioning is
-excluded from the free Sync/Mesh staging workflow.
+excluded from the Sync/Mesh staging workflow.
 
 The RPC contract is `anvil-backend/1` with `sync/2` and `mesh/2`. The cutover targets current clients;
 older-host compatibility is not required. This host-local design aims to keep idle per-host usage

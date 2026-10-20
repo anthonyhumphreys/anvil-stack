@@ -1,9 +1,10 @@
 # Hosted Sync and Mesh rollout checklist
 
-Sync and Mesh are free. Only future Anvil Cloud Agents are planned as a paid
-feature, and they stay disabled by default. This checklist records release
-gates; it is not evidence that staging or production passed them and does not
-authorize production resource changes.
+The Anvil-hosted Sync and Mesh beta requires a paid entitlement or a redeemed
+beta code. Local use and self-hosted deployments carry no Anvil subscription
+charge. Anvil Cloud Agents are a separate paid service and stay disabled by
+default. This checklist records release gates; it is not evidence that staging
+or production passed them and does not authorize production resource changes.
 
 ## Candidate and deployment
 

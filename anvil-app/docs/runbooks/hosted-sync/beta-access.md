@@ -1,7 +1,10 @@
 # Hosted beta codes and paid signup
 
-Anvil Desktop and self-hosted Sync & Mesh need no Anvil subscription. Only the
-Anvil-operated backend enables `HOSTED_BILLING_ENFORCEMENT=true`.
+Anvil Desktop and self-hosted Sync & Mesh carry no Anvil subscription charge.
+The Anvil-operated backend can enable
+`HOSTED_BILLING_ENFORCEMENT=true`; hosted writes then require a confirmed paid
+subscription or team seat, or an unexpired redeemed beta code. Staging keeps
+checkout disabled and uses beta codes for testers.
 
 ## Invite a tester
 
