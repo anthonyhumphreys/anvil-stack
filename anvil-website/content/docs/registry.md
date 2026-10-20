@@ -1,7 +1,7 @@
 ---
 title: Anvil Registry
 navTitle: Registry overview
-description: An npm registry gateway that evaluates deterministic policy, records package decisions, and keeps dependency ingress inspectable.
+description: An npm gateway that applies your policy to every package and records why it decided.
 product: Anvil Registry
 section: Overview
 journey: learn

@@ -204,6 +204,10 @@ contract later.
     uploads a committed Git archive with `.git`, ignored/untracked files,
     working-tree changes, and known secret-file paths excluded; remote launch
     remains read-only and behind the existing Cloud feature flag.
+14. The control plane exposes registered execution providers and their
+    capability/configuration descriptors without starting a sandbox. A provider
+    can be registered but not configured, and clients must show its reason and
+    still perform the request-level support check before launch.
 
 #### Verification
 
@@ -215,7 +219,7 @@ pnpm --filter @anvil-cloud/control-plane test
 pnpm --filter @anvil-cloud/aws test -- agent.test.ts
 pnpm --filter @anvilstack/cloud-cli test -- cli.test.ts
 anvil-cloud executions conformance --json
-cd ../anvil-app && pnpm exec tsc --noEmit && pnpm lint && pnpm test
+cd ../anvil-app && pnpm exec tsc --noEmit -p tsconfig.node.json && pnpm exec tsc --noEmit -p tsconfig.web.json && pnpm lint && pnpm test
 ```
 
 #### Upstream break risks
@@ -225,6 +229,9 @@ cd ../anvil-app && pnpm exec tsc --noEmit && pnpm lint && pnpm test
   agent OAuth state is `reject`.
 - Treating a worker image as subscription-capable without an explicit
   capability advertisement is `reject`.
+- Treating a provider descriptor as proof that a particular execution request
+  is supported is `reject`; callers must still use the provider's support
+  result when selecting a target.
 - Making the hosted handler authentication-optional or returning the encrypted
   Desktop bearer to the renderer is `reject`.
 - Replacing cursor reads with an unresumable stream is `adapt`: preserve the
@@ -235,3 +242,93 @@ cd ../anvil-app && pnpm exec tsc --noEmit && pnpm lint && pnpm test
 - Enabling AWS writes before patch signing, result review, approval gates, and
   cleanup evidence are implemented is `adapt` or `reject` depending on whether
   it can be restored behind read-only policy.
+
+### C3: Portable application data and background work
+
+Status: active
+Owner project: `anvil-cloud`
+
+Keep conditional commits, bounded table pages and the job outbox provider-neutral.
+Local, in-memory, DynamoDB and D1 hosts share all-or-nothing compare-and-replace
+semantics. Reject stale conditions with `CONFLICT` and retain the original state.
+Keep the 25-write, 256-KiB record and 1-MiB total portable limits. JSON local
+writes serialize within one process and use atomic file replacement.
+
+Pending jobs can be committed with application records. Scheduled Cell jobs call
+`ctx.dispatchPendingJobs` without accessing a provider host. Publication uses bounded
+passes, conditional leases, stable logical ids and retained failures. Preserve
+those ids through AWS and Cloudflare queue delivery so applications can deduplicate
+with transaction receipts. Delivery remains at least once. Do not claim atomicity
+for HTTP calls, file storage or queue publication itself.
+
+Cloudflare D1, private R2, queue/Cron and OIDC support are experimental runtime
+implementations. Artifacts can refer to existing stage-specific resources and
+emit a D1 migration. Keep the normal Cell deployment gate until provisioning and
+live lifecycle evidence exist. Require the same release evidence on AWS and
+Cloudflare. Do not add consumer-specific matching, source formats or business rules.
+
+Owner modules are `packages/runtime/src/database-{commit,page}.ts`,
+`packages/runtime/src/job-outbox.ts`, the local/AWS hosts, the AWS queue bridge,
+and `packages/cloudflare/src/{database,files,host,http,resources,artifacts}.ts`.
+The behavior and open release checks are in
+`anvil-cloud/docs/architecture/application-backends.md`.
+
+Verify from `anvil-cloud/` with `pnpm lint`, `pnpm typecheck`, `pnpm test`, and
+`pnpm verify:cloudflare-preview`. Real local D1/R2 tests and AWS SDK tests are
+required; neither substitutes for live provider evidence.
+
+### C4: Reviewed Desktop delivery and read-only Mesh candidates
+
+Status: active
+Owner project: `anvil-app`
+
+Turn-level delivery captures an immutable main-process review of the current
+changes in explicitly selected files. Provider edit events identify the files;
+they do not establish the files' final contents. Display the exact candidate
+before confirmation and reject stale branch, HEAD, index, file, origin or PR
+base state. Preserve unrelated staged and working changes. Create commits with
+normal Git hooks and signing in an isolated checkout, then verify the reviewed
+tree, parent and message before updating the source branch. PRs use a dedicated
+branch whose complete diff against its pinned remote base has been reviewed.
+Failed external delivery retains a recoverable local or pushed branch.
+
+Mesh branch combination, verification and application are independent facts.
+Empty checks mean verification did not run. Persist reviewed commands and their
+tested commit/tree, cap execution by the originating run and current policy,
+and invalidate evidence if the checkout changes. Retrying verification never
+replays branch combination. Applying a verified repository is an explicit
+fast-forward from its recorded base in a clean checkout, with a separate
+receipt for each repository. Never force, discard local changes or push as
+part of application. Hold real Git index and ref/HEAD locks, persist application
+intent before changing the checkout, and reconcile an exact clean destination
+match after restart. Retain ambiguous outcomes for inspection.
+
+Current-tracked source candidates are a bounded read-only Mesh feature. Capture
+selected tracked text files before approval, preserve source Git state, reject
+secret paths and secrets in both removed and added patch content, and freeze
+the base, candidate commit/tree, included paths and digest. Carry candidate
+bytes only in task-key-sealed inputs. Never publish them in a public manifest,
+status result or synced workflow template. Enforce the 128-KiB aggregate
+candidate payload, file/count limits and full sealed request limits. Require
+backend `mesh-job-capability-requirements/1` and worker
+`remote-review-candidate/v1`; an older backend or worker must fail closed.
+Freeze every selected repository's base and the approved backend/account scope
+before approval. Recheck that identity and backend support before submission
+or replay, retaining the original sealed request bytes.
+Materialize and validate the candidate in an isolated worker checkout before
+provider execution. Read-only review must not report the input candidate as
+worker-produced changes. Untracked files, binary patches and write-capable
+candidate tasks remain unsupported. Workflow edges continue to carry reports,
+not predecessor working directories.
+
+This entry concerns Desktop Mesh. Do not weaken C2's separate Cloud execution
+source, authentication or read-only boundaries.
+
+Owner modules: `scoped-git.service.ts`, `remote-review-candidate.service.ts`,
+`chat-delegation.service.ts`, `workflow.service.ts`, `mesh-dispatch.service.ts`,
+`mesh-integration.service.ts`, `mesh-worker.service.ts`, their shared contracts
+and typed IPC/UI paths, and backend worker placement/claim capability checks.
+
+Verify Desktop Node/web TypeScript checks, lint, service/real-Git tests and the
+full Desktop suite; run backend tests and typecheck for capability changes.
+Native UI and physical-device acceptance remain separate evidence.

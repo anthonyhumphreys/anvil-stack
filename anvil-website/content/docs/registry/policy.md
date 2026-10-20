@@ -5,7 +5,7 @@ description: How Anvil Registry decides whether a package should be allowed, war
 product: Anvil Registry
 section: Concepts
 journey: learn
-order: 4
+order: 100
 ---
 
 # Policy model

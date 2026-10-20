@@ -6,6 +6,8 @@ export interface FileEntry {
   relativePath: string;
   extension: string;
   sizeBytes: number;
+  /** Populated by walkRepo; optional so lightweight fixtures still type-check. */
+  mtimeMs?: number;
 }
 
 const ALWAYS_IGNORE = [
@@ -87,6 +89,7 @@ export async function walkRepo(repoPath: string): Promise<FileEntry[]> {
         relativePath,
         extension: ext,
         sizeBytes: stat.size,
+        mtimeMs: stat.mtimeMs,
       });
     } catch {
       // skip files we can't stat

@@ -18,10 +18,13 @@ import {
 } from '../../../shared/workitem-intent';
 import { SprintSelector } from './SprintSelector';
 import { TagFilter } from './TagFilter';
+import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import { WorkItemCard } from './WorkItemCard';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { repoIsMapped, useWorkspace } from '../../contexts/WorkspaceContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { SettingsLink } from '../shared/SettingsLink';
+import { presentSetupError } from '../../utils/setup-error';
 import { ChangeReviewPanel } from '../review/ChangeReviewPanel';
 
 export function buildWorkItemTree(items: WorkItem[]): WorkItem[] {
@@ -93,7 +96,7 @@ export function WorkItemsView() {
         setSelectedIterations(activeWorkspace?.preferences?.workitems.iterationIds ?? []);
       })
       .catch((err) => {
-        if (!cancelled) setError(String(err));
+        if (!cancelled) setError(presentSetupError(err, 'Something went wrong. Try again.'));
       });
     return () => {
       cancelled = true;
@@ -116,7 +119,7 @@ export function WorkItemsView() {
       setIterations(nextIterations);
     } catch (err) {
       if (version === request.current)
-        setError(err instanceof Error ? err.message : 'Could not load Work Items. Try refreshing.');
+        setError(presentSetupError(err, 'Could not load Work Items. Try refreshing.'));
     } finally {
       if (version === request.current) setLoading(false);
     }
@@ -139,7 +142,7 @@ export function WorkItemsView() {
       setSelectedTags([]);
       setConnectionId(id);
     } catch (err) {
-      setError(String(err));
+      setError(presentSetupError(err, 'Something went wrong. Try again.'));
     } finally {
       setBusy(false);
     }
@@ -154,7 +157,7 @@ export function WorkItemsView() {
         },
       });
     } catch (err) {
-      setError(String(err));
+      setError(presentSetupError(err, 'Something went wrong. Try again.'));
     }
   }
   async function launch(mode: 'plan' | 'implement' | 'impact') {
@@ -240,7 +243,8 @@ export function WorkItemsView() {
           </>
         }
       />
-      {error ? (
+      {/* With no tracker connected the empty state below explains what to do. */}
+      {error && connections.length > 0 ? (
         <InlineNotice icon={AlertTriangle} tone="error" className="mx-4 my-2">
           {error}
         </InlineNotice>
@@ -308,9 +312,16 @@ export function WorkItemsView() {
                 icon={TicketCheck}
                 title={connections.length ? 'No matching work items' : 'Connect your work tracker'}
                 description={
-                  connections.length
-                    ? 'Adjust the search, state or iteration filters.'
-                    : 'Add Azure DevOps, Linear or Jira in Settings to bring your work here.'
+                  connections.length ? (
+                    'Adjust the search, state or iteration filters.'
+                  ) : (
+                    <>
+                      <SettingsLink to="delivery#work-items">
+                        Add Azure DevOps, Linear or Jira in Settings
+                      </SettingsLink>{' '}
+                      to bring your work here.
+                    </>
+                  )
                 }
               />
             )}
@@ -413,10 +424,14 @@ export function WorkItemsView() {
                 <div className="space-y-6 p-5">
                   <section>
                     <h3 className="mb-2 text-sm font-semibold">Acceptance criteria</h3>
-                    <p className="max-w-prose whitespace-pre-wrap break-words text-sm leading-6 text-text-secondary">
-                      {extractAcceptanceCriteria(selected) ||
-                        'No explicit acceptance criteria in this item. Confirm the expectations when planning; inferred criteria are not approved requirements.'}
-                    </p>
+                    <div className="min-w-0 max-w-prose">
+                      <MarkdownRenderer
+                        content={
+                          extractAcceptanceCriteria(selected) ||
+                          'No explicit acceptance criteria in this item. Confirm the expectations when planning; inferred criteria are not approved requirements.'
+                        }
+                      />
+                    </div>
                     <p className="mt-2 text-xs text-text-tertiary">
                       Maintained in {connection?.name ?? selected.provider}. Refreshed before
                       starting work or accepting a review.
@@ -424,9 +439,11 @@ export function WorkItemsView() {
                   </section>
                   <section>
                     <h3 className="mb-2 text-sm font-semibold">Description</h3>
-                    <p className="max-w-prose whitespace-pre-wrap break-words text-sm leading-6 text-text-secondary">
-                      {workItemText(selected.description) || 'No description provided.'}
-                    </p>
+                    <div className="min-w-0 max-w-prose">
+                      <MarkdownRenderer
+                        content={workItemText(selected.description) || 'No description provided.'}
+                      />
+                    </div>
                   </section>
                   {selected.tags?.length ? (
                     <p className="text-xs text-text-tertiary">Tags: {selected.tags.join(', ')}</p>
@@ -530,8 +547,10 @@ async function resolveImpactAssessmentRepos(
   activeRepos: RepoInfo[],
   workspaceRepos: RepoInfo[],
 ): Promise<RepoInfo[]> {
-  const indexedWorkspaceRepos = workspaceRepos.filter((repo) => repo.status === 'indexed');
-  const indexedActiveRepos = activeRepos.filter((repo) => repo.status === 'indexed');
+  // Repo features unlock at the `mapped` tier — the fast structural pass is
+  // enough for work-item repo context; enrichment continues in the background.
+  const indexedWorkspaceRepos = workspaceRepos.filter(repoIsMapped);
+  const indexedActiveRepos = activeRepos.filter(repoIsMapped);
 
   const linkedRepoIds = new Set<string>();
   for (const item of scopeItems) {
@@ -638,16 +657,35 @@ function buildImpactAssessmentPrompt(
 function stripHtml(value?: string): string {
   if (!value) return '';
 
-  return value
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+  const withLineBreaks = value.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n\n');
+  return decodeHtmlEntities(stripHtmlTags(withLineBreaks))
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * Remove tags iteratively so a tag split across another tag (e.g. `<scr<script>ipt>`)
+ * cannot survive a single-pass replace.
+ */
+function stripHtmlTags(value: string): string {
+  let result = value;
+  let previous: string;
+  do {
+    previous = result;
+    result = result.replace(/<[^>]*>/g, '');
+  } while (result !== previous);
+  return result;
+}
+
+/** Decode HTML entities; `&amp;` must be decoded last so encoded entities are not double-decoded */
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&');
 }
 
 function normalizeRepoUrl(value?: string): string | undefined {

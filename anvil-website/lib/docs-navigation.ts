@@ -18,6 +18,15 @@ export const docsJourneys = [
 
 export type JourneyId = (typeof docsJourneys)[number]["id"];
 
+// Canonical section vocabulary. Every doc page declares exactly one of these
+// in frontmatter; the sidebar groups by section in this order. "Overview" is
+// reserved for kind:product landing pages.
+export const docsSections = ["Start here", "Guides", "Concepts", "Reference", "Overview"] as const;
+
+export type DocsSection = (typeof docsSections)[number];
+
+export const docsSectionOrder = new Map(docsSections.map((section, index) => [section, index]));
+
 export const docsProducts = [
   {
     id: "start",
@@ -34,6 +43,14 @@ export const docsProducts = [
     href: "/docs/desktop",
     folder: "desktop",
     repoName: "anvil-app/"
+  },
+  {
+    id: "sync",
+    label: "Anvil Sync & Mesh",
+    shortLabel: "Sync & Mesh",
+    href: "/docs/sync",
+    folder: "sync",
+    repoName: "anvil-app/ + anvil-cloud/"
   },
   {
     id: "cloud",

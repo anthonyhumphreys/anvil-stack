@@ -1,11 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 
 const state = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   appPath: vi.fn(() => '/preview'),
+  previewBuild: { buildId: 'preview' } as { buildId: string } | null,
 }));
-vi.mock('../../../shared/preview-build.js', () => ({ previewBuild: { buildId: 'preview' } }));
+vi.mock('../../../shared/preview-build.js', () => ({
+  get previewBuild() {
+    return state.previewBuild;
+  },
+}));
 vi.mock('electron', () => ({
   app: { on: vi.fn(), getAppPath: state.appPath },
   webContents: {},
@@ -32,8 +37,10 @@ import { registerBrowserHandlers } from '../../ipc/browser.ipc.js';
 
 beforeEach(() => {
   state.handlers.clear();
+  state.previewBuild = { buildId: 'preview' };
   vi.clearAllMocks();
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe('preview browser MCP isolation', () => {
   it('does not inspect, remove or replace shared Codex registrations at startup', async () => {
@@ -46,10 +53,17 @@ describe('preview browser MCP isolation', () => {
 
   it('rejects explicit MCP registration without launching the shared Codex CLI', async () => {
     registerBrowserHandlers();
-    await expect(state.handlers.get('browser:register-mcp')!()).resolves.toEqual({
-      success: false,
-      error: 'Shared Codex MCP registration is disabled in candidate previews.',
-    });
+    expect(await state.handlers.get('browser:register-mcp')!()).toEqual({ success: true });
+    expect(execFile).not.toHaveBeenCalled();
+    expect(state.appPath).not.toHaveBeenCalled();
+  });
+
+  it('also keeps isolated development profiles from inspecting or changing shared registrations', async () => {
+    state.previewBuild = null;
+    vi.stubEnv('ANVIL_DEV_USER_DATA_PATH', '/tmp/anvil-fixture-test');
+    registerBrowserHandlers();
+    await Promise.resolve();
+    expect(await state.handlers.get('browser:register-mcp')!()).toEqual({ success: true });
     expect(execFile).not.toHaveBeenCalled();
     expect(state.appPath).not.toHaveBeenCalled();
   });

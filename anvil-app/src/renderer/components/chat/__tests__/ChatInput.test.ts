@@ -57,6 +57,27 @@ describe('Cursor model labels', () => {
 });
 
 describe('shouldSendChatMessageFromKey', () => {
+  it('requires an explicit modifier to send during an active run', () => {
+    expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, busy: true })).toBe(false);
+    expect(
+      shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, busy: true, metaKey: true }),
+    ).toBe(true);
+    expect(
+      shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, busy: true, ctrlKey: true }),
+    ).toBe(true);
+    expect(
+      shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: true, busy: true, metaKey: true }),
+    ).toBe(false);
+    expect(
+      shouldSendChatMessageFromKey({
+        key: 'Enter',
+        shiftKey: false,
+        busy: true,
+        metaKey: true,
+        isComposing: true,
+      }),
+    ).toBe(false);
+  });
   it('sends on Enter with or without command modifiers', () => {
     expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false })).toBe(true);
     expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, metaKey: true })).toBe(
@@ -69,6 +90,15 @@ describe('shouldSendChatMessageFromKey', () => {
 
   it('keeps Shift+Enter available for new lines', () => {
     expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: true })).toBe(false);
+  });
+
+  it('does not send while an input method editor is composing text', () => {
+    expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, isComposing: true })).toBe(
+      false,
+    );
+    expect(shouldSendChatMessageFromKey({ key: 'Enter', shiftKey: false, keyCode: 229 })).toBe(
+      false,
+    );
   });
 
   it('ignores non-send keys', () => {

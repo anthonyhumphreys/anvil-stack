@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, Search, X } from 'lucide-react';
 import type { RepoInfo } from '../../../shared/types';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 interface BaseProps {
-  /** Only show repos with status === 'indexed'. Default true. */
+  /** Only show repos at the `mapped` index tier or better. Default true. */
   indexedOnly?: boolean;
   /** Message shown when there are no repos to display. */
   emptyMessage?: string;
@@ -70,7 +70,7 @@ export type RepoSelectorProps = (SingleSelectProps | MultiSelectProps) & Variant
 export function RepoSelector(props: RepoSelectorProps) {
   const {
     indexedOnly = true,
-    emptyMessage = 'No indexed repositories found. Index a repository first from the Repositories view.',
+    emptyMessage = 'No mapped repositories yet — indexing finishes in the background after a repo is connected.',
   } = props;
 
   const variant = 'variant' in props ? (props.variant ?? 'list') : 'list';
@@ -78,7 +78,7 @@ export function RepoSelector(props: RepoSelectorProps) {
   const searchable = props.searchable ?? variant !== 'list';
 
   const { repos: workspaceRepos } = useWorkspace();
-  const repos = indexedOnly ? workspaceRepos.filter((r) => r.status === 'indexed') : workspaceRepos;
+  const repos = indexedOnly ? workspaceRepos.filter(repoIsMapped) : workspaceRepos;
 
   const [search, setSearch] = useState('');
   const filtered =
@@ -446,7 +446,7 @@ function ModalWrapper({
           <button
             onClick={handleConfirm}
             disabled={!canConfirm}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent/80 disabled:opacity-40"
+            className="rounded-md bg-accent px-3 py-1.5 text-sm text-accent-foreground hover:bg-accent/80 disabled:opacity-40"
           >
             {confirmLabel}
           </button>

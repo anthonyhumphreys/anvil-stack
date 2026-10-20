@@ -1,153 +1,154 @@
 ---
-title: Chat personas, reasoning, and LLM providers
-navTitle: Chat and LLM
-description: Configure AI providers, switch chat personas, tune reasoning effort, and understand how Anvil Desktop grounds sessions in repository context.
+title: Chat, personas and models
+navTitle: Chat and models
+description: Connect AI providers, pick personas, set reasoning effort, and see what context Anvil Desktop sends to the model.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 111
+order: 60
 ---
 
-# Chat personas, reasoning, and LLM providers
+# Chat, personas and models
 
-Anvil Desktop chat sessions are not generic AI chats. They are grounded in repository context, work items, and the current branch state. The persona system shapes what the model optimises for, reasoning effort controls how much work the Codex turn asks the model to do, and the LLM provider configuration keeps credentials out of renderer code.
+Chat sessions in a workspace draw on your repositories, work items and current branch. A persona shapes what the model pays attention to, reasoning effort sets how hard it thinks, and provider credentials stay in the main process where the interface can't read them.
 
-## Supported LLM providers
+## Providers
 
-Anvil Desktop can route chat sessions through multiple backends:
-
-| Provider | Setup path | Notes |
+| Provider | How to set it up | Notes |
 | --- | --- | --- |
-| OpenAI API | API key in Settings | Direct API calls from the main process for configured OpenAI models. |
-| Azure AI Foundry | `~/.codex/config.toml` provider config plus the configured API-key environment variable | For organisations with Azure OpenAI deployments. The app reads the same provider config used by Codex. |
-| Codex CLI | Codex CLI installed and authenticated | Uses the local `codex` command through the Codex bridge. Good for agentic sessions that need local file access. |
-| Apple Foundation Models | macOS 26+, Apple Intelligence support, Apple Intelligence enabled; on macOS 27 the built-in `fm` CLI (after `sudo fm license`) or a Swift toolchain with `FoundationModels` | Optional on-device route for short helper prompts, including image attachments on macOS 27. No API key. Falls back to the configured backend when unavailable or unsuitable. |
+| OpenAI API | Add an API key in Settings | Calls OpenAI directly from the main process. |
+| Azure AI Foundry | Configure a provider in `~/.codex/config.toml`, with its API key in the environment variable that config names | For teams with Azure OpenAI deployments. Anvil reads the same config Codex uses. |
+| Codex CLI | Install Codex and sign in | Runs your local `codex` command. Best for agent sessions that need to read and change files. |
+| Apple Foundation Models | macOS 26 or later with Apple Intelligence turned on. On macOS 27, the built-in `fm` tool (after `sudo fm license`) or a Swift toolchain with `FoundationModels` | Optional, on-device, for short helper prompts. Handles image attachments on macOS 27. No API key. Falls back to your main provider when it can't help. |
 
-Credentials are stored encrypted in SQLite by the main-process settings service. The renderer never sees raw API keys.
+Cursor, Devin and LLMGateway are set up under **Agent providers**; see [Chat, surfaces and agent runs](/docs/desktop/chat-canvas-and-agent-runs).
 
-## Configuring a provider
+Credentials are encrypted and stored in the local database by the main process. The interface never sees raw API keys.
 
-1. Open Settings in Anvil Desktop.
-2. Choose the AI settings section.
-3. Pick Codex CLI, OpenAI API, or Azure AI Foundry as the Settings-level provider.
-4. For OpenAI, enter the API key and model in Settings.
-5. For Azure AI Foundry, configure `~/.codex/config.toml` and the environment variable referenced by its `env_key`.
-6. Use the built-in connection test where the selected provider exposes one. Apple Foundation Models has its own **Test Apple Models** button.
+## Set up a provider
 
-The selected provider is a Settings-level choice. Chat turns can still change reasoning effort per turn, but there is no separate per-session provider picker in the chat surface.
+1. Open **Settings** and go to the AI section.
+2. Choose Codex CLI, OpenAI API or Azure AI Foundry.
+3. For OpenAI, enter your API key and model.
+4. For Azure AI Foundry, edit `~/.codex/config.toml` and set the environment variable its `env_key` points to.
+5. Run the connection test if the provider has one. Apple Foundation Models has its own **Test Apple Models** button.
+
+The provider you choose here is the default for new chats. You can still change reasoning effort for each turn from the composer.
 
 ## Reasoning effort
 
-The chat input includes a reasoning effort menu for Codex-backed turns:
+The composer has a reasoning menu for Codex-backed turns:
 
-| Effort | Use it for |
+| Effort | When to use it |
 | --- | --- |
-| `none` | Fast responses where extended reasoning is not useful. |
-| `minimal` | Trivial prompts that need a little structure. |
-| `low` | Quick answers and lightweight edits. |
-| `medium` | The everyday default for normal coding work. |
-| `high` | Complex implementation, debugging, or review work. |
-| `xhigh` | Slow, expensive reasoning for the awkward jobs that have started making eye contact. |
+| `none` | Fast replies where extra thinking won't help. |
+| `minimal` | Simple prompts that need a little structure. |
+| `low` | Quick answers and small edits. |
+| `medium` | The everyday default for normal coding. |
+| `high` | Hard implementation, debugging or review. |
+| `xhigh` | Slow and expensive, for the genuinely awkward jobs. |
 
-Anvil sends the selected effort with each Codex `turn/start` request. The global Settings page still exposes the older low/medium/high default for direct GPT-5.5-style API calls; the chat menu is the per-turn control for Codex sessions.
+Anvil sends your choice with every Codex turn. The older low, medium and high default in Settings still applies to direct API calls; the composer menu is the per-turn control for Codex sessions.
 
-## Apple Foundation Models routing
+## Apple's on-device model
 
-Apple Foundation Models support is opt-in. In Settings, set **Apple Foundation Models** to **Prefer simple**, then use **Test Apple Models** to verify the route. The status card under the provider picker shows which backend is active, the model's availability reason, and which features this Mac supports.
+The on-device model is opt-in. In Settings, set **Apple Foundation Models** to **Prefer simple** and click **Test Apple Models**. The status card shows which backend is active, whether the model is available (and why not), and what your Mac supports.
 
-On macOS 27, Anvil prefers the built-in `fm` command-line tool — a prebuilt binary, so calls skip the Swift toolchain entirely and start faster. Run `sudo fm license` once to accept its legal notice; until then Anvil falls back to a bundled Swift helper compiled on first use. On macOS 26 the Swift helper path is the only option, so a Swift toolchain that can import `FoundationModels` is required.
+On macOS 27, Anvil uses the built-in `fm` command-line tool. It's a prebuilt binary, so it starts quickly and doesn't need Swift. Run `sudo fm license` once to accept its notice; until then Anvil uses a Swift helper it compiles on first use. On macOS 26 the Swift helper is the only option, so you need a Swift toolchain that can import `FoundationModels`.
 
-When enabled, Anvil tries the on-device model for plain chat messages — including image attachments on macOS 27 builds with the vision API — while slash-style commands and file attachments stay on the configured backend. The flow is deliberately conservative:
+When it's on, Anvil tries the on-device model for plain chat messages, including image attachments on macOS 27. Slash commands and file attachments always go to your main provider. The process is deliberately cautious:
 
-1. The normal Anvil chat session starts first. That still means the Codex CLI must be installed and authenticated for Codex-backed chat.
-2. Anvil asks the Apple model to classify the prompt as `local` or `cloud`, using session instructions rather than prompt stuffing.
-3. `local` is accepted only for short, self-contained prompts that need no repository access, file edits, command execution, web access, or deep multi-step reasoning.
-4. If the classifier says `cloud`, fails, refuses, returns empty output, or the prompt is too large, Anvil sends the turn to the configured backend.
-5. If the local answer is accepted, Anvil streams it through the normal chat event stream so the renderer displays and persists it like any other assistant reply.
+1. The normal chat session starts first, so Codex still needs to be installed and signed in for Codex-backed chat.
+2. Anvil asks the Apple model whether the prompt can be answered locally.
+3. It only answers locally for short, self-contained prompts that don't need your repository, file edits, commands, the web or long reasoning.
+4. If the answer is no, or the model fails, refuses, returns nothing, or the prompt is too long, the turn goes to your main provider.
+5. A local answer streams into the chat and is saved like any other reply.
 
-## What the on-device model is used for
+### What it's good for
 
-The Apple route exists for prompts where a cloud round-trip adds nothing:
+- **Quick questions**, like "what does `git rebase -i` do?"
+- **Rewording and summarising**, such as tightening a commit message or condensing pasted text.
+- **Questions about a screenshot** on macOS 27, when the vision API is available.
+- **Private or offline prompts**. The request never leaves your Mac.
 
-- **Quick questions and explanations** — "what does `git rebase -i` do", "difference between `let` and `const`". Short answers stream in place like any other reply.
-- **Rewording and summarising** — tightening a sentence, condensing pasted text, suggesting a clearer phrasing for a commit message or review comment.
-- **Image questions on macOS 27** — attaching a screenshot and asking what it shows, when the installed build exposes the vision API.
-- **Offline or privacy-sensitive prompts** — the request never leaves the Mac; nothing is sent to an API key or remote provider.
+It's never used for work that needs your repository: reading or editing files, running commands, approvals or multi-step agent turns. That's a deliberate choice; the on-device model has no tools.
 
-It is deliberately *not* used for repository-aware work: file reads, edits, commands, approvals, multi-step agent turns, and anything needing repo context always go to the configured backend. That boundary is a design choice, not a model limitation — the on-device model has no tools.
+The status card also shows the model's context size and whether streaming, image prompts and token counting work on your Mac. If the `fm` notice hasn't been accepted, it shows the command to run.
 
-The Settings status card shows what this Mac can actually do: which backend is active (`fm` CLI or a compiled Swift helper), the model's availability state, its context size, and whether streaming, image prompts, and token counting are supported. If the `fm` legal notice is pending, the card shows the `sudo fm license` command to run once.
+## Temporary chat
 
-Local routing is not a replacement for agentic Codex work. It is useful for small wording, summarisation, or helper prompts where involving a larger backend would be theatre with an invoice.
+Press **Cmd+K** and choose **Temporary chat** for a throwaway conversation. You don't need a workspace or repository. The header marks it as temporary, and **End temporary chat** discards it.
+
+The transcript and any unsent draft live in memory until you end the chat or quit. Temporary chats don't appear in your thread list, don't get automatic titles and aren't recorded in run history. They run in an empty folder, read-only, with no workspace, repository, governance or MCP context.
+
+Temporary chat is text-only and works with providers that run through Codex. Cursor, Devin, attachments, pasted images and dropped files aren't available.
 
 ## Thread titles and summaries
 
-Threads start with a title taken from the first message (or the persona or work item that created them). Settings → AI → **Thread assistance** can instead generate a short title and a rolling one-line summary after each completed turn:
+A new thread is titled from its first message, or from the persona or work item that started it. **Settings → AI → Thread assistance** can write a short title and a one-line summary after each turn instead:
 
-| Provider | Behaviour |
+| Option | What happens |
 | --- | --- |
-| Off | Default. Titles stay as the first-message text until you rename the thread. |
-| Primary provider | Uses the configured agent model through the shared LLM gateway path. |
-| Apple Intelligence | Uses the on-device model — free, private, and works offline. macOS only. |
-| A connected provider | Uses any provider activated under **Agent providers** — pick a specific model from its catalog, or leave the provider default. |
+| Off | The default. Titles stay as the first message until you rename them. |
+| Primary provider | Uses your main agent model. |
+| Apple Intelligence | Uses the on-device model. Free, private and works offline. macOS only. |
+| A connected provider | Uses any provider you've turned on under **Agent providers**, with a model you pick or its default. |
 
-Summaries appear under the thread title in the sidebar and are refreshed periodically as turns complete. Renaming a thread manually locks its title so assistance never overwrites it; the summary keeps updating.
+Summaries show under the title in the sidebar and refresh as turns finish. If you rename a thread yourself, its title is locked; the summary keeps updating.
 
-Threads can also carry a **linked pull request** (the chain icon in the thread row). Linking attaches an existing GitHub or Azure DevOps PR to the thread by number — Anvil snapshots its state, watches for drift as the PR moves, and surfaces checks and review status from the chat surface instead of sending you back to the provider UI. Linked PRs are re-observed periodically, and when a linked PR is merged or closed the thread settles itself out of the active list.
+You can also link a thread to a pull request (the chain icon on the thread). Link a GitHub or Azure DevOps pull request by number and Anvil keeps track of it, showing its checks and review status in chat. When the pull request is merged or closed, the thread archives itself.
 
-## Chat personas
+## Personas
 
-Personas change the system prompt and review priorities without changing the underlying model. They are a UX convenience, not a security boundary.
+Personas change the instructions and priorities the model works to, not the model itself. They're a convenience, not a security control.
 
-| Persona | Optimises for | Good for |
+| Persona | Pays attention to | Use it for |
 | --- | --- | --- |
-| Coder | Implementation, file changes, test coverage, smallest safe diff. | Writing code, debugging, adding features. |
-| Architect | Module boundaries, dependency direction, API contracts, migration paths. | Refactoring, new service design, tech debt decisions. |
-| Security | Auth, permissions, data handling, secrets, injection risks, unsafe execution. | Security review, threat modelling, dependency audit. |
-| Reviewer | Correctness, regressions, missing tests, readability, style. | Code review, PR preparation, handover notes. |
-| Docs | README, ADRs, setup instructions, API docs, handover clarity. | Documentation, onboarding material, architecture notes. |
-| BA | Acceptance criteria gaps, feasibility, risk, dependencies, compliance. | Requirements clarification, spike planning, impact analysis. |
+| Coder | Working code, tests and the smallest safe change | Writing code, debugging, new features |
+| Architect | Module boundaries, dependencies, APIs and migration paths | Refactoring, designing services, tech debt decisions |
+| Security | Auth, permissions, data handling, secrets, injection and unsafe execution | Security review, threat modelling, dependency audits |
+| Reviewer | Correctness, regressions, missing tests and readability | Code review, pull request prep, handover notes |
+| Docs | READMEs, decision records, setup steps, API docs | Documentation, onboarding, architecture notes |
+| BA | Gaps in acceptance criteria, feasibility, risk and compliance | Clarifying requirements, planning spikes, impact analysis |
 
-Switch personas mid-session when the conversation changes from implementation to review, or from coding to documentation. The context window keeps repo state; the persona changes the lens.
+Switch persona mid-conversation when the job changes, say from building to reviewing. The thread keeps its context; only the lens changes.
 
-## Prompt context
+## What the model sees
 
-Anvil Desktop sends the model:
+Anvil sends:
 
-- The active workspace and repository list.
-- Indexed module summaries for the target repo.
-- Branch state and recent commits where relevant.
-- The work item or acceptance criteria if linked.
-- Any files the user explicitly referenced.
-- Constraints such as "read-only", "no tests", or "docs only".
+- the active workspace and its repositories
+- indexed summaries of the relevant repository
+- branch state and recent commits, when they matter
+- the linked work item or acceptance criteria
+- any files you mention
+- constraints such as read-only, no tests or docs only
 
-The model does not receive:
+It doesn't send:
 
-- Raw source code for the entire repo (that would exceed most context windows).
-- Secrets, tokens, or connector credentials.
-- Unrelated workspace data.
+- your whole codebase (it wouldn't fit in the context window)
+- secrets, tokens or connector credentials
+- data from other workspaces
 
-## Session types
+## Kinds of session
 
-Use the right session type for the work:
+- **Plan**: understand how things work before changing them.
+- **Implement**: make a scoped change and show the evidence.
+- **Review**: check a diff for correctness and risk.
+- **Security**: check auth, data, secrets and dependencies.
+- **Docs**: write or update documentation.
+- **BA**: compare what was asked for with what was built.
+- **Handover**: summarise what changed and what hasn't been checked.
 
-- **Plan** — Understand current behaviour before changing it.
-- **Implement** — Make scoped changes with evidence.
-- **Review** — Inspect diffs for correctness and risk.
-- **Security** — Check auth, data, secrets, and dependencies.
-- **Docs** — Generate or update documentation.
-- **BA** — Compare intent with implementation.
-- **Handover** — Summarise what changed and what remains unverified.
+See [Agent workflows](/docs/desktop/agent-workflows) for how to run each one.
 
-Read [Agent workflows](/docs/desktop/agent-workflows) for the full session playbook.
+## Limits
 
-## Limitations
-
-- Context windows still matter. Large repos need module summaries, not full file dumps.
-- Personas do not change model capabilities. A security persona cannot make an unsafe model safe.
-- Apple Foundation Models require macOS 26 or later, an Apple Intelligence-compatible Mac, and Apple Intelligence enabled. The fastest path on macOS 27 is the built-in `fm` CLI (one-time `sudo fm license`); otherwise a Swift toolchain that can import `FoundationModels` is needed.
-- The Apple on-device model varies in capability and availability. Use it for sensitive or offline helper work where it fits, but verify important output with the configured backend when possible.
-- Codex CLI sessions depend on the local `codex` binary and its auth state.
+- Context windows still matter. Large repos need summaries, not whole files.
+- A persona doesn't change what a model can do. A security persona won't make an unsafe model safe.
+- Apple Foundation Models needs macOS 26 or later, a Mac that supports Apple Intelligence, and Apple Intelligence turned on.
+- The on-device model's quality and availability vary. Use it where it fits, and check anything important with your main provider.
+- Codex sessions depend on your local `codex` install and sign-in.
 
 ## Read next
 

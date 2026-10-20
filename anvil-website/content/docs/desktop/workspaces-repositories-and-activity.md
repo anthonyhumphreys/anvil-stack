@@ -1,75 +1,75 @@
 ---
-title: Workspaces, repositories, and activity
+title: Workspaces, repositories and activity
 navTitle: Workspaces and repositories
-description: Create workspaces, connect and index repositories, follow active work, capture notes, and generate onboarding artifacts.
+description: Set up workspaces, connect and index repositories, follow running work, keep notes and generate onboarding files.
 product: Anvil Desktop
-section: Core workspace
+section: Guides
 journey: build
-order: 109
+order: 40
 ---
 
-# Workspaces, repositories, and activity
+# Workspaces, repositories and activity
 
-The workspace is Anvil Desktop's main scope boundary. It groups repositories, connector choices, chat threads, activity, notes, and delivery evidence. Check the active workspace before starting work that can change files or external systems.
+A workspace is the main container in Anvil Desktop. It groups repositories, connector choices, chat threads, activity, notes and the evidence you collect as you work. Check which workspace is active before starting anything that can change files or other systems.
 
 ## Create and manage workspaces
 
-The first launch flow creates a workspace before opening the main shell. After that you can:
+The first launch creates a workspace for you. After that you can:
 
-- create, rename, and delete workspaces
-- add or remove connected repositories
-- open a workspace in another Anvil window
+- create, rename and delete workspaces
+- add or remove repositories
+- open a workspace in a second Anvil window
 - export its repositories as a VS Code workspace
-- store workspace-specific work item, documentation, and launch preferences
+- set work item, documentation and launch preferences for each workspace
 
-Deleting a workspace removes its Anvil-managed workspace state. It does not delete the repository directories on disk.
+Deleting a workspace removes what Anvil stores about it. It never deletes your repository folders.
 
 ## Connect repositories
 
-The Workspace view can scan a directory for local Git repositories. It can also list and clone remote repositories from GitHub or Azure DevOps when the matching connector is configured.
+The Workspace view can scan a folder for Git repositories. With the GitHub or Azure DevOps connector set up, it can also list remote repositories and clone them.
 
-Each connected repository keeps its local path, branch state, indexing status, summary, and repository map state. Anvil can open it in the embedded editor or VS Code.
+For each repository, Anvil keeps its path, branch state, indexing status, summary and map. You can open it in the built-in editor or in VS Code.
 
 ## Indexing and repository maps
 
-Indexing reads the working tree and stores repository summaries for chat and the repository detail view. The UI reports scan and indexing progress, supports a forced retry after a failed or stuck run, and keeps the latest summary in SQLite.
+Indexing reads the working tree and saves a summary that chat and the repository view can use. You can watch progress, force a retry if a run fails or stalls, and the latest summary is kept in the local database.
 
-Repository maps record modules and relationships as a graph. Map refresh can be manual or follow the repository's configured refresh policy. The repository twin combines that map with current Git status and recent agent runs so you can see where work and change are concentrated.
+A repository map records modules and how they connect. Refresh it by hand or on the repository's schedule. The repository twin combines the map with current Git status and recent agent runs, so you can see where changes are piling up.
 
-Treat summaries and maps as navigation aids. Open the source before relying on a generated description for a code change or review finding.
+Treat summaries and maps as a way to find your way around. Open the source before relying on a generated description for a change or a review finding.
 
-## Inbox and cross-workspace activity
+## Inbox and activity across workspaces
 
-The Inbox divides activity into two groups:
+The Inbox splits activity into two groups:
 
-- **Needs you** contains approvals, questions, failures, and completed work ready for review.
-- **In progress** contains agent work, automations, indexing, queued work, and local processes that are still running.
+- **Needs you**: approvals, questions, failures and finished work ready to review.
+- **In progress**: agent work, automations, indexing, queued work and local processes that are still running.
 
-Selecting an item opens its owning route. The activity centre and desktop notifications use the same model, including the originating workspace and thread when that context exists.
+Selecting an item takes you to where it lives. The activity centre and desktop notifications work the same way, and open the right workspace and thread when they know it.
 
-Switching workspaces does not cancel an active chat or terminal. Terminal output can reattach while the desktop process stays open. A full app quit ends terminal processes and any work that depends on the local desktop runtime.
+Switching workspaces doesn't stop a running chat or terminal, and terminal output is still there when you come back, as long as the app stays open. Quitting the app ends terminal processes and anything else that depends on it.
 
 ## Workspace notes
 
-Workspace Notes is a small review queue for follow-ups that should survive the current conversation. Create a note in the desktop view or through a supported companion surface. Later, either accept it as handled or dismiss it.
+Workspace Notes is a small queue for follow-ups you don't want to lose when a conversation ends. Add a note in the app or from a companion device, then later mark it handled or dismiss it.
 
-Notes are workspace-scoped. They are deliberately lighter than work items and should not replace a tracked ticket when ownership, priority, or delivery reporting matters.
+Notes belong to a workspace. They're deliberately lighter than work items; use a proper ticket when ownership, priority or reporting matters.
 
 ## Repository onboarding
 
-The Onboarding view inspects a connected repository and can:
+The Onboarding view looks at a repository and can:
 
-- detect languages, package managers, setup files, and environment state
-- generate an `AGENTS.md` draft
-- generate a devcontainer draft
-- read an existing onboarding artifact before replacement
-- write the approved artifact or write and commit it with an explicit message
-- run supported dependency installation steps while streaming output
+- detect its languages, package managers, setup files and environment
+- draft an `AGENTS.md`
+- draft a devcontainer
+- show you an existing onboarding file before replacing it
+- write the file you approve, or write and commit it with your message
+- run supported dependency installs and stream the output
 
-Generated files are drafts based on repository evidence. Review commands, ports, secrets handling, and platform assumptions before writing them. The app does not know which accidental local convention your team has promoted to sacred law.
+The drafts are based on what's in the repository. Check the commands, ports, secrets handling and platform assumptions before you write them. Anvil can't know which of your team's local habits are actually rules.
 
-## Open intents and extra windows
+## Open links and extra windows
 
-Anvil can receive a launch intent and route it through the Open in Anvil view. Notifications use the same principle to focus exact work instead of merely opening the app.
+Anvil can receive a link that opens specific work, and routes it through the **Open in Anvil** view. Notifications use the same mechanism to take you to the exact thread rather than just bringing the app forward.
 
-Tool views can open in separate windows tied to the active workspace. Use that for a browser preview, diagnostics, or another reference view while keeping Chat visible in the main window.
+Tool views can open in their own window, tied to the active workspace. That's useful for a browser preview, diagnostics or reference material while chat stays visible in the main window.

@@ -38,6 +38,7 @@ import {
   type AutomationDisplayEntry,
 } from '../../utils/automation-run-events';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { ConfirmDialog } from '../ui';
 
 const DEFAULT_CRON = '0 9 * * 1-5';
 
@@ -185,6 +186,7 @@ export function AutomationsView() {
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const { collapsed: automationsCollapsed, toggleCollapsed: toggleAutomationsCollapsed } =
     useStoredPanelState({
       storageKey: 'layout:automations-saved-panel',
@@ -332,7 +334,6 @@ export function AutomationsView() {
 
   const handleDelete = async () => {
     if (!selectedAutomationId) return;
-    if (!window.confirm('Delete this automation and its run history?')) return;
     setSaving(true);
     setError(null);
     try {
@@ -444,7 +445,7 @@ export function AutomationsView() {
             </button>
             <button
               onClick={handleNewAutomation}
-              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90"
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent/90"
             >
               New automation
             </button>
@@ -550,7 +551,7 @@ export function AutomationsView() {
                     handleSelectAutomation(automation);
                     toggleAutomationsCollapsed();
                   }}
-                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-[11px] font-semibold transition-colors ${
+                  className={`flex h-9 w-9 items-center justify-center rounded-lg border text-xs font-semibold transition-colors ${
                     selectedAutomationId === automation.id
                       ? 'border-accent bg-accent/10 text-accent'
                       : 'border-border-subtle bg-bg-primary text-text-secondary hover:border-border hover:text-text-primary'
@@ -814,7 +815,7 @@ export function AutomationsView() {
                               }
                               className={`rounded px-3 py-1.5 text-sm capitalize transition-colors ${
                                 draft.loopConfig?.mode === mode
-                                  ? 'bg-accent text-white'
+                                  ? 'bg-accent text-accent-foreground'
                                   : 'text-text-secondary hover:text-text-primary'
                               }`}
                             >
@@ -1197,7 +1198,7 @@ export function AutomationsView() {
                 <button
                   onClick={handleSave}
                   disabled={saving || repos.length === 0}
-                  className="flex items-center gap-1 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-60"
+                  className="flex items-center gap-1 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-60"
                 >
                   {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
                   Save
@@ -1217,7 +1218,7 @@ export function AutomationsView() {
                       Run now
                     </button>
                     <button
-                      onClick={handleDelete}
+                      onClick={() => setConfirmingDelete(true)}
                       disabled={saving}
                       className="flex items-center gap-1 rounded-md border border-error/40 px-3 py-2 text-sm text-error hover:bg-error/10 disabled:opacity-60"
                     >
@@ -1269,6 +1270,18 @@ export function AutomationsView() {
           </section>
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmingDelete}
+        title="Delete this automation?"
+        description="This permanently removes the automation and its run history."
+        confirmLabel="Delete automation"
+        tone="danger"
+        onConfirm={() => {
+          setConfirmingDelete(false);
+          void handleDelete();
+        }}
+        onCancel={() => setConfirmingDelete(false)}
+      />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -842,6 +843,68 @@ describe("startLocalRuntimeServer", () => {
       await server.close();
     }
   });
+
+  it("never forwards client proxy requests to a forged host", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+    await mkdir(path.join(rootDir, ".anvil/dist/client"), {
+      recursive: true,
+    });
+
+    const cell = app({
+      queries: {
+        ping: query({
+          auth: "public",
+          handler: async () => ({ ok: true }),
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        queries: ["ping"],
+        mutations: [],
+      },
+      rootDir,
+      cellName: "proxy-cell",
+      port: 0,
+      clientPort: 0,
+    });
+
+    const originalFetch = globalThis.fetch;
+    const proxiedTargets: string[] = [];
+
+    try {
+      globalThis.fetch = (async (input, init) => {
+        proxiedTargets.push(
+          String(input instanceof Request ? input.url : input),
+        );
+
+        return originalFetch(input, init);
+      }) as typeof fetch;
+
+      const runtimeOrigin = new URL(server.runtimeUrl).origin;
+      const inspect = await rawGet(
+        server.clientUrl,
+        "//forged.example.test/_anvil/inspect",
+      );
+
+      expect(inspect.statusCode).toBe(200);
+      expect(inspect.body).toContain('"ok":true');
+      expect(proxiedTargets).toHaveLength(1);
+      expect(new URL(proxiedTargets[0]).origin).toBe(runtimeOrigin);
+      expect(proxiedTargets[0]).not.toContain("forged.example.test");
+
+      await rawGet(server.clientUrl, "//forged.example.test/api/ping");
+
+      expect(proxiedTargets).toHaveLength(2);
+      expect(new URL(proxiedTargets[1]).origin).toBe(runtimeOrigin);
+      expect(proxiedTargets[1]).not.toContain("forged.example.test");
+    } finally {
+      globalThis.fetch = originalFetch;
+      await server.close();
+    }
+  });
 });
 
 async function postJson(url: string, body: unknown): Promise<unknown> {
@@ -866,4 +929,36 @@ async function fetchText(url: string): Promise<string> {
   const response = await fetch(url);
 
   return response.text();
+}
+
+function rawGet(
+  baseUrl: string,
+  requestTarget: string,
+): Promise<{ statusCode: number; body: string }> {
+  const base = new URL(baseUrl);
+
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        hostname: base.hostname,
+        port: base.port,
+        method: "GET",
+        path: requestTarget,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+
+    request.on("error", reject);
+    request.end();
+  });
 }

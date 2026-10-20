@@ -289,6 +289,7 @@ describe('createWorkspaceSnapshotFile', () => {
     getWorkspaceMock.mockReturnValue({
       id: 'workspace-1',
       name: 'Demo',
+      syncSelected: false,
       createdAt: '',
       updatedAt: '',
       repos: [
@@ -339,6 +340,7 @@ describe('findWorkspaceCodeWorkspaceFile', () => {
     getWorkspaceMock.mockReturnValue({
       id: 'workspace-1',
       name: 'Demo',
+      syncSelected: false,
       createdAt: '',
       updatedAt: '',
       repos: [

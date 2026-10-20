@@ -163,21 +163,21 @@ function invalidateTarget(): void {
   targetGeneration = randomUUID();
   writeDiscovery();
 }
-export async function handleCdpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const supplied = Buffer.from(req.headers.authorization ?? '');
-  const expected = Buffer.from(`Bearer ${bridgeToken}`);
-  if (!bridgeToken || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-    jsonResponse(res, 401, { error: 'Browser session authentication required' });
-    return;
-  }
-  if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] !== undefined) {
-    jsonResponse(res, 403, { error: 'Browser-origin requests are not allowed' });
-    return;
-  }
-  if (req.headers['x-anvil-target'] !== targetGeneration) {
-    jsonResponse(res, 409, { error: 'Browser target changed. Reconnect the browser MCP session.' });
-    return;
-  }
+export type BrowserBridgeResponse = Record<string, unknown> & { error?: string };
+
+const BRIDGE_COMMAND_PATHS = ['/cdp', '/evaluate', '/navigate', '/screenshot'];
+const TARGET_CHANGED = 'Browser target changed. Reconnect the browser MCP session.';
+
+/**
+ * Runs one bridge command against the attached webview. Shared by the
+ * loopback HTTP bridge (external MCP clients) and in-process agent tools.
+ * `readPayload` is only called for POST commands that take a body.
+ */
+async function runBridgeCommand(
+  method: string | undefined,
+  path: string | undefined,
+  readPayload: () => Promise<unknown>,
+): Promise<{ status: number; body: BrowserBridgeResponse }> {
   const target = attachedWebContents;
   const generation = targetGeneration;
   const token = bridgeToken;
@@ -191,33 +191,27 @@ export async function handleCdpRequest(req: IncomingMessage, res: ServerResponse
       throw new Error('Browser target changed during request');
   };
   try {
-    if (req.method === 'GET' && req.url === '/status') {
+    if (method === 'GET' && path === '/status') {
       assertCurrent();
-      jsonResponse(res, 200, { attached: !!target, url: target?.getURL() ?? null });
-      return;
+      return { status: 200, body: { attached: !!target, url: target?.getURL() ?? null } };
     }
-    if (!target) {
-      jsonResponse(res, 503, { error: 'No browser attached' });
-      return;
+    if (!target) return { status: 503, body: { error: 'No browser attached' } };
+    if (method !== 'POST' || !BRIDGE_COMMAND_PATHS.includes(path ?? '')) {
+      return { status: 404, body: { error: 'Not found' } };
     }
-    if (
-      req.method !== 'POST' ||
-      !['/cdp', '/evaluate', '/navigate', '/screenshot'].includes(req.url ?? '')
-    ) {
-      jsonResponse(res, 404, { error: 'Not found' });
-      return;
-    }
-    if (req.url === '/screenshot') {
+    if (path === '/screenshot') {
       const capture = await target.capturePage();
       assertCurrent();
-      jsonResponse(res, 200, { data: capture.toPNG().toString('base64'), mimeType: 'image/png' });
-      return;
+      return {
+        status: 200,
+        body: { data: capture.toPNG().toString('base64'), mimeType: 'image/png' },
+      };
     }
-    const body = JSON.parse(await readBody(req));
+    const body = ((await readPayload()) ?? {}) as Record<string, unknown>;
     assertCurrent();
-    let method: string;
+    let command: string;
     let params: Record<string, unknown>;
-    if (req.url === '/cdp') {
+    if (path === '/cdp') {
       if (typeof body.method !== 'string' || !body.method.trim())
         throw new Error('A CDP method is required');
       if (
@@ -226,25 +220,84 @@ export async function handleCdpRequest(req: IncomingMessage, res: ServerResponse
         )
       )
         throw new Error('Only page-scoped CDP commands are supported');
-      method = body.method;
-      params = body.params ?? {};
-    } else if (req.url === '/evaluate') {
+      command = body.method;
+      params = (body.params as Record<string, unknown> | undefined) ?? {};
+    } else if (path === '/evaluate') {
       if (typeof body.expression !== 'string') throw new Error('An expression is required');
-      method = 'Runtime.evaluate';
+      command = 'Runtime.evaluate';
       params = { expression: body.expression, returnByValue: true };
     } else {
-      const url = new URL(body.url);
+      const url = new URL(body.url as string);
       if (!['http:', 'https:'].includes(url.protocol))
         throw new Error('Only HTTP and HTTPS navigation is supported');
-      method = 'Page.navigate';
+      command = 'Page.navigate';
       params = { url: url.href };
     }
-    const result = await target.debugger.sendCommand(method, params);
+    const result = await target.debugger.sendCommand(command, params);
     assertCurrent();
-    jsonResponse(res, 200, { result });
+    return { status: 200, body: { result } };
   } catch (error) {
-    jsonResponse(res, 409, { error: error instanceof Error ? error.message : String(error) });
+    return { status: 409, body: { error: error instanceof Error ? error.message : String(error) } };
   }
+}
+
+export async function handleCdpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const supplied = Buffer.from(req.headers.authorization ?? '');
+  const expected = Buffer.from(`Bearer ${bridgeToken}`);
+  if (!bridgeToken || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    jsonResponse(res, 401, { error: 'Browser session authentication required' });
+    return;
+  }
+  if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] !== undefined) {
+    jsonResponse(res, 403, { error: 'Browser-origin requests are not allowed' });
+    return;
+  }
+  if (req.headers['x-anvil-target'] !== targetGeneration) {
+    jsonResponse(res, 409, { error: TARGET_CHANGED });
+    return;
+  }
+  const { status, body } = await runBridgeCommand(req.method, req.url, async () =>
+    JSON.parse(await readBody(req)),
+  );
+  jsonResponse(res, status, body);
+}
+
+export interface BrowserScopeSnapshot {
+  /** Target generation; pass to `browserBridgeCommand` to pin the checked target. */
+  target: string;
+  scope: { workspaceId: string; repoPaths: string[] } | null;
+}
+
+/** The running bridge's workspace scope and target, or null when the bridge is stopped. */
+export function getBrowserScope(): BrowserScopeSnapshot | null {
+  if (!bridgeServer || !bridgePort || !bridgeToken) return null;
+  return {
+    target: targetGeneration,
+    scope: targetScope
+      ? { workspaceId: targetScope.workspaceId, repoPaths: [...targetScope.repoPaths] }
+      : null,
+  };
+}
+
+/**
+ * In-process bridge command for agent tools (no loopback HTTP hop). Commands
+ * with a body are POSTs, `/status` is a GET — same paths as the HTTP bridge.
+ * `expectedTarget` (from `getBrowserScope`) refuses if the target changed
+ * since the caller's scope check.
+ */
+export async function browserBridgeCommand(
+  path: string,
+  body?: unknown,
+  expectedTarget?: string,
+): Promise<BrowserBridgeResponse> {
+  if (!bridgeToken) return { error: 'Anvil browser bridge not running.' };
+  if (expectedTarget !== undefined && expectedTarget !== targetGeneration) {
+    return { error: TARGET_CHANGED };
+  }
+  const result = await runBridgeCommand(body === undefined ? 'GET' : 'POST', path, async () =>
+    JSON.parse(JSON.stringify(body)),
+  );
+  return result.body;
 }
 
 let bridgeStartup: Promise<number> | null = null;

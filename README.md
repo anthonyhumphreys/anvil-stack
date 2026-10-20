@@ -17,17 +17,13 @@ Each project manages its own dependencies. Run `pnpm install` inside the project
 
 GitHub Actions workflows live in `.github/workflows/` and are path-filtered per project:
 
-- **anvil-app** — lint/test/build CI; macOS arm64 release builds on tags.
+- **anvil-app** — lint/test/build CI; macOS arm64 tag releases are unsigned by default.
+  The workflow offers a signed/notarized dispatch when Apple credentials are configured.
+  Auto-updates remain disabled.
 - **anvil-cloud** — lint/typecheck/test/build CI.
 - **anvil-registry** — CI plus container images published to GitHub Container Registry (`ghcr.io/anthonyhumphreys/...`).
 - **anvil-website** — build/typecheck CI; deployed via the Vercel git integration.
 - **npm** — `@anvilstack/cloud-cli`, `@anvilstack/registry-cli`, and the thin `@anvilstack/cli` wrapper publish from release tags.
-
-## Attribution - "Anvil App"
-- Inspired heavily by [T3Code](https://github.com/pingdotgg/t3code) - though not a fork!
-- Also inspired by Theo's video about [building more ambitiously with AI](https://youtu.be/WBT-z_-OPhw).
-- 'Settled' state in the sidebar is a concept inspired by T3 Code. This was a eureka moment for handling 'thread sprawl' and got to give credit where it is due. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for more details.
-  
 
 ## License
 

@@ -3,9 +3,9 @@ title: Examples
 navTitle: Examples
 description: Walk through the notes example and common Anvil Cell patterns.
 product: Anvil Cloud
-section: Getting started
+section: Start here
 journey: build
-order: 112
+order: 30
 ---
 
 # Examples

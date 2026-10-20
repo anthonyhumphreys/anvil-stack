@@ -1,52 +1,70 @@
+@import "../../anvil-app/src/renderer/styles/chat-theme.css";
+@import "./workbench.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  /* Cool steel neutrals (hue ~250) with one forge accent. Light is primary. */
   :root {
-    --background: 0.991 0.006 205;
-    --foreground: 0.18 0.014 205;
-    --card: 0.991 0.006 205;
-    --card-foreground: 0.18 0.014 205;
-    --popover: 0.991 0.006 205;
-    --popover-foreground: 0.18 0.014 205;
-    --primary: 0.18 0.014 205;
-    --primary-foreground: 0.991 0.006 205;
-    --secondary: 0.955 0.008 205;
-    --secondary-foreground: 0.18 0.014 205;
-    --muted: 0.955 0.008 205;
-    --muted-foreground: 0.49 0.025 205;
-    --accent: 0.74 0.18 58;
-    --accent-foreground: 0.18 0.014 205;
-    --destructive: 0.58 0.21 27;
-    --destructive-foreground: 0.991 0.006 205;
-    --border: 0.895 0.013 205;
-    --input: 0.895 0.013 205;
-    --ring: 0.74 0.18 58;
-    --radius: 0.5rem;
+    --background: 0.986 0.004 245;
+    --foreground: 0.2 0.016 255;
+    --card: 0.997 0.002 245;
+    --card-foreground: 0.2 0.016 255;
+    --popover: 0.997 0.002 245;
+    --popover-foreground: 0.2 0.016 255;
+    --primary: 0.68 0.19 48;
+    --primary-foreground: 0.18 0.016 255;
+    --secondary: 0.955 0.006 250;
+    --secondary-foreground: 0.2 0.016 255;
+    --muted: 0.958 0.006 250;
+    --muted-foreground: 0.47 0.02 255;
+    --accent: 0.66 0.19 46;
+    --accent-foreground: 0.18 0.016 255;
+    --destructive: 0.56 0.21 27;
+    --destructive-foreground: 0.986 0.004 245;
+    --border: 0.9 0.009 252;
+    --input: 0.88 0.01 252;
+    --ring: 0.66 0.19 46;
+    --radius: 0.625rem;
+    /* Forge-dark artifact surfaces: the app window, terminals, code, schematics.
+       Matched to Anvil Desktop's navy canvas and fixed in both site themes. */
+    --forge-bg: 0.17 0.03 265;
+    --forge-raised: 0.215 0.032 262;
+    --forge-line: 0.34 0.035 262;
+    --forge-faint: 0.44 0.035 260;
+    --forge-text: 0.95 0.008 255;
+    --forge-dim: 0.72 0.025 255;
+    --forge-ember: 0.76 0.17 52;
+    --forge-ok: 0.8 0.15 158;
     color-scheme: light;
   }
 
   .dark {
-    --background: 0.17 0.014 205;
-    --foreground: 0.935 0.008 205;
-    --card: 0.215 0.014 205;
-    --card-foreground: 0.935 0.008 205;
-    --popover: 0.215 0.014 205;
-    --popover-foreground: 0.935 0.008 205;
-    --primary: 0.935 0.008 205;
-    --primary-foreground: 0.17 0.014 205;
-    --secondary: 0.275 0.018 205;
-    --secondary-foreground: 0.935 0.008 205;
-    --muted: 0.275 0.018 205;
-    --muted-foreground: 0.74 0.018 205;
-    --accent: 0.78 0.17 58;
-    --accent-foreground: 0.17 0.014 205;
-    --destructive: 0.63 0.2 27;
-    --destructive-foreground: 0.935 0.008 205;
-    --border: 0.34 0.018 205;
-    --input: 0.34 0.018 205;
-    --ring: 0.78 0.17 58;
+    --background: 0.165 0.014 258;
+    --foreground: 0.94 0.006 250;
+    --card: 0.2 0.016 258;
+    --card-foreground: 0.94 0.006 250;
+    --popover: 0.205 0.016 258;
+    --popover-foreground: 0.94 0.006 250;
+    --primary: 0.76 0.17 54;
+    --primary-foreground: 0.17 0.016 258;
+    --secondary: 0.245 0.017 258;
+    --secondary-foreground: 0.94 0.006 250;
+    --muted: 0.235 0.017 258;
+    --muted-foreground: 0.73 0.016 252;
+    --accent: 0.76 0.17 54;
+    --accent-foreground: 0.17 0.016 258;
+    --destructive: 0.66 0.19 25;
+    --destructive-foreground: 0.165 0.014 258;
+    --border: 0.31 0.018 258;
+    --input: 0.34 0.018 258;
+    --ring: 0.76 0.17 54;
+    --forge-bg: 0.13 0.025 265;
+    --forge-raised: 0.175 0.028 262;
+    --forge-line: 0.32 0.032 262;
+    --forge-faint: 0.43 0.032 260;
     color-scheme: dark;
   }
 
@@ -75,7 +93,53 @@
 
   body {
     @apply bg-background text-foreground antialiased;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    font-size: 1.0625rem;
+    line-height: 1.65;
+    font-variation-settings: "wdth" 100;
+  }
+
+  ::selection {
+    background: color-mix(in oklch, oklch(var(--accent)) 30%, oklch(var(--background)));
+    color: oklch(var(--foreground));
+  }
+
+  input,
+  textarea,
+  [contenteditable="true"] {
+    caret-color: oklch(var(--accent));
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, oklch(var(--foreground)) 22%, transparent) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, oklch(var(--foreground)) 18%, transparent);
+    border: 3px solid transparent;
+    border-radius: 8px;
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklch, oklch(var(--foreground)) 30%, transparent);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid oklch(var(--ring));
+    outline-offset: 2px;
   }
 
   h1, h2, h3 {
@@ -89,6 +153,11 @@
   button, a, summary {
     touch-action: manipulation;
   }
+
+  table[data-numerals],
+  .tabular-data {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
 @layer components {
@@ -96,135 +165,395 @@
     @apply fixed left-4 top-3 z-50 -translate-y-20 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-transform focus:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2;
   }
 
-  .hero-proof {
-    position: relative;
-    display: grid;
-    gap: 1rem;
+  /* The display voice: Archivo set wide and heavy, like a maker's mark struck
+     into steel. Headings only. */
+  .font-display {
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    font-variation-settings: "wdth" 116;
+    font-weight: 720;
+    letter-spacing: -0.028em;
+    line-height: 0.98;
   }
 
-  .hero-proof::before {
-    position: absolute;
-    inset: 8% -5% 18% 14%;
-    border: 1px solid oklch(var(--border));
-    background: color-mix(in oklch, oklch(var(--accent)) 7%, oklch(var(--background)));
-    content: "";
-    opacity: 0.72;
-    pointer-events: none;
-    transform: translate(1rem, 1rem);
+  .text-display-1 {
+    font-size: clamp(2.6rem, 1.4rem + 5.2vw, 5.6rem);
   }
 
-  .hero-proof-main {
+  .text-display-2 {
+    font-size: clamp(2rem, 1.35rem + 2.4vw, 3.25rem);
+    line-height: 1.02;
+  }
+
+  .text-display-3 {
+    font-size: clamp(1.45rem, 1.15rem + 1vw, 1.95rem);
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+
+  /* Lede paragraphs under display headings. */
+  .lede {
+    @apply text-muted-foreground;
+    font-size: clamp(1.0625rem, 0.98rem + 0.4vw, 1.25rem);
+    line-height: 1.6;
+    max-width: 62ch;
+  }
+
+  .page-shell {
+    @apply mx-auto w-full max-w-[76rem] px-5 sm:px-8;
+  }
+
+  /* A maker's plate: the few facts a newcomer checks first, ruled like the
+     stamped spec plate on a tool. */
+  .spec-plate {
+    @apply grid rounded-xl border bg-card text-[0.9375rem];
+    box-shadow: 0 1px 0 oklch(var(--border)) inset;
+  }
+
+  .spec-plate > div {
+    @apply grid grid-cols-[6.5rem_minmax(0,1fr)] gap-4 border-b px-5 py-3.5 last:border-b-0;
+  }
+
+  .spec-plate dt {
+    @apply text-muted-foreground;
+  }
+
+  .spec-plate dd {
+    @apply font-medium;
+  }
+
+  /* The mark's spark strikes once when you point at the logo. */
+  .anvil-mark-spark {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a:hover .anvil-mark-spark,
+    a:focus-visible .anvil-mark-spark {
+      animation: spark-strike 520ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+  }
+
+  @keyframes spark-strike {
+    0% { transform: scale(1) rotate(0deg); }
+    35% { transform: scale(1.7) rotate(45deg); filter: brightness(1.35); }
+    100% { transform: scale(1) rotate(90deg); }
+  }
+
+  /* --- Forge-dark artifact surfaces ------------------------------------ */
+
+  .forge-panel {
     position: relative;
-    z-index: 1;
-    aspect-ratio: 16 / 10;
     overflow: hidden;
-    border: 1px solid oklch(var(--border));
+    border: 1px solid color-mix(in oklch, oklch(var(--forge-line)) 60%, transparent);
     border-radius: var(--radius);
-    background: oklch(0.13 0.014 205);
-    box-shadow: 0 12px 30px color-mix(in oklch, oklch(var(--foreground)) 9%, transparent);
-  }
-
-  .hero-window-bar {
-    position: absolute;
-    inset: 0 0 auto 0;
-    z-index: 2;
-    display: flex;
-    height: 2.25rem;
-    align-items: center;
-    gap: 0.42rem;
-    border-bottom: 1px solid color-mix(in oklch, oklch(var(--border)) 72%, transparent);
-    background: color-mix(in oklch, oklch(0.11 0.014 205) 88%, transparent);
-    padding: 0 0.9rem;
-  }
-
-  .hero-window-bar span {
-    width: 0.52rem;
-    height: 0.52rem;
-    border-radius: 999px;
-    background: oklch(var(--accent));
-  }
-
-  .hero-window-bar span:nth-child(2) {
-    background: oklch(0.78 0.13 145);
-  }
-
-  .hero-window-bar span:nth-child(3) {
-    background: oklch(0.69 0.16 27);
-  }
-
-  .hero-window-bar p {
-    margin-left: 0.35rem;
-    font-size: 0.72rem;
-    color: oklch(0.8 0.018 205);
-  }
-
-  .hero-proof-command {
-    position: relative;
-    z-index: 2;
-    margin: -3.25rem clamp(1rem, 5vw, 3rem) 0 auto;
-    width: min(88%, 34rem);
-    overflow: hidden;
-    border: 1px solid oklch(var(--border));
-    border-radius: var(--radius);
-    background: oklch(var(--card));
-    box-shadow: 0 10px 24px color-mix(in oklch, oklch(var(--foreground)) 10%, transparent);
-  }
-
-  .product-card {
-    display: flex;
-    min-height: 100%;
-    flex-direction: column;
-  }
-
-  .code-window {
     background:
-      radial-gradient(circle at 18% 10%, color-mix(in oklch, oklch(var(--accent)) 20%, transparent), transparent 30%),
-      linear-gradient(135deg, oklch(0.22 0.018 205) 0%, oklch(0.13 0.014 205) 100%);
+      radial-gradient(ellipse 120% 90% at 50% -20%, oklch(var(--forge-raised)) 0%, transparent 60%),
+      oklch(var(--forge-bg));
+    box-shadow:
+      0 1px 0 color-mix(in oklch, white 4%, transparent) inset,
+      0 18px 44px color-mix(in oklch, oklch(var(--foreground)) 14%, transparent);
+    color: oklch(var(--forge-text));
   }
+
+  .forge-grid {
+    background-image: radial-gradient(circle, color-mix(in oklch, oklch(var(--forge-text)) 9%, transparent) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-position: center;
+  }
+
+  .forge-window-bar {
+    display: flex;
+    height: 2.5rem;
+    align-items: center;
+    gap: 0.45rem;
+    border-bottom: 1px solid color-mix(in oklch, oklch(var(--forge-line)) 55%, transparent);
+    padding: 0 1rem;
+  }
+
+  .forge-window-bar .dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 999px;
+    background: oklch(var(--forge-faint));
+  }
+
+  .forge-window-bar .dot--ember {
+    background: oklch(var(--forge-ember));
+  }
+
+  /* --- Schematic diagram ------------------------------------------------ */
+
+  .schematic-node {
+    fill: oklch(var(--forge-raised));
+    stroke: oklch(var(--forge-faint));
+    stroke-width: 1.25;
+  }
+
+  .schematic-node-label {
+    fill: oklch(var(--forge-dim));
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+  }
+
+  .schematic-node-title {
+    fill: oklch(var(--forge-text));
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .schematic-route {
+    fill: none;
+    stroke: color-mix(in oklch, oklch(var(--forge-faint)) 80%, transparent);
+    stroke-width: 1.25;
+  }
+
+  .schematic-route--live {
+    stroke-dasharray: 5 5;
+    stroke: oklch(var(--forge-faint));
+  }
+
+  .schematic-annotation {
+    fill: oklch(var(--forge-dim));
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 9.5px;
+    letter-spacing: 0.04em;
+  }
+
+  .schematic-annotation--ember {
+    fill: oklch(var(--forge-ember));
+  }
+
+  .schematic-caption {
+    fill: oklch(var(--forge-dim));
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+  }
+
+  .schematic-tick {
+    stroke: oklch(var(--forge-faint));
+    stroke-width: 1;
+  }
+
+  .schematic-screen {
+    fill: color-mix(in oklch, oklch(var(--forge-text)) 7%, transparent);
+    stroke: color-mix(in oklch, oklch(var(--forge-faint)) 70%, transparent);
+    stroke-width: 1;
+  }
+
+  .schematic-relay-ring {
+    fill: none;
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.25;
+    stroke-dasharray: 4 7;
+    opacity: 0.7;
+    animation: relay-spin 40s linear infinite;
+    transform-origin: 320px 208px;
+  }
+
+  @keyframes relay-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .schematic-relay-core {
+    fill: oklch(var(--forge-raised));
+    stroke: oklch(var(--forge-faint));
+    stroke-width: 1.25;
+  }
+
+  .schematic-relay-mark {
+    fill: none;
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+  }
+
+  .schematic-packet {
+    fill: oklch(var(--forge-raised));
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.25;
+  }
+
+  .schematic-packet-flap {
+    fill: none;
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.1;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .schematic-packet-job {
+    fill: color-mix(in oklch, oklch(var(--forge-ember)) 22%, oklch(var(--forge-raised)));
+    stroke: oklch(var(--forge-ember));
+    stroke-width: 1.1;
+  }
+
+  .schematic-packet-checkpoint {
+    fill: oklch(var(--forge-raised));
+    stroke: oklch(var(--forge-text));
+    stroke-width: 1.1;
+  }
+
+  /* --- Terminal panel ---------------------------------------------------- */
+
+  .terminal-body {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 0.8125rem;
+    line-height: 1.75;
+  }
+
+  .terminal-line {
+    display: block;
+    min-height: 1.5em;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .terminal-cursor {
+    display: inline-block;
+    width: 0.55em;
+    height: 1.05em;
+    margin-left: 0.15em;
+    vertical-align: text-bottom;
+    background: oklch(var(--forge-ember));
+    animation: terminal-blink 1.1s steps(1) infinite;
+  }
+
+  @keyframes terminal-blink {
+    50% { opacity: 0; }
+  }
+
+  .proof-check {
+    @apply mt-0.5 size-4 shrink-0 text-accent;
+  }
+
+  /* --- Documentation markdown --------------------------------------------- */
 
   .doc-markdown {
-    @apply text-base leading-7 text-foreground;
+    --doc-text: color-mix(in oklch, oklch(var(--foreground)) 84%, oklch(var(--background)));
+    font-size: 1.0625rem;
+    line-height: 1.75;
+    color: var(--doc-text);
+  }
+
+  .doc-markdown > :first-child {
+    margin-top: 0;
   }
 
   .doc-markdown h1 {
-    @apply mb-5 text-4xl font-semibold leading-[1.08] tracking-[-0.025em] sm:text-5xl;
+    @apply mb-6 text-foreground;
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    font-variation-settings: "wdth" 114;
+    font-weight: 720;
+    font-size: clamp(2.1rem, 1.6rem + 2vw, 3rem);
+    line-height: 1.04;
+    letter-spacing: -0.028em;
+  }
+
+  /* The paragraph straight after the title reads as the page's summary. */
+  .doc-markdown h1 + p {
+    @apply text-muted-foreground;
+    font-size: 1.1875rem;
+    line-height: 1.7;
   }
 
   .doc-markdown h2 {
-    @apply mt-14 scroll-mt-24 border-t pt-8 text-2xl font-semibold tracking-[-0.015em];
+    @apply mt-16 scroll-mt-24 text-foreground;
+    font-size: 1.625rem;
+    font-weight: 680;
+    line-height: 1.2;
+    letter-spacing: -0.018em;
   }
 
   .doc-markdown h3 {
-    @apply mt-9 scroll-mt-24 text-xl font-semibold tracking-[-0.01em];
+    @apply mt-10 scroll-mt-24 text-foreground;
+    font-size: 1.25rem;
+    font-weight: 650;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+
+  .doc-markdown h4 {
+    @apply mt-8 scroll-mt-24 text-base font-semibold text-foreground;
   }
 
   .doc-markdown p {
-    @apply mt-4 text-muted-foreground;
+    @apply mt-5;
+  }
+
+  .doc-markdown h2 + p,
+  .doc-markdown h3 + p,
+  .doc-markdown h4 + p {
+    @apply mt-3;
+  }
+
+  .doc-markdown strong {
+    @apply font-semibold text-foreground;
   }
 
   .doc-markdown ul,
   .doc-markdown ol {
-    @apply mt-4 flex flex-col gap-2 pl-5 text-muted-foreground;
+    @apply mt-5 flex flex-col gap-2.5 pl-6;
+  }
+
+  .doc-markdown li > ul,
+  .doc-markdown li > ol {
+    @apply mt-2.5;
+  }
+
+  .doc-markdown li > p {
+    @apply mt-0;
+  }
+
+  .doc-markdown li > p + p,
+  .doc-markdown li > .doc-code,
+  .doc-markdown li > .doc-callout {
+    @apply mt-3;
   }
 
   .doc-markdown ul {
-    @apply list-disc;
+    list-style: none;
+  }
+
+  .doc-markdown ul > li {
+    position: relative;
+  }
+
+  .doc-markdown ul > li::before {
+    content: "";
+    position: absolute;
+    left: -1.05rem;
+    top: 0.78em;
+    width: 0.4rem;
+    height: 2px;
+    border-radius: 2px;
+    background: oklch(var(--accent));
   }
 
   .doc-markdown ol {
     @apply list-decimal;
   }
 
+  .doc-markdown ol > li::marker {
+    color: oklch(var(--muted-foreground));
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+
   .doc-markdown a {
-    @apply font-medium text-foreground underline underline-offset-4;
+    @apply font-medium text-foreground underline decoration-accent/50 underline-offset-[5px] transition-colors hover:decoration-foreground;
+    text-decoration-thickness: 1.5px;
   }
 
   .doc-markdown .doc-heading-anchor {
-    @apply no-underline;
+    @apply font-[inherit] no-underline;
   }
 
   .doc-markdown .doc-heading-anchor > span {
-    @apply ml-2 text-muted-foreground opacity-0 transition-opacity;
+    @apply ml-2 font-normal text-muted-foreground opacity-0 transition-opacity;
   }
 
   .doc-markdown h2:hover .doc-heading-anchor > span,
@@ -233,37 +562,136 @@
     @apply opacity-100;
   }
 
-  .doc-markdown code {
-    @apply rounded-md border bg-muted px-1.5 py-0.5 font-mono text-[13px] text-foreground;
+  .doc-markdown :not(pre) > code {
+    @apply rounded-md border bg-muted px-1.5 py-0.5 font-mono text-foreground;
+    font-size: 0.85em;
+    overflow-wrap: anywhere;
+  }
+
+  .doc-code {
+    @apply mt-6 overflow-hidden rounded-xl;
+    border: 1px solid color-mix(in oklch, oklch(var(--forge-line)) 70%, transparent);
+    background: oklch(var(--forge-bg));
+  }
+
+  .doc-code-bar {
+    @apply flex h-10 items-center justify-between px-4 text-xs;
+    border-bottom: 1px solid color-mix(in oklch, oklch(var(--forge-line)) 60%, transparent);
+    color: oklch(var(--forge-dim));
+  }
+
+  .doc-code-copy {
+    @apply rounded-md px-2 py-1 font-medium transition-colors;
+    color: oklch(var(--forge-dim));
+  }
+
+  .doc-code-copy:hover,
+  .doc-code-copy:focus-visible {
+    background: color-mix(in oklch, oklch(var(--forge-text)) 10%, transparent);
+    color: oklch(var(--forge-text));
+  }
+
+  .doc-code-copy[data-state="copied"] {
+    color: oklch(var(--forge-ok));
   }
 
   .doc-markdown pre {
-    @apply mt-5 overflow-x-auto rounded-lg border bg-[oklch(0.16_0.014_205)] p-5 text-sm text-[oklch(0.96_0.006_205)];
+    @apply overflow-x-auto p-5 font-mono;
+    font-size: 0.8125rem;
+    line-height: 1.75;
+    color: oklch(var(--forge-text));
   }
 
   .doc-markdown pre code {
-    @apply border-0 bg-transparent p-0 text-[oklch(0.96_0.006_205)];
+    @apply border-0 bg-transparent p-0;
+    font-size: inherit;
+    color: inherit;
   }
 
   .doc-markdown blockquote {
-    @apply mt-5 rounded-md border bg-muted px-4 py-3 text-muted-foreground;
+    @apply mt-6 border-l pl-5 italic text-muted-foreground;
+  }
+
+  .doc-callout {
+    @apply mt-6 rounded-xl border px-5 py-4;
+    font-size: 0.96875rem;
+  }
+
+  .doc-markdown .doc-callout > :first-child {
+    @apply mt-0;
+  }
+
+  .doc-markdown .doc-callout-title + p {
+    @apply mt-1;
+  }
+
+  .doc-markdown .doc-callout p + p {
+    @apply mt-3;
+  }
+
+  .doc-callout-title {
+    @apply font-semibold text-foreground;
+  }
+
+  .doc-callout--note {
+    background: color-mix(in oklch, oklch(0.62 0.12 245) 7%, oklch(var(--card)));
+    border-color: color-mix(in oklch, oklch(0.62 0.12 245) 30%, oklch(var(--border)));
+  }
+
+  .doc-callout--tip {
+    background: color-mix(in oklch, oklch(0.65 0.13 158) 8%, oklch(var(--card)));
+    border-color: color-mix(in oklch, oklch(0.65 0.13 158) 30%, oklch(var(--border)));
+  }
+
+  .doc-callout--warning {
+    background: color-mix(in oklch, oklch(var(--accent)) 9%, oklch(var(--card)));
+    border-color: color-mix(in oklch, oklch(var(--accent)) 40%, oklch(var(--border)));
+  }
+
+  .doc-markdown hr {
+    @apply my-12 border-t;
   }
 
   .doc-markdown table {
-    @apply mt-6 block w-full max-w-full border-collapse overflow-x-auto rounded-lg border text-sm md:table md:overflow-hidden;
+    @apply mt-6 block w-full max-w-full border-separate border-spacing-0 overflow-x-auto rounded-xl border md:table md:overflow-hidden;
+    font-size: 0.9375rem;
+    line-height: 1.6;
   }
 
   .doc-markdown th,
   .doc-markdown td {
-    @apply border p-3 text-left align-top;
+    @apply border-b px-4 py-3 text-left align-top;
+  }
+
+  .doc-markdown tr:last-child td {
+    @apply border-b-0;
   }
 
   .doc-markdown th {
     @apply bg-muted font-semibold text-foreground;
   }
 
+  .doc-markdown td:first-child {
+    @apply font-medium text-foreground;
+  }
+
+  .doc-markdown kbd {
+    @apply rounded border border-b-2 bg-card px-1.5 py-0.5 font-mono text-[0.8125em] text-foreground;
+  }
+
+  .doc-markdown img {
+    @apply mt-6 rounded-xl border;
+  }
+
   .docs-search-dialog[open] {
     animation: docs-dialog-in 150ms ease-out;
+  }
+
+  .docs-search-dialog mark {
+    background: color-mix(in oklch, oklch(var(--accent)) 24%, transparent);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
   }
 }
 
@@ -272,19 +700,29 @@
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-@media (max-width: 1023px) {
-  @layer components {
-    .hero-proof::before {
-      inset: 12% 0 20% 18%;
-    }
-  }
-}
-
-@media (max-width: 640px) {
-  @layer components {
-    .hero-proof-command {
-      margin: -1.25rem 0 0;
-      width: 100%;
-    }
-  }
+/* The workspace uses the desktop palette; the public website keeps its own theme. */
+.anvil-chat-theme {
+  --background: from var(--anvil-chat-bg-primary) l c h;
+  --foreground: from var(--anvil-chat-text-primary) l c h;
+  --card: from var(--anvil-chat-bg-secondary) l c h;
+  --card-foreground: from var(--anvil-chat-text-primary) l c h;
+  --popover: from var(--anvil-chat-bg-secondary) l c h;
+  --popover-foreground: from var(--anvil-chat-text-primary) l c h;
+  --primary: from var(--anvil-chat-accent) l c h;
+  --primary-foreground: from var(--anvil-chat-accent-foreground) l c h;
+  --secondary: from var(--anvil-chat-bg-secondary) l c h;
+  --secondary-foreground: from var(--anvil-chat-text-secondary) l c h;
+  --muted: from var(--anvil-chat-bg-tertiary) l c h;
+  --muted-foreground: from var(--anvil-chat-text-tertiary) l c h;
+  --accent: from var(--anvil-chat-accent) l c h;
+  --accent-foreground: from var(--anvil-chat-accent-foreground) l c h;
+  --destructive: from var(--anvil-chat-error) l c h;
+  --destructive-foreground: from var(--anvil-chat-bg-primary) l c h;
+  --border: from var(--anvil-chat-border) l c h;
+  --input: from var(--anvil-chat-border) l c h;
+  --ring: from var(--anvil-chat-accent) l c h;
+  --font-sans: var(--anvil-chat-font-sans);
+  --font-mono: var(--anvil-chat-font-mono);
+  font-family: var(--font-sans);
+  color-scheme: dark;
 }

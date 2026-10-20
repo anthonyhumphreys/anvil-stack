@@ -24,6 +24,11 @@ function openExternalLink(url: string): void {
   });
 }
 
+/** Blank same-renderer windows the chat opens to host a popped-out surface. */
+export function isSurfaceWindowRequest(url: string, frameName: string): boolean {
+  return (url === '' || url === 'about:blank') && /^anvil-surface-[\w:.-]+$/.test(frameName);
+}
+
 export function buildExternalLinkMenu(url: string): MenuItemConstructorOptions[] {
   if (!isExternalLink(url)) return [];
 
@@ -40,7 +45,13 @@ export function buildExternalLinkMenu(url: string): MenuItemConstructorOptions[]
 }
 
 export function registerExternalLinkHandling(contents: WebContents): void {
-  contents.setWindowOpenHandler(({ url }) => {
+  contents.setWindowOpenHandler(({ url, frameName }) => {
+    if (isSurfaceWindowRequest(url, frameName)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: { width: 1180, height: 820, minWidth: 640, minHeight: 480 },
+      };
+    }
     openExternalLink(url);
     return { action: 'deny' };
   });

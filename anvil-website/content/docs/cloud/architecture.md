@@ -3,9 +3,9 @@ title: Runtime model
 navTitle: Runtime model
 description: How shared execution contracts and adapter boundaries work in Anvil Cloud.
 product: Anvil Cloud
-section: Architecture
+section: Concepts
 journey: learn
-order: 120
+order: 60
 ---
 
 # Runtime model
@@ -173,4 +173,4 @@ This split gives alpha three useful properties:
 - adapters can change provider details without changing Cell code
 - Guard checks can reason about imports, capability use, manifest output, and deploy plans
 
-If a feature needs to live both in Cell code and in a provider adapter, stop and move the behavior up or down the stack. The runtime contract should stay boring. Boring contracts are where sleep comes from.
+If a feature needs logic in both Cell code and a provider adapter, decide which layer owns it. Keep application behaviour in the Cell and provider-specific resource handling in the adapter.

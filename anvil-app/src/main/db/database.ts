@@ -2,7 +2,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'node:path';
-import { SCHEMA_SQL, SCHEMA_VERSION, MIGRATIONS } from './schema.js';
+import { LEGACY_SCHEMA_REPAIR_SQL, SCHEMA_SQL, SCHEMA_VERSION, MIGRATIONS } from './schema.js';
+import { repairMissingColumns } from './schema-repair.js';
 import { LEGACY_DB_FILENAME, PRIMARY_DB_FILENAME } from '../../shared/app-identity.js';
 import type { AppTheme } from '../../shared/types.js';
 
@@ -31,7 +32,7 @@ export function initDatabase(defaultTheme: AppTheme = 'dark'): void {
   runMigrations(db, defaultTheme);
 }
 
-function runMigrations(database: Database.Database, defaultTheme: AppTheme): void {
+export function runMigrations(database: Database.Database, defaultTheme: AppTheme): void {
   database.exec('CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)');
 
   const row = database
@@ -47,6 +48,12 @@ function runMigrations(database: Database.Database, defaultTheme: AppTheme): voi
       // Fresh install — run full schema
       database.exec(SCHEMA_SQL);
     } else {
+      // Restore the full sync table set skipped by pre-merge v68/v69 builds
+      // before later migrations alter device_enrollments and sync_outbox.
+      if (currentVersion === 68 || currentVersion === 69) {
+        database.exec(LEGACY_SCHEMA_REPAIR_SQL);
+      }
+
       // Incremental migrations
       for (let v = currentVersion + 1; v <= SCHEMA_VERSION; v++) {
         const migration = MIGRATIONS[v];
@@ -54,6 +61,7 @@ function runMigrations(database: Database.Database, defaultTheme: AppTheme): voi
           console.log(`[Database] Running migration to v${v}`);
           // Run each ALTER statement separately (SQLite doesn't support multiple ALTERs in one exec)
           for (const stmt of migration
+            .replace(/^[ \t]*--[^\r\n]*/gm, '')
             .split(';')
             .map((s) => s.trim())
             .filter(Boolean)) {
@@ -85,4 +93,7 @@ function runMigrations(database: Database.Database, defaultTheme: AppTheme): voi
 
     console.log('[Database] Migration complete');
   }
+
+  // Every start: heal columns older installs never received from migrations.
+  repairMissingColumns(database, SCHEMA_SQL);
 }

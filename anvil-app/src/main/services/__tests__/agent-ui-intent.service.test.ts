@@ -158,6 +158,7 @@ describe('Agent UI intent service', () => {
   it('creates, lists, and incrementally updates plans while maintaining compatibility state', () => {
     const created = upsertAgentUIIntent({ intent: makePlan(), binding: { provider: 'codex' } });
     expect(listAgentUIIntents('thread-1')).toEqual([created]);
+    if (created.kind !== 'plan') throw new Error('Expected plan');
 
     const updated = patchAgentUIPlan(created.id, {
       planId: created.payload.planId,
@@ -267,6 +268,8 @@ describe('Agent UI intent service', () => {
     expect(() => validateAgentUIQuestionResolution(question, resolution)).not.toThrow();
     const resolved = recordAgentUIQuestionResolution(question, resolution);
     expect(resolved.lifecycle).toBe('resolved');
+    expect(JSON.stringify(resolved)).not.toContain('never-store-this');
+    expect(resolved.payload.response?.answers.secret).toBe('[redacted]');
 
     const row = database
       .prepare('SELECT response_json FROM agent_ui_intent_responses WHERE intent_id = ?')

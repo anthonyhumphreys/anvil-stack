@@ -152,8 +152,8 @@ export function BaSidebar({ workItem, repo, collapsed, onToggleCollapse }: BaSid
               )}
               {session?.worktreePath && (
                 <div className="mt-2 rounded-md border border-border bg-bg-secondary px-2 py-1.5">
-                  <p className="text-[11px] uppercase text-text-tertiary">Retained worktree</p>
-                  <p className="mt-1 break-all font-mono text-[11px] leading-snug text-text-secondary">
+                  <p className="text-eyebrow uppercase text-text-tertiary">Retained worktree</p>
+                  <p className="mt-1 break-all font-mono text-xs leading-snug text-text-secondary">
                     {session.worktreePath}
                   </p>
                 </div>
@@ -185,7 +185,7 @@ export function BaSidebar({ workItem, repo, collapsed, onToggleCollapse }: BaSid
               <h3 className="text-base font-semibold text-text-secondary">
                 Findings
                 {openFindings.length > 0 && (
-                  <span className="ml-1.5 rounded-full bg-accent px-2 py-0.5 text-sm text-white">
+                  <span className="ml-1.5 rounded-full bg-accent px-2 py-0.5 text-sm text-accent-foreground">
                     {openFindings.length}
                   </span>
                 )}
@@ -224,7 +224,7 @@ export function BaSidebar({ workItem, repo, collapsed, onToggleCollapse }: BaSid
                 <button
                   onClick={handleAddFinding}
                   disabled={!newContent.trim()}
-                  className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent/80 disabled:opacity-40"
+                  className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/80 disabled:opacity-40"
                 >
                   Add Finding
                 </button>

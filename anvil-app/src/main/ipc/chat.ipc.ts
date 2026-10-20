@@ -30,12 +30,15 @@ import type {
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
   ChatFileMentionSearchResult,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatSendOptions,
   ChatStartOptions,
+  ChatSteerResult,
   ChatThread,
-  ChatTurnSummary,
+  ChatThreadPurpose,
   CodexEvent,
   CodexInputResponse,
   CodexSession,
@@ -47,12 +50,16 @@ import {
   startSession,
   sendMessage,
   steerTurn,
+  followUpTurn,
   stopSession,
+  stopSessionAndWait,
   interruptTurn,
   emitLocalAssistantTurnStart,
   emitLocalAssistantText,
   emitLocalAssistantTurnEnd,
   getSessionStatus,
+  getCodexSession,
+  isTemporaryChatSession,
   stopAllSessions,
   getSessionForRepo,
   listActiveCodexSessions,
@@ -81,6 +88,8 @@ import {
   deleteChatThread,
   ensureWorkItemChatThread,
   getChatThreadProviderBinding,
+  getChatThread,
+  isTemporaryChatThread,
   listChatThreads,
   listWorkItemChatThreads,
   saveChatEntry,
@@ -89,20 +98,25 @@ import {
   setChatThreadProviderThreadId,
   loadChatHistory,
   clearChatHistory,
+  createTemporaryChatThread,
+  endTemporaryChatThread,
   updateChatThread,
 } from '../services/chat-persistence.service.js';
 import {
   prepareChatAttachments,
   selectChatAttachmentFiles,
 } from '../services/chat-attachment.service.js';
-import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
+import { saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
 import {
   discardChatArtifact,
   listChatArtifacts,
   readChatArtifactFile,
+  shareChatArtifact,
+  unshareChatArtifact,
   upsertChatArtifact,
 } from '../services/chat-artifact.service.js';
+import { isArtifactSharingAvailable } from '../services/artifact-share.service.js';
 import {
   createChatArtifactAnnotation,
   deleteChatArtifactAnnotation,
@@ -110,6 +124,23 @@ import {
   updateChatArtifactAnnotation,
 } from '../services/chat-artifact-annotation.service.js';
 import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
+import { resolveAnvilOwnedQuestion } from '../surfaces/core.js';
+import {
+  actOnChatDelegation,
+  assertChatDelegationsFinished,
+  describeChatDelegation,
+  listChatDelegations,
+  prepareDelegationIntegration,
+  integrateDelegation,
+  retryDelegationVerification,
+  applyDelegationIntegration,
+  requireChatDelegation,
+  stopChatDelegation,
+} from '../services/chat-delegation.service.js';
+import {
+  captureThreadContinuation,
+  prependThreadContinuation,
+} from '../services/chat-continuation.service.js';
 
 const LOCAL_LLM_CHAT_MAX_PROMPT_CHARS = 8_000;
 // Hold back this many streamed characters so early refusals never reach the UI.
@@ -187,6 +218,14 @@ async function tryLocalLlmChatReply(
 
   const route = await classifyPromptForLocalModel(message, (imagePaths?.length ?? 0) > 0);
   if (route !== 'local') return false;
+  const threadId = isTemporaryChatSession(sessionId)
+    ? undefined
+    : getCodexSession(sessionId)?.appThreadId;
+  const localPrompt = prependThreadContinuation(
+    threadId ? captureThreadContinuation(threadId).context : undefined,
+    message,
+  );
+  if (localPrompt.length > LOCAL_LLM_CHAT_MAX_PROMPT_CHARS) return false;
 
   let started = false;
   let emittedChars = 0;
@@ -197,7 +236,7 @@ async function tryLocalLlmChatReply(
       started = true;
     }
   };
-  const result = await callPreferredLocalModel(message, 4096, {
+  const result = await callPreferredLocalModel(localPrompt, 4096, {
     images: imagePaths,
     onPartial: (delta) => {
       pending += delta;
@@ -231,6 +270,45 @@ async function tryLocalLlmChatReply(
 }
 
 export function registerChatHandlers(): void {
+  ipcMain.handle('chat:list-delegations', (_event, threadId: string) =>
+    listChatDelegations(threadId),
+  );
+  ipcMain.handle('chat:read-delegation', (_event, threadId: string, runId: string) =>
+    describeChatDelegation(requireChatDelegation(threadId, runId)),
+  );
+  ipcMain.handle('chat:stop-delegation', (_event, threadId: string, runId: string) =>
+    stopChatDelegation(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:act-on-delegation',
+    (
+      _event,
+      threadId: string,
+      runId: string,
+      action: import('../../shared/chat-delegation.js').ChatDelegationAction,
+      nodeId?: string,
+    ) => actOnChatDelegation(threadId, runId, action, nodeId),
+  );
+  ipcMain.handle('chat:prepare-delegation-integration', (_event, threadId: string, runId: string) =>
+    prepareDelegationIntegration(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:integrate-delegation',
+    (
+      _event,
+      threadId: string,
+      runId: string,
+      selectedChecks: import('../../shared/chat-delegation.js').ChatDelegationVerificationSelection[],
+    ) => integrateDelegation(threadId, runId, selectedChecks),
+  );
+  ipcMain.handle('chat:retry-delegation-verification', (_event, threadId: string, runId: string) =>
+    retryDelegationVerification(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:apply-delegation-integration',
+    (_event, threadId: string, runId: string, repositoryId: string) =>
+      applyDelegationIntegration(threadId, runId, repositoryId),
+  );
   ipcMain.handle(
     'chat:link-pull-request',
     (_event, threadId: string, input: ChatThreadPullRequestInput) =>
@@ -261,16 +339,37 @@ export function registerChatHandlers(): void {
       const provider = options?.provider ?? getSettings().llmProvider;
       await assertChatProviderAvailable(provider);
 
+      const temporaryThread = getChatThread(options?.threadId ?? '');
+      const temporaryFlag = options?.temporaryChat === true;
+      if (temporaryFlag !== isTemporaryChatThread(options?.threadId)) {
+        throw new Error('Temporary chat session state does not match its thread.');
+      }
+      if (temporaryFlag) {
+        if (
+          !temporaryThread?.temporary ||
+          repoIds.length > 0 ||
+          options?.workspace ||
+          options?.scaffold ||
+          options?.providerThreadId ||
+          options?.forkFromProviderThreadId
+        ) {
+          throw new Error(
+            'Temporary chat cannot use workspace, repository, or resumed-thread context.',
+          );
+        }
+      } else if (temporaryThread?.temporary) {
+        throw new Error('Temporary chat sessions must use the isolated temporary session mode.');
+      }
+
       // Get repo paths from DB
       const db = getDb();
       const repoPaths: string[] = [];
       for (const rid of repoIds) {
         const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(rid) as
-          | { path: string }
-          | undefined;
+          { path: string } | undefined;
         if (row) repoPaths.push(row.path);
       }
-      if (repoPaths.length === 0 && !options?.scaffold && !options?.workspace) {
+      if (repoPaths.length === 0 && !options?.scaffold && !options?.workspace && !temporaryFlag) {
         throw new Error('No repos found');
       }
 
@@ -286,10 +385,11 @@ export function registerChatHandlers(): void {
       }
 
       // Use first repo's path as primary cwd; pass all paths for context
-      const storedBinding = getChatThreadProviderBinding(options?.threadId);
-      const providerThreadId =
-        options?.providerThreadId ??
-        (storedBinding?.provider === provider ? storedBinding.providerThreadId : undefined);
+      const storedBinding = temporaryFlag ? null : getChatThreadProviderBinding(options?.threadId);
+      const providerThreadId = temporaryFlag
+        ? undefined
+        : (options?.providerThreadId ??
+          (storedBinding?.provider === provider ? storedBinding.providerThreadId : undefined));
       const codexSession = await startSession(repoPaths, repoIds, personaId, {
         ...options,
         providerThreadId: options?.forkFromProviderThreadId
@@ -318,13 +418,14 @@ export function registerChatHandlers(): void {
       workspaceId: string,
       rootPath: string,
       personaId: string,
-      options?: Pick<ChatStartOptions, 'provider'>,
+      options?: Pick<ChatStartOptions, 'provider' | 'model'>,
     ): Promise<CodexSession> => {
       const provider = options?.provider ?? getSettings().llmProvider;
       await assertChatProviderAvailable(provider);
 
       const codexSession = await startSession([rootPath], [], personaId, {
         provider,
+        model: options?.model,
         scaffold: { workspaceId, rootPath },
       });
 
@@ -349,6 +450,9 @@ export function registerChatHandlers(): void {
       attachments?: ChatAttachment[],
       options?: ChatSendOptions,
     ): Promise<void> => {
+      if (isTemporaryChatSession(sessionId) && (attachments?.length ?? 0) > 0) {
+        throw new Error('Temporary chat supports text messages only.');
+      }
       // Parse chat commands before sending
       const parsed = parseChatCommand(message);
 
@@ -373,11 +477,7 @@ export function registerChatHandlers(): void {
       // Plain messages — and, on macOS 27+, image-only attachments — may be
       // answerable on-device.
       if (!parsed.command) {
-        const handledLocally = await tryLocalLlmChatReply(
-          sessionId,
-          enrichedMessage,
-          attachments,
-        );
+        const handledLocally = await tryLocalLlmChatReply(sessionId, enrichedMessage, attachments);
         if (handledLocally) return;
       }
 
@@ -385,9 +485,7 @@ export function registerChatHandlers(): void {
     },
   );
 
-  ipcMain.handle('chat:stop-session', (_event, sessionId: string): void => {
-    stopSession(sessionId);
-  });
+  ipcMain.handle('chat:stop-session', (_event, sessionId: string) => stopSessionAndWait(sessionId));
 
   ipcMain.handle('chat:interrupt', (_event, sessionId: string): void => {
     interruptTurn(sessionId);
@@ -395,8 +493,20 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle(
     'chat:steer',
-    (_event, sessionId: string, message: string, attachments?: ChatAttachment[]): Promise<void> => {
+    (
+      _event,
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+    ): Promise<ChatSteerResult> => {
       return steerTurn(sessionId, message, attachments);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:follow-up',
+    (_event, request: ChatFollowUpRequest): Promise<ChatFollowUpResult> => {
+      return followUpTurn(request);
     },
   );
 
@@ -415,8 +525,7 @@ export function registerChatHandlers(): void {
       const repoPaths: string[] = [];
       for (const rid of targetThread.repoIds) {
         const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(rid) as
-          | { path: string }
-          | undefined;
+          { path: string } | undefined;
         if (row) repoPaths.push(row.path);
       }
 
@@ -480,6 +589,7 @@ export function registerChatHandlers(): void {
   ipcMain.handle(
     'chat:resolve-agent-ui-question',
     (_event, intentId: string, resolution: AgentUIQuestionResolution) =>
+      resolveAnvilOwnedQuestion(intentId, resolution) ??
       resolveAgentUIQuestion(intentId, resolution),
   );
 
@@ -513,8 +623,7 @@ export function registerChatHandlers(): void {
       // Get repo path
       const db = getDb();
       const repoRow = db.prepare('SELECT path FROM repos WHERE id = ?').get(repoId) as
-        | { path: string }
-        | undefined;
+        { path: string } | undefined;
       if (!repoRow) throw new Error(`Repo not found: ${repoId}`);
 
       return startSession([repoRow.path], [repoId], personaId);
@@ -523,6 +632,16 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:get-personas', (): Persona[] => {
     return getPersonas();
+  });
+
+  ipcMain.handle('chat:create-temporary-thread', (_event, personaId: string): ChatThread => {
+    const persona = getPersonas().find((candidate) => candidate.id === personaId);
+    if (!persona) throw new Error('Choose an available persona before starting a temporary chat.');
+    return createTemporaryChatThread(persona.id);
+  });
+
+  ipcMain.handle('chat:end-temporary-thread', (_event, threadId: string): boolean => {
+    return endTemporaryChatThread(threadId);
   });
 
   ipcMain.handle('chat:list-threads', (_event, workspaceId: string | null): ChatThread[] => {
@@ -545,6 +664,8 @@ export function registerChatHandlers(): void {
         workspaceId?: string | null;
         personaId: string;
         title?: string;
+        purpose?: ChatThreadPurpose;
+        sideQuestionOfThreadId?: string;
         workItemId?: string;
         workItemProvider?: WorkItemProvider;
         workItemTitle?: string;
@@ -595,7 +716,8 @@ export function registerChatHandlers(): void {
     },
   );
 
-  ipcMain.handle('chat:delete-thread', (_event, threadId: string): void => {
+  ipcMain.handle('chat:delete-thread', async (_event, threadId: string): Promise<void> => {
+    await assertChatDelegationsFinished(threadId);
     deleteChatThread(threadId);
   });
 
@@ -605,10 +727,6 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:list-active-sessions', (): CodexSession[] => {
     return listActiveCodexSessions();
-  });
-
-  ipcMain.handle('chat:list-turn-summaries', (_event, threadId: string): ChatTurnSummary[] => {
-    return listChatTurnSummaries(threadId);
   });
 
   ipcMain.handle('chat:list-artifacts', (_event, threadId: string): ChatArtifact[] => {
@@ -625,6 +743,18 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:read-artifact-file', (_event, id: string): ChatArtifactFile => {
     return readChatArtifactFile(id);
+  });
+
+  ipcMain.handle('chat:share-artifact', (_event, id: string): Promise<ChatArtifact> => {
+    return shareChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:unshare-artifact', (_event, id: string): Promise<ChatArtifact> => {
+    return unshareChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:artifact-sharing-available', (): boolean => {
+    return isArtifactSharingAvailable();
   });
 
   ipcMain.handle(

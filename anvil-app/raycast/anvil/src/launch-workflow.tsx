@@ -1,12 +1,15 @@
 import { Action, ActionPanel, Form, Icon, List, popToRoot, showToast, Toast } from '@raycast/api';
 import { useCachedPromise } from '@raycast/utils';
-import { fetchOverview, startWorkflow, type QuickAction } from './api';
+import { useEffect } from 'react';
+import { fetchOverview, startWorkflow, subscribeToMeshUpdates, type QuickAction } from './api';
 import { getExtensionBrand } from './brand';
 
 export default function LaunchWorkflowCommand() {
   const { data, isLoading, revalidate } = useCachedPromise(fetchOverview);
   const brand = getExtensionBrand();
   const actions = data?.quickActions ?? [];
+
+  useEffect(() => subscribeToMeshUpdates(() => void revalidate()), [revalidate]);
 
   return (
     <List isLoading={isLoading} searchBarPlaceholder={`Launch ${brand.appName} workflows`}>

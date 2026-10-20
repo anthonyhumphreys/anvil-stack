@@ -1,0 +1,10 @@
+{
+  "name": "anvil-worker-image",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Runtime deps for the anvil-worker cloud environment image (daemon bundle externals)",
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "node-pty": "^1.1.0"
+  }
+}

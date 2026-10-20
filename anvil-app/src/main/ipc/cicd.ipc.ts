@@ -17,8 +17,11 @@ export function registerCicdHandlers(): void {
     return analyzeCicdPipelines(repoId, repo.name, repo.path);
   });
 
-  ipcMain.handle('cicd:create-pipeline', (_event, repoId: string, input: CicdCreatePipelineInput) => {
-    const repo = repoDetails(repoId);
-    return createCicdPipeline(repo.path, input);
-  });
+  ipcMain.handle(
+    'cicd:create-pipeline',
+    (_event, repoId: string, input: CicdCreatePipelineInput) => {
+      const repo = repoDetails(repoId);
+      return createCicdPipeline(repo.path, input);
+    },
+  );
 }

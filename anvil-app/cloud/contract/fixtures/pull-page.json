@@ -1,0 +1,23 @@
+{
+  "changes": [
+    {
+      "entityType": "workspace",
+      "entityId": "ws-website",
+      "revision": 12,
+      "operation": "create",
+      "schemaVersion": 2,
+      "payload": { "name": "Website", "description": "Marketing site" },
+      "sequence": 501
+    },
+    {
+      "entityType": "workitem",
+      "entityId": "wi-9",
+      "revision": 4,
+      "operation": "delete",
+      "schemaVersion": 3,
+      "sequence": 502
+    }
+  ],
+  "nextCursor": "cursor-000502",
+  "hasMore": true
+}

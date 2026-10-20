@@ -3,9 +3,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const existsSyncMock = vi.hoisted(() => vi.fn().mockReturnValue(true));
-const statSyncMock = vi.hoisted(() =>
-  vi.fn().mockReturnValue({ mtimeMs: 1_000, size: 4_096 }),
-);
+const statSyncMock = vi.hoisted(() => vi.fn().mockReturnValue({ mtimeMs: 1_000, size: 4_096 }));
 
 vi.mock('node:child_process', () => ({ spawn: spawnMock }));
 vi.mock('electron', () => ({
@@ -237,9 +235,7 @@ describe('apple-foundation-models.service', () => {
         run: (child) => {
           child.emitOut('{"type":"delta","text":"hel"}\n');
           child.emitOut('{"type":"delta","text":"lo"}\n');
-          child.emitOut(
-            '{"type":"final","ok":true,"content":"hello","unavailable":false}\n',
-          );
+          child.emitOut('{"type":"final","ok":true,"content":"hello","unavailable":false}\n');
           child.close(0);
         },
       },

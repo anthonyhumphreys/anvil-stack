@@ -1,25 +1,9 @@
-import { renderMermaid } from '../../utils/mermaid';
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, FileWarning, LoaderCircle } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import type { ChatArtifact, ChatArtifactFile } from '../../../shared/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
-
-const MERMAID_CONFIG: import('mermaid').MermaidConfig = {
-  startOnLoad: false,
-  securityLevel: 'strict',
-  theme: 'dark',
-  themeVariables: {
-    primaryColor: '#172033',
-    primaryTextColor: '#f8fbff',
-    primaryBorderColor: '#33415f',
-    lineColor: '#95a3b8',
-    secondaryColor: '#111827',
-    tertiaryColor: '#0b1020',
-    edgeLabelBackground: '#111827',
-    fontFamily: 'IBM Plex Sans, system-ui, sans-serif',
-  },
-};
+import { StreamedMermaidPreview } from './StreamedMermaidPreview';
 
 interface ArtifactPreviewProps {
   artifact: ChatArtifact;
@@ -54,17 +38,17 @@ export function ArtifactPreview({ artifact, mode }: ArtifactPreviewProps) {
       );
     case 'mermaid':
     case 'diagram':
-      return <MermaidPreview source={artifact.content} />;
+      return <StreamedMermaidPreview identity={artifact.id} source={artifact.content} />;
     case 'csv':
       return <TabularPreview sheets={[{ name: 'CSV', rows: parseCsv(artifact.content) }]} />;
     case 'docx':
-      return <DocxPreview key={`${artifact.id}:${artifact.version}`} artifact={artifact} />;
+      return <DocxPreview artifact={artifact} />;
     case 'pptx':
-      return <PptxPreview key={`${artifact.id}:${artifact.version}`} artifact={artifact} />;
+      return <PptxPreview artifact={artifact} />;
     case 'pdf':
-      return <PdfPreview key={`${artifact.id}:${artifact.version}`} artifact={artifact} />;
+      return <PdfPreview artifact={artifact} />;
     case 'xlsx':
-      return <XlsxPreview key={`${artifact.id}:${artifact.version}`} artifact={artifact} />;
+      return <XlsxPreview artifact={artifact} />;
     default:
       return (
         <pre className="min-h-full whitespace-pre-wrap p-4 text-sm leading-relaxed text-text-secondary">
@@ -100,68 +84,46 @@ function BinarySourceNotice({ artifact }: { artifact: ChatArtifact }) {
   );
 }
 
-function MermaidPreview({ source }: { source: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const id = `canvas-mermaid-${crypto.randomUUID()}`;
-    setError(null);
-
-    void renderMermaid(id, source.replace(/\\n/g, '\n'), MERMAID_CONFIG)
-      .then(({ svg }) => {
-        if (cancelled || !ref.current) return;
-        ref.current.innerHTML = DOMPurify.sanitize(svg, {
-          USE_PROFILES: { svg: true, svgFilters: true },
-          ADD_TAGS: ['foreignObject'],
-        });
-      })
-      .catch((renderError: unknown) => {
-        document.getElementById(id)?.remove();
-        if (!cancelled) {
-          setError(renderError instanceof Error ? renderError.message : String(renderError));
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      document.getElementById(id)?.remove();
-    };
-  }, [source]);
-
-  if (error) return <PreviewError title="Mermaid diagram could not be rendered" detail={error} />;
-
-  return (
-    <div className="flex min-h-full items-start justify-center overflow-auto p-6">
-      <div ref={ref} className="min-w-0 max-w-full [&_svg]:h-auto [&_svg]:max-w-full" />
-    </div>
-  );
-}
-
-type PreviewFile = Omit<ChatArtifactFile, 'dataBase64'> & { data: ArrayBuffer };
+type PreviewFile = Omit<ChatArtifactFile, 'dataBase64'> & {
+  artifactId: string;
+  version: number;
+  data: ArrayBuffer;
+};
 
 function useArtifactFile(artifact: ChatArtifact): {
   file: PreviewFile | null;
   error: string | null;
+  loading: boolean;
 } {
-  const [file, setFile] = useState<PreviewFile | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadedFile, setLoadedFile] = useState<PreviewFile | null>(null);
+  const [loadError, setLoadError] = useState<{
+    artifactId: string;
+    version: number;
+    error: string;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setFile(null);
-    setError(null);
+    setLoadError(null);
     void window.anvil.chat
       .readArtifactFile(artifact.id)
       .then((nextFile) => {
         if (cancelled) return;
         const { dataBase64, ...metadata } = nextFile;
-        setFile({ ...metadata, data: base64ToArrayBuffer(dataBase64) });
+        setLoadedFile({
+          ...metadata,
+          artifactId: artifact.id,
+          version: artifact.version,
+          data: base64ToArrayBuffer(dataBase64),
+        });
       })
       .catch((readError: unknown) => {
         if (!cancelled) {
-          setError(readError instanceof Error ? readError.message : String(readError));
+          setLoadError({
+            artifactId: artifact.id,
+            version: artifact.version,
+            error: readError instanceof Error ? readError.message : String(readError),
+          });
         }
       });
     return () => {
@@ -169,7 +131,13 @@ function useArtifactFile(artifact: ChatArtifact): {
     };
   }, [artifact.id, artifact.version]);
 
-  return { file, error };
+  const file = loadedFile?.artifactId === artifact.id ? loadedFile : null;
+  const error =
+    loadError?.artifactId === artifact.id && loadError.version === artifact.version
+      ? loadError.error
+      : null;
+
+  return { file, error, loading: !file || file.version !== artifact.version };
 }
 
 function base64ToArrayBuffer(value: string): ArrayBuffer {
@@ -180,23 +148,38 @@ function base64ToArrayBuffer(value: string): ArrayBuffer {
 }
 
 function DocxPreview({ artifact }: { artifact: ChatArtifact }) {
-  const { file, error } = useArtifactFile(artifact);
-  const [html, setHtml] = useState<string | null>(null);
-  const [conversionError, setConversionError] = useState<string | null>(null);
+  const { file, error, loading } = useArtifactFile(artifact);
+  const [rendered, setRendered] = useState<{
+    artifactId: string;
+    version: number;
+    html: string;
+  } | null>(null);
+  const [conversionError, setConversionError] = useState<{
+    version: number;
+    error: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!file) return;
     let cancelled = false;
-    setHtml(null);
-    setConversionError(null);
     void import('mammoth/mammoth.browser')
       .then((mammoth) => mammoth.convertToHtml({ arrayBuffer: file.data }))
       .then(({ value }) => {
-        if (!cancelled) setHtml(DOMPurify.sanitize(value));
+        if (!cancelled) {
+          setRendered({
+            artifactId: file.artifactId,
+            version: file.version,
+            html: DOMPurify.sanitize(value),
+          });
+          setConversionError(null);
+        }
       })
       .catch((nextError: unknown) => {
         if (!cancelled) {
-          setConversionError(nextError instanceof Error ? nextError.message : String(nextError));
+          setConversionError({
+            version: file.version,
+            error: nextError instanceof Error ? nextError.message : String(nextError),
+          });
         }
       });
     return () => {
@@ -204,36 +187,66 @@ function DocxPreview({ artifact }: { artifact: ChatArtifact }) {
     };
   }, [file]);
 
-  if (error || conversionError) {
-    return (
-      <PreviewError title="Word document could not be rendered" detail={error ?? conversionError} />
-    );
+  const visibleRendered = rendered?.artifactId === artifact.id ? rendered : null;
+  const activeConversionError =
+    conversionError &&
+    conversionError.version === artifact.version &&
+    file?.version === artifact.version
+      ? conversionError.error
+      : null;
+  const activeError = error ?? activeConversionError;
+
+  if (!visibleRendered && activeError) {
+    return <PreviewError title="Word document could not be rendered" detail={activeError} />;
   }
-  if (!html) return <PreviewLoading label="Rendering Word document" />;
+  if (!visibleRendered) return <PreviewLoading label="Rendering Word document" />;
+
+  const isUpdating =
+    loading ||
+    !file ||
+    file.version !== artifact.version ||
+    visibleRendered.version !== file.version;
 
   return (
     <div className="min-h-full bg-slate-300/10 px-4 py-6 sm:px-8">
+      <PreviewUpdateNotice
+        label={
+          activeError
+            ? `Showing version ${visibleRendered.version}; version ${artifact.version} could not be rendered.`
+            : isUpdating
+              ? `Showing version ${visibleRendered.version} while version ${artifact.version} is prepared.`
+              : null
+        }
+        error={activeError}
+      />
       <article
         className="mx-auto min-h-[720px] max-w-[816px] bg-slate-50 px-10 py-12 text-sm leading-relaxed text-slate-900 shadow-lg [&_a]:text-blue-700 [&_h1]:mb-5 [&_h1]:text-3xl [&_h1]:font-semibold [&_h2]:mb-4 [&_h2]:mt-7 [&_h2]:text-2xl [&_h2]:font-semibold [&_img]:max-w-full [&_li]:ml-5 [&_ol]:list-decimal [&_p]:mb-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-slate-300 [&_td]:p-2 [&_th]:border [&_th]:border-slate-300 [&_th]:bg-slate-100 [&_th]:p-2 [&_ul]:list-disc"
-        dangerouslySetInnerHTML={{ __html: html }}
+        dangerouslySetInnerHTML={{ __html: visibleRendered.html }}
       />
     </div>
   );
 }
 
 function PptxPreview({ artifact }: { artifact: ChatArtifact }) {
-  const { file, error } = useArtifactFile(artifact);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [renderError, setRenderError] = useState<string | null>(null);
+  const { file, error, loading } = useArtifactFile(artifact);
+  const firstSlotRef = useRef<HTMLDivElement>(null);
+  const secondSlotRef = useRef<HTMLDivElement>(null);
+  const activeSlotRef = useRef<number | null>(null);
+  const activeViewerRef = useRef<import('@aiden0z/pptx-renderer/browser').PptxViewer | null>(null);
+  const [activeSlot, setActiveSlot] = useState<number | null>(null);
+  const [renderedVersion, setRenderedVersion] = useState<number | null>(null);
+  const [renderError, setRenderError] = useState<{ version: number; error: string } | null>(null);
 
   useEffect(() => {
-    if (!file || !containerRef.current) return;
+    if (!file) return;
     let viewer: import('@aiden0z/pptx-renderer/browser').PptxViewer | null = null;
     let cancelled = false;
+    const slot = activeSlotRef.current === 0 ? 1 : 0;
+    const container = slot === 0 ? firstSlotRef.current : secondSlotRef.current;
+    if (!container) return;
     setRenderError(null);
-    containerRef.current.replaceChildren();
+    container.replaceChildren();
 
-    const container = containerRef.current;
     void import('@aiden0z/pptx-renderer/browser')
       .then(({ PptxViewer, RECOMMENDED_ZIP_LIMITS }) =>
         PptxViewer.open(file.data, container, {
@@ -245,51 +258,141 @@ function PptxPreview({ artifact }: { artifact: ChatArtifact }) {
         }),
       )
       .then((nextViewer) => {
-        if (cancelled) nextViewer.destroy();
-        else viewer = nextViewer;
+        if (cancelled) {
+          nextViewer.destroy();
+          return;
+        }
+
+        viewer = nextViewer;
+        const previousViewer = activeViewerRef.current;
+        activeViewerRef.current = nextViewer;
+        activeSlotRef.current = slot;
+        setActiveSlot(slot);
+        setRenderedVersion(file.version);
+        setRenderError(null);
+        previousViewer?.destroy();
       })
       .catch((nextError: unknown) => {
         if (!cancelled) {
-          setRenderError(nextError instanceof Error ? nextError.message : String(nextError));
+          setRenderError({
+            version: file.version,
+            error: nextError instanceof Error ? nextError.message : String(nextError),
+          });
         }
       });
 
     return () => {
       cancelled = true;
-      viewer?.destroy();
+      if (viewer && activeViewerRef.current !== viewer) viewer.destroy();
+      if (activeSlotRef.current !== slot) container.replaceChildren();
     };
   }, [file]);
 
-  if (error || renderError) {
-    return <PreviewError title="PowerPoint could not be rendered" detail={error ?? renderError} />;
+  useEffect(
+    () => () => {
+      activeViewerRef.current?.destroy();
+      activeViewerRef.current = null;
+      activeSlotRef.current = null;
+    },
+    [],
+  );
+
+  const activeError =
+    error ?? (renderError?.version === artifact.version ? renderError.error : null);
+  const isUpdating =
+    loading || !file || file.version !== artifact.version || renderedVersion !== artifact.version;
+
+  if (activeSlot === null && activeError) {
+    return <PreviewError title="PowerPoint could not be rendered" detail={activeError} />;
   }
 
   return (
-    <div className="min-h-full overflow-auto bg-slate-950/40 p-4">
-      {!file && <PreviewLoading label="Rendering PowerPoint" />}
-      <div ref={containerRef} className="mx-auto min-h-full max-w-6xl" />
+    <div className="relative min-h-full overflow-auto bg-slate-950/40 p-4">
+      <PreviewUpdateNotice
+        label={
+          activeSlot === null
+            ? null
+            : activeError
+              ? `Showing version ${renderedVersion}; version ${artifact.version} could not be rendered.`
+              : isUpdating
+                ? `Showing version ${renderedVersion} while version ${artifact.version} is prepared.`
+                : null
+        }
+        error={activeError}
+      />
+      {activeSlot === null && !activeError && <PreviewLoading label="Rendering PowerPoint" />}
+      <div className="relative mx-auto min-h-full max-w-6xl">
+        <div
+          ref={firstSlotRef}
+          aria-hidden={activeSlot !== 0}
+          className={`w-full ${activeSlot === 0 ? '' : 'pointer-events-none absolute inset-0 invisible'}`}
+        />
+        <div
+          ref={secondSlotRef}
+          aria-hidden={activeSlot !== 1}
+          className={`w-full ${activeSlot === 1 ? '' : 'pointer-events-none absolute inset-0 invisible'}`}
+        />
+      </div>
     </div>
   );
 }
 
 function PdfPreview({ artifact }: { artifact: ChatArtifact }) {
-  const { file, error } = useArtifactFile(artifact);
-  const [url, setUrl] = useState<string | null>(null);
+  const { file, error, loading } = useArtifactFile(artifact);
+  const [url, setUrl] = useState<{ artifactId: string; version: number; value: string } | null>(
+    null,
+  );
+  const activeUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!file) {
-      setUrl(null);
-      return;
-    }
+    if (!file) return;
     const nextUrl = URL.createObjectURL(new Blob([file.data], { type: file.mimeType }));
-    setUrl(nextUrl);
-    return () => URL.revokeObjectURL(nextUrl);
+    setUrl({ artifactId: file.artifactId, version: file.version, value: nextUrl });
+    return () => {
+      if (activeUrlRef.current !== nextUrl) URL.revokeObjectURL(nextUrl);
+    };
   }, [file]);
 
-  if (error) return <PreviewError title="PDF could not be opened" detail={error} />;
-  if (!url) return <PreviewLoading label="Opening PDF" />;
+  useEffect(() => {
+    const nextUrl = url?.value ?? null;
+    const previousUrl = activeUrlRef.current;
+    activeUrlRef.current = nextUrl;
+    if (previousUrl && previousUrl !== nextUrl) URL.revokeObjectURL(previousUrl);
+
+    return () => {
+      if (activeUrlRef.current === nextUrl) {
+        activeUrlRef.current = null;
+        if (nextUrl) URL.revokeObjectURL(nextUrl);
+      }
+    };
+  }, [url]);
+
+  const visibleUrl = url?.artifactId === artifact.id ? url : null;
+
+  if (!visibleUrl && error) return <PreviewError title="PDF could not be opened" detail={error} />;
+  if (!visibleUrl) return <PreviewLoading label="Opening PDF" />;
+
+  const isUpdating =
+    loading || !file || file.version !== artifact.version || visibleUrl.version !== file.version;
+
   return (
-    <iframe title={artifact.title} src={url} className="h-full min-h-[640px] w-full bg-slate-100" />
+    <div className="min-h-full">
+      <PreviewUpdateNotice
+        label={
+          error
+            ? `Showing version ${visibleUrl.version}; version ${artifact.version} could not be opened.`
+            : isUpdating
+              ? `Showing version ${visibleUrl.version} while version ${artifact.version} is prepared.`
+              : null
+        }
+        error={error}
+      />
+      <iframe
+        title={artifact.title}
+        src={visibleUrl.value}
+        className="h-full min-h-[640px] w-full bg-slate-100"
+      />
+    </div>
   );
 }
 
@@ -299,9 +402,13 @@ interface PreviewSheet {
 }
 
 function XlsxPreview({ artifact }: { artifact: ChatArtifact }) {
-  const { file, error } = useArtifactFile(artifact);
-  const [sheets, setSheets] = useState<PreviewSheet[] | null>(null);
-  const [parseError, setParseError] = useState<string | null>(null);
+  const { file, error, loading } = useArtifactFile(artifact);
+  const [rendered, setRendered] = useState<{
+    artifactId: string;
+    version: number;
+    sheets: PreviewSheet[];
+  } | null>(null);
+  const [parseError, setParseError] = useState<{ version: number; error: string } | null>(null);
 
   useEffect(() => {
     if (!file) return;
@@ -314,45 +421,80 @@ function XlsxPreview({ artifact }: { artifact: ChatArtifact }) {
             type: 'array',
             cellDates: true,
           });
-          setSheets(
-            workbook.SheetNames.map((name) => ({
-              name,
-              rows: XLSX.utils.sheet_to_json<string[]>(workbook.Sheets[name], {
-                header: 1,
-                raw: false,
-                defval: '',
-              }),
-            })),
-          );
+          const sheets = workbook.SheetNames.map((name) => ({
+            name,
+            rows: XLSX.utils.sheet_to_json<string[]>(workbook.Sheets[name], {
+              header: 1,
+              raw: false,
+              defval: '',
+            }),
+          }));
+          setRendered({ artifactId: file.artifactId, version: file.version, sheets });
           setParseError(null);
         })
         .catch((nextError: unknown) => {
           if (!cancelled) {
-            setParseError(nextError instanceof Error ? nextError.message : String(nextError));
+            setParseError({
+              version: file.version,
+              error: nextError instanceof Error ? nextError.message : String(nextError),
+            });
           }
         });
     } catch (nextError) {
-      setParseError(nextError instanceof Error ? nextError.message : String(nextError));
+      setParseError({
+        version: file.version,
+        error: nextError instanceof Error ? nextError.message : String(nextError),
+      });
     }
     return () => {
       cancelled = true;
     };
   }, [file]);
 
-  if (error || parseError) {
-    return <PreviewError title="Spreadsheet could not be rendered" detail={error ?? parseError} />;
+  const visibleRendered = rendered?.artifactId === artifact.id ? rendered : null;
+  const activeParseError =
+    parseError && parseError.version === artifact.version && file?.version === artifact.version
+      ? parseError.error
+      : null;
+  const activeError = error ?? activeParseError;
+
+  if (!visibleRendered && activeError) {
+    return <PreviewError title="Spreadsheet could not be rendered" detail={activeError} />;
   }
-  if (!sheets) return <PreviewLoading label="Rendering spreadsheet" />;
-  return <TabularPreview sheets={sheets} />;
+  if (!visibleRendered) return <PreviewLoading label="Rendering spreadsheet" />;
+
+  const isUpdating =
+    loading ||
+    !file ||
+    file.version !== artifact.version ||
+    visibleRendered.version !== file.version;
+
+  return (
+    <div className="flex min-h-full flex-col">
+      <PreviewUpdateNotice
+        label={
+          activeError
+            ? `Showing version ${visibleRendered.version}; version ${artifact.version} could not be rendered.`
+            : isUpdating
+              ? `Showing version ${visibleRendered.version} while version ${artifact.version} is prepared.`
+              : null
+        }
+        error={activeError}
+      />
+      <TabularPreview sheets={visibleRendered.sheets} />
+    </div>
+  );
 }
 
 function TabularPreview({ sheets }: { sheets: PreviewSheet[] }) {
-  const [activeSheet, setActiveSheet] = useState(0);
+  const [activeSheetKey, setActiveSheetKey] = useState<string | null>(null);
+  const activeSheet = Math.max(
+    0,
+    sheets.findIndex((candidate, index) => `${candidate.name}-${index}` === activeSheetKey),
+  );
   const sheet = sheets[activeSheet] ?? { name: 'Sheet', rows: [] };
   const visibleRows = sheet.rows.slice(0, 1_000);
   const columnCount = Math.min(100, Math.max(0, ...visibleRows.map((row) => row.length)));
-
-  useEffect(() => setActiveSheet(0), [sheets]);
 
   return (
     <div className="flex min-h-full flex-col">
@@ -362,7 +504,7 @@ function TabularPreview({ sheets }: { sheets: PreviewSheet[] }) {
             <button
               key={`${candidate.name}-${index}`}
               type="button"
-              onClick={() => setActiveSheet(index)}
+              onClick={() => setActiveSheetKey(`${candidate.name}-${index}`)}
               className={`shrink-0 rounded-t-md border border-b-0 px-3 py-1.5 text-xs transition-colors ${
                 index === activeSheet
                   ? 'border-border bg-bg-primary text-text-primary'
@@ -480,6 +622,32 @@ function PreviewLoading({ label }: { label: string }) {
     <div className="flex min-h-full items-center justify-center gap-2 p-6 text-sm text-text-tertiary">
       <LoaderCircle className="animate-spin" size={16} />
       {label}
+    </div>
+  );
+}
+
+function PreviewUpdateNotice({ label, error }: { label?: string | null; error?: string | null }) {
+  const active = Boolean(label || error);
+
+  return (
+    <div
+      className={`flex h-6 items-center gap-2 overflow-hidden px-3 text-xs ${active ? 'border-b border-border-subtle' : ''} ${error ? 'text-warning' : 'text-text-tertiary'}`}
+      role={active ? (error ? 'alert' : 'status') : undefined}
+      aria-live={active ? 'polite' : undefined}
+      aria-hidden={active ? undefined : true}
+      title={error ?? label ?? undefined}
+    >
+      {active &&
+        (error ? (
+          <AlertTriangle size={14} className="shrink-0" />
+        ) : (
+          <LoaderCircle size={14} className="shrink-0 animate-spin" />
+        ))}
+      {active && (
+        <span className="truncate">
+          {error ? `${label ?? 'Preview update failed.'} ${error}` : label}
+        </span>
+      )}
     </div>
   );
 }

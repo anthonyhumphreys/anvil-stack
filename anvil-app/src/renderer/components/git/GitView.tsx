@@ -22,6 +22,7 @@ import {
   GitPullRequest,
   Sparkles,
   ExternalLink,
+  CheckCheck,
 } from 'lucide-react';
 import type {
   GitStatusResult,
@@ -33,19 +34,25 @@ import type {
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
-import { EmptyState } from '../layout/ViewScaffold';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
+import { buildChangeReviewPath } from '../../utils/change-review-context';
+import { readGitRoute, writeGitRoute, type GitViewTab } from '../../utils/git-route';
 
-type Tab = 'changes' | 'pull_requests' | 'log' | 'branches';
+type Tab = GitViewTab;
 
 export function GitView() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const { repos } = useWorkspace();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { repos, featureAvailability } = useWorkspace();
   const indexedRepos = useMemo(() => repos.filter((r) => r.status !== 'error'), [repos]);
 
   const [selectedRepoId, setSelectedRepoId] = useState('');
   const [tab, setTab] = useState<Tab>('changes');
-  const [status, setStatus] = useState<GitStatusResult | null>(null);
+  const [statusSnapshot, setStatusSnapshot] = useState<{
+    repoId: string;
+    status: GitStatusResult;
+  } | null>(null);
+  const status = statusSnapshot?.repoId === selectedRepoId ? statusSnapshot.status : null;
   const [log, setLog] = useState<GitLogEntry[]>([]);
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
   const [pullRequests, setPullRequests] = useState<CodeReviewPullRequest[]>([]);
@@ -73,16 +80,29 @@ export function GitView() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const requestedTab = searchParams.get('tab');
-    if (requestedTab === 'pull_requests') setTab('pull_requests');
+    const { repoId: requestedRepo } = readGitRoute(searchParams);
+    if (requestedRepo && indexedRepos.some((repo) => repo.id === requestedRepo))
+      setSelectedRepoId(requestedRepo);
+  }, [indexedRepos, searchParams]);
+
+  useEffect(() => {
+    const { tab: requestedTab } = readGitRoute(searchParams);
+    if (requestedTab) setTab(requestedTab);
   }, [searchParams]);
+
+  const updateGitLocation = (repoId: string, nextTab: Tab) => {
+    setSearchParams(writeGitRoute(searchParams, repoId, nextTab));
+  };
 
   // Auto-select first repo
   useEffect(() => {
     if (!selectedRepoId && indexedRepos.length > 0) {
-      setSelectedRepoId(indexedRepos[0].id);
+      const { repoId: requestedRepo } = readGitRoute(searchParams);
+      setSelectedRepoId(
+        indexedRepos.find((repo) => repo.id === requestedRepo)?.id ?? indexedRepos[0].id,
+      );
     }
-  }, [indexedRepos, selectedRepoId]);
+  }, [indexedRepos, searchParams, selectedRepoId]);
 
   const refresh = useCallback(async () => {
     if (!selectedRepoId) return;
@@ -94,7 +114,7 @@ export function GitView() {
         window.anvil.git.log(selectedRepoId, 50),
         window.anvil.git.branches(selectedRepoId),
       ]);
-      setStatus(s);
+      setStatusSnapshot({ repoId: selectedRepoId, status: s });
       setLog(l);
       setBranches(b);
     } catch (err) {
@@ -136,7 +156,7 @@ export function GitView() {
     const interval = setInterval(() => {
       window.anvil.git
         .status(selectedRepoId)
-        .then(setStatus)
+        .then((status) => setStatusSnapshot({ repoId: selectedRepoId, status }))
         .catch(() => {});
     }, 5000);
     return () => clearInterval(interval);
@@ -305,13 +325,12 @@ export function GitView() {
   const staged = useMemo(() => status?.files.filter((f) => f.staged) ?? [], [status]);
   const unstaged = useMemo(() => status?.files.filter((f) => !f.staged) ?? [], [status]);
 
-  if (indexedRepos.length === 0) {
+  if (!featureAvailability.repoFeaturesEnabled || indexedRepos.length === 0) {
     return (
-      <EmptyState
+      <RepoFeatureEmptyState
         icon={GitBranch}
-        title="Connect a repository for Git"
+        featureLabel="Git"
         description="Git changes, branches, commits, and pull requests are scoped to a workspace repository."
-        className="h-full"
       />
     );
   }
@@ -323,7 +342,11 @@ export function GitView() {
         <select
           aria-label="Git repository"
           value={selectedRepoId}
-          onChange={(e) => setSelectedRepoId(e.target.value)}
+          onChange={(e) => {
+            const repoId = e.target.value;
+            setSelectedRepoId(repoId);
+            updateGitLocation(repoId, tab);
+          }}
           className="rounded-lg border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary"
         >
           {indexedRepos.map((r) => (
@@ -359,6 +382,25 @@ export function GitView() {
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() =>
+              navigate(
+                buildChangeReviewPath({
+                  repoId: selectedRepoId,
+                  source: 'git',
+                  baseRef: status?.tracking ?? 'HEAD',
+                  origin: { git: { baseRef: status?.tracking ?? 'HEAD' } },
+                }),
+              )
+            }
+            disabled={!selectedRepoId}
+            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-40"
+            title="Compare and verify this checkout"
+          >
+            <CheckCheck size={13} />
+            Review changes
+          </button>
           <WorkspaceGitActions
             repos={indexedRepos}
             selectedRepoId={selectedRepoId}
@@ -445,7 +487,10 @@ export function GitView() {
         {(['changes', 'pull_requests', 'log', 'branches'] as Tab[]).map((t) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t);
+              if (selectedRepoId) updateGitLocation(selectedRepoId, t);
+            }}
             className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${
               tab === t
                 ? 'border-b-2 border-accent text-text-primary'
@@ -498,6 +543,23 @@ export function GitView() {
             onViewDiff={(pullRequest) =>
               navigate(`/codereview/${selectedRepoId}?pr=${pullRequest.id}&view=diff`)
             }
+            onChangeReview={(pullRequest) => {
+              if (!pullRequest.sourceCommitSha) return;
+              navigate(
+                buildChangeReviewPath({
+                  repoId: selectedRepoId,
+                  source: 'pull-request',
+                  baseRef: pullRequest.targetBranch,
+                  origin: {
+                    pullRequest: {
+                      id: pullRequest.id,
+                      provider: pullRequest.provider,
+                      headSha: pullRequest.sourceCommitSha,
+                    },
+                  },
+                }),
+              );
+            }}
           />
         )}
         {tab === 'branches' && (
@@ -523,12 +585,14 @@ function PullRequestsTab({
   error,
   onVisualise,
   onViewDiff,
+  onChangeReview,
 }: {
   pullRequests: CodeReviewPullRequest[];
   loading: boolean;
   error: string | null;
   onVisualise: (pullRequest: CodeReviewPullRequest) => void;
   onViewDiff: (pullRequest: CodeReviewPullRequest) => void;
+  onChangeReview: (pullRequest: CodeReviewPullRequest) => void;
 }) {
   if (loading) {
     return (
@@ -585,9 +649,22 @@ function PullRequestsTab({
             <button
               type="button"
               onClick={() => onVisualise(pullRequest)}
-              className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85"
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
             >
               <Sparkles size={13} /> Visualise PR
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeReview(pullRequest)}
+              disabled={!pullRequest.sourceCommitSha}
+              title={
+                pullRequest.sourceCommitSha
+                  ? 'Link this checkout to the PR head; staged and unstaged edits remain part of the candidate'
+                  : 'The PR provider did not return a head commit'
+              }
+              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <CheckCheck size={13} /> Change review
             </button>
             {pullRequest.url && (
               <button
@@ -769,13 +846,13 @@ function ChangesTab({
           <button
             onClick={onCommit}
             disabled={staged.length === 0 || committing || generatingMessage}
-            className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/80 disabled:opacity-40"
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/80 disabled:opacity-40"
           >
             {committing ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
             {commitMsg.trim() ? 'Commit' : 'Generate & commit'} ({staged.length} file
             {staged.length !== 1 ? 's' : ''})
           </button>
-          <div className="mt-1 text-center text-[10px] text-text-tertiary">
+          <div className="mt-1 text-center text-xs text-text-tertiary">
             {navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to commit
           </div>
         </div>
@@ -854,7 +931,7 @@ function FileRow({
         <FileIcon status={file.status} />
         <span className="truncate text-sm text-text-primary">{file.path}</span>
       </button>
-      <div className="flex shrink-0 items-center gap-1 opacity-0 group-hover:opacity-100">
+      <div className="flex shrink-0 items-center gap-1 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
         {onDiscard && (
           <button
             onClick={(e) => {
@@ -954,7 +1031,7 @@ function LogTab({ log }: { log: GitLogEntry[] }) {
                     {entry.message}
                   </span>
                   {entry.refs && (
-                    <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                    <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-eyebrow font-medium text-accent">
                       {entry.refs}
                     </span>
                   )}
@@ -1027,7 +1104,7 @@ function BranchesTab({
           <button
             onClick={onCreateBranch}
             disabled={!newBranchName.trim()}
-            className="rounded bg-accent px-2 py-1 text-xs text-white hover:bg-accent/80 disabled:opacity-40"
+            className="rounded bg-accent px-2 py-1 text-xs text-accent-foreground hover:bg-accent/80 disabled:opacity-40"
           >
             Create
           </button>
@@ -1057,7 +1134,7 @@ function BranchesTab({
                   {b.name}
                 </span>
                 {b.current && (
-                  <span className="rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                  <span className="rounded bg-accent/20 px-1.5 py-0.5 text-eyebrow font-medium text-accent">
                     current
                   </span>
                 )}
@@ -1065,7 +1142,7 @@ function BranchesTab({
               {b.tracking && <div className="text-xs text-text-tertiary">{b.tracking}</div>}
             </div>
             {!b.current && (
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+              <div className="flex items-center gap-1 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
                 <button
                   onClick={() => onSwitch(b.name)}
                   className="rounded px-2 py-0.5 text-xs text-text-secondary hover:bg-bg-primary hover:text-text-primary"

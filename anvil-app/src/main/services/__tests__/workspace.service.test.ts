@@ -22,7 +22,12 @@ vi.mock('../settings.service.js', () => ({
   getSettings: () => settingsState.current,
 }));
 
-import { createWorkspace, deleteWorkspace, getWorkspacePreferences } from '../workspace.service.js';
+import {
+  createWorkspace,
+  deleteWorkspace,
+  getWorkspacePreferences,
+  updateWorkspace,
+} from '../workspace.service.js';
 
 function seedWorkspace(id: string): void {
   inMemoryDb
@@ -85,6 +90,31 @@ describe('workspace work item connections', () => {
     expect(() =>
       createWorkspace({ name: 'Haunted workspace', workItemConnectionId: 'missing' }),
     ).toThrow('Work item connection not found: missing');
+  });
+});
+
+describe('workspace Sync selection', () => {
+  it('keeps new workspaces local unless Sync is explicitly selected', () => {
+    const local = createWorkspace({ name: 'Local workspace' });
+    const synced = createWorkspace({ name: 'Synced workspace', syncSelected: true });
+
+    expect(local.syncSelected).toBe(false);
+    expect(synced.syncSelected).toBe(true);
+    expect(
+      inMemoryDb.prepare('SELECT sync_selected FROM workspaces WHERE id = ?').get(local.id),
+    ).toEqual({ sync_selected: 0 });
+  });
+
+  it('updates the local Sync choice without deleting workspace rows', () => {
+    const workspace = createWorkspace({ name: 'Project', syncSelected: true });
+
+    const local = updateWorkspace(workspace.id, { syncSelected: false });
+    expect(local.syncSelected).toBe(false);
+    expect(inMemoryDb.prepare('SELECT id FROM workspaces WHERE id = ?').get(workspace.id)).toEqual({
+      id: workspace.id,
+    });
+
+    expect(updateWorkspace(workspace.id, { syncSelected: true }).syncSelected).toBe(true);
   });
 });
 

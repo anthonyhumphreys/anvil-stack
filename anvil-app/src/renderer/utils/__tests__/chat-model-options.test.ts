@@ -94,6 +94,7 @@ describe('buildChatModelOptions', () => {
   it('keeps a custom configured model visible when it is absent from the catalog', () => {
     const codexStatus: CodexCliStatus = {
       installed: true,
+      configuredForFoundry: false,
       models: [],
     };
 
@@ -108,7 +109,8 @@ describe('buildChatModelOptions', () => {
     expect(options[0]).toMatchObject({
       id: 'deployment-review',
       label: 'deployment-review',
-      description: 'Custom model or deployment selected in Settings.',
+      description:
+        'Custom model or deployment selected under Settings → Providers & models.',
     });
     expect(options.some((option) => option.id === 'gpt-5.6-sol')).toBe(true);
   });
@@ -116,6 +118,7 @@ describe('buildChatModelOptions', () => {
   it('carries provider-advertised service tiers into the chat model capability', () => {
     const codexStatus: CodexCliStatus = {
       installed: true,
+      configuredForFoundry: false,
       models: [
         {
           id: 'gpt-5.6-sol',

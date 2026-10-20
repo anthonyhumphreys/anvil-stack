@@ -11,10 +11,13 @@ import type {
   AgentUIQuestionIntent,
   AgentUIQuestionResolution,
   AgentUIAnswerValue,
+  AgentUISurfaceIntent,
 } from '../../shared/agent-ui-intents.js';
 import { AGENT_UI_PROTOCOL_VERSION } from '../../shared/agent-ui-intents.js';
 import type { ChatPlanSnapshot } from '../../shared/types.js';
+import { getSurfaceKind } from '../../shared/surfaces/registry.js';
 import { getDb } from '../db/database.js';
+import { formatSchemaErrors, validateJsonSchema } from '../surfaces/validate.js';
 
 interface AgentUIIntentRow {
   id: string;
@@ -32,7 +35,15 @@ export class AgentUIIntentConflictError extends Error {
   }
 }
 
-export function validateAgentUIIntent(value: unknown): AgentUIIntentValidationResult {
+/**
+ * Validates an intent envelope and payload. Surface payloads are checked
+ * against their registered kind schema unless `structuralOnly` is set (used
+ * when reading persisted rows so a tightened schema never hides history).
+ */
+export function validateAgentUIIntent(
+  value: unknown,
+  options: { structuralOnly?: boolean } = {},
+): AgentUIIntentValidationResult {
   const errors: string[] = [];
   if (!isRecord(value)) return { ok: false, errors: ['Intent must be an object.'] };
 
@@ -40,7 +51,7 @@ export function validateAgentUIIntent(value: unknown): AgentUIIntentValidationRe
     errors.push(`Unsupported protocolVersion: ${String(value.protocolVersion)}.`);
   }
   if (!isNonEmptyString(value.id)) errors.push('Intent id is required.');
-  if (value.kind !== 'plan' && value.kind !== 'question') {
+  if (value.kind !== 'plan' && value.kind !== 'question' && value.kind !== 'surface') {
     errors.push(`Unsupported intent kind: ${String(value.kind)}.`);
   }
   if (!Number.isInteger(value.revision) || Number(value.revision) < 1) {
@@ -71,7 +82,31 @@ export function validateAgentUIIntent(value: unknown): AgentUIIntentValidationRe
 
   if (value.kind === 'plan') validatePlanPayload(value.payload, errors);
   if (value.kind === 'question') validateQuestionPayload(value.payload, errors);
+  if (value.kind === 'surface') {
+    validateSurfacePayload(value.payload, errors, options.structuralOnly === true);
+  }
   return { ok: errors.length === 0, errors };
+}
+
+export function listAgentUISurfaces(
+  threadId: string,
+  options: { surfaceKind?: string; key?: string; includeSuperseded?: boolean } = {},
+): AgentUISurfaceIntent[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, intent_json, binding_json FROM agent_ui_intents
+       WHERE thread_id = ? AND kind = 'surface'
+       ORDER BY created_at ASC`,
+    )
+    .all(threadId) as AgentUIIntentRow[];
+  return rows.flatMap((row) => {
+    const intent = parseIntent(row.intent_json);
+    if (intent?.kind !== 'surface') return [];
+    if (options.surfaceKind && intent.payload.surfaceKind !== options.surfaceKind) return [];
+    if (options.key && intent.payload.key !== options.key) return [];
+    if (!options.includeSuperseded && intent.payload.supersededBy) return [];
+    return [intent];
+  });
 }
 
 export function upsertAgentUIIntent(record: AgentUIIntentRecord): AgentUIIntent {
@@ -387,17 +422,23 @@ export function recordAgentUIQuestionResolution(
   intent: AgentUIQuestionIntent,
   resolution: AgentUIQuestionResolution,
 ): AgentUIQuestionIntent {
-  validateAgentUIQuestionResolution(intent, resolution);
   const db = getDb();
   const existing = db
     .prepare('SELECT id FROM agent_ui_intent_responses WHERE intent_id = ?')
     .get(intent.id) as { id: string } | undefined;
-  if (existing) return requireIntentRecord(intent.id).intent as AgentUIQuestionIntent;
+  if (existing && resolution.intentId === intent.id) {
+    return requireIntentRecord(intent.id).intent as AgentUIQuestionIntent;
+  }
+  validateAgentUIQuestionResolution(intent, resolution);
 
   const safeAnswers = Object.fromEntries(
     intent.payload.questions.map((question) => [
       question.id,
-      question.sensitive ? '[redacted]' : (resolution.answers[question.id] ?? null),
+      resolution.action !== 'submit' || !hasAnswer(resolution.answers[question.id])
+        ? null
+        : question.sensitive
+          ? '[redacted]'
+          : (resolution.answers[question.id] ?? null),
     ]),
   );
   const now = new Date().toISOString();
@@ -405,6 +446,10 @@ export function recordAgentUIQuestionResolution(
     ...intent,
     revision: intent.revision + 1,
     lifecycle: resolution.action === 'submit' ? 'resolved' : 'dismissed',
+    payload: {
+      ...intent.payload,
+      response: { action: resolution.action, answers: safeAnswers },
+    },
     presentation: { ...intent.presentation, collapsed: true },
     updatedAt: now,
     resolvedAt: now,
@@ -428,6 +473,34 @@ export function recordAgentUIQuestionResolution(
   });
   tx();
   return resolved;
+}
+
+/** Provider processes cannot survive an app restart. Retain their questions as history. */
+export function expirePendingAgentUIQuestions(): number {
+  const rows = getDb()
+    .prepare(
+      "SELECT id, intent_json, binding_json FROM agent_ui_intents WHERE kind = 'question' AND lifecycle IN ('pending', 'presented')",
+    )
+    .all() as AgentUIIntentRow[];
+  let count = 0;
+  for (const row of rows) {
+    const record = parseRow(row);
+    if (!record) continue;
+    const now = new Date().toISOString();
+    persistIntent(
+      {
+        ...record.intent,
+        revision: record.intent.revision + 1,
+        lifecycle: 'expired',
+        updatedAt: now,
+        resolvedAt: now,
+      },
+      record.binding,
+    );
+    recordIntentEvent(record.intent.id, 'agent', 'expired', { reason: 'app_restart' });
+    count += 1;
+  }
+  return count;
 }
 
 export function expireAgentUIIntentsForSession(sessionId: string): AgentUIIntent[] {
@@ -530,7 +603,7 @@ function persistIntent(intent: AgentUIIntent, binding?: AgentUIIntentBinding): v
     );
 }
 
-function recordIntentEvent(
+export function recordIntentEvent(
   intentId: string,
   actor: 'agent' | 'user',
   eventType: string,
@@ -719,7 +792,9 @@ function parseRow(row: AgentUIIntentRow): AgentUIIntentRecord | null {
 function parseIntent(value: string): AgentUIIntent | null {
   try {
     const parsed = JSON.parse(value) as unknown;
-    return validateAgentUIIntent(parsed).ok ? (parsed as AgentUIIntent) : null;
+    return validateAgentUIIntent(parsed, { structuralOnly: true }).ok
+      ? (parsed as AgentUIIntent)
+      : null;
   } catch {
     return null;
   }
@@ -876,6 +951,33 @@ function validateQuestionPayload(value: unknown, errors: string[]): void {
         errors.push(`Question ${question.id} has an invalid default value.`);
       }
     }
+  }
+}
+
+function validateSurfacePayload(value: unknown, errors: string[], structuralOnly: boolean): void {
+  if (!isRecord(value)) {
+    errors.push('Surface payload must be an object.');
+    return;
+  }
+  if (!isNonEmptyString(value.surfaceKind)) errors.push('Surface surfaceKind is required.');
+  if (!isNonEmptyString(value.title)) errors.push('Surface title is required.');
+  if (typeof value.streaming !== 'boolean') errors.push('Surface streaming must be a boolean.');
+  if (typeof value.digest !== 'string') errors.push('Surface digest must be a string.');
+  if (value.key !== undefined && typeof value.key !== 'string') {
+    errors.push('Surface key must be a string.');
+  }
+  if (value.supersededBy !== undefined && !isNonEmptyString(value.supersededBy)) {
+    errors.push('Surface supersededBy must be an intent id.');
+  }
+  if (structuralOnly || !isNonEmptyString(value.surfaceKind)) return;
+  const definition = getSurfaceKind(value.surfaceKind);
+  if (!definition) {
+    errors.push(`Unknown surface kind: ${value.surfaceKind}.`);
+    return;
+  }
+  const dataErrors = validateJsonSchema(definition.schema, value.data, '$.data');
+  if (dataErrors.length > 0) {
+    errors.push(`Invalid ${value.surfaceKind} data: ${formatSchemaErrors(dataErrors)}.`);
   }
 }
 

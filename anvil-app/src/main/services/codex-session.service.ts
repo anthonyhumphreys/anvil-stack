@@ -2,7 +2,7 @@ import { listDojoPrices, recordDojoExecutionEvent } from './dojo-analytics.servi
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -18,18 +18,27 @@ import type {
 import type {
   AgentProvider,
   ChatAttachment,
+  ChatFollowUpIntent,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
+  ChatFollowUpStatus,
   ChatSendOptions,
   ChatStartOptions,
+  ChatSteerResult,
   CodexEvent,
   CodexInputResponse,
   CodexMode,
   CodexSession,
+  CodexSessionCapabilities,
+  CodexSessionContinuity,
   MobileApprovalRequest,
+  LlmGatewayBillingMode,
 } from '../../shared/types.js';
 import {
   buildSystemPrompt,
   buildDesignSystemPrompt,
   buildScaffoldSystemPrompt,
+  buildTemporaryChatSystemPrompt,
   getPersonaById,
 } from './persona.service.js';
 import { getSettings } from './settings.service.js';
@@ -38,17 +47,34 @@ import {
   handleCodexServerLine,
   type JsonRpcRequestId,
   sendCodexJsonRpc,
+  sendCodexJsonRpcWithId,
   sendCodexJsonRpcNotification,
   sendCodexJsonRpcResult,
 } from './codex-protocol.service.js';
 import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
+import { providerSpawnEnv } from './agent-spawn-env.js';
+import { assertSessionTurnAllowed } from './mesh-ownership.service.js';
 import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
-import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
+import { getLlmGatewayCodexConfigArgs, LLM_GATEWAY_KEY_ENV } from '../../shared/llm-gateway.js';
 import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { resolveCodexRuntime } from './codex-runtime.service.js';
-import { updateChatThreadAttention } from './chat-persistence.service.js';
+import { saveChatEvent } from './chat-evidence.service.js';
+import {
+  getChatThread,
+  setChatThreadProviderThreadId,
+  isTemporaryChatThread,
+  updateChatThreadAttention,
+} from './chat-persistence.service.js';
+import {
+  cancelAgentQuestionsForSession,
+  hasPendingAgentQuestion,
+} from './agent-question.service.js';
+import {
+  captureThreadContinuation,
+  prependThreadContinuation,
+} from './chat-continuation.service.js';
 import { scheduleThreadMetadataRefresh } from './thread-assist.service.js';
 import {
   dismissAgentUIIntent,
@@ -68,6 +94,24 @@ import {
   providerResponseFromAgentUIResolution,
 } from './codex-agent-ui.adapter.js';
 import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
+import { supportsNativeResume } from './provider-capability.service.js';
+import { isPermissionMode } from '../../../cloud/contract/permissions.js';
+import { ROLE_FEATURES } from '../../shared/types.js';
+import type { AgentToolSessionContext } from '../agent-tools/dispatch.js';
+import {
+  awaitAgentMcpEndpoint,
+  getAgentMcpEndpoint,
+  getAgentMcpTokenForSession,
+  mintAgentMcpToken,
+  revokeAgentMcpToken,
+} from './agent-mcp/registry.js';
+import {
+  ANVIL_MCP_TOKEN_ENV,
+  buildAcpMcpServers,
+  buildCodexMcpArgs,
+  readAcpMcpCapabilities,
+  type AcpMcpCapabilities,
+} from './agent-mcp/injection.js';
 
 const ACP_PROVIDER_LABELS: Record<AcpAgentProvider, string> = {
   cursor: 'Cursor',
@@ -82,12 +126,18 @@ const ACP_AUTH_METHODS: Record<AcpAgentProvider, string> = {
 interface ManagedSession {
   id: string;
   repoId?: string;
+  /** Every repo in the session's scope; the MCP endpoint enforces tool repo arguments against it. */
+  repoIds: string[];
   workspaceId?: string;
   appThreadId?: string;
   kind: 'repo' | 'workspace' | 'scaffold';
   personaId: string;
   mode: CodexMode;
+  /** Access mode pinned by the session caller, such as a read-only side chat. */
+  modeOverride?: CodexMode;
   process: ChildProcess;
+  /** Isolated process group captured at spawn time on POSIX. */
+  processGroupId?: number;
   provider: 'codex' | AcpAgentProvider;
   agentProvider: AgentProvider;
   gatewayModels?: import('../../shared/types.js').LlmGatewayModel[];
@@ -99,9 +149,26 @@ interface ManagedSession {
   acpSystemPromptDelivered?: boolean;
   /** True after one handshake auth retry so we never loop on auth failures. */
   acpAuthRetried?: boolean;
+  /** True when the ACP agent advertised `agentCapabilities.loadSession` at initialize. */
+  acpLoadSession?: boolean;
+  /** `agentCapabilities.mcpCapabilities` from the ACP initialize result. */
+  acpMcpCapabilities?: AcpMcpCapabilities;
+  /** Deferred session start while the initialize result is in flight (resume needs the advertised capability first). */
+  acpPendingSessionStart?: { resumeSessionId?: string };
+  /** True once session/load was sent — a failure falls back to session/new once. */
+  acpResumeAttempted?: boolean;
+  acpResumeFailed?: boolean;
+  /** Honest lifecycle: how this provider thread came to be. */
+  continuity?: CodexSessionContinuity;
+  continuationContext?: string;
+  continuationNeedsRefresh?: boolean;
+  /** Provider-side mode id applied for the current turn (H9 honest labelling). */
+  appliedMode?: string;
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
+  temporaryChatCwd?: string;
+  temporaryChat?: boolean;
   buffer: string;
   threadId: string | null;
   turnId: string | null;
@@ -111,6 +178,25 @@ interface ManagedSession {
   threadReady: Promise<void>;
   resolveThreadReady: (() => void) | null;
   rejectThreadReady: ((err: Error) => void) | null;
+  origin: 'desktop' | 'browser';
+  /** Internal remote runs stream through the main-process event bus only. */
+  headless: boolean;
+}
+
+/** Main-process-only controls used by Mesh. Never add these to the IPC contract. */
+export interface RemoteSessionRuntimeOptions {
+  provider: AgentProvider;
+  model: string;
+  extraEnv?: Record<string, string>;
+  codexMode: CodexMode;
+  headless: true;
+  bypassEnabledProviderGate: true;
+  onSessionCreated?: (sessionId: string) => void;
+}
+
+/** Keep provider descendants out of Anvil's POSIX process group. */
+export function providerProcessSpawnOptions(): { detached: true } | Record<string, never> {
+  return process.platform === 'win32' ? {} : { detached: true };
 }
 
 type CodexUserInput =
@@ -146,6 +232,59 @@ type PendingServerRequest =
 const pendingServerRequests = new Map<string, PendingServerRequest>();
 const pendingApprovalDetails = new Map<string, MobileApprovalRequest>();
 const pendingPlanFeedback = new Map<string, string[]>();
+interface PendingFollowUp {
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  message: string;
+  attachments: ChatAttachment[];
+  tracked: boolean;
+}
+
+interface FollowUpReceipt {
+  fingerprint: string;
+  result?: ChatFollowUpResult;
+  inFlight?: Promise<ChatFollowUpResult>;
+}
+
+interface PendingProviderFollowUp {
+  receipt: FollowUpReceipt;
+  request: Pick<ChatFollowUpRequest, 'requestId' | 'intent'>;
+  method: string;
+}
+
+interface PendingProviderResponse {
+  resolve: (result: unknown) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}
+
+interface PendingUserTurnRequest {
+  method: 'turn/start' | 'session/prompt';
+}
+
+/** Explicit queue intent and legacy ACP busy sends share one ordered queue. */
+const pendingFollowUps = new Map<string, PendingFollowUp[]>();
+/** Idempotency receipts live for the lifetime of their active session. */
+const followUpReceipts = new Map<string, Map<string, FollowUpReceipt>>();
+const pendingProviderFollowUps = new Map<string, PendingProviderFollowUp>();
+const pendingProviderResponses = new Map<string, PendingProviderResponse>();
+const pendingUserTurnRequests = new Map<string, PendingUserTurnRequest>();
+const PROVIDER_RESPONSE_TIMEOUT_MS = 15_000;
+
+export interface CodexEventSubscription {
+  sessionId: string;
+  appThreadId?: string;
+  event: CodexEvent;
+}
+
+type CodexEventListener = (payload: CodexEventSubscription) => void;
+const codexEventListeners = new Set<CodexEventListener>();
+
+/** Subscribe to provider events before they are forwarded to BrowserWindows. */
+export function subscribeToCodexEvents(listener: CodexEventListener): () => void {
+  codexEventListeners.add(listener);
+  return () => codexEventListeners.delete(listener);
+}
 
 export function resolveSessionModel(provider: AgentProvider, configuredModel: string): string {
   if (isAcpAgentProvider(provider)) return configuredModel.trim() || 'auto';
@@ -153,16 +292,24 @@ export function resolveSessionModel(provider: AgentProvider, configuredModel: st
   return normaliseCodexModel(configuredModel);
 }
 
+function resolveGatewayBillingMode(value: string | undefined): LlmGatewayBillingMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'devpass' || value === 'payg') return value;
+  throw new Error('llmgateway-billing-mode-invalid');
+}
+
 /** Build a provider-scoped environment without changing the user's Codex state. */
 export async function buildCodexProcessEnvironment(
   provider: AgentProvider,
   settings: ReturnType<typeof getSettings>,
+  extraEnv?: Record<string, string>,
 ): Promise<Record<string, string>> {
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+  const env: Record<string, string> = providerSpawnEnv();
+  let gatewayHome: string | undefined;
   if (provider === 'openai' && settings.openaiApiKey) env.OPENAI_API_KEY = settings.openaiApiKey;
   if (provider === 'llmgateway') {
-    applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
-    const gatewayHome = path.join(app.getPath('userData'), 'codex', 'llmgateway');
+    applyLlmGatewayEnvironment(env, extraEnv?.[LLM_GATEWAY_KEY_ENV] ?? settings.llmGatewayApiKey);
+    gatewayHome = path.join(app.getPath('userData'), 'codex', 'llmgateway');
     await syncGatewayCodexIntegrations(
       gatewayHome,
       process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
@@ -171,6 +318,10 @@ export async function buildCodexProcessEnvironment(
     delete env.OPENAI_BASE_URL;
     env.CODEX_HOME = gatewayHome;
   }
+  if (extraEnv) Object.assign(env, extraEnv);
+  // An attempt grant may override provider credentials, but must never point
+  // the isolated gateway runtime back at the user's personal CODEX_HOME.
+  if (gatewayHome) env.CODEX_HOME = gatewayHome;
   return env;
 }
 
@@ -203,13 +354,13 @@ export function resolveAcpSessionMode(
 
 /**
  * Translate Anvil's stored model value into the provider's configOption value.
- * 'auto' maps to Cursor's `default[]` option; for Devin it means "leave the
- * session default" (Adaptive), so no set_config_option call is made.
+ * Anvil advertises Cursor's parameterized model picker, whose Auto value is
+ * `default`. For Devin, Auto leaves the session default (Adaptive) unchanged.
  */
 export function resolveAcpModelValue(provider: AcpAgentProvider, model: string): string | null {
   const trimmed = model.trim();
   if (!trimmed || trimmed === 'auto') {
-    return provider === 'cursor' ? 'default[]' : null;
+    return provider === 'cursor' ? 'default' : null;
   }
   return trimmed;
 }
@@ -233,34 +384,72 @@ export async function startSession(
   repoIds: string[],
   personaId: string,
   options?: ChatStartOptions,
+  runtime?: RemoteSessionRuntimeOptions,
 ): Promise<CodexSession> {
   const id = randomUUID();
   const settings = getSettings();
-  const agentProvider = options?.provider ?? settings.llmProvider;
+  const agentProvider = runtime?.provider ?? options?.provider ?? settings.llmProvider;
+  const appThread = options?.threadId ? getChatThread(options.threadId) : null;
+  if ((options?.temporaryChat === true) !== Boolean(appThread?.temporary)) {
+    throw new Error('Temporary chat session state does not match its thread.');
+  }
+  if (options?.temporaryChat) {
+    if (repoIds.length > 0 || options.workspace || options.scaffold) {
+      throw new Error('Temporary chat cannot use a workspace, repository, or scaffold context.');
+    }
+    if (isAcpAgentProvider(agentProvider)) {
+      throw new Error('Temporary chat currently supports Codex providers only.');
+    }
+  }
+  const isSideQuestion =
+    options?.threadId !== undefined && getChatThread(options.threadId)?.purpose === 'side-question';
+  const modeOverride = options?.temporaryChat
+    ? 'read-only'
+    : isSideQuestion
+      ? 'read-only'
+      : options?.codexMode;
+  if (modeOverride === 'read-only' && isAcpAgentProvider(agentProvider)) {
+    throw new Error(
+      `${acpProviderLabel(agentProvider)} cannot guarantee a provider-enforced read-only session.`,
+    );
+  }
   const enabledProviders = settings.enabledLlmProviders?.length
     ? settings.enabledLlmProviders
     : [settings.llmProvider];
-  if (!enabledProviders.includes(agentProvider)) {
+  if (!runtime?.bypassEnabledProviderGate && !enabledProviders.includes(agentProvider)) {
     throw new Error(
       `${agentProvider} is not enabled. Activate it in Settings before starting a chat.`,
     );
   }
-  const mode = settings.codexMode ?? 'on-request';
-  const configuredModel = resolveSessionModel(agentProvider, settings.openaiModel);
+  const mode = options?.temporaryChat
+    ? 'read-only'
+    : (runtime?.codexMode ?? modeOverride ?? settings.codexMode ?? 'on-request');
+  const configuredModel = resolveSessionModel(
+    agentProvider,
+    options?.model ?? runtime?.model ?? settings.openaiModel,
+  );
   const gatewayConfig =
     agentProvider === 'llmgateway'
-      ? await resolveLlmGatewayModelConfig(configuredModel, settings.reasoningLevel)
+      ? await resolveLlmGatewayModelConfig(
+          configuredModel,
+          settings.reasoningLevel,
+          undefined,
+          resolveGatewayBillingMode(runtime?.extraEnv?.['LLMGATEWAY_BILLING_MODE']),
+        )
       : undefined;
   const model = gatewayConfig?.model ?? configuredModel;
   const codexPolicy = resolvePersonaCodexPolicy(mode, personaId);
-  const systemPrompt = options?.scaffold
-    ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
-    : personaId === 'design'
-      ? buildDesignSystemPrompt(repoIds, options?.designMode ?? 'design', options?.figmaContext)
-      : buildSystemPrompt(personaId, repoIds, options?.workspace?.workspaceId);
+  const systemPrompt = options?.temporaryChat
+    ? buildTemporaryChatSystemPrompt(personaId)
+    : options?.scaffold
+      ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
+      : personaId === 'design'
+        ? buildDesignSystemPrompt(repoIds, options?.designMode ?? 'design', options?.figmaContext)
+        : buildSystemPrompt(personaId, repoIds, options?.workspace?.workspaceId);
   const cwd = resolveSessionCwd(repoPaths, options, app.getPath('userData'));
 
-  // Build environment
+  // Build environment — allowlisted, never a full process.env copy
+  // (SESSION-01: ambient tokens must not leak into agent subprocesses).
   const provider: ManagedSession['provider'] = isAcpAgentProvider(agentProvider)
     ? agentProvider
     : 'codex';
@@ -281,10 +470,33 @@ export async function startSession(
         : agentProvider === 'llmgateway'
           ? getLlmGatewayCodexConfigArgs()
           : ['app-server'];
+  // Local MCP endpoint (spec §6.2): one bearer token per session, delivered via
+  // env (Codex) or the ACP stdin channel — never in args. Temporary chats and
+  // headless Mesh runs get no Anvil server.
+  const mcpEndpoint =
+    options?.temporaryChat || runtime?.headless ? undefined : await awaitAgentMcpEndpoint();
+  const mcpToken = mcpEndpoint
+    ? mintAgentMcpToken(id, () => getAgentToolSessionContext(id))
+    : undefined;
+  if (!isAcpAgentProvider(provider)) {
+    args.push(
+      ...buildCodexMcpArgs({
+        temporaryChat: options?.temporaryChat,
+        url: mcpToken ? mcpEndpoint?.url : undefined,
+      }),
+    );
+  }
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
-  const env = await buildCodexProcessEnvironment(agentProvider, settings);
+  let env: Record<string, string>;
+  try {
+    env = await buildCodexProcessEnvironment(agentProvider, settings, runtime?.extraEnv);
+  } catch (err) {
+    revokeAgentMcpToken(id);
+    throw err;
+  }
+  if (mcpToken && !isAcpAgentProvider(provider)) env[ANVIL_MCP_TOKEN_ENV] = mcpToken;
   if (gatewayConfig)
     args.push(...(await writeGatewayCodexCatalog(env.CODEX_HOME, gatewayConfig.models)));
 
@@ -294,8 +506,11 @@ export async function startSession(
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...providerProcessSpawnOptions(),
     });
   } catch (err) {
+    revokeAgentMcpToken(id);
+    if (options?.temporaryChat) rmSync(cwd, { recursive: true, force: true });
     throw new Error(
       `Failed to spawn ${acpProcessLabel(provider)}: ${err instanceof Error ? err.message : err}`,
     );
@@ -311,12 +526,15 @@ export async function startSession(
   const session: ManagedSession = {
     id,
     repoId: repoIds[0],
+    repoIds: [...repoIds],
     workspaceId: options?.scaffold?.workspaceId ?? options?.workspace?.workspaceId,
     appThreadId: options?.threadId,
     kind: options?.scaffold ? 'scaffold' : repoIds.length > 0 ? 'repo' : 'workspace',
     personaId,
     mode: codexPolicy.sandbox === 'read-only' ? 'read-only' : mode,
+    modeOverride,
     process: proc,
+    ...(process.platform !== 'win32' && proc.pid !== undefined ? { processGroupId: proc.pid } : {}),
     provider,
     agentProvider,
     gatewayModels: gatewayConfig?.models,
@@ -326,6 +544,8 @@ export async function startSession(
     status: 'starting',
     startedAt: new Date().toISOString(),
     cwd,
+    temporaryChatCwd: options?.temporaryChat ? cwd : undefined,
+    temporaryChat: options?.temporaryChat,
     buffer: '',
     threadId: null,
     turnId: null,
@@ -334,9 +554,12 @@ export async function startSession(
     threadReady,
     resolveThreadReady,
     rejectThreadReady,
+    origin: options?.origin ?? 'desktop',
+    headless: runtime?.headless === true,
   };
 
   sessions.set(id, session);
+  runtime?.onSessionCreated?.(id);
 
   // Handle stdout — JSON-RPC events, one per line
   proc.stdout?.on('data', (chunk: Buffer) => {
@@ -350,14 +573,14 @@ export async function startSession(
     }
   });
 
-  proc.stderr?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString().trim();
-    if (text) {
-      console.warn(`[Codex:${id.slice(0, 8)}] stderr: ${text}`);
-    }
-  });
+  // Drain the pipe so a verbose provider cannot block on stderr. Provider stderr
+  // can contain credentials or other sensitive diagnostics, so never log it.
+  proc.stderr?.on('data', () => undefined);
 
   proc.on('exit', (code, signal) => {
+    cancelAgentQuestionsForSession(id);
+    revokeAgentMcpToken(id);
+    removeTemporaryChatDirectory(session);
     console.log(`[Codex:${id.slice(0, 8)}] exited with code=${code} signal=${signal}`);
     for (const intent of expireAgentUIIntentsForSession(id)) {
       broadcastAgentUIIntent(intent, id);
@@ -367,6 +590,10 @@ export async function startSession(
       return;
     }
     session.status = 'error';
+    clearPendingProviderFollowUps(id);
+    clearPendingUserTurnRequests(id);
+    clearPendingProviderResponses(id, 'Provider exited before acknowledging the request.');
+    failPendingFollowUps(session, 'The provider exited before this queued task could start.');
     session.rejectThreadReady?.(
       new Error(
         `${acpProcessLabel(provider)} exited before the session was ready (code=${code}, signal=${signal})`,
@@ -382,8 +609,11 @@ export async function startSession(
   });
 
   proc.on('error', (err) => {
+    cancelAgentQuestionsForSession(id);
     console.error(`[Codex:${id.slice(0, 8)}] process error:`, err);
     session.status = 'error';
+    clearPendingProviderResponses(id, `Provider process error: ${err.message}`);
+    clearPendingUserTurnRequests(id);
     session.rejectThreadReady?.(err);
     session.rejectThreadReady = null;
     setSessionThreadAttention(session, 'failed');
@@ -406,11 +636,21 @@ export async function startSession(
     if (provider === 'cursor') {
       sendCodexJsonRpc(proc, 'authenticate', { methodId: ACP_AUTH_METHODS.cursor });
     }
-    sendCodexJsonRpc(proc, 'session/new', {
-      cwd,
-      mcpServers: [],
-      _meta: { systemPrompt },
-    });
+    if (options?.providerThreadId) {
+      // Resume goes through ACP session/load, but only when the agent
+      // advertises agentCapabilities.loadSession — known once the initialize
+      // result arrives, so the session call is deferred to
+      // observeAcpInitializeResult (which falls back to session/new).
+      session.acpPendingSessionStart = { resumeSessionId: options.providerThreadId };
+      session.continuity = 'resumed';
+    } else {
+      // session/new also waits for the initialize result: the advertised
+      // mcpCapabilities decide how the Anvil MCP server is attached.
+      session.acpPendingSessionStart = {};
+      // ACP cannot fork a provider thread: a "fork" is a new session the
+      // renderer seeds from the transcript — record that honestly.
+      session.continuity = options?.forkFromProviderThreadId ? 'transcript-seeded' : 'new';
+    }
   } else {
     // Step 1: Send initialize
     sendCodexJsonRpc(proc, 'initialize', {
@@ -429,25 +669,48 @@ export async function startSession(
       developerInstructions: systemPrompt,
       approvalPolicy: codexPolicy.approvalPolicy,
       sandbox: codexPolicy.sandbox,
+      ...(options?.temporaryChat ? { ephemeral: true } : {}),
     };
+    session.appliedMode = codexPolicy.sandbox;
     if (options?.forkFromProviderThreadId) {
       sendCodexJsonRpc(proc, 'thread/fork', {
         threadId: options.forkFromProviderThreadId,
         ...threadParams,
       });
+      session.continuity = 'forked';
     } else if (options?.providerThreadId) {
       sendCodexJsonRpc(proc, 'thread/resume', {
         threadId: options.providerThreadId,
         ...threadParams,
       });
+      session.continuity = 'resumed';
     } else {
       sendCodexJsonRpc(proc, 'thread/start', threadParams);
+      session.continuity = 'new';
     }
   }
 
   // Wait for thread/started before marking ready
-  await waitForThreadReady(threadReady, id);
+  try {
+    await waitForThreadReady(threadReady, id);
+  } catch (error) {
+    if (session.headless) await stopHeadlessSession(id);
+    else await stopSessionAndWait(id);
+    throw error;
+  }
 
+  if (
+    !session.headless &&
+    !session.temporaryChat &&
+    session.appThreadId &&
+    session.continuity !== 'resumed' &&
+    session.continuity !== 'forked' &&
+    getChatThread(session.appThreadId)
+  ) {
+    session.continuationContext =
+      captureThreadContinuation(session.appThreadId).context || undefined;
+    if (session.continuationContext) session.continuity = 'transcript-seeded';
+  }
   session.status = 'ready';
   broadcastEvent(id, { type: 'status', status: 'executing' });
 
@@ -462,13 +725,24 @@ export async function sendMessage(
   message: string,
   attachments: ChatAttachment[] = [],
   options?: ChatSendOptions,
+  followUpTracking?: {
+    receipt: FollowUpReceipt;
+    request: Pick<ChatFollowUpRequest, 'requestId' | 'intent'>;
+  },
 ): Promise<void> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
+  if (session.temporaryChat && attachments.length > 0) {
+    throw new Error('Temporary chat supports text messages only.');
+  }
+  // SESSION-03: a session whose ownership moved to another device fails
+  // closed — the durable relinquish marker outlives restarts.
+  assertSessionTurnAllowed(sessionId);
   if (!session.process.stdin?.writable) throw new Error('Session stdin not writable');
 
   // Wait for thread to be ready before sending
   await session.threadReady;
+  assertSessionActive(session);
 
   const settings = getSettings();
   const configuredModel = resolveSessionModel(
@@ -483,59 +757,281 @@ export async function sendMessage(
           session.gatewayModels,
         )
       : undefined;
+  assertSessionActive(session);
   const model = gatewayConfig?.model ?? configuredModel;
 
+  if (options?.permissionMode !== undefined && !isPermissionMode(options.permissionMode)) {
+    throw new Error('Invalid chat permission mode.');
+  }
+  const isSideQuestion =
+    session.appThreadId !== undefined &&
+    getChatThread(session.appThreadId)?.purpose === 'side-question';
+  if (!session.temporaryChat && !isSideQuestion && options?.permissionMode !== undefined) {
+    session.modeOverride = options.permissionMode;
+  }
+  const mode = resolveSessionTurnMode({
+    temporaryChat: session.temporaryChat,
+    sideQuestion: isSideQuestion,
+    permissionMode: options?.permissionMode,
+    sessionModeOverride: session.modeOverride,
+    configuredMode: settings.codexMode,
+    currentMode: session.mode,
+  });
+
+  if (session.continuationNeedsRefresh && session.appThreadId && !session.temporaryChat)
+    session.continuationContext =
+      captureThreadContinuation(session.appThreadId).context || undefined;
+  const providerMessage = prependThreadContinuation(session.continuationContext, message);
   session.status = 'busy';
   setSessionThreadAttention(session, 'working');
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
 
-  const mode = settings.codexMode ?? session.mode;
   session.model = model;
   const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
     planMode: options?.collaborationMode === 'plan',
   });
   session.mode = codexPolicy.sandbox === 'read-only' ? 'read-only' : mode;
 
-  if (isAcpAgentProvider(session.provider)) {
-    if (!session.threadId) {
-      throw new Error(`${acpProviderLabel(session.provider)} ACP session is not ready.`);
-    }
-    // Mode changes go through the standard `session/set_mode`; model selection
-    // uses `session/set_config_option` against the agent's `model` config
-    // option. Both agents reject the legacy `session/set_config` method.
-    sendCodexJsonRpc(session.process, 'session/set_mode', {
-      sessionId: session.threadId,
-      modeId: resolveAcpSessionMode(session.provider, mode, options?.collaborationMode),
-    });
-    const acpModel = resolveAcpModelValue(session.provider, model);
-    if (acpModel) {
-      sendCodexJsonRpc(session.process, 'session/set_config_option', {
+  try {
+    if (isAcpAgentProvider(session.provider)) {
+      if (!session.threadId) {
+        throw new Error(`${acpProviderLabel(session.provider)} ACP session is not ready.`);
+      }
+      // H1: feed the persona-clamped session.mode (read-only for
+      // canWriteFiles:false personas and plan mode), not raw settings.codexMode,
+      // or a read-only persona would still run in agent/smart mode.
+      const acpModeId = resolveAcpSessionMode(
+        session.provider,
+        session.mode ?? mode,
+        options?.collaborationMode,
+      );
+      session.appliedMode = acpModeId;
+      // Mode changes go through the standard `session/set_mode`; model selection
+      // uses `session/set_config_option` against the agent's `model` config
+      // option. Both agents reject the legacy `session/set_config` method.
+      const modeRequest = {
         sessionId: session.threadId,
-        configId: 'model',
-        value: acpModel,
-      });
+        modeId: acpModeId,
+      };
+      // Apply controls before the prompt. ACP agents can reject a config
+      // change once the concurrent prompt has already started running.
+      await sendProviderRequestAndWait(session, 'session/set_mode', modeRequest);
+      assertSessionActive(session);
+      const acpModel = resolveAcpModelValue(session.provider, model);
+      if (acpModel) {
+        const modelRequest = {
+          sessionId: session.threadId,
+          configId: 'model',
+          value: acpModel,
+        };
+        await sendProviderRequestAndWait(session, 'session/set_config_option', modelRequest);
+        assertSessionActive(session);
+      }
+      assertSessionActive(session);
+      sendFollowUpAwareProviderRequest(
+        session,
+        'session/prompt',
+        {
+          sessionId: session.threadId,
+          prompt: buildAcpPrompt(session, providerMessage, attachments),
+        },
+        followUpTracking,
+      );
+      session.acpSystemPromptDelivered = true;
+      session.continuationContext = undefined;
+      session.continuationNeedsRefresh = false;
+      return;
     }
-    sendCodexJsonRpc(session.process, 'session/prompt', {
-      sessionId: session.threadId,
-      prompt: buildAcpPrompt(session, message, attachments),
+
+    const effort = gatewayConfig
+      ? gatewayConfig.effort
+      : normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
+    session.appliedMode = codexPolicy.sandbox;
+    sendFollowUpAwareProviderRequest(
+      session,
+      'turn/start',
+      {
+        threadId: session.threadId,
+        input: buildUserInput(providerMessage, attachments),
+        approvalPolicy: codexPolicy.approvalPolicy,
+        sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
+        model,
+        ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
+        ...(effort ? { effort } : {}),
+        collaborationMode: buildCodexCollaborationMode(options?.collaborationMode, model, effort),
+      },
+      followUpTracking,
+    );
+    session.continuationContext = undefined;
+    session.continuationNeedsRefresh = false;
+  } catch (error) {
+    if (isCurrentSession(session)) {
+      const message =
+        error instanceof Error ? error.message : 'Provider could not accept the send.';
+      session.status = 'ready';
+      setSessionThreadAttention(session, 'idle');
+      broadcastEvent(sessionId, {
+        type: 'status',
+        status: 'error',
+        errorMessage: message,
+      });
+      if (!followUpTracking) {
+        failPendingFollowUps(
+          session,
+          'The active task could not be sent; queued tasks were not started.',
+        );
+      }
+    }
+    throw error;
+  }
+}
+
+function isCurrentSession(session: ManagedSession): boolean {
+  return sessions.get(session.id) === session && !session.stopping && session.status !== 'error';
+}
+
+function assertSessionActive(session: ManagedSession): void {
+  if (!isCurrentSession(session)) throw new Error('Session stopped before the follow-up was sent.');
+}
+
+function sendProviderRequest(
+  session: ManagedSession,
+  method: string,
+  params: Record<string, unknown>,
+): void {
+  if (!sendCodexJsonRpc(session.process, method, params)) {
+    throw new Error(`${acpProcessLabel(session.provider)} could not accept ${method}.`);
+  }
+}
+
+async function sendProviderRequestAndWait(
+  session: ManagedSession,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  assertSessionActive(session);
+  const requestId = randomUUID();
+  const key = buildPendingRequestKey(session.id, requestId);
+  const response = new Promise<unknown>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingProviderResponses.delete(key);
+      reject(new Error(`${acpProcessLabel(session.provider)} did not acknowledge ${method}.`));
+    }, PROVIDER_RESPONSE_TIMEOUT_MS);
+    pendingProviderResponses.set(key, {
+      resolve: (result) => {
+        clearTimeout(timeout);
+        resolve(result);
+      },
+      reject: (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+      timeout,
     });
-    session.acpSystemPromptDelivered = true;
+  });
+
+  if (!sendCodexJsonRpcWithId(session.process, method, params, requestId)) {
+    const pending = pendingProviderResponses.get(key);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      pendingProviderResponses.delete(key);
+    }
+    throw new Error(`${acpProcessLabel(session.provider)} could not accept ${method}.`);
+  }
+  const result = await response.catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : 'Invalid provider response';
+    const control =
+      method === 'session/set_config_option' && params.configId === 'model'
+        ? `model "${String(params.value)}"`
+        : method;
+    throw new Error(`${acpProviderLabel(session.provider)} rejected ${control}: ${detail}`, {
+      cause: error,
+    });
+  });
+  assertSessionActive(session);
+  return result;
+}
+
+function sendFollowUpAwareProviderRequest(
+  session: ManagedSession,
+  method: string,
+  params: Record<string, unknown>,
+  tracking?: {
+    receipt: FollowUpReceipt;
+    request: Pick<ChatFollowUpRequest, 'requestId' | 'intent'>;
+  },
+): void {
+  if (!tracking) {
+    if (method !== 'turn/start' && method !== 'session/prompt') {
+      sendProviderRequest(session, method, params);
+      return;
+    }
+    const requestId = randomUUID();
+    const key = buildPendingRequestKey(session.id, requestId);
+    pendingUserTurnRequests.set(key, { method });
+    if (!sendCodexJsonRpcWithId(session.process, method, params, requestId)) {
+      pendingUserTurnRequests.delete(key);
+      throw new Error(`${acpProcessLabel(session.provider)} could not accept ${method}.`);
+    }
     return;
   }
 
-  const effort = gatewayConfig
-    ? gatewayConfig.effort
-    : normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
-  sendCodexJsonRpc(session.process, 'turn/start', {
-    threadId: session.threadId,
-    input: buildUserInput(message, attachments),
-    approvalPolicy: codexPolicy.approvalPolicy,
-    sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
-    model,
-    ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
-    ...(effort ? { effort } : {}),
-    collaborationMode: buildCodexCollaborationMode(options?.collaborationMode, model, effort),
-  });
+  const protocolRequestId = randomUUID();
+  const key = buildPendingRequestKey(session.id, protocolRequestId);
+  pendingProviderFollowUps.set(key, { ...tracking, method });
+  if (!sendCodexJsonRpcWithId(session.process, method, params, protocolRequestId)) {
+    pendingProviderFollowUps.delete(key);
+    throw new Error(`${acpProcessLabel(session.provider)} could not accept ${method}.`);
+  }
+}
+
+/**
+ * Live tool context for the local MCP endpoint, resolved per request so mode
+ * and role changes apply immediately. Undefined for ended or temporary sessions.
+ */
+export function getAgentToolSessionContext(sessionId: string): AgentToolSessionContext | undefined {
+  const session = sessions.get(sessionId);
+  if (!session || session.temporaryChat || session.stopping) return undefined;
+  const role = getSettings().userRole;
+  return {
+    sessionId,
+    appThreadId: session.appThreadId,
+    workspaceId: session.workspaceId,
+    repoIds: session.repoIds,
+    provider: session.agentProvider,
+    // A persona-clamped read-only session stays read-only whatever the caller pinned.
+    mode: session.mode === 'read-only' ? 'read-only' : (session.modeOverride ?? session.mode),
+    features: (role && ROLE_FEATURES[role]) || [],
+  };
+}
+
+export function isTemporaryChatSession(sessionId: string): boolean {
+  return sessions.get(sessionId)?.temporaryChat === true;
+}
+
+export function resolveSessionTurnMode(input: {
+  temporaryChat?: boolean;
+  sideQuestion?: boolean;
+  permissionMode?: CodexMode;
+  sessionModeOverride?: CodexMode;
+  configuredMode?: CodexMode;
+  currentMode: CodexMode;
+}): CodexMode {
+  if (input.temporaryChat || input.sideQuestion) return 'read-only';
+  return (
+    input.permissionMode ?? input.sessionModeOverride ?? input.configuredMode ?? input.currentMode
+  );
+}
+
+export function shouldPersistDojoExecutionEvent(
+  session: Pick<ManagedSession, 'temporaryChat' | 'appThreadId'> | undefined,
+  event: CodexEvent,
+): boolean {
+  return (
+    !session?.temporaryChat &&
+    Boolean(session?.appThreadId) &&
+    ['usage', 'usage_context', 'turn_outcome', 'context_compaction', 'status'].includes(event.type)
+  );
 }
 
 export function buildCodexCollaborationMode(
@@ -554,25 +1050,290 @@ export function buildCodexCollaborationMode(
   };
 }
 
+/**
+ * Mid-turn composer send. Codex app-server supports in-band `turn/steer`;
+ * ACP providers (Cursor/Devin) have no steer — a send while the session is
+ * busy is queued and flushed via `session/prompt` when the turn completes
+ * (H2). Never throws for a healthy ACP session: the renderer uses
+ * `disposition` to decide whether the message was delivered or queued.
+ */
 export async function steerTurn(
   sessionId: string,
   message: string,
   attachments: ChatAttachment[] = [],
-): Promise<void> {
+): Promise<ChatSteerResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
+  if (session.temporaryChat && attachments.length > 0) {
+    throw new Error('Temporary chat supports text messages only.');
+  }
   if (!session.process.stdin?.writable) throw new Error('Session stdin not writable');
 
   await session.threadReady;
+
+  if (isAcpAgentProvider(session.provider)) {
+    if (session.status === 'busy') {
+      const queued = enqueueFollowUp(sessionId, {
+        requestId: randomUUID(),
+        intent: 'queue',
+        message,
+        attachments,
+        tracked: false,
+      });
+      return { disposition: 'queued', queueDepth: queued };
+    }
+    // Idle session: a "steer" is just a normal new prompt.
+    await sendMessage(sessionId, message, attachments);
+    return { disposition: 'sent', queueDepth: queueDepth(sessionId) };
+  }
+
   if (!session.threadId || !session.turnId) {
     throw new Error('No active Codex turn to steer.');
   }
 
-  sendCodexJsonRpc(
-    session.process,
+  sendProviderRequest(
+    session,
     'turn/steer',
     buildTurnSteerParams(session.threadId, session.turnId, message, attachments),
   );
+  return { disposition: 'steered', queueDepth: 0 };
+}
+
+/** Deliver explicit follow-up intent with process-local idempotency by requestId. */
+export async function followUpTurn(request: ChatFollowUpRequest): Promise<ChatFollowUpResult> {
+  if (!request || typeof request !== 'object') {
+    return failedFollowUp('', 'queue', 'A follow-up request is required.');
+  }
+  const sessionId = typeof request.sessionId === 'string' ? request.sessionId : '';
+  const requestId = typeof request.requestId === 'string' ? request.requestId : '';
+  const intent =
+    request.intent === 'guide' || request.intent === 'queue' ? request.intent : 'queue';
+  const message = typeof request.message === 'string' ? request.message : '';
+  const attachments = request.attachments ?? [];
+  const session = sessions.get(sessionId);
+  if (!session) return failedFollowUp(requestId, intent, 'Session not found.');
+  if (session.temporaryChat && attachments.length > 0) {
+    return failedFollowUp(requestId, intent, 'Temporary chat supports text messages only.');
+  }
+  if (!requestId.trim() || requestId.length > 128) {
+    return failedFollowUp(requestId, intent, 'A valid follow-up requestId is required.');
+  }
+  if (request.intent !== 'guide' && request.intent !== 'queue') {
+    return failedFollowUp(requestId, intent, 'Unsupported follow-up intent.');
+  }
+  if (typeof request.message !== 'string') {
+    return failedFollowUp(requestId, intent, 'The follow-up message must be text.');
+  }
+  if (
+    !Array.isArray(attachments) ||
+    attachments.some(
+      (attachment) =>
+        !attachment ||
+        typeof attachment !== 'object' ||
+        typeof attachment.name !== 'string' ||
+        typeof attachment.path !== 'string' ||
+        typeof attachment.mimeType !== 'string' ||
+        typeof attachment.size !== 'number' ||
+        (attachment.kind !== 'image' && attachment.kind !== 'file'),
+    )
+  ) {
+    return failedFollowUp(requestId, intent, 'The follow-up attachments are invalid.');
+  }
+  if (!message.trim() && attachments.length === 0) {
+    return failedFollowUp(requestId, intent, 'Add a message or attachment first.');
+  }
+
+  const fingerprint = followUpFingerprint(intent, message, attachments);
+  const receipts = followUpReceipts.get(sessionId) ?? new Map<string, FollowUpReceipt>();
+  followUpReceipts.set(sessionId, receipts);
+  const prior = receipts.get(requestId);
+  if (prior) {
+    if (prior.fingerprint !== fingerprint) {
+      return failedFollowUp(
+        requestId,
+        intent,
+        'This requestId was already used for different follow-up content.',
+        queueDepth(sessionId),
+      );
+    }
+    const priorResult = prior.result ?? (prior.inFlight ? await prior.inFlight : undefined);
+    return priorResult
+      ? { ...priorResult, queueDepth: queueDepth(sessionId) }
+      : failedFollowUp(requestId, intent, 'The earlier follow-up is still being processed.');
+  }
+
+  const receipt: FollowUpReceipt = { fingerprint };
+  receipts.set(requestId, receipt);
+  const operation = dispatchFollowUp(
+    session,
+    {
+      sessionId,
+      requestId,
+      intent,
+      message,
+      attachments,
+    },
+    receipt,
+  );
+  receipt.inFlight = operation;
+  const result = await operation;
+  receipt.inFlight = undefined;
+  receipt.result = result;
+  return result;
+}
+
+async function dispatchFollowUp(
+  session: ManagedSession,
+  request: ChatFollowUpRequest,
+  receipt: FollowUpReceipt,
+): Promise<ChatFollowUpResult> {
+  try {
+    assertSessionTurnAllowed(session.id);
+    if (!session.process.stdin?.writable) throw new Error('Session stdin not writable.');
+    await session.threadReady;
+    assertSessionActive(session);
+
+    if (request.intent === 'guide') {
+      if (isAcpAgentProvider(session.provider)) {
+        throw new Error(`${acpProviderLabel(session.provider)} cannot guide a running turn.`);
+      }
+      if (session.status !== 'busy' || !session.threadId || !session.turnId) {
+        throw new Error('There is no active Codex turn to guide.');
+      }
+      sendFollowUpAwareProviderRequest(
+        session,
+        'turn/steer',
+        buildTurnSteerParams(
+          session.threadId,
+          session.turnId,
+          request.message,
+          request.attachments ?? [],
+        ),
+        { receipt, request },
+      );
+      if (receipt.result?.status === 'failed') return receipt.result;
+      return setFollowUpResult(session.id, receipt, request, 'delivered');
+    }
+
+    if (session.status === 'busy') {
+      enqueueFollowUp(session.id, {
+        requestId: request.requestId,
+        intent: 'queue',
+        message: request.message,
+        attachments: request.attachments ?? [],
+        tracked: true,
+      });
+      return setFollowUpResult(session.id, receipt, request, 'queued');
+    }
+
+    await sendMessage(session.id, request.message, request.attachments ?? [], undefined, {
+      receipt,
+      request,
+    });
+    if (receipt.result?.status === 'failed') return receipt.result;
+    return setFollowUpResult(session.id, receipt, request, 'delivered');
+  } catch (error) {
+    if (!isCurrentSession(session)) {
+      return (
+        receipt.result ??
+        failedFollowUp(
+          request.requestId,
+          request.intent,
+          error instanceof Error ? error.message : 'Session stopped before the follow-up was sent.',
+        )
+      );
+    }
+    return setFollowUpResult(
+      session.id,
+      receipt,
+      request,
+      'failed',
+      error instanceof Error ? error.message : 'Provider could not accept the follow-up.',
+    );
+  }
+}
+
+function enqueueFollowUp(sessionId: string, pending: PendingFollowUp): number {
+  const queued = pendingFollowUps.get(sessionId) ?? [];
+  queued.push(pending);
+  pendingFollowUps.set(sessionId, queued);
+  broadcastEvent(sessionId, { type: 'queue_update', queuedSendCount: queued.length });
+  return queued.length;
+}
+
+function queueDepth(sessionId: string): number {
+  return pendingFollowUps.get(sessionId)?.length ?? 0;
+}
+
+function setFollowUpResult(
+  sessionId: string,
+  receipt: FollowUpReceipt,
+  request: Pick<ChatFollowUpRequest, 'requestId' | 'intent'>,
+  status: ChatFollowUpStatus,
+  error?: string,
+): ChatFollowUpResult {
+  const result: ChatFollowUpResult = {
+    requestId: request.requestId,
+    intent: request.intent,
+    status,
+    queueDepth: queueDepth(sessionId),
+    ...(error ? { error } : {}),
+  };
+  receipt.result = result;
+  broadcastEvent(sessionId, {
+    type: 'follow_up_delivery',
+    followUpRequestId: request.requestId,
+    followUpIntent: request.intent,
+    followUpStatus: status,
+    followUpQueueDepth: result.queueDepth,
+    ...(error ? { followUpError: error } : {}),
+  });
+  return result;
+}
+
+function failedFollowUp(
+  requestId: string,
+  intent: ChatFollowUpIntent,
+  error: string,
+  currentQueueDepth = 0,
+): ChatFollowUpResult {
+  return { requestId, intent, status: 'failed', queueDepth: currentQueueDepth, error };
+}
+
+function followUpFingerprint(
+  intent: ChatFollowUpIntent,
+  message: string,
+  attachments: ChatAttachment[],
+): string {
+  return JSON.stringify({
+    intent,
+    message,
+    attachments: attachments.map(({ name, path, mimeType, size }) => ({
+      name,
+      path,
+      mimeType,
+      size,
+    })),
+  });
+}
+
+function acpMcpServers(session: ManagedSession) {
+  const endpoint = getAgentMcpEndpoint();
+  return buildAcpMcpServers({
+    url: endpoint?.url,
+    token: getAgentMcpTokenForSession(session.id),
+    capabilities: session.acpMcpCapabilities,
+    shimPath: endpoint?.shimPath,
+    execPath: process.execPath,
+  });
+}
+
+function sendAcpSessionNew(session: ManagedSession): void {
+  sendCodexJsonRpc(session.process, 'session/new', {
+    cwd: session.cwd,
+    mcpServers: acpMcpServers(session),
+    _meta: { systemPrompt: session.systemPrompt },
+  });
 }
 
 function buildAcpPrompt(
@@ -668,6 +1429,11 @@ export function emitLocalAssistantTurnEnd(
 ): void {
   const session = sessions.get(sessionId);
   if (!session) return;
+  // The provider did not see this on-device turn. Refresh from saved visible
+  // history on its next accepted turn, after renderer persistence has flushed.
+  session.continuationNeedsRefresh = true;
+  if (session.appThreadId && !session.temporaryChat)
+    setChatThreadProviderThreadId(session.appThreadId, null, session.provider);
   session.status = 'ready';
   setSessionThreadAttention(session, outcome === 'completed' ? 'complete' : 'idle');
   broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: outcome, model: 'on-device' });
@@ -679,45 +1445,137 @@ export function interruptTurn(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) return;
   if (!session.threadId) return;
-  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: 'interrupted' });
   if (isAcpAgentProvider(session.provider)) {
-    sendCodexJsonRpcNotification(session.process, 'session/cancel', {
-      sessionId: session.threadId,
-    });
-    session.status = 'ready';
-    broadcastEvent(sessionId, { type: 'status', status: 'complete' });
+    if (
+      !sendCodexJsonRpcNotification(session.process, 'session/cancel', {
+        sessionId: session.threadId,
+      })
+    ) {
+      throw new Error(`${acpProviderLabel(session.provider)} could not accept the cancel request.`);
+    }
+    cancelAgentQuestionsForSession(sessionId);
     return;
   }
   if (!session.turnId) return;
 
-  sendCodexJsonRpc(session.process, 'turn/interrupt', {
+  cancelAgentQuestionsForSession(sessionId);
+  sendProviderRequest(session, 'turn/interrupt', {
     threadId: session.threadId,
     turnId: session.turnId,
   });
-
-  session.status = 'ready';
-  session.turnId = null;
-  setSessionThreadAttention(session, 'idle');
-  broadcastEvent(sessionId, { type: 'status', status: 'complete' });
 }
 
 export function stopSession(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) return;
   session.stopping = true;
+  cancelAgentQuestionsForSession(sessionId);
+  revokeAgentMcpToken(sessionId);
+  failPendingFollowUps(session, 'The session stopped before this queued task could start.');
+  session.rejectThreadReady?.(new Error('Session stopped before it became ready.'));
+  session.resolveThreadReady = null;
+  session.rejectThreadReady = null;
   try {
-    session.process.kill('SIGTERM');
+    if (session.processGroupId !== undefined) process.kill(-session.processGroupId, 'SIGTERM');
+    else session.process.kill('SIGTERM');
   } catch {
-    /* already dead */
+    try {
+      session.process.kill('SIGTERM');
+    } catch {
+      /* already dead */
+    }
   }
   sessions.delete(sessionId);
+  removeTemporaryChatDirectory(session);
   pendingPlanFeedback.delete(sessionId);
+  pendingFollowUps.delete(sessionId);
+  followUpReceipts.delete(sessionId);
+  clearPendingProviderFollowUps(sessionId);
+  clearPendingUserTurnRequests(sessionId);
+  clearPendingProviderResponses(sessionId, 'Session stopped before provider acknowledgement.');
   for (const [requestKey, request] of pendingServerRequests) {
     if (request.sessionId === sessionId) {
       pendingServerRequests.delete(requestKey);
       pendingApprovalDetails.delete(requestKey);
     }
   }
+}
+
+/** Stop a provider session and wait until its isolated POSIX group is gone. */
+export async function stopSessionAndWait(sessionId: string): Promise<void> {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  const proc = session.process;
+  const processGroupId = session.processGroupId;
+  stopSession(sessionId);
+  await stopManagedProviderProcess(proc, processGroupId);
+}
+
+/** Kill only a process group created for a provider session, never Anvil's group. */
+export async function stopManagedProviderProcess(
+  proc: ChildProcess,
+  processGroupId?: number,
+  graceMs = 3_000,
+): Promise<void> {
+  if (processGroupId !== undefined) {
+    const groupExists = (): boolean => {
+      try {
+        process.kill(-processGroupId, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+      }
+    };
+    const signalGroup = (signal: NodeJS.Signals): void => {
+      try {
+        process.kill(-processGroupId, signal);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    };
+    const waitForGroupExit = async (): Promise<boolean> => {
+      const deadline = Date.now() + graceMs;
+      while (groupExists()) {
+        if (Date.now() >= deadline) return false;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return true;
+    };
+    if (!groupExists()) return;
+    signalGroup('SIGTERM');
+    if (await waitForGroupExit()) return;
+    signalGroup('SIGKILL');
+    if (!(await waitForGroupExit())) throw new Error('provider-process-group-did-not-stop');
+    return;
+  }
+
+  if (proc.exitCode !== null || proc.signalCode !== null) return;
+  const signalChild = (name: NodeJS.Signals): void => {
+    try {
+      proc.kill(name);
+    } catch {
+      /* Process already exited. */
+    }
+  };
+  const waitForExit = (timeoutMs: number): Promise<boolean> => {
+    if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      proc.once('exit', () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  };
+  signalChild('SIGTERM');
+  if (await waitForExit(graceMs)) return;
+  signalChild('SIGKILL');
+  if (!(await waitForExit(graceMs))) throw new Error('provider-process-did-not-stop');
+}
+
+/** Stop an internal headless Mesh session with the same group cleanup guarantees. */
+export async function stopHeadlessSession(sessionId: string): Promise<void> {
+  await stopSessionAndWait(sessionId);
 }
 
 export function stopAllSessions(): void {
@@ -748,6 +1606,19 @@ export function listActiveCodexSessions(): CodexSession[] {
 export function getCodexSession(sessionId: string): CodexSession | null {
   const session = sessions.get(sessionId);
   return session ? sessionToPublic(session) : null;
+}
+
+/** Active provider model for durable handoff pinning; absent after the session exits. */
+export function getCodexSessionModel(sessionId: string): string | null {
+  return sessions.get(sessionId)?.model ?? null;
+}
+
+/** Transfer persistence ownership when a browser attaches to an idle Desktop session. */
+export function claimSessionForBrowser(sessionId: string): CodexSession | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  session.origin = 'browser';
+  return sessionToPublic(session);
 }
 
 export function listPendingApprovalRequests(): MobileApprovalRequest[] {
@@ -834,6 +1705,11 @@ export function resolveAgentUIQuestion(
   if (!record || record.intent.kind !== 'question') {
     throw new Error(`Question intent not found: ${intentId}`);
   }
+  if (
+    (record.intent.lifecycle === 'resolved' || record.intent.lifecycle === 'dismissed') &&
+    resolution.intentId === intentId
+  )
+    return record.intent;
   validateAgentUIQuestionResolution(record.intent, resolution);
   const binding = record.binding;
   if (!binding?.sessionId || binding.requestId === undefined || !binding.responseKind) {
@@ -858,7 +1734,7 @@ export function resolveAgentUIQuestion(
   pendingServerRequests.delete(requestKey);
   const resolved = recordAgentUIQuestionResolution(record.intent, resolution);
   setSessionThreadAttention(session, 'working');
-  broadcastEvent(session.id, { type: 'agent_ui_intent_resolved', agentUIIntentId: intentId });
+  broadcastAgentUIIntent(resolved, session.id);
   return resolved;
 }
 
@@ -1029,6 +1905,9 @@ export function resolveSessionCwd(
   options: ChatStartOptions | undefined,
   userDataPath: string,
 ): string {
+  if (options?.temporaryChat) {
+    return mkdtempSync(path.join(os.tmpdir(), 'anvil-temporary-chat-'));
+  }
   if (options?.scaffold?.rootPath) return options.scaffold.rootPath;
   if (options?.workspace?.cwd) return options.workspace.cwd;
   if (repoPaths.length > 0) return commonParentDir(repoPaths);
@@ -1044,7 +1923,62 @@ export function resolveSessionCwd(
   return process.cwd();
 }
 
+function removeTemporaryChatDirectory(session: Pick<ManagedSession, 'temporaryChatCwd'>): void {
+  if (!session.temporaryChatCwd) return;
+  try {
+    rmSync(session.temporaryChatCwd, { recursive: true, force: true });
+  } catch (err) {
+    console.warn('Failed to remove temporary chat directory:', err);
+  }
+  session.temporaryChatCwd = undefined;
+}
+
+/**
+ * Watch the raw ACP stream for the initialize result so the session layer can
+ * learn `agentCapabilities.loadSession` and dispatch a deferred session start
+ * (session/load for resume, session/new otherwise). Protocol-level event
+ * normalisation stays in handleCodexServerLine — this only reads the result.
+ */
+function observeAcpInitializeResult(session: ManagedSession, line: string): void {
+  if (!isAcpAgentProvider(session.provider)) return;
+  let msg: Record<string, unknown>;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (msg.method !== undefined || msg.id === undefined || msg.error !== undefined) return;
+  const result = msg.result as Record<string, unknown> | undefined;
+  const capabilities = result?.agentCapabilities as Record<string, unknown> | undefined;
+  if (capabilities) {
+    session.acpLoadSession = capabilities.loadSession === true;
+    session.acpMcpCapabilities = readAcpMcpCapabilities(capabilities);
+  }
+
+  const pending = session.acpPendingSessionStart;
+  if (!pending) return;
+  // Only the initialize result releases the deferred session start —
+  // protocolVersion is the field both ACP agents return there.
+  if (!capabilities && typeof result?.protocolVersion !== 'number') return;
+  session.acpPendingSessionStart = undefined;
+  if (pending.resumeSessionId && session.acpLoadSession) {
+    session.acpResumeAttempted = true;
+    session.continuity = 'resumed';
+    sendCodexJsonRpc(session.process, 'session/load', {
+      sessionId: pending.resumeSessionId,
+      cwd: session.cwd,
+      mcpServers: acpMcpServers(session),
+      _meta: { systemPrompt: session.systemPrompt },
+    });
+    return;
+  }
+  // Agent cannot load sessions (or none was requested): start fresh and say so.
+  if (pending.resumeSessionId) session.continuity = 'transcript-seeded';
+  sendAcpSessionNew(session);
+}
+
 function handleServerMessage(session: ManagedSession, line: string): void {
+  observeAcpInitializeResult(session, line);
   handleCodexServerLine(session, line, {
     onThreadReady: () => {
       session.resolveThreadReady?.();
@@ -1060,15 +1994,33 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       session.status = 'busy';
     },
     onTurnCompleted: (status) => {
+      cancelAgentQuestionsForSession(session.id, status === 'completed');
       session.status = 'ready';
       setSessionThreadAttention(
         session,
-        status === 'failed' ? 'failed' : status === 'interrupted' ? 'idle' : 'complete',
+        status === 'failed'
+          ? 'failed'
+          : status === 'interrupted'
+            ? 'idle'
+            : hasPendingAgentQuestion(session.id)
+              ? 'input'
+              : 'complete',
       );
-      void flushPendingPlanFeedback(session);
+      if (status === 'completed') {
+        void flushPendingAcpWork(session);
+      } else {
+        failPendingFollowUps(session, `The active turn ${status}; queued tasks were not started.`);
+        void flushPendingPlanFeedback(session);
+      }
     },
     onTurnIdChanged: (turnId) => {
       session.turnId = turnId;
+    },
+    onResponse: ({ requestId, result }) => {
+      resolvePendingProviderResponse(session.id, requestId, result);
+      const requestKey = buildPendingRequestKey(session.id, requestId);
+      pendingProviderFollowUps.delete(requestKey);
+      pendingUserTurnRequests.delete(requestKey);
     },
     onEvent: (event) => {
       if (event.type === 'approval_request' && event.approvalRequestId !== undefined) {
@@ -1089,13 +2041,16 @@ function handleServerMessage(session: ManagedSession, line: string): void {
                 kind,
               },
         );
-        if (kind === 'command' || kind === 'file_change') {
+        // H8: ACP session/request_permission arrives as kind 'permissions' —
+        // register those too so mobile-companion and the statusbar pending
+        // count see Cursor/Devin approvals, not just Codex command/file_change.
+        if (kind === 'command' || kind === 'file_change' || kind === 'permissions') {
           pendingApprovalDetails.set(requestKey, {
             sessionId: session.id,
             requestKey,
             requestId: event.approvalRequestId,
             kind,
-            reason: event.approvalReason,
+            reason: event.approvalReason ?? event.toolName,
             command: event.approvalCommand,
             cwd: event.approvalCwd,
             grantRoot: event.approvalGrantRoot,
@@ -1120,7 +2075,7 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         }
       }
       let deliveredEvent = event;
-      if (session.appThreadId) {
+      if (session.appThreadId && !isTemporaryChatThread(session.appThreadId)) {
         const currentPlan = getAgentUIIntent(`plan:${session.appThreadId}`);
         const adapted = adaptProviderEventToAgentUIIntent(
           event,
@@ -1154,9 +2109,14 @@ function handleServerMessage(session: ManagedSession, line: string): void {
           setSessionThreadAttention(session, 'working');
         }
       } else if (event.type === 'error' || (event.type === 'status' && event.status === 'error')) {
+        cancelAgentQuestionsForSession(session.id);
         setSessionThreadAttention(session, 'failed');
       } else if (event.type === 'status' && event.status === 'complete') {
-        setSessionThreadAttention(session, 'complete');
+        cancelAgentQuestionsForSession(session.id, true);
+        setSessionThreadAttention(
+          session,
+          hasPendingAgentQuestion(session.id) ? 'input' : 'complete',
+        );
       } else if (event.type === 'status' && event.status === 'thinking') {
         setSessionThreadAttention(session, 'working');
       }
@@ -1174,6 +2134,9 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       console.log(`[Codex:${session.id.slice(0, 8)}] ${message}`);
     },
     onRequestError: (error) => {
+      if (rejectPendingProviderResponse(session.id, error.requestId, error.message)) return true;
+      if (failPendingProviderFollowUp(session, error)) return true;
+      if (failPendingUserTurnRequest(session, error)) return true;
       // Devin only needs `authenticate` when stored credentials are missing or
       // expired. Retry the handshake once via devin-browser, which opens a
       // browser sign-in — triggered by failure, never eagerly.
@@ -1184,14 +2147,24 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         isAcpAuthError(error.message)
       ) {
         session.acpAuthRetried = true;
+        if (session.acpResumeAttempted) session.continuity = 'transcript-seeded';
         sendCodexJsonRpc(session.process, 'authenticate', {
           methodId: ACP_AUTH_METHODS.devin,
         });
-        sendCodexJsonRpc(session.process, 'session/new', {
-          cwd: session.cwd,
-          mcpServers: [],
-          _meta: { systemPrompt: session.systemPrompt },
-        });
+        sendAcpSessionNew(session);
+        return true;
+      }
+      // A failed session/load (e.g. the provider forgot the session id) falls
+      // back to a fresh session once — continuity reports what really happened.
+      if (
+        isAcpAgentProvider(session.provider) &&
+        session.acpResumeAttempted &&
+        !session.acpResumeFailed &&
+        !session.threadId
+      ) {
+        session.acpResumeFailed = true;
+        session.continuity = 'transcript-seeded';
+        sendAcpSessionNew(session);
         return true;
       }
       return false;
@@ -1210,12 +2183,92 @@ function handleServerMessage(session: ManagedSession, line: string): void {
   });
 }
 
+/**
+ * Drain queued work at a successful turn boundary. A failed or interrupted
+ * active turn fails pending user tasks instead of silently starting them.
+ * Each sendMessage starts one new turn, so only one queue item is dispatched
+ * per completion boundary.
+ */
+async function flushPendingAcpWork(session: ManagedSession): Promise<void> {
+  if (await flushPendingFollowUp(session)) return;
+  await flushPendingPlanFeedback(session);
+}
+
+/** Returns true when a queued composer send consumed this turn boundary. */
+async function flushPendingFollowUp(session: ManagedSession): Promise<boolean> {
+  if (session.status !== 'ready') return false;
+  const queued = pendingFollowUps.get(session.id);
+  const next = queued?.shift();
+  if (!next) return false;
+  if (!queued?.length) pendingFollowUps.delete(session.id);
+  broadcastEvent(session.id, { type: 'queue_update', queuedSendCount: queued?.length ?? 0 });
+  try {
+    const receipt = next.tracked
+      ? followUpReceipts.get(session.id)?.get(next.requestId)
+      : undefined;
+    await sendMessage(
+      session.id,
+      next.message,
+      next.attachments,
+      undefined,
+      receipt
+        ? { receipt, request: { requestId: next.requestId, intent: next.intent } }
+        : undefined,
+    );
+    if (next.tracked && receipt?.result?.status !== 'failed') {
+      if (receipt) {
+        setFollowUpResult(
+          session.id,
+          receipt,
+          { requestId: next.requestId, intent: next.intent },
+          'delivered',
+        );
+      }
+    }
+  } catch (error) {
+    if (next.tracked) {
+      const receipt = followUpReceipts.get(session.id)?.get(next.requestId);
+      if (receipt) {
+        setFollowUpResult(
+          session.id,
+          receipt,
+          { requestId: next.requestId, intent: next.intent },
+          'failed',
+          error instanceof Error ? error.message : 'Provider could not accept the queued task.',
+        );
+      }
+    }
+    failPendingFollowUps(session, 'A queued task could not be sent; later tasks were not started.');
+    console.warn(`[Codex:${session.id.slice(0, 8)}] Failed to deliver queued message:`, error);
+  }
+  return true;
+}
+
+function failPendingFollowUps(session: ManagedSession, reason: string): void {
+  const queued = pendingFollowUps.get(session.id) ?? [];
+  pendingFollowUps.delete(session.id);
+  let failedAny = false;
+  for (const [requestId, receipt] of followUpReceipts.get(session.id) ?? []) {
+    if (receipt.result?.status !== 'queued') continue;
+    const intent =
+      queued.find((item) => item.requestId === requestId)?.intent ?? receipt.result.intent;
+    setFollowUpResult(session.id, receipt, { requestId, intent }, 'failed', reason);
+    failedAny = true;
+  }
+  if (queued.length > 0 || failedAny) {
+    broadcastEvent(session.id, { type: 'queue_update', queuedSendCount: 0 });
+  }
+}
+
 async function flushPendingPlanFeedback(session: ManagedSession): Promise<void> {
   const queued = pendingPlanFeedback.get(session.id);
   if (!queued?.length || session.status !== 'ready') return;
   pendingPlanFeedback.delete(session.id);
   try {
-    await sendMessage(session.id, queued.join('\n'));
+    await sendMessage(session.id, queued.join('\n'), [], {
+      model: session.model,
+      permissionMode: session.mode,
+    });
   } catch (error) {
     pendingPlanFeedback.set(session.id, [
       ...queued,
@@ -1234,7 +2287,10 @@ function setSessionThreadAttention(
 ): void {
   if (!session.appThreadId) return;
   try {
-    updateChatThreadAttention(session.appThreadId, state);
+    updateChatThreadAttention(
+      session.appThreadId,
+      state === 'working' && hasPendingAgentQuestion(session.id) ? 'input' : state,
+    );
   } catch (error) {
     console.warn(
       `[Codex:${session.id.slice(0, 8)}] Failed to persist thread attention state:`,
@@ -1266,10 +2322,34 @@ function notifyForChatEvent(session: ManagedSession, event: CodexEvent): void {
 
 function broadcastEvent(sessionId: string, event: CodexEvent): void {
   const session = sessions.get(sessionId);
+  let persistedByMain = session?.origin === 'browser';
   if (
+    (event.type === 'turn_outcome' || event.type === 'follow_up_delivery') &&
     session?.appThreadId &&
-    ['usage', 'usage_context', 'turn_outcome', 'context_compaction', 'status'].includes(event.type)
+    session.origin !== 'browser'
   ) {
+    try {
+      saveChatEvent(
+        session.appThreadId,
+        session.repoId ?? null,
+        sessionId,
+        event,
+        new Date().toISOString(),
+      );
+      persistedByMain = true;
+    } catch (error) {
+      console.error(`[Chat] Could not persist ${event.type}:`, error);
+    }
+  }
+  const deliveredEvent: CodexEvent = {
+    ...(persistedByMain ? { ...event, persistedBy: 'main' as const } : event),
+    // Stamp the session model onto usage events so the renderer's per-turn
+    // footer doesn't have to look it up.
+    ...(event.type === 'usage' || event.type === 'usage_context'
+      ? { model: event.model ?? session?.model }
+      : {}),
+  };
+  if (session && session.appThreadId && shouldPersistDojoExecutionEvent(session, event)) {
     try {
       const model = event.model ?? session.model;
       const usagePrice =
@@ -1288,27 +2368,80 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
     }
   }
   if (
+    !session?.temporaryChat &&
     session?.appThreadId &&
     ((event.type === 'turn_outcome' && event.turnOutcome === 'completed') ||
       (event.type === 'status' && event.status === 'complete'))
   ) {
     scheduleThreadMetadataRefresh(session.appThreadId);
   }
-  if (['usage', 'usage_context', 'turn_outcome', 'context_compaction'].includes(event.type)) return;
+  // Usage, context, and terminal outcome events reach subscribers/windows.
+  // Other raw turn internals remain telemetry-only.
+  if (event.type === 'context_compaction') return;
+  for (const listener of codexEventListeners) {
+    try {
+      listener({
+        sessionId,
+        appThreadId: session?.appThreadId,
+        event: deliveredEvent,
+      });
+    } catch (error) {
+      console.error('[Codex] Event subscriber failed:', error);
+    }
+  }
+  if (session?.headless) return;
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('chat:event', {
       sessionId,
       appThreadId: session?.appThreadId,
-      ...event,
+      ...deliveredEvent,
     });
   }
 }
 
-function broadcastAgentUIIntent(
+/**
+ * Delivers structured feedback (surface actions, anchored comments) to a
+ * live session using the same steer / prompt / queue rules as plan edits.
+ * Returns false when the session is gone.
+ */
+export async function deliverStructuredAgentFeedback(
+  sessionId: string,
+  payload: string,
+): Promise<boolean> {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  const delivery = resolvePlanFeedbackDelivery(session.provider, session.status, session.turnId);
+  if (delivery === 'steer') {
+    await steerTurn(session.id, payload);
+  } else if (delivery === 'prompt') {
+    await sendMessage(session.id, payload, [], {
+      model: session.model,
+      permissionMode: session.mode,
+    });
+  } else if (delivery === 'queue') {
+    const queued = pendingPlanFeedback.get(session.id) ?? [];
+    queued.push(payload);
+    pendingPlanFeedback.set(session.id, queued);
+  }
+  return true;
+}
+
+export function broadcastAgentUIIntent(
   intent: NonNullable<CodexEvent['agentUIIntent']>,
   sessionId?: string,
 ): void {
   if (sessionId && sessions.has(sessionId)) {
+    const session = sessions.get(sessionId)!;
+    if (intent.kind === 'question') {
+      setSessionThreadAttention(
+        session,
+        intent.lifecycle === 'pending' || intent.lifecycle === 'presented'
+          ? 'input'
+          : session.status === 'busy'
+            ? 'working'
+            : 'idle',
+      );
+    }
     broadcastEvent(sessionId, { type: 'agent_ui_intent', agentUIIntent: intent });
     return;
   }
@@ -1325,8 +2458,133 @@ function buildPendingRequestKey(sessionId: string, requestId: JsonRpcRequestId):
   return `${sessionId}:${typeof requestId}:${String(requestId)}`;
 }
 
+function clearPendingProviderFollowUps(sessionId: string): void {
+  for (const key of pendingProviderFollowUps.keys()) {
+    if (key.startsWith(`${sessionId}:`)) pendingProviderFollowUps.delete(key);
+  }
+}
+
+function clearPendingUserTurnRequests(sessionId: string): void {
+  for (const key of pendingUserTurnRequests.keys()) {
+    if (key.startsWith(`${sessionId}:`)) pendingUserTurnRequests.delete(key);
+  }
+}
+
+function resolvePendingProviderResponse(
+  sessionId: string,
+  requestId: JsonRpcRequestId,
+  result: unknown,
+): void {
+  const key = buildPendingRequestKey(sessionId, requestId);
+  const pending = pendingProviderResponses.get(key);
+  if (!pending) return;
+  pendingProviderResponses.delete(key);
+  pending.resolve(result);
+}
+
+function rejectPendingProviderResponse(
+  sessionId: string,
+  requestId: JsonRpcRequestId,
+  message: string,
+): boolean {
+  const key = buildPendingRequestKey(sessionId, requestId);
+  const pending = pendingProviderResponses.get(key);
+  if (!pending) return false;
+  pendingProviderResponses.delete(key);
+  pending.reject(new Error(message || 'Provider rejected the request.'));
+  return true;
+}
+
+function clearPendingProviderResponses(sessionId: string, reason: string): void {
+  for (const [key, pending] of pendingProviderResponses) {
+    if (!key.startsWith(`${sessionId}:`)) continue;
+    pendingProviderResponses.delete(key);
+    clearTimeout(pending.timeout);
+    pending.reject(new Error(reason));
+  }
+}
+
+function failPendingProviderFollowUp(
+  session: ManagedSession,
+  error: { requestId: JsonRpcRequestId; message: string },
+): boolean {
+  const key = buildPendingRequestKey(session.id, error.requestId);
+  const pending = pendingProviderFollowUps.get(key);
+  if (!pending) return false;
+  pendingProviderFollowUps.delete(key);
+  setFollowUpResult(
+    session.id,
+    pending.receipt,
+    pending.request,
+    'failed',
+    `${acpProcessLabel(session.provider)} rejected ${pending.method}: ${error.message || 'request failed'}`,
+  );
+  if (pending.method !== 'turn/steer' && session.status === 'busy') {
+    session.status = 'ready';
+    setSessionThreadAttention(session, 'failed');
+    const reason = `${acpProcessLabel(session.provider)} rejected ${pending.method}: ${error.message || 'request failed'}`;
+    if (pending.method === 'turn/start' || pending.method === 'session/prompt') {
+      broadcastEvent(session.id, { type: 'turn_outcome', turnOutcome: 'failed' });
+    }
+    broadcastEvent(session.id, { type: 'status', status: 'error', errorMessage: reason });
+    failPendingFollowUps(session, 'A queued task was rejected; later tasks were not started.');
+  }
+  return true;
+}
+
+function failPendingUserTurnRequest(
+  session: ManagedSession,
+  error: { requestId: JsonRpcRequestId; message: string },
+): boolean {
+  const key = buildPendingRequestKey(session.id, error.requestId);
+  const pending = pendingUserTurnRequests.get(key);
+  if (!pending) return false;
+  pendingUserTurnRequests.delete(key);
+  const reason = `${acpProcessLabel(session.provider)} rejected ${pending.method}: ${error.message || 'request failed'}`;
+  session.status = 'ready';
+  setSessionThreadAttention(session, 'failed');
+  broadcastEvent(session.id, { type: 'turn_outcome', turnOutcome: 'failed' });
+  broadcastEvent(session.id, { type: 'status', status: 'error', errorMessage: reason });
+  failPendingFollowUps(session, 'The active task was rejected; queued tasks were not started.');
+  return true;
+}
+
 function isAcpAuthError(message: string): boolean {
   return /auth|login|sign.?in|credential|unauthorized|401|forbidden|403/i.test(message);
+}
+
+/**
+ * Distinct provider-side access modes for ACP agents (H9): Cursor collapses
+ * Anvil's four CodexMode levels to ask/agent/plan, so the renderer should only
+ * offer these. Codex-family providers leave this unset — all four levels are
+ * distinct there.
+ */
+const ACP_ACCESS_MODES: Record<AcpAgentProvider, string[]> = {
+  cursor: ['ask', 'agent', 'plan'],
+  devin: ['ask', 'accept-edits', 'smart', 'bypass', 'plan'],
+};
+
+/** True when a later session could natively continue this provider thread. */
+function sessionSupportsResume(session: ManagedSession): boolean {
+  if (isAcpAgentProvider(session.provider)) {
+    // Truth comes from what the agent advertised at initialize, not a static
+    // claim — an older CLI without loadSession reports resumable: false.
+    return session.acpLoadSession === true;
+  }
+  return supportsNativeResume(session.agentProvider);
+}
+
+function sessionCapabilities(session: ManagedSession): CodexSessionCapabilities {
+  const acpProvider = isAcpAgentProvider(session.provider) ? session.provider : null;
+  return {
+    resumable: sessionSupportsResume(session),
+    midTurnSend: acpProvider ? 'queue' : 'steer',
+    followUp: { guide: !acpProvider, queue: true },
+    readOnlySession: !acpProvider,
+    // Goal lifecycle events are Codex-only (thread/goal/*); ACP agents emit none.
+    goals: !acpProvider,
+    ...(acpProvider ? { accessModes: ACP_ACCESS_MODES[acpProvider] } : {}),
+  };
 }
 
 function sessionToPublic(session: ManagedSession): CodexSession {
@@ -1341,9 +2599,14 @@ function sessionToPublic(session: ManagedSession): CodexSession {
     status: session.status,
     startedAt: session.startedAt,
     mode: session.mode,
+    appliedMode: session.appliedMode,
     providerThreadId: session.threadId ?? undefined,
     currentTurnId: session.turnId ?? undefined,
-    resumable: !!session.threadId,
+    resumable: !!session.threadId && sessionSupportsResume(session),
+    queuedSendCount: queueDepth(session.id),
+    continuity: session.continuity,
+    capabilities: sessionCapabilities(session),
+    origin: session.origin,
   };
 }
 

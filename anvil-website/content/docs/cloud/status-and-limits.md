@@ -1,23 +1,37 @@
 ---
 title: Status and limits
 navTitle: Status and limits
-description: Current alpha maturity, working surfaces, non-goals, and known limits for Anvil Cloud.
+description: What works in Anvil Cloud today, known limits, deployment restrictions and work still needed before hosted agents launch.
 product: Anvil Cloud
 section: Reference
 journey: reference
-order: 160
+order: 200
 ---
 
 # Status and limits
 
-Anvil Cloud is alpha software with real implementation across the runtime,
-builder, local server, React/Vite client path, CLI, Lens, and AWS preview
-adapter.
+Anvil Cloud is alpha software. You can run Cells locally, build React/Vite
+clients, inspect them with the CLI and Lens, and try AWS preview deployments.
 
-Use it for inspection, local development, adapter design, demos, tests, and
-contribution work. Do not treat it as production hosting. The useful question is
-not "is it done?" It is "which parts are implemented, which parts are gated, and
-what evidence should I inspect before trusting a Cell?"
+Anvil Cloud Agents will run agents on machines we host. It hasn't launched
+and has no price or release date yet. The existing integrations use your own
+provider accounts, which bill you directly.
+
+Use it for local development, demos, tests and contribution work. Before a
+preview deployment, check which features your adapter supports and inspect
+the generated plan. Production hosting is not ready.
+
+## AWS and Cloudflare app backends
+
+Both adapters now have conditional database commits, bounded record pages,
+private file storage, queue dispatch and bearer-token verification. Cloudflare
+also has a queue consumer and Cron Trigger bridge. Its experimental artifact
+builder accepts existing resources and generates a database migration. Normal
+Cell deployment remains gated. Automatic provisioning and live lifecycle evidence
+are still incomplete. AWS remains a preview adapter.
+
+Read [data and background work](/docs/cloud/app-backends) for failure behavior
+and the release checks required on each provider.
 
 ## Implemented surfaces
 
@@ -30,7 +44,7 @@ what evidence should I inspect before trusting a Cell?"
 | Builder           | Config, import policy, typecheck, server/client bundle, manifest extraction, generated client, and build metadata exist.                                                                                                                                                                                                                                                                                               |
 | Local runtime     | Local HTTP server, JSON database with snapshot branches and TTL cleanup, files, auth, logs, usage events, events, jobs, workflows, supervised services, manifest, and inspection state exist.                                                                                                                                                                                                                          |
 | CLI               | `new`, `dev`, `check`, `review`, `build`, `agents`, `executions conformance`, `channels simulate`, `inspect`, `logs`, `usage --local`, `usage --preview`, `db` table and branch lifecycle commands, `workflows`, `services list`, named `deploy --preview`, `rollback --preview --dry-run`, and `destroy --preview` exist.                                                                                                                    |
-| Client            | React/Vite is the current paved road. The browser client supports generated query/mutation metadata, mounted agent session helpers, token lookup, structured runtime errors, hook helpers, and manual `refetch`.                                                                                                                                                                                                      |
+| Client            | React/Vite is the default UI setup. The browser client supports generated query/mutation metadata, mounted agent session helpers, token lookup, structured runtime errors, hook helpers and manual `refetch`. |
 | Lens              | Local Lens is served at `/_anvil/lens` and reads the same local runtime truth as CLI JSON: manifest, capabilities, auth users, logs, traces, usage totals, active database branch, database state, workflows, services, and diagnostics.                                                                                                                                                                                |
 | Examples          | `examples/notes` is the canonical local demo. `examples/aws-preview` is the AWS-compatible smoke Cell.                                                                                                                                                                                                                                                                                                                 |
 | AWS preview       | Plan, review aggregation, CloudFormation synthesis, artifacts, optional provisioner, named preview metadata, Lambda bridge, DynamoDB, S3, SQS, EventBridge events and schedules, Step Functions workflows, outbound fetch guard, ECS/Fargate service resource synthesis, CloudWatch logs, remote inspect, remote logs, usage visibility, rollback intent, preview destroy, cost-driver hints, and cleanup hints exist. |
@@ -67,7 +81,7 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Agent evals are local-first                  | Mounted agent eval suites run locally through `anvil-cloud eval`, support baseline comparisons, and can write updated baselines for CI review. Hosted eval orchestration and remote eval execution are not wired yet.                                                                                                                                         |
 | Agent sessions are local-first               | Mounted agents support local persisted sessions, ordered events, continuation tokens, and SSE replay streams. AWS preview session transport and hosted continuation are not wired yet. See [Anvil Agents](/docs/cloud/agents).                                                                                                                                           |
 | Channels are contract-first                  | Channel bindings compile into the manifest and local simulation can route messages into mounted agent sessions. Real Slack/GitHub/Discord adapters, signature verification, and deployed webhook ingress are not wired yet. See [Anvil Agents](/docs/cloud/agents).                                                                                                       |
-| Agent Sandboxes have a runnable control plane | Runtime contracts, local providers, idempotent leases, durable cursor events, controls, budgets, cleanup receipts, authenticated HTTP/service boundaries, immutable snapshots, one-time grants, Desktop controls, subscription-auth intent, and AWS read-only transport exist. A deployed compatible worker, concrete subscription-login runners, sandbox-aware Lens, hosted persistence, and real-account verification remain. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
+| Agent Sandboxes have a runnable control plane | Runtime contracts, local providers, idempotent leases, durable cursor events, controls, budgets, cleanup receipts, authenticated HTTP/service boundaries, immutable snapshots, one-time grants, Desktop controls, provider-account authentication intent, and AWS read-only transport exist. Anvil Cloud Agents hosted compute is unavailable and disabled by default. A deployed compatible worker, concrete provider login runners, sandbox-aware Lens, hosted persistence, and real-account verification remain. Hosted compute will be paid when released; no price or release date has been set. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
 
 ## What to verify before trusting a Cell
 

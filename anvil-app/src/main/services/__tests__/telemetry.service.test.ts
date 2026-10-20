@@ -41,9 +41,18 @@ describe('initializeTelemetry', () => {
         sendDefaultPii: false,
         maxBreadcrumbs: 0,
         tracesSampleRate: 0,
-        autoSessionTracking: false,
-        attachScreenshot: false,
+        integrations: expect.any(Function),
       }),
     );
+    const options = mocks.init.mock.calls[0][0] as {
+      integrations: (integrations: Array<{ name: string }>) => Array<{ name: string }>;
+    };
+    const filtered = options.integrations([
+      { name: 'MainProcessSession' },
+      { name: 'BrowserWindowSession' },
+      { name: 'Screenshots' },
+      { name: 'ElectronBreadcrumbs' },
+    ]);
+    expect(filtered).toEqual([{ name: 'ElectronBreadcrumbs' }]);
   });
 });

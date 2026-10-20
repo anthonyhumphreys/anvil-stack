@@ -50,6 +50,8 @@ import {
 import { PullRequestEvidencePanel } from '../review/PullRequestEvidencePanel';
 import { PullRequestThreads } from './PullRequestThreads';
 import { PullRequestDiffView } from './PullRequestDiffView';
+import { ReviewInChatButton } from './ReviewInChat';
+import type { ReviewInChatScope } from './review-in-chat';
 
 type ExperienceMode = 'story' | 'map' | 'diff';
 
@@ -280,6 +282,14 @@ export function PullRequestCanvas({
     ],
   );
 
+  const reviewScope: ReviewInChatScope = {
+    type: 'pull-request',
+    repoId,
+    repoName: activeWorkspace?.repos.find((repo) => repo.id === repoId)?.name,
+    pullRequestId,
+    title: visualisation?.pullRequest.title,
+  };
+
   const linkedProvider = searchParams.get('provider');
   const threadPullRequest =
     (visualisation?.repoId === repoId && visualisation.pullRequest.id === pullRequestId
@@ -315,7 +325,9 @@ export function PullRequestCanvas({
             <h1 className="truncate text-sm font-semibold text-text-primary">
               Pull request #{pullRequestId}
             </h1>
-            <p className="mt-0.5 text-xs text-text-tertiary">Traditional diff review</p>
+            <p className="mt-0.5 text-xs text-text-tertiary">
+              Traditional diff review · New reviews open inline in chat
+            </p>
           </div>
           <button
             type="button"
@@ -323,10 +335,11 @@ export function PullRequestCanvas({
               setMode('map');
               void generate(false);
             }}
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85"
+            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
           >
             <Sparkles size={13} /> Visualise PR
           </button>
+          <ReviewInChatButton scope={reviewScope} />
           {onClose && (
             <button
               type="button"
@@ -390,11 +403,16 @@ export function PullRequestCanvas({
             <button
               type="button"
               onClick={() => void generate(true)}
-              className="mt-4 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-4 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={generating}
             >
               {generating ? 'Retrying…' : 'Try again'}
             </button>
+          )}
+          {error && (
+            <div className="mt-3 flex justify-center">
+              <ReviewInChatButton scope={reviewScope} variant="secondary" />
+            </div>
           )}
         </div>
       </div>
@@ -427,6 +445,8 @@ export function PullRequestCanvas({
             <span className="shrink-0 font-mono tabular-nums">
               {visualisation.headSha.slice(0, 8)}
             </span>
+            <span className="hidden shrink-0 text-border xl:inline">/</span>
+            <span className="hidden truncate xl:inline">New reviews open inline in chat</span>
           </div>
         </div>
 
@@ -480,6 +500,7 @@ export function PullRequestCanvas({
         >
           <MessageSquareText size={13} /> <span className="hidden xl:inline">Ask in chat</span>
         </button>
+        <ReviewInChatButton scope={reviewScope} className="shrink-0" />
         <button
           type="button"
           onClick={() =>
@@ -566,7 +587,7 @@ export function PullRequestCanvas({
                         <span
                           className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md font-mono text-xs font-semibold tabular-nums ${
                             selected
-                              ? 'bg-accent text-white'
+                              ? 'bg-accent text-accent-foreground'
                               : 'bg-bg-primary text-text-tertiary group-hover:text-text-secondary'
                           }`}
                         >
@@ -619,7 +640,7 @@ export function PullRequestCanvas({
                     aria-pressed={changeState === state}
                     className={`rounded-md px-3 py-1.5 text-xs font-medium capitalize ${
                       changeState === state
-                        ? 'bg-accent text-white'
+                        ? 'bg-accent text-accent-foreground'
                         : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
                     }`}
                   >
@@ -689,7 +710,7 @@ export function PullRequestCanvas({
                       <button
                         type="button"
                         onClick={() => openNode(selectedNode)}
-                        className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85"
+                        className="inline-flex min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent/85"
                       >
                         <FileCode2 size={13} className="shrink-0" />
                         <span>Open source</span>

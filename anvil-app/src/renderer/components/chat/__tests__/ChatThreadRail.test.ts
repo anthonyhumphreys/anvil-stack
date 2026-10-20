@@ -4,6 +4,7 @@ import {
   canSettleThread,
   getThreadActionVisibilityClass,
   getThreadDisplayState,
+  partitionNeedsUserThreads,
   partitionThreads,
   shouldSelectThreadFromKey,
 } from '../ChatThreadRail';
@@ -33,6 +34,14 @@ describe('getThreadActionVisibilityClass', () => {
 
     expect(className).toContain('group-hover:opacity-100');
     expect(className).toContain('group-focus-within:opacity-100');
+  });
+
+  it('floats over the row instead of reserving title width, except while renaming', () => {
+    expect(getThreadActionVisibilityClass()).toContain('absolute');
+    expect(getThreadActionVisibilityClass()).not.toMatch(/\bw-\[/);
+    const editing = getThreadActionVisibilityClass(true);
+    expect(editing).not.toContain('absolute');
+    expect(editing).not.toContain('opacity-0');
   });
 });
 
@@ -86,5 +95,17 @@ describe('work inbox lifecycle', () => {
         false,
       ),
     ).toBe('idle');
+  });
+
+  it('puts approval and input threads in the waiting-for-user group in their existing order', () => {
+    const idle = makeThread({ id: 'idle' });
+    const input = makeThread({ id: 'input', attentionState: 'input' });
+    const failed = makeThread({ id: 'failed', attentionState: 'failed' });
+    const approval = makeThread({ id: 'approval', attentionState: 'approval' });
+
+    expect(partitionNeedsUserThreads([idle, input, failed, approval])).toEqual({
+      needsUserThreads: [input, approval],
+      otherActiveThreads: [idle, failed],
+    });
   });
 });

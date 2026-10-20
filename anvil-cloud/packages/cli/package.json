@@ -29,20 +29,20 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.1063.0",
-    "@aws-sdk/client-cloudformation": "^3.1063.0",
-    "@aws-sdk/client-cloudwatch-logs": "^3.1063.0",
-    "@aws-sdk/client-dynamodb": "^3.1063.0",
-    "@aws-sdk/client-eventbridge": "^3.1066.0",
-    "@aws-sdk/client-lambda-microvms": "^3.1076.0",
-    "@aws-sdk/client-s3": "^3.1063.0",
-    "@aws-sdk/client-sfn": "^3.1063.0",
-    "@aws-sdk/client-sqs": "^3.1063.0",
-    "effect": "^3.21.4",
+    "@aws-sdk/client-bedrock-runtime": "^3.1146.0",
+    "@aws-sdk/client-cloudformation": "^3.1146.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.1146.0",
+    "@aws-sdk/client-dynamodb": "^3.1146.0",
+    "@aws-sdk/client-eventbridge": "^3.1146.0",
+    "@aws-sdk/client-lambda-microvms": "^3.1146.0",
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/client-sfn": "^3.1146.0",
+    "@aws-sdk/client-sqs": "^3.1146.0",
+    "effect": "^3.22.2",
     "esbuild": "^0.28.1",
-    "jose": "^6.2.3",
-    "typescript": "^5.7.2",
-    "vite": "^6.4.3"
+    "jose": "^6.2.12",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4"
   },
   "devDependencies": {
     "@anvil-cloud/auth": "workspace:^",
@@ -53,6 +53,6 @@
     "@anvil-cloud/deployment": "workspace:*",
     "@anvil-cloud/local": "workspace:*",
     "@anvil-cloud/runtime": "workspace:*",
-    "tsx": "^4.22.4"
+    "tsx": "^4.23.15"
   }
 }

@@ -731,12 +731,28 @@ function inspectContextCapabilityUse(
   policyContext: PolicyContext,
 ): void {
   switch (contextProperty) {
+    case "dispatchPendingJobs":
+      for (const capability of ["database", "jobs"] as const) {
+        inspectCapabilityUse(
+          capability,
+          "ctx.dispatchPendingJobs",
+          `ctx.dispatchPendingJobs requires capabilities.${capability} to be declared.`,
+          `Declare capabilities.${capability} before publishing pending jobs.`,
+          sourceFile,
+          relativeFile,
+          node,
+          diagnostics,
+          policyContext,
+        );
+      }
+      return;
     case "db":
+    case "commit":
       inspectCapabilityUse(
         "database",
-        "ctx.db",
-        "ctx.db requires capabilities.database to be declared.",
-        "Declare capabilities.database: true before using ctx.db.",
+        `ctx.${contextProperty}`,
+        `ctx.${contextProperty} requires capabilities.database to be declared.`,
+        `Declare capabilities.database: true before using ctx.${contextProperty}.`,
         sourceFile,
         relativeFile,
         node,

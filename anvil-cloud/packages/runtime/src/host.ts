@@ -12,6 +12,9 @@ export type DatabaseWhereOperator = "=" | "!=" | ">" | ">=" | "<" | "<=";
 
 export type DatabaseRecord = Record<string, unknown>;
 
+export type DatabasePageOptions = { limit?: number; cursor?: string };
+export type DatabasePage = { records: DatabaseRecord[]; cursor: string | null };
+
 export type DatabaseQueryClient = {
   all: () => Promise<DatabaseRecord[]>;
   first: () => Promise<DatabaseRecord | null>;
@@ -19,6 +22,8 @@ export type DatabaseQueryClient = {
 };
 
 export type DatabaseTableClient = {
+  /** Records ordered by id. Cursors are scoped to this table, not a snapshot. */
+  page: (options?: DatabasePageOptions) => Promise<DatabasePage>;
   all: () => Promise<DatabaseRecord[]>;
   get: (id: string) => Promise<DatabaseRecord | null>;
   insert: (record: DatabaseRecord) => Promise<DatabaseRecord>;
@@ -37,9 +42,19 @@ export type DatabaseInspection = {
   tables: Record<string, { rows: number }>;
 };
 
+/** A conditional replacement. null means absent for expected, or deletion for record. */
+export type DatabaseWrite = {
+  table: string;
+  id: string;
+  expected: DatabaseRecord | null;
+  record: DatabaseRecord | null;
+};
+
 export interface DatabaseAdapter {
   table(name: string): DatabaseTableClient;
   inspect?(): Promise<DatabaseInspection>;
+  /** All conditions and writes succeed together, or none of the records change. */
+  commit?(writes: readonly DatabaseWrite[]): Promise<void>;
 }
 
 export interface FileAdapter {
@@ -76,16 +91,17 @@ export interface EventAdapter {
 }
 
 export interface JobAdapter {
-  enqueue(name: string, payload: unknown): Promise<{ id: string }>;
+  enqueue(
+    name: string,
+    payload: unknown,
+    options?: { id: string },
+  ): Promise<{ id: string }>;
 }
 
 export type WorkflowRunStatus = "running" | "completed" | "failed";
 
 export type WorkflowStepRunStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed";
+  "pending" | "running" | "completed" | "failed";
 
 export type WorkflowStepRun = {
   name: string;
@@ -108,10 +124,7 @@ export type WorkflowRun = {
 };
 
 export type WorkflowRunLifecycle =
-  | "completed"
-  | "failed"
-  | "in-flight"
-  | "resumable";
+  "completed" | "failed" | "in-flight" | "resumable";
 
 export type WorkflowRunProgress = {
   lifecycle: WorkflowRunLifecycle;

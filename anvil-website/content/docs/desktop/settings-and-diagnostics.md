@@ -3,9 +3,9 @@ title: Settings and diagnostics
 navTitle: Settings and diagnostics
 description: Configure roles, providers, connectors, companion access, Codex extensions, telemetry, and runtime diagnostics.
 product: Anvil Desktop
-section: Operations
+section: Reference
 journey: reference
-order: 122
+order: 280
 ---
 
 # Settings and diagnostics
@@ -53,6 +53,28 @@ Documentation settings support Confluence directly and Notion through MCP. Git a
 Mobile companion settings start or stop the local companion service, create a short-lived pairing ticket, issue a Raycast token, list paired devices, and revoke a device. Pairing data is a credential.
 
 Cloud features are off by default. Enabling them reveals the Cloud Workbench; it does not configure a Cloud execution endpoint for you.
+
+## Sync & Mesh
+
+In **Settings → Sync & Mesh**, choose a backend and sign in to connect a device.
+You can use your own Cloudflare deployment or a compatible third-party backend.
+Anvil-hosted production access has not launched. Its invite-only test path
+requires paid or beta access, and checkout is closed. Proposed paid plans are
+on the [pricing page](/pricing). Running your own backend carries no Anvil
+subscription charge.
+
+Choose Local or Sync separately for each workspace. New workspaces start Local.
+Sync carries workspace definitions, templates, custom agents and selected
+settings. Repository files, provider credentials, machine paths and chat
+transcripts stay on their machines.
+
+Once signed in, you can manage devices, follow remote jobs, enable the worker
+on this machine and export your data. Account security and deployment limits
+still apply.
+
+For supported upgraded clients, the app selects an encrypted live route to an enrolled host when that host is enabled and reachable. Managed HTTPS routes use an operator-configured provider proxy; they are off by default and are not peer-to-peer. Configuring a Sync backend alone does not provide a host route.
+
+The panel itself is covered in [Sync and Mesh](/docs/desktop/sync-and-mesh); the encryption, sync, job, handoff, and self-deploy mechanics behind it are in the [Sync & Mesh docs](/docs/sync/overview).
 
 ## Updates and crash reporting
 

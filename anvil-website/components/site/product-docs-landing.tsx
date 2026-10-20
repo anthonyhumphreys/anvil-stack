@@ -1,34 +1,11 @@
-import Image from "next/image";
 import Link from "next/link";
-import {
-  ArrowRight,
-  Check,
-  ChevronDown,
-  CircleDot,
-  Container,
-  FileCheck2,
-  PackageSearch,
-  ShieldCheck
-} from "lucide-react";
+import { ArrowRight, Check, ChevronDown, FileCheck2, PackageSearch, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { EnvelopeBoundary } from "@/components/site/envelope-boundary";
+import { WorkbenchStill } from "@/components/site/workbench";
 import { groupProductDocs, type DocMeta } from "@/lib/docs";
 import { journeyById, type ProductId } from "@/lib/docs-navigation";
-import { productLines } from "@/lib/site";
-
-const startHref: Record<Exclude<ProductId, "start" | "project">, string> = {
-  desktop: "/docs/desktop/installation",
-  cloud: "/docs/cloud/quickstart",
-  registry: "/docs/registry/quickstart",
-  "node-base": "/docs/node-base/safe-mode"
-};
-
-const statusLabel: Record<Exclude<ProductId, "start" | "project">, string> = {
-  desktop: "Active development",
-  cloud: "Alpha",
-  registry: "Alpha",
-  "node-base": "Companion surface"
-};
+import { productById, type ProductId as SiteProductId } from "@/lib/site";
 
 export function ProductDocsLanding({
   productId,
@@ -37,69 +14,56 @@ export function ProductDocsLanding({
   productId: Exclude<ProductId, "start" | "project">;
   docs: Array<DocMeta & { slug: string; segments: string[] }>;
 }) {
-  const product = productLines.find((entry) => entry.id === productId);
+  const product = productById.get(productId as SiteProductId);
   if (!product) return null;
   const journeys = groupProductDocs(docs, productId);
 
   return (
     <div className="pb-8">
-      <section className="border-b pb-12">
-        <div className="flex flex-wrap items-center gap-3">
-          <Badge variant="outline" className="gap-2 bg-muted/35 text-muted-foreground">
-            <product.icon className="size-3.5 text-accent" aria-hidden="true" />
-            {product.repoName}
-          </Badge>
-          <span className="text-xs text-muted-foreground">Open source · {statusLabel[productId]}</span>
-        </div>
-        <h1 className="mt-6 max-w-4xl text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.025em] sm:text-5xl lg:text-6xl">
-          {product.title}
-        </h1>
-        <p className="mt-5 max-w-[68ch] text-pretty text-lg leading-8 text-muted-foreground">{product.description}</p>
-        <div className="mt-7 flex flex-wrap gap-3">
+      <section className="pb-12">
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <product.icon className="size-4 text-accent" aria-hidden="true" />
+          {product.statusLabel}
+          <span aria-hidden="true">/</span>
+          <span className="font-mono text-[0.8125rem]">{product.repoName}</span>
+        </p>
+        <h1 className="font-display text-display-2 mt-5">{product.title}</h1>
+        <p className="mt-4 text-xl font-medium leading-8">{product.tagline}</p>
+        <p className="mt-4 max-w-[66ch] text-lg leading-8 text-muted-foreground">{product.description}</p>
+        <div className="mt-8 flex flex-wrap gap-3">
           <Button asChild size="lg">
-            <Link href={startHref[productId]}>
-              Open the setup guide
-              <ArrowRight data-icon="inline-end" aria-hidden="true" />
-            </Link>
+            <Link href={product.startHref}>{product.startLabel}</Link>
           </Button>
           <Button asChild size="lg" variant="outline">
-            <Link href={product.repoHref}>Inspect the repository</Link>
+            <Link href={product.repoHref}>Read the source</Link>
           </Button>
         </div>
       </section>
 
-      <section className="py-12" aria-labelledby={`${productId}-proof-title`}>
-        <div className="mb-6 grid gap-3 sm:grid-cols-[12rem_1fr]">
-          <h2 id={`${productId}-proof-title`} className="text-sm font-semibold">Working proof</h2>
-          <p className="max-w-2xl text-sm leading-6 text-muted-foreground">A concrete view of the boundary this product owns today.</p>
-        </div>
+      <section aria-label={`${product.title} at work`}>
         <ProductProof productId={productId} />
       </section>
 
-      <section className="border-y py-10" aria-labelledby={`${productId}-boundary-title`}>
-        <div className="grid gap-8 lg:grid-cols-2">
-          <div>
-            <h2 id={`${productId}-boundary-title`} className="text-xl font-semibold">What it owns</h2>
-            <p className="mt-3 max-w-[62ch] text-sm leading-6 text-muted-foreground">{product.boundary}</p>
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold">Current status</h2>
-            <p className="mt-3 max-w-[62ch] text-sm leading-6 text-muted-foreground">{product.status}</p>
-          </div>
+      <section className="mt-14 grid gap-10 border-y py-10 lg:grid-cols-2" aria-labelledby={`${productId}-scope`}>
+        <div>
+          <h2 id={`${productId}-scope`} className="text-lg font-semibold">What it&apos;s for</h2>
+          <p className="mt-3 max-w-[56ch] text-[0.9375rem] leading-7 text-muted-foreground">{product.boundary}</p>
+          <h2 className="mt-8 text-lg font-semibold">Where it&apos;s at</h2>
+          <p className="mt-3 max-w-[56ch] text-[0.9375rem] leading-7 text-muted-foreground">{product.status}</p>
         </div>
-        <ul className="mt-8 grid gap-x-8 gap-y-3 sm:grid-cols-2">
-          {product.points.slice(0, 6).map((point) => (
-            <li key={point} className="flex items-start gap-3 text-sm leading-6 text-muted-foreground">
-              <Check className="mt-1 size-4 shrink-0 text-accent" aria-hidden="true" />
+        <ul className="grid content-start gap-3">
+          {product.points.map((point) => (
+            <li key={point} className="flex gap-3 text-[0.9375rem] leading-7">
+              <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
               <span>{point}</span>
             </li>
           ))}
         </ul>
       </section>
 
-      <section className="pt-12" aria-labelledby={`${productId}-paths-title`}>
-        <h2 id={`${productId}-paths-title`} className="text-3xl font-semibold tracking-[-0.02em]">Choose a path</h2>
-        <div className="mt-7 border-y">
+      <section className="pt-14" aria-labelledby={`${productId}-paths-title`}>
+        <h2 id={`${productId}-paths-title`} className="font-display text-display-3">Read the docs</h2>
+        <div className="mt-8 border-y">
           {journeys.map((journey) => (
             <div key={journey.id} className="grid gap-5 border-b py-7 last:border-b-0 lg:grid-cols-[12rem_1fr]">
               <div>
@@ -108,18 +72,18 @@ export function ProductDocsLanding({
               </div>
               <div>
                 <div className="grid gap-1 sm:grid-cols-2">
-                  {journey.entries.slice(0, 6).map((entry) => (
+                  {journey.entries.slice(0, 8).map((entry) => (
                     <JourneyLink key={entry.slug} entry={entry} />
                   ))}
                 </div>
-                {journey.entries.length > 6 ? (
+                {journey.entries.length > 8 ? (
                   <details className="group/more mt-2 border-t pt-2">
                     <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                       <ChevronDown className="size-3.5 transition-transform group-open/more:rotate-180" aria-hidden="true" />
-                      Show {journey.entries.length - 6} more {journey.label.toLowerCase()} pages
+                      {journey.entries.length - 8} more
                     </summary>
                     <div className="mt-1 grid gap-1 sm:grid-cols-2">
-                      {journey.entries.slice(6).map((entry) => (
+                      {journey.entries.slice(8).map((entry) => (
                         <JourneyLink key={entry.slug} entry={entry} />
                       ))}
                     </div>
@@ -138,53 +102,45 @@ function JourneyLink({ entry }: { entry: { slug: string; navTitle: string } }) {
   return (
     <Link
       href={`/docs/${entry.slug}`}
-      className="group flex min-h-11 items-center justify-between gap-3 rounded-md px-3 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group flex min-h-11 items-center justify-between gap-3 rounded-md px-3 text-[0.9375rem] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <span>{entry.navTitle}</span>
-      <ArrowRight className="size-3.5 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100" aria-hidden="true" />
+      <ArrowRight
+        className="size-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+        aria-hidden="true"
+      />
     </Link>
   );
 }
 
 function ProductProof({ productId }: { productId: Exclude<ProductId, "start" | "project"> }) {
-  if (productId === "desktop") {
-    return (
-      <figure className="overflow-hidden rounded-lg border bg-[oklch(0.13_0.014_205)]">
-        <div className="flex h-10 items-center gap-2 border-b border-white/10 px-4 text-xs text-white/65">
-          <CircleDot className="size-3.5 text-accent" aria-hidden="true" />
-          Repository, conversation, and evidence in one workspace
-        </div>
-        <div className="relative aspect-[16/9]">
-          <Image src="/anvil-app-homepage.png" alt="Anvil Desktop with repository navigation and an agent conversation." fill className="object-cover object-left-top" sizes="(min-width: 1280px) 896px, 100vw" priority />
-        </div>
-      </figure>
-    );
-  }
+  if (productId === "sync") return <EnvelopeBoundary />;
+  if (productId === "desktop") return <WorkbenchStill step={2} />;
 
   if (productId === "registry") {
     const steps = [
-      { label: "npm request", detail: "metadata or tarball", icon: PackageSearch },
-      { label: "deterministic policy", detail: "signals and cached analysis", icon: ShieldCheck },
-      { label: "recorded decision", detail: "allow, quarantine, or block", icon: FileCheck2 }
+      { label: "A package is requested", detail: "npm, pnpm or Yarn asks for metadata or a tarball.", icon: PackageSearch },
+      { label: "Policy decides", detail: "Rules, provenance and cached analysis are checked.", icon: ShieldCheck },
+      { label: "The decision is recorded", detail: "Allowed, quarantined or blocked, with the reason.", icon: FileCheck2 }
     ];
     return (
-      <div className="rounded-lg border bg-muted/20 px-5 py-7">
-        <ol className="grid gap-3 lg:grid-cols-3">
+      <div className="rounded-xl border bg-card p-6 sm:p-7">
+        <ol className="grid gap-6 lg:grid-cols-3">
           {steps.map((step, index) => (
-            <li key={step.label} className="relative flex min-h-28 items-start gap-4 border-t pt-4 lg:border-t-0 lg:pt-0">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-[oklch(var(--accent)/0.14)] text-foreground">
+            <li key={step.label} className="flex gap-4">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-accent/15">
                 <step.icon className="size-5 text-accent" aria-hidden="true" />
               </span>
               <span>
-                <span className="block font-mono text-xs text-muted-foreground">0{index + 1}</span>
-                <span className="mt-1 block font-semibold">{step.label}</span>
-                <span className="mt-1 block text-sm leading-5 text-muted-foreground">{step.detail}</span>
+                <span className="block text-sm text-muted-foreground">Step {index + 1}</span>
+                <span className="mt-0.5 block font-semibold">{step.label}</span>
+                <span className="mt-1 block text-sm leading-6 text-muted-foreground">{step.detail}</span>
               </span>
             </li>
           ))}
         </ol>
-        <p className="mt-5 border-t pt-5 text-sm leading-6 text-muted-foreground">
-          LLM review can explain the evidence. Deterministic policy remains the enforcement authority.
+        <p className="mt-6 border-t pt-5 text-sm leading-6 text-muted-foreground">
+          An optional LLM review can explain the evidence. It never decides; the policy does.
         </p>
       </div>
     );
@@ -192,36 +148,47 @@ function ProductProof({ productId }: { productId: Exclude<ProductId, "start" | "
 
   if (productId === "cloud") {
     return (
-      <div className="overflow-hidden rounded-lg bg-[oklch(0.145_0.014_205)] text-[oklch(0.94_0.008_205)]">
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs text-white/60">
-          <span>src/cells/orders.cell.ts</span>
-          <span>contract → manifest → runtime</span>
+      <figure className="forge-panel">
+        <div className="forge-window-bar" aria-hidden="true">
+          <span className="dot dot--ember" />
+          <span className="dot" />
+          <span className="dot" />
+          <span className="ml-2 font-mono text-[0.6875rem] text-[oklch(var(--forge-dim))]">src/cells/orders.cell.ts</span>
         </div>
-        <pre className="overflow-x-auto p-5 font-mono text-[0.8125rem] leading-7"><code>{`export const Orders = cell({
-  queries: { listOrders },
-  mutations: { createOrder },
-  capabilities: ["database"]
-});
+        <pre className="overflow-x-auto p-5 font-mono text-[0.8125rem] leading-7 sm:p-6">
+          <code>{`import { app, query, table, text } from "@anvil-cloud/runtime";
 
-$ anvil cloud check --json
-{ "buildReady": true }`}</code></pre>
-      </div>
+export default app({
+  schema: { orders: table({ title: text() }) },
+  capabilities: { database: true },
+  queries: {
+    listOrders: query({
+      auth: "required",
+      handler: async (ctx) => ctx.db.orders.page({ limit: 25 })
+    })
+  }
+});`}</code>
+        </pre>
+        <figcaption className="sr-only">An example backend with a data table and a signed-in query returning up to 25 orders.</figcaption>
+      </figure>
     );
   }
 
   return (
-    <div className="grid overflow-hidden rounded-lg border md:grid-cols-2">
-      <div className="bg-background p-6">
-        <Container className="size-5 text-accent" aria-hidden="true" />
-        <h3 className="mt-4 text-xl font-semibold">Safe mode</h3>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">Install dependencies with lifecycle scripts disabled.</p>
-        <code className="mt-5 block overflow-x-auto rounded-md bg-muted px-3 py-3 font-mono text-xs">anvil-npm-ci-safe</code>
+    <div className="grid overflow-hidden rounded-xl border md:grid-cols-2">
+      <div className="bg-card p-6">
+        <h3 className="text-lg font-semibold">Safe mode</h3>
+        <p className="mt-2 text-[0.9375rem] leading-7 text-muted-foreground">
+          Install dependencies with lifecycle scripts switched off.
+        </p>
+        <code className="mt-5 block overflow-x-auto rounded-md bg-muted px-3 py-3 font-mono text-[0.8125rem]">anvil-npm-ci-safe</code>
       </div>
-      <div className="border-t bg-muted/25 p-6 md:border-l md:border-t-0">
-        <FileCheck2 className="size-5 text-accent" aria-hidden="true" />
-        <h3 className="mt-4 text-xl font-semibold">Observed mode</h3>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">Run lifecycle scripts deliberately and write an inspection report.</p>
-        <code className="mt-5 block overflow-x-auto rounded-md bg-background px-3 py-3 font-mono text-xs">anvil-npm-ci-observed</code>
+      <div className="border-t bg-card p-6 md:border-l md:border-t-0">
+        <h3 className="text-lg font-semibold">Observed mode</h3>
+        <p className="mt-2 text-[0.9375rem] leading-7 text-muted-foreground">
+          Let the scripts run, and get a report of what they did.
+        </p>
+        <code className="mt-5 block overflow-x-auto rounded-md bg-muted px-3 py-3 font-mono text-[0.8125rem]">anvil-npm-ci-observed</code>
       </div>
     </div>
   );

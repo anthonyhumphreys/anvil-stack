@@ -3,9 +3,9 @@ title: Registry CLI
 navTitle: CLI
 description: Install and use Anvil Registry commands for package decisions, lockfile scans, reports, overrides, and operations.
 product: Anvil Registry
-section: Getting started
+section: Guides
 journey: build
-order: 3
+order: 30
 ---
 
 # Registry CLI
@@ -28,7 +28,7 @@ Use `anvil registry ...` in normal docs, tutorials, and shell usage. Use
 `anvil-registry ...` when you are testing the package directly, debugging the
 wrapper, or writing package-specific CI.
 
-The CLI is a client. It does not run Anvil Registry by itself. Package decision commands require a running gateway, and protected operator commands require an Admin service plus an admin token. Tiny detail, large difference; otherwise you have installed a very confident phone with nobody on the other end.
+The CLI connects to a running Registry gateway. Start with the [quickstart](/docs/registry/quickstart) if you haven't set one up. Protected operator commands also need the Admin service and an admin token.
 
 ## Prerequisites
 

@@ -1,32 +1,32 @@
 ---
-title: Build, inspect, and run
+title: Build, inspect and run
 navTitle: Build and inspect
-description: Run repository commands, inspect CI pipelines, preview web and mobile apps, and send runtime evidence back to Chat.
+description: Run repository commands, explore CI pipelines, preview web and mobile apps, and send what you find back to chat.
 product: Anvil Desktop
-section: Delivery tools
+section: Guides
 journey: build
-order: 114
+order: 120
 ---
 
-# Build, inspect, and run
+# Build, inspect and run
 
-Anvil Desktop keeps common build and inspection tools inside the workspace. These tools run against local repositories and processes. They do not turn a developer machine into a sandbox.
+Anvil Desktop keeps everyday build and inspection tools inside the workspace. They run against your local repositories and processes. They don't turn your machine into a sandbox.
 
 ## Repository run commands
 
-Anvil detects runnable scripts from a repository and can use the configured model to suggest additional commands. You can save a custom command, pin or unpin it, start it, stop it, and inspect its latest status and output.
+Anvil finds the scripts a repository can run, and can ask your model to suggest more. You can save a custom command, pin it, start and stop it, and see its latest status and output.
 
-Detected or generated commands are still shell commands. Read them before running them. Saved commands persist for reuse but do not gain extra safety by being familiar.
+Detected or suggested commands are still shell commands, so read them before running them. A saved command isn't any safer for being familiar.
 
 ## CI/CD Atlas
 
-CI/CD Atlas analyses the selected repository's pipeline files and renders stages, jobs, dependencies, reusable templates, and environment gates as an explorable graph. Select a node to inspect its source, dependencies, gate status, and validation findings.
+CI/CD Atlas reads a repository's pipeline files and draws its stages, jobs, dependencies, shared templates and environment gates as a graph you can explore. Select a node to see its source, dependencies, gate status and any problems.
 
-The assistant input supports focused requests such as finding gates, validating the pipeline, or locating a named job. It works against the parsed pipeline model; it is not a general chat session.
+Its assistant answers focused questions, like finding gates, validating the pipeline or locating a job. It only knows about the pipeline; it isn't a general chat.
 
 When no supported pipeline exists, Atlas can preview and create a starter file from its built-in templates. Review the generated file, especially permissions, secrets, branch filters, deployment environments, and release gates, before committing it.
 
-Pipeline analysis is local static inspection. It does not prove that the hosted CI provider accepted or ran the configuration.
+This is a local read of the files. It doesn't prove your CI provider accepted or ran them.
 
 ## Embedded browser
 
@@ -40,7 +40,7 @@ The Browser view can:
 - send browser context to Chat
 - start the local browser bridge, attach its debugger, and register the browser MCP integration
 
-The bridge gives an agent a route to browser inspection when configured. Treat it as privileged local automation and stop it when the task is complete.
+The bridge lets an agent inspect the browser. Treat it as powerful local automation and stop it when you're done.
 
 ## iOS simulator preview
 
@@ -50,13 +50,13 @@ The preview depends on local Xcode simulator state and the configured mobile pro
 
 ## Terminal and editor
 
-The PTY terminal runs a real shell and preserves buffered output while the desktop process stays alive. The embedded editor starts a local VS Code server, focuses files and positions requested by other Anvil views, and can hand a target to an external editor.
+The terminal runs a real shell and keeps its output while the app is open. The built-in editor runs a local VS Code server, jumps to files and lines other parts of Anvil point at, and can open them in your own editor.
 
 See [Terminal and editor](/docs/desktop/terminal-and-editor) for lifecycle and security limits.
 
-## Useful evidence to send to Chat
+## What to send to chat
 
-Send the smallest useful evidence:
+Send the smallest thing that helps:
 
 - the failing command and exit code
 - the relevant output excerpt
@@ -65,4 +65,4 @@ Send the smallest useful evidence:
 - a screenshot or annotation when layout matters
 - the repository and branch under test
 
-Do not paste a whole build log if the first actionable error is twelve lines long. Agents can read noise, but they cannot make it free.
+Don't paste a whole build log when the first real error is twelve lines long. Agents can read noise, but it isn't free.

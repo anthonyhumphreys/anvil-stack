@@ -25,8 +25,19 @@ interface AttentionThreadRow {
 
 interface RepoStatusRow {
   workspace_id: string;
+  repo_id: string;
   name: string;
   status: string;
+  error: string | null;
+}
+
+const UNKNOWN_REPO_ERROR = 'No error details are available.';
+const REPO_ERROR_NEXT_ACTION = 'Open Workspace to inspect and retry indexing.';
+
+function conciseRepoError(value: string | null): string {
+  const message = value?.replace(/\s+/g, ' ').trim();
+  if (!message) return UNKNOWN_REPO_ERROR;
+  return message.length > 180 ? `${message.slice(0, 177).trimEnd()}...` : message;
 }
 
 interface ScaffoldRow {
@@ -70,8 +81,7 @@ function threadItem(row: AttentionThreadRow): WorkspaceActivityItem | null {
       return { ...base, detail: 'A turn is in progress.', status: 'running' };
     case 'complete': {
       const unseen =
-        !row.last_viewed_at ||
-        dateValue(row.attention_updated_at) > dateValue(row.last_viewed_at);
+        !row.last_viewed_at || dateValue(row.attention_updated_at) > dateValue(row.last_viewed_at);
       return unseen
         ? { ...base, detail: 'Completed work is ready to review.', status: 'ready' }
         : null;
@@ -81,10 +91,7 @@ function threadItem(row: AttentionThreadRow): WorkspaceActivityItem | null {
   }
 }
 
-function automationItem(
-  workspaceId: string,
-  item: AutomationTriageItem,
-): WorkspaceActivityItem {
+function automationItem(workspaceId: string, item: AutomationTriageItem): WorkspaceActivityItem {
   const detail =
     item.attention === 'blocked'
       ? (item.errorMessage ?? item.summary ?? 'Automation needs attention.')
@@ -131,7 +138,7 @@ function scaffoldItem(row: ScaffoldRow): WorkspaceActivityItem | null {
       id: `scaffold-${row.workspace_id}`,
       workspaceId: row.workspace_id,
       feature: row.status === 'indexing' ? 'repos' : 'chat',
-      route: row.status === 'indexing' ? '/repos' : '/chat',
+      route: row.status === 'indexing' ? '/workspace?view=repositories' : '/chat',
       title: row.status === 'indexing' ? 'Workspace indexing' : 'Workspace setup running',
       detail:
         row.status === 'indexing'
@@ -175,16 +182,21 @@ export function getWorkspaceActivityFeed(): WorkspaceActivitySummary[] {
 
   const repoRows = db
     .prepare(
-      `SELECT wr.workspace_id, r.name, r.status
+      `SELECT wr.workspace_id, r.id AS repo_id, r.name, r.status,
+              (SELECT j.error
+               FROM repo_index_jobs j
+               WHERE j.repo_id = r.id AND j.state = 'failed'
+               ORDER BY COALESCE(j.finished_at, j.queued_at) DESC, j.rowid DESC
+               LIMIT 1) AS error
        FROM workspace_repos wr JOIN repos r ON r.id = wr.repo_id
        WHERE r.status IN ('indexing', 'error')`,
     )
     .all() as RepoStatusRow[];
-  const reposByWorkspace = new Map<string, { indexing: string[]; errored: string[] }>();
+  const reposByWorkspace = new Map<string, { indexing: string[]; errored: RepoStatusRow[] }>();
   for (const row of repoRows) {
     const bucket = reposByWorkspace.get(row.workspace_id) ?? { indexing: [], errored: [] };
     if (row.status === 'indexing') bucket.indexing.push(row.name);
-    else bucket.errored.push(row.name);
+    else bucket.errored.push(row);
     reposByWorkspace.set(row.workspace_id, bucket);
   }
   for (const [workspaceId, bucket] of reposByWorkspace) {
@@ -193,20 +205,21 @@ export function getWorkspaceActivityFeed(): WorkspaceActivitySummary[] {
         id: `repos-indexing-${workspaceId}`,
         workspaceId,
         feature: 'repos',
-        route: '/repos',
+        route: '/workspace?view=repositories',
         title: `${bucket.indexing.length} repo${bucket.indexing.length === 1 ? '' : 's'} indexing`,
         detail: bucket.indexing.join(', '),
         status: 'running',
       });
     }
-    if (bucket.errored.length > 0) {
+    for (const repo of bucket.errored) {
       push({
-        id: `repos-error-${workspaceId}`,
+        id: `repo-error-${repo.repo_id}`,
         workspaceId,
         feature: 'repos',
-        route: '/repos',
-        title: `${bucket.errored.length} repo${bucket.errored.length === 1 ? ' needs' : 's need'} attention`,
-        detail: bucket.errored.join(', '),
+        route: `/workspace?repo=${encodeURIComponent(repo.repo_id)}`,
+        title: `${repo.name} needs attention`,
+        detail: conciseRepoError(repo.error),
+        nextAction: REPO_ERROR_NEXT_ACTION,
         status: 'error',
       });
     }

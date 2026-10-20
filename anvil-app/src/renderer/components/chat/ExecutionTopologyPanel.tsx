@@ -15,17 +15,25 @@ import type {
   ExecutionTopologyNode,
   ExecutionTopologyNodeStatus,
 } from '../../utils/execution-topology';
+import { summarizeAgentWork } from '../../utils/execution-topology';
+import { summarizePromptTitle } from '../../utils/thread-display-title';
 
 interface ExecutionTopologyPanelProps {
   topology: ExecutionTopology;
   onOpenThread?: (threadId: string) => void;
   onStop?: (sessionId: string) => void;
+  sinceLastLookMessage?: string | null;
+  pendingQuestionTarget?: { id: string; label: string } | null;
+  onJumpToQuestion?: (id: string) => void;
 }
 
 export function ExecutionTopologyPanel({
   topology,
   onOpenThread,
   onStop,
+  sinceLastLookMessage,
+  pendingQuestionTarget,
+  onJumpToQuestion,
 }: ExecutionTopologyPanelProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const root = topology.nodes.find((node) => node.kind === 'thread');
@@ -35,6 +43,7 @@ export function ExecutionTopologyPanel({
     [topology.nodes],
   );
   const selectedNode = delegates.find((node) => node.id === selectedNodeId);
+  const topLevelDelegates = delegates.filter((node) => node.parentId === coordinator?.id);
   const completedCount = delegates.filter((node) => node.status === 'completed').length;
   const failedCount = delegates.filter((node) => node.status === 'failed').length;
   const workingDelegateCount = delegates.filter((node) => node.status === 'running').length;
@@ -49,12 +58,12 @@ export function ExecutionTopologyPanel({
   if (!root || !coordinator) return null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="shrink-0 border-b border-border-subtle">
         <div className="flex items-center justify-between gap-3 px-3 py-2.5">
           <div>
             <p className="text-xs font-medium text-text-secondary">Agent fan-out</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">
+            <p className="mt-0.5 text-xs text-text-tertiary">
               {topology.runningCount > 0
                 ? `${topology.runningCount} agent${topology.runningCount === 1 ? '' : 's'} working`
                 : failedCount > 0
@@ -65,37 +74,76 @@ export function ExecutionTopologyPanel({
             </p>
           </div>
           {delegates.length > 0 ? (
-            <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] text-text-tertiary">
+            <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-eyebrow text-text-tertiary">
               {completedCount}/{delegates.length} complete
             </span>
           ) : (
-            <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] text-text-tertiary">
+            <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-eyebrow text-text-tertiary">
               Solo run
             </span>
           )}
         </div>
+        {sinceLastLookMessage && (
+          <p
+            className="border-t border-border-subtle/70 px-3 py-2 text-xs text-text-secondary"
+            role="status"
+            aria-live="polite"
+          >
+            {sinceLastLookMessage}
+          </p>
+        )}
+        {pendingQuestionTarget && onJumpToQuestion && (
+          <div className="flex items-center gap-3 border-t border-border-subtle/70 px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-warning">Waiting for your response</p>
+              <p
+                className="truncate text-xs text-text-secondary"
+                title={pendingQuestionTarget.label || 'A request needs your response'}
+              >
+                {pendingQuestionTarget.label || 'A request needs your response'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onJumpToQuestion(pendingQuestionTarget.id)}
+              aria-label={`Jump to ${pendingQuestionTarget.label || 'the pending request'}`}
+              className="shrink-0 rounded-md border border-border px-2 py-1 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              Jump
+            </button>
+          </div>
+        )}
         <div className="flex items-start gap-2 border-t border-border-subtle/70 px-3 py-2.5">
-          <span className="shrink-0 pt-0.5 text-[11px] font-medium text-text-muted">Task</span>
-          <p className="line-clamp-2 text-xs leading-relaxed text-text-primary">
-            {root.prompt ?? root.label}
+          <span className="shrink-0 pt-0.5 text-xs font-medium text-text-muted">Task</span>
+          <p
+            className="line-clamp-2 break-words text-xs leading-relaxed text-text-primary"
+            title={root.prompt ?? root.label}
+          >
+            {root.appThreadId
+              ? root.threadSummary || root.prompt || root.label
+              : root.prompt || root.label}
           </p>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         <FanoutMap
           coordinator={coordinator}
-          delegates={delegates}
+          delegates={topLevelDelegates}
           selectedNodeId={selectedNodeId}
           onSelect={setSelectedNodeId}
         />
 
         {delegates.length > 0 ? (
-          <div className="border-t border-border-subtle" aria-label="Delegated agents">
+          <div
+            className="border-t border-border-subtle"
+            aria-label="Agent assignments and progress"
+          >
             {delegates.map((node) => (
               <AgentRow
                 key={node.id}
                 node={node}
+                delegatorLabel={topology.nodes.find((parent) => parent.id === node.parentId)?.label}
                 selected={node.id === selectedNode?.id}
                 onSelect={() =>
                   setSelectedNodeId((current) => (current === node.id ? null : node.id))
@@ -146,7 +194,7 @@ function FanoutMap({
   const canvasWidth = Math.max(300, delegates.length * 74);
 
   return (
-    <div className="overflow-x-auto px-2" aria-label="Agent topology">
+    <div className="min-w-0 overflow-x-auto px-2" aria-label="Agent topology">
       <div
         className="relative h-[142px] w-full"
         style={{ minWidth: `${canvasWidth}px` }}
@@ -184,7 +232,10 @@ function FanoutMap({
           <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-primary text-text-secondary">
             <StatusIcon status={coordinator.status} kind={coordinator.kind} />
           </div>
-          <span className="mt-1 max-w-24 truncate text-[10px] font-medium text-text-secondary">
+          <span
+            className="mt-1 max-w-24 truncate text-center text-xs font-medium text-text-secondary"
+            title={coordinator.label}
+          >
             {coordinator.label}
           </span>
         </div>
@@ -212,9 +263,10 @@ function FanoutMap({
                 <StatusIcon status={node.status} kind={node.kind} />
               </span>
               <span
-                className={`mt-1 w-full truncate text-[10px] ${
+                className={`mt-1 w-full truncate text-center text-xs ${
                   selected ? 'font-medium text-text-primary' : 'text-text-tertiary'
                 }`}
+                title={node.label}
               >
                 {node.label}
               </span>
@@ -228,12 +280,14 @@ function FanoutMap({
 
 function AgentRow({
   node,
+  delegatorLabel,
   selected,
   onSelect,
   onOpenThread,
   onStop,
 }: {
   node: ExecutionTopologyNode;
+  delegatorLabel?: string;
   selected: boolean;
   onSelect: () => void;
   onOpenThread?: (threadId: string) => void;
@@ -244,45 +298,59 @@ function AgentRow({
       <button
         type="button"
         onClick={onSelect}
-        className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
+        className={`flex w-full min-w-0 items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
           selected ? 'bg-bg-tertiary/65' : ''
         }`}
         aria-expanded={selected}
       >
-        <StatusIcon status={node.status} kind={node.kind} />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-medium text-text-primary">{node.label}</span>
-          <span className="mt-0.5 block line-clamp-2 text-xs leading-5 text-text-secondary">
-            {node.prompt ?? 'Task details unavailable'}
-          </span>
-          <span className="mt-1 block text-xs text-text-tertiary">{node.detail}</span>
-          <span className="mt-1 block line-clamp-2 text-xs leading-5 text-text-secondary">
-            {node.latestMessage ? `Latest: ${node.latestMessage}` : 'No agent update received yet.'}
-          </span>
+        <span className="shrink-0 pt-0.5">
+          <StatusIcon status={node.status} kind={node.kind} />
         </span>
-        <span className={`shrink-0 text-[10px] ${statusTone(node.status)}`}>
+        <span className="min-w-0 flex-1">
+          <span className="block break-words text-xs font-medium text-text-primary">
+            {summarizePromptTitle(node.prompt ?? '') ?? node.label}
+          </span>
+          <span className="mt-0.5 block line-clamp-2 break-words text-xs leading-5 text-text-secondary">
+            {summarizeAgentWork(node.latestMessage ?? node.prompt)}
+          </span>
+          {delegatorLabel && (
+            <span className="mt-1 block text-xs text-text-tertiary">
+              <span className="break-words">Delegated by {delegatorLabel}</span>
+            </span>
+          )}
+        </span>
+        <span className={`shrink-0 text-xs ${statusTone(node.status)}`}>
           {statusLabel(node.status)}
         </span>
       </button>
 
       {selected && (
-        <div className="bg-bg-primary/35 px-8 pb-3 pt-1">
-          {node.prompt && (
-            <div>
-              <p className="text-[10px] font-medium text-text-muted">Task</p>
-              <p className="mt-1 text-xs leading-relaxed text-text-secondary">{node.prompt}</p>
-            </div>
-          )}
-          {node.latestMessage && (
-            <div className={node.prompt ? 'mt-2.5' : ''}>
-              <p className="text-[10px] font-medium text-text-muted">Latest update</p>
-              <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-                {node.latestMessage}
-              </p>
-            </div>
+        <div className="min-w-0 bg-bg-primary/35 px-8 pb-3 pt-1">
+          <div>
+            <p className="text-xs font-medium text-text-muted">Assignment</p>
+            <p className="mt-1 break-words text-xs leading-relaxed text-text-secondary">
+              {node.prompt ?? 'No assignment details were reported.'}
+            </p>
+          </div>
+          <div className="mt-2.5">
+            <p className="text-xs font-medium text-text-muted">Latest update</p>
+            <p className="mt-1 break-words text-xs leading-relaxed text-text-secondary">
+              {node.latestMessage ?? 'No progress message has been reported.'}
+            </p>
+          </div>
+          <div className="mt-2.5">
+            <p className="text-xs font-medium text-text-muted">Last observed activity</p>
+            <p className="mt-1 break-words text-xs leading-relaxed text-text-secondary">
+              {node.detail}
+            </p>
+          </div>
+          {delegatorLabel && (
+            <p className="mt-2.5 break-words text-xs text-text-tertiary">
+              Delegated by {delegatorLabel}
+            </p>
           )}
           {(node.model || node.reasoningEffort) && (
-            <p className="mt-2.5 font-mono text-[10px] text-text-muted">
+            <p className="mt-2.5 break-all font-mono text-xs text-text-muted">
               {[node.model, node.reasoningEffort].filter(Boolean).join(' · ')}
             </p>
           )}
@@ -344,7 +412,7 @@ function RunFooter({
 
   return (
     <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border-subtle bg-bg-primary/35 px-3 py-2.5">
-      <p className="min-w-0 truncate text-[11px] text-text-tertiary" aria-live="polite">
+      <p className="min-w-0 truncate text-xs text-text-tertiary" aria-live="polite">
         <span>{summary}</span>
         {elapsed && <span className="ml-2 font-mono text-text-muted">{elapsed}</span>}
       </p>

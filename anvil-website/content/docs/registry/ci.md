@@ -3,9 +3,9 @@ title: CI usage
 navTitle: CI usage
 description: Use Anvil Registry and Anvil Node Base in pull requests, main branch gates, and dependency review workflows.
 product: Anvil Registry
-section: Operations
+section: Guides
 journey: build
-order: 12
+order: 70
 ---
 
 # CI usage

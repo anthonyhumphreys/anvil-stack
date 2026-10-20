@@ -1,16 +1,16 @@
 ---
 title: Anvil Lens
 navTitle: Anvil Lens
-description: The local-first management plane for Anvil Cells - a browser UI over the local runtime plus the ControlPlaneApi contract a hosted plane would implement.
+description: Inspect a running Cell's manifest, logs, data, workflows and services in your browser.
 product: Anvil Cloud
-section: Runtime
+section: Concepts
 journey: build
-order: 127
+order: 170
 ---
 
 # Anvil Lens
 
-Anvil Lens is the inspection and debugging surface for a running Cell. In alpha it is local-first: a single self-contained HTML page served by the local runtime, backed by the same `/_anvil/*` JSON routes the CLI uses. A hosted control plane can sit behind the same contract later.
+Anvil Lens lets you inspect and debug a running Cell in your browser. The local runtime serves the page and its data through the same `/_anvil/*` routes the CLI uses. A hosted version could use the same API later; the alpha runs locally.
 
 ## Opening Lens
 

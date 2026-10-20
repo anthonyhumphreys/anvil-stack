@@ -4,8 +4,10 @@ import { Analytics } from "@vercel/analytics/next";
 import { ThemeScript } from "@/components/site/theme-script";
 import "./globals.css";
 
+// Variable Archivo with the width axis: normal width for text, set wide for display.
 const archivo = Archivo({
   subsets: ["latin"],
+  axes: ["wdth"],
   variable: "--font-sans",
   display: "swap"
 });
@@ -16,25 +18,32 @@ const mono = JetBrains_Mono({
   display: "swap"
 });
 
+const description =
+  "Anvil is a free, open-source desktop app for running coding agents on your own repos. Plan the work, watch it happen, and review every change. Add paid hosted Sync & Mesh to work across machines, or self-host for free.";
+
 export const metadata: Metadata = {
-  title: "Anvil | Open source tools for inspectable developer work",
-  description: "Anvil is an open source family of developer tools: Anvil Desktop for repo-aware agent delivery, Anvil Registry for npm dependency policy, Anvil Node Base for safer installs, and Anvil Cloud for inspectable Cell runtime contracts.",
+  title: "Anvil | A workbench for coding agents",
+  description,
   metadataBase: new URL("https://anvil.dev"),
+  icons: {
+    icon: [{ url: "/anvil-mark.svg", type: "image/svg+xml" }],
+    shortcut: ["/anvil-mark.svg"]
+  },
   openGraph: {
-    title: "Anvil | Open source tools for inspectable developer work",
-    description: "Repo-aware agent delivery work, safer npm installs, hardened Node devcontainers, and inspectable Anvil Cell runtime workflows.",
+    title: "Anvil | A workbench for coding agents",
+    description,
     type: "website"
   },
   twitter: {
     card: "summary_large_image",
-    title: "Anvil | Inspectable developer tooling",
-    description: "Open source local-first tooling for agent delivery work, npm supply-chain safety, and provider-neutral app runtime contracts."
+    title: "Anvil | A workbench for coding agents",
+    description
   }
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${archivo.variable} ${mono.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${archivo.variable} ${mono.variable}`} data-scroll-behavior="smooth" suppressHydrationWarning>
       <head>
         <ThemeScript />
       </head>

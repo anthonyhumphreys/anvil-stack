@@ -3,9 +3,9 @@ title: Extending Anvil Desktop
 navTitle: Extend the app
 description: Add new app capabilities without bypassing the Electron service boundaries.
 product: Anvil Desktop
-section: Engineering
+section: Guides
 journey: build
-order: 130
+order: 220
 ---
 
 # Extending Anvil Desktop

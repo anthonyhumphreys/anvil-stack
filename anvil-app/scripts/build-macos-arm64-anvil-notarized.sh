@@ -133,6 +133,10 @@ fi
 
 require_command node
 require_command pnpm
+require_command codesign
+require_command spctl
+require_command hdiutil
+require_command unzip
 require_command xcrun
 xcrun --find notarytool >/dev/null || fail "Xcode notarytool is not available. Install/select Xcode 13 or newer."
 xcrun --find stapler >/dev/null || fail "Xcode stapler is not available. Install/select Xcode command line tools."
@@ -146,9 +150,19 @@ fi
 if env_present CSC_LINK; then
   require_env_group "Developer ID certificate signing" CSC_LINK CSC_KEY_PASSWORD
 elif env_present CSC_NAME; then
-  :
+  require_command security
+  signing_identities="$(security find-identity -v -p codesigning 2>/dev/null)" || fail "Could not inspect code-signing identities in the keychain."
+  if ! grep -F "${CSC_NAME}" <<<"${signing_identities}" | grep -q 'Developer ID Application:'; then
+    fail "CSC_NAME does not identify a valid Developer ID Application certificate."
+  fi
 elif [[ "${ALLOW_SIGNING_AUTO_DISCOVERY:-0}" != "1" ]]; then
   fail "Set CSC_LINK + CSC_KEY_PASSWORD, or CSC_NAME. Use ALLOW_SIGNING_AUTO_DISCOVERY=1 only when the intended Developer ID identity is already installed."
+else
+  require_command security
+  signing_identities="$(security find-identity -v -p codesigning 2>/dev/null)" || fail "Could not inspect code-signing identities in the keychain."
+  if ! grep -q 'Developer ID Application:' <<<"${signing_identities}"; then
+    fail "No Developer ID Application certificate is installed for electron-builder to discover."
+  fi
 fi
 
 if [[ "${CSC_IDENTITY_AUTO_DISCOVERY:-}" == "false" ]]; then
@@ -186,8 +200,28 @@ node scripts/dist.mjs \
 app_path="dist/mac-arm64/Anvil.app"
 [[ -d "${app_path}" ]] || fail "Expected notarized app was not found at ${app_path}."
 
+info "validating Developer ID signature"
+signature_info="$(codesign -dv --verbose=4 "${app_path}" 2>&1)" || fail "Could not inspect the app signature."
+if ! grep -q 'Authority=Developer ID Application:' <<<"${signature_info}"; then
+  fail "The app is not signed with a Developer ID Application certificate."
+fi
+codesign --verify --deep --strict --verbose=2 "${app_path}"
+
+info "validating Gatekeeper assessment"
+spctl --assess --type execute --verbose=2 "${app_path}"
+
 info "validating notarization ticket"
 xcrun stapler validate "${app_path}"
 
-info "available artifacts"
-find dist -maxdepth 1 -type f \( -name '*arm64*.dmg' -o -name '*arm64*.zip' \) -print
+shopt -s nullglob
+dmg_artifacts=(dist/Anvil-[0-9]*-arm64.dmg)
+zip_artifacts=(dist/Anvil-[0-9]*-arm64-mac.zip)
+[[ "${#dmg_artifacts[@]}" -eq 1 ]] || fail "Expected one versioned arm64 DMG, found ${#dmg_artifacts[@]}."
+[[ "${#zip_artifacts[@]}" -eq 1 ]] || fail "Expected one versioned arm64 ZIP, found ${#zip_artifacts[@]}."
+
+info "verifying installer archives"
+hdiutil verify "${dmg_artifacts[0]}"
+unzip -t "${zip_artifacts[0]}"
+
+info "verified artifacts"
+printf '%s\n' "${dmg_artifacts[0]}" "${zip_artifacts[0]}"

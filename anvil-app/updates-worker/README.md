@@ -36,6 +36,6 @@ The manual `Anvil Desktop Updates Cloudflare` GitHub workflow creates the `anvil
 - `CLOUDFLARE_DEPLOY_API_TOKEN`, scoped to deploy this Worker and create or bind the release bucket
 - `CLOUDFLARE_R2_ACCESS_KEY_ID` and `CLOUDFLARE_R2_SECRET_ACCESS_KEY`, generated from a bucket-scoped R2 read/write token
 
-After the first deploy, set the repository variable `ANVIL_UPDATE_ORIGIN` to the exact HTTPS Worker origin. The signed macOS release workflow embeds that origin in the app, generates the update feed, and uploads the versioned ZIP before replacing the mutable feed.
+The Worker and R2 routes are deployable, but update publication is not wired into the app release workflow. That workflow currently forces `ANVIL_UPDATE_ORIGIN` to an empty value and publishes GitHub Release assets only. Setting the repository variable does not enable in-app updates. Keep automatic updates off until a release path generates signed update metadata, uploads the immutable ZIP, verifies it, and updates the feed only after the asset is available.
 
-Keep the R2 development URL disabled. A `workers.dev` origin is suitable for the current alpha distribution. A custom domain can replace it once an Anvil domain is managed by the same Cloudflare account.
+Keep the R2 development URL disabled. A `workers.dev` origin is suitable for testing the Worker routes. A custom domain can replace it once an Anvil domain is managed by the same Cloudflare account.

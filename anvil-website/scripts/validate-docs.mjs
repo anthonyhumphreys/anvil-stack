@@ -3,7 +3,8 @@ import path from "node:path";
 import { load as loadYaml } from "js-yaml";
 
 const root = path.join(process.cwd(), "content", "docs");
-const products = new Set(["Start here", "Anvil Desktop", "Anvil Cloud", "Anvil Registry", "Anvil Node Base", "Project"]);
+const products = new Set(["Start here", "Anvil Desktop", "Anvil Sync & Mesh", "Anvil Cloud", "Anvil Registry", "Anvil Node Base", "Project"]);
+const sections = new Set(["Start here", "Guides", "Concepts", "Reference", "Overview"]);
 const journeys = new Set(["learn", "build", "reference"]);
 const required = ["title", "navTitle", "description", "product", "section", "journey", "order"];
 
@@ -33,6 +34,7 @@ for (const file of files) {
     const { data, body } = parse(relative, await fs.readFile(file, "utf8"));
     for (const key of required) if (data[key] === undefined || data[key] === "") errors.push(`${relative}: missing ${key}`);
     if (!products.has(data.product)) errors.push(`${relative}: unknown product ${String(data.product)}`);
+    if (!sections.has(data.section)) errors.push(`${relative}: unknown section ${String(data.section)} — use Start here, Guides, Concepts, Reference, or Overview`);
     if (!journeys.has(data.journey)) errors.push(`${relative}: journey must be learn, build, or reference`);
     if (!Number.isInteger(data.order)) errors.push(`${relative}: order must be an integer`);
 

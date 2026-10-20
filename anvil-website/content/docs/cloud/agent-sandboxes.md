@@ -1,28 +1,28 @@
 ---
 title: Agent Sandboxes
 navTitle: Agent Sandboxes
-description: The Agent Sandbox contract and AWS Lambda MicroVM provider for isolated, sessionful Anvil Agent workspaces.
+description: Run agents in isolated workspaces, follow their progress, pause for approval and resume from saved state.
 product: Anvil Cloud
-section: Runtime
-journey: build
-order: 126
+section: Concepts
+journey: learn
+order: 130
 ---
 
 # Agent Sandboxes
 
-Agent Sandboxes are the runtime shape for serious Anvil Agent execution: isolated,
-inspectable, sessionful workspaces where an agent can run tools, operate a repo,
-wait for approval, resume with state, and leave evidence behind.
+An Agent Sandbox gives an agent an isolated workspace to run tools and work on
+a repository. You can inspect its activity, pause for approval and resume from
+saved state.
 
-The execution foundation now exists: Anvil has provider-neutral sandbox and
-execution contracts, resumable cursor events, durable local lease storage, a
-deterministic conformance provider, an authenticated HTTP boundary,
-content-addressed source snapshots, a provider-neutral worker boundary, a
-runnable CLI service, an opt-in Desktop workbench, and an AWS Lambda MicroVM
-read-only transport. The full hosted experience still needs a compatible
-deployed worker image, subscription-login workers, production persistence,
-Lens topology, and real-account verification. Technically functional, not yet
-wearing a cape.
+The alpha includes local execution, persisted events, source snapshots, a CLI
+service and an optional Desktop view. The AWS Lambda MicroVM adapter supports
+read-only execution. The sections below describe the contracts and their limits.
+
+Anvil Cloud Agents will let you run this work on machines we host. It hasn't
+launched, and no price or release date has been set. It still needs a deployed
+worker image, provider login runners, production storage, Lens integration and
+testing with real accounts. Existing integrations use your own machines or
+provider accounts; those providers bill you directly.
 
 ## Why sandboxes exist
 

@@ -1,20 +1,18 @@
 ---
 title: Automations
 navTitle: Automations
-description: Schedule recurring checks, run disposable worktrees, and wire automation output back into workspace evidence.
+description: Run an agent on a schedule or when something happens, in its own throwaway worktree, and review what it did.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 116
+order: 150
 ---
 
 # Automations
 
-Anvil Desktop automations run an agent prompt against one or more repositories. They start manually, on a cron schedule, or when Watchtower observes a matching workflow, pull request, or pipeline event.
+An automation runs an agent prompt against one or more repositories. It can start when you click **Run now**, on a schedule, or when Watchtower sees a matching workflow, pull request or pipeline event.
 
-## Automation definition
-
-An automation stores:
+## What an automation contains
 
 - a name and agent persona
 - the prompt to run
@@ -24,43 +22,43 @@ An automation stores:
 - an optional multi-persona loop and stop condition, or a saved workflow template
 - enabled state, timezone, last run, and next run
 
-Every run uses disposable Git worktrees. Persona automation prompts are constrained to those paths and explicitly forbid pushes, pull requests, remote mutations, and external ticket, document, or comment creation. Workflow automations use the selected workflow instructions and provider persona policies; they require both repository write and command permissions.
+Every run gets its own throwaway Git worktree. Persona automations are limited to those paths and are told not to push, open pull requests, change anything remote, or create tickets, documents or comments elsewhere. Workflow automations follow the chosen workflow's instructions and each provider's persona rules, and need permission to write files and run commands.
 
-## Schedules and Watchtower
+## Triggers
 
 | Trigger | Use it for |
 | --- | --- |
-| Schedule | Run from a cron expression in the selected IANA timezone. |
-| Watchtower | Wait for a workflow completion or failure, pull request merge or close, or pipeline completion or failure. |
-| Run now | Start the selected automation manually without changing its saved trigger. |
+| Schedule | Run on a cron schedule in the time zone you pick. |
+| Watchtower | Run when a workflow finishes or fails, a pull request is merged or closed, or a pipeline finishes or fails. |
+| Run now | Start it by hand without changing its saved trigger. |
 
-Workflow events come from Anvil's local workflow state. Pull request and pipeline watchers poll supported GitHub or Azure DevOps remotes. A pull request watcher needs a PR number; a pipeline watcher needs a pipeline name, workflow file, or run identifier.
+Workflow events come from Anvil itself. Pull request and pipeline watchers check GitHub or Azure DevOps on a timer. A pull request watcher needs a pull request number; a pipeline watcher needs a pipeline name, workflow file or run ID.
 
-The view shows the latest observed external state and any watcher error. An observed state change only starts a run when it matches the configured event.
+The view shows the latest state it saw and any watcher errors. A change only starts a run when it matches the event you configured.
 
-## Background daemon
+## Running in the background
 
-The automation daemon evaluates due schedules and pending Watchtower events outside the foreground window:
+A small background service checks schedules and Watchtower events even when the app window isn't open:
 
 - macOS uses a user LaunchAgent through `launchctl`
 - Linux uses a user `systemd` service when user services are available
-- unsupported platforms fall back to the app process
+- elsewhere, the app itself does the checking while it's running
 
-The Automations view reports whether the daemon is supported, installed, and loaded. Reconcile it after changing platform configuration or the packaged application path.
+The Automations view shows whether the service is supported, installed and running. Reconcile it if you move the app or change system settings.
 
-## Disposable worktrees
+## Throwaway worktrees
 
 Before a run, Anvil creates a dedicated branch and worktree for every target repository. The agent may only edit those worktree paths when write permission is enabled.
 
-For persona runs, clean worktrees are removed after the run. A worktree with changes is kept for review and appears in the run detail. This prevents an unattended run from mixing changes into the developer's current checkout while preserving work that needs inspection.
+After a persona run, worktrees with no changes are removed. A worktree with changes is kept for you to review and shows up in the run details. That way an unattended run never mixes its changes into the checkout you're working in, and nothing worth reviewing is lost.
 
-Disposable worktrees isolate Git state, not the operating system. An allowed command still runs as the user who launched Anvil.
+Worktrees keep Git state separate, not the operating system. Any command the agent is allowed to run still runs as you.
 
 ## Agent loops
 
-An optional loop assigns a list of personas, a maximum of one to eight iterations, and a stop condition. Sequence mode hands work through the personas in order. Dynamic mode lets the orchestrator decide whether a persona is useful for the current iteration.
+A loop runs a list of personas for between one and eight rounds, until a stop condition is met. In sequence mode, work passes through the personas in order. In dynamic mode, the orchestrator decides which persona is useful in each round.
 
-Each member runs in a separate provider thread and receives the earlier thread outputs as handoff context. Use a small member list and a concrete stop condition. A vague loop is just an expensive way to rediscover ambiguity.
+Each persona runs in its own thread and gets the earlier output as context. Keep the list short and the stop condition concrete. A vague loop is an expensive way to rediscover ambiguity.
 
 ## Launch a workflow
 
@@ -68,9 +66,9 @@ Select a saved workflow template to run it with the automation's prompt as its k
 
 Workflow agents use the prepared worktrees. Those worktrees are retained for inspection and for paused workflow runs, including runs waiting for a human decision. Open the linked workflow from run details, resolve its decisions, and resume there. The automation transcript records the workflow state when its scheduler stops; inspect the linked workflow for subsequent progress.
 
-Workflow completion events carrying an originating automation run are filtered from Watchtower triggers to prevent feedback loops.
+A workflow started by an automation won't trigger Watchtower when it finishes, so automations can't set each other off in a loop.
 
-## Results and triage
+## Reviewing results
 
 The run detail has four views:
 
@@ -79,7 +77,7 @@ The run detail has four views:
 - Worktrees lists the branch and retained state for each repository.
 - Raw Events shows the stored event stream without presentation grouping.
 
-Run history records trigger, status, assistant result, error, changed-file count, and worktree state. The triage list lifts failed or changed runs that need review. Notifications and Inbox activity can route back to the exact automation run.
+Run history records what triggered each run, its status, the result, any error, how many files changed and the worktree state. Failed runs and runs with changes rise to the top of the triage list. Notifications and the Inbox link straight to the run.
 
 ## Limits
 
@@ -87,7 +85,7 @@ Run history records trigger, status, assistant result, error, changed-file count
 - Command and write permissions are broad within the disposable worktrees. Review retained changes before merging them.
 - Cancellation and failure do not reverse commands or external effects that already occurred.
 - External Watchtower polling depends on local provider credentials and API availability.
-- Automations complement hosted CI. They do not prove that a deployment pipeline passed.
+- Automations sit alongside your CI. They don't prove a deployment pipeline passed.
 
 ## Read next
 

@@ -20,10 +20,7 @@ vi.mock('../../db/database.js', () => ({
   }),
 }));
 
-import {
-  clearChatFileMentionCache,
-  searchChatFileMentions,
-} from '../chat-file-mention.service.js';
+import { clearChatFileMentionCache, searchChatFileMentions } from '../chat-file-mention.service.js';
 
 describe('searchChatFileMentions', () => {
   let repoPath: string;

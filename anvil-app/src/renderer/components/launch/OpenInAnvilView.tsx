@@ -4,6 +4,7 @@ import { ExternalLink, FolderOpen, Loader2, Rocket, XCircle } from 'lucide-react
 import type { OpenInAnvilLaunchIntent } from '../../../shared/types';
 import { useBrand } from '../../contexts/BrandContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { libraryPath } from '../../utils/sidebar-navigation';
 
 export function OpenInAnvilView() {
   const navigate = useNavigate();
@@ -66,7 +67,7 @@ export function OpenInAnvilView() {
     setCurrentStep(null);
     setCloneStatuses({});
     if (workspaces.length > 0) {
-      navigate('/repos', { replace: true });
+      navigate('/workspace', { replace: true });
     }
   }, [navigate, workspaces.length]);
 
@@ -138,9 +139,9 @@ export function OpenInAnvilView() {
       if (intent.iterationId) {
         navigate('/workitems', { replace: true });
       } else if (intent.docsParentId) {
-        navigate('/docs', { replace: true });
+        navigate(libraryPath({ kind: 'doc' }), { replace: true });
       } else {
-        navigate('/repos', { replace: true });
+        navigate('/workspace', { replace: true });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create workspace from deep link.');
@@ -292,7 +293,7 @@ export function OpenInAnvilView() {
             type="button"
             onClick={handleConfirm}
             disabled={creating}
-            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50"
+            className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
           >
             {creating ? (
               <span className="inline-flex items-center gap-2">

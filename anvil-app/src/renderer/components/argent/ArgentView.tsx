@@ -406,7 +406,7 @@ function CommandButton({
         <span className="mt-1 block text-xs leading-relaxed text-text-secondary">
           {command.description}
         </span>
-        <span className="mt-2 block truncate font-mono text-[11px] text-text-tertiary">
+        <span className="mt-2 block truncate font-mono text-xs text-text-tertiary">
           {command.command}
         </span>
       </span>
@@ -467,7 +467,7 @@ function PromptCard({
         {template.evidence.map((item) => (
           <span
             key={item}
-            className="rounded-full border border-border-subtle bg-bg-secondary px-2 py-0.5 text-[11px] text-text-tertiary"
+            className="rounded-full border border-border-subtle bg-bg-secondary px-2 py-0.5 text-eyebrow text-text-tertiary"
           >
             {item}
           </span>

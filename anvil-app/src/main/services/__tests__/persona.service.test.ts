@@ -22,14 +22,32 @@ type ModuleSummaryRow = {
   purpose: string | null;
 };
 
-const { loadPromptTemplate, dbState } = vi.hoisted(() => ({
+type EditableAgentRow = {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  colour: string;
+  prompt_body: string;
+  can_write_files: number;
+  can_run_commands: number;
+  can_read_files: number;
+  created_at: string;
+  updated_at: string;
+};
+
+const { loadPromptTemplate, renderPromptTemplate, dbState } = vi.hoisted(() => ({
   loadPromptTemplate: vi.fn((templateName: string, variables: Record<string, string>) =>
     JSON.stringify({ templateName, variables }),
+  ),
+  renderPromptTemplate: vi.fn((template: string, variables: Record<string, string>) =>
+    JSON.stringify({ template, variables }),
   ),
   dbState: {
     repos: new Map<string, RepoRow>(),
     repoSummaries: new Map<string, RepoSummaryRow>(),
     moduleSummaries: new Map<string, ModuleSummaryRow[]>(),
+    editableAgents: new Map<string, EditableAgentRow>(),
   },
 }));
 
@@ -61,9 +79,25 @@ vi.mock('../../db/database.js', () => ({
         };
       }
 
-      if (query.includes('SELECT path, purpose FROM module_summaries WHERE repo_id = ?')) {
+      if (
+        query.includes('FROM module_summaries WHERE repo_id = ?') &&
+        query.includes('SELECT path, purpose')
+      ) {
         return {
           all: (repoId: string) => dbState.moduleSummaries.get(repoId) ?? [],
+        };
+      }
+
+      if (query.includes('FROM editable_agents ORDER BY name')) {
+        return {
+          all: () =>
+            [...dbState.editableAgents.values()].sort((a, b) => a.name.localeCompare(b.name)),
+        };
+      }
+
+      if (query.includes('FROM editable_agents WHERE id = ?')) {
+        return {
+          get: (id: string) => dbState.editableAgents.get(id),
         };
       }
 
@@ -74,22 +108,43 @@ vi.mock('../../db/database.js', () => ({
 
 vi.mock('../../utils/prompt-templates.js', () => ({
   loadPromptTemplate,
+  renderPromptTemplate,
 }));
 
 vi.mock('../db-insights.service.js', () => ({
   getDbInsightsPersonaSummary,
 }));
 
-import { buildDesignSystemPrompt, buildSystemPrompt, getPersonas } from '../persona.service.js';
+// Editable agents emit sync intent on writes; the persona read path never
+// writes, but keep the sync boundary inert here regardless.
+vi.mock('../sync-persistence.service.js', () => ({
+  withSyncedEntityWrite: (
+    _entityType: string,
+    _entityId: string,
+    _schemaVersion: number,
+    _operation: string,
+    _buildPayload: () => unknown,
+    domainWrite: () => void,
+  ) => domainWrite(),
+}));
+
+import {
+  buildDesignSystemPrompt,
+  buildSystemPrompt,
+  getPersonaById,
+  getPersonas,
+} from '../persona.service.js';
 
 let repoDir = '';
 
 beforeEach(() => {
   loadPromptTemplate.mockClear();
+  renderPromptTemplate.mockClear();
   getDbInsightsPersonaSummary.mockClear();
   dbState.repos.clear();
   dbState.repoSummaries.clear();
   dbState.moduleSummaries.clear();
+  dbState.editableAgents.clear();
 
   repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devhub-persona-'));
   fs.writeFileSync(
@@ -278,5 +333,60 @@ describe('buildDesignSystemPrompt', () => {
       }),
     );
     expect(prompt).toContain('"templateName":"personas/design.md"');
+  });
+});
+
+describe('editable agents', () => {
+  function seedAgent(overrides: Partial<EditableAgentRow> = {}): EditableAgentRow {
+    const row: EditableAgentRow = {
+      id: 'agent-1',
+      name: 'Release Captain',
+      description: 'Runs release checklists',
+      icon: 'Rocket',
+      colour: '#f97316',
+      prompt_body: 'You are a release captain for {{repoName}}.',
+      can_write_files: 1,
+      can_run_commands: 0,
+      can_read_files: 1,
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-01T00:00:00Z',
+      ...overrides,
+    };
+    dbState.editableAgents.set(row.id, row);
+    return row;
+  }
+
+  it('merges editable agents into getPersonas after builtins', () => {
+    seedAgent();
+    const personas = getPersonas();
+    const agent = personas.find((p) => p.id === 'agent-1');
+    expect(agent).toMatchObject({
+      name: 'Release Captain',
+      editable: true,
+      promptBody: 'You are a release captain for {{repoName}}.',
+      capabilities: { canWriteFiles: true, canRunCommands: false, canReadFiles: true },
+    });
+    expect(personas[0].id).toBe('coder'); // builtins first
+  });
+
+  it('resolves editable agents through getPersonaById and marks them editable', () => {
+    seedAgent();
+    expect(getPersonaById('coder')?.editable).toBeUndefined();
+    expect(getPersonaById('agent-1')).toMatchObject({
+      id: 'agent-1',
+      editable: true,
+    });
+    expect(getPersonaById('nope')).toBeUndefined();
+  });
+
+  it('renders the inline prompt body instead of a prompt file', () => {
+    seedAgent();
+    const prompt = buildSystemPrompt('agent-1', []);
+    expect(renderPromptTemplate).toHaveBeenCalledWith(
+      'You are a release captain for {{repoName}}.',
+      expect.objectContaining({ repoName: 'Workspace documents and requirements' }),
+    );
+    expect(loadPromptTemplate).not.toHaveBeenCalled();
+    expect(prompt).toContain('"template":"You are a release captain for {{repoName}}."');
   });
 });

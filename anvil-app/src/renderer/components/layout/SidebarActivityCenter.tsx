@@ -11,6 +11,8 @@ import type {
 import type { RunStatus } from '../../../shared/run-types';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { useRepoIndex } from '../../contexts/RepoIndexContext';
+import { WORKSPACE_REPOSITORIES_PATH } from '../../utils/sidebar-navigation';
 
 export type SidebarActivityStatus = 'running' | 'queued' | 'ready' | 'warning' | 'error';
 
@@ -20,6 +22,7 @@ export interface SidebarActivityItem {
   route: string;
   title: string;
   detail: string;
+  nextAction?: string;
   status: SidebarActivityStatus;
   startedAt?: string;
 }
@@ -60,6 +63,7 @@ function useSidebarActivityData(): SidebarActivityValue {
   const location = useLocation();
   const { activeWorkspace, activeScaffoldSession, repos, featureAvailability } = useWorkspace();
   const { busy, liveThreadStatuses, activeThread, threads } = useChatContext();
+  const repoIndex = useRepoIndex();
   const [agentRuns, setAgentRuns] = useState<AgentRunSummary[]>([]);
   const [automationTriage, setAutomationTriage] = useState<AutomationTriageItem[]>([]);
   const [runStatuses, setRunStatuses] = useState<RunStatus[]>([]);
@@ -194,7 +198,8 @@ function useSidebarActivityData(): SidebarActivityValue {
         nextItems.push({
           id: `scaffold-${activeScaffoldSession.id}`,
           feature: activeScaffoldSession.status === 'indexing' ? 'repos' : 'chat',
-          route: activeScaffoldSession.status === 'indexing' ? '/repos' : '/chat',
+          route:
+            activeScaffoldSession.status === 'indexing' ? WORKSPACE_REPOSITORIES_PATH : '/chat',
           title:
             activeScaffoldSession.status === 'indexing'
               ? 'Workspace indexing'
@@ -214,7 +219,7 @@ function useSidebarActivityData(): SidebarActivityValue {
       nextItems.push({
         id: 'repos-indexing',
         feature: 'repos',
-        route: '/repos',
+        route: WORKSPACE_REPOSITORIES_PATH,
         title: `${indexingRepos.length} repo${indexingRepos.length === 1 ? '' : 's'} indexing`,
         detail: indexingRepos.map((repo) => repo.name).join(', '),
         status: 'running',
@@ -223,21 +228,22 @@ function useSidebarActivityData(): SidebarActivityValue {
       nextItems.push({
         id: 'workspace-indexing',
         feature: 'repos',
-        route: '/repos',
+        route: WORKSPACE_REPOSITORIES_PATH,
         title: 'Repository indexing pending',
         detail: featureAvailability.repoFeatureReason ?? 'Index repositories to unlock features.',
         status: 'warning',
       });
     }
 
-    const erroredRepos = repos.filter((repo) => repo.status === 'error');
-    if (erroredRepos.length > 0) {
+    for (const repo of repos.filter((item) => item.status === 'error')) {
+      const reason = conciseRepoError(repoIndex.lastErrorForRepo(repo.id)?.error);
       nextItems.push({
-        id: 'repos-error',
+        id: `repo-error-${repo.id}`,
         feature: 'repos',
-        route: '/repos',
-        title: `${erroredRepos.length} repo${erroredRepos.length === 1 ? '' : 's'} need attention`,
-        detail: erroredRepos.map((repo) => repo.name).join(', '),
+        route: `/workspace?repo=${encodeURIComponent(repo.id)}`,
+        title: `${repo.name} needs attention`,
+        detail: reason,
+        nextAction: 'Open Workspace to inspect and retry indexing.',
         status: 'error',
       });
     }
@@ -338,6 +344,7 @@ function useSidebarActivityData(): SidebarActivityValue {
     liveThreadStatuses,
     location.pathname,
     repos,
+    repoIndex,
     runStatuses,
     simulatorStatus.running,
     simulatorStatus.startedAt,
@@ -387,7 +394,7 @@ export function SidebarActivityBadge({
 
   return (
     <span
-      className={`ml-auto inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${colour} ${
+      className={`ml-auto inline-flex min-w-5 items-center justify-center rounded-full px-1.5 py-0.5 text-eyebrow font-semibold ${colour} ${
         indicator.status === 'running' ? 'animate-pulse' : ''
       }`}
       title={indicator.label}
@@ -530,6 +537,12 @@ function automationTriageDetail(item: AutomationTriageItem): string {
     return item.summary ?? `${item.changedFileCount} changed files are ready to review.`;
   }
   return item.status === 'queued' ? 'Automation is queued.' : 'Automation is running.';
+}
+
+function conciseRepoError(value?: string): string {
+  const message = value?.replace(/\s+/g, ' ').trim();
+  if (!message) return 'No error details are available.';
+  return message.length > 180 ? `${message.slice(0, 177).trimEnd()}...` : message;
 }
 
 function dateValue(value?: string): number {

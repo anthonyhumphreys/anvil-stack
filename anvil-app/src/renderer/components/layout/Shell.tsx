@@ -1,10 +1,13 @@
-import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useShortcuts } from '../../hooks/useShortcuts';
+import { SHORTCUTS, shortcutFor, shortcutMatches } from '../../utils/shortcuts';
+import { useChatContext } from '../../contexts/ChatContext';
 import { Sidebar } from './Sidebar';
 import { StatusBar } from './StatusBar';
 import { CommandPalette } from './CommandPalette';
 import { WorkspaceCreator } from '../workspace/WorkspaceCreator';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
 import type { UserRole } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
 import { TerminalPanel } from '../terminal/TerminalPanel';
@@ -12,6 +15,12 @@ import { TerminalPanel } from '../terminal/TerminalPanel';
 import { isEditableShortcutTarget, isShellShortcutOptInTarget } from '../../utils/keyboard';
 import { SidebarActivityProvider } from './SidebarActivityCenter';
 import { PictureInPicture2 } from 'lucide-react';
+import {
+  allSidebarNavItems,
+  DEMOTED_NAV_ITEMS,
+  isSidebarNavItemActive,
+  resolveLegacyRoute,
+} from '../../utils/sidebar-navigation';
 
 const EditorView = lazy(() =>
   import('../editor/EditorView').then((module) => ({ default: module.EditorView })),
@@ -28,7 +37,18 @@ interface ShellProps {
 }
 
 export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: ShellProps) {
-  const { activeScaffoldSession, switchWorkspace, refreshWorkspaces } = useWorkspace();
+  const {
+    activeScaffoldSession,
+    repos,
+    switchWorkspace,
+    refreshWorkspaces,
+    workspaceSwitchNotice,
+    undoWorkspaceSwitch,
+    dismissWorkspaceSwitchNotice,
+  } = useWorkspace();
+  const { overrides: shortcuts } = useShortcuts();
+  const { startNewSession } = useChatContext();
+  const handledThreadRequest = useRef<string | null>(null);
   const [showCreator, setShowCreator] = useState(false);
   const [editorMounted, setEditorMounted] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -41,46 +61,82 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
   useEffect(() => {
     if (showingEditor) setEditorMounted(true);
   }, [showingEditor]);
-  const reserveTitlebarSpace = !windowChromeState.isFullScreen;
+  const reserveTitlebarSpace =
+    navigator.platform.includes('Mac') && !windowChromeState.isFullScreen;
   const isToolWindow = new URLSearchParams(location.search).get('toolWindow') === '1';
 
   const toggleTerminal = useCallback(() => setTerminalOpen((prev) => !prev), []);
 
+  // WS7: the "Switched to X" toast auto-dismisses after a few seconds.
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (shouldIgnoreShellShortcut(e.target)) return;
+    if (!workspaceSwitchNotice) return;
+    const timeout = window.setTimeout(dismissWorkspaceSwitchNotice, 6000);
+    return () => window.clearTimeout(timeout);
+  }, [workspaceSwitchNotice, dismissWorkspaceSwitchNotice]);
 
-      if (e.key === '`' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        toggleTerminal();
-      }
-      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        setCommandPaletteOpen((prev) => !prev);
-      }
-      if (e.key === ',' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        navigate('/settings');
+  useEffect(() => {
+    const request = (location.state as { newThreadRequest?: string } | null)?.newThreadRequest;
+    if (location.pathname !== '/chat' || !request || handledThreadRequest.current === request)
+      return;
+    handledThreadRequest.current = request;
+    void startNewSession();
+  }, [location.pathname, location.state, startNewSession]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      if (
+        document.querySelector('[aria-modal="true"]') ||
+        (event.target as HTMLElement | null)?.closest?.('[data-shortcut-recorder]')
+      )
+        return;
+      const shortcut = SHORTCUTS.find((item) =>
+        shortcutMatches(event, shortcutFor(item.id, shortcuts), navigator.platform.includes('Mac')),
+      );
+      if (!shortcut) return;
+      event.preventDefault();
+      switch (shortcut.id) {
+        case 'terminal':
+          toggleTerminal();
+          break;
+        case 'commandPalette':
+          setCommandPaletteOpen((open) => !open);
+          break;
+        case 'settings':
+          navigate('/settings');
+          break;
+        case 'newWorkspace':
+          setShowCreator(true);
+          break;
+        case 'newThread':
+          navigate('/chat', { state: { newThreadRequest: crypto.randomUUID() } });
+          break;
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigate, toggleTerminal]);
+  }, [navigate, toggleTerminal, shortcuts]);
 
+  // Q4: scaffold route locks lift as soon as any repo reaches the `mapped`
+  // tier — enrichment keeps running in the background and Chat/Settings stay
+  // available throughout. Failed sessions also unlock (the workspace view
+  // surfaces the error with a Retry affordance).
   useEffect(() => {
     if (!activeScaffoldSession) return;
     if (
       activeScaffoldSession.status === 'completed' ||
-      activeScaffoldSession.status === 'cancelled'
+      activeScaffoldSession.status === 'cancelled' ||
+      activeScaffoldSession.status === 'failed'
     ) {
       return;
     }
+    if (repos.some(repoIsMapped)) return; // unlocked at the mapped tier
 
     const allowedPaths = new Set(['/chat', '/settings']);
     if (!allowedPaths.has(location.pathname)) {
       navigate('/chat', { replace: true });
     }
-  }, [activeScaffoldSession, location.pathname, navigate]);
+  }, [activeScaffoldSession, repos, location.pathname, navigate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -147,7 +203,7 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
           <header className="titlebar-drag flex h-11 shrink-0 items-center border-b border-border/60 bg-bg-secondary pl-20 pr-4">
             <PictureInPicture2 size={13} className="mr-2 text-accent" />
             <span className="truncate text-xs font-medium text-text-secondary">
-              {getToolWindowTitle(location.pathname)}
+              {getToolWindowTitle(location.pathname, location.search)}
             </span>
             <span className="ml-2 text-xs text-text-tertiary">Detached</span>
           </header>
@@ -215,6 +271,33 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
           onToggleTerminal={() => setTerminalOpen((prev) => !prev)}
           terminalOpen={terminalOpen}
         />
+        {/* WS7: workspace-switch confirmation with Undo. */}
+        {workspaceSwitchNotice && (
+          <div
+            role="status"
+            className="fixed bottom-12 right-4 z-50 flex items-center gap-3 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm shadow-[0_16px_40px_rgba(0,0,0,0.32)]"
+          >
+            <span className="text-text-secondary">
+              Switched to{' '}
+              <span className="font-medium text-text-primary">{workspaceSwitchNotice.toName}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => void undoWorkspaceSwitch()}
+              className="rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10"
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={dismissWorkspaceSwitchNotice}
+              aria-label="Dismiss"
+              className="rounded-md px-1.5 py-1 text-xs text-text-tertiary hover:text-text-primary"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         {showCreator && (
           <WorkspaceCreator
             onCreated={async () => {
@@ -228,6 +311,7 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
           open={commandPaletteOpen}
           onClose={() => setCommandPaletteOpen(false)}
           userRole={userRole}
+          cloudFeaturesEnabled={cloudFeaturesEnabled}
           onToggleTerminal={toggleTerminal}
           onCreateWorkspace={() => setShowCreator(true)}
         />
@@ -240,9 +324,36 @@ export function shouldIgnoreShellShortcut(target: EventTarget | null): boolean {
   return isEditableShortcutTarget(target) && !isShellShortcutOptInTarget(target);
 }
 
-export function getToolWindowTitle(pathname: string): string {
-  const segment = pathname.split('/').filter(Boolean)[0] ?? 'tool';
-  return segment
+const REPO_SECTION_TITLES: Record<string, string> = { health: 'Health', setup: 'Setup' };
+
+/**
+ * Detached-window title for a route: the matching nav destination (Library,
+ * Notes, Health…) rather than the raw first path segment, so the Library
+ * (`/workspace?view=library`) isn't titled "Workspace".
+ */
+export function getToolWindowTitle(pathname: string, search = ''): string {
+  const legacy = resolveLegacyRoute(pathname, search);
+  if (legacy) {
+    const [legacyPath, legacyQuery = ''] = legacy.split('?');
+    return getToolWindowTitle(legacyPath, legacyQuery);
+  }
+  const segments = pathname.split('/').filter(Boolean);
+  if (segments[0] === 'workspace') {
+    if (segments[1] === 'repos' && REPO_SECTION_TITLES[segments[3]]) {
+      return REPO_SECTION_TITLES[segments[3]];
+    }
+    const params = new URLSearchParams(search);
+    const view = params.get('view');
+    if (view === 'repositories' || (view !== 'library' && params.has('repo'))) {
+      return 'Repositories';
+    }
+    if (view !== 'library') return 'Workspace overview';
+  }
+  const match = [...allSidebarNavItems(), ...DEMOTED_NAV_ITEMS]
+    .filter((item) => isSidebarNavItemActive(pathname, item, search))
+    .sort((left, right) => right.path.length - left.path.length)[0];
+  if (match) return match.label;
+  return (segments[0] ?? 'tool')
     .split('-')
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(' ');

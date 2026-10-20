@@ -3,9 +3,9 @@ title: Security
 navTitle: Security
 description: Security design expectations, vulnerability reporting, and safe research guidelines for Anvil Registry and Anvil Node Base.
 product: Anvil Registry
-section: Project
+section: Concepts
 journey: reference
-order: 15
+order: 140
 ---
 
 # Security
@@ -90,4 +90,4 @@ Safe research guidelines:
 
 - [Policy model](/docs/registry/policy)
 - [Package decisions](/docs/registry/package-decisions)
-- [Open source posture](/docs/project/open-source)
+- [Open source](/docs/project/open-source)

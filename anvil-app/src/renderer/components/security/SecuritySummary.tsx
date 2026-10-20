@@ -7,7 +7,7 @@ interface Props {
 }
 
 const severityConfig = [
-  { key: 'critical', label: 'Critical', color: 'text-red-400', bg: 'bg-red-500/20' },
+  { key: 'critical', label: 'Critical', color: 'text-error', bg: 'bg-error/20' },
   { key: 'high', label: 'High', color: 'text-orange-400', bg: 'bg-orange-500/20' },
   { key: 'medium', label: 'Medium', color: 'text-yellow-400', bg: 'bg-yellow-500/20' },
   { key: 'low', label: 'Low', color: 'text-blue-400', bg: 'bg-blue-500/20' },

@@ -1,19 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useShortcuts } from '../../hooks/useShortcuts';
+import { formatShortcut, shortcutFor } from '../../utils/shortcuts';
 import { useNavigate } from 'react-router-dom';
 import {
-  BookOpen,
+  Activity,
   Bell,
+  House,
+  Boxes,
   Code,
+  Cloud,
   Compass,
   Database,
-  FileText,
+  FileDiff,
+  FolderMinus,
   GitBranch,
   GitFork,
   GitPullRequest,
   Globe,
   Landmark,
+  Library,
   MessageSquare,
   Palette,
+  Pin,
+  PinOff,
   Search,
   Settings,
   Shield,
@@ -22,10 +31,13 @@ import {
   Terminal,
   TicketCheck,
   RadioTower,
-  Scale,
   FolderOpen,
   Wrench,
   MonitorSmartphone,
+  NotebookPen,
+  Target,
+  Workflow,
+  LayoutDashboard,
 } from 'lucide-react';
 import type { ChatLayout, Feature, UserRole } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
@@ -33,6 +45,24 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { getNextListboxIndex } from '../../utils/list-navigation';
 import { slugForDomId } from '../../utils/dom-id';
+import { isEditableShortcutTarget } from '../../utils/keyboard';
+import {
+  chatPromptPath,
+  getAvailableSidebarNavigation,
+  getSidebarNavigationEntries,
+  LIBRARY_PATH,
+  libraryPath,
+  MAX_PINNED_NAV_TOOLS,
+  navItemGateReason,
+  NOTES_PATH,
+  PINNED_NAV_TOOLS_CHANGED_EVENT,
+  readPinnedNavTools,
+  repositoriesSectionHintPath,
+  togglePinnedNavTool,
+  WORKSPACE_REPOSITORIES_PATH,
+  writePinnedNavTools,
+  type SidebarNavItemDefinition,
+} from '../../utils/sidebar-navigation';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,6 +77,9 @@ interface Command {
   keywords?: string[];
   shortcut?: string;
   feature?: Feature;
+  /** Additional features the role must have (e.g. chat for agent commands). */
+  requiresFeatures?: Feature[];
+  recent?: boolean;
   action: () => void;
 }
 
@@ -56,6 +89,7 @@ interface CommandPaletteProps {
   userRole: UserRole;
   onToggleTerminal: () => void;
   onCreateWorkspace: () => void;
+  cloudFeaturesEnabled: boolean;
 }
 
 const COMMAND_PALETTE_LIST_ID = 'command-palette-list';
@@ -89,7 +123,7 @@ export function buildNewChatThreadCommandMetadata() {
 }
 
 export function buildToggleChatLayoutCommandMetadata(currentLayout: ChatLayout) {
-  const nextLayout = currentLayout === 'workitems' ? 'classic' : 'workitems';
+  const nextLayout: ChatLayout = currentLayout === 'workitems' ? 'classic' : 'workitems';
   return {
     id: 'act-toggle-chat-layout',
     label: nextLayout === 'workitems' ? 'Switch to Work-Item Chat' : 'Switch to Classic Chat',
@@ -102,8 +136,184 @@ export function buildToggleChatLayoutCommandMetadata(currentLayout: ChatLayout) 
   };
 }
 
+export type AskAgentCommandId =
+  | 'ask-agent-security-audit'
+  | 'ask-agent-dependencies'
+  | 'ask-agent-cicd'
+  | 'ask-agent-review-changes';
+
+export interface AskAgentCommandMetadata {
+  id: AskAgentCommandId;
+  label: string;
+  description: string;
+  section: string;
+  keywords: string[];
+  /** Role feature for the underlying domain; chat is always required too. */
+  feature: Feature;
+  prompt: string;
+}
+
+/** Section heading for the agent-backed replacements of removed tools (spec §12). */
+export const ASK_AGENT_SECTION = 'Ask the agent';
+
+/**
+ * Security, Dependencies and CI/CD stopped being destinations (spec §12):
+ * their results now arrive as chat surfaces. These commands start a chat with
+ * a prefilled (not sent) prompt via the `/chat?prompt=` route intent.
+ */
+export function buildAskAgentCommands(): AskAgentCommandMetadata[] {
+  return [
+    {
+      id: 'ask-agent-security-audit',
+      label: 'Ask the agent: Run a security audit',
+      description: 'Findings with severity, evidence, and fixes, right in the thread.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['security', 'audit', 'scan', 'vulnerabilities', 'owasp', 'findings'],
+      feature: 'security',
+      prompt:
+        'Run a security audit of the repositories in this workspace. Report concrete findings with severity, evidence (file and line), and a practical fix for each.',
+    },
+    {
+      id: 'ask-agent-dependencies',
+      label: 'Ask the agent: Check dependencies',
+      description: 'Outdated, deprecated, vulnerable, and licence-risky packages.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['dependencies', 'packages', 'npm', 'sbom', 'licences', 'licenses', 'upgrade'],
+      feature: 'dependencies',
+      prompt:
+        'Check the dependencies in this workspace: outdated or deprecated packages, known vulnerabilities, and licence risks. Prioritise what to upgrade first and why.',
+    },
+    {
+      id: 'ask-agent-cicd',
+      label: 'Ask the agent: Analyse CI/CD',
+      description: 'Stages, gates, failing or slow steps, and improvements.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['ci', 'cd', 'ci/cd', 'cicd', 'pipeline', 'build', 'deploy', 'workflow'],
+      feature: 'cicd',
+      prompt:
+        'Analyse the CI/CD pipelines in this workspace. Map the stages and gates, flag failing, flaky, or slow steps, and suggest concrete improvements.',
+    },
+    {
+      id: 'ask-agent-review-changes',
+      label: 'Ask the agent: Review my changes',
+      description: 'Bugs, regressions, missing tests, and risky assumptions.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['review', 'changes', 'diff', 'code review', 'quality', 'working tree'],
+      feature: 'codereview',
+      prompt:
+        'Review my changes: call review_context for the working tree, then publish the review with review_publish so it opens as a Review surface. Prioritise correctness, regressions, missing tests, and security risks, and anchor every finding to a changed line.',
+    },
+  ];
+}
+
+/** Pin/unpin a demoted tool from the palette (it has no sidebar row to right-click). */
+export function buildPinToolCommandMetadata(
+  item: Pick<SidebarNavItemDefinition, 'path' | 'label'>,
+  pinned: string[],
+) {
+  const isPinned = pinned.includes(item.path);
+  const atCap = !isPinned && pinned.length >= MAX_PINNED_NAV_TOOLS;
+  return {
+    id: `pin-${item.path.slice(1).replaceAll('/', '-')}`,
+    label: isPinned ? `Unpin ${item.label} from navigation` : `Pin ${item.label} to navigation`,
+    description: atCap
+      ? `Up to ${MAX_PINNED_NAV_TOOLS} tools can be pinned. Unpin one first.`
+      : isPinned
+        ? 'Remove it from the primary navigation.'
+        : 'Show it in the primary navigation.',
+    keywords: ['pin', 'unpin', 'sidebar', 'navigation', item.label.toLowerCase()],
+    isPinned,
+    disabled: atCap,
+  };
+}
+
 export function buildCommandPaletteOptionId(commandId: string): string {
   return `command-palette-option-${slugForDomId(commandId)}`;
+}
+
+interface SearchablePaletteCommand {
+  label: string;
+  description?: string;
+  section: string;
+  keywords?: string[];
+  recent?: boolean;
+}
+
+export function filterCommandPaletteCommands<T extends SearchablePaletteCommand>(
+  commands: T[],
+  query: string,
+): T[] {
+  const trimmedQuery = query.trim().toLowerCase();
+  const candidates = trimmedQuery
+    ? commands
+    : (() => {
+        let recentThreads = 0;
+        return commands.filter((command) => {
+          if (command.section !== 'Threads') return true;
+          if (!command.recent || recentThreads >= 8) return false;
+          recentThreads += 1;
+          return true;
+        });
+      })();
+
+  if (!trimmedQuery) return candidates;
+  return candidates.filter((command) =>
+    [command.label, command.description, command.section, ...(command.keywords ?? [])]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(trimmedQuery),
+  );
+}
+
+export function groupPaletteCommands<T extends { section: string }>(commands: T[]) {
+  const groups = new Map<string, T[]>();
+  for (const command of commands) {
+    const group = groups.get(command.section);
+    if (group) group.push(command);
+    else groups.set(command.section, [command]);
+  }
+  return Array.from(groups, ([section, items]) => ({ section, items }));
+}
+
+function askAgentIcon(id: AskAgentCommandId): React.ReactNode {
+  switch (id) {
+    case 'ask-agent-security-audit':
+      return <Shield size={16} />;
+    case 'ask-agent-dependencies':
+      return <Boxes size={16} />;
+    case 'ask-agent-cicd':
+      return <Workflow size={16} />;
+    case 'ask-agent-review-changes':
+      return <GitPullRequest size={16} />;
+  }
+}
+
+function navigationIconForPath(path: string): React.ReactNode {
+  const icons: Record<string, React.ReactNode> = {
+    '/overview': <House size={16} />,
+    '/inbox': <Bell size={16} />,
+    '/chat': <MessageSquare size={16} />,
+    '/workspace': <LayoutDashboard size={16} />,
+    '/automations': <RadioTower size={16} />,
+    '/workflows': <GitFork size={16} />,
+    '/dojo': <Target size={16} />,
+    '/workitems': <TicketCheck size={16} />,
+    '/editor': <SquareTerminal size={16} />,
+    '/browser': <Globe size={16} />,
+    '/argent': <MonitorSmartphone size={16} />,
+    '/review': <FileDiff size={16} />,
+    '/codereview': <GitPullRequest size={16} />,
+    '/git': <GitBranch size={16} />,
+    '/cloud': <Cloud size={16} />,
+    '/db-insights': <Database size={16} />,
+    [NOTES_PATH]: <NotebookPen size={16} />,
+    [LIBRARY_PATH]: <Library size={16} />,
+    '/governance': <Landmark size={16} />,
+    '/settings': <Settings size={16} />,
+    '/diagnostics': <Activity size={16} />,
+  };
+  return icons[path] ?? <Compass size={16} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,15 +326,38 @@ export function CommandPalette({
   userRole,
   onToggleTerminal,
   onCreateWorkspace,
+  cloudFeaturesEnabled,
 }: CommandPaletteProps) {
   const navigate = useNavigate();
-  const { activeWorkspace } = useWorkspace();
-  const { startNewSession } = useChatContext();
+  const { overrides: shortcuts } = useShortcuts();
+  const { activeWorkspace, workspaces, switchWorkspace, removeRepos, featureAvailability } =
+    useWorkspace();
+  const { threads, startTemporaryChat } = useChatContext();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [chatLayout, setChatLayout] = useState<ChatLayout>('classic');
+  // WS4: two-step "Remove repository" picker — null = normal command mode.
+  const [repoRemoval, setRepoRemoval] = useState<{ confirmRepoId?: string } | null>(null);
+  const [pinnedPaths, setPinnedPaths] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // ⌃1–9 switches workspaces from anywhere in the shell (WS4). The palette is
+  // always mounted, so the listener lives here even when the palette is closed.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      if (event.key < '1' || event.key > '9') return;
+      if (isEditableShortcutTarget(event.target)) return;
+      const workspace = workspaces[Number(event.key) - 1];
+      if (!workspace || workspace.id === activeWorkspace?.id) return;
+      event.preventDefault();
+      void switchWorkspace(workspace.id);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [workspaces, activeWorkspace?.id, switchWorkspace]);
 
   const go = useCallback(
     (path: string) => {
@@ -136,10 +369,38 @@ export function CommandPalette({
 
   const promptChat = useCallback(
     (prompt: string) => {
-      navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+      navigate(chatPromptPath(prompt));
       onClose();
     },
     [navigate, onClose],
+  );
+
+  // Demoted tools (Browser, DB Insights, Argent) are pinned from here.
+  const pinnableNavPaths = useMemo(() => {
+    const navigation = getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled);
+    return new Set(
+      [
+        ...navigation.automate,
+        ...navigation.tools.flatMap((group) => group.items),
+        ...navigation.demoted,
+      ].map((item) => item.path),
+    );
+  }, [userRole, cloudFeaturesEnabled]);
+
+  useEffect(() => {
+    if (open) setPinnedPaths(readPinnedNavTools(pinnableNavPaths));
+  }, [open, pinnableNavPaths]);
+
+  const togglePinnedTool = useCallback(
+    (path: string) => {
+      const next = togglePinnedNavTool(pinnedPaths, path);
+      if (next === pinnedPaths) return;
+      writePinnedNavTools(next);
+      setPinnedPaths(next);
+      window.dispatchEvent(new CustomEvent(PINNED_NAV_TOOLS_CHANGED_EVENT));
+      onClose();
+    },
+    [pinnedPaths, onClose],
   );
 
   const toggleChatLayout = useCallback(async () => {
@@ -170,19 +431,6 @@ export function CommandPalette({
               action: () => go('/editor'),
             },
             {
-              id: 'workspace-review-changes',
-              label: 'Review Current Workspace Changes',
-              description: 'Ask Chat for bugs, regressions, missing tests, and risky assumptions.',
-              section: 'Workspace',
-              icon: <GitPullRequest size={16} />,
-              feature: 'chat' as Feature,
-              keywords: ['workspace', 'review', 'diff', 'changes', 'quality'],
-              action: () =>
-                promptChat(
-                  'Review the current workspace changes. Prioritise correctness, regressions, missing tests, security risks, and developer workflow issues. Cite files and lines where possible.',
-                ),
-            },
-            {
               id: 'workspace-dev-loop',
               label: 'Plan the Next Dev Loop',
               description: 'Ask for a practical inspect, edit, test sequence.',
@@ -198,195 +446,139 @@ export function CommandPalette({
           ]
         : []),
 
-      // Navigation
+      // Switch workspace (WS4) — ⌃1–9 matches the WorkspaceRail order.
+      ...workspaces.map((workspace) => {
+        const position = workspaces.indexOf(workspace) + 1;
+        const isActive = workspace.id === activeWorkspace?.id;
+        return {
+          id: `workspace-switch-${workspace.id}`,
+          label: `Switch to ${workspace.name}`,
+          description: isActive
+            ? 'Current workspace'
+            : `${workspace.repoCount} repo${workspace.repoCount === 1 ? '' : 's'}`,
+          section: 'Workspace',
+          icon: <FolderOpen size={16} />,
+          shortcut: position <= 9 ? `Ctrl+${position}` : undefined,
+          keywords: ['workspace', 'switch', workspace.name.toLowerCase()],
+          action: () => {
+            if (!isActive) void switchWorkspace(workspace.id);
+            onClose();
+          },
+        };
+      }),
+
+      // Thread commands remain searchable across the full thread history.
+      ...[...threads]
+        .sort(
+          (a, b) =>
+            Number(!!a.settledAt) - Number(!!b.settledAt) ||
+            dateValueForSort(b.lastMessageAt ?? b.updatedAt) -
+              dateValueForSort(a.lastMessageAt ?? a.updatedAt),
+        )
+        .map((thread) => ({
+          id: `thread-${thread.id}`,
+          label: `Jump to thread: ${thread.title}`,
+          description: thread.preview || 'Open this conversation in Chat.',
+          section: 'Threads',
+          icon: <MessageSquare size={16} />,
+          feature: 'chat' as Feature,
+          recent: !thread.settledAt,
+          keywords: ['thread', 'chat', 'jump', thread.title.toLowerCase()],
+          action: () =>
+            go(
+              `/chat?thread=${encodeURIComponent(thread.id)}&persona=${encodeURIComponent(thread.personaId)}`,
+            ),
+        })),
+
+      // Navigation comes from the same catalog as the sidebar.
+      ...getSidebarNavigationEntries(userRole, cloudFeaturesEnabled).map(({ item, section }) => ({
+        id: `nav-${item.path.slice(1).replaceAll('/', '-')}`,
+        label: `Go to ${item.label}`,
+        description: navItemGateReason(item, featureAvailability) ?? item.description,
+        section,
+        icon: navigationIconForPath(item.path),
+        shortcut:
+          item.path === '/settings'
+            ? formatShortcut(shortcutFor('settings', shortcuts), navigator.platform.includes('Mac'))
+            : undefined,
+        feature: item.feature,
+        keywords: [
+          item.path.slice(1).replaceAll('-', ' '),
+          item.label.toLowerCase(),
+          ...(item.keywords ?? []),
+        ],
+        action: () => go(item.path),
+      })),
+      // Pin/unpin demoted tools — they have no sidebar row to right-click.
+      ...getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled).demoted.map((item) => {
+        const metadata = buildPinToolCommandMetadata(item, pinnedPaths);
+        return {
+          id: metadata.id,
+          label: metadata.label,
+          description: metadata.description,
+          section: 'More tools',
+          icon: metadata.isPinned ? <PinOff size={16} /> : <Pin size={16} />,
+          feature: item.feature,
+          keywords: metadata.keywords,
+          action: () => {
+            if (!metadata.disabled) togglePinnedTool(item.path);
+          },
+        };
+      }),
+
+      // Spec §12: agent-backed replacements for the removed result tools.
+      ...buildAskAgentCommands().map((metadata) => ({
+        id: metadata.id,
+        label: metadata.label,
+        description: metadata.description,
+        section: metadata.section,
+        icon: askAgentIcon(metadata.id),
+        feature: metadata.feature,
+        requiresFeatures: ['chat'] as Feature[],
+        keywords: ['ask', 'agent', 'chat', ...metadata.keywords],
+        action: () => promptChat(metadata.prompt),
+      })),
+
+      // Saved history and setup moved into repo detail (Health, Setup).
       {
-        id: 'nav-inbox',
-        label: 'Go to Activity',
-        description: 'Review work that needs you and work still in progress across workspaces.',
-        section: 'Navigation',
-        icon: <Bell size={16} />,
-        feature: 'chat',
-        keywords: ['inbox', 'activity', 'attention', 'approval', 'failed', 'completed'],
-        action: () => go('/inbox'),
-      },
-      {
-        id: 'nav-repos',
-        label: 'Go to Workspace',
-        description: 'Connect, inspect, and index source repositories.',
-        section: 'Navigation',
-        icon: <Code size={16} />,
-        feature: 'repos',
-        keywords: ['repos', 'code'],
-        action: () => go('/repos'),
-      },
-      {
-        id: 'nav-chat',
-        label: 'Go to Chat',
-        description: 'Work with the active persona and attached repo context.',
-        section: 'Navigation',
-        icon: <MessageSquare size={16} />,
-        feature: 'chat',
-        keywords: ['chat', 'ai', 'conversation'],
-        action: () => go('/chat'),
-      },
-      {
-        id: 'nav-editor',
-        label: 'Go to Editor',
-        description: 'Inspect files and open the embedded IDE.',
-        section: 'Navigation',
-        icon: <SquareTerminal size={16} />,
-        feature: 'editor',
-        keywords: ['editor', 'inspect', 'code', 'ide'],
-        action: () => go('/editor'),
-      },
-      {
-        id: 'nav-automations',
-        label: 'Go to Watchtower & schedules',
-        description: 'Manage event-driven and scheduled background agent work.',
-        section: 'Navigation',
-        icon: <RadioTower size={16} />,
-        feature: 'automations',
-        keywords: ['automation', 'watchtower', 'schedule', 'daemon', 'agents'],
-        action: () => go('/automations'),
-      },
-      {
-        id: 'nav-workflows',
-        label: 'Go to Workflows',
-        description: 'Build and run reusable multi-step agent workflows.',
-        section: 'Navigation',
-        icon: <GitFork size={16} />,
-        feature: 'workflows',
-        keywords: ['automation', 'workflow', 'agents', 'graph'],
-        action: () => go('/workflows'),
-      },
-      {
-        id: 'nav-onboard',
-        label: 'Go to Onboarding',
-        section: 'Navigation',
-        icon: <Compass size={16} />,
-        feature: 'onboard',
-        keywords: ['onboard', 'setup', 'wizard'],
-        action: () => go('/onboard'),
-      },
-      {
-        id: 'nav-db-insights',
-        label: 'Go to DB Insights',
-        description: 'Import database exports and analyze schemas.',
-        section: 'Navigation',
-        icon: <Database size={16} />,
-        feature: 'dbinsights',
-        keywords: ['database', 'db', 'schema', 'sql', 'insights'],
-        action: () => go('/db-insights'),
-      },
-      {
-        id: 'nav-workitems',
-        label: 'Go to Work Items',
-        section: 'Navigation',
-        icon: <TicketCheck size={16} />,
-        feature: 'workitems',
-        keywords: ['work', 'items', 'tickets', 'ado', 'backlog'],
-        action: () => go('/workitems'),
-      },
-      {
-        id: 'nav-security',
-        label: 'Go to Security',
-        section: 'Navigation',
+        id: 'repo-health-security',
+        label: 'Open Security history (repo Health)',
+        description: 'Pick a repository to see its past security audits.',
+        section: 'Repository health',
         icon: <Shield size={16} />,
         feature: 'security',
-        keywords: ['security', 'audit', 'vulnerabilities'],
-        action: () => go('/security'),
+        keywords: ['security', 'audit', 'history', 'health', 'findings'],
+        action: () => go(repositoriesSectionHintPath('health', 'security')),
       },
       {
-        id: 'nav-codereview',
-        label: 'Go to Code Review',
-        section: 'Navigation',
-        icon: <GitPullRequest size={16} />,
-        feature: 'codereview',
-        keywords: ['code', 'review', 'pr'],
-        action: () => go('/codereview'),
+        id: 'repo-health-dependencies',
+        label: 'Open Dependencies (repo Health)',
+        description: 'Pick a repository to inspect packages, licences, and SBOMs.',
+        section: 'Repository health',
+        icon: <Boxes size={16} />,
+        feature: 'dependencies',
+        keywords: ['dependencies', 'packages', 'sbom', 'licences', 'health'],
+        action: () => go(repositoriesSectionHintPath('health', 'dependencies')),
       },
       {
-        id: 'nav-docs',
-        label: 'Go to Documentation',
-        section: 'Navigation',
-        icon: <FileText size={16} />,
-        feature: 'docs',
-        keywords: ['docs', 'confluence', 'documentation'],
-        action: () => go('/docs'),
+        id: 'repo-health-cicd',
+        label: 'Open CI/CD (repo Health)',
+        description: 'Pick a repository to explore its pipelines.',
+        section: 'Repository health',
+        icon: <Workflow size={16} />,
+        feature: 'cicd',
+        keywords: ['ci', 'cd', 'cicd', 'pipeline', 'build', 'health'],
+        action: () => go(repositoriesSectionHintPath('health', 'cicd')),
       },
       {
-        id: 'nav-adrs',
-        label: 'Go to ADRs',
-        section: 'Navigation',
-        icon: <BookOpen size={16} />,
-        feature: 'adrs',
-        keywords: ['adr', 'architecture', 'decision', 'records'],
-        action: () => go('/adrs'),
-      },
-      {
-        id: 'nav-diagrams',
-        label: 'Go to Diagrams',
-        section: 'Navigation',
-        icon: <GitFork size={16} />,
-        feature: 'diagrams',
-        keywords: ['diagrams', 'architecture', 'drawio'],
-        action: () => go('/diagrams'),
-      },
-      {
-        id: 'nav-governance',
-        label: 'Go to Governance',
-        section: 'Navigation',
-        icon: <Landmark size={16} />,
-        feature: 'governance',
-        keywords: ['governance', 'boards', 'compliance'],
-        action: () => go('/governance'),
-      },
-      {
-        id: 'nav-browser',
-        label: 'Go to Browser',
-        section: 'Navigation',
-        icon: <Globe size={16} />,
-        feature: 'browser',
-        keywords: ['browser', 'web', 'localhost', 'dev server'],
-        action: () => go('/browser'),
-      },
-      {
-        id: 'nav-argent',
-        label: 'Go to Argent',
-        description: 'Set up and operate Argent against the Expo companion app.',
-        section: 'Navigation',
-        icon: <MonitorSmartphone size={16} />,
-        feature: 'argent',
-        keywords: ['argent', 'expo', 'mobile', 'simulator', 'emulator', 'mcp'],
-        action: () => go('/argent'),
-      },
-      {
-        id: 'nav-git',
-        label: 'Go to Git',
-        description: 'Inspect branches, diffs, and repository status.',
-        section: 'Navigation',
-        icon: <GitBranch size={16} />,
-        feature: 'git',
-        keywords: ['git', 'branch', 'commit', 'diff', 'status'],
-        action: () => go('/git'),
-      },
-      {
-        id: 'nav-compliance',
-        label: 'Go to Data & Compliance',
-        section: 'Navigation',
-        icon: <Scale size={16} />,
-        feature: 'compliance',
-        keywords: ['data', 'compliance', 'dpia', 'privacy', 'terms'],
-        action: () => go('/compliance'),
-      },
-      {
-        id: 'nav-settings',
-        label: 'Go to Settings',
-        section: 'Navigation',
-        icon: <Settings size={16} />,
-        shortcut: 'Cmd/Ctrl+,',
-        keywords: ['settings', 'config', 'preferences'],
-        action: () => go('/settings'),
+        id: 'repo-setup',
+        label: 'Set up a repository for agents',
+        description: 'AGENTS.md, devcontainer, and environment readiness (repo Setup).',
+        section: 'Repository health',
+        icon: <Compass size={16} />,
+        feature: 'onboard',
+        keywords: ['onboard', 'setup', 'agents.md', 'devcontainer', 'repo setup', 'wizard'],
+        action: () => go(repositoriesSectionHintPath('setup')),
       },
 
       // Actions
@@ -396,7 +588,10 @@ export function CommandPalette({
         description: 'Open the built-in terminal panel.',
         section: 'Actions',
         icon: <Terminal size={16} />,
-        shortcut: 'Cmd/Ctrl+`',
+        shortcut: formatShortcut(
+          shortcutFor('terminal', shortcuts),
+          navigator.platform.includes('Mac'),
+        ),
         keywords: ['terminal', 'console', 'shell'],
         action: () => {
           onToggleTerminal();
@@ -405,6 +600,10 @@ export function CommandPalette({
       },
       {
         id: 'act-workspace',
+        shortcut: formatShortcut(
+          shortcutFor('newWorkspace', shortcuts),
+          navigator.platform.includes('Mac'),
+        ),
         label: 'Create Workspace',
         description: 'Group repositories into a focused working set.',
         section: 'Actions',
@@ -422,17 +621,54 @@ export function CommandPalette({
         icon: <Code size={16} />,
         feature: 'repos',
         keywords: ['connect', 'add', 'repository', 'repo'],
-        action: () => go('/repos'),
+        action: () => go(WORKSPACE_REPOSITORIES_PATH),
       },
+      ...(activeWorkspace && activeWorkspace.repos.length > 0
+        ? [
+            {
+              id: 'act-remove-repo',
+              label: 'Remove Repository from Workspace…',
+              description: `Detach a repository from ${activeWorkspace.name}.`,
+              section: 'Actions',
+              icon: <FolderMinus size={16} />,
+              feature: 'repos' as Feature,
+              keywords: ['remove', 'detach', 'repository', 'repo', 'workspace'],
+              action: () => {
+                setQuery('');
+                setSelectedIndex(0);
+                setRepoRemoval({});
+              },
+            },
+          ]
+        : []),
       {
         ...buildNewChatThreadCommandMetadata(),
+        shortcut: formatShortcut(
+          shortcutFor('newThread', shortcuts),
+          navigator.platform.includes('Mac'),
+        ),
         section: 'Actions',
         icon: <MessageSquare size={16} />,
         feature: 'chat',
         action: () => {
-          navigate('/chat');
+          navigate('/chat', { state: { newThreadRequest: crypto.randomUUID() } });
           onClose();
-          void startNewSession();
+        },
+      },
+      {
+        id: 'act-temporary-chat',
+        label: 'Start Temporary Chat',
+        description: 'Start a session that ends when Anvil closes, without workspace context.',
+        section: 'Actions',
+        icon: <MessageSquare size={16} />,
+        feature: 'chat',
+        keywords: ['temporary', 'ephemeral', 'private', 'no workspace', 'new chat'],
+        action: () => {
+          void (async () => {
+            await startTemporaryChat();
+            navigate('/chat?temporary=1');
+            onClose();
+          })();
         },
       },
       {
@@ -455,21 +691,12 @@ export function CommandPalette({
         action: () => go('/editor'),
       },
       {
-        id: 'act-run-security',
-        label: 'Run Security Audit',
-        section: 'Actions',
-        icon: <Shield size={16} />,
-        feature: 'security',
-        keywords: ['run', 'security', 'audit', 'scan'],
-        action: () => go('/security'),
-      },
-      {
         id: 'act-run-review',
-        label: 'Run Code Review',
+        label: 'Run PR Review',
         section: 'Actions',
         icon: <GitPullRequest size={16} />,
         feature: 'codereview',
-        keywords: ['run', 'code', 'review'],
+        keywords: ['run', 'code', 'review', 'pr', 'pull request'],
         action: () => go('/codereview'),
       },
       {
@@ -484,11 +711,12 @@ export function CommandPalette({
       {
         id: 'act-create-diagram',
         label: 'Create Architecture Diagram',
+        description: 'Open the diagram tool in the Library.',
         section: 'Actions',
         icon: <GitFork size={16} />,
         feature: 'diagrams',
-        keywords: ['diagram', 'architecture', 'drawio', 'mermaid'],
-        action: () => go('/diagrams'),
+        keywords: ['diagram', 'architecture', 'drawio', 'mermaid', 'library'],
+        action: () => go(libraryPath({ kind: 'diagram', tool: true })),
       },
       {
         id: 'act-open-browser',
@@ -600,33 +828,87 @@ export function CommandPalette({
     ],
     [
       activeWorkspace,
+      workspaces,
+      switchWorkspace,
+      threads,
+      cloudFeaturesEnabled,
+      featureAvailability,
       go,
       navigate,
       onClose,
       onCreateWorkspace,
+      shortcuts,
       onToggleTerminal,
       promptChat,
-      startNewSession,
       chatLayout,
       toggleChatLayout,
+      startTemporaryChat,
+      userRole,
+      pinnedPaths,
+      togglePinnedTool,
     ],
   );
 
+  // Repo-removal picker commands (WS4): step one picks a repo, step two
+  // confirms. The actual removal goes through WorkspaceContext.removeRepos.
+  const pickerCommands = useMemo<Command[]>(() => {
+    if (!repoRemoval || !activeWorkspace) return [];
+
+    if (repoRemoval.confirmRepoId) {
+      const repo = activeWorkspace.repos.find((r) => r.id === repoRemoval.confirmRepoId);
+      if (!repo) return [];
+      return [
+        {
+          id: `remove-repo-confirm-${repo.id}`,
+          label: `Remove ${repo.name} from ${activeWorkspace.name}`,
+          description:
+            'The repository stays connected in Anvil; it is only detached from this workspace.',
+          section: 'Confirm removal',
+          icon: <FolderMinus size={16} />,
+          action: () => {
+            void removeRepos([repo.id]);
+            setRepoRemoval(null);
+            onClose();
+          },
+        },
+        {
+          id: 'remove-repo-cancel',
+          label: 'Keep repository',
+          section: 'Confirm removal',
+          icon: <Code size={16} />,
+          action: () => {
+            setRepoRemoval({});
+            setSelectedIndex(0);
+          },
+        },
+      ];
+    }
+
+    return activeWorkspace.repos.map((repo) => ({
+      id: `remove-repo-${repo.id}`,
+      label: `Remove ${repo.name}`,
+      description: repo.path,
+      section: 'Remove repository',
+      icon: <FolderMinus size={16} />,
+      keywords: ['remove', 'repo', repo.name.toLowerCase()],
+      action: () => {
+        setRepoRemoval({ confirmRepoId: repo.id });
+        setQuery('');
+        setSelectedIndex(0);
+      },
+    }));
+  }, [repoRemoval, activeWorkspace, removeRepos, onClose]);
+
   // Filter by role and query
   const filtered = useMemo(() => {
-    const allowed = commands.filter(
-      (cmd) => !cmd.feature || ROLE_FEATURES[userRole].includes(cmd.feature),
+    const allowed = (repoRemoval ? pickerCommands : commands).filter(
+      (cmd) =>
+        (!cmd.feature || ROLE_FEATURES[userRole].includes(cmd.feature)) &&
+        (cmd.requiresFeatures ?? []).every((feature) => ROLE_FEATURES[userRole].includes(feature)),
     );
-    if (!query.trim()) return allowed;
-
-    const q = query.toLowerCase();
-    const matches = allowed.filter((cmd) => {
-      const haystack = [cmd.label, cmd.description, cmd.section, ...(cmd.keywords ?? [])]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(q);
-    });
+    const matches = filterCommandPaletteCommands(allowed, query);
+    if (!query.trim()) return matches;
+    if (repoRemoval) return matches;
 
     const trimmedQuery = query.trim();
     const chatAvailable = ROLE_FEATURES[userRole].includes('chat');
@@ -644,29 +926,34 @@ export function CommandPalette({
     }
 
     return matches;
-  }, [activeWorkspace, commands, promptChat, query, userRole]);
+  }, [activeWorkspace, commands, pickerCommands, promptChat, query, repoRemoval, userRole]);
 
   // Group by section
-  const sections = useMemo(() => {
-    const map = new Map<string, Command[]>();
-    for (const cmd of filtered) {
-      if (!map.has(cmd.section)) map.set(cmd.section, []);
-      map.get(cmd.section)!.push(cmd);
-    }
-    return map;
-  }, [filtered]);
+  const sections = useMemo(() => groupPaletteCommands(filtered), [filtered]);
+  const orderedCommands = useMemo(() => sections.flatMap((section) => section.items), [sections]);
 
   // Reset on open/close
   useEffect(() => {
     if (open) {
       setQuery('');
       setSelectedIndex(0);
+      setRepoRemoval(null);
       requestAnimationFrame(() => inputRef.current?.focus());
       window.anvil.settings
         .get()
         .then((settings) => setChatLayout(settings.chatLayout ?? 'classic'))
         .catch(console.error);
     }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousFocus = document.activeElement;
+    return () => {
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+        previousFocus.focus();
+      }
+    };
   }, [open]);
 
   useEffect(() => {
@@ -683,8 +970,10 @@ export function CommandPalette({
 
   // Keep selection in bounds
   useEffect(() => {
-    if (selectedIndex >= filtered.length) setSelectedIndex(Math.max(0, filtered.length - 1));
-  }, [filtered.length, selectedIndex]);
+    if (selectedIndex >= orderedCommands.length) {
+      setSelectedIndex(Math.max(0, orderedCommands.length - 1));
+    }
+  }, [orderedCommands.length, selectedIndex]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -695,24 +984,50 @@ export function CommandPalette({
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       switch (e.key) {
+        case 'Tab': {
+          const focusable = Array.from(
+            dialogRef.current?.querySelectorAll<HTMLElement>(
+              'input:not([disabled]), button:not([disabled]):not([tabindex="-1"])',
+            ) ?? [],
+          );
+          if (focusable.length === 0) break;
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+          break;
+        }
         case 'ArrowDown':
         case 'ArrowUp':
         case 'Home':
         case 'End':
           e.preventDefault();
-          setSelectedIndex((index) => getNextListboxIndex(e.key, index, filtered.length) ?? index);
+          setSelectedIndex(
+            (index) => getNextListboxIndex(e.key, index, orderedCommands.length) ?? index,
+          );
           break;
         case 'Enter':
           e.preventDefault();
-          filtered[selectedIndex]?.action();
+          orderedCommands[selectedIndex]?.action();
           break;
         case 'Escape':
           e.preventDefault();
-          onClose();
+          if (repoRemoval) {
+            setRepoRemoval(null);
+            setQuery('');
+            setSelectedIndex(0);
+          } else {
+            onClose();
+          }
           break;
       }
     },
-    [filtered, selectedIndex, onClose],
+    [orderedCommands, selectedIndex, onClose, repoRemoval],
   );
 
   if (!open) return null;
@@ -722,10 +1037,14 @@ export function CommandPalette({
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" onClick={onClose}>
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60" />
+      <div className="absolute inset-0 bg-scrim" />
 
       {/* Palette */}
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
         className="relative w-full max-w-2xl overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
@@ -741,15 +1060,21 @@ export function CommandPalette({
               setQuery(e.target.value);
               setSelectedIndex(0);
             }}
-            placeholder="Search commands, workflows, prompts..."
+            placeholder={
+              repoRemoval
+                ? repoRemoval.confirmRepoId
+                  ? 'Confirm removal…'
+                  : 'Remove which repository from this workspace?'
+                : 'Search commands, workflows, prompts...'
+            }
             role="combobox"
             aria-label="Search commands"
             aria-autocomplete="list"
             aria-expanded={filtered.length > 0}
             aria-controls={COMMAND_PALETTE_LIST_ID}
             aria-activedescendant={
-              filtered[selectedIndex]
-                ? buildCommandPaletteOptionId(filtered[selectedIndex].id)
+              orderedCommands[selectedIndex]
+                ? buildCommandPaletteOptionId(orderedCommands[selectedIndex].id)
                 : undefined
             }
             className="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none"
@@ -773,24 +1098,26 @@ export function CommandPalette({
             </p>
           )}
 
-          {Array.from(sections.entries()).map(([section, cmds]) => (
+          {sections.map(({ section, items }) => (
             <div key={section}>
               <div className="flex items-center justify-between px-3 pb-1 pt-2 text-xs font-medium uppercase tracking-wide text-text-tertiary">
                 {section}
-                <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[10px] normal-case tracking-normal text-text-muted">
-                  {cmds.length}
+                <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-xs normal-case tracking-normal text-text-muted">
+                  {items.length}
                 </span>
               </div>
-              {cmds.map((cmd) => {
+              {items.map((cmd) => {
                 const idx = flatIndex++;
                 return (
                   <button
                     id={buildCommandPaletteOptionId(cmd.id)}
                     key={cmd.id}
                     data-index={idx}
+                    tabIndex={-1}
                     role="option"
                     aria-selected={idx === selectedIndex}
                     onMouseEnter={() => setSelectedIndex(idx)}
+                    onFocus={() => setSelectedIndex(idx)}
                     onClick={cmd.action}
                     className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
                       idx === selectedIndex
@@ -816,7 +1143,7 @@ export function CommandPalette({
                       )}
                     </span>
                     {cmd.shortcut && (
-                      <kbd className="shrink-0 rounded border border-border-subtle bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-tertiary">
+                      <kbd className="shrink-0 rounded border border-border-subtle bg-bg-tertiary px-1.5 py-0.5 text-eyebrow text-text-tertiary">
                         {cmd.shortcut}
                       </kbd>
                     )}
@@ -848,4 +1175,10 @@ export function CommandPalette({
       </div>
     </div>
   );
+}
+
+function dateValueForSort(value?: string): number {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }

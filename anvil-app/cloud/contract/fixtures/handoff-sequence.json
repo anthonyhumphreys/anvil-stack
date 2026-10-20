@@ -1,0 +1,11 @@
+{
+  "states": [
+    "requested",
+    "target-prepared-without-execution",
+    "source-quiescing",
+    "source-relinquished-and-checkpointed",
+    "ownership-transferred",
+    "target-activating",
+    "completed"
+  ]
+}

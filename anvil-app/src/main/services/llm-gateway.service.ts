@@ -224,8 +224,9 @@ export async function resolveLlmGatewayModelConfig(
   model: string,
   effort?: ReasoningEffort,
   sessionModels?: LlmGatewayModel[],
+  billingModeOverride?: LlmGatewayBillingMode,
 ): Promise<ResolvedLlmGatewayModelConfig> {
-  const billingMode = getSettings().llmGatewayBillingMode;
+  const billingMode = billingModeOverride ?? getSettings().llmGatewayBillingMode;
   const models = sessionModels ?? (await listLlmGatewayModels(billingMode));
   const resolved = models.find((candidate) => candidate.id === model);
   if (!resolved) throw new Error(`LLMGateway model is not available: ${model}`);

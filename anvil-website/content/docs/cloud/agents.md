@@ -1,26 +1,25 @@
 ---
 title: Anvil Agents
 navTitle: Agents
-description: Define contract-first agents, mount them in Cells, compile provider-neutral manifests, and run them locally through Anvil Runtime.
+description: Define an agent's tools and permissions, add it to a Cell, inspect its manifest and run it locally.
 product: Anvil Cloud
-section: Runtime
+section: Concepts
 journey: build
-order: 124
+order: 120
 ---
 
 # Anvil Agents
 
-Anvil Agents are portable, inspectable, capability-bound runtime units.
+An Anvil Agent declares its tools and permissions before it runs.
 
-They can operate an Anvil workspace, power a Cell workflow, or become the primary interface of an Agent Cell. Every agent compiles to a provider-neutral manifest before it is run or deployed, so the contract can be reviewed, tested locally, and handed to runtime adapters without leaking provider infrastructure into Cell code.
+Agents can work in an Anvil workspace, run a Cell workflow or provide a Cell's main interface. Each agent compiles to a manifest you can review and test locally. Adapters translate that manifest for a provider, so Cell code doesn't need provider-specific APIs.
 
-This is an MVP foundation, not a hosted agent platform. Useful. Refreshingly unglamorous. Keep the contract small enough to inspect.
+You can use the open-source runtime and CLI today with your own provider accounts. Providers bill you directly. Anvil Cloud Agents, which will run agents on machines we host, hasn't launched and has no price or release date yet.
 
-The bigger runtime direction is [Agent Sandboxes](/docs/cloud/agent-sandboxes):
-isolated, sessionful, inspectable workspaces for agents that need to run tools,
-operate a repo, wait for approval, and resume with state. The first AWS Lambda
-MicroVM-backed provider is implemented behind the adapter boundary; the manifest
-contract starts here.
+[Agent Sandboxes](/docs/cloud/agent-sandboxes) support longer tasks that need
+an isolated repository, approval pauses and saved state. The first AWS Lambda
+MicroVM adapter supports read-only execution. Start here to define the agent
+that runs inside one.
 
 ## Contract boundary
 

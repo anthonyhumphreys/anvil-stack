@@ -37,8 +37,8 @@ export function checkCloudflarePreviewSupport(
       unsupported(
         "database",
         Object.keys(manifest.schema.tables).sort(),
-        "Cloudflare preview does not yet implement the Anvil database contract on D1.",
-        "Use a stateless Cell for the live Worker smoke test until the D1 host passes database conformance.",
+        "The D1 runtime is implemented, but automatic resource provisioning and live deployment verification are incomplete.",
+        "Supply existing D1 resources to the experimental artifact builder and apply its migration before testing. Normal CLI deployment remains gated.",
       ),
     );
   }
@@ -49,10 +49,10 @@ export function checkCloudflarePreviewSupport(
         [manifest.cell.name],
         options.authentication === "temporary"
           ? "Cloudflare Temporary Accounts do not currently list R2 as a supported resource, and the Anvil files host is not implemented."
-          : "Cloudflare preview does not yet implement the Anvil files contract on R2.",
+          : "The private R2 runtime is implemented, but automatic resource provisioning and live deployment verification are incomplete.",
         options.authentication === "temporary"
           ? "Use a stateless Cell for this temporary preview."
-          : "Use a Cell without file storage until the R2 host passes file conformance.",
+          : "Supply an existing private R2 bucket to the experimental artifact builder. Normal CLI deployment remains gated.",
       ),
     );
   }
@@ -103,8 +103,8 @@ export function checkCloudflarePreviewSupport(
       unsupported(
         "jobs",
         manifest.jobs.map((item) => item.name),
-        "Cloudflare preview does not yet execute scheduled or queued jobs.",
-        "Run jobs locally until Queues and Cron Trigger runtime bridges are implemented.",
+        "Queue consumers and Cron Trigger bridges are implemented, but automatic resource provisioning and live deployment verification are incomplete.",
+        "Supply an existing queue and dead-letter queue to the experimental artifact builder. Use five-field UTC cron expressions.",
       ),
     );
   }

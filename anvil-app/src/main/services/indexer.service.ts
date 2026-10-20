@@ -1,11 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { LanguageBreakdown } from '../../shared/types.js';
-import {
-  type FileEntry,
-  walkRepo,
-  buildDirectoryTree,
-} from '../utils/file-walker.js';
+import { type FileEntry, walkRepo, buildDirectoryTree } from '../utils/file-walker.js';
 
 // Extension → language mapping
 const EXTENSION_MAP: Record<string, string> = {
@@ -176,19 +172,61 @@ function detectFrameworks(repoPath: string, files: FileEntry[]): string[] {
   return [...found];
 }
 
+const MAX_MODULES = 25;
+// If a single group holds more than this share of all files, descend one level
+// inside it so monorepo layouts (e.g. src/ holding 95% of files) still split.
+const DOMINANT_GROUP_THRESHOLD = 0.6;
+
 function identifyModules(repoPath: string, files: FileEntry[]): ModuleInfo[] {
-  // Group files by top-level directory (max 15 modules)
-  const topDirs = new Map<string, FileEntry[]>();
+  const workspaceDirs = detectWorkspaceMemberDirs(repoPath, files);
+  const groups = new Map<string, FileEntry[]>();
+
+  const push = (key: string, file: FileEntry) => {
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(file);
+  };
 
   for (const file of files) {
+    // Workspace manifests win: a file under a declared member dir belongs to
+    // that member even when it is nested deeper than the top level.
+    const member = workspaceDirs
+      .filter((dir) => file.relativePath === dir || file.relativePath.startsWith(`${dir}/`))
+      .sort((a, b) => b.length - a.length)[0];
+    if (member) {
+      push(member, file);
+      continue;
+    }
     const parts = file.relativePath.split('/');
-    const topDir = parts.length > 1 ? parts[0] : '.';
-    if (!topDirs.has(topDir)) topDirs.set(topDir, []);
-    topDirs.get(topDir)!.push(file);
+    push(parts.length > 1 ? parts[0] : '.', file);
+  }
+
+  // Descend one level into any group that dominates the repo so a single
+  // giant module (e.g. src/ in a monorepo) splits into its children.
+  const total = files.length;
+  for (const [groupPath, groupFiles] of [...groups.entries()]) {
+    if (groupPath === '.' || groupFiles.length <= total * DOMINANT_GROUP_THRESHOLD) continue;
+    let descended = false;
+    for (const file of groupFiles) {
+      const rest = file.relativePath.slice(groupPath.length + 1);
+      const nextSegment = rest.split('/')[0];
+      if (rest.includes('/') && nextSegment) {
+        push(`${groupPath}/${nextSegment}`, file);
+        descended = true;
+      }
+    }
+    if (descended) {
+      groups.set(
+        groupPath,
+        groupFiles.filter((file) => !file.relativePath.slice(groupPath.length + 1).includes('/')),
+      );
+      if (groups.get(groupPath)!.length === 0) groups.delete(groupPath);
+    }
   }
 
   const modules: ModuleInfo[] = [];
-  const sortedDirs = [...topDirs.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 15);
+  const sortedDirs = [...groups.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, MAX_MODULES);
 
   for (const [dir, dirFiles] of sortedDirs) {
     const keyFiles = selectKeyFiles(dirFiles);
@@ -203,6 +241,105 @@ function identifyModules(repoPath: string, files: FileEntry[]): ModuleInfo[] {
   }
 
   return modules;
+}
+
+/**
+ * Detect monorepo workspace member directories from common manifests:
+ * pnpm-workspace.yaml, package.json#workspaces, go.work, Cargo.toml [workspace].
+ * Returns concrete directory prefixes (e.g. 'packages/foo') that contain files.
+ */
+function detectWorkspaceMemberDirs(repoPath: string, files: FileEntry[]): string[] {
+  const patterns: string[] = [];
+
+  // pnpm-workspace.yaml — `packages:` list entries
+  const pnpmWorkspace = readManifestFile(repoPath, 'pnpm-workspace.yaml');
+  if (pnpmWorkspace) {
+    const packagesMatch = pnpmWorkspace.match(/^packages:\s*\n((?:\s+-\s+.+\n?)+)/m);
+    if (packagesMatch) {
+      for (const line of packagesMatch[1].split('\n')) {
+        const entry = line.match(/^\s+-\s+['"]?([^'"\s]+)['"]?\s*$/);
+        if (entry && !entry[1].startsWith('!')) patterns.push(entry[1]);
+      }
+    }
+  }
+
+  // package.json#workspaces — array or { packages: [...] }
+  const pkgJson = readManifestFile(repoPath, 'package.json');
+  if (pkgJson) {
+    try {
+      const pkg = JSON.parse(pkgJson) as { workspaces?: string[] | { packages?: string[] } };
+      const workspaces = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages;
+      if (Array.isArray(workspaces)) {
+        patterns.push(...workspaces.filter((w) => typeof w === 'string' && !w.startsWith('!')));
+      }
+    } catch {
+      /* ignore parse errors */
+    }
+  }
+
+  // go.work — `use` directives (single-line and block form)
+  const goWork = readManifestFile(repoPath, 'go.work');
+  if (goWork) {
+    const block = goWork.match(/use\s*\(([^)]*)\)/);
+    const useLines = block
+      ? block[1].split('\n')
+      : goWork.split('\n').filter((line) => /^\s*use\s+/.test(line));
+    for (const line of useLines) {
+      const entry = line.match(/^\s*use\s+['"]?([^'")\s]+)['"]?\s*$/) ?? line.match(/([.\w/-]+)/);
+      if (entry) patterns.push(entry[1].replace(/^\.\//, ''));
+    }
+  }
+
+  // Cargo.toml — [workspace] members array
+  const cargoToml = readManifestFile(repoPath, 'Cargo.toml');
+  if (cargoToml) {
+    const workspaceSection = cargoToml.match(/\[workspace\]([\s\S]*?)(?=\n\[|$)/);
+    const members = workspaceSection?.[1].match(/members\s*=\s*\[([\s\S]*?)\]/);
+    if (members) {
+      for (const entry of members[1].matchAll(/['"]([^'"]+)['"]/g)) {
+        if (!entry[1].startsWith('!')) patterns.push(entry[1]);
+      }
+    }
+  }
+
+  const dirs = new Set<string>();
+  const knownDirs = new Set(
+    files.flatMap((file) => {
+      const parts = file.relativePath.split('/');
+      return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
+    }),
+  );
+
+  for (const pattern of patterns) {
+    const normalized = pattern.replace(/^\.\//, '').replace(/\/+$/, '');
+    if (!normalized) continue;
+
+    if (!normalized.includes('*')) {
+      // Literal member path
+      if (knownDirs.has(normalized)) dirs.add(normalized);
+      continue;
+    }
+
+    // Glob member — resolve the static base and enumerate its child dirs.
+    const base = normalized.split('*')[0].replace(/\/+$/, '');
+    if (!base || !knownDirs.has(base)) continue;
+    for (const dir of knownDirs) {
+      if (dir.startsWith(`${base}/`) && dir.split('/').length === base.split('/').length + 1) {
+        dirs.add(dir);
+      }
+    }
+  }
+
+  return [...dirs];
+}
+
+function readManifestFile(repoPath: string, name: string): string | null {
+  try {
+    const fullPath = path.join(repoPath, name);
+    return fs.existsSync(fullPath) ? fs.readFileSync(fullPath, 'utf-8') : null;
+  } catch {
+    return null;
+  }
 }
 
 function selectKeyFiles(files: FileEntry[]): FileEntry[] {

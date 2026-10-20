@@ -5,6 +5,7 @@ import type {
   DiagnosticProcessMetric,
   DiagnosticsSnapshot,
 } from '../../shared/types.js';
+import { getAgentMcpStatus } from './agent-mcp/index.js';
 import { listTargets } from './browser.service.js';
 import { getCodexSessionDiagnostics } from './codex-session.service.js';
 import { getRunProcessDiagnostics } from './run-process.service.js';
@@ -17,6 +18,24 @@ function mapMemoryUsage(memory: NodeJS.MemoryUsage): DiagnosticMemoryUsage {
     heapUsed: memory.heapUsed,
     external: memory.external,
     arrayBuffers: memory.arrayBuffers,
+  };
+}
+
+/** Endpoint status for Diagnostics; copies counters field by field so no token can leak. */
+export function buildAgentMcpDiagnostics(
+  status: ReturnType<typeof getAgentMcpStatus>,
+): NonNullable<DiagnosticsSnapshot['agentMcp']> {
+  return {
+    listening: status.running,
+    ...(status.port !== undefined ? { port: status.port } : {}),
+    ...(status.error ? { error: status.error } : {}),
+    activeSessions: status.sessions.length,
+    sessions: status.sessions.map(({ sessionId, createdAt, toolCalls, toolErrors }) => ({
+      sessionId,
+      createdAt,
+      toolCalls,
+      toolErrors,
+    })),
   };
 }
 
@@ -77,5 +96,6 @@ export function getDiagnosticsSnapshot(): DiagnosticsSnapshot {
     },
     processes: app.getAppMetrics().map(mapProcessMetric),
     featureMetrics,
+    agentMcp: buildAgentMcpDiagnostics(getAgentMcpStatus()),
   };
 }

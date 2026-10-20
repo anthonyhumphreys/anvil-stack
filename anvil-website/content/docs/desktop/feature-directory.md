@@ -3,9 +3,9 @@ title: Desktop feature directory
 navTitle: Feature directory
 description: A route-by-route map of every user-facing Anvil Desktop feature and the guide that explains it.
 product: Anvil Desktop
-section: Basics
+section: Start here
 journey: learn
-order: 101
+order: 30
 ---
 
 # Desktop feature directory
@@ -48,7 +48,7 @@ Role selection controls which tools appear. Cloud is also hidden until you enabl
 | Editor | Starts or attaches to the embedded VS Code server, focuses files from Anvil, or opens them in an external editor. | [Terminal and editor](/docs/desktop/terminal-and-editor) |
 | Browser | Detects local dev servers, opens an embedded preview, records annotations, sends page context to Chat, and can register the browser MCP bridge. | [Build, inspect, and run](/docs/desktop/build-inspect-and-run) |
 | Cloud | Runs Anvil Cloud health, build, runtime, workflow, service, and agent commands. It can also start and supervise authenticated remote executions. | [Cloud and mobile workbenches](/docs/desktop/cloud-and-mobile-workbenches) |
-| DB Insights | Imports database exports, detects tables, stored procedures, relationships, and risks, then prepares follow-up prompts for Chat. | [Assurance tools](/docs/desktop/assurance-tools) |
+| DB Insights | Analyses SQL DDL, MongoDB and DynamoDB JSON, or Redis key/type exports, then brings observed structure and follow-up prompts into Chat. | [Assurance tools](/docs/desktop/assurance-tools) |
 | Dependencies | Inventories npm, pnpm, Yarn, NuGet, and Python packages; runs vulnerability and licence checks; and exports SBOMs. | [Assurance tools](/docs/desktop/assurance-tools) |
 | Security | Runs repository security audits, tracks findings, creates work items, and exports reports. Its Pentest tab runs Docker-backed dynamic scans. | [Assurance tools](/docs/desktop/assurance-tools) |
 | Onboarding | Detects repository setup, generates `AGENTS.md` and devcontainer files, checks the environment, and can write or commit approved artifacts. | [Workspaces, repositories, and activity](/docs/desktop/workspaces-repositories-and-activity) |
@@ -72,6 +72,7 @@ Role selection controls which tools appear. Cloud is also hidden until you enabl
 | Governance boards | Groups local governance documents into workspace boards. | [Governance and lifecycle](/docs/desktop/governance-and-lifecycle) |
 | Data and Compliance | Generates repository-grounded DPIA, privacy policy, and terms drafts with explicit human-review markers. | [Assurance tools](/docs/desktop/assurance-tools) |
 | Settings | Controls roles, themes, chat layout, model providers, connectors, companion access, feature flags, review rubrics, and opt-in crash reports. | [Settings and diagnostics](/docs/desktop/settings-and-diagnostics) |
+| Sync & Mesh | Syncs workspaces, workflow templates, agents, and settings across enrolled devices; runs and supervises mesh jobs on remote machines; moves sessions between devices with checkpointed handoff; shares artifacts through sealed links; exports and imports account data. | [Sync and Mesh](/docs/desktop/sync-and-mesh) · [Sync & Mesh overview](/docs/sync/overview) |
 | Codex Skills and MCPs | Inspects installed skills and MCP servers, searches `skills.sh`, installs skills, and registers local or HTTP MCP servers. | [Settings and diagnostics](/docs/desktop/settings-and-diagnostics) |
 | Runtime Diagnostics | Reports Electron process memory, feature counters, active work, and local runtime state. | [Settings and diagnostics](/docs/desktop/settings-and-diagnostics) |
 

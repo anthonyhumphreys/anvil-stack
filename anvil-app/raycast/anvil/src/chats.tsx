@@ -1,12 +1,15 @@
 import { Action, ActionPanel, Form, Icon, List, popToRoot, showToast, Toast } from '@raycast/api';
 import { useCachedPromise } from '@raycast/utils';
-import { fetchOverview, sendThreadMessage, type ChatThread } from './api';
+import { useEffect } from 'react';
+import { fetchOverview, sendThreadMessage, subscribeToMeshUpdates, type ChatThread } from './api';
 import { getExtensionBrand } from './brand';
 
 export default function ChatsCommand() {
   const { data, isLoading, revalidate } = useCachedPromise(fetchOverview);
   const threads = data?.threads ?? [];
   const brand = getExtensionBrand();
+
+  useEffect(() => subscribeToMeshUpdates(() => void revalidate()), [revalidate]);
 
   return (
     <List isLoading={isLoading} searchBarPlaceholder={`Search ${brand.appName} chats`}>

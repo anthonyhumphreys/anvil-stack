@@ -1,8 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { MobileOverview } from '../../../shared/types.js';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { app } from 'electron';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChatMessage, MobileOverview } from '../../../shared/types.js';
+import { loadChatHistory } from '../chat-persistence.service.js';
+import { getSettings } from '../settings.service.js';
 import { getWorkspace } from '../workspace.service.js';
 
 vi.mock('electron', () => ({
+  app: { getPath: vi.fn(() => '/tmp/anvil-mobile-companion-test-user-data') },
   BrowserWindow: { getAllWindows: () => [] },
 }));
 
@@ -13,7 +28,7 @@ vi.mock('../../db/database.js', () => ({
 }));
 
 vi.mock('../settings.service.js', () => ({
-  getSettings: () => ({}),
+  getSettings: vi.fn(() => ({})),
 }));
 
 vi.mock('../workspace.service.js', () => ({
@@ -48,12 +63,16 @@ vi.mock('../chat-persistence.service.js', () => ({
 import {
   buildMobileWorkQueue,
   buildWorkflowDigest,
+  getMeshCompanionOverview,
+  readMeshCompanionThreadHistory,
+  resolveMeshCompanionFileMentions,
   resolveMobileActiveWorkspace,
 } from '../mobile-companion.service.js';
 
 const workspace = {
   id: 'ws-1',
   name: 'Launch Control',
+  syncSelected: false,
   createdAt: '2026-05-26T10:00:00.000Z',
   updatedAt: '2026-05-26T10:00:00.000Z',
   repos: [
@@ -68,7 +87,7 @@ const workspace = {
       branchCount: 3,
     },
   ],
-} as MobileOverview['activeWorkspace'];
+} as NonNullable<MobileOverview['activeWorkspace']>;
 
 describe('mobile companion workspace selection', () => {
   const getWorkspaceMock = vi.mocked(getWorkspace);
@@ -102,6 +121,133 @@ describe('mobile companion workspace selection', () => {
         'launch-workspace',
       )?.id,
     ).toBe('mac-workspace');
+  });
+
+  it('fails closed for a deleted explicit Mesh workspace instead of falling back to the active workspace', () => {
+    getWorkspaceMock.mockClear();
+    vi.mocked(getSettings).mockReturnValue({
+      activeWorkspaceId: 'workspace-b',
+    } as ReturnType<typeof getSettings>);
+    getWorkspaceMock.mockImplementation((workspaceId) => {
+      if (workspaceId === 'workspace-b') {
+        return { ...workspace, id: 'workspace-b', name: 'Workspace B' };
+      }
+      throw new Error('Workspace is missing.');
+    });
+
+    expect(() => getMeshCompanionOverview('deleted-workspace-a')).toThrow(
+      'The requested Mesh workspace is unavailable.',
+    );
+    expect(getWorkspaceMock).toHaveBeenCalledTimes(1);
+    expect(getWorkspaceMock).toHaveBeenCalledWith('deleted-workspace-a');
+  });
+});
+
+describe('Mesh file mention snapshots', () => {
+  let userDataDirectory: string;
+  let repositoryDirectory: string;
+  let temporaryDirectory: string;
+
+  beforeEach(() => {
+    temporaryDirectory = mkdtempSync(path.join(tmpdir(), 'anvil-mesh-mentions-'));
+    userDataDirectory = path.join(temporaryDirectory, 'user-data');
+    repositoryDirectory = path.join(temporaryDirectory, 'repository');
+    mkdirSync(userDataDirectory);
+    mkdirSync(repositoryDirectory);
+    vi.mocked(app.getPath).mockReturnValue(userDataDirectory);
+    vi.mocked(getWorkspace).mockImplementation((workspaceId) => ({
+      ...workspace,
+      id: workspaceId,
+      repos: [{ ...workspace.repos[0], path: repositoryDirectory }],
+    }));
+  });
+
+  afterEach(() => {
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+    vi.mocked(app.getPath).mockReturnValue('/tmp/anvil-mobile-companion-test-user-data');
+  });
+
+  it('keeps the originally selected bytes when the workspace path is replaced by an outside symlink', () => {
+    const selectedPath = path.join(repositoryDirectory, 'selected.ts');
+    const outsidePath = path.join(temporaryDirectory, 'outside-secret.ts');
+    writeFileSync(selectedPath, 'original selected content');
+    writeFileSync(outsidePath, 'outside replacement content');
+
+    const [attachment] = resolveMeshCompanionFileMentions(
+      'workspace-1',
+      ['repo-1'],
+      [{ repoId: 'repo-1', relativePath: 'selected.ts' }],
+    );
+    expect(attachment?.path).not.toBe(selectedPath);
+
+    rmSync(selectedPath);
+    symlinkSync(outsidePath, selectedPath);
+
+    expect(readFileSync(attachment!.path!, 'utf8')).toBe('original selected content');
+    expect(readFileSync(attachment!.path!, 'utf8')).not.toContain('outside replacement content');
+  });
+
+  it('removes snapshots already made when a later mention fails repository containment', () => {
+    const firstPath = path.join(repositoryDirectory, 'first.txt');
+    const outsidePath = path.join(temporaryDirectory, 'outside.txt');
+    const outsideLink = path.join(repositoryDirectory, 'outside-link.txt');
+    writeFileSync(firstPath, 'safe content');
+    writeFileSync(outsidePath, 'outside content');
+    symlinkSync(outsidePath, outsideLink);
+
+    expect(() =>
+      resolveMeshCompanionFileMentions(
+        'workspace-1',
+        ['repo-1'],
+        [
+          { repoId: 'repo-1', relativePath: 'first.txt' },
+          { repoId: 'repo-1', relativePath: 'outside-link.txt' },
+        ],
+      ),
+    ).toThrow('Mesh file mention resolves outside its repository.');
+
+    const snapshotDirectory = path.join(
+      userDataDirectory,
+      'chat-attachments',
+      '.mesh-file-mentions',
+    );
+    expect(readdirSync(snapshotDirectory)).toEqual([]);
+  });
+});
+
+describe('mesh companion history projection', () => {
+  it('does not expose host paths through event, repo, citation, or attachment metadata', () => {
+    vi.mocked(loadChatHistory).mockReturnValue([
+      {
+        id: 'message-1',
+        role: 'assistant',
+        content: 'Here is the result.',
+        timestamp: '2026-05-26T10:00:00.000Z',
+        event: { type: 'file_read', filePath: '/Users/anthony/private/repo/file.ts' },
+        repoContext: '/Users/anthony/private/repo',
+        citations: [{ filePath: '/Users/anthony/private/repo/file.ts', lineStart: 4 }],
+        attachments: [
+          {
+            id: 'attachment-1',
+            name: 'notes.txt',
+            mimeType: 'text/plain',
+            size: 5,
+            path: '/Users/anthony/private/attachment.txt',
+          },
+        ],
+      } as ChatMessage,
+    ]);
+
+    const [message] = readMeshCompanionThreadHistory('thread-1');
+
+    expect(message).toMatchObject({
+      content: 'Here is the result.',
+      citations: [{ filePath: 'file.ts', lineStart: 4 }],
+      attachments: [{ id: 'attachment-1', name: 'notes.txt', mimeType: 'text/plain', size: 5 }],
+    });
+    expect(message).not.toHaveProperty('event');
+    expect(message).not.toHaveProperty('repoContext');
+    expect(JSON.stringify(message)).not.toContain('/Users/anthony');
   });
 });
 
@@ -199,6 +345,7 @@ describe('mobile companion work queue', () => {
           personaId: 'coder',
           title: 'Release check',
           workspaceId: 'ws-1',
+          repoIds: ['repo-1'],
           preview: 'Checking the release.',
           messageCount: 2,
           updatedAt: '2026-05-26T10:02:00.000Z',
@@ -244,6 +391,7 @@ describe('mobile companion work queue', () => {
           personaId: 'coder',
           title: 'Ready session',
           workspaceId: 'ws-1',
+          repoIds: ['repo-1'],
           messageCount: 3,
           updatedAt: '2026-05-26T10:03:00.000Z',
           activeSessionId: 'session-1',
@@ -255,6 +403,7 @@ describe('mobile companion work queue', () => {
           personaId: 'reviewer',
           title: 'Yesterday review',
           workspaceId: 'ws-1',
+          repoIds: ['repo-1'],
           preview: 'No findings.',
           messageCount: 4,
           updatedAt: '2026-05-26T09:00:00.000Z',

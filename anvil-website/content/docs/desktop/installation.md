@@ -1,58 +1,63 @@
 ---
-title: Installation and setup
+title: Install Anvil Desktop
 navTitle: Installation
-description: Get Anvil Desktop running from a release build or from source, and complete first-launch setup.
+description: Download a release build or build from source, then get through the first launch.
 product: Anvil Desktop
-section: Basics
+section: Start here
 journey: build
-order: 101
+order: 20
 ---
 
-# Installation and setup
+# Install Anvil Desktop
 
-Anvil Desktop is an Electron app. You can run a packaged release build or build it from source. Both paths end at the same first-launch flow.
+You can download a ready-made build or build the app from source. Either way you end up at the same first-launch setup.
 
-## Option A: release build
+## Download a release
 
-Release builds are attached to GitHub releases tagged `app-v*` in the [anvil-stack repository](https://github.com/anthonyhumphreys/anvil-stack/releases).
+Builds are attached to the `app-v*` releases in the [anvil-stack repository](https://github.com/anthonyhumphreys/anvil-stack/releases).
 
-1. Download the latest [macOS Apple Silicon DMG](https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg), or open the latest `app-v*` release and choose the `.dmg` or `.zip` asset manually.
-2. Open the disk image and drag Anvil into Applications.
-3. Open Terminal and run the following command before launching Anvil:
+### macOS
+
+1. Download the latest [DMG for Apple silicon](https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg) and `Anvil-macos-arm64.sha256` from the same release.
+2. In Terminal, move to the download folder and verify the DMG:
 
    ```bash
-   xattr -dr com.apple.quarantine /Applications/Anvil.app
+   grep '  Anvil-latest-arm64.dmg$' Anvil-macos-arm64.sha256 | shasum -a 256 -c -
    ```
 
-4. Launch Anvil from Applications.
+   Continue only if the result says `OK`.
+3. Open the disk image and drag Anvil into Applications.
+4. Open Anvil from Applications.
 
-> **Info: macOS signing**
+> **About signed builds**
 >
-> Anvil is currently unsigned and not notarized because we do not yet have an Apple Developer account. We are working on it. The command above removes macOS quarantine from Anvil so you can open it. Only run it for a copy downloaded from our official GitHub releases.
+> Check the release notes. They state whether that build is signed and notarised. Unsigned internal builds may be blocked by Gatekeeper. For private testing only, follow the release note's quarantine-removal instruction after verifying the checksum. Removing quarantine does not sign or notarise the app. Never use that step to make an unverified download appear safe.
 >
-> [Sponsor Anvil on GitHub](https://github.com/sponsors/anthonyhumphreys) to support development and help fund Apple Developer membership.
+> [Sponsoring Anvil on GitHub](https://github.com/sponsors/anthonyhumphreys) helps pay for the Apple Developer membership.
 
-The `app-v*` release workflows also publish Windows x64 NSIS installers and portable executables, plus Linux x64 AppImage, deb, and pacman packages. Choose the matching asset and inspect the included checksum files on the [release page](https://github.com/anthonyhumphreys/anvil-stack/releases). Wait for the relevant platform workflow to finish if a newly created release does not yet contain its assets.
+Automatic updates are switched off for macOS builds for now, so check the releases page for new versions.
 
-Automatic updates are currently disabled for the standard macOS release.
+### Windows and Linux
 
-> **Info: using LLMGateway**
+Each release also includes Windows x64 installers and portable executables, and Linux x64 AppImage, deb and pacman packages. Download the one you need from the [releases page](https://github.com/anthonyhumphreys/anvil-stack/releases) and check it against the checksum file next to it. If a brand-new release is missing your platform, its build is probably still running; check back shortly.
+
+> **Note: Using LLMGateway**
 >
-> You need Codex installed to run LLMGateway coding agents in Anvil. In Anvil's LLMGateway setup, choose **Install coding engine** to let Anvil install and manage Codex for you. Codex runs locally to edit files and execute commands; LLMGateway supplies the models and handles billing.
+> LLMGateway agents run through Codex, so you need Codex installed. In Anvil's LLMGateway setup, choose **Install coding engine** and Anvil installs and manages it for you. Codex edits files and runs commands on your machine; LLMGateway provides the models and bills you for them.
 >
-> **No ChatGPT login or subscription is required.** Connect your LLMGateway account or API key instead. LLMGateway's own billing still applies.
+> You don't need a ChatGPT login or subscription. Connect your LLMGateway account or API key instead.
 
-## Option B: build from source
+## Build from source
 
-Prerequisites:
+You'll need:
 
-- Node.js 22.12.0 or later
-- pnpm 10 (`corepack enable` is the simplest route)
-- A C/C++ toolchain for the native modules (`better-sqlite3`, `node-pty`):
+- Node.js 22.13.0 or later
+- pnpm 10 (run `corepack enable` to get it)
+- A C/C++ toolchain for the native modules (`better-sqlite3` and `node-pty`):
   - macOS: Xcode Command Line Tools (`xcode-select --install`)
   - Windows: Visual Studio Build Tools with the "Desktop development with C++" workload
-  - Linux: `build-essential`, `python3`, `libsecret-1-dev`
-- Git 2.30+
+  - Linux: `build-essential`, `python3` and `libsecret-1-dev`
+- Git 2.30 or later
 
 ```bash
 git clone https://github.com/anthonyhumphreys/anvil-stack.git
@@ -61,38 +66,45 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm install` rebuilds the native modules through a postinstall hook, and `pnpm dev` rebuilds them against the Electron runtime before starting. If either native module misbehaves after a Node or dependency change, rerun `pnpm install` before debugging anything else.
+`pnpm install` builds the native modules, and `pnpm dev` rebuilds them for Electron before starting the app. If a native module misbehaves after you change Node or a dependency, run `pnpm install` again before digging further.
 
-To produce a local packaged build on macOS arm64:
+To package a build yourself on an Apple silicon Mac:
 
 ```bash
 pnpm run dist:mac:arm64
 ```
 
-Artifacts land in `dist/`.
+The result lands in `dist/`.
 
 ## First launch
 
-On first launch the app walks you through connector setup:
+You can start locally without an Anvil account. Setup has three short steps:
 
-1. **LLM provider**: connect LLMGateway and install its Codex coding engine as described above, authenticate the Codex CLI for ChatGPT-backed agent sessions, add an OpenAI key in Settings, or configure Azure AI Foundry through `~/.codex/config.toml` plus the referenced API-key environment variable. OpenAI credentials entered in Settings are encrypted before being stored in the local SQLite database.
-2. **Optional Apple Foundation Models route**: on macOS 26 or later, with Apple Intelligence available and enabled, set Apple Foundation Models to **Prefer simple** and run **Test Apple Models** from Settings. On macOS 27, run `sudo fm license` once to unlock the faster `fm` CLI backend and image prompts. This only routes short, self-contained helper prompts to the on-device model; repo-aware work still uses the configured backend.
-3. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
-4. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.
+1. **Choose your starting tools.** Pick the kind of work you do. This changes the initial navigation, not what you are allowed to use. Change your role or show all tools in Settings later.
+2. **Connect a coding agent, or choose Set up later.** Use your Codex, Cursor or Devin subscription, or connect OpenAI, Azure AI Foundry or LLMGateway. A coding agent is needed for chat and coding tasks; you can browse repositories before connecting one. Any API keys you save are encrypted on your machine.
+3. **Choose whether to use Sync.** Select **Continue without Sync** to work on this device. Sync is optional and has separate hosting and account setup.
 
-Desktop state is stored locally. There is no required hosted backend; deleting
-the app's data directory resets it completely. If you explicitly enable the
-optional Cloud Workbench, Desktop can connect to the Anvil Cloud endpoint you
-configure. That bearer is encrypted locally and remote execution state belongs
-to that control plane.
+Next, create a workspace and add a local repository or clone one. A workspace groups the repositories and conversations for a piece of work. Let indexing finish, then try a small task on a repository you know.
 
-## Optional extras
+### Connect more tools when you need them
 
-- A [Nerd Font](https://www.nerdfonts.com/) (for example MesloLGS NF or Hack Nerd Font) makes the built-in terminal render powerline glyphs correctly.
-- The Expo companion app in `anvil-app/mobile` and the Raycast extension in `anvil-app/raycast/anvil` pair with a running desktop instance. See [Companion surfaces](/docs/desktop/companion-surfaces).
+You do not need to configure everything before your first task. Settings lets you add more agent accounts, choose models, and connect Azure DevOps, Linear or Jira for work items. Connect Confluence, Notion or Linear for documents when your work needs them.
+
+For LLMGateway, Anvil offers **Install coding engine** during setup. It uses Codex to edit files and run commands, while LLMGateway supplies and bills for the models. A ChatGPT subscription is not required.
+
+### Optional on-device helpers
+
+On macOS 26 or later with Apple Intelligence enabled, **Settings → AI connections & models → Local model** can route short helper prompts to Apple Foundation Models. Coding work still uses your chosen agent. Leave this off to start; the settings panel explains the platform requirements and test options.
+
+Your repositories, settings and chat history are stored locally. Coding agents send the context they need to your chosen model provider, and optional integrations contact their services. Deleting the app's data folder resets it completely. If you turn on the optional Cloud Workbench, Anvil connects to the Anvil Cloud endpoint you set up; its token is encrypted locally, and the remote run state lives on that service.
+
+## Nice to have
+
+- A [Nerd Font](https://www.nerdfonts.com/), such as MesloLGS NF or Hack Nerd Font, so the built-in terminal draws prompt icons properly.
+- The mobile companion app in `anvil-app/mobile` and the Raycast extension in `anvil-app/raycast/anvil`. Both pair with a running copy of the desktop app. See [Companion surfaces](/docs/desktop/companion-surfaces).
 
 ## Read next
 
-- [Operating guide](/docs/desktop/operating-guide) for the day-to-day working loop.
-- [Chat personas, reasoning, and LLM providers](/docs/desktop/chat-personas-and-llm) to configure models.
-- [Troubleshooting](/docs/desktop/troubleshooting) if something refuses to start.
+- [Operating guide](/docs/desktop/operating-guide) for the day-to-day loop.
+- [Chat, personas and models](/docs/desktop/chat-personas-and-llm) to set up models.
+- [Troubleshooting](/docs/desktop/troubleshooting) if something won't start.

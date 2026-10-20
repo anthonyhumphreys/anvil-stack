@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { resolveCodexReasoningEffort } from '../../shared/codex-models';
-import type { WorkflowNode, WorkflowRun, WorkflowRuntimeEvent } from '../../shared/types';
+import type {
+  WorkflowNode,
+  WorkflowRun,
+  WorkflowRuntimeEvent,
+  WorkflowRemoteExecution,
+} from '../../shared/types';
 import {
   orchestrationConfig,
   parseDelegation,
@@ -15,7 +20,14 @@ export interface WorkflowRuntimeHooks {
     run: WorkflowRun,
     node: WorkflowNode,
     signal: AbortSignal,
-  ) => Promise<{ output: string; sessionId?: string; threadId?: string }>;
+  ) => Promise<{
+    output: string;
+    sessionId?: string;
+    threadId?: string;
+    outcome?: 'completed' | 'waiting' | 'attention';
+    error?: string;
+    remote?: WorkflowRemoteExecution;
+  }>;
   signal: AbortSignal;
 }
 
@@ -59,7 +71,12 @@ export function expandWorkflowTeam(
       ...specialistNode(profiles[index], id, task.name, task.prompt),
       parentNodeId: parent.id,
       depth: (parent.depth ?? 0) + 1,
-      teamStrategy: parent.teamStrategy === 'autonomous' ? 'autonomous' : 'manual',
+      teamStrategy:
+        parent.teamStrategy === 'autonomous' &&
+        (!profiles[index].target || profiles[index].target?.kind === 'local')
+          ? 'autonomous'
+          : 'manual',
+      permissionMode: parent.permissionMode,
       teamProfileIds: parent.teamProfileIds,
       position: { x: parent.position.x - 330, y: parent.position.y + (index + 1) * 190 },
     };
@@ -163,20 +180,29 @@ export async function runWorkflowRuntime(
         );
         return;
       }
-      if ((state.attempts?.length ?? 0) >= config.maxAttempts)
+      const attempts = (state.attempts ??= []);
+      if (attempts.length >= config.maxAttempts)
         throw new Error('Maximum attempts reached for this step.');
-      const attempt = {
-        id: randomUUID(),
-        startedAt: new Date().toISOString(),
-        status: 'running' as const,
-        provider: node.provider ?? 'codex',
-        model: node.model,
-        reasoningEffort:
-          node.provider === 'cursor'
-            ? node.reasoningEffort
-            : resolveCodexReasoningEffort(node.model, node.reasoningEffort),
-      };
-      (state.attempts ??= []).push(attempt);
+      const priorAttempt = attempts.at(-1);
+      const attempt =
+        (priorAttempt?.status === 'running' || priorAttempt?.status === 'waiting') &&
+        priorAttempt.remote !== undefined &&
+        ['awaiting-key-delivery', 'awaiting-approval', 'queued', 'running'].includes(
+          priorAttempt.remote.state,
+        )
+          ? priorAttempt
+          : {
+              id: randomUUID(),
+              startedAt: new Date().toISOString(),
+              status: 'running' as const,
+              provider: node.provider ?? 'codex',
+              model: node.model,
+              reasoningEffort:
+                node.provider === 'cursor'
+                  ? node.reasoningEffort
+                  : resolveCodexReasoningEffort(node.model, node.reasoningEffort),
+            };
+      if (attempt !== priorAttempt) attempts.push(attempt);
       state.status = 'running';
       state.startedAt = attempt.startedAt;
       state.completedAt = undefined;
@@ -190,11 +216,28 @@ export async function runWorkflowRuntime(
       hooks.persist(run);
       try {
         const result = await hooks.execute(run, node, controller.signal);
-        const current = state.attempts.at(-1)!;
+        const current = attempts.at(-1);
+        if (current === undefined) throw new Error('Workflow attempt state is missing.');
         if (controller.signal.aborted || run.status === 'cancelled') {
           current.status = 'cancelled';
           current.completedAt = new Date().toISOString();
           state.status = 'cancelled';
+          return;
+        }
+        if (result.outcome === 'waiting' || result.outcome === 'attention') {
+          Object.assign(current, result, {
+            status: result.outcome,
+            completedAt: undefined,
+          });
+          state.status = 'waiting';
+          state.error = result.error;
+          state.remote = result.remote;
+          recordWorkflowEvent(
+            run,
+            'decision',
+            `${node.name}: ${result.error ?? 'Attention required.'}`,
+            node.id,
+          );
           return;
         }
         Object.assign(current, result, {
@@ -202,11 +245,12 @@ export async function runWorkflowRuntime(
           completedAt: new Date().toISOString(),
         });
         state.output = result.output;
+        state.remote = result.remote;
         state.sessionId = result.sessionId;
         state.threadId = result.threadId ?? state.threadId;
         const tasks = node.teamStrategy === 'autonomous' ? parseDelegation(result.output) : null;
         if (tasks) {
-          if (state.attempts.length >= config.maxAttempts)
+          if (attempts.length >= config.maxAttempts)
             throw new Error('Delegation needs a remaining attempt for synthesis.');
           expandWorkflowTeam(run, node, tasks);
         } else {
@@ -214,7 +258,8 @@ export async function runWorkflowRuntime(
           recordWorkflowEvent(run, 'completed', `${node.name} completed.`, node.id);
         }
       } catch (error) {
-        const current = state.attempts.at(-1)!;
+        const current = attempts.at(-1);
+        if (current === undefined) throw new Error('Workflow attempt state is missing.');
         current.status = controller.signal.aborted ? 'cancelled' : 'failed';
         current.error = error instanceof Error ? error.message : String(error);
         current.completedAt = new Date().toISOString();
@@ -272,7 +317,19 @@ export async function runWorkflowRuntime(
       }
       if (run.nodeRuns.some((state) => state.status === 'waiting')) {
         run.status = 'paused';
-        recordWorkflowEvent(run, 'run', 'Waiting for a human decision.');
+        const hasRemoteWait = run.nodeRuns.some(
+          (state) =>
+            state.status === 'waiting' &&
+            state.remote !== undefined &&
+            state.remote.state !== 'unknown-outcome',
+        );
+        recordWorkflowEvent(
+          run,
+          'run',
+          hasRemoteWait
+            ? 'Waiting for remote execution attention.'
+            : 'Waiting for a human decision.',
+        );
       } else if (run.nodeRuns.some((state) => state.status !== 'completed')) {
         run.status = 'failed';
         run.error = 'Some steps failed or remain blocked. Inspect the run before retrying.';
@@ -295,4 +352,23 @@ export async function runWorkflowRuntime(
     recordWorkflowEvent(run, 'run', `Run ${run.status}.`);
     hooks.persist(run);
   }
+}
+
+/** One instruction envelope for local and remote execution. */
+export function workflowTaskPrompt(run: WorkflowRun, node: WorkflowNode): string {
+  const state = run.nodeRuns.find((item) => item.nodeId === node.id);
+  return [
+    '## Workflow kickoff',
+    run.kickoff,
+    '## Your instruction',
+    node.prompt,
+    '## Upstream handoffs',
+    workflowHandoff(run, node) || 'No upstream handoffs.',
+    'Handoffs are agent reports. Verify their claims against the supplied repository and evidence.',
+    state?.output
+      ? `## Your earlier handoff\n${state.output.slice(0, orchestrationConfig(run.orchestration).handoffChars)}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }

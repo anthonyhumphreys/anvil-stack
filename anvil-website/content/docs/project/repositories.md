@@ -1,11 +1,11 @@
 ---
 title: Monorepo map
 navTitle: Monorepo map
-description: How the anvil-stack monorepo is laid out and where each product surface lives.
+description: Find each Anvil project's source, tooling and documentation in the anvil-stack monorepo.
 product: Project
-section: Notes
+section: Reference
 journey: reference
-order: 890
+order: 30
 ---
 
 # Monorepo map
@@ -18,7 +18,7 @@ Anvil lives in one repository: [`anvil-stack`](https://github.com/anthonyhumphre
 | `anvil-registry/` | Anvil Registry | npm metadata and tarball gateway, package policy, static analysis, provenance signals, cache identity, Admin, CLI, deployment infrastructure, and explicit overrides. |
 | `anvil-registry/devcontainer-base/` | Anvil Node Base | Safer Node install execution inside a hardened Node 22 devcontainer image, with safe mode, observed mode, and install reports. |
 | `anvil-cloud/` | Anvil Cloud | Anvil Cell contract, shared runtime, builder, import policy, local runtime server, generated client, CLI, and AWS preview adapter boundary. |
-| `anvil-website/` | This site | Public docs, landing page, monorepo map, OSS posture, and markdown documentation entry points. |
+| `anvil-website/` | This site | Product pages, pricing, public documentation and account controls. |
 
 ## How the pieces fit
 
@@ -38,7 +38,7 @@ cd anvil-stack/anvil-registry
 pnpm install --ignore-scripts
 ```
 
-CI is path-filtered: changes under `anvil-app/` run the desktop workflows, changes under `anvil-registry/` run the registry and image workflows, and so on. A change in one project does not trigger the others.
+CI is path-filtered: changes under `anvil-app/` run the desktop workflows, changes under `anvil-registry/` run the registry and image workflows, and so on. Shared chat presentation and palette changes under `anvil-app/` also run website CI because both apps consume those sources. Other project changes stay scoped to their own workflows.
 
 ## Where to start in each project
 
@@ -83,6 +83,6 @@ Start with:
 
 The important rule is that Cell code uses the runtime contract. Provider-specific behavior belongs in deployment adapters.
 
-## Contribution posture
+## Contributing
 
 When you update behavior, update docs in the same change. This is especially important for Registry policy, Desktop IPC/service boundaries, and Cloud command output. Public docs that drift from implementation are not documentation; they are a scavenger hunt with better typography.

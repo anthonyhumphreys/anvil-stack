@@ -5,7 +5,7 @@ description: Install dependencies without lifecycle scripts and generate reviewa
 product: Anvil Node Base
 section: Guides
 journey: build
-order: 7
+order: 20
 ---
 
 # Node Base safe mode

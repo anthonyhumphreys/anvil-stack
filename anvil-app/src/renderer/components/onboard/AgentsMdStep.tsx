@@ -139,7 +139,7 @@ export function AgentsMdStep({ repoId, detection, onNext }: AgentsMdStepProps) {
         <button
           onClick={handleWrite}
           disabled={!content || writing || generating}
-          className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-40"
+          className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-40"
         >
           {writing ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
           {written ? 'Write Again' : 'Write to Repo'}
@@ -148,7 +148,7 @@ export function AgentsMdStep({ repoId, detection, onNext }: AgentsMdStepProps) {
         <button
           onClick={handleWriteAndCommit}
           disabled={!content || committing || generating || committed}
-          className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-40"
+          className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-40"
         >
           {committing ? (
             <Loader2 size={14} className="animate-spin" />

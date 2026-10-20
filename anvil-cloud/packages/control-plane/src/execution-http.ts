@@ -1,5 +1,6 @@
 import type {
   AgentExecutionApprovalDecision,
+  AgentExecutionProviderDescriptor,
   AgentExecutionInputSubmission,
   AgentExecutionRequest,
 } from "@anvil-cloud/runtime";
@@ -44,6 +45,7 @@ export type AgentExecutionHttpPrincipal = {
 };
 
 export type AgentExecutionHttpAction =
+  | "providers"
   | "create"
   | "list"
   | "read"
@@ -94,6 +96,10 @@ export interface AgentExecutionSourceHttpClient {
   uploadSnapshot(
     input: AgentExecutionSnapshotUpload,
   ): Promise<Extract<AgentExecutionRequest["source"], { kind: "snapshot" }>>;
+}
+
+export interface AgentExecutionProviderHttpClient {
+  listProviders(): Promise<AgentExecutionProviderDescriptor[]>;
 }
 
 export class AgentExecutionHttpError extends Error {
@@ -265,6 +271,22 @@ export function createHttpAgentExecutionControlPlane(
   }
 
   return {
+    async listProviders() {
+      const payload = await request("/v1/execution-providers");
+
+      if (
+        !Array.isArray(payload.providers) ||
+        !payload.providers.every(isProviderDescriptor)
+      ) {
+        throw new AgentExecutionHttpError(
+          "EXECUTION_CONTROL_PLANE_INVALID_RESPONSE",
+          "Execution control plane returned an invalid provider catalog.",
+          502,
+        );
+      }
+
+      return payload.providers as AgentExecutionProviderDescriptor[];
+    },
     async createExecution(input) {
       const payload = await request("/v1/executions", {
         method: "POST",
@@ -480,6 +502,16 @@ async function routeAgentExecutionRequest(
     const record = await options.snapshots.put(upload);
 
     return ok({ snapshot: record.source });
+  }
+
+  if (request.path === "/v1/execution-providers" && method === "GET") {
+    await requireAuthorization(security, {
+      principal,
+      action: "providers",
+      httpRequest: request,
+    });
+
+    return ok({ providers: await api.listProviders() });
   }
 
   if (request.path === "/v1/executions" && method === "POST") {
@@ -854,6 +886,43 @@ function readLease(payload: Record<string, unknown>): AgentExecutionLease {
   }
 
   return payload.execution as AgentExecutionLease;
+}
+
+function isProviderDescriptor(
+  value: unknown,
+): value is AgentExecutionProviderDescriptor {
+  if (!isObject(value) || typeof value.id !== "string") {
+    return false;
+  }
+
+  const capabilities = value.capabilities;
+  const availability = value.availability;
+
+  return (
+    isObject(capabilities) &&
+    isStringArray(capabilities.modes) &&
+    isStringArray(capabilities.modelAuth) &&
+    (capabilities.subscriptionProviders === undefined ||
+      isStringArray(capabilities.subscriptionProviders)) &&
+    typeof capabilities.maxTtlSeconds === "number" &&
+    Number.isSafeInteger(capabilities.maxTtlSeconds) &&
+    capabilities.maxTtlSeconds > 0 &&
+    typeof capabilities.resumableEvents === "boolean" &&
+    typeof capabilities.approvals === "boolean" &&
+    typeof capabilities.input === "boolean" &&
+    typeof capabilities.steering === "boolean" &&
+    typeof capabilities.artifacts === "boolean" &&
+    typeof capabilities.patches === "boolean" &&
+    isObject(availability) &&
+    typeof availability.configured === "boolean" &&
+    isStringArray(availability.reasons)
+  );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
 }
 
 function statusForControlPlaneError(

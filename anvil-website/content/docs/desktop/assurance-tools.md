@@ -1,16 +1,16 @@
 ---
 title: Assurance tools
 navTitle: Assurance tools
-description: Code review, security audits, dynamic pentests, dependency checks, database analysis, and compliance drafts in Anvil Desktop.
+description: Review code, scan for security issues, check dependencies, analyse database exports and draft compliance documents in Anvil Desktop.
 product: Anvil Desktop
-section: Assurance
-journey: reference
-order: 118
+section: Concepts
+journey: learn
+order: 250
 ---
 
 # Assurance tools
 
-Anvil Desktop has several evidence-producing review tools. They overlap on purpose, but they answer different questions. None of them replaces tests, a specialist review, or a deterministic production control.
+Anvil Desktop has several tools for checking work. They overlap on purpose, but each answers a different question. None of them replaces tests, a specialist reviewer or a real control in production.
 
 ## Code Review
 
@@ -24,7 +24,7 @@ Pull request support includes listing provider pull requests, reading a pull req
 
 Security audits inspect an indexed repository and report progress while the configured model analyses the code. Findings can be dismissed, turned into work items individually or in bulk, and exported as a report.
 
-The useful unit is a finding with a file, risk, reason, suggested action, and verification status. An OWASP or CWE label on its own proves very little.
+A useful finding names the file, the risk, why it matters, what to do and whether it's been checked. An OWASP or CWE label on its own proves very little.
 
 ## Dynamic pentests
 
@@ -38,19 +38,23 @@ The Dependencies view reads package manifests for npm, pnpm, Yarn, NuGet, and Py
 
 You can run the selected manager's audit command, audit installed licence metadata, and export a software bill of materials as CycloneDX JSON, SPDX JSON, or CSV. Audit output is displayed for triage, including the command and exit code.
 
-This is local evidence. Use [Anvil Registry](/docs/registry/introduction) when an organisation needs deterministic package-ingress policy, cached package identity, quarantine, or audited overrides.
+This is a local check. Use [Anvil Registry](/docs/registry/introduction) when a team needs a policy that decides which packages get in, with caching, quarantine and audited overrides.
 
 ## DB Insights
 
-DB Insights imports database export files into the active workspace and analyses them together. The result covers:
+DB Insights analyses local exports in the active workspace. It detects SQL Server, PostgreSQL, MySQL, and SQLite DDL, MongoDB JSON documents, DynamoDB typed JSON items, and Redis key/type exports. Add exports from one technology per analysis. Each file is limited to 5 MB and an analysis to 20 MB.
 
-- tables and notable columns
+The result reports the structure present in those files:
+
+- SQL tables, columns, procedures, views, functions, and declared relationships
+- MongoDB collection fields found in exported documents
+- DynamoDB attribute names found in exported items
+- Redis key patterns and types present in the export
 - stored procedures and referenced objects
-- explicit relationships
 - risks and watchpoints
 - follow-up questions that can be opened in Chat
 
-The analyser works from the exports you add. Missing schema, routines, or production-only behavior will remain missing from its answer. Remove an imported artifact when it should no longer be part of the workspace evidence.
+DB Insights reads files only. It does not connect to a live database. JSON record values are omitted from the analysis context; MongoDB and DynamoDB counts describe records in the added exports, and Redis counts describe observed keys. None of these counts establish the full live database size. Add schema or key/type exports with the structure you want to discuss. Remove an imported artifact when it should no longer be part of the workspace evidence.
 
 ## Data and Compliance
 
@@ -75,4 +79,4 @@ These files contain `[ACTION REQUIRED]` markers where code cannot supply the ans
 | What does this database export imply? | DB Insights |
 | Which privacy or legal questions does the code leave unanswered? | Data and Compliance |
 
-Record the exact scope and date with exported evidence. A clean result against the wrong branch is still the wrong result.
+Note the exact scope and date on anything you export. A clean result on the wrong branch is still the wrong result.

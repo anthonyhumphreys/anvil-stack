@@ -8,10 +8,14 @@
 /* eslint-disable @typescript-eslint/ban-types */
 
 type ExtensionPreferences = {
-  /** Companion Base URL - Base URL shown when creating a Raycast token in desktop app settings. */
-  "baseUrl": string,
+  /** Companion Base URL - Base URL shown when creating a Raycast token in desktop app settings. Leave empty to use account sign-in instead. */
+  "baseUrl"?: string,
   /** Companion Token - Bearer token created from desktop app settings for this Raycast extension. */
-  "token": string
+  "token"?: string,
+  /** Account API URL - Sync backend URL for account-connected mode (used when no companion token is set). */
+  "accountApiUrl"?: string,
+  /** Account Enrollment Code - Single-use enrollment code minted from the account website or an enrolled device. Redeemed once, then discarded. */
+  "accountEnrollmentCode"?: string
 }
 
 /** Preferences accessible in all the extension's commands */

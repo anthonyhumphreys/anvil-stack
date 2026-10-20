@@ -3,9 +3,9 @@ title: Troubleshooting
 navTitle: Troubleshooting
 description: Diagnose native module failures, LLM connection problems, indexing issues, and terminal rendering glitches in Anvil Desktop.
 product: Anvil Desktop
-section: Assurance
+section: Reference
 journey: reference
-order: 121
+order: 300
 ---
 
 # Troubleshooting

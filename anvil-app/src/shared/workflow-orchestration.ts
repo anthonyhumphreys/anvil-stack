@@ -1,3 +1,5 @@
+import { AGENT_PROVIDERS } from './agent-providers';
+import { validateWorkflowTarget } from './workflow-target';
 import type {
   WorkflowAgentProfile,
   WorkflowNode,
@@ -73,9 +75,10 @@ export function validateOrchestration(value?: WorkflowOrchestration): void {
     const id = profile.id?.trim();
     if (!id || ids.has(id)) throw new Error('Specialist profile ids must be unique.');
     ids.add(id);
+    validateWorkflowTarget(profile.target, profile.provider, profile.name);
     if (!profile.name?.trim() || !profile.model?.trim() || !profile.personaId?.trim())
       throw new Error('Every specialist needs a name, persona, and model.');
-    if (!['codex', 'cursor', 'devin', 'openai', 'azure'].includes(profile.provider))
+    if (!AGENT_PROVIDERS.includes(profile.provider))
       throw new Error('Unknown specialist provider.');
     if (
       !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(
@@ -162,6 +165,7 @@ export function specialistNode(
     model: profile.model,
     reasoningEffort: profile.reasoningEffort,
     executionStrategy: 'focused',
+    ...(profile.target ? { target: structuredClone(profile.target) } : {}),
     position: { x: 0, y: 0 },
   };
 }

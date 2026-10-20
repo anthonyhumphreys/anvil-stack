@@ -1,3 +1,4 @@
+import type { AgentUIQuestionIntent, AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
 import type { CodexEvent } from '../../../shared/types';
 import type { ChatEntry } from '../../contexts/ChatContext';
 
@@ -25,12 +26,44 @@ export type ChatTurnWorkItem =
       sourceIndex: number;
     };
 
+/**
+ * H5 — per-turn usage/context/cost rollup, aggregated from `usage` deltas
+ * (Codex token totals, deduplicated by `usageId`) and `usage_context`
+ * snapshots (ACP context window + observed USD cost).
+ */
+export interface ChatTurnUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  /** Latest context-window snapshot, when the provider reports one. */
+  contextUsed?: number;
+  contextSize?: number;
+  /** USD cost — observed (ACP) or priced from `usagePrice` (Codex). */
+  costUsd?: number;
+  model?: string;
+}
+
+/** An inline surface published during the turn; it renders in the reply, not the work log. */
+export interface ChatTurnSurface {
+  intent: AgentUISurfaceIntent;
+  sourceIndex: number;
+}
+
 export interface ComposedChatTurn {
   key: string;
+  startedAt?: string;
+  endedAt?: string;
   user: IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | null;
   work: ChatTurnWorkItem[];
   answer: IndexedChatEntry<AssistantEntry> | null;
   trailingWork: ChatTurnWorkItem[];
+  /** Surfaces in publish order; compare `sourceIndex` with `answer` to place them. */
+  surfaces: ChatTurnSurface[];
+  /** Answer receipts remain visible after their composer prompt closes. */
+  questionReceipts?: AgentUIQuestionIntent[];
+  usage?: ChatTurnUsage;
+  /** Provider-reported turn lifecycle. Missing means the provider supplied no terminal outcome. */
+  runOutcome?: NonNullable<CodexEvent['turnOutcome']>;
 }
 
 interface AssistantSegment {
@@ -62,10 +95,78 @@ export function composeChatTurns(
   );
 }
 
+export type ApprovalAwareWorkSegment =
+  | {
+      kind: 'routine';
+      key: string;
+      items: ChatTurnWorkItem[];
+      expandedByDefault: boolean;
+    }
+  | {
+      kind: 'approval';
+      key: string;
+      item: Extract<ChatTurnWorkItem, { kind: 'event' }>;
+    };
+
+/** Split routine activity around pending approvals without losing source order. */
+export function buildApprovalAwareWorkSegments(
+  items: readonly ChatTurnWorkItem[],
+): ApprovalAwareWorkSegment[] {
+  const resolvedRequests = new Set(
+    items.flatMap((item) => {
+      if (item.kind !== 'event' || item.event.type !== 'request_resolved') return [];
+      if (item.event.resolvedRequestId === undefined) return [];
+      return [requestKey(item.event, item.event.resolvedRequestId)];
+    }),
+  );
+
+  const segments: ApprovalAwareWorkSegment[] = [];
+  let routineItems: ChatTurnWorkItem[] = [];
+  const flushRoutine = (expandedByDefault: boolean) => {
+    if (routineItems.length === 0) return;
+    const firstIndex = routineItems[0].sourceIndex;
+    segments.push({
+      kind: 'routine',
+      key: `work-${firstIndex}`,
+      items: routineItems,
+      expandedByDefault,
+    });
+    routineItems = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === 'event' && item.event.type === 'request_resolved') continue;
+    if (item.kind === 'event' && item.event.type === 'approval_request') {
+      const requestId = item.event.approvalRequestId;
+      if (requestId !== undefined && resolvedRequests.has(requestKey(item.event, requestId))) {
+        continue;
+      }
+
+      flushRoutine(true);
+      segments.push({
+        kind: 'approval',
+        key:
+          requestId === undefined
+            ? `approval-${item.event.sessionId ?? item.event.appThreadId ?? 'thread'}-index-${item.sourceIndex}`
+            : `approval-${requestKey(item.event, requestId)}`,
+        item,
+      });
+      continue;
+    }
+
+    routineItems.push(item);
+  }
+  flushRoutine(false);
+  return segments;
+}
+
+function requestKey(event: CodexEvent, requestId: string | number): string {
+  return `${event.sessionId ?? event.appThreadId ?? 'thread'}:${typeof requestId}:${String(requestId)}`;
+}
+
 function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): ComposedChatTurn {
   const userEntry = entries.find((entry) => entry.kind === 'user') as
-    | IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>>
-    | undefined;
+    IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | undefined;
   const assistantSegments = coalesceAssistantSegments(entries);
   const explicitFinal = [...assistantSegments]
     .reverse()
@@ -91,8 +192,58 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
 
   const work: ChatTurnWorkItem[] = [];
   const trailingWork: ChatTurnWorkItem[] = [];
+  const surfaces: ChatTurnSurface[] = [];
+  const questionReceipts: AgentUIQuestionIntent[] = [];
+  const usage = emptyTurnUsage();
+  const seenUsageIds = new Set<string>();
+  let sawUsage = false;
+  let runOutcome: ComposedChatTurn['runOutcome'];
+
   for (const entry of entries) {
     if (entry.kind === 'user' || answerSourceIndexes.has(entry.sourceIndex)) continue;
+
+    // H5 — usage telemetry belongs to the turn footer, not the work log.
+    if (
+      entry.kind === 'event' &&
+      (entry.event.type === 'usage' || entry.event.type === 'usage_context')
+    ) {
+      sawUsage = accumulateTurnUsage(usage, seenUsageIds, entry.event) || sawUsage;
+      continue;
+    }
+
+    // H14 — `file_read` is a dead renderer surface; drop any legacy persisted
+    // rows instead of rendering or counting them.
+    if (entry.kind === 'event' && entry.event.type === 'file_read') continue;
+
+    // Thread title/summary refreshes arrive after the turn settles; they are
+    // thread metadata, not turn activity or evidence of when the turn ended.
+    if (entry.kind === 'event' && entry.event.type === 'thread_metadata') continue;
+
+    // The outcome belongs to the turn summary rather than the operational
+    // activity list. Providers that do not report it leave it undefined.
+    if (entry.kind === 'event' && entry.event.type === 'turn_outcome') {
+      runOutcome = entry.event.turnOutcome;
+      continue;
+    }
+
+    if (
+      entry.kind === 'event' &&
+      entry.event.type === 'agent_ui_intent' &&
+      entry.event.agentUIIntent?.kind === 'question' &&
+      ['resolved', 'dismissed', 'expired'].includes(entry.event.agentUIIntent.lifecycle)
+    ) {
+      questionReceipts.push(entry.event.agentUIIntent);
+      continue;
+    }
+
+    if (
+      entry.kind === 'event' &&
+      entry.event.type === 'agent_ui_intent' &&
+      entry.event.agentUIIntent?.kind === 'surface'
+    ) {
+      surfaces.push({ intent: entry.event.agentUIIntent, sourceIndex: entry.sourceIndex });
+      continue;
+    }
 
     const target = entry.sourceIndex > answerEndSourceIndex ? trailingWork : work;
 
@@ -126,11 +277,90 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
 
   return {
     key: userEntry?.id ?? answerSegment?.entry.id ?? `turn-${entries[0]?.sourceIndex ?? 0}`,
+    startedAt: userEntry?.timestamp ?? entries[0]?.timestamp,
+    endedAt: active
+      ? undefined
+      : entries.findLast(
+          (entry) =>
+            entry.kind !== 'user' &&
+            entry.timestamp &&
+            !(entry.kind === 'event' && entry.event.type === 'thread_metadata'),
+        )?.timestamp,
     user: userEntry ?? null,
     work,
     answer: answerSegment?.entry ?? null,
     trailingWork,
+    surfaces,
+    ...(questionReceipts.length ? { questionReceipts } : {}),
+    usage: sawUsage ? usage : undefined,
+    runOutcome,
   };
+}
+
+function emptyTurnUsage(): ChatTurnUsage {
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+}
+
+/**
+ * Fold one usage-family event into the running turn totals. Mirrors the
+ * accumulation rules in dojo-analytics.service.ts (`usage` deltas dedupe by
+ * `usageId`; `usage_context` context is a snapshot, `observedCostUsd` is a
+ * delta). Returns whether the event contributed anything worth rendering.
+ */
+function accumulateTurnUsage(
+  turn: ChatTurnUsage,
+  seenUsageIds: Set<string>,
+  event: CodexEvent,
+): boolean {
+  if (event.model) turn.model = event.model;
+
+  if (event.type === 'usage') {
+    const usage = event.usage;
+    if (!usage) return false;
+    if (event.usageId) {
+      if (seenUsageIds.has(event.usageId)) return false;
+      seenUsageIds.add(event.usageId);
+    }
+    if (
+      ![usage.input, usage.cachedInput, usage.output].every((n) => Number.isFinite(n) && n >= 0)
+    ) {
+      return false;
+    }
+    turn.inputTokens += usage.input;
+    turn.cachedInputTokens += usage.cachedInput;
+    turn.outputTokens += usage.output;
+    const price = event.usagePrice;
+    if (
+      price &&
+      [price.input, price.cachedInput, price.output].every((n) => Number.isFinite(n) && n >= 0)
+    ) {
+      turn.costUsd =
+        (turn.costUsd ?? 0) +
+        ((usage.input - usage.cachedInput) * price.input +
+          usage.cachedInput * price.cachedInput +
+          usage.output * price.output) /
+          1_000_000;
+    }
+    return true;
+  }
+
+  // usage_context
+  const context = event.contextUsage;
+  let contributed = false;
+  if (context && Number.isFinite(context.size) && context.size > 0) {
+    turn.contextUsed = context.used;
+    turn.contextSize = context.size;
+    contributed = true;
+  }
+  if (
+    typeof event.observedCostUsd === 'number' &&
+    Number.isFinite(event.observedCostUsd) &&
+    event.observedCostUsd >= 0
+  ) {
+    turn.costUsd = (turn.costUsd ?? 0) + event.observedCostUsd;
+    contributed = true;
+  }
+  return contributed;
 }
 
 function coalesceAssistantSegments(entries: Array<IndexedChatEntry>): AssistantSegment[] {

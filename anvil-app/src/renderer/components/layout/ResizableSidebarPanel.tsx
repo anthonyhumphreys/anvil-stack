@@ -68,7 +68,16 @@ export function ResizableSidebarPanel({
     maxWidth,
     defaultCollapsed,
   });
-  const [autoCollapsed, setAutoCollapsed] = useState(false);
+  // Decide on the first render so narrow windows never paint the panel open, then collapse it.
+  const [autoCollapsed, setAutoCollapsed] = useState(
+    () =>
+      collapsible &&
+      shouldAutoCollapsePanel({
+        viewportWidth: window.innerWidth,
+        threshold: autoCollapseBelow,
+        persistedCollapsed: collapsed,
+      }),
+  );
   const effectiveCollapsed = collapsed || autoCollapsed;
   const isWidthZeroCollapsed = effectiveCollapsed && collapsedWidth === 0;
 

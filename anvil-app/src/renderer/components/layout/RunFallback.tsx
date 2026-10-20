@@ -16,6 +16,7 @@ export function RunFallback({ repos, onCommandSaved, onAiDetected, onClose }: Pr
   const [customCommand, setCustomCommand] = useState('');
   const [selectedRepoId, setSelectedRepoId] = useState(repos[0]?.id ?? '');
   const [aiLoading, setAiLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleAiDetect = async () => {
@@ -38,21 +39,37 @@ export function RunFallback({ repos, onCommandSaved, onAiDetected, onClose }: Pr
 
   const handleCustomSubmit = async () => {
     if (!customCommand.trim() || !selectedRepoId) return;
-    const label = customCommand.trim().split(' ').slice(0, 3).join(' ');
-    const cmd = await window.anvil.run.saveCustomCommand(
-      selectedRepoId,
-      label,
-      customCommand.trim(),
-    );
-    onCommandSaved(selectedRepoId, cmd);
-    setCustomCommand('');
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const label = customCommand.trim().split(' ').slice(0, 3).join(' ');
+      const cmd = await window.anvil.run.saveCustomCommand(
+        selectedRepoId,
+        label,
+        customCommand.trim(),
+      );
+      onCommandSaved(selectedRepoId, cmd);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not save the run command.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div className="absolute left-3 right-3 top-full z-50 mt-1 rounded-lg border border-border-subtle bg-bg-secondary p-4 shadow-lg">
+    <div
+      role="dialog"
+      aria-label="How to run?"
+      className="absolute left-3 right-3 top-full z-50 mt-1 rounded-lg border border-border-subtle bg-bg-secondary p-4 shadow-lg"
+    >
       <div className="mb-3 flex items-center justify-between">
         <span className="text-sm font-medium text-text-primary">How to run?</span>
-        <button onClick={onClose} className="text-text-tertiary hover:text-text-primary">
+        <button
+          aria-label="Close run setup"
+          onClick={onClose}
+          className="text-text-tertiary hover:text-text-primary"
+        >
           <X size={14} />
         </button>
       </div>
@@ -92,14 +109,14 @@ export function RunFallback({ repos, onCommandSaved, onAiDetected, onClose }: Pr
           onChange={(e) => setCustomCommand(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleCustomSubmit()}
           placeholder="Or type a command..."
-          className="flex-1 rounded-md border border-border-subtle bg-bg-primary px-2 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+          className="min-w-0 flex-1 rounded-md border border-border-subtle bg-bg-primary px-2 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
         />
         <button
           onClick={handleCustomSubmit}
-          disabled={!customCommand.trim()}
-          className="rounded-md bg-bg-tertiary px-3 py-1.5 text-sm text-text-primary transition-colors hover:bg-bg-elevated disabled:opacity-50"
+          disabled={saving || !customCommand.trim()}
+          className="shrink-0 rounded-md bg-bg-tertiary px-3 py-1.5 text-sm text-text-primary transition-colors hover:bg-bg-elevated disabled:opacity-50"
         >
-          Save
+          {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>

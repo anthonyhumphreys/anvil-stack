@@ -300,7 +300,7 @@ export function CreateFindingWorkItemModal({
           <button
             onClick={handleCreate}
             disabled={submitting}
-            className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {submitting ? <Loader2 size={14} className="animate-spin" /> : <TicketPlus size={14} />}
             Create work item

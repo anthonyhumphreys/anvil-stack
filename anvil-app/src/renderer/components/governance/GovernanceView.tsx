@@ -199,7 +199,7 @@ export function GovernanceView() {
                 </button>
                 <button
                   onClick={() => setShowCreateBoard(true)}
-                  className="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-sm font-medium text-white hover:bg-accent/90"
+                  className="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-sm font-medium text-accent-foreground hover:bg-accent/90"
                 >
                   <Plus size={12} />
                   New Board
@@ -242,7 +242,7 @@ export function GovernanceView() {
                     <Landmark size={14} />
                     <span className="truncate">{board.name}</span>
                   </button>
-                  <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100">
+                  <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
                     <button
                       onClick={() => setEditingBoard({ ...board })}
                       className="rounded p-0.5 text-text-tertiary hover:text-text-primary"
@@ -337,7 +337,7 @@ export function GovernanceView() {
 
                         <button
                           onClick={() => handleRemoveDocument(doc.id)}
-                          className="rounded p-1 text-text-tertiary opacity-0 hover:text-error group-hover:opacity-100"
+                          className="rounded p-1 text-text-tertiary opacity-0 hover:text-error group-focus-within:opacity-100 group-hover:opacity-100"
                           aria-label={`Remove ${doc.fileName}`}
                         >
                           <Trash2 size={14} />
@@ -401,7 +401,7 @@ export function GovernanceView() {
                   <button
                     onClick={handleCreateBoard}
                     disabled={!newBoardName.trim()}
-                    className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-40"
+                    className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-40"
                   >
                     Create
                   </button>
@@ -459,7 +459,7 @@ export function GovernanceView() {
                   <button
                     onClick={handleUpdateBoard}
                     disabled={!editingBoard.name.trim()}
-                    className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-40"
+                    className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-40"
                   >
                     Save
                   </button>

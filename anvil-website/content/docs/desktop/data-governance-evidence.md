@@ -1,16 +1,16 @@
 ---
 title: Data, governance, and evidence
 navTitle: Data and evidence
-description: How Anvil Desktop treats SQLite persistence, lifecycle gates, governance notes, and handover evidence.
+description: How Anvil Desktop stores workspace data, tracks delivery decisions and records checks for handover.
 product: Anvil Desktop
-section: Assurance
+section: Concepts
 journey: reference
-order: 119
+order: 260
 ---
 
 # Data, governance, and evidence
 
-Anvil Desktop is local-first, but local does not mean casual. The app stores workspace state, repository metadata, connector settings, work evidence, review output, and workflow history in local persistence.
+Anvil Desktop stores workspace state, repository metadata, connector settings, reviews and workflow history in a local SQLite database. This page explains how contributors should handle that data and keep review records attached to the work.
 
 ## SQLite persistence
 
@@ -37,9 +37,9 @@ Workspace state coordinates:
 - launch intents
 - companion pairing state
 
-Features should respect workspace state instead of inventing parallel global settings. Parallel state is how bugs learn to commute.
+Use the workspace's existing settings and state. A second global copy can become stale or apply one workspace's choices to another.
 
-## Governance surfaces
+## Delivery decisions
 
 Governance features should make lifecycle state visible:
 
@@ -52,7 +52,7 @@ Governance features should make lifecycle state visible:
 - handover packs
 - follow-up ownership
 
-Governance should not become paperwork theater. If a gate does not affect a decision, it is probably decoration.
+Each gate should identify the decision it controls and the information needed to make it.
 
 ## Evidence lifecycle
 

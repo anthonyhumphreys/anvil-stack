@@ -7,16 +7,29 @@ import type { WorkflowRun } from '../../../shared/types';
 
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
+const integrationMocks = vi.hoisted(() => ({ retry: vi.fn() }));
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('../notification.service.js', () => ({ notifyWorkflowDecision: vi.fn() }));
 import { notifyWorkflowDecision } from '../notification.service.js';
+import { integrateResults } from '../mesh-integration.service.js';
 
 vi.mock('../automation.service.js', () => ({ triggerWatchtowerEvent: vi.fn() }));
+vi.mock('../mesh-integration.service.js', () => ({
+  integrateResults: vi.fn(),
+  getIntegration: vi.fn(() => null),
+  retryIntegrationVerification: integrationMocks.retry,
+  applyIntegrationRepository: vi.fn(),
+}));
 vi.mock('../persona.service.js', () => ({
   getPersonaById: (id: string) => (id === 'coder' ? { id } : null),
   buildSystemPrompt: () => '',
 }));
 vi.mock('../chat-persistence.service.js', () => ({
+  getChatThread: (id: string) => {
+    const row = db.prepare('SELECT id, workspace_id FROM chat_threads WHERE id = ?').get(id) as
+      { id: string; workspace_id: string } | undefined;
+    return row ? { id: row.id, workspaceId: row.workspace_id } : null;
+  },
   createChatThread: () => {
     const id = randomUUID();
     db.prepare(
@@ -30,19 +43,26 @@ vi.mock('../chat-persistence.service.js', () => ({
 }));
 import {
   cancelWorkflowRun,
+  convergeWorkflowRun,
   decideWorkflowNode,
   getWorkflowRun,
   getWorkflowTemplate,
+  inspectWorkflowNode,
   recoverInterruptedWorkflowRuns,
   resumeWorkflowRun,
   retryWorkflowNode,
   saveWorkflowTemplate,
   startWorkflowRun,
+  startChatWorkflowRun,
+  listChatWorkflowRuns,
+  getChatWorkflowRunByRequest,
+  retryWorkflowRunVerification,
   waitForWorkflowRun,
 } from '../workflow.service';
 
 beforeEach(() => {
   vi.mocked(notifyWorkflowDecision).mockClear();
+  integrationMocks.retry.mockReset();
   db.exec(
     "DELETE FROM workflow_runs; DELETE FROM workflow_templates; DELETE FROM chat_threads; DELETE FROM workspaces; INSERT INTO workspaces (id, name, created_at, updated_at) VALUES ('ws', 'Test', datetime('now'), datetime('now'));",
   );
@@ -85,6 +105,117 @@ function store(run: WorkflowRun) {
 }
 
 describe('workflow persistence and commands', () => {
+  it('persists chat-native work without saving a template or adding another supervisor chat', async () => {
+    const definition = template();
+    db.exec('DELETE FROM workflow_templates');
+    db.prepare(
+      "INSERT INTO chat_threads (id, workspace_id, persona_id, title) VALUES ('source', 'ws', 'coder', 'Original chat')",
+    ).run();
+    const origin = {
+      threadId: 'source',
+      requestId: 'request',
+      fingerprint: 'fingerprint',
+      reason: 'Independent review',
+      destinations: { gate: 'This device' },
+    };
+    const started = startChatWorkflowRun({
+      definition,
+      origin,
+      workspaceId: 'ws',
+      repoIds: [],
+      kickoff: 'Review this',
+      permissionCeiling: 'read-only',
+    });
+    const paused = await waitForWorkflowRun(started.id);
+    expect(paused.status).toBe('paused');
+    expect(paused.supervisorThreadId).toBe('source');
+    expect(paused.chatOrigin).toEqual(origin);
+    expect(paused.nodes[0].permissionMode).toBe('read-only');
+    expect(db.prepare('SELECT COUNT(*) AS count FROM workflow_templates').get()).toEqual({
+      count: 0,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM chat_threads').get()).toEqual({ count: 1 });
+    expect(getChatWorkflowRunByRequest('source', 'request')?.id).toBe(started.id);
+    expect(getChatWorkflowRunByRequest('another-chat', 'request')).toBeNull();
+    expect(listChatWorkflowRuns('source').map((run) => run.id)).toEqual([started.id]);
+    decideWorkflowNode(started.id, 'gate', true, 'Approved');
+    resumeWorkflowRun(started.id);
+    await waitForWorkflowRun(started.id);
+    expect(getWorkflowRun(started.id)?.chatOrigin).toEqual(origin);
+  });
+  it('retains the approved remote-review backend binding across run reloads', async () => {
+    const current = await pausedRun();
+    current.remoteReviewBackend = {
+      backendId: 'deployment-1',
+      baseUrl: 'https://mesh.example/',
+      apiUrl: 'https://mesh.example/api/',
+      accountId: 'account-opaque',
+      datasetEpoch: 'epoch-opaque',
+    };
+    store(current);
+
+    expect(getWorkflowRun(current.id)?.remoteReviewBackend).toEqual(current.remoteReviewBackend);
+  });
+  it('persists a frozen input manifest and target policy with the run', async () => {
+    const saved = saveWorkflowTemplate({
+      name: 'Remote package',
+      orchestration: { ...DEFAULT_ORCHESTRATION },
+      nodes: [
+        {
+          id: 'remote',
+          name: 'Remote package',
+          prompt: 'Run the package and report its verification.',
+          personaId: 'coder',
+          provider: 'codex',
+          model: 'gpt-5.6-terra',
+          reasoningEffort: 'high',
+          executionStrategy: 'focused',
+          target: { kind: 'auto', requirements: { capabilities: ['workflow-node'] } },
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [],
+    });
+    const started = startWorkflowRun({
+      templateId: saved.id,
+      workspaceId: 'ws',
+      repoIds: [],
+      kickoff: 'Run the package',
+      trigger: { kind: 'watchtower.pull-request', headSha: 'head-a' },
+    });
+    expect(started.inputManifest).toMatchObject({
+      repositories: [],
+      bootstrapDigest: 'none',
+      configVersions: {},
+      trigger: { kind: 'watchtower.pull-request', headSha: 'head-a' },
+    });
+    expect(getWorkflowRun(started.id)?.inputManifest).toEqual(started.inputManifest);
+    await waitForWorkflowRun(started.id);
+  });
+
+  it('rejects automatic placement without a capability requirement', () => {
+    expect(() =>
+      saveWorkflowTemplate({
+        name: 'Invalid remote',
+        nodes: [
+          {
+            id: 'remote',
+            name: 'Remote package',
+            prompt: 'Run remotely',
+            personaId: 'coder',
+            provider: 'codex',
+            model: 'gpt-5.6-terra',
+            reasoningEffort: 'high',
+            executionStrategy: 'focused',
+            target: { kind: 'auto', requirements: { capabilities: [] } },
+            position: { x: 0, y: 0 },
+          },
+        ],
+        edges: [],
+      }),
+    ).toThrow('at least one automatic placement capability');
+  });
+
   it('retains the paused run when native notifications fail', async () => {
     vi.mocked(notifyWorkflowDecision).mockImplementationOnce(() => {
       throw new Error('Native notification unavailable');
@@ -212,6 +343,118 @@ describe('workflow persistence and commands', () => {
     retryWorkflowNode(current.id, 'gate');
     expect(getWorkflowRun(current.id)?.nodeRuns[0].status).toBe('queued');
     expect(getWorkflowRun(current.id)?.nodeRuns[0].attempts).toHaveLength(1);
+  });
+  it('requires inspection before retrying an unknown remote outcome', async () => {
+    const current = await pausedRun();
+    current.status = 'paused';
+    current.nodes[0].kind = 'agent';
+    current.nodeRuns[0].status = 'waiting';
+    current.nodeRuns[0].remote = {
+      dispatchId: 'dispatch-unknown',
+      state: 'unknown-outcome',
+    };
+    current.nodeRuns[0].attempts = [
+      {
+        id: 'attempt-unknown',
+        status: 'attention',
+        startedAt: current.createdAt,
+        provider: 'codex',
+        model: 'model',
+        reasoningEffort: 'high',
+        remote: current.nodeRuns[0].remote,
+      },
+    ];
+    store(current);
+    expect(() => resumeWorkflowRun(current.id)).toThrow('Resolve pending human decisions');
+    inspectWorkflowNode(current.id, 'gate');
+    expect(getWorkflowRun(current.id)?.nodeRuns[0].status).toBe('failed');
+    retryWorkflowNode(current.id, 'gate');
+    expect(getWorkflowRun(current.id)?.nodeRuns[0].remote).toBeUndefined();
+  });
+  it('converges completed remote dispatches in stable graph order', async () => {
+    const current = await pausedRun();
+    current.status = 'paused';
+    current.nodes[0].kind = 'agent';
+    current.nodeRuns[0].status = 'completed';
+    current.nodeRuns[0].remote = { dispatchId: 'dispatch-converge', state: 'completed' };
+    store(current);
+    vi.mocked(integrateResults).mockResolvedValueOnce({
+      state: 'integrated',
+      combined: true,
+      verificationState: 'not-run',
+      verificationAttempt: 0,
+      verificationSelections: [],
+      repositories: [],
+      verification: [],
+      verificationAttempts: [],
+      appliedAt: null,
+    });
+    const converged = await convergeWorkflowRun(current.id);
+    expect(converged.convergence).toMatchObject({
+      integrationId: `workflow-convergence:${current.id}`,
+      state: 'integrated',
+    });
+    expect(integrateResults).toHaveBeenCalledWith(
+      expect.objectContaining({ dispatchIds: ['dispatch-converge'] }),
+    );
+  });
+  it('restores a completed chat delegation after a saved verification retry passes', async () => {
+    const current = await pausedRun();
+    current.status = 'paused';
+    current.nodes[0].kind = 'agent';
+    current.nodeRuns[0].status = 'completed';
+    current.nodeRuns[0].remote = { dispatchId: 'dispatch-verify-retry', state: 'completed' };
+    store(current);
+    const selections = [{ repositoryId: 'portable-repo', commands: ['npm test'] }];
+    const verification = [
+      {
+        repositoryId: 'portable-repo',
+        command: 'npm test',
+        approvalGranted: true,
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 120,
+        logTail: 'passed',
+        testedHead: 'a'.repeat(40),
+        testedTree: 'b'.repeat(40),
+      },
+    ];
+    vi.mocked(integrateResults).mockResolvedValueOnce({
+      state: 'integrated',
+      combined: true,
+      verificationState: 'failed',
+      verificationAttempt: 1,
+      verificationSelections: selections,
+      repositories: [],
+      verification,
+      verificationAttempts: [],
+      appliedAt: null,
+    });
+    integrationMocks.retry.mockResolvedValueOnce({
+      state: 'integrated',
+      combined: true,
+      verificationState: 'passed',
+      verificationAttempt: 2,
+      verificationSelections: selections,
+      repositories: [],
+      verification,
+      verificationAttempts: [],
+      appliedAt: null,
+    });
+
+    const failed = await convergeWorkflowRun(current.id);
+    expect(failed.status).toBe('paused');
+    expect(failed.convergence?.verificationState).toBe('failed');
+
+    const recovered = await retryWorkflowRunVerification(current.id);
+    expect(recovered.status).toBe('completed');
+    expect(recovered.error).toBeUndefined();
+    expect(recovered.convergence?.verificationState).toBe('passed');
+    expect(integrationMocks.retry).toHaveBeenCalledWith({
+      integrationId: `workflow-convergence:${current.id}`,
+      runId: current.id,
+      permissionMode: 'read-only',
+    });
   });
   it('does not reclaim a run from a live owner', async () => {
     const current = await pausedRun();

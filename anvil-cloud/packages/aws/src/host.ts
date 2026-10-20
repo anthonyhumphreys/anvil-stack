@@ -8,6 +8,7 @@ import {
   PutItemCommand,
   QueryCommand,
   ScanCommand,
+  TransactWriteItemsCommand,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
 import {
@@ -30,6 +31,10 @@ import {
 } from "@anvil-cloud/auth";
 import {
   RuntimeError,
+  databaseConflict,
+  databaseRecordJson,
+  databasePageLimit,
+  validateDatabaseWrites,
   type AuthAdapter,
   type AuthIdentity,
   type DatabaseAdapter,
@@ -37,7 +42,9 @@ import {
   type DatabaseQueryClient,
   type DatabaseRecord,
   type DatabaseTableClient,
+  type DatabasePageOptions,
   type DatabaseWhereOperator,
+  type DatabaseWrite,
   type EnvAdapter,
   type EventAdapter,
   type FileAdapter,
@@ -115,6 +122,75 @@ export class AwsDynamoDbDatabaseAdapter implements DatabaseAdapter {
     return new AwsDynamoDbTableClient(name, this);
   }
 
+  async commit(writes: readonly DatabaseWrite[]): Promise<void> {
+    validateDatabaseWrites(writes);
+    writes = structuredClone(writes);
+    const tableName = this.requireTableName();
+    // Preserve the exact stored JSON in DynamoDB conditions, including legacy key order.
+    const conditions = await Promise.all(
+      writes.map(async (write) => {
+        const current = await this.options.client.send(
+          new GetItemCommand({
+            TableName: tableName,
+            Key: keyFor(write.table, write.id),
+            ConsistentRead: true,
+          }),
+        );
+        if (
+          databaseRecordJson(
+            current.Item ? recordFromItem(current.Item) : null,
+          ) !== databaseRecordJson(write.expected)
+        )
+          throw databaseConflict();
+        return current.Item ? stringAttribute(current.Item.data) : null;
+      }),
+    );
+    try {
+      await this.options.client.send(
+        new TransactWriteItemsCommand({
+          TransactItems: writes.map((write, index) => {
+            const condition =
+              conditions[index] === null
+                ? { ConditionExpression: "attribute_not_exists(pk)" }
+                : {
+                    ConditionExpression: "#data = :expected",
+                    ExpressionAttributeNames: { "#data": "data" },
+                    ExpressionAttributeValues: {
+                      ":expected": { S: conditions[index]! },
+                    },
+                  };
+            return write.record === null
+              ? {
+                  Delete: {
+                    TableName: tableName,
+                    Key: keyFor(write.table, write.id),
+                    ...condition,
+                  },
+                }
+              : {
+                  Put: {
+                    TableName: tableName,
+                    Item: itemFor(write.table, write.record),
+                    ...condition,
+                  },
+                };
+          }),
+        }),
+      );
+    } catch (error) {
+      const reasons = isRecord(error) ? error.CancellationReasons : undefined;
+      if (
+        Array.isArray(reasons) &&
+        reasons.some(
+          (reason: unknown) =>
+            isRecord(reason) && reason.Code === "ConditionalCheckFailed",
+        )
+      )
+        throw databaseConflict();
+      throw error;
+    }
+  }
+
   async inspect(): Promise<DatabaseInspection> {
     if (!this.options.tableName) {
       return { tables: {} };
@@ -143,11 +219,40 @@ export class AwsDynamoDbDatabaseAdapter implements DatabaseAdapter {
     return responseItems.map(recordFromItem);
   }
 
+  async page(table: string, options: DatabasePageOptions = {}) {
+    const limit = databasePageLimit(options);
+    const response = await this.options.client.send(
+      new QueryCommand({
+        TableName: this.requireTableName(),
+        ConsistentRead: true,
+        Limit: limit,
+        KeyConditionExpression:
+          options.cursor === undefined
+            ? "pk = :pk"
+            : "pk = :pk AND sk > :cursor",
+        ExpressionAttributeValues: {
+          ":pk": { S: table },
+          ...(options.cursor === undefined
+            ? {}
+            : { ":cursor": { S: options.cursor } }),
+        },
+      }),
+    );
+    const records = (response.Items ?? []).map(recordFromItem);
+    return {
+      records,
+      cursor: response.LastEvaluatedKey
+        ? stringAttribute(response.LastEvaluatedKey.sk)
+        : null,
+    };
+  }
+
   async get(table: string, id: string): Promise<DatabaseRecord | null> {
     const response = await this.options.client.send(
       new GetItemCommand({
         TableName: this.requireTableName(),
         Key: keyFor(table, id),
+        ConsistentRead: true,
       }),
     );
 
@@ -293,6 +398,10 @@ class AwsDynamoDbTableClient implements DatabaseTableClient {
     private readonly name: string,
     private readonly adapter: AwsDynamoDbDatabaseAdapter,
   ) {}
+
+  async page(options: DatabasePageOptions = {}) {
+    return this.adapter.page(this.name, options);
+  }
 
   async all(): Promise<DatabaseRecord[]> {
     return this.adapter.all(this.name);
@@ -617,11 +726,16 @@ class AwsSqsJobAdapter implements JobAdapter {
     },
   ) {}
 
-  async enqueue(name: string, payload: unknown): Promise<{ id: string }> {
+  async enqueue(
+    name: string,
+    payload: unknown,
+    options?: { id: string },
+  ): Promise<{ id: string }> {
     const response = await this.options.client.send(
       new SendMessageCommand({
         QueueUrl: this.requireQueueUrl(),
         MessageBody: JSON.stringify({
+          ...(options ? { id: options.id } : {}),
           name,
           payload,
         }),
@@ -630,9 +744,10 @@ class AwsSqsJobAdapter implements JobAdapter {
 
     return {
       id:
-        typeof response.MessageId === "string"
+        options?.id ??
+        (typeof response.MessageId === "string"
           ? response.MessageId
-          : `job_${randomUUID()}`,
+          : `job_${randomUUID()}`),
     };
   }
 

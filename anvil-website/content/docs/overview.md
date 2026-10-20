@@ -1,37 +1,50 @@
 ---
-title: Anvil docs
+title: Start here
 navTitle: Overview
-description: Start here for Anvil Desktop, Anvil Registry, Anvil Node Base, and Anvil Cloud.
+description: What each part of Anvil does, which one you need, and where to go next.
 product: Start here
-section: Welcome
+section: Start here
 journey: learn
 order: 10
 ---
 
-# Anvil docs
+# Start here
 
-Anvil is an open source family of developer tools for work that needs evidence before trust. The docs are written for people who want to clone the repo, run the tools, review the architecture, and decide what is ready for their workflow today.
+Anvil is a set of open-source tools for running coding agents on your own machines, and for checking their work before you trust it. Everything lives in one repository, and every part can be used on its own.
 
-The public site covers three main repositories:
+## Which part do you need?
 
-- **anvil-app**: Anvil Desktop, a local Electron workspace for repo-aware agent delivery, work items, review, security checks, terminals, documentation, diagrams, companion controls, and handover evidence.
-- **anvil-registry**: Anvil Registry plus Anvil Node Base, a TypeScript npm gateway and hardened Node devcontainer image for policy, package analysis, cache identity, safer installs, reports, and explicit overrides.
-- **anvil-cloud**: Anvil Cloud, a local-first TypeScript platform for Anvil Cells, shared runtime contracts, builder output, local inspection, generated clients, and adapter-driven deployment.
+| If you want to… | Use | Read first |
+| --- | --- | --- |
+| Run Codex, Cursor, Devin or OpenAI agents on your repos, and review what they change | Anvil Desktop | [Install Anvil Desktop](/docs/desktop/installation) |
+| Keep your Anvil setup in step across machines, or send work from one machine to another | Sync & Mesh | [How Sync & Mesh works](/docs/sync/overview) |
+| Check npm packages against a policy before they reach developers or CI | Anvil Registry | [Registry quickstart](/docs/registry/quickstart) |
+| Install dependencies for a repo you don't trust yet | Anvil Node Base | [Safe mode](/docs/node-base/safe-mode) |
+| Build small apps and agents locally, then deploy them through an adapter | Anvil Cloud | [Cloud quickstart](/docs/cloud/quickstart) |
 
-The tools are separate because they own different risk boundaries. Desktop owns local delivery context. Registry owns dependency ingress. Cloud owns the app runtime contract. Node Base owns install execution inside a safer container.
+They're separate because they solve separate problems. Desktop looks after your local work. Sync & Mesh connects your machines. Registry decides which packages get in. Node Base contains package installs. Cloud defines a small, portable app runtime.
 
-## First run paths
+## Where the code lives
 
-| Tool | Local path |
+The [anvil-stack repository](https://github.com/anthonyhumphreys/anvil-stack) holds four projects:
+
+- **anvil-app**: Anvil Desktop, the Electron app, plus the desktop side of Sync & Mesh.
+- **anvil-registry**: Anvil Registry and Anvil Node Base.
+- **anvil-cloud**: Anvil Cloud, plus the Sync & Mesh backend you can deploy yourself.
+- **anvil-website**: this site and these docs.
+
+Each project has its own lockfile and tooling. Install dependencies inside the project folder, not at the repository root.
+
+## Run each one from source
+
+| Tool | Commands |
 | --- | --- |
 | Anvil Desktop | `cd anvil-app && pnpm install && pnpm dev` |
 | Anvil Registry | `cd anvil-registry && pnpm install --ignore-scripts && docker compose -f infra/docker/docker-compose.yml up --build` |
 | Anvil Node Base | `docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/anthonyhumphreys/anvil-stack/anvil-node-base:22 anvil-npm-ci-safe` |
 | Anvil Cloud | `cd anvil-cloud && pnpm install --ignore-scripts && pnpm build && pnpm anvil-cloud --help` |
 
-Each workspace has its own lockfile and tooling. Do not run dependency installs at the monorepo root unless a project document explicitly says to.
-
-For published command-line usage, start with the umbrella [Anvil CLI](/docs/cli):
+If you'd rather install the command-line tools, start with the [Anvil CLI](/docs/cli):
 
 ```bash
 npm install --global @anvilstack/cli
@@ -42,64 +55,67 @@ anvil cloud check --json
 anvil registry doctor
 ```
 
-## Start by job
+## Find a page by task
 
-| Job | Start here |
+| Task | Page |
 | --- | --- |
-| Understand the monorepo layout | [Monorepo map](/docs/project/repositories) |
+| See which folder owns what | [Monorepo map](/docs/project/repositories) |
 | Use the command line | [Anvil CLI](/docs/cli) |
-| Understand the desktop app | [Desktop overview](/docs/desktop/overview) |
-| Follow Electron process boundaries | [Desktop architecture](/docs/desktop/architecture) |
-| Run repo-aware agent sessions | [Agent workflows](/docs/desktop/agent-workflows) |
-| Configure LLM providers, reasoning, and personas | [Chat personas and LLM](/docs/desktop/chat-personas-and-llm) |
-| Manage Git branches and commits | [Git workflows](/docs/desktop/git-workflows) |
-| Review security and code changes | [Security and review](/docs/desktop/security-and-review) |
-| Use phone, watch, Raycast, widgets, or menu bar controls | [Companion surfaces](/docs/desktop/companion-surfaces) |
-| Try the registry gateway locally | [Registry quickstart](/docs/registry/quickstart) |
-| Understand dependency decisions | [Package decisions](/docs/registry/package-decisions) |
-| Understand what analysis detects | [Worker analysis](/docs/registry/worker-analysis) |
-| Roll out the registry safely | [Registry rollout guide](/docs/registry/rollout-guide) |
+| Get a tour of the desktop app | [Desktop overview](/docs/desktop/overview) |
+| Understand how the desktop app is built | [Desktop architecture](/docs/desktop/architecture) |
+| Plan, build and review with an agent | [Agent workflows](/docs/desktop/agent-workflows) |
+| Choose providers, models and personas | [Chat, personas and models](/docs/desktop/chat-personas-and-llm) |
+| Work with branches and commits | [Git workflows](/docs/desktop/git-workflows) |
+| Review code and security findings | [Security and review](/docs/desktop/security-and-review) |
+| Use your phone, watch, Raycast or the menu bar | [Companion surfaces](/docs/desktop/companion-surfaces) |
+| Sync your devices and run jobs on your own machines | [Sync & Mesh](/docs/sync/overview) |
+| Try the registry locally | [Registry quickstart](/docs/registry/quickstart) |
+| Understand why a package was allowed or blocked | [Package decisions](/docs/registry/package-decisions) |
+| See what package analysis looks for | [Worker analysis](/docs/registry/worker-analysis) |
+| Roll the registry out to a team | [Registry rollout guide](/docs/registry/rollout-guide) |
 | Contribute to Registry or Node Base | [Contributing to Anvil Registry](/docs/registry/contributing) |
 | Use the hardened Node image | [Node Base overview](/docs/node-base/overview) |
-| Build an Anvil Cell | [Cloud quickstart](/docs/cloud/quickstart) |
-| Understand the Cell contract | [Cloud Cell contract](/docs/cloud/cell-contract) |
-| Define capability-bound agents | [Anvil Agents](/docs/cloud/agents) |
-| Inspect sandbox-required agent workspaces | [Agent Sandboxes](/docs/cloud/agent-sandboxes) |
-| Add authentication to a Cell | [Cloud auth](/docs/cloud/auth) |
-| Run durable multi-step workflows | [Cloud workflows](/docs/cloud/workflows) |
-| Run long-lived supervised services | [Cloud services](/docs/cloud/services) |
+| Build your first Cell | [Cloud quickstart](/docs/cloud/quickstart) |
+| Understand what a Cell can declare | [Cell contract](/docs/cloud/cell-contract) |
+| Give an agent a clear set of permissions | [Anvil Agents](/docs/cloud/agents) |
+| Run an agent in an isolated workspace | [Agent Sandboxes](/docs/cloud/agent-sandboxes) |
+| Add sign-in to a Cell | [Cloud auth](/docs/cloud/auth) |
+| Run multi-step workflows that survive restarts | [Cloud workflows](/docs/cloud/workflows) |
+| Run long-lived background services | [Cloud services](/docs/cloud/services) |
 | Manage a Cell from a local UI | [Anvil Lens](/docs/cloud/lens) |
-| Understand local runtime and inspection | [Cloud local runtime](/docs/cloud/local-runtime) |
-| Understand builder and Guard checks | [Cloud builder and Guard](/docs/cloud/builder-and-guard) |
+| Run and inspect a Cell locally | [Local runtime](/docs/cloud/local-runtime) |
+| Understand the build checks | [Builder and Guard](/docs/cloud/builder-and-guard) |
 | Test Cells without deploying | [Testing Cells](/docs/cloud/testing-cells) |
-| Preview deployment through AWS | [Cloud AWS preview](/docs/cloud/aws-preview) |
-| Check current Cloud limits | [Cloud status and limits](/docs/cloud/status-and-limits) |
+| Preview a deployment on AWS | [AWS preview](/docs/cloud/aws-preview) |
+| Check what Cloud can't do yet | [Cloud status and limits](/docs/cloud/status-and-limits) |
 
-## Read by product
+## Every page, by product
 
 ### Anvil Desktop
-
-Read these when you want to understand the desktop app as a local delivery workspace:
 
 - [Overview](/docs/desktop/overview)
 - [Architecture](/docs/desktop/architecture)
 - [Operating guide](/docs/desktop/operating-guide)
 - [Agent workflows](/docs/desktop/agent-workflows)
-- [Chat personas, reasoning, and LLM providers](/docs/desktop/chat-personas-and-llm)
+- [Chat, personas and models](/docs/desktop/chat-personas-and-llm)
 - [Git workflows](/docs/desktop/git-workflows)
 - [Work items and planning](/docs/desktop/work-items-and-planning)
 - [Security and review](/docs/desktop/security-and-review)
-- [Data, governance, and evidence](/docs/desktop/data-governance-evidence)
+- [Data, governance and evidence](/docs/desktop/data-governance-evidence)
 - [Companion surfaces](/docs/desktop/companion-surfaces)
 - [Terminal and editor](/docs/desktop/terminal-and-editor)
 - [Automations](/docs/desktop/automations)
 - [Database guide](/docs/desktop/database-guide)
 - [Extending Anvil Desktop](/docs/desktop/extending-anvil)
 - [Build and release](/docs/desktop/build-and-release)
+- [Sync and Mesh settings](/docs/desktop/sync-and-mesh)
+
+### Sync & Mesh
+
+- [Sync & Mesh overview](/docs/sync/overview)
+- [Run your own backend](/docs/sync/self-deploy)
 
 ### Anvil Registry
-
-Read these when you want package policy, npm gateway behavior, or Node Base install safety:
 
 - [Introduction](/docs/registry/introduction)
 - [Alpha status](/docs/registry/alpha-status)
@@ -122,8 +138,6 @@ Read these when you want package policy, npm gateway behavior, or Node Base inst
 
 ### Anvil Node Base
 
-Read these when install execution is the risk:
-
 - [Overview](/docs/node-base/overview)
 - [Safe mode](/docs/node-base/safe-mode)
 - [Observed mode](/docs/node-base/observed-mode)
@@ -131,8 +145,6 @@ Read these when install execution is the risk:
 - [Network policy](/docs/node-base/network-policy)
 
 ### Anvil Cloud
-
-Read these when you want the alpha app contract and adapter path:
 
 - [Overview](/docs/cloud/overview)
 - [Quickstart](/docs/cloud/quickstart)
@@ -154,8 +166,6 @@ Read these when you want the alpha app contract and adapter path:
 - [AWS preview](/docs/cloud/aws-preview)
 - [Status and limits](/docs/cloud/status-and-limits)
 
-## What Anvil is not
+## What Anvil won't claim
 
-Anvil is not a SaaS dashboard pretending to be local tooling. It is not a security vendor landing page with twelve synonyms for visibility. It is also not a claim that agents, LLMs, package heuristics, or runtime abstractions remove the need for human judgement.
-
-The useful claim is smaller and sharper: Anvil helps developers inspect the work before trusting it.
+Agents, LLMs, package heuristics and runtime abstractions don't replace human judgement, and nothing here says they do. Anvil's job is narrower: to help you see what the work actually did before you trust it.

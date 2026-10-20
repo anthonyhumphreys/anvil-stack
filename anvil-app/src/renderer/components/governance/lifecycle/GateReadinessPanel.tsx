@@ -21,15 +21,15 @@ interface Props {
 }
 
 const OVERALL_CONFIG: Record<OverallReadiness, { dot: string; label: string }> = {
-  green: { dot: 'bg-emerald-500', label: 'Ready' },
-  amber: { dot: 'bg-amber-500', label: 'Partially Ready' },
-  red: { dot: 'bg-red-500', label: 'Not Ready' },
+  green: { dot: 'bg-success', label: 'Ready' },
+  amber: { dot: 'bg-warning', label: 'Partially Ready' },
+  red: { dot: 'bg-error', label: 'Not Ready' },
 };
 
 const STATUS_DOT: Record<ReadinessStatus, string> = {
-  met: 'bg-emerald-500',
-  partial: 'bg-amber-500',
-  not_met: 'bg-red-500',
+  met: 'bg-success',
+  partial: 'bg-warning',
+  not_met: 'bg-error',
 };
 
 const DECISION_LABELS: Record<GateDecisionOutcome, string> = {
@@ -40,10 +40,10 @@ const DECISION_LABELS: Record<GateDecisionOutcome, string> = {
 };
 
 const DECISION_BADGE: Record<GateDecisionOutcome, string> = {
-  approved: 'bg-emerald-500/10 text-emerald-400',
-  approved_with_conditions: 'bg-amber-500/10 text-amber-400',
+  approved: 'bg-success/10 text-success',
+  approved_with_conditions: 'bg-warning/10 text-warning',
   deferred: 'bg-blue-500/10 text-blue-400',
-  rejected: 'bg-red-500/10 text-red-400',
+  rejected: 'bg-error/10 text-error',
 };
 
 function formatDate(iso: string) {
@@ -204,7 +204,7 @@ export function GateReadinessPanel({ lifecycleItemId, workspaceId, currentStage 
       <div>
         <button
           onClick={() => setShowDecisionModal(true)}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90"
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90"
         >
           Record Gate Decision
         </button>

@@ -1,0 +1,22 @@
+{
+  "name": "anvil-mesh-provisioner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ENV-04/ENV-09: Cloudflare Sandbox provisioner bridge for anvil-worker environments (BYO cloudflare-sandbox and the anvil-managed service-binding backend)",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.13.0-next.751.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260911.1",
+    "typescript": "^5.9.2",
+    "vitest": "4.1.0",
+    "wrangler": "4.135.0"
+  }
+}

@@ -3,9 +3,9 @@ title: Terminal and editor
 navTitle: Terminal and editor
 description: Use the PTY terminal and embedded VS Code editor inside Anvil Desktop without losing workspace context.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 115
+order: 110
 ---
 
 # Terminal and editor
@@ -57,9 +57,9 @@ The embedded editor is a VS Code server instance that Anvil Desktop can start fo
 - Debugging features depend on the language server and debug adapter setup.
 - The embedded editor is a convenience, not a replacement for a full IDE when heavy refactoring or multi-repo navigation is needed.
 
-## Security posture
+## Process access
 
-The terminal and editor are privileged surfaces:
+The terminal and editor can access local files and run commands:
 
 - They run shell commands and file writes directly.
 - They do not go through the preload bridge like renderer components.

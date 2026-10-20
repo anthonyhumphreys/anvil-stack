@@ -1,5 +1,7 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { linkifyBareFileReferences } from '../MarkdownRenderer';
+import { linkifyBareFileReferences, MarkdownRenderer } from '../MarkdownRenderer';
 
 describe('linkifyBareFileReferences', () => {
   it('converts bare source paths into markdown links', () => {
@@ -35,5 +37,49 @@ describe('linkifyBareFileReferences', () => {
     expect(linkifyBareFileReferences('This is product/design language, not a file.')).toBe(
       'This is product/design language, not a file.',
     );
+  });
+
+  it('keeps an unfinished streamed fence visible as code', () => {
+    const markup = renderToStaticMarkup(
+      createElement(MarkdownRenderer, { content: 'Answer so far:\n\n```ts\nconst answer = 42;' }),
+    );
+
+    expect(markup).toContain('data-line-number-gutter="true"');
+    expect(markup).toContain('const answer = 42;');
+  });
+
+  it('keeps Mermaid source available while an incomplete diagram is rendering', () => {
+    const markup = renderToStaticMarkup(
+      createElement(MarkdownRenderer, {
+        content: '```mermaid\ngraph TD\n  A -->',
+      }),
+    );
+
+    expect(markup).toContain('Rendering diagram');
+    expect(markup).toContain('Show Mermaid source');
+    expect(markup).toContain('A --&gt;');
+  });
+
+  it('reserves a stable image frame and exposes loading state', () => {
+    const markup = renderToStaticMarkup(
+      createElement(MarkdownRenderer, {
+        content: '![Build output](https://example.test/build.png)',
+      }),
+    );
+
+    expect(markup).toContain('aspect-video');
+    expect(markup).toContain('Loading image');
+    expect(markup).toContain('loading="lazy"');
+  });
+
+  it('does not request an image while its markdown destination is unfinished', () => {
+    const markup = renderToStaticMarkup(
+      createElement(MarkdownRenderer, {
+        content: '![Build output](https://example.test/build.png',
+      }),
+    );
+
+    expect(markup).not.toContain('<img');
+    expect(markup).not.toContain('Loading image');
   });
 });

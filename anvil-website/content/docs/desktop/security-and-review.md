@@ -3,16 +3,14 @@ title: Security and review
 navTitle: Security and review
 description: How Anvil Desktop approaches code review, security review, dependency risk, and evidence capture.
 product: Anvil Desktop
-section: Assurance
-journey: reference
-order: 118
+section: Guides
+journey: build
+order: 140
 ---
 
 # Security and review
 
-Anvil Desktop review surfaces should help a developer decide whether a change deserves trust.
-
-That means findings need file references, severity, reasoning, and validation notes. A vague warning is not a review finding; it is an anxious tooltip.
+Use Anvil Desktop's review tools to check a change before you keep it. A useful finding identifies the file, severity, reasoning and validation needed. Read the supporting code and run the relevant checks before acting on it.
 
 ## Review a concrete change
 

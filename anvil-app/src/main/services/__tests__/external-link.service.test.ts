@@ -16,6 +16,7 @@ vi.mock('electron', () => ({
 import {
   buildExternalLinkMenu,
   isExternalLink,
+  isSurfaceWindowRequest,
   registerExternalLinkHandling,
 } from '../external-link.service.js';
 
@@ -46,7 +47,9 @@ describe('external link handling', () => {
   });
 
   it('opens new-window links externally and denies the in-app popup', () => {
-    let windowOpenHandler: ((details: { url: string }) => { action: 'deny' }) | undefined;
+    let windowOpenHandler:
+      | ((details: { url: string; frameName: string }) => { action: string })
+      | undefined;
     const contents = {
       setWindowOpenHandler: vi.fn((handler) => {
         windowOpenHandler = handler;
@@ -55,9 +58,17 @@ describe('external link handling', () => {
     };
 
     registerExternalLinkHandling(contents as never);
-    const result = windowOpenHandler?.({ url: 'https://example.com' });
+    const result = windowOpenHandler?.({ url: 'https://example.com', frameName: '' });
 
     expect(result).toEqual({ action: 'deny' });
     expect(openExternalMock).toHaveBeenCalledWith('https://example.com');
+  });
+
+  it('allows only blank surface pop-out windows to open in-app', () => {
+    expect(isSurfaceWindowRequest('about:blank', 'anvil-surface-surface:1234')).toBe(true);
+    expect(isSurfaceWindowRequest('', 'anvil-surface-abc')).toBe(true);
+    expect(isSurfaceWindowRequest('https://example.com', 'anvil-surface-abc')).toBe(false);
+    expect(isSurfaceWindowRequest('about:blank', 'other')).toBe(false);
+    expect(isSurfaceWindowRequest('about:blank', 'anvil-surface-a b')).toBe(false);
   });
 });

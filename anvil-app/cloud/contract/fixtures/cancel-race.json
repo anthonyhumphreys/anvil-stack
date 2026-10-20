@@ -1,0 +1,6 @@
+{
+  "jobId": "44444444-4444-4444-8444-444444444444",
+  "state": "cancel-requested",
+  "attemptedCompletion": { "from": "cancel-requested", "to": "completed" },
+  "acceptedCancellation": { "from": "cancel-requested", "to": "cancelled" }
+}

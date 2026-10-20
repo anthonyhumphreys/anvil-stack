@@ -45,6 +45,8 @@ through `defineAgent`.
 - an authenticated worker router that verifies snapshot bytes before handing
   them to a provider-neutral worker driver;
 - a deterministic fake provider and conformance suite.
+- a provider capability catalog for clients that need to choose an execution
+  target before creating a lease;
 
 Run the conformance loop with:
 
@@ -122,6 +124,7 @@ POST /v1/executions
 GET  /v1/executions
 GET  /v1/executions/:id
 GET  /v1/executions/:id/events?cursor=<cursor>&limit=<n>
+GET  /v1/execution-providers
 POST /v1/executions/:id/approval
 POST /v1/executions/:id/input
 POST /v1/executions/:id/steer
@@ -161,6 +164,16 @@ anvil-cloud executions snapshot \
 `--provider aws` additionally requires an HTTPS `--public-url`, the configured
 AWS sandbox image, and a compatible deployed worker. Remote public binds are
 rejected unless deliberately enabled.
+
+`GET /v1/execution-providers` returns the registered adapter ids, execution
+capabilities, and adapter-level configuration status. A provider can be
+registered but not configured, for example when the AWS MicroVM image is
+missing. Configuration is not a live provider probe. Clients should show the
+configuration reason and still use the normal request-level support check
+before submitting work. Providers that are not registered do not appear as
+available targets. The Desktop Mesh environment contract already supports
+Cloudflare and Vercel environment adapters, but those are separate from this
+C2 execution-provider registry until they implement this worker contract.
 
 ## AWS read-only transport
 

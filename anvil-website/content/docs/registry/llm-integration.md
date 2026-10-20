@@ -1,11 +1,11 @@
 ---
 title: LLM integration
 navTitle: LLM integration
-description: Configure optional LLM risk review, understand the provider contract, and keep model output out of the enforcement seat.
+description: Configure optional LLM risk summaries while keeping deterministic policy in charge of package access.
 product: Anvil Registry
-section: Operations
-journey: build
-order: 10
+section: Concepts
+journey: learn
+order: 130
 ---
 
 # LLM integration
@@ -19,7 +19,7 @@ Use LLM review for reviewer context:
 - Suggest which evidence a human should inspect first.
 - Add quarantine-level context for messy packages.
 
-Do not use LLM review as a permission engine. A model recommendation cannot make a package safe, cannot bypass policy, and cannot approve an override. That job still belongs to deterministic rules and audited humans, because apparently we would like the security product to contain security.
+LLM review cannot allow a package, bypass policy or approve an override. Deterministic policy decides package access, and human overrides are recorded for audit.
 
 ## What runs where
 

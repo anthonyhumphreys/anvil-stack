@@ -32,6 +32,7 @@ import { getNextListboxIndex } from '../../utils/list-navigation';
 import { extToLang } from '../chat/shiki';
 import { ResizableSidebarPanel } from '../layout/ResizableSidebarPanel';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 
 const DEFAULT_STATUS: EmbeddedEditorStatus = {
   availability: 'unavailable',
@@ -51,7 +52,7 @@ export function EditorView() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const { activeWorkspace, switchWorkspace } = useWorkspace();
+  const { activeWorkspace, switchWorkspace, featureAvailability } = useWorkspace();
   const isEditorRoute = location.pathname === '/editor';
   const [status, setStatus] = useState<EmbeddedEditorStatus>(DEFAULT_STATUS);
   const [snapshot, setSnapshot] = useState<EmbeddedEditorFileSnapshot | null>(null);
@@ -568,6 +569,18 @@ export function EditorView() {
     return () => window.removeEventListener('keydown', handleQuickOpen);
   }, [isEditorRoute]);
 
+  // /editor is nav-gated on repo readiness — show the shared unblock state
+  // instead of a dead editor when no repo has reached the mapped tier yet.
+  if (isEditorRoute && !featureAvailability.repoFeaturesEnabled) {
+    return (
+      <RepoFeatureEmptyState
+        icon={BookOpenText}
+        featureLabel="The embedded editor"
+        description="Inspect workspace files, diffs, and findings once a repository is mapped."
+      />
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 w-full bg-bg-primary">
       <ResizableSidebarPanel
@@ -661,7 +674,7 @@ export function EditorView() {
               />
             )}
           </div>
-          <p className="mt-2 text-[11px] text-text-muted">Cmd/Ctrl+P focuses file search.</p>
+          <p className="mt-2 text-xs text-text-muted">Cmd/Ctrl+P focuses file search.</p>
 
           {fileSearchError && (
             <p className="mt-2 text-xs leading-relaxed text-warning">{fileSearchError}</p>
@@ -696,7 +709,7 @@ export function EditorView() {
                     <span className="block truncate font-mono text-xs text-text-primary">
                       {result.relativePath}
                     </span>
-                    <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
+                    <span className="mt-0.5 block truncate text-xs text-text-tertiary">
                       {result.repoName}
                     </span>
                   </span>
@@ -721,7 +734,7 @@ export function EditorView() {
               Workspace
             </h3>
             {activeWorkspace && (
-              <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[10px] uppercase tracking-wide text-text-tertiary">
+              <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-eyebrow uppercase tracking-wide text-text-tertiary">
                 {activeWorkspace.repos.length}
               </span>
             )}
@@ -982,7 +995,7 @@ function WorkspaceSummaryPanel({
             className="min-w-0 rounded-lg border border-border/70 bg-bg-primary px-3 py-2"
           >
             <p className="truncate text-xs font-semibold text-text-primary">{repo.name}</p>
-            <p className="mt-1 truncate font-mono text-[11px] text-text-tertiary">{repo.path}</p>
+            <p className="mt-1 truncate font-mono text-xs text-text-tertiary">{repo.path}</p>
           </div>
         ))}
       </div>
@@ -1231,16 +1244,16 @@ function FocusedFilePane({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full border border-border bg-bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+              <span className="rounded-full border border-border bg-bg-primary px-2 py-0.5 text-eyebrow font-semibold uppercase tracking-wide text-text-tertiary">
                 {languageLabel}
               </span>
               {source && (
-                <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                <span className="rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-eyebrow font-semibold uppercase tracking-wide text-accent">
                   {source}
                 </span>
               )}
               {snapshot.truncated && (
-                <span className="rounded-full border border-warning/25 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warning">
+                <span className="rounded-full border border-warning/25 bg-warning/10 px-2 py-0.5 text-eyebrow font-semibold uppercase tracking-wide text-warning">
                   excerpt
                 </span>
               )}

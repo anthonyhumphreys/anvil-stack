@@ -11,6 +11,8 @@ export interface ReviewOrigin {
   automationRunId?: string;
   executionPath?: string;
   pullRequest?: { id: string; provider: string; headSha: string; number?: number };
+  chat?: { threadId: string; turnId: string; changedFiles: string[] };
+  git?: { baseRef: string };
 }
 export interface ReviewEvidenceSource {
   visualisationId: string;
@@ -41,7 +43,7 @@ export interface ReviewNativeEvidence {
   id: string;
   buildId: string;
   headSha: string;
-  platform: 'darwin';
+  platform: 'darwin' | 'linux';
   arch: 'arm64' | 'x64';
   status: 'passed' | 'failed' | 'unsupported' | 'unavailable';
   signing: 'unsigned' | 'signed' | 'unavailable';

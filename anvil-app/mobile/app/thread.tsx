@@ -28,7 +28,11 @@ import {
 } from '@/components/companion-ui';
 import { ChatActivityGroup } from '@/components/chat-activity-group';
 import { useCompanion } from '@/contexts/companion-context';
-import { chatAttachmentUrl, type CompanionConnection } from '@/lib/anvil-api';
+import {
+  chatAttachmentUrl,
+  fetchChatAttachmentDataUrl,
+  type CompanionConnection,
+} from '@/lib/anvil-api';
 import { threadHref } from '@/lib/routes';
 import type {
   ChatAttachment,
@@ -37,6 +41,7 @@ import type {
   ChatFileMentionSearchResult,
   ChatMessage,
   CodexRegisteredSkill,
+  MobileCompanionFileMentionReference,
   ReasoningEffort,
 } from '../../src/shared/types';
 
@@ -44,6 +49,10 @@ type IconName = ComponentProps<typeof MaterialIcons>['name'];
 
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+interface ComposerAttachment extends ChatAttachmentInput {
+  fileMention?: MobileCompanionFileMentionReference;
+}
 
 interface OptimisticMessage {
   id: string;
@@ -53,6 +62,7 @@ interface OptimisticMessage {
   input: {
     message: string;
     attachments: ChatAttachmentInput[];
+    fileMentions?: MobileCompanionFileMentionReference[];
     collaborationMode: ChatCollaborationMode;
     reasoningEffort: ReasoningEffort;
   };
@@ -86,7 +96,7 @@ export default function ChatThreadScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [mode, setMode] = useState<ChatCollaborationMode>('default');
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
-  const [attachments, setAttachments] = useState<ChatAttachmentInput[]>([]);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [pickingAttachment, setPickingAttachment] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [fileSuggestions, setFileSuggestions] = useState<ChatFileMentionSearchResult[]>([]);
@@ -184,6 +194,17 @@ export default function ChatThreadScreen() {
   const submit = async () => {
     if (!thread || (!draft.trim() && attachments.length === 0)) return;
     const message = draft.trim() || attachmentOnlyMessage(attachments);
+    const attachmentInputs = attachments.flatMap((attachment) => {
+      if (attachment.fileMention) return [];
+      const { fileMention: _fileMention, ...input } = attachment;
+      return [input];
+    });
+    const fileMentions =
+      connection?.authMode === 'account'
+        ? attachments.flatMap((attachment) =>
+            attachment.fileMention ? [attachment.fileMention] : [],
+          )
+        : undefined;
     const optimistic: OptimisticMessage = {
       id: `optimistic:${Date.now()}`,
       content: message,
@@ -191,7 +212,8 @@ export default function ChatThreadScreen() {
       state: 'sending',
       input: {
         message,
-        attachments: [...attachments],
+        attachments: attachmentInputs,
+        ...(fileMentions && fileMentions.length > 0 ? { fileMentions } : {}),
         collaborationMode: mode,
         reasoningEffort,
       },
@@ -228,16 +250,29 @@ export default function ChatThreadScreen() {
   }, []);
 
   const selectFileSuggestion = (file: ChatFileMentionSearchResult) => {
+    const accountMention = connection?.authMode === 'account';
     setAttachments((current) =>
-      current.some((attachment) => attachment.path === file.path)
+      current.some((attachment) =>
+        accountMention
+          ? attachment.fileMention?.repoId === file.repoId &&
+            attachment.fileMention.relativePath === file.relativePath
+          : attachment.path === file.path,
+      )
         ? current
         : [
             ...current,
             {
-              id: `workspace:${file.repoId}:${file.path}`,
+              id: `workspace:${file.repoId}:${file.relativePath}`,
               name: file.name,
-              path: file.path,
               size: file.size,
+              ...(accountMention
+                ? {
+                    fileMention: {
+                      repoId: file.repoId,
+                      relativePath: file.relativePath,
+                    },
+                  }
+                : { path: file.path }),
             },
           ],
     );
@@ -757,13 +792,46 @@ function MessageAttachmentCard({
   connection: CompanionConnection | null;
 }) {
   const isImage = attachment.kind === 'image' && connection;
+  const accountImageKey =
+    connection?.authMode === 'account'
+      ? `${connection.id}:${connection.enrollmentId ?? ''}:${connection.baseUrl}:${attachment.id}`
+      : null;
+  const [resolvedImage, setResolvedImage] = useState<{ key: string; uri: string } | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    if (!accountImageKey || !connection || !isImage)
+      return () => {
+        current = false;
+      };
+    void fetchChatAttachmentDataUrl(connection, attachment.id)
+      .then((uri) => {
+        if (current) setResolvedImage({ key: accountImageKey, uri });
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [accountImageKey, attachment.id, connection, isImage]);
+
+  const imageUri =
+    connection?.authMode === 'account'
+      ? resolvedImage?.key === accountImageKey
+        ? resolvedImage.uri
+        : null
+      : isImage && connection
+        ? chatAttachmentUrl(connection, attachment.id)
+        : null;
+
   return (
     <View style={messageAttachmentCardStyle}>
-      {isImage ? (
+      {isImage && imageUri ? (
         <Image
           source={{
-            uri: chatAttachmentUrl(connection, attachment.id),
-            headers: { Authorization: `Bearer ${connection.token}` },
+            uri: imageUri,
+            ...(connection.authMode === 'account'
+              ? {}
+              : { headers: { Authorization: `Bearer ${connection.token}` } }),
           }}
           contentFit="cover"
           transition={140}
@@ -877,7 +945,7 @@ function attachmentIcon(attachment: ChatAttachmentInput): IconName {
   return 'attach-file';
 }
 
-function attachmentOnlyMessage(attachments: ChatAttachmentInput[]): string {
+function attachmentOnlyMessage(attachments: ComposerAttachment[]): string {
   const imageCount = attachments.filter((attachment) =>
     (attachment.mimeType ?? '').startsWith('image/'),
   ).length;

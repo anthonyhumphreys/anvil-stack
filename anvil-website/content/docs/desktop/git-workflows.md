@@ -3,14 +3,14 @@ title: Git workflows
 navTitle: Git
 description: Branch management, diff review, commit preparation, and PR handover from inside Anvil Desktop.
 product: Anvil Desktop
-section: Working guide
+section: Guides
 journey: build
-order: 113
+order: 100
 ---
 
 # Git workflows
 
-Anvil Desktop keeps Git operations close to the workspace so context does not leak across applications.
+Review diffs, manage branches, prepare commits and open pull requests from the active workspace in Anvil Desktop.
 
 ## Repository indexing
 

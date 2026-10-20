@@ -5,12 +5,19 @@ on:
     paths:
       - ".github/workflows/website-ci.yml"
       - "anvil-website/**"
+      - "anvil-app/src/renderer/components/chat/shared/**"
+      - "anvil-app/src/renderer/components/chat/ChatEmptyState.tsx"
+      - "anvil-app/src/renderer/styles/chat-theme.css"
   push:
     branches:
       - main
+      - develop
     paths:
       - ".github/workflows/website-ci.yml"
       - "anvil-website/**"
+      - "anvil-app/src/renderer/components/chat/shared/**"
+      - "anvil-app/src/renderer/components/chat/ChatEmptyState.tsx"
+      - "anvil-app/src/renderer/styles/chat-theme.css"
   workflow_dispatch:
 
 permissions:
@@ -53,6 +60,12 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Test deployment environment isolation
+        run: pnpm test:deployment-env
+
+      - name: Test browser workspace credentials
+        run: pnpm test:browser-workspace
 
       - name: Build
         run: pnpm build

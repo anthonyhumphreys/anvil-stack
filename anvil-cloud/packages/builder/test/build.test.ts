@@ -1139,6 +1139,24 @@ describe("buildCell", () => {
     });
   });
 
+  it("requires the database capability for direct and destructured commits", async () => {
+    for (const handler of [
+      "async (ctx) => ctx.commit([])",
+      "async ({ commit }) => commit([])",
+      "async (ctx) => ctx.dispatchPendingJobs()",
+    ]) {
+      const rootDir = await createCell({
+        server: `import { app, mutation } from "@anvil-cloud/runtime"; export default app({ mutations: { change: mutation({ handler: ${handler} }) } });`,
+      });
+      const result = await checkCell({ rootDir });
+      expect(result.diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "CAPABILITY_NOT_DECLARED" }),
+        ]),
+      );
+    }
+  });
+
   it("accepts ctx.jobs with the jobs capability declared", async () => {
     const rootDir = await createCell({
       server: [

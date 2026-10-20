@@ -17,6 +17,7 @@ import type {
   ReasoningEffort,
 } from '../../shared/types.js';
 import { normaliseReasoningEffort } from '../../shared/codex-models.js';
+import type { ChatArtifactRevision } from '../../shared/surfaces/ipc.js';
 import { getDb } from '../db/database.js';
 
 interface ChatArtifactRow {
@@ -36,6 +37,9 @@ interface ChatArtifactRow {
   source: string | null;
   model: string | null;
   reasoning_effort: string | null;
+  share_id: string | null;
+  shared_url: string | null;
+  shared_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -63,6 +67,9 @@ function mapArtifactRow(row: ChatArtifactRow): ChatArtifact {
     reasoningEffort: row.reasoning_effort
       ? normaliseReasoningEffort(row.reasoning_effort)
       : undefined,
+    shareId: row.share_id ?? undefined,
+    sharedUrl: row.shared_url ?? undefined,
+    sharedAt: row.shared_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -136,7 +143,7 @@ function normaliseArtifactPath(relativePath: string, kind: ChatArtifactKind): st
   return normalised.includes('.') ? normalised : `${normalised}.${fallbackExtension}`;
 }
 
-function extensionForKind(kind: ChatArtifactKind): string {
+export function extensionForKind(kind: ChatArtifactKind): string {
   switch (kind) {
     case 'markdown':
       return 'md';
@@ -280,6 +287,9 @@ export function listChatArtifacts(threadId: string): ChatArtifact[] {
          source,
          model,
          reasoning_effort,
+         share_id,
+         shared_url,
+         shared_at,
          created_at,
          updated_at
        FROM chat_artifacts
@@ -424,9 +434,141 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
   return mapArtifactRow(row);
 }
 
+export function getChatArtifact(id: string): ChatArtifact | null {
+  const row = getDb().prepare('SELECT * FROM chat_artifacts WHERE id = ?').get(id) as
+    | ChatArtifactRow
+    | undefined;
+  return row ? mapArtifactRow(row) : null;
+}
+
+interface ChatArtifactRevisionRow {
+  artifact_id: string;
+  version: number;
+  title: string;
+  content: string;
+  source_message_id: string | null;
+  created_at: string;
+}
+
+function mapRevisionRow(row: ChatArtifactRevisionRow): ChatArtifactRevision {
+  return {
+    artifactId: row.artifact_id,
+    version: Number(row.version),
+    title: row.title,
+    content: row.content,
+    ...(row.source_message_id ? { sourceMessageId: row.source_message_id } : {}),
+    createdAt: row.created_at,
+  };
+}
+
+/** Every stored version of an artifact, newest first. */
+export function listChatArtifactRevisions(artifactId: string): ChatArtifactRevision[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT artifact_id, version, title, content, source_message_id, created_at
+       FROM chat_artifact_revisions WHERE artifact_id = ? ORDER BY version DESC`,
+    )
+    .all(artifactId) as ChatArtifactRevisionRow[];
+  return rows.map(mapRevisionRow);
+}
+
+export function getChatArtifactRevision(
+  artifactId: string,
+  version: number,
+): ChatArtifactRevision | null {
+  const row = getDb()
+    .prepare(
+      `SELECT artifact_id, version, title, content, source_message_id, created_at
+       FROM chat_artifact_revisions WHERE artifact_id = ? AND version = ?`,
+    )
+    .get(artifactId, version) as ChatArtifactRevisionRow | undefined;
+  return row ? mapRevisionRow(row) : null;
+}
+
+/** Moves a session-only artifact into the repository (`.anvil/artifacts`) as a new version. */
+export function saveChatArtifactToRepository(id: string, repoId: string): ChatArtifact {
+  const db = getDb();
+  const current = getChatArtifact(id);
+  if (!current) throw new Error(`Artifact not found: ${id}`);
+  if (current.storage === 'repository') return current;
+  const filePath = writeRepoArtifact(repoId, current.relativePath, current.content);
+  if (!filePath) throw new Error('Artifact repository is not connected');
+  const now = new Date().toISOString();
+  const version = current.version + 1;
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE chat_artifacts
+       SET repo_id = ?, storage_scope = 'repository', file_path = ?, version = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(repoId, filePath, version, now, id);
+    db.prepare(
+      `INSERT INTO chat_artifact_revisions (
+         id, artifact_id, version, source_message_id, title, kind, storage_scope, relative_path,
+         file_path, content, status, visibility, source, model, reasoning_effort, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 'repository', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(artifact_id, version) DO NOTHING`,
+    ).run(
+      randomUUID(),
+      id,
+      version,
+      current.sourceMessageId ?? null,
+      current.title,
+      current.kind,
+      current.relativePath,
+      filePath,
+      current.content,
+      current.status,
+      current.visibility,
+      current.source,
+      current.model ?? null,
+      current.reasoningEffort ?? null,
+      now,
+    );
+  })();
+  return getChatArtifact(id) as ChatArtifact;
+}
+
 export function discardChatArtifact(id: string): boolean {
   const result = getDb()
     .prepare("DELETE FROM chat_artifacts WHERE id = ? AND storage_scope = 'session'")
     .run(id);
+  if (result.changes > 0) {
+    void import('./share.service.js')
+      .then(({ revokeSharesForItems }) => revokeSharesForItems('artifact', [id]))
+      .catch((error: unknown) => console.warn('[Artifacts] Share revoke after discard failed:', error));
+  }
   return result.changes > 0;
+}
+
+/**
+ * Publishes a chat artifact and returns the row with `sharedUrl` set for
+ * this response only. Delegates to share.service: the same bundle build
+ * and secret scan as the share dialog (any finding blocks here, since this
+ * path has no preview), one stable link per artifact (re-sharing updates
+ * the live link), and the URL kept only in credential storage — never in
+ * SQLite.
+ */
+export async function shareChatArtifact(id: string): Promise<ChatArtifact> {
+  const { shareArtifactFromLegacyCaller } = await import('./share.service.js');
+  const sharedUrl = await shareArtifactFromLegacyCaller(id);
+  const fresh = getDb().prepare('SELECT * FROM chat_artifacts WHERE id = ?').get(id) as
+    | ChatArtifactRow
+    | undefined;
+  if (!fresh) throw new Error('Artifact not found');
+  return { ...mapArtifactRow(fresh), sharedUrl };
+}
+
+/**
+ * Revokes every live link of the artifact (via share.service) and clears
+ * its local share metadata. Idempotent; a revoke failure other than
+ * not-found propagates before local state changes, so the user can retry.
+ */
+export async function unshareChatArtifact(id: string): Promise<ChatArtifact> {
+  const { unshareArtifactFromLegacyCaller } = await import('./share.service.js');
+  await unshareArtifactFromLegacyCaller(id);
+  const fresh = getDb().prepare('SELECT * FROM chat_artifacts WHERE id = ?').get(id) as
+    | ChatArtifactRow
+    | undefined;
+  if (!fresh) throw new Error('Artifact not found');
+  return mapArtifactRow(fresh);
 }

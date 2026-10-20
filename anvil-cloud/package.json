@@ -16,7 +16,11 @@
     "verify:notes-golden-path": "node scripts/verify-notes-local.mjs",
     "verify:notes-local": "pnpm verify:notes-golden-path",
     "verify:aws-preview": "node scripts/verify-aws-preview.mjs",
+    "verify:application-backends": "node scripts/verify-application-backends.mjs",
+    "preflight:application-backends": "node scripts/preflight-application-backends.mjs",
+    "test:preflight:application-backends": "node --test scripts/preflight-application-backends.test.mjs",
     "verify:cloudflare-preview": "pnpm build && node scripts/verify-cloudflare-preview.mjs",
+    "verify:mesh-rehearsal": "node scripts/verify-mesh-rehearsal.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
@@ -26,21 +30,22 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^22.10.2",
-    "eslint": "^10.7.0",
-    "globals": "^17.7.0",
-    "prettier": "^3.8.4",
-    "typescript": "^5.7.2",
-    "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.9",
-    "wrangler": "4.120.0"
+    "@types/node": "^22.20.5",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.9",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^4.1.11",
+    "wrangler": "4.147.0"
   },
   "pnpm": {
     "overrides": {
-      "brace-expansion@5": "5.0.9",
+      "brace-expansion@5": "5.0.12",
       "esbuild": "0.28.1",
       "nanoid@3": "3.3.18",
-      "postcss": "8.5.26"
+      "postcss": "8.5.26",
+      "sharp": "0.35.5"
     }
   }
 }

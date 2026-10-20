@@ -5,7 +5,7 @@ const electron = vi.hoisted(() => ({
   notifications: [] as Array<{
     options: Record<string, unknown>;
     handlers: Map<string, (...args: unknown[]) => void>;
-    show: ReturnType<typeof vi.fn>;
+    show: ReturnType<typeof vi.fn<() => void>>;
   }>,
   windows: [] as Array<{
     isFocused: ReturnType<typeof vi.fn>;

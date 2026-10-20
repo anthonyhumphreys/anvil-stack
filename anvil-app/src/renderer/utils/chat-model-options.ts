@@ -112,11 +112,13 @@ export function buildProviderModelOptions(
       provider,
       id: selectedModel,
       label: selectedModel,
+      // Plain-text descriptions (rendered inside option labels, no links) —
+      // name the owning panel: Settings → Providers & models.
       description: isAcpAgentProvider(provider)
-        ? `Custom ${provider === 'devin' ? 'Devin' : 'Cursor'} model selected in Settings.`
+        ? `Custom ${provider === 'devin' ? 'Devin' : 'Cursor'} model selected under Settings → Providers & models.`
         : provider === 'llmgateway'
-          ? 'Selected model is unavailable in the LLMGateway catalog. Refresh models in Settings.'
-          : 'Custom model or deployment selected in Settings.',
+          ? 'Selected model is unavailable in the LLMGateway catalog. Refresh models under Settings → Providers & models.'
+          : 'Custom model or deployment selected under Settings → Providers & models.',
       supportedReasoningEfforts:
         isAcpAgentProvider(provider) || provider === 'llmgateway' ? [] : CODEX_REASONING_EFFORTS,
       defaultReasoningEffort: 'medium',

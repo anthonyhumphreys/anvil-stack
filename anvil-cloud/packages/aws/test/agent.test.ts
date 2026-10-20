@@ -126,6 +126,19 @@ describe("checkAwsAgentCompatibility", () => {
 });
 
 describe("AwsLambdaMicroVmSandboxProvider", () => {
+  it("reports missing image configuration without contacting AWS", () => {
+    const provider = new AwsLambdaMicroVmSandboxProvider({
+      client: { send: async () => ({}) },
+    });
+
+    expect(provider.describe()).toEqual({
+      configured: false,
+      reasons: [
+        "AWS Agent Sandbox image is not configured. Set ANVIL_AWS_AGENT_SANDBOX_IMAGE or provider imageIdentifier.",
+      ],
+    });
+  });
+
   it("starts, inspects, resumes, suspends, terminates, and creates auth tokens", async () => {
     const sent: unknown[] = [];
     const provider = new AwsLambdaMicroVmSandboxProvider({
@@ -164,6 +177,8 @@ describe("AwsLambdaMicroVmSandboxProvider", () => {
       },
       maximumDurationInSeconds: 3600,
     });
+
+    expect(provider.describe()).toEqual({ configured: true, reasons: [] });
     const manifest = createAgentManifest(
       defineAgent({
         name: "release-engineer",

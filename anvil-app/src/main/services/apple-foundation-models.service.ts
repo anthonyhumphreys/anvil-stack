@@ -100,7 +100,10 @@ function runCommand(
   options: { input?: string; timeoutMs?: number } = {},
 ): Promise<{ code: number | null; stdout: string; stderr: string; error?: string }> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -149,9 +152,7 @@ async function getMacOsVersion(): Promise<MacOsVersion | null> {
   if (macOsVersionCache !== undefined) return macOsVersionCache;
   const result = await runCommand('/usr/bin/sw_vers', ['-productVersion'], { timeoutMs: 5_000 });
   const match = result.stdout.trim().match(/^(\d+)\.(\d+)/);
-  macOsVersionCache = match
-    ? { major: Number(match[1]), minor: Number(match[2]) }
-    : null;
+  macOsVersionCache = match ? { major: Number(match[1]), minor: Number(match[2]) } : null;
   return macOsVersionCache;
 }
 
@@ -314,11 +315,9 @@ async function compileHelper(spec: HelperSpec): Promise<string | null> {
     try {
       const binary = join(helperCacheDir(), `${spec.id}-${stamp}`);
       if (existsSync(binary)) return binary;
-      const result = await runCommand(
-        '/usr/bin/xcrun',
-        ['swiftc', '-O', '-o', binary, source],
-        { timeoutMs: COMPILE_TIMEOUT_MS },
-      );
+      const result = await runCommand('/usr/bin/xcrun', ['swiftc', '-O', '-o', binary, source], {
+        timeoutMs: COMPILE_TIMEOUT_MS,
+      });
       if (result.code === 0 && existsSync(binary)) return binary;
       console.warn(`[AFM] Failed to compile ${spec.id}: ${result.stderr.trim().slice(0, 300)}`);
       return null;
@@ -345,7 +344,10 @@ function runHelperProcess(
   backend: AppleLocalBackend,
 ): Promise<HelperRun> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     let buffer = '';
     let stderr = '';
     let settled = false;
@@ -482,7 +484,9 @@ async function probeHelper(spec: HelperSpec): Promise<HelperEvent | null> {
 // Composite status + entry points
 // ---------------------------------------------------------------------------
 
-function mergeFeatures(parts: Array<Partial<AppleModelFeatureFlags> | undefined>): AppleModelFeatureFlags {
+function mergeFeatures(
+  parts: Array<Partial<AppleModelFeatureFlags> | undefined>,
+): AppleModelFeatureFlags {
   return {
     streaming: parts.some((p) => p?.streaming),
     instructions: parts.some((p) => p?.instructions),
@@ -663,8 +667,7 @@ export async function callAppleFoundationModel(
   return {
     ok: false,
     unavailable: true,
-    error:
-      'Apple Foundation Models are unavailable: no working backend (fm CLI or Swift helper).',
+    error: 'Apple Foundation Models are unavailable: no working backend (fm CLI or Swift helper).',
   };
 }
 

@@ -1,18 +1,12 @@
 import { EventEmitter } from 'node:events';
+import type { CompanionEvent, CompanionEventType } from '../../shared/types.js';
 
-export type CompanionEvent =
-  | { type: 'overview'; generatedAt: string }
-  | { type: 'approvals'; generatedAt: string }
-  | { type: 'sessions'; generatedAt: string }
-  | { type: 'settings'; generatedAt: string }
-  | { type: 'notes'; generatedAt: string }
-  | { type: 'carplay'; generatedAt: string }
-  | { type: 'handover'; generatedAt: string };
+export type { CompanionEvent, CompanionEventType };
 
 const companionEvents = new EventEmitter();
 companionEvents.setMaxListeners(100);
 
-export function emitCompanionEvent(type: CompanionEvent['type']): void {
+export function emitCompanionEvent(type: CompanionEventType): void {
   companionEvents.emit('event', {
     type,
     generatedAt: new Date().toISOString(),

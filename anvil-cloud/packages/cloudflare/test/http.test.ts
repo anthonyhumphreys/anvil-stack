@@ -5,6 +5,7 @@ import {
   createInMemoryRuntimeHost,
   endpoint,
   mutation,
+  job,
   query,
 } from "@anvil-cloud/runtime";
 import {
@@ -182,4 +183,86 @@ describe("Cloudflare Worker HTTP bridge", () => {
       error: { code: "INVALID_JSON" },
     });
   });
+});
+
+it("uses verified bearer identity and rejects invalid credentials and oversized bodies", async () => {
+  const host = createInMemoryRuntimeHost();
+  host.auth.verifyToken = async (token) => {
+    if (token !== "valid") throw new Error("invalid");
+    return { userId: "verified" };
+  };
+  const secured = app({
+    queries: {
+      me: query({ auth: "required", handler: async (ctx) => ctx.auth.userId }),
+    },
+  });
+  const handler = createCloudflareWorkerHandler(secured, {
+    createHost: () => host,
+  });
+  const call = (token: string, body = "{}") =>
+    handler.fetch(
+      new Request("https://cell.example/_anvil/query/me", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body,
+      }),
+      {},
+      context,
+    );
+  expect(
+    await (
+      await call("valid", JSON.stringify({ auth: { userId: "forged" } }))
+    ).json(),
+  ).toMatchObject({ result: "verified" });
+  expect((await call("invalid")).status).toBe(401);
+  expect((await call("valid", "x".repeat(1024 * 1024 + 1))).status).toBe(413);
+});
+
+it("acknowledges successful jobs, retries failures independently and queues matching cron jobs", async () => {
+  const host = createInMemoryRuntimeHost();
+  const cell = app({
+    jobs: {
+      refresh: job<{ fail?: boolean }>({
+        schedule: "*/20 * * * *",
+        handler: async (_ctx, payload) => {
+          if (payload.fail) throw new Error("try again");
+        },
+      }),
+    },
+  });
+  const handler = createCloudflareWorkerHandler(cell, {
+    createHost: () => host,
+  });
+  const calls: string[] = [];
+  const messages = [false, true].map((fail, i) => ({
+    id: String(i),
+    timestamp: new Date(),
+    attempts: 1,
+    body: {
+      kind: "job",
+      id: `logical-${i}`,
+      name: "refresh",
+      payload: { fail },
+    },
+    ack: () => {
+      calls.push(`ack:${i}`);
+    },
+    retry: () => {
+      calls.push(`retry:${i}`);
+    },
+  }));
+  await handler.queue(
+    { queue: "jobs", messages, ackAll() {}, retryAll() {} },
+    {},
+    context,
+  );
+  expect(calls).toEqual(["ack:0", "retry:1"]);
+  await handler.scheduled(
+    { cron: "*/20 * * * *", scheduledTime: 1234, noRetry() {} },
+    {},
+    context,
+  );
+  expect(host.jobs.entries).toEqual([
+    { id: "refresh:1234", name: "refresh", payload: {} },
+  ]);
 });

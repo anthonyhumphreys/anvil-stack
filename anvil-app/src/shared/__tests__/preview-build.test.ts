@@ -40,6 +40,20 @@ describe('candidate preview identity', () => {
     expect(previewProfileDirectory(first)).not.toBe(previewProfileDirectory(rebuilt));
   });
 
+  it('accepts isolated native Linux x64 preview identities', () => {
+    const linuxIdentity = {
+      ...identity,
+      buildId: `pr-7-${headSha}-linux-x64-${'e'.repeat(32)}`,
+      platform: 'linux',
+      arch: 'x64',
+    } as const;
+    const linuxPreview = parsePreviewBuild(JSON.stringify(linuxIdentity))!;
+
+    expect(linuxPreview.platform).toBe('linux');
+    expect(linuxPreview.arch).toBe('x64');
+    expect(previewProfileDirectory(linuxPreview)).toBe(`Anvil Preview/${linuxIdentity.buildId}`);
+  });
+
   it.each([
     { buildId: '../../Anvil' },
     { headSha: 'main' },
@@ -47,6 +61,11 @@ describe('candidate preview identity', () => {
     { platform: 'linux' },
     { arch: 'other' },
     { headSha: 'b'.repeat(40) },
+    {
+      platform: 'linux',
+      arch: 'arm64',
+      buildId: `pr-7-${headSha}-linux-arm64-${'c'.repeat(32)}`,
+    },
   ])('rejects malformed or mismatched identity %j', (change) => {
     expect(() => parsePreviewBuild(JSON.stringify({ ...identity, ...change }))).toThrow();
   });

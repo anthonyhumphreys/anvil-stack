@@ -14,8 +14,11 @@ import { useNavigate } from 'react-router-dom';
 import type { SecurityAudit } from '../../../shared/types';
 import { SecurityAuditReport } from './SecurityAuditReport';
 import { RepoSelector } from '../shared/RepoSelector';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { SecurityTabs } from './SecurityTabs';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
+import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { repoDetailPath } from '../../utils/sidebar-navigation';
 
 const auditSteps = [
   { key: 'scope', label: 'Detecting scope', icon: Search, threshold: 5 },
@@ -97,10 +100,12 @@ function SecurityAuditProgress({ message, percent }: { message: string; percent:
   );
 }
 
-export function SecurityView() {
+/** `embedded` hides the audit-type tab bar when repo Health already shows one. */
+export function SecurityView({ embedded = false }: { embedded?: boolean }) {
   const { repoId } = useParams<{ repoId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { featureAvailability } = useWorkspace();
 
   // State for audit list
   const [audits, setAudits] = useState<SecurityAudit[]>([]);
@@ -211,11 +216,23 @@ export function SecurityView() {
     }
   }, [repoId, syncAuditState]);
 
+  // Gated until at least one repo reaches the mapped index tier — nav items
+  // stay reachable (aria-disabled), so this view must explain the block.
+  if (!featureAvailability.repoFeaturesEnabled) {
+    return (
+      <RepoFeatureEmptyState
+        icon={Shield}
+        featureLabel="Security audits"
+        description="Inspect an indexed repository for security risks and review evidence-backed findings."
+      />
+    );
+  }
+
   // Repo selection view
   if (!repoId) {
     return (
       <div className="flex h-full flex-1 flex-col">
-        <SecurityTabs />
+        <SecurityTabs embedded={embedded} />
         <ViewHeader
           icon={Shield}
           title="Security Audit"
@@ -224,7 +241,7 @@ export function SecurityView() {
         <div className="flex-1 overflow-auto p-5">
           <RepoSelector
             selectedRepoId={null}
-            onSelect={(repo) => navigate(`/security/${repo.id}`)}
+            onSelect={(repo) => navigate(repoDetailPath(repo.id, 'health', 'security'))}
           />
         </div>
       </div>
@@ -234,7 +251,7 @@ export function SecurityView() {
   // Audit view for specific repo
   return (
     <div className="flex h-full flex-1 flex-col">
-      <SecurityTabs />
+      <SecurityTabs embedded={embedded} />
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar: audit list */}
         <div className="flex w-[260px] shrink-0 flex-col border-r border-border-subtle bg-bg-secondary">
@@ -246,7 +263,7 @@ export function SecurityView() {
             <button
               onClick={handleRunAudit}
               disabled={running}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
               aria-label={running ? 'Audit running' : 'Run new security audit'}
             >
               {running ? (
@@ -289,7 +306,7 @@ export function SecurityView() {
                 onClick={() => setSelectedAudit(audit)}
                 className={`mb-1 flex w-full flex-col rounded-md px-3 py-2 text-left text-sm transition-colors ${
                   selectedAudit?.id === audit.id
-                    ? 'bg-accent text-white'
+                    ? 'bg-accent text-accent-foreground'
                     : 'text-text-secondary hover:bg-bg-tertiary'
                 }`}
               >
@@ -301,7 +318,7 @@ export function SecurityView() {
                   })}
                 </span>
                 <span
-                  className={`mt-0.5 text-xs ${audit.status === 'failed' ? 'text-error' : selectedAudit?.id === audit.id ? 'text-white/70' : 'text-text-secondary'}`}
+                  className={`mt-0.5 text-xs ${audit.status === 'failed' ? 'text-error' : selectedAudit?.id === audit.id ? 'text-accent-foreground/70' : 'text-text-secondary'}`}
                 >
                   {audit.status === 'completed'
                     ? audit.scope.join(', ')

@@ -1,15 +1,31 @@
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Shield, Boxes } from 'lucide-react';
+import {
+  repoDetailPath,
+  repositoriesSectionHintPath,
+  type RepoHealthTab,
+} from '../../utils/sidebar-navigation';
 
-const tabs = [
-  { key: 'audit', label: 'Static Audit', icon: Shield, pathSuffix: '' },
-  { key: 'deps', label: 'Dependencies Audit', icon: Boxes, pathSuffix: '/dependencies' },
-] as const;
+const tabs: ReadonlyArray<{
+  key: 'audit' | 'deps';
+  label: string;
+  icon: typeof Shield;
+  healthTab: RepoHealthTab;
+}> = [
+  { key: 'audit', label: 'Static Audit', icon: Shield, healthTab: 'security' },
+  { key: 'deps', label: 'Dependencies Audit', icon: Boxes, healthTab: 'dependencies' },
+];
 
-export function SecurityTabs() {
+/**
+ * Static / Dependencies audit switcher. Hidden when `embedded` in repo
+ * Health, whose own tab bar already offers both.
+ */
+export function SecurityTabs({ embedded = false }: { embedded?: boolean }) {
   const { repoId } = useParams<{ repoId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
+
+  if (embedded) return null;
 
   const isDeps = location.pathname.includes('/dependencies');
   const activeKey = isDeps ? 'deps' : 'audit';
@@ -22,7 +38,13 @@ export function SecurityTabs() {
         return (
           <button
             key={tab.key}
-            onClick={() => navigate(`/security/${repoId || ''}${tab.pathSuffix}`)}
+            onClick={() =>
+              navigate(
+                repoId
+                  ? repoDetailPath(repoId, 'health', tab.healthTab)
+                  : repositoriesSectionHintPath('health', tab.healthTab),
+              )
+            }
             className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
               isActive
                 ? 'border-accent text-accent'

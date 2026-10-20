@@ -74,12 +74,16 @@ export function EnvironmentStep({ detection, onNext }: EnvironmentStepProps) {
     <div className="flex gap-6">
       {/* Main content */}
       <div className="flex-1 space-y-4">
-        <h3 className="text-base font-semibold text-text-primary">Environment & Artifact Check</h3>
+        <h3 className="text-base font-semibold text-text-primary">Check your repository setup</h3>
+        <p className="text-sm text-text-secondary">
+          Review what is already installed. You can add missing tools and setup files now or return
+          to them later.
+        </p>
 
         {/* Artifact status */}
         <div className="space-y-2">
           <h4 className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
-            Repository Artifacts
+            Setup files
           </h4>
 
           <ArtifactRow
@@ -204,7 +208,7 @@ export function EnvironmentStep({ detection, onNext }: EnvironmentStepProps) {
               <button
                 onClick={handleInstallAll}
                 disabled={!!installing || missingDeps.every((d) => installed.has(d.name))}
-                className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-40"
+                className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-40"
               >
                 {installing ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                 {missingDeps.every((d) => installed.has(d.name))
@@ -233,7 +237,7 @@ export function EnvironmentStep({ detection, onNext }: EnvironmentStepProps) {
 
         <button
           onClick={onNext}
-          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90"
+          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90"
         >
           {allPassed ? 'Continue' : 'Continue Anyway'}
         </button>

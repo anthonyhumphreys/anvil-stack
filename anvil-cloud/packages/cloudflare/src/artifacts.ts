@@ -1,3 +1,9 @@
+import { CLOUDFLARE_DATABASE_MIGRATION } from "./database.js";
+import {
+  cloudflareResourceConfig,
+  hasCloudflareRuntimeResource,
+  type CloudflareRuntimeResources,
+} from "./resources.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -31,6 +37,7 @@ export type CreateCloudflareWorkerArtifactsOptions = {
   environment?: string;
   outputDirectory?: string;
   authentication?: CloudflareAuthenticationMode;
+  resources?: CloudflareRuntimeResources;
 };
 
 export class CloudflareWorkerCompatibilityError extends Error {
@@ -48,9 +55,23 @@ export async function createCloudflareWorkerArtifacts(
   options: CreateCloudflareWorkerArtifactsOptions,
 ): Promise<CloudflareWorkerArtifacts> {
   const environment = options.environment ?? "preview";
+  const resources = options.resources ?? {};
   const supportDiagnostics = checkCloudflarePreviewSupport(options.manifest, {
     authentication: options.authentication ?? "permanent",
+  }).filter((diagnostic) => {
+    // Temporary accounts retain their stricter resource/provisioning restrictions.
+    if (
+      options.authentication === "temporary" &&
+      (diagnostic.feature === "files" || diagnostic.feature === "secrets")
+    )
+      return true;
+    if (diagnostic.feature === "secrets")
+      return diagnostic.names.some(
+        (name) => !resources.secrets?.includes(name),
+      );
+    return !hasCloudflareRuntimeResource(diagnostic.feature, resources);
   });
+  const resourceConfig = cloudflareResourceConfig(options.manifest, resources);
 
   if (supportDiagnostics.length > 0) {
     throw new CloudflareWorkerCompatibilityError(supportDiagnostics);
@@ -68,6 +89,14 @@ export async function createCloudflareWorkerArtifacts(
   );
 
   await mkdir(directory, { recursive: true });
+  if (resources.database) {
+    await mkdir(path.join(directory, "migrations"), { recursive: true });
+    await writeFile(
+      path.join(directory, "migrations", "0001_anvil_records.sql"),
+      CLOUDFLARE_DATABASE_MIGRATION,
+      "utf8",
+    );
+  }
   await bundleWorkerEntrypoint(options.buildOutput.serverBundle, worker);
 
   const assetsDirectory = existsSync(options.buildOutput.clientIndex)
@@ -81,6 +110,7 @@ export async function createCloudflareWorkerArtifacts(
         main: "./worker.mjs",
         compatibility_date: CLOUDFLARE_COMPATIBILITY_DATE,
         workers_dev: true,
+        ...resourceConfig,
         ...(assetsDirectory
           ? {
               assets: {

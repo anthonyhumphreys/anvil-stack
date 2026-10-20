@@ -397,20 +397,20 @@ export function CodexRegistryView() {
                       {result.tags?.slice(0, 4).map((tag) => (
                         <span
                           key={tag}
-                          className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[11px] text-text-tertiary"
+                          className="rounded-full bg-bg-tertiary px-2 py-0.5 text-eyebrow text-text-tertiary"
                         >
                           {tag}
                         </span>
                       ))}
                     </div>
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                      <code className="min-w-0 flex-1 truncate rounded bg-bg-primary px-2 py-1 font-mono text-[11px] text-text-tertiary">
+                      <code className="min-w-0 flex-1 truncate rounded bg-bg-primary px-2 py-1 font-mono text-xs text-text-tertiary">
                         {result.installCommand}
                       </code>
                       <button
                         onClick={() => installSkill(result)}
                         disabled={installing}
-                        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
                       >
                         {installing ? (
                           <Loader2 size={13} className="animate-spin" />
@@ -539,7 +539,7 @@ export function CodexRegistryView() {
               <button
                 onClick={registerMcp}
                 disabled={registeringMcp || !mcpForm.name}
-                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
               >
                 {registeringMcp ? (
                   <Loader2 size={14} className="animate-spin" />
@@ -687,7 +687,7 @@ function SkillCard({ skill }: { skill: CodexRegisteredSkill }) {
             </p>
           )}
         </div>
-        <span className="shrink-0 rounded-full bg-bg-tertiary px-2 py-0.5 text-[11px] text-text-tertiary">
+        <span className="shrink-0 rounded-full bg-bg-tertiary px-2 py-0.5 text-eyebrow text-text-tertiary">
           {scopeLabel(skill.scope)}
         </span>
       </div>
@@ -707,7 +707,7 @@ function McpCard({ server }: { server: CodexMcpServer }) {
           </p>
         </div>
         <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${
+          className={`shrink-0 rounded-full px-2 py-0.5 text-eyebrow ${
             server.status === 'enabled'
               ? 'bg-success/10 text-success'
               : 'bg-bg-tertiary text-text-tertiary'

@@ -84,7 +84,7 @@ Blocked or quarantined installs should return JSON that explains:
 - Whether an override exists.
 - What the developer or reviewer can do next.
 
-The install should fail clearly, not with a mystery 500 and vibes.
+The response should explain the policy decision so the developer can identify the blocked package and review its report.
 
 ## Admin and CLI
 

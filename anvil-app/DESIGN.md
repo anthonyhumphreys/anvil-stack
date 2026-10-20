@@ -148,6 +148,20 @@ Anvil is flat by default. Tonal layering and one-pixel borders establish structu
 - **Focus:** visible accent ring and border shift.
 - **Error / Disabled:** semantic colour plus plain-language state; preserve entered content.
 
+### Chat Composer
+
+The chat composer is a focused surface-level exception to the general field shape. Its shell uses the tertiary background and a generous 28px radius; the message editor is 16px with a 26px line height, starts at 76px, grows with available width, and scrolls after reaching 200px. Give the text 18px top and 20px side insets; keep the focus border visible and use the existing semantic surface and text tokens so brand themes remain intact.
+
+The footer keeps the access selector available beside a 36px ghost attachment control (Plus), with 4px between adjacent controls, model selection inline, and run settings compact. The primary send and stop actions are 40px circles. Send defaults to an ArrowUp icon; the mode menu retains the labeled Guide, Queue, and Side choices, and selecting a mode does not submit the draft. At composer widths below 600px, the toolbar wraps into two rows; at 420px and below, hide only the provider label while retaining the provider and model in the control's accessible name.
+
+#### Save model
+
+Settings and preference forms **autosave** — changes persist on change/blur
+with a quiet tick/spinner indicator ("Saved", "Saving…") rather than a page-level
+Save button. The exception is credential/secret forms, which use an explicit
+Save action so secrets are only transmitted deliberately. Do not add "Save"
+buttons to ordinary settings panels; do not autosave raw secrets on keystroke.
+
 ### Navigation
 
 Use familiar desktop rails and toolbars. Active workspace, route, and thread must remain unambiguous. Collapse lower-priority actions before shrinking labels into ambiguity.

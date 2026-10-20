@@ -103,7 +103,7 @@ export function CreateLifecycleItemModal({ workspaceId, onCreated, onClose }: Pr
             }}
             className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
               mode === 'work-item'
-                ? 'bg-accent text-white'
+                ? 'bg-accent text-accent-foreground'
                 : 'text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -119,7 +119,7 @@ export function CreateLifecycleItemModal({ workspaceId, onCreated, onClose }: Pr
             }}
             className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
               mode === 'manual'
-                ? 'bg-accent text-white'
+                ? 'bg-accent text-accent-foreground'
                 : 'text-text-secondary hover:text-text-primary'
             }`}
           >
@@ -272,7 +272,7 @@ export function CreateLifecycleItemModal({ workspaceId, onCreated, onClose }: Pr
           <button
             onClick={handleCreate}
             disabled={!title.trim() || submitting}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50"
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
           >
             {submitting ? 'Creating...' : 'Create'}
           </button>

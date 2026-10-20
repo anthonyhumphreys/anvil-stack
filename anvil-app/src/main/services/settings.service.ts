@@ -17,9 +17,17 @@ import {
   normaliseCodexModel,
   normaliseReasoningEffort,
 } from '../../shared/codex-models.js';
+import {
+  SYNC_ENTITY_SCHEMA_VERSIONS,
+  SYNC_ENTITY_SETTINGS,
+  SYNC_SETTINGS_ENTITY_ID,
+} from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
-import { decryptSecret, encryptSecret } from './auth.service.js';
+import { normaliseModelPickerPreferences } from '../../shared/model-picker.js';
+import { decryptSecret, encryptSecret, readStoredSecret } from './auth.service.js';
 import { testLlmConnection } from './llm.service.js';
+import { buildEntityPayload, SYNCED_SETTINGS_KEYS } from './sync-entity-domain.js';
+import { withSyncedEntityWrite } from './sync-persistence.service.js';
 
 interface SettingsRow {
   llm_provider: string | null;
@@ -46,6 +54,7 @@ interface SettingsRow {
   reasoning_level: string | null;
   codex_mode: string | null;
   chat_layout: string | null;
+  model_picker: string | null;
   ado_org_url: string | null;
   ado_project: string | null;
   ado_team: string | null;
@@ -383,6 +392,7 @@ export function getSettings(): AppSettings {
     reasoningLevel: normaliseReasoningEffort(row.reasoning_level),
     codexMode: normaliseCodexMode(row.codex_mode),
     chatLayout: normaliseChatLayout(row.chat_layout),
+    modelPicker: normaliseModelPickerPreferences(row.model_picker),
     adoOrganizationUrl: row.ado_org_url ?? '',
     adoProject: row.ado_project ?? '',
     adoTeam: row.ado_team ?? undefined,
@@ -425,6 +435,16 @@ export function getSettings(): AppSettings {
 export function updateSettings(partial: Partial<AppSettings>): void {
   const db = getDb();
   ensureDocsSettingsColumns(db);
+  if (partial.workItemConnections !== undefined) {
+    const stored = db.prepare('SELECT work_item_connections FROM settings WHERE id = 1').get() as {
+      work_item_connections: Buffer | null;
+    };
+    const read = readStoredSecret(stored.work_item_connections);
+    if (read.state !== 'available' && read.state !== 'not-configured')
+      throw new Error(
+        'Saved work item connections are locked or unavailable. Unlock credential storage before editing them.',
+      );
+  }
   const current = getSettings();
   const setClauses: string[] = [];
   const values: unknown[] = [];
@@ -525,6 +545,10 @@ export function updateSettings(partial: Partial<AppSettings>): void {
   if (partial.chatLayout !== undefined) {
     setClauses.push('chat_layout = ?');
     values.push(normaliseChatLayout(partial.chatLayout));
+  }
+  if (partial.modelPicker !== undefined) {
+    setClauses.push('model_picker = ?');
+    values.push(JSON.stringify(normaliseModelPickerPreferences(partial.modelPicker)));
   }
   if (partial.adoOrganizationUrl !== undefined) {
     setClauses.push('ado_org_url = ?');
@@ -671,6 +695,19 @@ export function updateSettings(partial: Partial<AppSettings>): void {
   setClauses.push("updated_at = datetime('now')");
   const sql = `UPDATE settings SET ${setClauses.join(', ')} WHERE id = 1`;
   db.prepare(sql).run(...values);
+
+  // Emit sync intent only when an allowlisted (portable) field changed;
+  // secrets, endpoints, paths, and connector config never leave the device.
+  if (Object.keys(partial).some((key) => (SYNCED_SETTINGS_KEYS as string[]).includes(key))) {
+    withSyncedEntityWrite(
+      SYNC_ENTITY_SETTINGS,
+      SYNC_SETTINGS_ENTITY_ID,
+      SYNC_ENTITY_SCHEMA_VERSIONS[SYNC_ENTITY_SETTINGS],
+      'update',
+      () => buildEntityPayload(SYNC_ENTITY_SETTINGS, SYNC_SETTINGS_ENTITY_ID),
+      () => {},
+    );
+  }
 }
 
 export async function testFoundryConnection(): Promise<{ ok: boolean; error?: string }> {
@@ -753,6 +790,7 @@ function defaultSettings(): AppSettings {
     reasoningLevel: DEFAULT_CODEX_REASONING_EFFORT,
     codexMode: 'on-request',
     chatLayout: 'classic',
+    modelPicker: normaliseModelPickerPreferences(undefined),
     workItemProvider: 'ado',
     workItemConnections: [],
     activeWorkItemConnectionId: undefined,
@@ -770,6 +808,8 @@ function defaultSettings(): AppSettings {
   };
 }
 
+// Crash-reporting (Sentry) consent only. Activation metrics are local-only
+// rows in the activation_events table and are independent of this flag.
 export function isTelemetryEnabled(): boolean {
   const row = getDb().prepare('SELECT telemetry_enabled FROM settings WHERE id = 1').get() as
     | { telemetry_enabled: number | null }

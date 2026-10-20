@@ -3,9 +3,9 @@ title: API reference
 navTitle: API reference
 description: Gateway, Admin, health, readiness, explain, policy, override, report, and package endpoint reference for alpha operators.
 product: Anvil Registry
-section: Operations
+section: Reference
 journey: reference
-order: 11
+order: 150
 ---
 
 # API reference
@@ -82,7 +82,7 @@ GET /@:scope/:packageName/-/:tarballName
 
 Tarball routes check policy decisions for the resolved package identity, serve cached allowed tarballs when possible, and fetch from upstream when needed.
 
-Blocked or quarantined tarball requests should return useful JSON rather than a mystery failure dressed as package-manager misery.
+Blocked or quarantined tarball requests return JSON explaining the decision so you can diagnose the failed install.
 
 ## Explain
 
