@@ -4,6 +4,27 @@ import { buildDescriptor } from '../src/descriptor';
 import { WORKOS_AUTHKIT_ISSUER } from '../../contract/auth';
 
 describe('backend discovery descriptor', () => {
+  it('advertises share audiences only with organization identity and a configured signed viewer channel', () => {
+    const complete = {
+      HOSTED_DB: {},
+      HOSTED_WORKOS_CLIENT_ID: 'client_website',
+      HOSTED_SERVICE_KEYS: JSON.stringify({ viewer: 'a'.repeat(32) }),
+      OIDC_ISSUER: WORKOS_AUTHKIT_ISSUER,
+      OIDC_CLIENT_ID: 'client_desktop',
+    };
+    expect(buildDescriptor(complete).features).toContain('share-audiences/1');
+    expect(buildDescriptor().features).not.toContain('share-audiences/1');
+    for (const partial of [
+      { ...complete, HOSTED_DB: undefined },
+      { ...complete, HOSTED_WORKOS_CLIENT_ID: undefined },
+      { ...complete, HOSTED_SERVICE_KEYS: undefined },
+      { ...complete, HOSTED_SERVICE_KEYS: '{broken' },
+      { ...complete, HOSTED_SERVICE_KEYS: JSON.stringify({ viewer: 'short' }) },
+      { ...complete, OIDC_ISSUER: 'https://other.example' },
+    ])
+      expect(buildDescriptor(partial).features).not.toContain('share-audiences/1');
+  });
+
   it('advertises worker capability requirement enforcement for Mesh jobs', () => {
     expect(buildDescriptor().features).toContain('mesh-job-capability-requirements/1');
   });
@@ -13,10 +34,7 @@ describe('backend discovery descriptor', () => {
       OIDC_ISSUER: WORKOS_AUTHKIT_ISSUER,
       OIDC_CLIENT_ID: 'client_anvil_public',
     });
-    expect(descriptor.authModes).toEqual([
-      'oidc-pkce',
-      'workos-device',
-    ]);
+    expect(descriptor.authModes).toEqual(['oidc-pkce', 'workos-device']);
   });
 
   it('does not advertise device authorization for another OIDC authority', () => {

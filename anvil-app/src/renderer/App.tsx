@@ -39,6 +39,11 @@ const WorkspaceView = lazy(() =>
 const ChatView = lazy(() =>
   import('./components/chat/ChatView').then((module) => ({ default: module.ChatView })),
 );
+const ThreadPickupView = lazy(() =>
+  import('./components/share/ThreadPickupView').then((module) => ({
+    default: module.ThreadPickupView,
+  })),
+);
 // Native fixture route is stripped from release builds.
 const ProcessingPreview = import.meta.env.DEV
   ? lazy(() => import('./components/chat/replay/ProcessingPreview'))
@@ -230,24 +235,35 @@ function LaunchIntentRouter() {
   useEffect(() => {
     let cancelled = false;
 
-    window.anvil.launch
-      .getPendingIntent()
-      .then((intent) => {
-        if (!cancelled && intent) {
-          navigate('/open', { replace: true });
-        }
-      })
-      .catch(() => {});
+    void Promise.all([
+      window.anvil.launch.getPendingIntent().catch(() => null),
+      window.anvil.shares.pickupPending().catch(() => false),
+    ]).then(([intent, pickupPending]) => {
+      if (cancelled) return;
+      if (pickupPending) {
+        navigate('/pick-up-thread', {
+          replace: true,
+          state: { pickupRequest: crypto.randomUUID() },
+        });
+      } else if (intent) {
+        navigate('/open', { replace: true });
+      }
+    });
 
     const cleanup = window.anvil.launch.onIntent(() => {
       if (!cancelled) {
         navigate('/open', { replace: true });
       }
     });
+    const cleanupPickup = window.anvil.shares.onPickupRequested(() => {
+      if (!cancelled)
+        navigate('/pick-up-thread', { state: { pickupRequest: crypto.randomUUID() } });
+    });
 
     return () => {
       cancelled = true;
       cleanup();
+      cleanupPickup();
     };
   }, [navigate]);
 
@@ -294,7 +310,10 @@ function AppContent() {
     try {
       const settings = await window.anvil.settings.get();
       const brand = await window.brand.get();
-      const pendingLaunchIntent = await window.anvil.launch.getPendingIntent();
+      const [pendingLaunchIntent, pendingPickup] = await Promise.all([
+        window.anvil.launch.getPendingIntent(),
+        window.anvil.shares.pickupPending().catch(() => false),
+      ]);
 
       setAppTheme(settings.theme ?? brand.defaultTheme);
       setCloudFeaturesEnabled(settings.cloudFeaturesEnabled);
@@ -302,12 +321,12 @@ function AppContent() {
         setUserRole(settings.userRole);
       }
       setShowAllTools(settings.showAllTools === true);
-      // Skip the welcome flow for existing users, launch intents, and
-      // restarts after the welcome step completed but before a workspace was
-      // created (J9/3.3 resume).
+      // Skip the welcome flow for existing users, launch intents, shared
+      // thread pickups, and onboarding resumes before a workspace was created.
       if (
         settings.activeWorkspaceId ||
         pendingLaunchIntent ||
+        pendingPickup ||
         settings.onboardingStep === 'workspace' ||
         settings.onboardingStep === 'done'
       ) {
@@ -562,6 +581,17 @@ function AppContent() {
                     <Route
                       path="/chat"
                       element={guard('chat', <ChatRoute userRole={userRole} />)}
+                    />
+                    <Route
+                      path="/pick-up-thread"
+                      element={guard(
+                        'chat',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <ThreadPickupView userRole={userRole} />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
                     />
                     {ProcessingPreview && (
                       <Route

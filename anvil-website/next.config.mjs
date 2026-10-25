@@ -14,6 +14,17 @@ const nextConfig = {
   outputFileTracingRoot: path.resolve(projectRoot, ".."),
   turbopack: { root: path.resolve(projectRoot, "..") },
   reactStrictMode: true,
+  async headers() {
+    return [{
+      source: "/artifacts/:path*",
+      headers: [
+        { key: "Cache-Control", value: "private, no-store" },
+        { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "X-Content-Type-Options", value: "nosniff" }
+      ]
+    }];
+  },
   async redirects() {
     const registryDocs = [
       "alpha-status",

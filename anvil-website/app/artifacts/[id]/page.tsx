@@ -1,4 +1,8 @@
 import type { Metadata } from "next";
+import { MAX_BUNDLE_CHARS } from "@/lib/share-bundle";
+import { hostedIdentity } from "@/lib/auth";
+import { shareFailureCode, shareFailureMessage, shareTitle } from "@/lib/share-access";
+import { ShareFragmentRecovery, ShareSignIn } from "./share-sign-in";
 
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
@@ -31,23 +35,26 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Shared artifact | Anvil",
-  description: "An item shared from Anvil, decrypted in your browser."
+  title: "Shared item | Anvil",
+  description: "An item shared from Anvil, decrypted in your browser.",
+  robots: { index: false, follow: false, nocache: true }
 };
 
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 
-function UnavailablePage({ reason }: { reason: string }) {
+function UnavailablePage({ reason, signInId, recoveryId, heading = "This share link isn’t available" }: { reason: string; signInId?: string; recoveryId?: string; heading?: string }) {
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader />
+      {recoveryId && <ShareFragmentRecovery id={recoveryId} />}
       <main id="main-content">
         <section className="mx-auto max-w-2xl px-4 py-24 text-center sm:px-6">
           <Badge variant="secondary" className="border bg-muted/70">
-            Shared artifact
+            Shared item
           </Badge>
-          <h1 className="mt-6 text-2xl font-semibold">This share link isn&apos;t available</h1>
+          <h1 className="mt-6 text-2xl font-semibold">{heading}</h1>
           <p className="mt-4 text-sm leading-7 text-muted-foreground">{reason}</p>
+          {signInId && <ShareSignIn id={signInId} />}
         </section>
       </main>
       <SiteFooter />
@@ -67,27 +74,32 @@ export default async function SharedArtifactPage({
 
   let upstream: Response;
   try {
-    upstream = await fetchSharedArtifact(id);
+    const identity = await hostedIdentity();
+    upstream = await fetchSharedArtifact(id, identity ?? undefined);
   } catch (error) {
     if (error instanceof HostedApiError && error.code === "unconfigured") {
       return (
-        <UnavailablePage reason="Shared items aren't served from this deployment: the hosted share service isn't configured." />
+        <UnavailablePage recoveryId={id} reason="Shared items aren't served from this deployment: the hosted share service isn't configured." />
       );
     }
     return (
-      <UnavailablePage reason="Couldn't reach the share service. Try again in a few minutes." />
+      <UnavailablePage recoveryId={id} reason="Couldn't reach the share service. Try again in a few minutes." />
     );
   }
 
   if (!upstream.ok) {
-    return (
-      <UnavailablePage reason="This link was revoked or has expired. Ask the person who shared it for a new link." />
-    );
+    const code = await shareFailureCode(upstream);
+    return <UnavailablePage
+      reason={shareFailureMessage(upstream.status, code)}
+      heading={upstream.status === 401 ? "Sign in to view this share" : upstream.status === 403 ? "Access denied" : undefined}
+      signInId={upstream.status === 401 ? id : undefined}
+      recoveryId={id}
+    />;
   }
 
   const mediaType = upstream.headers.get("content-type") ?? "application/octet-stream";
   const titleHeader = upstream.headers.get("x-anvil-share-title");
-  const title = titleHeader === null ? "Shared artifact" : decodeURIComponent(titleHeader);
+  const title = shareTitle(titleHeader, "Shared artifact");
   const expiresHeader = upstream.headers.get("x-anvil-share-expires-at");
   const expiresLabel =
     expiresHeader === null ? null : formatShareDate(expiresHeader);
@@ -110,7 +122,7 @@ export default async function SharedArtifactPage({
           <section className="mx-auto max-w-4xl px-4 py-10 sm:px-6 lg:px-8">
             <div className="flex flex-wrap items-center gap-3">
               <Badge variant="secondary" className="border bg-muted/70">
-                Shared artifact · {mediaTypeLabel(mediaType)} · encrypted
+                Shared item · {mediaTypeLabel(mediaType)} · encrypted
               </Badge>
               {updatedLabel && (
                 <span className="text-xs text-muted-foreground">{updatedLabel}</span>
@@ -148,13 +160,13 @@ export default async function SharedArtifactPage({
     mediaType === "application/json" ||
     mediaType === SHARE_BUNDLE_MEDIA_TYPE;
   const text =
-    isTextual && bytes.byteLength <= MAX_TEXT_BYTES
+    isTextual && bytes.byteLength <= (mediaType === SHARE_BUNDLE_MEDIA_TYPE ? MAX_BUNDLE_CHARS : MAX_TEXT_BYTES)
       ? new TextDecoder().decode(bytes)
       : null;
 
   let body: React.ReactNode;
   if (mediaType === SHARE_BUNDLE_MEDIA_TYPE && text !== null) {
-    body = <ShareBundleView text={text} fallbackTitle={title} />;
+    body = <ShareBundleView text={text} fallbackTitle={title} shareId={id} />;
   } else if (mediaType === "text/markdown" && text !== null) {
     const html = await renderSharedMarkdown(text);
     body = (
@@ -233,7 +245,7 @@ export default async function SharedArtifactPage({
         <section className="mx-auto max-w-4xl px-4 py-10 sm:px-6 lg:px-8">
           <div className="flex flex-wrap items-center gap-3">
             <Badge variant="secondary" className="border bg-muted/70">
-              Shared artifact · {mediaTypeLabel(mediaType)}
+              Shared item · {mediaTypeLabel(mediaType)}
             </Badge>
             {updatedLabel && (
               <span className="text-xs text-muted-foreground">{updatedLabel}</span>

@@ -1,4 +1,7 @@
-import { publishWorkItemReview } from './workitem-review-publication.service.js';
+import {
+  publishWorkItemLink,
+  publishWorkItemReview,
+} from './workitem-review-publication.service.js';
 import { withWorkItemContext } from './workitem-context.service.js';
 import type {
   WorkItem,
@@ -17,6 +20,11 @@ export interface WorkItemProviderService {
   listIterations(): Promise<Iteration[]>;
   createItem(input: WorkItemCreateInput): Promise<WorkItem>;
   publishReview?(id: string, text: string): Promise<void>;
+  publishLink?(
+    id: string,
+    input: { text: string; label: string; url: string },
+    beforePost?: () => void | Promise<void>,
+  ): Promise<void>;
   testConnection(): Promise<{ ok: boolean; error?: string }>;
 }
 
@@ -45,6 +53,10 @@ export function getActiveProvider(
   return {
     publishReview: (id, text) =>
       withWorkItemContext(settings, true, () => publishWorkItemReview(id, text)),
+    publishLink: (id, input, beforePost) =>
+      withWorkItemContext(settings, true, () =>
+        publishWorkItemLink(id, input.text, input.label, input.url, beforePost),
+      ),
     listItems: (filters) => withWorkItemContext(settings, fresh, () => provider.listItems(filters)),
     getItem: (id) => withWorkItemContext(settings, fresh, () => provider.getItem(id)),
     listIterations: () => withWorkItemContext(settings, fresh, () => provider.listIterations()),

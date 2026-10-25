@@ -75,6 +75,14 @@ describe('resolveThreadAccessLevel', () => {
     expect(resolveThreadAccessLevel(store, 'thread-1')).toBe('workspace-auto');
   });
 
+  it('keeps a picked-up thread at on-request even when its workspace default is elevated', () => {
+    const pickedUp = setThreadAccessLevel(store, 'picked-up-thread', 'on-request');
+
+    expect(resolveThreadAccessLevel(pickedUp, 'picked-up-thread', 'full-access')).toBe(
+      'on-request',
+    );
+  });
+
   it('falls back to the workspace default for unknown threads', () => {
     expect(resolveThreadAccessLevel(store, 'thread-2')).toBe('on-request');
     expect(resolveThreadAccessLevel(store, null)).toBe('on-request');

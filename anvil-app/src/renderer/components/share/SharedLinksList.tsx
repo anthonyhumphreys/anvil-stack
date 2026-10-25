@@ -4,6 +4,7 @@
 import { AlertTriangle, Check, LoaderCircle } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { ShareItemType, ShareRecord } from '../../../shared/shares-ipc';
+import { ShareDialog } from './ShareDialog';
 import { Button, ConfirmDialog, cx } from '../ui';
 import { errorMessage, formatShareDate, isShareBehind, isShareExpired } from './share-format';
 
@@ -37,6 +38,7 @@ export function SharedLinksList({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ShareRecord | null>(null);
+  const [editTarget, setEditTarget] = useState<ShareRecord | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -195,25 +197,22 @@ export function SharedLinksList({
                           Copy link
                         </Button>
                       )}
-                      {!expired && behind && (
-                        <Button
-                          size="sm"
-                          disabled={busyId !== null}
-                          aria-label={`Update link for ${record.title} to v${record.currentVersion}`}
-                          onClick={() =>
-                            void run(
-                              record,
-                              () => window.anvil.shares.update(record.id),
-                              `Link updated to v${record.currentVersion}`,
-                            )
-                          }
-                        >
-                          {busy ? (
-                            <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" />
-                          ) : null}
-                          Update
-                        </Button>
-                      )}
+                      {!expired &&
+                        (behind ||
+                          record.itemType === 'thread' ||
+                          record.itemType === 'remote-thread') && (
+                          <Button
+                            size="sm"
+                            disabled={busyId !== null}
+                            aria-label={`Update link for ${record.title} to v${record.currentVersion}`}
+                            onClick={() => setEditTarget(record)}
+                          >
+                            {busy ? (
+                              <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" />
+                            ) : null}
+                            Update
+                          </Button>
+                        )}
                       <Button
                         size="sm"
                         variant="danger"
@@ -250,6 +249,19 @@ export function SharedLinksList({
         }}
         onCancel={() => setRevokeTarget(null)}
       />
+      {editTarget && (
+        <ShareDialog
+          target={{ itemType: editTarget.itemType, itemId: editTarget.itemId }}
+          title={editTarget.title}
+          initialAudience={editTarget.audience}
+          initialRecordId={editTarget.id}
+          open
+          onClose={() => {
+            setEditTarget(null);
+            void load();
+          }}
+        />
+      )}
     </div>
   );
 }

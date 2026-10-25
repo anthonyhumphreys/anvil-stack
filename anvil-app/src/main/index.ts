@@ -64,6 +64,12 @@ import { registerRunHandlers, cleanupRunProcesses } from './ipc/run.ipc.js';
 import { registerVoiceHandlers } from './ipc/voice.ipc.js';
 import { registerSurfacesHandlers } from './ipc/surfaces.ipc.js';
 import { registerSharesHandlers } from './ipc/shares.ipc.js';
+import {
+  deliverPendingThreadPickup,
+  isThreadPickupUrl,
+  queueThreadPickup,
+  queueThreadPickupFromArgv,
+} from './services/thread-pickup-launch.service.js';
 import { registerLibraryHandlers } from './ipc/library.ipc.js';
 import { registerSurfaceTools } from './surfaces/index.js';
 import { startAgentMcpEndpoint, stopAgentMcpEndpoint } from './services/agent-mcp/index.js';
@@ -176,6 +182,13 @@ function sendWindowChromeState(targetWindow: BrowserWindow): void {
 }
 
 function handleIncomingLaunchUrl(rawUrl: string): void {
+  if (isThreadPickupUrl(rawUrl)) {
+    queueThreadPickup();
+    if (mainWindow?.isMinimized()) mainWindow.restore();
+    mainWindow?.focus();
+    deliverPendingThreadPickup(mainWindow);
+    return;
+  }
   try {
     const intent = parseOpenInAnvilUrl(rawUrl);
     if (!intent) return;
@@ -192,7 +205,8 @@ function handleIncomingLaunchUrl(rawUrl: string): void {
 }
 
 const initialLaunchUrl = extractLaunchUrlFromArgv(process.argv);
-if (initialLaunchUrl) {
+const initialPickup = !daemonMode && queueThreadPickupFromArgv(process.argv);
+if (initialLaunchUrl && !initialPickup) {
   handleIncomingLaunchUrl(initialLaunchUrl);
 }
 
@@ -336,6 +350,7 @@ function createWindow(
   createdWindow.webContents.on('did-finish-load', () => {
     if (createdWindow === mainWindow) {
       deliverPendingLaunchIntent(createdWindow);
+      deliverPendingThreadPickup(createdWindow);
     }
     sendWindowChromeState(createdWindow);
   });
@@ -361,8 +376,12 @@ if (!gotSingleInstanceLock) {
 } else {
   if (!daemonMode) {
     app.on('second-instance', (_event, argv) => {
-      const launchUrl = extractLaunchUrlFromArgv(argv);
-      if (launchUrl) handleIncomingLaunchUrl(launchUrl);
+      if (queueThreadPickupFromArgv(argv)) {
+        deliverPendingThreadPickup(mainWindow);
+      } else {
+        const launchUrl = extractLaunchUrlFromArgv(argv);
+        if (launchUrl) handleIncomingLaunchUrl(launchUrl);
+      }
 
       if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore();
@@ -373,6 +392,13 @@ if (!gotSingleInstanceLock) {
     app.on('open-url', (event, rawUrl) => {
       event.preventDefault();
       handleIncomingLaunchUrl(rawUrl);
+    });
+    app.on('open-file', (event, filePath) => {
+      if (!queueThreadPickup(filePath)) return;
+      event.preventDefault();
+      if (mainWindow?.isMinimized()) mainWindow.restore();
+      mainWindow?.focus();
+      deliverPendingThreadPickup(mainWindow);
     });
   }
 }

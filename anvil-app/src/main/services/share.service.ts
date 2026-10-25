@@ -26,7 +26,9 @@ import type {
   ShareRecord,
   ShareSecretFinding,
   ShareTarget,
+  ShareAudience,
 } from '../../shared/shares-ipc.js';
+import type { WorkItemReference } from '../../shared/change-review-types.js';
 import {
   SHARE_BUNDLE_MEDIA_TYPE,
   SHARE_DEFAULT_EXPIRES_DAYS,
@@ -45,6 +47,8 @@ import {
   publishSharedArtifact,
   revokeSharedArtifact,
   updateSharedArtifact,
+  artifactShareScope,
+  getShareAccessOptions,
 } from './artifact-share.service.js';
 import type {
   ArtifactShareSource,
@@ -70,6 +74,8 @@ interface ShareRow {
   created_at: string;
   updated_at: string;
   revoked_at: string | null;
+  audience_json?: string;
+  backend_scope?: string | null;
 }
 
 interface ArtifactRow {
@@ -101,13 +107,16 @@ const ARTIFACT_KINDS: ReadonlySet<string> = new Set([
 function mapRecord(row: ShareRow, currentVersion?: number): ShareRecord {
   return {
     id: row.id,
-    itemType: row.item_type === 'surface' ? 'surface' : 'artifact',
+    itemType: row.item_type as ShareItemType,
     itemId: row.item_id,
     version: Number(row.version),
     shareId: row.share_id,
     title: row.title,
     mediaType: row.media_type,
     interactive: row.interactive === 1,
+    audience: row.audience_json
+      ? (JSON.parse(row.audience_json) as ShareAudience)
+      : { kind: 'link' },
     ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -284,6 +293,7 @@ let knownSecretsProvider: KnownSecretsProvider = defaultKnownSecrets;
 // ---- targets -------------------------------------------------------------------
 
 type ResolvedTarget =
+  | { itemType: 'thread' | 'remote-thread'; itemId: string }
   | {
       itemType: 'artifact';
       itemId: string;
@@ -346,6 +356,8 @@ async function resolveShareTarget(target: ShareTarget): Promise<ResolvedTarget> 
   if (!target || typeof target.itemId !== 'string' || target.itemId.length === 0) {
     throw new Error('Choose something to share.');
   }
+  if (target.itemType === 'thread' || target.itemType === 'remote-thread')
+    return { ...target, itemType: target.itemType };
   if (target.itemType === 'artifact') return resolveArtifact(target.itemId);
   if (target.itemType !== 'surface') throw new Error('Unsupported share target.');
 
@@ -395,6 +407,80 @@ interface PreparedShare {
   findings: ShareSecretFinding[];
   bytes: Uint8Array;
   finalText: string | null;
+  contextItems?: SharePreview['contextItems'];
+  suggestedTicket?: SharePreview['suggestedTicket'];
+}
+
+const preparedShares = new Map<
+  string,
+  { prepared: PreparedShare; key: string; scope: string | null; expires: number }
+>();
+const PREVIEW_TTL = 15 * 60 * 1000;
+
+function previewKey(
+  target: ShareTarget,
+  options: ShareOptionsInput,
+  findings: ShareSecretFinding[],
+): string {
+  const findingIds = new Set(findings.map((finding) => finding.id));
+  return JSON.stringify([
+    target.itemType,
+    target.itemId,
+    options.audience ?? { kind: 'link' },
+    options.includeComments === true,
+    options.includeFullDiff === true,
+    clampExpiry(options.expiresInDays),
+    [...(options.contextItemIds ?? [])].sort(),
+    [...(options.redactFindingIds ?? [])].filter((id) => findingIds.has(id)).sort(),
+    options.diagramSvg ?? null,
+  ]);
+}
+
+function rememberPreview(
+  target: ShareTarget,
+  options: ShareOptionsInput,
+  prepared: PreparedShare,
+): string {
+  for (const [id, value] of preparedShares)
+    if (value.expires < Date.now()) preparedShares.delete(id);
+  while (preparedShares.size >= 4) preparedShares.delete(preparedShares.keys().next().value!);
+  const id = randomUUID();
+  preparedShares.set(id, {
+    prepared,
+    key: previewKey(target, options, prepared.findings),
+    scope: artifactShareScope(),
+    expires: Date.now() + PREVIEW_TTL,
+  });
+  return id;
+}
+
+async function preparedForPublication(
+  target: ShareTarget,
+  options: ShareOptionsInput,
+): Promise<PreparedShare> {
+  if (!options.preparedId) {
+    if (target.itemType === 'thread' || target.itemType === 'remote-thread')
+      throw new Error('Preview this thread before publishing.');
+    return prepareShare(target, options);
+  }
+  const saved = preparedShares.get(options.preparedId);
+  if (
+    !saved ||
+    saved.expires < Date.now() ||
+    saved.scope !== artifactShareScope() ||
+    saved.key !== previewKey(target, options, saved.prepared.findings)
+  ) {
+    throw new Error(
+      'This preview expired or its options/account changed. Preview again before publishing.',
+    );
+  }
+  preparedShares.delete(options.preparedId);
+  return saved.prepared;
+}
+
+function assertShareScope(row: ShareRow): void {
+  if (row.backend_scope && row.backend_scope !== artifactShareScope())
+    throw new Error('Connect the account and backend that published this link.');
 }
 
 function buildOptions(options: ShareOptionsInput): ShareBuildOptions {
@@ -412,15 +498,23 @@ async function prepareShare(
   const resolved = await resolveShareTarget(target);
   const bundles = await import('./share-bundle.service.js');
   let built: BuiltShare;
+  let contextItems: SharePreview['contextItems'];
+  let suggestedTicket: SharePreview['suggestedTicket'];
   if (resolved.itemType === 'artifact') {
     built = await bundles.buildArtifactShare(resolved.source, buildOptions(options));
-  } else {
+  } else if (resolved.itemType === 'surface') {
     const { getMainSurfaceHandler } = await import('../surfaces/index.js');
     built = bundles.buildSurfaceShare(
       resolved.source,
       getMainSurfaceHandler(resolved.source.surfaceKind),
       buildOptions(options),
     );
+  } else {
+    const { buildThreadShare } = await import('./thread-share.service.js');
+    const thread = await buildThreadShare(target, options);
+    built = thread;
+    contextItems = thread.contextItems;
+    suggestedTicket = thread.suggestedTicket;
   }
 
   let findings: ShareSecretFinding[] = [];
@@ -445,7 +539,11 @@ async function prepareShare(
   }
   const bytes =
     finalText !== null ? new TextEncoder().encode(finalText) : (built.binary ?? new Uint8Array());
-  return { resolved, built, findings, bytes, finalText };
+  if (built.mediaType === SHARE_BUNDLE_MEDIA_TYPE && finalText) {
+    const bundle = JSON.parse(finalText) as { title: string };
+    built = { ...built, title: bundle.title };
+  }
+  return { resolved, built, findings, bytes, finalText, contextItems, suggestedTicket };
 }
 
 function assertFindingsResolved(prepared: PreparedShare, options: ShareOptionsInput): void {
@@ -496,7 +594,7 @@ export function extractShareKey(url: string): string | null {
 
 function requireSession(): void {
   if (!isArtifactSharingAvailable()) {
-    throw new Error('Sharing needs an active Anvil sync session. Sign in to Anvil sync first.');
+    throw new Error('Sharing needs an active Anvil sync session and a configured share viewer.');
   }
 }
 
@@ -540,14 +638,61 @@ export function isSharingAvailable(): boolean {
   return isArtifactSharingAvailable();
 }
 
+export const shareAccessOptions = getShareAccessOptions;
+
+function ticketMetadata(row: ShareRow) {
+  assertShareScope(row);
+  if (row.revoked_at || (row.expires_at && Date.parse(row.expires_at) <= Date.now()))
+    throw new Error('Publish a current link before attaching it to a ticket.');
+  const audience = mapRecord(row).audience;
+  return {
+    title: row.title,
+    sharedAt: row.updated_at,
+    audienceLabel:
+      audience?.kind === 'organization'
+        ? 'Members of the selected organisation with this link'
+        : 'Anyone with the link',
+  };
+}
+
+export async function previewShareTicketAttachment(recordId: string, ticket: WorkItemReference) {
+  const { previewShareTicket } = await import('./share-ticket.service.js');
+  return previewShareTicket(ticket, ticketMetadata(readShareRow(recordId)));
+}
+
+export async function attachShareTicket(recordId: string, ticket: WorkItemReference) {
+  const row = readShareRow(recordId);
+  const metadata = ticketMetadata(row);
+  const url = await links().get(linkKey(recordId));
+  if (!url)
+    throw new Error(
+      'This link is not stored on this device. Publish a new link before attaching it.',
+    );
+  assertShareScope(row);
+  const { attachShareToTicket } = await import('./share-ticket.service.js');
+  return attachShareToTicket(ticket, { ...metadata, shareRecordId: recordId, url }, async () => {
+    if ((await links().get(linkKey(recordId))) !== url)
+      throw new Error('The shared link changed. Preview the ticket comment again.');
+    const current = readShareRow(recordId);
+    ticketMetadata(current);
+    if (current.updated_at !== row.updated_at || current.share_id !== row.share_id)
+      throw new Error('The shared snapshot changed. Preview the ticket comment again.');
+  });
+}
+
 export async function previewShare(
   target: ShareTarget,
   options: ShareOptionsInput = {},
 ): Promise<SharePreview> {
+  const scope = artifactShareScope();
   const prepared = await prepareShare(target, options);
   const { buildPreviewDocument } = await import('./share-bundle.service.js');
+  if (scope !== artifactShareScope()) throw new Error('The sync account changed. Preview again.');
   const { built } = prepared;
   return {
+    preparedId: rememberPreview(target, options, prepared),
+    ...(prepared.contextItems ? { contextItems: prepared.contextItems } : {}),
+    ...(prepared.suggestedTicket ? { suggestedTicket: prepared.suggestedTicket } : {}),
     title: built.title,
     mediaType: built.mediaType,
     interactive: built.interactive,
@@ -575,7 +720,8 @@ export async function publishShare(
   options: ShareOptionsInput = {},
 ): Promise<{ record: ShareRecord; url: string }> {
   requireSession();
-  const prepared = await prepareShare(target, options);
+  const scope = artifactShareScope();
+  const prepared = await preparedForPublication(target, options);
   assertFindingsResolved(prepared, options);
   const { built, resolved } = prepared;
   const { share, shareKey } = await publishSharedArtifact({
@@ -583,8 +729,12 @@ export async function publishShare(
     bytes: prepared.bytes,
     mediaType: built.mediaType,
     expiresInDays: clampExpiry(options.expiresInDays),
+    audience: options.audience ?? { kind: 'link' },
+    expectedScope: scope,
   });
   const url = buildShareUrl(share.shareId, shareKey);
+  if (scope !== artifactShareScope())
+    throw new Error('The sync account changed during publication.');
   const now = new Date().toISOString();
   const row: ShareRow = {
     id: randomUUID(),
@@ -599,13 +749,15 @@ export async function publishShare(
     created_at: now,
     updated_at: now,
     revoked_at: null,
+    audience_json: JSON.stringify(options.audience ?? { kind: 'link' }),
+    backend_scope: scope,
   };
   getDb()
     .prepare(
       `INSERT INTO shares (
          id, item_type, item_id, version, share_id, media_type, interactive, title,
-         expires_at, created_at, updated_at, revoked_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         expires_at, created_at, updated_at, revoked_at, audience_json, backend_scope
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     )
     .run(
       row.id,
@@ -619,6 +771,8 @@ export async function publishShare(
       row.expires_at,
       row.created_at,
       row.updated_at,
+      row.audience_json,
+      row.backend_scope,
     );
   try {
     await links().set(linkKey(row.id), url);
@@ -627,6 +781,8 @@ export async function publishShare(
     // now; it just can't be copied or updated from this device later.
   }
   if (resolved.itemType === 'artifact') syncArtifactShareColumns(resolved.itemId);
+  if (scope !== artifactShareScope())
+    throw new Error('The sync account changed during publication. Reconnect it to copy the link.');
   return {
     record: mapRecord(row, itemCurrentVersion(row.item_type as ShareItemType, row.item_id)),
     url,
@@ -640,6 +796,14 @@ export async function updateShare(
 ): Promise<ShareRecord> {
   requireSession();
   const row = readShareRow(shareRecordId);
+  assertShareScope(row);
+  const scope = artifactShareScope();
+  if (
+    options.audience &&
+    JSON.stringify(options.audience) !== JSON.stringify(mapRecord(row).audience)
+  ) {
+    throw new Error('Changing access creates a new link. Choose Share as new link.');
+  }
   if (row.revoked_at) throw new Error('This link was revoked. Share as a new link instead.');
   const url = await links().get(linkKey(row.id));
   const shareKey = url ? extractShareKey(url) : null;
@@ -648,7 +812,7 @@ export async function updateShare(
       "This link isn't stored on this device, so it can't be updated. Share as a new link instead.",
     );
   }
-  const prepared = await prepareShare(
+  const prepared = await preparedForPublication(
     { itemType: row.item_type as ShareItemType, itemId: row.item_id },
     options,
   );
@@ -660,9 +824,12 @@ export async function updateShare(
   }
   await updateSharedArtifact({
     shareId: row.share_id,
+    title: backendTitle(prepared.built.title),
     shareKey,
     bytes: prepared.bytes,
     mediaType: row.media_type,
+    audience: mapRecord(row).audience,
+    expectedScope: scope,
   });
   const now = new Date().toISOString();
   getDb()
@@ -681,9 +848,9 @@ export async function updateShare(
   return mapRecord(fresh, itemCurrentVersion(fresh.item_type as ShareItemType, fresh.item_id));
 }
 
-async function revokeRemote(shareId: string): Promise<void> {
+async function revokeRemote(shareId: string, scope = artifactShareScope()): Promise<void> {
   try {
-    await revokeSharedArtifact(shareId);
+    await revokeSharedArtifact(shareId, { expectedScope: scope });
   } catch (error) {
     // Already gone server-side (expired, swept, account deleted): the goal
     // state holds. Anything else may mean the link is still live.
@@ -700,8 +867,11 @@ function markRevoked(row: ShareRow): void {
 
 export async function revokeShare(shareRecordId: string): Promise<ShareRecord> {
   const row = readShareRow(shareRecordId);
+  assertShareScope(row);
   if (!row.revoked_at) {
-    requireSession();
+    // Revocation must remain possible if a custom viewer is removed or unavailable.
+    if (artifactShareScope() === null)
+      throw new Error('Connect to Anvil sync to revoke this link.');
     await revokeRemote(row.share_id);
     markRevoked(row);
     await links()
@@ -754,9 +924,10 @@ export async function revokeSharesForItems(
 export async function listShares(
   filter: { itemType?: ShareItemType; itemId?: string; workspaceId?: string } = {},
 ): Promise<ShareRecord[]> {
+  const scope = artifactShareScope();
   const clauses = ['revoked_at IS NULL'];
   const params: string[] = [];
-  if (filter.itemType === 'artifact' || filter.itemType === 'surface') {
+  if (filter.itemType) {
     clauses.push('item_type = ?');
     params.push(filter.itemType);
   }
@@ -770,6 +941,7 @@ export async function listShares(
 
   const records: ShareRecord[] = [];
   for (const row of rows) {
+    if (row.backend_scope && row.backend_scope !== artifactShareScope()) continue;
     let currentVersion: number | undefined;
     let workspaceId: string | null | undefined;
     if (row.item_type === 'artifact') {
@@ -782,25 +954,39 @@ export async function listShares(
         .get(row.item_id) as { version: number; workspace_id: string | null } | undefined;
       currentVersion = info ? Number(info.version) : undefined;
       workspaceId = info?.workspace_id;
-    } else {
+    } else if (row.item_type === 'surface') {
       const intent = await loadSurface(row.item_id);
       currentVersion = intent?.revision;
       workspaceId = intent?.scope.workspaceId;
+    } else {
+      try {
+        const { threadShareInfo } = await import('./thread-share.service.js');
+        workspaceId = (
+          await threadShareInfo({ itemType: row.item_type as ShareItemType, itemId: row.item_id })
+        ).workspaceId;
+      } catch {
+        // Keep orphaned links manageable in the global list if source deletion
+        // succeeded but background revocation failed.
+      }
     }
     if (filter.workspaceId && workspaceId !== filter.workspaceId) continue;
     records.push(mapRecord(row, currentVersion));
   }
+  if (scope !== artifactShareScope())
+    throw new Error('The sync account changed. Reload share links.');
   return records;
 }
 
 export async function copyShareLink(shareRecordId: string): Promise<boolean> {
   const row = readShareRow(shareRecordId);
+  assertShareScope(row);
   if (row.revoked_at) throw new Error('This link was revoked.');
   const url = await links().get(linkKey(row.id));
   if (!url) {
     throw new Error("This link isn't stored on this device. Share as a new link to get one.");
   }
   const { clipboard } = await import('electron');
+  assertShareScope(row);
   clipboard.writeText(url);
   return true;
 }
@@ -843,6 +1029,7 @@ export async function unshareArtifactFromLegacyCaller(artifactId: string): Promi
     )
     .all(artifactId) as ShareRow[];
   const shareIds = new Set(live.map((row) => row.share_id));
+  for (const row of live) assertShareScope(row);
   if (artifact.share_id) shareIds.add(artifact.share_id);
   for (const shareId of shareIds) await revokeRemote(shareId);
   for (const row of live) {
@@ -922,7 +1109,7 @@ async function assertInScope(
     if (ctx.appThreadId && resolved.threadId === ctx.appThreadId) return;
     const workspace = threadWorkspace(resolved.threadId);
     if (ctx.workspaceId && workspace === ctx.workspaceId) return;
-  } else {
+  } else if (resolved.itemType === 'surface') {
     const scope = resolved.intent.scope;
     if (ctx.appThreadId && scope.threadId === ctx.appThreadId) return;
     if (ctx.workspaceId && scope.workspaceId === ctx.workspaceId) return;

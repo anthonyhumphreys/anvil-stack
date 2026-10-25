@@ -3,13 +3,24 @@
 //
 // Shares reuse the artifact lifecycle — reserve, upload out of band,
 // verify, publish — but are user-actor operations with no job/attempt
-// binding. The share id is an unguessable capability; every public read
-// resolves through the hosted service channel and enforces state, expiry,
-// and revocation at read time, so a share URL never outlives revocation.
+// binding. Link-audience share ids are unguessable capabilities; organization
+// shares also require current membership. Every read resolves through the
+// signed viewer channel and enforces audience, state, expiry, and revocation.
+
+export const SHARE_AUDIENCES_FEATURE = 'share-audiences/1';
+
+/** Immutable access policy. Possession of the URL is sufficient only for link shares. */
+export type ShareAudience = { kind: 'link' } | { kind: 'organization'; organizationId: string };
+
+/** `share.audiences` (authenticated device): current active organization choices. */
+export interface ShareAudiencesResult {
+  organizations: Array<{ id: string; name: string }>;
+}
 
 export type SharedArtifactState = 'reserved' | 'uploaded' | 'published' | 'revoked' | 'expired';
 
 export interface SharedArtifactDescriptor {
+  audience: ShareAudience;
   /** Unguessable public id; the share URL path segment. */
   shareId: string;
   /** Account identity is server-derived; never accepted client-side. */
@@ -62,6 +73,8 @@ export function canTransitionSharedArtifact(
 
 /** `share.create` (user actor): allocates the share id + byte allowance. */
 export interface ShareCreateParams {
+  /** Omitted by older clients: defaults to link access. */
+  audience?: ShareAudience;
   title: string;
   mediaType: string;
   byteLength: number;
@@ -74,6 +87,8 @@ export interface ShareCreateParams {
 }
 
 export interface ShareCreateResult {
+  /** Effective persisted policy, returned for client verification. */
+  audience: ShareAudience;
   shareId: string;
   /** API path the bytes are PUT to; resolved against the negotiated base. */
   uploadPath: string;
@@ -85,6 +100,8 @@ export interface ShareCreateResult {
  * `share.update` on a published share (swaps the bytes in place).
  */
 export interface ShareFinalizeParams {
+  /** Replacement reservation identity; prevents stale finalizers from publishing a later update. */
+  updateToken?: string;
   shareId: string;
   byteLength: number;
   sha256: string;
@@ -122,6 +139,8 @@ export interface ShareRevokeResult {
  * expiry and media type; `sealed` must match the original reservation.
  */
 export interface ShareUpdateParams {
+  /** Optional replacement metadata, published atomically with the verified bytes. */
+  title?: string;
   shareId: string;
   byteLength: number;
   sha256: string;
@@ -130,6 +149,9 @@ export interface ShareUpdateParams {
 }
 
 export interface ShareUpdateResult {
+  updateToken: string;
+  /** Existing immutable policy, confirmed before replacement bytes are uploaded. */
+  audience: ShareAudience;
   /** API path the replacement bytes are PUT to. */
   uploadPath: string;
   /** Deadline for the replacement upload + finalize. */

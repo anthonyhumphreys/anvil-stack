@@ -719,21 +719,24 @@ async function handleRpcInternal(
     // object so a share id resolves globally; byte uploads ride
     // PUT /v1/shared/{shareId}. Error codes pass through verbatim —
     // quota-exceeded/conflict/forbidden are meaningful to the client.
+    case 'share.audiences':
     case 'share.create':
     case 'share.finalize':
     case 'share.list':
     case 'share.revoke':
     case 'share.update': {
       const internal =
-        envelope.request.operation === 'share.create'
-          ? '/internal/share-create'
-          : envelope.request.operation === 'share.finalize'
-            ? '/internal/share-finalize'
-            : envelope.request.operation === 'share.list'
-              ? '/internal/share-list'
-              : envelope.request.operation === 'share.update'
-                ? '/internal/share-update'
-                : '/internal/share-revoke';
+        envelope.request.operation === 'share.audiences'
+          ? '/internal/share-audiences'
+          : envelope.request.operation === 'share.create'
+            ? '/internal/share-create'
+            : envelope.request.operation === 'share.finalize'
+              ? '/internal/share-finalize'
+              : envelope.request.operation === 'share.list'
+                ? '/internal/share-list'
+                : envelope.request.operation === 'share.update'
+                  ? '/internal/share-update'
+                  : '/internal/share-revoke';
       const response = await sessionStub(env).fetch(
         new Request(`https://internal.anvil${internal}`, {
           method: 'POST',

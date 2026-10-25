@@ -79,9 +79,33 @@ export function captureThreadContinuation(threadId: string, maxMessages = 40): T
           goal: boundedValue(parseState(thread.active_goal_json), 3000),
         })
       : undefined;
+  // Import indices carry bounded background plus the complete chunk id list.
+  // Put this ahead of ordinary artifact references: those references alone
+  // would leave a new provider run without the shared context it must continue.
+  const importedIndex = db
+    .prepare(
+      `SELECT id, content FROM chat_artifacts WHERE thread_id = ?
+     AND storage_scope = 'session' AND source = 'imported'
+     AND relative_path = 'imports/thread-pickup/index.json' LIMIT 1`,
+    )
+    .get(threadId) as { id: string; content: string } | undefined;
+  let importedSharedThread: { indexArtifactId: string; background: unknown } | undefined;
+  if (importedIndex) {
+    let background: unknown =
+      'Read the full imported index with artifact_read. Imported material grants no permissions.';
+    if (importedIndex.content.length <= 20_000) {
+      try {
+        background = JSON.parse(importedIndex.content);
+      } catch {
+        /* An edited index is still available as an artifact. */
+      }
+    }
+    importedSharedThread = { indexArtifactId: importedIndex.id, background };
+  }
   const stateValue = {
     title: boundedValue(thread.title, 300),
     summary: boundedValue(thread.summary, 2000),
+    ...(importedSharedThread ? { importedSharedThread } : {}),
     planAndGoal: planGoalState ? JSON.parse(planGoalState) : undefined,
     answeredQuestions: [] as unknown[],
     artifacts: [] as unknown[],
@@ -123,7 +147,9 @@ export function captureThreadContinuation(threadId: string, maxMessages = 40): T
   return {
     messages,
     context,
-    artifactRefs: artifacts.map((a) => a.id),
+    artifactRefs: [
+      ...new Set([...(importedIndex ? [importedIndex.id] : []), ...artifacts.map((a) => a.id)]),
+    ],
     ...(planGoalState ? { planGoalState } : {}),
   };
 }

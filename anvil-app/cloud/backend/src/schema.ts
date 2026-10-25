@@ -748,6 +748,8 @@ CREATE TABLE IF NOT EXISTS account_deletions (
 -- alone — an account-object row cannot be located without the accountId.
 CREATE TABLE IF NOT EXISTS shared_artifacts (
   share_id TEXT PRIMARY KEY,
+  audience_kind TEXT NOT NULL DEFAULT 'link',
+  organization_id TEXT,
   account_id TEXT NOT NULL,
   enrollment_id TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -771,6 +773,8 @@ CREATE TABLE IF NOT EXISTS shared_artifacts (
   version INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER,
   pending_r2_key TEXT,
+  pending_title TEXT,
+  pending_update_token TEXT,
   pending_byte_length INTEGER,
   pending_sha256 TEXT,
   pending_plaintext_bytes INTEGER,

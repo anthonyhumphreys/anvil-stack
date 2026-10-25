@@ -1,14 +1,14 @@
 ---
-title: Artifacts and share links
+title: Artifacts, thread snapshots and share links
 navTitle: Artifacts and share links
-description: Upload encrypted files, create share links, preview shared content in a browser and revoke access.
+description: Publish encrypted artifact or thread snapshots, choose guest or organisation access, update links manually and revoke future reads.
 product: Anvil Sync & Mesh
 section: Guides
 journey: build
 order: 70
 ---
 
-# Artifacts and share links
+# Artifacts, thread snapshots and share links
 
 Mesh jobs can produce files, reports and captures. These artifacts are
 encrypted on your device before upload. Share links use a separate key for
@@ -53,12 +53,44 @@ https://<site>/artifacts/{id}#k={key}
 
 Two properties follow from the fragment:
 
-- **The key never reaches a server.** Browsers do not send URL fragments in
-  HTTP requests; the `#k=…` tail stays in the recipient's machine. The server
-  holds ciphertext it cannot open, addressed by an id it can revoke.
-- **Anyone holding the full link can decrypt.** The link *is* the credential —
-  there is no account check on the decrypt path. Treat a share URL like a
-  password: paste it where you would paste a password, not in a channel log.
+- **The viewer backend does not receive the key.** Browsers omit URL
+  fragments from HTTP requests to the viewer. The backend holds ciphertext
+  addressed by an id it can revoke. Pasting the full link into a ticket or
+  another external service gives that service a copy of the key.
+- **The full link carries the decryption key.** For a link-audience share,
+  guests can open it without an Anvil account. For an organisation-audience
+  share, the server also checks current membership before serving any bytes
+  or content metadata. Treat either full URL as a secret.
+
+## Choose an audience
+
+The sender chooses an audience before publishing:
+
+- **Anyone with the link**: a guest can view without logging in.
+- **Organisation members**: the reader must sign in as a current member of
+  the selected organisation and hold the full link. Viewing does not require
+  a paid seat. Membership is checked on every page and download request;
+  the sender's own account is not a substitute for membership.
+
+Audience is fixed when the link is created. Updating its snapshot cannot
+change the organisation or switch the link to guest access; publish a new
+link for a different audience. Older shares without an audience retain guest
+access.
+
+For an organisation share, **Sign in to view** keeps the fragment key in
+this browser tab's session storage, removes it from that tab's URL during
+sign-in, and restores it once if you return within ten minutes. The saved
+entry is removed when you return or the tab is closed. The OAuth
+return path contains only `/artifacts/{id}`. No key is sent in OAuth state,
+query strings, cookies, or the request body. If tab storage is blocked,
+sign-in stops and leaves the full link intact. Open the full link again if
+the tab was closed or the temporary key expired.
+
+Sign-in proves membership; it does not unlock account encryption keys.
+The backend still stores only the share ciphertext. Access denied, expired,
+revoked, and damaged or missing key states appear separately where the
+server can safely disclose the lifecycle state. An unauthorised reader
+receives no title, snapshot, or download metadata.
 
 ## What gets shared
 
@@ -71,6 +103,7 @@ The desktop app decides what a link carries before anything is sealed:
 | HTML artifacts and kept sketches | A **share bundle** with a static snapshot and the interactive page |
 | Mermaid / diagram artifacts | A share bundle whose snapshot embeds the diagram as SVG (the source if no render was available) |
 | Native surfaces (reviews, findings, …) that opt in | A share bundle with a read-only snapshot and the redacted data |
+| Threads | A read-only snapshot of the selected thread content, with only the attachments and artifacts the sender explicitly includes |
 
 Sketches are never shared directly: sharing a sketch keeps it first, and the
 link points at the resulting HTML artifact. Third-party app surfaces are not
@@ -91,7 +124,79 @@ share. It holds:
 - `interactive` — for HTML artifacts and kept sketches only: the full,
   self-contained page, with Anvil's light and dark theme tokens inlined so it
   needs no network;
-- `payload` — the redacted surface data, for opening the share in Anvil.
+- `payload` — the redacted surface data, for opening the share in Anvil;
+- `continuation` — for newer thread shares, structured conversation entries
+  and selected context, redacted and encrypted together with the snapshot.
+
+### Thread snapshots and tickets
+
+Thread shares use the same encrypted share bundle and browser viewer. They
+are snapshots captured at publication, not a live transcript or an account
+sync grant. Review the selected messages, native surface snapshots, artifact
+content and attachments before publishing. Binary files cannot be secret
+scanned; included files are offered as downloads only after the reader
+chooses them. Thread bundles cannot run interactive code.
+
+Thread publication allows at most 16 included files and 8 MiB of decoded
+file bytes within a 12 MiB JSON bundle limit. Desktop also limits the
+**combined UTF-8 size of snapshot HTML and CSS to 4 MiB**. The viewer validates
+each snapshot field separately, with a ceiling of 4,194,304 characters per
+field and the same overall bundle and file limits. These limits do not mean
+that every source file can be published.
+
+Attach a published snapshot from the share dialog:
+
+1. Under **Attach to ticket**, choose the configured Work Item connection
+   and enter the ticket ID. A thread's linked ticket can supply a suggestion.
+2. Choose **Preview comment**. Check the resolved ticket title, connection,
+   share title, audience and publication date. The preview shows a link label;
+   it does not expose the fragment key.
+3. Select **I reviewed the ticket and comment preview**, then choose
+   **Attach to ticket**. The main process adds the full share link to the
+   selected Linear, Jira or Azure DevOps ticket.
+4. Check the publication result. A successful local receipt prevents posting
+   the same share to the same ticket twice. If publication is pending or its
+   outcome is uncertain, inspect the ticket before taking further action;
+   Anvil does not automatically retry an ambiguous post.
+
+Changing the connection, ticket or shared snapshot requires reviewing a
+fresh comment preview.
+
+When attaching a published thread share to an external ticket, the full URL
+includes its key. People and systems with access to that ticket may retain
+it. An organisation audience still requires current membership when someone
+opens the ticket's link. Updating the existing share publishes a new snapshot
+under the same URL; ticket content does not sync automatically. Revoking the
+share blocks later server reads but cannot recall downloaded copies or
+remove a URL already saved in a ticket.
+
+### Pick up the thread
+
+After a compatible thread share has been decrypted in your browser, choose
+**Pick up the thread** to download a `.anvil-thread` continuation package.
+Guest and organisation shares use the same download flow. Older snapshots
+without structured continuation data ask the author to update the share.
+
+The package contains the shared conversation, reference context, selected
+artifacts and attachments, and the static snapshot. It also includes a
+source share ID, version and optional viewer URL without a query or fragment.
+It does not carry the share key, account credentials, provider session
+handles, local source paths or permission grants. Continuation text has a
+4 MiB aggregate limit; the package still fits within the overall 12 MiB and
+16-file/8 MiB file limits, with a separate 4 MiB combined snapshot limit.
+
+**The downloaded package is readable plaintext.** Anyone with the file can
+read it. Organisation membership, share revocation and expiry cannot recall
+this downloaded copy. Download only when you intend to keep a local copy.
+
+Open the downloaded file in Anvil, or choose **Open Anvil** and then
+**Pick up shared thread…** from the command palette to select it. The app link only opens the import
+flow; it sends no share content, link or key. In Anvil, choose your local
+workspace and agent, review the imported content, then create a new thread.
+Imported context is reference material: it does not reconnect the sender's
+repositories, resume their provider session, grant permissions, activate
+their goal or plan, or start an agent run. The sender's account and account
+encryption keys are not needed.
 
 ## Before anything uploads
 
@@ -118,7 +223,7 @@ uploaded until you publish.
 `/artifacts/{id}` on the website:
 
 1. fetches the ciphertext through a **signed service channel** — the server
-   authorizes delivery of the blob without ever seeing the share key;
+   checks the audience and authorizes delivery without seeing the share key;
 2. verifies the ciphertext **SHA-256** before decrypting;
 3. decrypts in the browser with **WebCrypto AES-GCM**;
 4. renders or offers the plaintext for download.
@@ -151,8 +256,8 @@ Choosing **Load interactive version** runs the page in a frame with:
 - height driven by `ui/notifications/size-changed` messages, accepted only
   from that frame's own window and clamped to 80–4000 px.
 
-"Anyone with the link" is literal for interactive shares too: the decision to
-run the code is the recipient's, behind that warning.
+The audience check also applies to interactive shares. Choosing to run the
+code remains the recipient's decision, behind that warning.
 
 ## Updating a link
 
@@ -165,7 +270,7 @@ Sharing an item again from Anvil offers two paths:
   swaps them in with a single row update after verifying size and SHA-256 —
   readers see either the old or the new version, never a mix, and a failed
   verification leaves the published version untouched. The share keeps its
-  id, expiry and media type; the page then shows "Version N · updated
+  id, expiry, media type and audience; the page then shows "Version N · updated
   <date>".
 - **Share as new link** publishes a separate share with a fresh key, leaving
   the old link frozen at its version. Use it when you want to rotate the key.
@@ -201,13 +306,13 @@ the app can't copy or update that link later.
 - The share lifecycle and browser-decrypt path are implemented and
   typechecked; a manual browser click-through on a live deployment is still
   worth doing — that path has the least exercised surface.
-- Anyone with the full link can decrypt, forever, until the share is revoked
-  or expires. There is no per-recipient access control inside a share link.
-- Expiry depends on the sweep running; a share at its expiry boundary may
-  serve until the next pass.
-- Updating a link reuses its key. Anyone who ever had the link can read every
-  later version until it is revoked or expires; use **Share as new link** to
-  rotate.
+- Guest links are accessible to anyone with the full URL until revoked or
+  expired. Organisation links additionally require current membership. There
+  is no named-recipient allowlist inside a share.
+- Expiry is checked on each fetch. The sweep removes expired stored bytes.
+- Updating a link reuses its key. A holder who still meets the audience rule
+  can read later versions until revocation or expiry; use **Share as new link**
+  to rotate the key.
 - Interactive pages run on the website's own origin, isolated only by the
   sandbox (opaque origin, no network). Serving them from a separate
   user-content origin is planned hardening, not done yet.
@@ -216,3 +321,12 @@ the app can't copy or update that link later.
   flag harmless strings. Review the preview, not just the findings list.
 - Snapshot frames can't size themselves to their content; long snapshots
   without a measured height scroll inside the frame.
+
+## Self-hosted viewers
+
+A self-hosted backend needs an explicitly configured, compatible share
+viewer. Configure its viewer origin and signed service channel together;
+do not send a self-hosted ciphertext id to the official viewer. Organisation
+shares also need the matching WorkOS client and server-side membership
+integration. A viewer without those capabilities must fail closed instead
+of turning organisation shares into public guest links.

@@ -4,6 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 
+import { MAX_BUNDLE_CHARS } from "@/lib/share-bundle";
+import { restoreShareFragment, fragmentKey } from "@/lib/share-fragment";
+import { shareFailureCode, shareFailureMessage } from "@/lib/share-access";
 import { Button } from "@/components/ui/button";
 import { mediaTypeLabel, formatBytes, parseCsv, SHARE_BUNDLE_MEDIA_TYPE } from "./csv";
 import { SandboxedHtml } from "./sandboxed-html";
@@ -53,6 +56,7 @@ export function SealedShareView(props: {
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
+      restoreShareFragment(props.id, window);
       const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
       const keyParam = fragment.get("k");
       if (keyParam === null) {
@@ -63,7 +67,7 @@ export function SealedShareView(props: {
         });
         return;
       }
-      const key = base64UrlDecode(keyParam);
+      const key = fragmentKey(window.location.hash) === null ? null : base64UrlDecode(keyParam);
       if (key === null || key.byteLength !== 32) {
         setStatus({ kind: "error", message: "The decryption key in this link is damaged. Ask the sender for the link again." });
         return;
@@ -72,11 +76,15 @@ export function SealedShareView(props: {
       if (!response.ok) {
         setStatus({
           kind: "error",
-          message: "Couldn't fetch the shared data. The link may have been revoked.",
+          message: shareFailureMessage(response.status, await shareFailureCode(response)),
         });
         return;
       }
       const ciphertext = new Uint8Array(await response.arrayBuffer());
+      if (props.mediaType === SHARE_BUNDLE_MEDIA_TYPE && ciphertext.byteLength > MAX_BUNDLE_CHARS + 28) {
+        setStatus({ kind: "error", message: "This shared snapshot exceeds the supported size limit." });
+        return;
+      }
       const actual = await sha256Hex(ciphertext);
       if (actual !== props.sha256) {
         setStatus({ kind: "error", message: "The downloaded data failed its checksum, so it wasn't decrypted." });
@@ -144,7 +152,7 @@ export function SealedShareView(props: {
 
   let body: React.ReactNode;
   if (props.mediaType === SHARE_BUNDLE_MEDIA_TYPE && text !== null) {
-    body = <ShareBundleView text={text} fallbackTitle={props.title} />;
+    body = <ShareBundleView text={text} fallbackTitle={props.title} shareId={props.id} />;
   } else if (props.mediaType === "text/markdown" && text !== null) {
     body = <MarkdownBody text={text} />;
   } else if (props.mediaType === "text/html" && text !== null) {

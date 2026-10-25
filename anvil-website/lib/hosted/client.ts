@@ -209,11 +209,12 @@ export async function hostedCallRaw(path: string, body: unknown): Promise<Respon
 
 /**
  * POST /internal/hosted/shared-artifact — resolves a published share to
- * its bytes plus `x-anvil-share-*` metadata headers. Non-2xx means the
- * share is revoked, expired, or never existed.
+ * its bytes plus `x-anvil-share-*` metadata headers. The backend checks the
+ * immutable audience before returning metadata or bytes. Identity comes only
+ * from the server-side WorkOS session.
  */
-export function fetchSharedArtifact(shareId: string): Promise<Response> {
-  return hostedCallRaw("/internal/hosted/shared-artifact", { shareId });
+export function fetchSharedArtifact(shareId: string, identity?: HostedIdentity): Promise<Response> {
+  return hostedCallRaw("/internal/hosted/shared-artifact", { shareId, ...(identity ? { identity } : {}) });
 }
 
 /** POST /internal/hosted/account — billing-account lookup for the identity. */

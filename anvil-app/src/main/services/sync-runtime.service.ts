@@ -613,7 +613,13 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
     if (backend === null || token === null || !sessionBoundToBackend(backend, fields)) return null;
-    return { apiUrl: apiUrlFor(backend), accessToken: token };
+    return {
+      apiUrl: apiUrlFor(backend),
+      accessToken: token,
+      scopeKey: JSON.stringify([backend.id, fields?.accountId]),
+      features: backend.descriptor.features,
+      hosted: backend.connectionMode === 'hosted',
+    };
   });
   // SESSION-03: handoff orchestration reads the same session context; the
   // local ownership mirror must be reconciled before any session resumes.

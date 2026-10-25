@@ -8,6 +8,13 @@ directories:
 
 afterPack: scripts/build-apple-speech-helper.mjs
 
+fileAssociations:
+  - ext: anvil-thread
+    name: Anvil shared thread
+    description: Pick up a shared Anvil conversation
+    mimeType: application/vnd.anvil.thread+json
+    role: Viewer
+
 files:
   - 'out/**/*'
   - 'prompts/**/*'

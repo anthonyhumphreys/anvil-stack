@@ -1,6 +1,8 @@
 import type { BackendDescriptor } from '../../contract/discovery';
 import { DEFAULT_LIMITS, DESCRIPTOR_VERSION, PROTOCOL } from '../../contract/version';
 import { isWorkosAuthKitIssuer } from './oidc';
+import { SHARE_AUDIENCES_FEATURE } from '../../contract/shares';
+import { shareAudiencesAvailable } from './hosted/share-access';
 
 /** Legacy staging identity. Keep until the staging deployment is intentionally migrated. */
 export const SPIKE_DEPLOYMENT_ID = 'spike-0000-0000-0000-backend01demo';
@@ -10,6 +12,8 @@ type DescriptorEnvironment = {
   ANVIL_DEPLOYMENT_ID?: string;
   ANVIL_DEPLOYMENT_NAME?: string;
   HOSTED_DB?: unknown;
+  HOSTED_WORKOS_CLIENT_ID?: string;
+  HOSTED_SERVICE_KEYS?: string;
   OIDC_ISSUER?: string;
   OIDC_CLIENT_ID?: string;
   OIDC_SCOPES?: string;
@@ -44,7 +48,13 @@ export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor 
     displayName: env?.ANVIL_DEPLOYMENT_NAME?.trim() || SPIKE_DEPLOYMENT_NAME,
     protocols: [PROTOCOL],
     profiles: ['sync/2', 'mesh/2'],
-    features: ['browser-workspace/1', 'mesh-job-capability-requirements/1'],
+    features: [
+      'browser-workspace/1',
+      'mesh-job-capability-requirements/1',
+      ...(env !== undefined && workosConfigured && shareAudiencesAvailable(env)
+        ? [SHARE_AUDIENCES_FEATURE]
+        : []),
+    ],
     apiPath: 'v1',
     socketPath: 'v1/connect',
     authModes: [

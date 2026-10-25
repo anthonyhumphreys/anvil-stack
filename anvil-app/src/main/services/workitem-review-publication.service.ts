@@ -1,11 +1,32 @@
 import { getWorkItemSettings } from './workitem-context.service.js';
 
-/** Called only by the provider after the user chooses Publish. Never retry a POST automatically. */
+/** Called only after an explicit user action. Never retry a provider POST automatically. */
 export async function publishWorkItemReview(id: string, text: string): Promise<void> {
+  await publishComment(id, text);
+}
+
+/** Publish text and a first-class provider link (including Jira's ADF link mark). */
+export async function publishWorkItemLink(
+  id: string,
+  text: string,
+  label: string,
+  linkUrl: string,
+  beforePost?: () => void | Promise<void>,
+): Promise<void> {
+  await publishComment(id, text, { label, url: linkUrl }, beforePost);
+}
+
+async function publishComment(
+  id: string,
+  text: string,
+  link?: { label: string; url: string },
+  beforePost?: () => void | Promise<void>,
+): Promise<void> {
   const s = getWorkItemSettings();
   let url: string;
   let body: unknown;
   let headers: Record<string, string>;
+  const markdown = link ? `${text}\n\n[${link.label}](${link.url})` : text;
   if (s.workItemProvider === 'linear') {
     url = 'https://api.linear.app/graphql';
     headers = { Authorization: s.linearApiKey ?? '', 'Content-Type': 'application/json' };
@@ -24,7 +45,7 @@ export async function publishWorkItemReview(id: string, text: string): Promise<v
       throw new Error('Linear issue could not be resolved.');
     body = {
       query: 'mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success } }',
-      variables: { input: { issueId: item.data.issue.id, body: text } },
+      variables: { input: { issueId: item.data.issue.id, body: markdown } },
     };
   } else if (s.workItemProvider === 'ado') {
     url = `${s.adoOrganizationUrl.replace(/\/$/, '')}/${encodeURIComponent(s.adoProject)}/_apis/wit/workItems/${encodeURIComponent(id)}/comments?api-version=7.1-preview.4&format=markdown`;
@@ -32,7 +53,7 @@ export async function publishWorkItemReview(id: string, text: string): Promise<v
       Authorization: `Basic ${Buffer.from(`:${s.adoPat ?? ''}`).toString('base64')}`,
       'Content-Type': 'application/json',
     };
-    body = { text };
+    body = { text: markdown };
   } else if (s.workItemProvider === 'jira') {
     const version = s.jiraAuthMode === 'server' ? '2' : '3';
     const host = s.jiraHost?.replace(/\/$/, '') ?? '';
@@ -44,27 +65,39 @@ export async function publishWorkItemReview(id: string, text: string): Promise<v
           : `Basic ${Buffer.from(`${s.jiraEmail ?? ''}:${s.jiraApiToken ?? ''}`).toString('base64')}`,
       'Content-Type': 'application/json',
     };
-    body = {
-      body:
-        version === '2'
-          ? text
-          : {
-              type: 'doc',
-              version: 1,
-              content: text.split('\n').map((line) => ({
-                type: 'paragraph',
-                content: line ? [{ type: 'text', text: line }] : [],
-              })),
-            },
-    };
+    const content: unknown[] = text.split('\n').map((line) => ({
+      type: 'paragraph',
+      content: line ? [{ type: 'text', text: line }] : [],
+    }));
+    if (link) {
+      content.push({
+        type: 'paragraph',
+        content: [
+          {
+            type: 'text',
+            text: link.label,
+            marks: [{ type: 'link', attrs: { href: link.url } }],
+          },
+        ],
+      });
+    }
+    body = { body: version === '2' ? markdown : { type: 'doc', version: 1, content } };
   } else throw new Error('This provider does not support review publication.');
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(20_000),
-    redirect: 'error',
-  });
+  // The caller can revalidate the selected connection and link immediately before mutation.
+  await beforePost?.();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
+      redirect: 'error',
+    });
+  } catch {
+    // Do not propagate fetch errors, which may include request details or bearer URLs.
+    throw new Error('Review publication outcome is unknown. Check the Work Item before retrying.');
+  }
   if (!response.ok)
     throw new Error(
       `Review publication returned HTTP ${response.status}. Check the Work Item before retrying.`,

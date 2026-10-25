@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Archivo, JetBrains_Mono } from "next/font/google";
-import { Analytics } from "@vercel/analytics/next";
+import { PrivateAnalytics } from "@/components/site/private-analytics";
 import { ThemeScript } from "@/components/site/theme-script";
 import "./globals.css";
 
@@ -50,7 +50,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <a href="#main-content" className="skip-link">Skip to content</a>
         {children}
-        <Analytics />
+        <PrivateAnalytics />
       </body>
     </html>
   );

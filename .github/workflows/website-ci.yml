@@ -5,6 +5,9 @@ on:
     paths:
       - ".github/workflows/website-ci.yml"
       - "anvil-website/**"
+      - "anvil-app/cloud/contract/thread-pickup.ts"
+      - "anvil-app/src/main/services/thread-share.service.ts"
+      - "anvil-app/src/main/services/share-secret-scan.ts"
       - "anvil-app/src/renderer/components/chat/shared/**"
       - "anvil-app/src/renderer/components/chat/ChatEmptyState.tsx"
       - "anvil-app/src/renderer/styles/chat-theme.css"
@@ -15,6 +18,9 @@ on:
     paths:
       - ".github/workflows/website-ci.yml"
       - "anvil-website/**"
+      - "anvil-app/cloud/contract/thread-pickup.ts"
+      - "anvil-app/src/main/services/thread-share.service.ts"
+      - "anvil-app/src/main/services/share-secret-scan.ts"
       - "anvil-app/src/renderer/components/chat/shared/**"
       - "anvil-app/src/renderer/components/chat/ChatEmptyState.tsx"
       - "anvil-app/src/renderer/styles/chat-theme.css"
@@ -66,6 +72,9 @@ jobs:
 
       - name: Test browser workspace credentials
         run: pnpm test:browser-workspace
+
+      - name: Test shared thread access and pickup
+        run: pnpm test:shares
 
       - name: Build
         run: pnpm build

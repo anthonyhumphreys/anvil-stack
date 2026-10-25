@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 113;
+export const SCHEMA_VERSION = 114;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -347,7 +347,7 @@ CREATE INDEX IF NOT EXISTS idx_surface_comments_surface
 
 CREATE TABLE IF NOT EXISTS shares (
   id TEXT PRIMARY KEY,
-  item_type TEXT NOT NULL CHECK (item_type IN ('artifact', 'surface')),
+  item_type TEXT NOT NULL CHECK (item_type IN ('artifact', 'surface', 'thread', 'remote-thread')),
   item_id TEXT NOT NULL,
   version INTEGER NOT NULL,
   share_id TEXT NOT NULL UNIQUE,
@@ -357,11 +357,28 @@ CREATE TABLE IF NOT EXISTS shares (
   expires_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  revoked_at TEXT
+  revoked_at TEXT,
+  audience_json TEXT NOT NULL DEFAULT '{"kind":"link"}',
+  backend_scope TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_shares_item
   ON shares(item_type, item_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS share_ticket_publications (
+  id TEXT PRIMARY KEY,
+  share_record_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK(provider IN ('linear','jira','ado')),
+  ticket_id TEXT NOT NULL,
+  ticket_title TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','published','uncertain')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  published_at TEXT,
+  UNIQUE(share_record_id, connection_id, provider, ticket_id)
+);
+CREATE INDEX IF NOT EXISTS idx_share_ticket_publications_share ON share_ticket_publications(share_record_id);
 
 CREATE TABLE IF NOT EXISTS review_workspace_comments (
   id TEXT PRIMARY KEY,
@@ -3953,6 +3970,43 @@ FROM mesh_integrations;
 DROP TABLE mesh_integrations;
 ALTER TABLE mesh_integrations_v113 RENAME TO mesh_integrations;
 RELEASE SAVEPOINT anvil_mesh_integrations_v113;
+`,
+  114: `
+CREATE TABLE shares_v114 (
+  id TEXT PRIMARY KEY,
+  item_type TEXT NOT NULL CHECK (item_type IN ('artifact', 'surface', 'thread', 'remote-thread')),
+  item_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  share_id TEXT NOT NULL UNIQUE,
+  media_type TEXT NOT NULL,
+  interactive INTEGER NOT NULL DEFAULT 0,
+  title TEXT NOT NULL,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT,
+  audience_json TEXT NOT NULL DEFAULT '{"kind":"link"}',
+  backend_scope TEXT
+);
+INSERT INTO shares_v114 (id,item_type,item_id,version,share_id,media_type,interactive,title,expires_at,created_at,updated_at,revoked_at)
+SELECT id,item_type,item_id,version,share_id,media_type,interactive,title,expires_at,created_at,updated_at,revoked_at FROM shares;
+DROP TABLE shares;
+ALTER TABLE shares_v114 RENAME TO shares;
+CREATE INDEX idx_shares_item ON shares(item_type,item_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS share_ticket_publications (
+  id TEXT PRIMARY KEY,
+  share_record_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK(provider IN ('linear','jira','ado')),
+  ticket_id TEXT NOT NULL,
+  ticket_title TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','published','uncertain')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  published_at TEXT,
+  UNIQUE(share_record_id, connection_id, provider, ticket_id)
+);
+CREATE INDEX IF NOT EXISTS idx_share_ticket_publications_share ON share_ticket_publications(share_record_id);
 `,
 };
 

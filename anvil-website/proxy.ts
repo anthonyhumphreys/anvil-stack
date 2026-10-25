@@ -13,6 +13,7 @@ const unauthenticatedPaths = [
   "/pricing",
   "/waitlist",
   "/invite",
+  "/artifacts/:path*",
   "/callback",
   "/auth/callback"
 ];

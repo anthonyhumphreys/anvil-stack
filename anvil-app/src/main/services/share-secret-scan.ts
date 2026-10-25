@@ -113,6 +113,58 @@ const RULES: SecretRule[] = [
   {
     id: 'env-assignment',
     label: 'Secret-looking assignment',
+    // Raw continuation strings and their JSON-escaped quote pairs must be
+    // scanned too; punctuation such as '&' belongs to the quoted value.
+    pattern: new RegExp(
+      `(?:^|[^A-Za-z0-9_])(${SECRET_KEY_NAMES})(?:\\\\?["'])?\\s*[:=]\\s*(\\\\?["'])([^\\s<]*?)\\2`,
+      'gim',
+    ),
+    group: 3,
+    accept: looksSecretValue,
+  },
+  {
+    id: 'env-assignment',
+    label: 'Secret-looking assignment',
+    // An unquoted raw continuation value can contain '&'. HTML entities are
+    // handled separately below, without mistaking their prefix for the value.
+    pattern: new RegExp(
+      `(?:^|[^A-Za-z0-9_])(${SECRET_KEY_NAMES})(?:\\\\?["'])?\\s*[:=]\\s*([^\\s'"\\\\<>,;\`)]{8,})`,
+      'gim',
+    ),
+    group: 2,
+    accept: (value) =>
+      value.includes('&') &&
+      !/&(?:amp|lt|gt|quot|#39)(?:;|$)/.test(value) &&
+      looksSecretValue(value),
+  },
+  {
+    id: 'env-assignment',
+    label: 'Secret-looking assignment',
+    // HTML snapshot text quotes become entities before the bundle is JSON
+    // encoded. Match inside the quote pair so replacement retains the pair.
+    pattern: new RegExp(
+      `(?:^|[^A-Za-z0-9_])(${SECRET_KEY_NAMES})(?:&quot;|&#39;)?\\s*[:=]\\s*(&quot;|&#39;)([^\\s<]*?)\\2`,
+      'gim',
+    ),
+    group: 3,
+    accept: (value) => looksSecretValue(htmlDecoded(value)),
+  },
+  {
+    id: 'env-assignment',
+    label: 'Secret-looking assignment',
+    // Consume entities as part of an unquoted value, rather than reporting
+    // only the prefix before '&'. Bound the alternation to avoid deep regex
+    // stacks on large snapshots and require a delimiter to avoid truncation.
+    pattern: new RegExp(
+      `(?:^|[^A-Za-z0-9_])(${SECRET_KEY_NAMES})(?:&quot;|&#39;)?\\s*[:=]\\s*((?:&(?:amp|lt|gt);|[^\\s'"\\\\<>,;&\`)]){8,4096})(?=$|[\\s'"\\\\<>,;&\`)])`,
+      'gim',
+    ),
+    group: 2,
+    accept: (value) => /&(?:amp|lt|gt);/.test(value) && looksSecretValue(htmlDecoded(value)),
+  },
+  {
+    id: 'env-assignment',
+    label: 'Secret-looking assignment',
     pattern: new RegExp(
       `(?:^|[^A-Za-z0-9_])(${SECRET_KEY_NAMES})(?:\\\\?["'])?\\s*[:=]\\s*(?:\\\\?["'])?([^\\s'"\\\\<>,;&\`)]{8,})`,
       'gim',
@@ -155,6 +207,31 @@ function countOccurrences(text: string, value: string): number {
   }
 }
 
+/** Decode exactly the entities emitted by our snapshot text escaper. */
+function htmlDecoded(value: string): string {
+  return value.replace(
+    /&(?:amp|lt|gt|quot|#39);/g,
+    (entity) =>
+      ({
+        '&amp;': '&',
+        '&lt;': '<',
+        '&gt;': '>',
+        '&quot;': '"',
+        '&#39;': "'",
+      })[entity] ?? entity,
+  );
+}
+
+/** Match the escaping used for conversation and attachment snapshot text. */
+function htmlEscaped(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /** JSON-escaped form of a value as it appears inside a serialised string. */
 function jsonEscaped(value: string): string {
   return JSON.stringify(value).slice(1, -1);
@@ -162,16 +239,19 @@ function jsonEscaped(value: string): string {
 
 function scanInternal(text: string, knownSecrets: readonly string[]): InternalFinding[] {
   const byValue = new Map<string, InternalFinding>();
-  const add = (ruleId: string, label: string, value: string, index: number) => {
+  const add = (ruleId: string, label: string, value: string, index: number, stableId?: string) => {
     if (value.length === 0 || value.includes(REDACTED_PLACEHOLDER)) return;
     if (byValue.has(value)) return;
     // A value already covered by a longer, more specific hit (e.g. the
     // token inside `GITHUB_TOKEN=ghp_…`) is the same finding.
     for (const existing of byValue.values()) {
-      if (existing.value.includes(value)) return;
+      if (ruleId !== 'known-secret' && existing.value.includes(value)) {
+        const start = text.lastIndexOf(existing.value, index);
+        if (start >= 0 && start + existing.value.length >= index + value.length) return;
+      }
     }
     byValue.set(value, {
-      id: findingId(ruleId, value),
+      id: stableId ?? findingId(ruleId, value),
       ruleId,
       label,
       value,
@@ -182,9 +262,21 @@ function scanInternal(text: string, knownSecrets: readonly string[]): InternalFi
 
   for (const secret of knownSecrets) {
     if (typeof secret !== 'string' || secret.trim().length < 8) continue;
-    for (const form of new Set([secret, jsonEscaped(secret)])) {
+    const html = htmlEscaped(secret);
+    const jsonInHtml = htmlEscaped(jsonEscaped(secret));
+    // Snapshot HTML is then serialised into bundle JSON. Scan every form that
+    // can reach the recipient; redact the matched encoded bytes themselves.
+    for (const form of new Set([
+      secret,
+      jsonEscaped(secret),
+      html,
+      jsonEscaped(html),
+      jsonInHtml,
+      jsonEscaped(jsonInHtml),
+    ])) {
       const at = text.indexOf(form);
-      if (at >= 0) add('known-secret', 'Saved Anvil credential', form, at);
+      if (at >= 0)
+        add('known-secret', 'Saved Anvil credential', form, at, findingId('known-secret', secret));
     }
   }
 
@@ -211,12 +303,21 @@ export function scanForSecrets(
   text: string,
   options: SecretScanOptions = {},
 ): ShareSecretFinding[] {
-  return scanInternal(text, options.knownSecrets ?? []).map((finding) => ({
-    id: finding.id,
-    label: finding.label,
-    excerpt: `${finding.context}${mask(finding.value)}`,
-    occurrences: finding.occurrences,
-  }));
+  const findings = new Map<string, ShareSecretFinding>();
+  for (const finding of scanInternal(text, options.knownSecrets ?? [])) {
+    const existing = findings.get(finding.id);
+    if (existing) {
+      existing.occurrences = (existing.occurrences ?? 0) + finding.occurrences;
+    } else {
+      findings.set(finding.id, {
+        id: finding.id,
+        label: finding.label,
+        excerpt: `${finding.context}${mask(finding.value)}`,
+        occurrences: finding.occurrences,
+      });
+    }
+  }
+  return [...findings.values()];
 }
 
 /**

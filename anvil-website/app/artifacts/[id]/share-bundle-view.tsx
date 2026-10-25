@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { parseShareBundle, shareDownloadName, type ShareBundleFile } from "@/lib/share-bundle";
+import { ThreadPickupDownload } from "./thread-pickup-download";
 import { Button } from "@/components/ui/button";
 import { SandboxedHtml } from "./sandboxed-html";
 
@@ -16,40 +18,9 @@ const INTERACTIVE_POLICY =
 const MIN_FRAME_HEIGHT = 80;
 const MAX_FRAME_HEIGHT = 4000;
 
-interface AnvilShareBundle {
-  format: "anvil-share/v1";
-  title: string;
-  kind: string;
-  version: number;
-  sharedAt: string;
-  digest: string;
-  snapshot: { html: string; css: string; images?: Record<string, string>; height?: number };
-  interactive?: { html: string; kitVersion?: string };
-}
-
-function parseBundle(text: string): AnvilShareBundle | null {
-  try {
-    const value = JSON.parse(text) as Partial<AnvilShareBundle> | null;
-    if (
-      !value ||
-      value.format !== "anvil-share/v1" ||
-      typeof value.title !== "string" ||
-      typeof value.kind !== "string" ||
-      !value.snapshot ||
-      typeof value.snapshot.html !== "string" ||
-      typeof value.snapshot.css !== "string"
-    ) {
-      return null;
-    }
-    if (value.interactive !== undefined && typeof value.interactive?.html !== "string") return null;
-    return value as AnvilShareBundle;
-  } catch {
-    return null;
-  }
-}
-
 /** "artifact:html" → "HTML page", "surface:review" → "Review". */
 export function bundleKindLabel(kind: string): string {
+  if (kind === "thread" || kind.startsWith("thread:")) return "Thread snapshot";
   const [family, name = ""] = kind.split(":");
   if (family === "artifact") {
     if (name === "html") return "HTML page";
@@ -113,8 +84,8 @@ function InteractiveFrame({ html, title }: { html: string; title: string }) {
  * always; for interactive bundles, a trust interstitial and then — only
  * if the reader chooses — the full document in a scripts-only sandbox.
  */
-export function ShareBundleView({ text, fallbackTitle }: { text: string; fallbackTitle: string }) {
-  const bundle = useMemo(() => parseBundle(text), [text]);
+export function ShareBundleView({ text, fallbackTitle, shareId }: { text: string; fallbackTitle: string; shareId?: string }) {
+  const bundle = useMemo(() => parseShareBundle(text), [text]);
   const [loadInteractive, setLoadInteractive] = useState(false);
   const digestId = useId();
   const warningId = useId();
@@ -135,6 +106,8 @@ export function ShareBundleView({ text, fallbackTitle }: { text: string; fallbac
 
   return (
     <div className="space-y-4">
+      {bundle.kind === "thread" && <p className="text-xs text-muted-foreground">Read-only thread snapshot · captured {new Date(bundle.sharedAt).toLocaleDateString("en-GB")} · updates only when the sender publishes again</p>}
+      {bundle.kind === "thread" && shareId && <ThreadPickupDownload key={`${shareId}:${bundle.version}:${bundle.sharedAt}`} bundle={bundle} shareId={shareId} />}
       {bundle.digest && (
         <p id={digestId} className="text-sm leading-6 text-muted-foreground">
           {bundle.digest}
@@ -163,6 +136,13 @@ export function ShareBundleView({ text, fallbackTitle }: { text: string; fallbac
         </section>
       )}
 
+      {bundle.files && bundle.files.length > 0 && (
+        <section className="rounded-lg border p-4" aria-label="Included files">
+          <h2 className="text-sm font-semibold">Included files</h2>
+          <p className="mt-1 text-xs text-muted-foreground">Files the sender chose to include. Binary files cannot be scanned for secrets. Download only files you trust.</p>
+          <ul className="mt-3 space-y-2">{bundle.files.map((file, index) => <li key={index}><BundleFileDownload file={file} /></li>)}</ul>
+        </section>
+      )}
       {showInteractive && bundle.interactive ? (
         <div>
           <InteractiveFrame html={bundle.interactive.html} title={title} />
@@ -186,4 +166,25 @@ export function ShareBundleView({ text, fallbackTitle }: { text: string; fallbac
       )}
     </div>
   );
+}
+
+function BundleFileDownload({ file }: { file: ShareBundleFile }) {
+  const [error, setError] = useState(false);
+  return <>
+    <button type="button" className="text-sm underline underline-offset-4" onClick={() => {
+      try {
+        const binary = atob(file.dataBase64);
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        // Always download as opaque bytes. Never navigate a frame to shared active content.
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = shareDownloadName(file.name);
+        link.rel = "noreferrer";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch { setError(true); }
+    }}>Download {file.name}</button>
+    {error && <p role="alert" className="text-xs text-muted-foreground">This file could not be downloaded.</p>}
+  </>;
 }

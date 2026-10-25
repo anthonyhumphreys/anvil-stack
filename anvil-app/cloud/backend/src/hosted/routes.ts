@@ -299,7 +299,7 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
             new Request('https://internal.anvil/internal/shared-artifact', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ shareId: json['shareId'] }),
+              body: JSON.stringify({ shareId: json['shareId'], identity: json['identity'] }),
             }),
           );
         }

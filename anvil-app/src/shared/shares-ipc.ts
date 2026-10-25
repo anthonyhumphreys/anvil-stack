@@ -1,7 +1,27 @@
 // window.anvil.shares — owned by the sharing workstream.
 // Spec: docs/plans/inline-artifacts-and-canvas-tools.md §11.
 
-export type ShareItemType = 'artifact' | 'surface';
+import type { ShareAudience } from '../../cloud/contract/shares.js';
+import type { WorkItemReference } from './change-review-types.js';
+import type { ShareTicketPreview, ShareTicketReceipt } from './share-ticket.js';
+import type { ThreadContinuation } from '../../cloud/contract/thread-pickup.js';
+import type { ThreadPickupInput, ThreadPickupPreview } from './thread-pickup-ipc.js';
+import type { ChatThread } from './types.js';
+export type { ShareAudience, ShareTicketPreview, ShareTicketReceipt };
+
+export type ShareItemType = 'artifact' | 'surface' | 'thread' | 'remote-thread';
+
+export interface ShareContextItem {
+  id: string;
+  title: string;
+  kind: 'artifact' | 'surface' | 'attachment';
+}
+
+export interface ShareAccessOptions {
+  available: boolean;
+  organizations: Array<{ id: string; name: string }>;
+  organizationSharing: boolean;
+}
 
 export interface ShareTarget {
   itemType: ShareItemType;
@@ -9,6 +29,10 @@ export interface ShareTarget {
 }
 
 export interface ShareOptionsInput {
+  audience?: ShareAudience;
+  /** Main-process snapshot reviewed in the preview; required for thread publication. */
+  preparedId?: string;
+  contextItemIds?: string[];
   includeComments?: boolean;
   includeFullDiff?: boolean;
   expiresInDays?: number;
@@ -64,6 +88,9 @@ export interface AnvilShareBundle {
   };
   payload?: unknown;
   schemaVersion?: number;
+  files?: Array<{ name: string; mediaType: string; dataBase64: string }>;
+  /** Reviewed, redacted portable conversation. No provider state or inherited permissions. */
+  continuation?: ThreadContinuation;
 }
 
 export interface ShareSecretFinding {
@@ -76,6 +103,9 @@ export interface ShareSecretFinding {
 }
 
 export interface SharePreview {
+  preparedId?: string;
+  contextItems?: ShareContextItem[];
+  suggestedTicket?: { id: string; provider: WorkItemReference['provider'] };
   title: string;
   mediaType: string;
   interactive: boolean;
@@ -93,6 +123,7 @@ export interface SharePreview {
 }
 
 export interface ShareRecord {
+  audience?: ShareAudience;
   id: string;
   itemType: ShareItemType;
   itemId: string;
@@ -110,7 +141,15 @@ export interface ShareRecord {
 }
 
 export interface SharesApi {
+  pickupPending(): Promise<boolean>;
+  onPickupRequested(callback: () => void): () => void;
+  preparePickup(): Promise<ThreadPickupPreview | null>;
+  confirmPickup(input: ThreadPickupInput): Promise<ChatThread>;
+  cancelPickup(preparedId: string): Promise<void>;
   available(): Promise<boolean>;
+  accessOptions(): Promise<ShareAccessOptions>;
+  previewTicket(shareRecordId: string, ticket: WorkItemReference): Promise<ShareTicketPreview>;
+  attachTicket(shareRecordId: string, ticket: WorkItemReference): Promise<ShareTicketReceipt>;
   preview(target: ShareTarget, options?: ShareOptionsInput): Promise<SharePreview>;
   /** Publishes and copies nothing: returns the URL for the renderer to place on the clipboard. */
   publish(

@@ -17,6 +17,8 @@ const revokeSharedArtifact = vi.hoisted(() => vi.fn());
 vi.mock('../artifact-share.service.js', () => ({
   publishSharedArtifact: vi.fn(),
   revokeSharedArtifact,
+  artifactShareScope: () => null,
+  getShareAccessOptions: vi.fn(),
 }));
 
 import {

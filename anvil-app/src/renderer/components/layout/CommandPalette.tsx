@@ -122,6 +122,15 @@ export function buildNewChatThreadCommandMetadata() {
   };
 }
 
+export function buildPickupSharedThreadCommandMetadata() {
+  return {
+    id: 'act-pick-up-thread',
+    label: 'Pick up shared thread…',
+    description: 'Review a .anvil-thread file and create a private continuation in your workspace.',
+    keywords: ['shared', 'pick up', 'continue', 'import', 'thread', 'conversation'],
+  };
+}
+
 export function buildToggleChatLayoutCommandMetadata(currentLayout: ChatLayout) {
   const nextLayout: ChatLayout = currentLayout === 'workitems' ? 'classic' : 'workitems';
   return {
@@ -652,6 +661,16 @@ export function CommandPalette({
         feature: 'chat',
         action: () => {
           navigate('/chat', { state: { newThreadRequest: crypto.randomUUID() } });
+          onClose();
+        },
+      },
+      {
+        ...buildPickupSharedThreadCommandMetadata(),
+        section: 'Actions',
+        icon: <MessageSquare />,
+        feature: 'chat',
+        action: () => {
+          navigate('/pick-up-thread');
           onClose();
         },
       },

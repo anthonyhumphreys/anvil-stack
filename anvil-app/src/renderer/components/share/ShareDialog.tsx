@@ -10,12 +10,15 @@ import type {
   SharePreview,
   ShareRecord,
   ShareTarget,
+  ShareAccessOptions,
+  ShareAudience,
 } from '../../../shared/shares-ipc';
 import { SHARE_DEFAULT_EXPIRES_DAYS } from '../../../shared/shares-ipc';
 import type { AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
 import { renderMermaid } from '../../utils/mermaid';
 import { useSurfaces } from '../surfaces/surfaces-context';
 import { Button, ConfirmDialog, Dialog } from '../ui';
+import { ShareTicketPanel } from './ShareTicketPanel';
 import {
   SHARE_EXPIRY_OPTIONS,
   errorMessage,
@@ -30,6 +33,8 @@ export interface ShareDialogProps {
   open: boolean;
   onClose: () => void;
   onShared?: (record: ShareRecord) => void;
+  initialAudience?: ShareAudience;
+  initialRecordId?: string;
 }
 
 type Availability = 'checking' | 'available' | 'unavailable';
@@ -46,6 +51,7 @@ async function mermaidSourceFor(
   target: ShareTarget,
   getSurface: (surfaceId: string) => AgentUISurfaceIntent | undefined,
 ): Promise<string | undefined> {
+  if (target.itemType === 'thread' || target.itemType === 'remote-thread') return undefined;
   if (target.itemType === 'surface') {
     const surface = getSurface(target.itemId);
     const data = surface?.payload.data as { format?: unknown; source?: unknown } | undefined;
@@ -90,10 +96,22 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function ShareDialog({ target, title, open, onClose, onShared }: ShareDialogProps) {
+export function ShareDialog({
+  target,
+  title,
+  open,
+  onClose,
+  onShared,
+  initialAudience,
+  initialRecordId,
+}: ShareDialogProps) {
   const headingId = useId();
   const { getSurface } = useSurfaces();
   const [availability, setAvailability] = useState<Availability>('checking');
+  const [access, setAccess] = useState<ShareAccessOptions | null>(null);
+  const [audienceId, setAudienceId] = useState('link');
+  const [contextItemIds, setContextItemIds] = useState<string[]>([]);
+  const [previewRevision, setPreviewRevision] = useState(0);
   const [existing, setExisting] = useState<ShareRecord[]>([]);
   const [preview, setPreview] = useState<SharePreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -120,6 +138,11 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
     if (!open) return;
     setAvailability('checking');
     setExisting([]);
+    setAccess(null);
+    setAudienceId(
+      initialAudience?.kind === 'organization' ? initialAudience.organizationId : 'link',
+    );
+    setContextItemIds([]);
     setPreview(null);
     setPreviewError(null);
     setDiagramSvg(undefined);
@@ -134,9 +157,12 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
     setPublished(null);
     let cancelled = false;
     void window.anvil.shares
-      .available()
-      .then((available) => {
-        if (!cancelled) setAvailability(available ? 'available' : 'unavailable');
+      .accessOptions()
+      .then((value) => {
+        if (!cancelled) {
+          setAccess(value);
+          setAvailability(value.available ? 'available' : 'unavailable');
+        }
       })
       .catch(() => {
         if (!cancelled) setAvailability('unavailable');
@@ -176,9 +202,14 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
       includeComments,
       includeFullDiff,
       expiresInDays,
+      audience:
+        audienceId === 'link'
+          ? { kind: 'link' }
+          : { kind: 'organization', organizationId: audienceId },
+      contextItemIds,
       ...(diagramSvg ? { diagramSvg } : {}),
     }),
-    [includeComments, includeFullDiff, expiresInDays, diagramSvg],
+    [includeComments, includeFullDiff, expiresInDays, diagramSvg, audienceId, contextItemIds],
   );
 
   // Preview (re-run when what's included or redacted changes).
@@ -212,23 +243,38 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
           }
         })
         .catch((error: unknown) => {
-          if (request === previewRequest.current) setPreviewError(errorMessage(error));
+          if (request === previewRequest.current) {
+            setPreview(null);
+            setPreviewError(errorMessage(error));
+          }
         })
         .finally(() => {
           if (request === previewRequest.current) setLoadingPreview(false);
         });
     }, 150);
-    return () => window.clearTimeout(timer);
-  }, [open, availability, diagramReady, targetKey, options, keptKey]);
+    return () => {
+      window.clearTimeout(timer);
+      previewRequest.current++;
+    };
+  }, [open, availability, diagramReady, targetKey, options, keptKey, previewRevision]);
 
   const findings = preview?.secretFindings ?? [];
   const keptFindings = findings.filter((finding) => keptFindingIds.includes(finding.id));
   const needsConfirmation = keptFindings.length > 0 && !confirmedSafe;
-  const latest = existing[0] ?? null;
-  const canAct = availability === 'available' && preview !== null && !loadingPreview && !busy;
+  const audienceRecords = existing.filter((record) =>
+    audienceId === 'link'
+      ? !record.audience || record.audience.kind === 'link'
+      : record.audience?.kind === 'organization' && record.audience.organizationId === audienceId,
+  );
+  const latest =
+    audienceRecords.find((record) => record.id === initialRecordId) ?? audienceRecords[0] ?? null;
+  const isThread = target.itemType === 'thread' || target.itemType === 'remote-thread';
+  const canAct =
+    availability === 'available' && preview !== null && !previewError && !loadingPreview && !busy;
 
   const submitOptions = (): ShareOptionsInput => ({
     ...options,
+    preparedId: preview?.preparedId,
     redactFindingIds,
     acknowledgeFindingIds: confirmedSafe ? keptFindings.map((finding) => finding.id) : [],
   });
@@ -248,6 +294,7 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
       setActionError(errorMessage(error));
     } finally {
       setBusy(null);
+      setPreviewRevision((revision) => revision + 1);
     }
   };
 
@@ -256,13 +303,17 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
     setActionError(null);
     try {
       const updated = await window.anvil.shares.update(record.id, submitOptions());
-      setStatus(`Link updated to v${updated.version}. Anyone with it now sees this version.`);
+      setPublished(updated);
+      setStatus(
+        `Link updated to v${updated.version}. Authorised recipients now see this snapshot.`,
+      );
       onShared?.(updated);
       await refreshExisting();
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
       setBusy(null);
+      setPreviewRevision((revision) => revision + 1);
     }
   };
 
@@ -319,7 +370,8 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
       >
         <p className="mt-3 text-sm text-text-secondary">
           Sharing needs an Anvil sync session. Links are encrypted on this device and served by
-          Anvil sync, so sign in to Anvil sync in Settings, then try again.
+          Anvil sync. Sign in to Anvil sync in Settings. Self-hosted backends also need a configured
+          share viewer.
         </p>
       </Dialog>
     );
@@ -333,7 +385,7 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
         open={open}
         onClose={onClose}
         title={dialogTitle}
-        description="Nothing is uploaded until you publish. Anyone with the link can view it."
+        description="Review the snapshot and choose who can open the link. Nothing is uploaded until you publish."
         size="xl"
         footer={
           published ? (
@@ -370,6 +422,42 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
         }
       >
         <div className="mt-4 space-y-4">
+          <section aria-label="Link access" className="space-y-2">
+            <label className="flex flex-wrap items-center gap-3 text-sm text-text-secondary">
+              Who can open this link
+              <select
+                value={audienceId}
+                disabled={busy !== null}
+                onChange={(event) => {
+                  setAudienceId(event.target.value);
+                  setPublished(null);
+                }}
+                className="rounded-lg border border-border bg-bg-primary px-2 py-1 text-sm text-text-primary"
+              >
+                <option value="link">Anyone with the link</option>
+                {access?.organizations.map((org) => (
+                  <option key={org.id} value={org.id}>
+                    Members of {org.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="text-xs text-text-tertiary">
+              {audienceId === 'link'
+                ? 'Guests can view without signing in. Anyone receiving the complete link can open it.'
+                : 'Recipients must sign in and be current members of this organisation. Membership does not grant access to your other conversations.'}
+            </p>
+            {!access?.organizationSharing && (
+              <p className="text-xs text-text-tertiary">
+                This backend does not support organisation access.
+              </p>
+            )}
+            {access?.organizationSharing && access.organizations.length === 0 && (
+              <p className="text-xs text-text-tertiary">
+                Join an organisation to create a members-only link.
+              </p>
+            )}
+          </section>
           {latest && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm">
               <span className="text-text-primary">{shareStatusLine(latest)}</span>
@@ -382,7 +470,7 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
                 >
                   Copy link
                 </Button>
-                {isShareBehind(latest) && (
+                {(isThread || isShareBehind(latest)) && (
                   <Button
                     size="sm"
                     onClick={() => void handleUpdate(latest)}
@@ -391,7 +479,7 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
                     {busy === 'update' ? (
                       <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" />
                     ) : null}
-                    Update link
+                    Update shared snapshot
                   </Button>
                 )}
                 <Button
@@ -425,9 +513,53 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
             </p>
           )}
 
+          {isThread && (published ?? latest) && (
+            <ShareTicketPanel
+              key={`${(published ?? latest)!.id}:${(published ?? latest)!.updatedAt}`}
+              record={(published ?? latest)!}
+              suggestedTicket={preview?.suggestedTicket}
+            />
+          )}
+          {preview?.contextItems && preview.contextItems.length > 0 && (
+            <fieldset className="space-y-2" disabled={busy !== null}>
+              <legend className="text-sm font-medium text-text-primary">Supporting context</legend>
+              <p className="text-xs text-text-tertiary">
+                Select the artifacts, results and attachments to include with the conversation.
+              </p>
+              {preview.contextItems.map((item) => (
+                <label
+                  key={item.id}
+                  className="flex items-center gap-2 text-sm text-text-secondary"
+                >
+                  <input
+                    type="checkbox"
+                    checked={contextItemIds.includes(item.id)}
+                    onChange={(event) =>
+                      setContextItemIds((ids) =>
+                        event.target.checked
+                          ? [...ids, item.id]
+                          : ids.filter((id) => id !== item.id),
+                      )
+                    }
+                  />
+                  {item.title} <span className="text-xs text-text-tertiary">{item.kind}</span>
+                </label>
+              ))}
+            </fieldset>
+          )}
           <section aria-label="Preview">
             <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
               <span className="font-medium text-text-secondary">What recipients see first</span>
+              {isThread && (
+                <button
+                  type="button"
+                  className="text-accent"
+                  disabled={busy !== null || loadingPreview}
+                  onClick={() => setPreviewRevision((revision) => revision + 1)}
+                >
+                  Refresh snapshot
+                </button>
+              )}
               {preview?.interactive && (
                 <span className="inline-flex items-center gap-1 rounded-md border border-accent/35 bg-accent/10 px-1.5 py-0.5 text-accent">
                   <Sparkles aria-hidden className="h-3 w-3" />
@@ -479,7 +611,11 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
             </section>
           )}
 
-          <section aria-label="Options" className="flex flex-wrap items-center gap-x-6 gap-y-3">
+          <fieldset
+            aria-label="Options"
+            disabled={busy !== null}
+            className="flex flex-wrap items-center gap-x-6 gap-y-3"
+          >
             {preview?.availableOptions?.includeComments && (
               <label className="flex items-center gap-2 text-sm text-text-secondary">
                 <input
@@ -514,7 +650,12 @@ export function ShareDialog({ target, title, open, onClose, onShared }: ShareDia
                 ))}
               </select>
             </label>
-          </section>
+          </fieldset>
+          {latest && (
+            <p className="text-xs text-text-tertiary">
+              Expiry applies to new links. Updating a snapshot keeps the existing link’s expiry.
+            </p>
+          )}
 
           {preview?.unscanned && (
             <p className="text-xs text-text-tertiary">

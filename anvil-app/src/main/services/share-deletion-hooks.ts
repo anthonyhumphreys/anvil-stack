@@ -5,7 +5,7 @@
 import { getDb } from '../db/database.js';
 
 function liveShareItemIds(
-  itemType: 'artifact' | 'surface',
+  itemType: 'artifact' | 'surface' | 'thread',
   sourceSql: string,
   threadIds: readonly string[],
 ): string[] {
@@ -25,7 +25,24 @@ export function revokeThreadSharesInBackground(threadIds: readonly string[]): vo
   if (threadIds.length === 0) return;
   let artifactIds: string[];
   let surfaceIds: string[];
+  let sharedThreadIds: string[];
+  let remoteThreadIds: string[];
   try {
+    sharedThreadIds = liveShareItemIds(
+      'thread',
+      'SELECT id FROM chat_threads WHERE id IN (%THREADS%)',
+      threadIds,
+    );
+    const placeholders = threadIds.map(() => '?').join(', ');
+    remoteThreadIds = (
+      getDb()
+        .prepare(
+          `SELECT DISTINCT s.item_id AS id FROM shares s JOIN remote_chats r ON r.id = s.item_id
+      WHERE s.item_type = 'remote-thread' AND s.revoked_at IS NULL
+      AND json_extract(r.record_json, '$.sourceThreadId') IN (${placeholders})`,
+        )
+        .all(...threadIds) as Array<{ id: string }>
+    ).map((row) => row.id);
     artifactIds = liveShareItemIds(
       'artifact',
       'SELECT id FROM chat_artifacts WHERE thread_id IN (%THREADS%)',
@@ -39,12 +56,20 @@ export function revokeThreadSharesInBackground(threadIds: readonly string[]): vo
   } catch {
     return;
   }
-  if (artifactIds.length === 0 && surfaceIds.length === 0) return;
+  if (
+    artifactIds.length === 0 &&
+    surfaceIds.length === 0 &&
+    sharedThreadIds.length === 0 &&
+    remoteThreadIds.length === 0
+  )
+    return;
   void import('./share.service.js')
     .then(({ revokeSharesForItems }) =>
       Promise.all([
         revokeSharesForItems('artifact', artifactIds),
         revokeSharesForItems('surface', surfaceIds),
+        revokeSharesForItems('thread', sharedThreadIds),
+        revokeSharesForItems('remote-thread', remoteThreadIds),
       ]),
     )
     .catch((error: unknown) => console.warn('[Shares] Revoke after deletion failed:', error));
@@ -53,11 +78,24 @@ export function revokeThreadSharesInBackground(threadIds: readonly string[]): vo
 export function revokeWorkspaceSharesInBackground(workspaceId: string): void {
   try {
     const threadIds = (
-      getDb().prepare('SELECT id FROM chat_threads WHERE workspace_id = ?').all(workspaceId) as Array<{
+      getDb()
+        .prepare('SELECT id FROM chat_threads WHERE workspace_id = ?')
+        .all(workspaceId) as Array<{
         id: string;
       }>
     ).map((row) => row.id);
     revokeThreadSharesInBackground(threadIds);
+    const remoteIds = (
+      getDb()
+        .prepare(
+          "SELECT s.item_id AS id FROM shares s JOIN remote_chats r ON r.id = s.item_id WHERE s.item_type = 'remote-thread' AND s.revoked_at IS NULL AND r.workspace_id = ?",
+        )
+        .all(workspaceId) as Array<{ id: string }>
+    ).map((row) => row.id);
+    if (remoteIds.length)
+      void import('./share.service.js')
+        .then(({ revokeSharesForItems }) => revokeSharesForItems('remote-thread', remoteIds))
+        .catch(() => undefined);
   } catch {
     // Shares table may be absent in partial test schemas; deletion proceeds.
   }

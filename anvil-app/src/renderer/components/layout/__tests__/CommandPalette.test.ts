@@ -6,6 +6,7 @@ import {
   buildPinToolCommandMetadata,
   buildCommandPaletteOptionId,
   buildNewChatThreadCommandMetadata,
+  buildPickupSharedThreadCommandMetadata,
   buildToggleChatLayoutCommandMetadata,
   filterCommandPaletteCommands,
   groupPaletteCommands,
@@ -52,6 +53,18 @@ describe('buildNewChatThreadCommandMetadata', () => {
       label: 'New Chat Thread',
       description: 'Start a clean conversation in Chat.',
       keywords: ['new', 'chat', 'thread', 'session', 'conversation'],
+    });
+  });
+});
+
+describe('buildPickupSharedThreadCommandMetadata', () => {
+  it('describes an explicit reviewed shared-thread pickup action', () => {
+    expect(buildPickupSharedThreadCommandMetadata()).toEqual({
+      id: 'act-pick-up-thread',
+      label: 'Pick up shared thread…',
+      description:
+        'Review a .anvil-thread file and create a private continuation in your workspace.',
+      keywords: ['shared', 'pick up', 'continue', 'import', 'thread', 'conversation'],
     });
   });
 });

@@ -4,6 +4,7 @@ import type { ChatGoalSnapshot, WorkspaceScaffoldStatus } from '../../../shared/
 import { SegmentedControl } from '../ui';
 import { ChatSurfacesPopover } from './ChatSurfacesPopover';
 import { ThreadPullRequests } from './ThreadPullRequests';
+import { ThreadShareButton } from '../share/ThreadShareButton';
 import { formatGoalStatus } from './chat-view-utils';
 import type { ChatPanelId } from './useChatPanels';
 
@@ -127,6 +128,13 @@ export function ChatHeader({
       </div>
 
       <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
+        {pullRequestThread && !scaffoldModeActive && (
+          <ThreadShareButton
+            key={pullRequestThread.threadId}
+            target={{ itemType: 'thread', itemId: pullRequestThread.threadId }}
+            title={title}
+          />
+        )}
         {showSurfaces && <ChatSurfacesPopover />}
         {showItsmToggle && (
           <button

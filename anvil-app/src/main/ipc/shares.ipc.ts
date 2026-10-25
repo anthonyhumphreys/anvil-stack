@@ -2,7 +2,13 @@
 // Validates renderer input, delegates to share.service, and registers the
 // approval-gated `share_item` agent tool.
 
-import { ipcMain } from 'electron';
+import { BrowserWindow, dialog, ipcMain } from 'electron';
+import {
+  hasPendingThreadPickup,
+  takePendingThreadPickupFile,
+} from '../services/thread-pickup-launch.service.js';
+import type { ThreadPickupInput } from '../../shared/thread-pickup-ipc.js';
+import type { WorkItemReference } from '../../shared/change-review-types.js';
 import type {
   ShareItemType,
   ShareOptionsInput,
@@ -21,6 +27,9 @@ import {
   revokeShare,
   sharesAgentToolProvider,
   updateShare,
+  shareAccessOptions,
+  previewShareTicketAttachment,
+  attachShareTicket,
 } from '../services/share.service.js';
 
 const MAX_ID_LENGTH = 200;
@@ -33,7 +42,9 @@ function isId(value: unknown): value is string {
 }
 
 function isItemType(value: unknown): value is ShareItemType {
-  return value === 'artifact' || value === 'surface';
+  return (
+    value === 'artifact' || value === 'surface' || value === 'thread' || value === 'remote-thread'
+  );
 }
 
 function parseTarget(value: unknown): ShareTarget {
@@ -57,6 +68,20 @@ function parseOptions(value: unknown): ShareOptionsInput {
   if (typeof value !== 'object') throw new Error('Invalid share options.');
   const record = value as Record<string, unknown>;
   const options: ShareOptionsInput = {};
+  if (record['preparedId'] !== undefined) {
+    if (!isId(record['preparedId'])) throw new Error('Invalid preview.');
+    options.preparedId = record['preparedId'];
+  }
+  if (record['contextItemIds'] !== undefined)
+    options.contextItemIds = parseIdList(record['contextItemIds']);
+  if (record['audience'] !== undefined) {
+    const audience = record['audience'] as Record<string, unknown> | null;
+    if (!audience || typeof audience !== 'object') throw new Error('Invalid share audience.');
+    if (audience['kind'] === 'link') options.audience = { kind: 'link' };
+    else if (audience['kind'] === 'organization' && isId(audience['organizationId']))
+      options.audience = { kind: 'organization', organizationId: audience['organizationId'] };
+    else throw new Error('Invalid share audience.');
+  }
   if (record['includeComments'] !== undefined) {
     options.includeComments = record['includeComments'] === true;
   }
@@ -106,8 +131,75 @@ function requireRecordId(value: unknown): string {
 
 let toolRegistered = false;
 
+function parseTicket(value: unknown): WorkItemReference {
+  if (!value || typeof value !== 'object') throw new Error('Select a ticket.');
+  const ref = value as Record<string, unknown>;
+  if (
+    !isId(ref['id']) ||
+    !isId(ref['connectionId']) ||
+    !['jira', 'linear', 'ado'].includes(String(ref['provider']))
+  )
+    throw new Error('Invalid ticket reference.');
+  return {
+    id: ref['id'],
+    connectionId: ref['connectionId'],
+    provider: ref['provider'] as WorkItemReference['provider'],
+  };
+}
+
 export function registerSharesHandlers(): void {
+  ipcMain.handle('shares:pickup-pending', () => hasPendingThreadPickup());
+  ipcMain.handle('shares:prepare-pickup', async (event) => {
+    let filePath = takePendingThreadPickupFile();
+    if (!filePath) {
+      const options: Electron.OpenDialogOptions = {
+        title: 'Pick up a shared thread',
+        properties: ['openFile'],
+        filters: [{ name: 'Anvil thread', extensions: ['anvil-thread'] }],
+      };
+      const window = BrowserWindow.fromWebContents(event.sender);
+      const result = window
+        ? await dialog.showOpenDialog(window, options)
+        : await dialog.showOpenDialog(options);
+      if (result.canceled || !result.filePaths[0]) return null;
+      filePath = result.filePaths[0];
+    }
+    const { prepareThreadPickup } = await import('../services/thread-pickup.service.js');
+    return prepareThreadPickup(filePath);
+  });
+  ipcMain.handle('shares:confirm-pickup', async (_event, value: unknown) => {
+    if (!value || typeof value !== 'object') throw new Error('Review the shared thread first.');
+    const input = value as Record<string, unknown>;
+    if (
+      !isId(input.preparedId) ||
+      !isId(input.workspaceId) ||
+      !isId(input.personaId) ||
+      !Array.isArray(input.repoIds) ||
+      input.repoIds.length > 100 ||
+      !input.repoIds.every(isId)
+    )
+      throw new Error('Select a workspace, persona and local repositories.');
+    const { confirmThreadPickup } = await import('../services/thread-pickup.service.js');
+    return confirmThreadPickup({
+      preparedId: input.preparedId,
+      workspaceId: input.workspaceId,
+      personaId: input.personaId,
+      repoIds: input.repoIds,
+    } satisfies ThreadPickupInput);
+  });
+  ipcMain.handle('shares:cancel-pickup', async (_event, id: unknown) => {
+    if (!isId(id)) throw new Error('Invalid preview.');
+    const { cancelThreadPickup } = await import('../services/thread-pickup.service.js');
+    cancelThreadPickup(id);
+  });
   ipcMain.handle('shares:available', (): boolean => isSharingAvailable());
+  ipcMain.handle('shares:access-options', () => shareAccessOptions());
+  ipcMain.handle('shares:preview-ticket', (_event, id: unknown, ticket: unknown) =>
+    previewShareTicketAttachment(requireRecordId(id), parseTicket(ticket)),
+  );
+  ipcMain.handle('shares:attach-ticket', (_event, id: unknown, ticket: unknown) =>
+    attachShareTicket(requireRecordId(id), parseTicket(ticket)),
+  );
 
   ipcMain.handle(
     'shares:preview',

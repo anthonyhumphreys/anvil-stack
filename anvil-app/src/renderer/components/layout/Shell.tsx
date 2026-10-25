@@ -132,7 +132,7 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
     }
     if (repos.some(repoIsMapped)) return; // unlocked at the mapped tier
 
-    const allowedPaths = new Set(['/chat', '/settings']);
+    const allowedPaths = new Set(['/chat', '/pick-up-thread', '/settings']);
     if (!allowedPaths.has(location.pathname)) {
       navigate('/chat', { replace: true });
     }

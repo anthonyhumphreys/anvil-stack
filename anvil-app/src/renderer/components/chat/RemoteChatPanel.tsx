@@ -7,6 +7,7 @@ import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { agentProviderLabel } from '../../utils/agent-display';
 import { chatAccessLevelLabel } from './thread-access';
 import { SettingsLink } from '../shared/SettingsLink';
+import { ThreadShareButton } from '../share/ThreadShareButton';
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const LABELS: Record<string, string> = {
@@ -397,6 +398,11 @@ export function RemoteChatPanel({
           )}
           {selected && (
             <div className="max-h-64 space-y-3 overflow-y-auto text-sm" aria-live="polite">
+              <ThreadShareButton
+                key={selected.id}
+                target={{ itemType: 'remote-thread', itemId: selected.id }}
+                title={selected.turns[0]?.prompt.slice(0, 100) || 'Mesh conversation'}
+              />
               <p className="text-text-secondary">
                 {LABELS[selected.state] ?? selected.state} on{' '}
                 {devices.find((device) => device.enrollmentId === selected.targetEnrollmentId)

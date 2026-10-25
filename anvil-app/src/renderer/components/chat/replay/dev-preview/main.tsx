@@ -100,6 +100,20 @@ const localSurfaces: SurfacesApi = {
 };
 
 const localShares = {
+  pickupPending: async () => false,
+  onPickupRequested: () => noopUnsubscribe,
+  preparePickup: async () => null,
+  confirmPickup: async () => {
+    throw new Error(SHARING_DISABLED);
+  },
+  cancelPickup: async () => undefined,
+  accessOptions: async () => ({ available: false, organizationSharing: false, organizations: [] }),
+  previewTicket: async () => {
+    throw new Error(SHARING_DISABLED);
+  },
+  attachTicket: async () => {
+    throw new Error(SHARING_DISABLED);
+  },
   available: async () => false,
   list: async () => [],
   preview: async () => {

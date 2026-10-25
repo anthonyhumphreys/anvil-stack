@@ -332,3 +332,60 @@ and typed IPC/UI paths, and backend worker placement/claim capability checks.
 Verify Desktop Node/web TypeScript checks, lint, service/real-Git tests and the
 full Desktop suite; run backend tests and typecheck for capability changes.
 Native UI and physical-device acceptance remain separate evidence.
+
+### C6: Reviewed thread shares and explicit ticket publication
+
+Status: active
+Owner projects: `anvil-app`, `anvil-website`
+
+Share only the exact main-process snapshot reviewed by the author. Include
+visible conversation text and explicitly selected artifacts, native surfaces
+and attachments; exclude system prompts, provider events and account keys.
+Bound preview custody to its options, expiry and backend/account identity.
+Updates are explicit, preserve the link's audience and expiry, and atomically
+replace reviewed title metadata and encrypted bytes. Changed access requires
+a new link. Saved credentials must be scanned in their serialized and HTML
+forms; binary content is disclosed as unscanned.
+
+Each share uses an independent browser fragment key. Guest links permit
+possession-based reads. Organisation links additionally require a verified
+website identity and current membership for every metadata and byte read,
+without requiring a paid reader seat. Fail closed when the backend/viewer
+cannot enforce the requested audience. Keep keys out of OAuth URLs, server
+requests, analytics, logs and SQLite. Revocation and expiry block future reads;
+they cannot recall bytes already downloaded. Account changes invalidate
+preview publication and transport operations.
+
+Attaching a link to a ticket is a separate explicit action after reviewing the
+connection, target and comment. Keep the complete fragment in the provider's
+link. Pin connection identity across asynchronous lookups, recheck share
+liveness immediately before posting, and retain durable publication intent.
+Never automatically retry a pending or uncertain comment publication.
+
+Owner modules: Desktop share/thread-share/share-ticket services, share IPC/UI
+and persistence; Sync share contract, coordinator and hosted access checks;
+website artifact viewer, signed read client and fragment sign-in restoration.
+Verify desktop and backend suites, migration retention, membership denial,
+revocation/expiry, frozen preview bytes, redaction and ticket retry boundaries;
+also run typechecks, lint, website viewer tests and production builds. Live
+identity-provider and external-ticket acceptance is separate from local mocks.
+
+Recipients may explicitly pick up a thread by downloading a `.anvil-thread`
+package from the authorised, decrypted viewer. The package contains the same
+redacted structured conversation, selected context and inert snapshot; it is a
+readable local copy that cannot be recalled by revocation. Keep fragment keys
+out of packages and protocol links. `anvil://pick-up-thread` only opens import
+review; it carries no conversation data. File association and manual import
+must use the same bounded, frozen main-process validation.
+
+Import creates a fresh private thread only after the recipient chooses their
+workspace, persona and local repositories. Preserve source references and full
+conversation/context as local artifacts, with bounded background supplied to
+the first actual agent request. Treat imported messages and plans as quoted
+background, never current approvals or proof of repository state. Do not
+resume a sender's provider session, activate a goal, post to a ticket, clone a
+repository or start an agent during import. The new thread starts with an
+explicit on-request access override; the recipient chooses model and access
+before sending. Validate filenames and references, write only app-owned files,
+and roll back failed imports without removing unrelated data. Preview builds
+remain isolated from OS file/protocol association registration.

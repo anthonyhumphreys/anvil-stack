@@ -1,3 +1,5 @@
+import { hostedIdentity } from "@/lib/auth";
+import { SHARE_RESPONSE_HEADERS, shareFailureCode, shareTitle } from "@/lib/share-access";
 import { fetchSharedArtifact } from "@/lib/hosted/client";
 
 export const runtime = "nodejs";
@@ -41,17 +43,23 @@ function safeFilename(title: string, mediaType: string): string {
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) {
-    return new Response("Not found", { status: 404 });
+    return new Response("Not found", { status: 404, headers: SHARE_RESPONSE_HEADERS });
   }
   let upstream: Response;
   try {
-    upstream = await fetchSharedArtifact(id);
+    const identity = await hostedIdentity();
+    upstream = await fetchSharedArtifact(id, identity ?? undefined);
   } catch {
-    return new Response("Unavailable", { status: 502 });
+    return new Response("Unavailable", { status: 502, headers: SHARE_RESPONSE_HEADERS });
   }
-  if (!upstream.ok || upstream.body === null) {
-    return new Response("Not found", { status: 404 });
+  if (!upstream.ok) {
+    const code = await shareFailureCode(upstream);
+    const status = [401, 403, 404, 410].includes(upstream.status) ? upstream.status : 502;
+    const safeCode = status === 401 ? "unauthenticated" : status === 403 ? "forbidden" :
+      ["share-revoked", "share-expired"].includes(code ?? "") ? code : "unavailable";
+    return Response.json({ error: { code: safeCode } }, { status, headers: SHARE_RESPONSE_HEADERS });
   }
+  if (upstream.body === null) return new Response("Unavailable", { status: 502, headers: SHARE_RESPONSE_HEADERS });
   // Sealed shares carry ciphertext: serve them as opaque binary so a
   // direct /raw download never lands a ".md" full of encrypted bytes.
   const sealed = upstream.headers.get("x-anvil-share-sealed") === "1";
@@ -59,8 +67,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     ? "application/octet-stream"
     : (upstream.headers.get("content-type") ?? "application/octet-stream");
   const titleHeader = upstream.headers.get("x-anvil-share-title");
-  const title = titleHeader === null ? "artifact" : decodeURIComponent(titleHeader);
-  const headers = new Headers();
+  const title = shareTitle(titleHeader, "artifact");
+  const headers = new Headers(SHARE_RESPONSE_HEADERS);
   headers.set("content-type", mediaType);
   const filename = sealed
     ? `${safeFilename(title, mediaType).replace(/\.[a-z0-9]{1,8}$/i, "")}.bin`

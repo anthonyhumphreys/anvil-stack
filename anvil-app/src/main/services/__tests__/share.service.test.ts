@@ -12,6 +12,12 @@ vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 
 const backend = vi.hoisted(() => ({
   isArtifactSharingAvailable: vi.fn(() => true),
+  artifactShareScope: vi.fn(() => 'scope-1'),
+  getShareAccessOptions: vi.fn(async () => ({
+    available: true,
+    organizationSharing: true,
+    organizations: [{ id: 'org-1', name: 'Org One' }],
+  })),
   publishSharedArtifact: vi.fn(),
   updateSharedArtifact: vi.fn(),
   revokeSharedArtifact: vi.fn(),
@@ -51,6 +57,7 @@ import {
   publishShare,
   revokeShare,
   revokeSharesForItems,
+  shareAccessOptions,
   setKnownSecretsProviderForTests,
   setShareLinkStoreForTests,
   sharesAgentToolProvider,
@@ -130,6 +137,12 @@ beforeEach(() => {
   setKnownSecretsProviderForTests(async () => []);
   vi.clearAllMocks();
   backend.isArtifactSharingAvailable.mockReturnValue(true);
+  backend.artifactShareScope.mockReturnValue('scope-1');
+  backend.getShareAccessOptions.mockResolvedValue({
+    available: true,
+    organizationSharing: true,
+    organizations: [{ id: 'org-1', name: 'Org One' }],
+  });
   backend.publishSharedArtifact.mockImplementation(async () => {
     shareCounter += 1;
     return {
@@ -214,6 +227,118 @@ describe('previewShare', () => {
 });
 
 describe('publishShare', () => {
+  it('does not invalidate a fresh preview when a previously found secret disappears', async () => {
+    insertArtifact('a1', 'markdown', `token ${GITHUB}`);
+    const target = { itemType: 'artifact' as const, itemId: 'a1' };
+    const original = await previewShare(target);
+    db.prepare("UPDATE chat_artifacts SET content = '# Clean snapshot' WHERE id = 'a1'").run();
+    const refreshed = await previewShare(target, {
+      redactFindingIds: original.secretFindings.map((finding) => finding.id),
+    });
+    expect(refreshed.secretFindings).toEqual([]);
+    await publishShare(target, { preparedId: refreshed.preparedId, redactFindingIds: [] });
+    const upload = backend.publishSharedArtifact.mock.calls[0][0];
+    expect(new TextDecoder().decode(upload.bytes)).toBe('# Clean snapshot');
+  });
+
+  it('uses the reviewed redacted bundle title in public metadata and later updates', async () => {
+    insertArtifact('a1', 'html', '<p>Safe content</p>');
+    db.prepare('UPDATE chat_artifacts SET title = ? WHERE id = ?').run(`Title ${GITHUB}`, 'a1');
+    const target = { itemType: 'artifact' as const, itemId: 'a1' };
+    const first = await previewShare(target);
+    const options = { redactFindingIds: first.secretFindings.map((finding) => finding.id) };
+    const reviewed = await previewShare(target, options);
+    const { record } = await publishShare(target, { ...options, preparedId: reviewed.preparedId });
+    const upload = backend.publishSharedArtifact.mock.calls[0][0];
+    expect(reviewed.title).toBe('Title [redacted]');
+    expect(record.title).toBe(reviewed.title);
+    expect(upload.title).toBe(reviewed.title);
+    expect(new TextDecoder().decode(upload.bytes)).not.toContain(GITHUB);
+    const next = await previewShare(target, options);
+    await updateShare(record.id, { ...options, preparedId: next.preparedId });
+    expect(backend.updateSharedArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: reviewed.title,
+      }),
+    );
+  });
+
+  it('publishes the exact bytes reviewed in the preview after the source changes', async () => {
+    insertArtifact('a1', 'markdown', '# reviewed bytes', 1);
+    const preview = await previewShare({ itemType: 'artifact', itemId: 'a1' });
+    db.prepare(
+      "UPDATE chat_artifacts SET content = '# changed later', version = 2 WHERE id = 'a1'",
+    ).run();
+
+    const { record } = await publishShare(
+      { itemType: 'artifact', itemId: 'a1' },
+      { preparedId: preview.preparedId },
+    );
+
+    const call = backend.publishSharedArtifact.mock.calls[0][0] as {
+      bytes: Uint8Array;
+      expectedScope: string;
+    };
+    expect(new TextDecoder().decode(call.bytes)).toBe('# reviewed bytes');
+    expect(call.expectedScope).toBe('scope-1');
+    expect(record).toMatchObject({ version: 1, currentVersion: 2 });
+  });
+
+  it('rejects changed redaction and publish options after preview', async () => {
+    insertArtifact('a1', 'markdown', `token ${GITHUB}`);
+    const preview = await previewShare({ itemType: 'artifact', itemId: 'a1' });
+    await expect(
+      publishShare(
+        { itemType: 'artifact', itemId: 'a1' },
+        {
+          preparedId: preview.preparedId,
+          redactFindingIds: [preview.secretFindings[0].id],
+        },
+      ),
+    ).rejects.toThrow(/preview expired or its options\/account changed/);
+    expect(backend.publishSharedArtifact).not.toHaveBeenCalled();
+
+    const expiringPreview = await previewShare(
+      { itemType: 'artifact', itemId: 'a1' },
+      { expiresInDays: 7 },
+    );
+    await expect(
+      publishShare(
+        { itemType: 'artifact', itemId: 'a1' },
+        { preparedId: expiringPreview.preparedId, expiresInDays: 8 },
+      ),
+    ).rejects.toThrow(/preview expired or its options\/account changed/);
+  });
+
+  it('rejects a preview prepared under another backend account scope', async () => {
+    insertArtifact('a1', 'markdown', '# reviewed');
+    const preview = await previewShare({ itemType: 'artifact', itemId: 'a1' });
+    backend.artifactShareScope.mockReturnValue('scope-2');
+    await expect(
+      publishShare({ itemType: 'artifact', itemId: 'a1' }, { preparedId: preview.preparedId }),
+    ).rejects.toThrow(/preview expired or its options\/account changed/);
+    expect(backend.publishSharedArtifact).not.toHaveBeenCalled();
+  });
+
+  it('exposes organization access options and keeps organization access immutable on updates', async () => {
+    insertArtifact('a1', 'markdown', '# organization content');
+    await expect(shareAccessOptions()).resolves.toEqual({
+      available: true,
+      organizationSharing: true,
+      organizations: [{ id: 'org-1', name: 'Org One' }],
+    });
+    const audience = { kind: 'organization' as const, organizationId: 'org-1' };
+    const { record } = await publishShare({ itemType: 'artifact', itemId: 'a1' }, { audience });
+    expect(record.audience).toEqual(audience);
+    await expect(
+      updateShare(record.id, { audience: { kind: 'organization', organizationId: 'org-2' } }),
+    ).rejects.toThrow(/Changing access creates a new link/);
+    await expect(updateShare(record.id, { audience: { kind: 'link' } })).rejects.toThrow(
+      /Changing access creates a new link/,
+    );
+    expect(backend.updateSharedArtifact).not.toHaveBeenCalled();
+  });
+
   it('refuses unresolved findings, then publishes redacted bytes and keeps the URL out of SQLite', async () => {
     insertArtifact('a1', 'markdown', `token ${GITHUB}`);
     await expect(publishShare({ itemType: 'artifact', itemId: 'a1' })).rejects.toThrow(
@@ -230,10 +355,17 @@ describe('publishShare', () => {
       bytes: Uint8Array;
       mediaType: string;
       expiresInDays: number;
+      audience: { kind: string };
+      expectedScope: string;
     };
     const uploaded = new TextDecoder().decode(call.bytes);
     expect(uploaded).toBe('token [redacted]');
-    expect(call).toMatchObject({ mediaType: 'text/markdown', expiresInDays: 7 });
+    expect(call).toMatchObject({
+      mediaType: 'text/markdown',
+      expiresInDays: 7,
+      audience: { kind: 'link' },
+      expectedScope: 'scope-1',
+    });
     expect(url).toBe(`https://anvilstack.dev/artifacts/${record.shareId}#k=${KEY}`);
     expect(stored.get(`share-url:${record.id}`)).toBe(url);
     expect(record).toMatchObject({ version: 1, currentVersion: 1, interactive: false });
@@ -271,6 +403,17 @@ describe('publishShare', () => {
 });
 
 describe('updateShare / revokeShare / listShares', () => {
+  it('allows revocation when the connected backend no longer has a configured viewer', async () => {
+    insertArtifact('a1', 'markdown', '# Shared snapshot');
+    const { record } = await publishShare({ itemType: 'artifact', itemId: 'a1' });
+    backend.isArtifactSharingAvailable.mockReturnValue(false);
+    const revoked = await revokeShare(record.id);
+    expect(revoked.revokedAt).toBeDefined();
+    expect(backend.revokeSharedArtifact).toHaveBeenCalledWith(record.shareId, {
+      expectedScope: 'scope-1',
+    });
+  });
+
   it('re-seals the current version under the same share id and key', async () => {
     insertArtifact('a1', 'markdown', '# v1');
     const { record } = await publishShare({ itemType: 'artifact', itemId: 'a1' });
@@ -282,9 +425,12 @@ describe('updateShare / revokeShare / listShares', () => {
     const updated = await updateShare(record.id);
     expect(backend.updateSharedArtifact).toHaveBeenCalledWith({
       shareId: record.shareId,
+      title: 'Title a1',
       shareKey: KEY,
       bytes: new TextEncoder().encode('# v4'),
       mediaType: 'text/markdown',
+      audience: { kind: 'link' },
+      expectedScope: 'scope-1',
     });
     expect(updated).toMatchObject({ id: record.id, shareId: record.shareId, version: 4 });
     expect(backend.publishSharedArtifact).toHaveBeenCalledTimes(1);
@@ -307,7 +453,9 @@ describe('updateShare / revokeShare / listShares', () => {
       new BackendRpcError({ code: 'not-found', retryable: false }),
     );
     const revoked = await revokeShare(record.id);
-    expect(backend.revokeSharedArtifact).toHaveBeenCalledWith(record.shareId);
+    expect(backend.revokeSharedArtifact).toHaveBeenCalledWith(record.shareId, {
+      expectedScope: 'scope-1',
+    });
     expect(revoked.revokedAt).toBeDefined();
     expect(stored.size).toBe(0);
     expect(await listShares()).toEqual([]);

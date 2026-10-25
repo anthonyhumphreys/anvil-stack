@@ -59,6 +59,114 @@ it('defaults workspaces to Local and preserves existing workspace Sync bindings'
   }
 });
 
+describe('migration 114 share records and ticket receipts', () => {
+  it('preserves old shares and supports thread audiences, account scope, and ticket receipts', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE shares (
+          id TEXT PRIMARY KEY,
+          item_type TEXT NOT NULL CHECK (item_type IN ('artifact', 'surface')),
+          item_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          share_id TEXT NOT NULL UNIQUE,
+          media_type TEXT NOT NULL,
+          interactive INTEGER NOT NULL DEFAULT 0,
+          title TEXT NOT NULL,
+          expires_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          revoked_at TEXT
+        );
+        CREATE INDEX idx_shares_item ON shares(item_type, item_id, created_at DESC);
+        INSERT INTO shares VALUES (
+          'old-record', 'artifact', 'artifact-1', 3, 'old-share', 'text/markdown', 0,
+          'Existing share', NULL, 'created', 'updated', NULL
+        );
+      `);
+
+      applyMigration(db, MIGRATIONS[114]!);
+
+      expect(
+        db
+          .prepare(
+            'SELECT id, item_type, item_id, share_id, audience_json, backend_scope FROM shares',
+          )
+          .all(),
+      ).toEqual([
+        {
+          id: 'old-record',
+          item_type: 'artifact',
+          item_id: 'artifact-1',
+          share_id: 'old-share',
+          audience_json: '{"kind":"link"}',
+          backend_scope: null,
+        },
+      ]);
+      db.prepare(
+        `INSERT INTO shares
+          (id, item_type, item_id, version, share_id, media_type, title, created_at, updated_at,
+           audience_json, backend_scope)
+         VALUES (?, ?, ?, 1, ?, 'application/vnd.anvil.share+json', ?, 'now', 'now', ?, ?)`,
+      ).run(
+        'thread-record',
+        'thread',
+        'thread-1',
+        'thread-share',
+        'Thread share',
+        '{"kind":"organization","organizationId":"org-1"}',
+        'account-scope-1',
+      );
+      db.prepare(
+        `INSERT INTO shares
+          (id, item_type, item_id, version, share_id, media_type, title, created_at, updated_at,
+           audience_json, backend_scope)
+         VALUES (?, ?, ?, 1, ?, 'application/vnd.anvil.share+json', ?, 'now', 'now', ?, ?)`,
+      ).run(
+        'remote-record',
+        'remote-thread',
+        'remote-1',
+        'remote-share',
+        'Mesh share',
+        '{"kind":"link"}',
+        'account-scope-2',
+      );
+      db.prepare(
+        `INSERT INTO share_ticket_publications
+          (id, share_record_id, connection_id, provider, ticket_id, ticket_title, status,
+           created_at, updated_at, published_at)
+         VALUES ('receipt-1', 'thread-record', 'connection-1', 'linear', 'ANV-1',
+           'Thread ticket', 'published', 'created', 'updated', 'published')`,
+      ).run();
+
+      expect(
+        db.prepare('SELECT item_type, audience_json, backend_scope FROM shares ORDER BY id').all(),
+      ).toEqual([
+        {
+          item_type: 'artifact',
+          audience_json: '{"kind":"link"}',
+          backend_scope: null,
+        },
+        {
+          item_type: 'remote-thread',
+          audience_json: '{"kind":"link"}',
+          backend_scope: 'account-scope-2',
+        },
+        {
+          item_type: 'thread',
+          audience_json: '{"kind":"organization","organizationId":"org-1"}',
+          backend_scope: 'account-scope-1',
+        },
+      ]);
+      expect(
+        db.prepare('SELECT status, provider, ticket_id FROM share_ticket_publications').get(),
+      ).toEqual({ status: 'published', provider: 'linear', ticket_id: 'ANV-1' });
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('fresh database schema', () => {
   it('preserves integration receipts while adding a durable combination state', () => {
     const db = new Database(':memory:');
@@ -401,7 +509,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(113);
+      expect(SCHEMA_VERSION).toBe(114);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
