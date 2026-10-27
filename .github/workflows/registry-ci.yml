@@ -144,6 +144,7 @@ jobs:
         with:
           name: mezair-registry-ci-logs
           path: mezair-registry/.ci-artifacts
+          include-hidden-files: true
           if-no-files-found: ignore
 
       - name: Stop local registry stack

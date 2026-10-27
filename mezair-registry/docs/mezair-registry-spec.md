@@ -1073,7 +1073,10 @@ services:
       - "6379:6379"
 
   minio:
-    image: minio/minio
+    build:
+      context: ./release
+      dockerfile: minio.Dockerfile
+      target: minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minio

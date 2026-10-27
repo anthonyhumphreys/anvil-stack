@@ -155,6 +155,7 @@ jobs:
           cp mezair-registry/infra/docker/release/docker-compose.codex.yml "${bundle_dir}/docker-compose.codex.yml"
           cp mezair-registry/infra/docker/release/.env.example "${bundle_dir}/.env.example"
           cp mezair-registry/infra/docker/release/README.md "${bundle_dir}/README.md"
+          cp mezair-registry/infra/docker/release/minio.Dockerfile "${bundle_dir}/minio.Dockerfile"
           tar -C dist -czf "dist/${bundle_name}.tar.gz" "${bundle_name}"
           (cd dist && zip -qr "${bundle_name}.zip" "${bundle_name}")
           (cd dist && sha256sum "${bundle_name}.tar.gz" "${bundle_name}.zip" > SHA256SUMS)

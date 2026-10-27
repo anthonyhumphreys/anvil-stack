@@ -182,7 +182,7 @@ services:
       retries: 10
 
   minio:
-    image: ${MINIO_IMAGE:-minio/minio}
+    image: ${MINIO_IMAGE:?Set MINIO_IMAGE to a locally built or approved MinIO image}
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -192,7 +192,7 @@ services:
       - ${MEZAIR_DATA_DIR:?Set MEZAIR_DATA_DIR}/minio:/data
 
   minio-init:
-    image: ${MINIO_MC_IMAGE:-minio/mc}
+    image: ${MINIO_MC_IMAGE:?Set MINIO_MC_IMAGE to a locally built or approved mc image}
     restart: "no"
     depends_on:
       - minio

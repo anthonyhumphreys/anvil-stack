@@ -130,6 +130,7 @@ jobs:
         with:
           name: node-base-image-logs
           path: mezair-registry/.ci-artifacts
+          include-hidden-files: true
           if-no-files-found: ignore
 
       - name: Log in to GHCR

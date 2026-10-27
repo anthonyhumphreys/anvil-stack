@@ -25,6 +25,39 @@ also need DNS, TLS and service configuration before use.
 - A stable hostname or IP address reachable by npm and pnpm clients.
 - HTTPS through a reverse proxy if traffic crosses an untrusted network.
 
+## MinIO source images
+
+The upstream Community `minio/minio` and `minio/mc` image repositories are no
+longer available. The included `minio.Dockerfile` builds the official sources:
+
+- Server: [RELEASE.2025-10-15T17-29-55Z](https://github.com/minio/minio/releases/tag/RELEASE.2025-10-15T17-29-55Z),
+  commit `9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a`, including the final upstream security fix.
+- Client: [RELEASE.2025-08-13T08-35-41Z](https://github.com/minio/mc/releases/tag/RELEASE.2025-08-13T08-35-41Z),
+  commit `7394ce0dd2a80935aded936b09fa12cbb3cb8096`.
+
+Both [server](https://github.com/minio/minio) and [client](https://github.com/minio/mc)
+repositories are archived. This restores local/CI S3 fixtures with fixed source revisions;
+it does not establish continuing upstream maintenance. Operators must decide
+whether these pinned sources meet their deployment requirements.
+
+Build the two local images once before starting this bundle:
+
+```bash
+docker build -f minio.Dockerfile --target minio -t mezair-minio:RELEASE.2025-10-15T17-29-55Z .
+docker build -f minio.Dockerfile --target mc -t mezair-minio-mc:RELEASE.2025-08-13T08-35-41Z .
+```
+
+The MinIO server and client executables are compiled from the pinned commits.
+Go verifies module checksums through its module proxy and checksum database.
+The Go and Alpine base images support AMD64 and ARM64, and each build compiles
+for its target platform. Use Docker Buildx with `--platform` when preparing an
+image for another host. Both resulting images include their upstream licence and dependency credits.
+
+`MINIO_IMAGE` and `MINIO_MC_IMAGE` remain operator-controlled. To use approved
+compatible images instead, set those variables to immutable image references,
+pull them explicitly, and skip the two source builds. The Compose commands below
+pull application/Postgres/Redis images while retaining the prepared storage images.
+
 ## Install
 
 1. Copy `.env.example` to `.env`.
@@ -34,7 +67,7 @@ also need DNS, TLS and service configuration before use.
 5. Start the stack:
 
    ```bash
-   docker compose pull
+   docker compose pull gateway worker admin migrate postgres redis
    docker compose up -d
    docker compose ps
    ```
@@ -100,7 +133,7 @@ The release includes an opt-in Compose override that runs Codex CLI only inside 
 
    ```bash
    docker compose -f docker-compose.yml -f docker-compose.codex.yml config
-   docker compose -f docker-compose.yml -f docker-compose.codex.yml pull
+   docker compose -f docker-compose.yml -f docker-compose.codex.yml pull gateway worker admin migrate postgres redis
    docker compose -f docker-compose.yml -f docker-compose.codex.yml up -d
    ```
 
@@ -123,7 +156,7 @@ Mount only `auth.json`, not the whole `.codex` directory. The file grants use of
 3. Pull and apply the release:
 
    ```bash
-   docker compose pull
+   docker compose pull gateway worker admin migrate postgres redis
    docker compose up -d
    docker compose ps
    ```

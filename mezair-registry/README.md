@@ -91,6 +91,14 @@ Start the local stack:
 docker compose -f infra/docker/docker-compose.yml up -d --build gateway worker admin
 ```
 
+MinIO and its `mc` bootstrap client are built from pinned official source commits
+using `infra/docker/release/minio.Dockerfile`. The upstream Community image
+repositories are unavailable; switching registry hostnames is insufficient.
+The first build therefore downloads the Go toolchain and source dependencies.
+The actual S3 service, private bucket bootstrap and integration smokes remain
+in place. See the [source-build notes](infra/docker/release/README.md#minio-source-images)
+for versions and operator image overrides.
+
 This starts Postgres, Redis, MinIO, the migration job, gateway, worker, and the Next.js Admin service through service dependencies. The gateway listens on `http://localhost:4873`; Admin listens on `http://localhost:3000`. The local admin token defaults to `local-dev-token`.
 
 Point npm at the gateway:
@@ -109,7 +117,8 @@ Tagged Registry releases include a separate Compose bundle under `infra/docker/r
 cd infra/docker/release
 cp .env.example .env
 # Set PUBLIC_BASE_URL, MEZAIR_DATA_DIR, and every placeholder secret.
-docker compose pull
+# Build the MinIO images using the included guide before starting the stack.
+docker compose pull gateway worker admin migrate postgres redis
 docker compose up -d
 ```
 
