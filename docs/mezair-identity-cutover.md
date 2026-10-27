@@ -54,6 +54,10 @@ Before making a public release or enabling a hosted connection:
 
 - Establish control of `mezair.dev`, its required subdomains and TLS/DNS.
   Configure the website and service URLs explicitly for the deployment.
+- Set the Vercel project Root Directory to `mezair-website` when adopting this
+  branch. The connected project setting is external to the repository; a preview
+  still targeting the removed directory fails before its build starts. Coordinate
+  this setting with the branch cutover so earlier source remains deployable.
 - Configure WorkOS applications, allowed origins and browser/device callbacks
   for the new site and application schemes. Rotate or re-enter deployment
   credentials through the intended secret stores.
