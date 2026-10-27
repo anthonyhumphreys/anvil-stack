@@ -53,7 +53,8 @@ const tools: AgentToolDefinition[] = [
     name: 'factory_preview',
     title: 'Preview a factory definition',
     feature: 'automations',
-    description: 'Validate and summarize the exact typed factory definition before saving it.',
+    description:
+      'Validate and summarize the exact typed factory definition before saving it. A revision keeps its pinned workflow graph unless repinWorkflow is true.',
     inputSchema: {
       type: 'object',
       required: ['definition'],
@@ -61,6 +62,7 @@ const tools: AgentToolDefinition[] = [
       properties: {
         definition: { type: 'object', additionalProperties: true },
         factoryId: { type: 'string' },
+        repinWorkflow: { type: 'boolean' },
       },
     },
   },
@@ -70,7 +72,7 @@ const tools: AgentToolDefinition[] = [
     feature: 'automations',
     mutation: true,
     description:
-      'Save a reviewed factory definition as an inactive draft. This never activates issue processing.',
+      'Save a reviewed factory definition as an inactive draft. This never activates issue processing. Set repinWorkflow to pin the current saved workflow template in the new revision.',
     inputSchema: {
       type: 'object',
       required: ['definition'],
@@ -79,6 +81,7 @@ const tools: AgentToolDefinition[] = [
         definition: { type: 'object', additionalProperties: true },
         factoryId: { type: 'string' },
         expectedRevision: { type: 'integer', minimum: 1 },
+        repinWorkflow: { type: 'boolean' },
       },
     },
   },
@@ -259,7 +262,9 @@ export const factoryToolProvider: AgentToolProvider = {
           );
         assertRepoInScope(ctx, definition.repoId);
       }
-      const preview = await previewFactory(definition, factoryId);
+      const preview = await previewFactory(definition, factoryId, {
+        repinWorkflow: args.repinWorkflow === true,
+      });
       return textResult(JSON.stringify(preview), { preview });
     }
     if (name === 'factory_save') {
@@ -282,13 +287,21 @@ export const factoryToolProvider: AgentToolProvider = {
           );
         assertRepoInScope(ctx, definition.repoId);
       }
+      const repinWorkflow = args.repinWorkflow === true;
       const preview = await previewFactory(
         definition,
         typeof args.factoryId === 'string' ? args.factoryId : undefined,
+        { repinWorkflow },
       );
-      const detail = [preview.summary.join('\n'), JSON.stringify(preview.definition, null, 2)].join(
-        '\n\n',
-      );
+      const detail = [
+        ...(repinWorkflow
+          ? [
+              'This revision re-pins the current saved workflow template. Existing runs keep their graph.',
+            ]
+          : []),
+        preview.summary.join('\n'),
+        JSON.stringify(preview.definition, null, 2),
+      ].join('\n\n');
       await approve(
         ctx,
         args.factoryId ? 'Save this factory revision?' : 'Save this factory draft?',
@@ -299,6 +312,7 @@ export const factoryToolProvider: AgentToolProvider = {
       const input: FactorySaveInput = {
         definition: preview.definition,
         confirmation: preview.confirmation,
+        ...(repinWorkflow ? { repinWorkflow } : {}),
         ...(typeof args.factoryId === 'string' ? { id: args.factoryId } : {}),
         ...(typeof args.expectedRevision === 'number'
           ? { expectedRevision: args.expectedRevision }

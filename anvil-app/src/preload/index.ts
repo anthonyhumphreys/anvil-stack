@@ -69,6 +69,7 @@ import type {
   FactoryOrganizationMember,
   FactoryOrganizationOption,
   FactoryPreview,
+  FactoryPreviewOptions,
   FactoryRun,
   FactoryRunControlInput,
   FactorySaveInput,
@@ -498,9 +499,22 @@ const api: AnvilAPI = {
 
   factories: {
     draft: (request: string, workspaceId: string) =>
-      ipcRenderer.invoke('factories:draft', request, workspaceId) as Promise<FactoryDefinitionInput>,
-    preview: (definition: FactoryDefinitionInput, factoryId?: string) =>
-      ipcRenderer.invoke('factories:preview', definition, factoryId) as Promise<FactoryPreview>,
+      ipcRenderer.invoke(
+        'factories:draft',
+        request,
+        workspaceId,
+      ) as Promise<FactoryDefinitionInput>,
+    preview: (
+      definition: FactoryDefinitionInput,
+      factoryId?: string,
+      options?: FactoryPreviewOptions,
+    ) =>
+      ipcRenderer.invoke(
+        'factories:preview',
+        definition,
+        factoryId,
+        options,
+      ) as Promise<FactoryPreview>,
     save: (input: FactorySaveInput) =>
       ipcRenderer.invoke('factories:save', input) as Promise<FactoryDefinition>,
     activate: (input: FactoryActivateInput) =>
@@ -517,11 +531,27 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('factories:control', input) as Promise<FactoryDefinition>,
     controlRun: (input: FactoryRunControlInput) =>
       ipcRenderer.invoke('factories:control-run', input) as Promise<FactoryRun>,
-    listOrganizations: () => ipcRenderer.invoke('factories:organizations') as Promise<FactoryOrganizationOption[]>,
-    listOrganizationMembers: (organizationId: string) => ipcRenderer.invoke('factories:organization-members', organizationId) as Promise<FactoryOrganizationMember[]>,
-    validateOrganizationTeam: (organizationId: string, source: { host: 'github.com'; owner: string; repo: string }, teamId: string) => ipcRenderer.invoke('factories:organization-team', organizationId, source, teamId) as Promise<boolean>,
-    registerOrganizationKey: (organizationId: string) => ipcRenderer.invoke('factories:organization-key-register', organizationId) as Promise<string>,
-    directory: (organizationId?: string) => ipcRenderer.invoke('factories:directory', organizationId) as Promise<FactoryDirectoryItem[]>,
+    listOrganizations: () =>
+      ipcRenderer.invoke('factories:organizations') as Promise<FactoryOrganizationOption[]>,
+    listOrganizationMembers: (organizationId: string) =>
+      ipcRenderer.invoke('factories:organization-members', organizationId) as Promise<
+        FactoryOrganizationMember[]
+      >,
+    validateOrganizationTeam: (
+      organizationId: string,
+      source: { host: 'github.com'; owner: string; repo: string },
+      teamId: string,
+    ) =>
+      ipcRenderer.invoke(
+        'factories:organization-team',
+        organizationId,
+        source,
+        teamId,
+      ) as Promise<boolean>,
+    registerOrganizationKey: (organizationId: string) =>
+      ipcRenderer.invoke('factories:organization-key-register', organizationId) as Promise<string>,
+    directory: (organizationId?: string) =>
+      ipcRenderer.invoke('factories:directory', organizationId) as Promise<FactoryDirectoryItem[]>,
   },
 
   dojo: {
@@ -860,7 +890,8 @@ const api: AnvilAPI = {
     recommendations: () => ipcRenderer.invoke('codex-registry:recommendations'),
     inspectCollection: (input) => ipcRenderer.invoke('codex-registry:inspect-collection', input),
     installCollection: (input) => ipcRenderer.invoke('codex-registry:install-collection', input),
-    saveRecommendations: (input) => ipcRenderer.invoke('codex-registry:save-recommendations', input),
+    saveRecommendations: (input) =>
+      ipcRenderer.invoke('codex-registry:save-recommendations', input),
     searchSkills: (query: string) => ipcRenderer.invoke('codex-registry:search-skills', query),
     installSkill: (input) => ipcRenderer.invoke('codex-registry:install-skill', input),
     registerMcp: (input) => ipcRenderer.invoke('codex-registry:register-mcp', input),

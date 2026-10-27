@@ -28,6 +28,7 @@ import type {
   FactoryOrganizationMember,
   FactoryOrganizationOption,
   FactoryPreview,
+  FactoryPreviewOptions,
   FactoryRun,
   FactoryRunControlInput,
   FactorySaveInput,
@@ -617,7 +618,11 @@ export interface AnvilAPI {
 
   factories: {
     draft: (request: string, workspaceId: string) => Promise<FactoryDefinitionInput>;
-    preview: (definition: FactoryDefinitionInput, factoryId?: string) => Promise<FactoryPreview>;
+    preview: (
+      definition: FactoryDefinitionInput,
+      factoryId?: string,
+      options?: FactoryPreviewOptions,
+    ) => Promise<FactoryPreview>;
     save: (input: FactorySaveInput) => Promise<FactoryDefinition>;
     activate: (input: FactoryActivateInput) => Promise<FactoryDefinition>;
     list: (workspaceId?: string) => Promise<FactoryDefinition[]>;
@@ -628,7 +633,11 @@ export interface AnvilAPI {
     controlRun: (input: FactoryRunControlInput) => Promise<FactoryRun>;
     listOrganizations: () => Promise<FactoryOrganizationOption[]>;
     listOrganizationMembers: (organizationId: string) => Promise<FactoryOrganizationMember[]>;
-    validateOrganizationTeam: (organizationId: string, source: { host: 'github.com'; owner: string; repo: string }, teamId: string) => Promise<boolean>;
+    validateOrganizationTeam: (
+      organizationId: string,
+      source: { host: 'github.com'; owner: string; repo: string },
+      teamId: string,
+    ) => Promise<boolean>;
     registerOrganizationKey: (organizationId: string) => Promise<string>;
     directory: (organizationId?: string) => Promise<FactoryDirectoryItem[]>;
   };
@@ -892,7 +901,9 @@ export interface AnvilAPI {
     snapshot: () => Promise<CodexRegistrySnapshot>;
     recommendations: () => Promise<SkillRecommendationCatalog>;
     inspectCollection: (input: SkillRecommendationSelection) => Promise<SkillCollectionInspection>;
-    installCollection: (input: SkillRecommendationSelection & { skillName?: string }) => Promise<CodexRegistryActionResult>;
+    installCollection: (
+      input: SkillRecommendationSelection & { skillName?: string },
+    ) => Promise<CodexRegistryActionResult>;
     saveRecommendations: (input: SaveSkillRecommendationsInput) => Promise<void>;
     searchSkills: (query: string) => Promise<CodexSkillSearchResult[]>;
     installSkill: (input: CodexSkillInstallInput) => Promise<CodexRegistryActionResult>;

@@ -204,7 +204,42 @@ describe('factory agent tools', () => {
       factoryId: 'factory-1',
       definition: factory(true).definition,
     });
-    expect(mocks.previewFactory).toHaveBeenCalledWith(factory(true).definition, 'factory-1');
+    expect(mocks.previewFactory).toHaveBeenCalledWith(factory(true).definition, 'factory-1', {
+      repinWorkflow: false,
+    });
+  });
+
+  it('re-pins a workflow only through an approved, explicit revision request', async () => {
+    mocks.saveFactory.mockResolvedValue(factory());
+    await factoryToolProvider.call(ctx, 'factory_save', {
+      factoryId: 'factory-1',
+      expectedRevision: 2,
+      definition: factory().definition,
+      repinWorkflow: true,
+    });
+    expect(mocks.previewFactory).toHaveBeenCalledWith(factory().definition, 'factory-1', {
+      repinWorkflow: true,
+    });
+    expect(mocks.approve).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        detail: expect.stringContaining('re-pins the current saved workflow'),
+      }),
+      undefined,
+    );
+    expect(mocks.saveFactory).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'factory-1', repinWorkflow: true }),
+    );
+
+    mocks.saveFactory.mockClear();
+    await factoryToolProvider.call(ctx, 'factory_save', {
+      factoryId: 'factory-1',
+      expectedRevision: 2,
+      definition: factory().definition,
+    });
+    expect(mocks.saveFactory).toHaveBeenCalledWith(
+      expect.not.objectContaining({ repinWorkflow: expect.anything() }),
+    );
   });
 
   it('only exposes current-head merge approval through run control, never a policy change', async () => {

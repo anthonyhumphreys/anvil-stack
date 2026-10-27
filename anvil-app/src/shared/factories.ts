@@ -215,7 +215,14 @@ export interface FactoryRun {
   remote?: boolean;
   executionOwner?: boolean;
 }
-export interface FactorySaveInput {
+export interface FactoryPreviewOptions {
+  /**
+   * Pin the current saved template instead of retaining the existing revision's graph.
+   * Only the designated executor can re-pin; existing runs keep their own snapshot.
+   */
+  repinWorkflow?: boolean;
+}
+export interface FactorySaveInput extends FactoryPreviewOptions {
   definition: FactoryDefinitionInput;
   id?: string;
   expectedRevision?: number;
@@ -282,3 +289,65 @@ export interface FactoryProvider {
   ): Promise<FactoryEvidence>;
 }
 export const FACTORY_TERMINAL_STAGES: FactoryRunStage[] = ['completed', 'cancelled', 'taken-over'];
+
+/**
+ * Isolated worker constraints for a factory graph, in the order the controller enforces them.
+ * Empty when the graph can run in a factory. The first issue is the activation error.
+ */
+export function factoryWorkflowIssues(
+  workflow: Pick<WorkflowTemplate, 'nodes' | 'orchestration'>,
+): string[] {
+  const issues = new Set<string>();
+  if (!workflow.nodes.length || workflow.nodes.length > 32)
+    issues.add('Choose a bounded saved workflow.');
+  for (const node of workflow.nodes) {
+    if (node.target && node.target.kind !== 'local')
+      issues.add('Factory workers must run in the isolated local execution checkout.');
+    if (node.kind !== 'human' && !['codex'].includes(node.provider ?? 'codex'))
+      issues.add(
+        'Factory workers require a Codex app-server provider with enforced sandbox isolation.',
+      );
+    if (node.requiresValidation)
+      issues.add(
+        'Factory acceptance checks run independently in the controller; remove inline privileged validation from the worker graph.',
+      );
+  }
+  for (const profile of workflow.orchestration?.profiles ?? [])
+    if (
+      (profile.target && profile.target.kind !== 'local') ||
+      !['codex'].includes(profile.provider)
+    )
+      issues.add('Factory specialist profiles must use isolated local Codex app-server execution.');
+  return [...issues];
+}
+
+function behaviouralGraph(workflow: Pick<WorkflowTemplate, 'nodes' | 'edges' | 'orchestration'>) {
+  // Canvas positions and labels do not change what a worker does.
+  return JSON.stringify({
+    nodes: [...workflow.nodes]
+      .map(({ position: _position, ...node }) => node)
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    edges: [...workflow.edges].map(({ source, target }) => `${source}>${target}`).sort(),
+    orchestration: workflow.orchestration ?? null,
+  });
+}
+
+/** Compares a factory's pinned graph with the saved template it was pinned from. */
+export function factoryWorkflowDrift(
+  pinned: WorkflowTemplate,
+  template: WorkflowTemplate | null | undefined,
+): 'current' | 'changed' | 'missing' {
+  if (!template) return 'missing';
+  return behaviouralGraph(pinned) === behaviouralGraph(template) ? 'current' : 'changed';
+}
+
+const FACTORY_WORKER_THREAD_PREFIX = 'factory-worker-';
+/** The chat thread that owns a factory run's delegated workflow; also its provenance key. */
+export function factoryWorkerThreadId(runId: string): string {
+  return `${FACTORY_WORKER_THREAD_PREFIX}${runId}`;
+}
+export function factoryRunIdFromWorkerThread(threadId: string | undefined): string | null {
+  return threadId?.startsWith(FACTORY_WORKER_THREAD_PREFIX)
+    ? threadId.slice(FACTORY_WORKER_THREAD_PREFIX.length) || null
+    : null;
+}

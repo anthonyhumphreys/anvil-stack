@@ -3,6 +3,7 @@ import type {
   FactoryActivateInput,
   FactoryControlInput,
   FactoryDefinitionInput,
+  FactoryPreviewOptions,
   FactoryRunControlInput,
   FactorySaveInput,
 } from '../../shared/factories.js';
@@ -28,8 +29,14 @@ export function registerFactoryHandlers(): void {
   ipcMain.handle('factories:draft', (_event, request: string, workspaceId: string) =>
     draftFactory(request, workspaceId),
   );
-  ipcMain.handle('factories:preview', (_event, definition: FactoryDefinitionInput, factoryId?: string) =>
-    previewFactory(definition, factoryId),
+  ipcMain.handle(
+    'factories:preview',
+    (
+      _event,
+      definition: FactoryDefinitionInput,
+      factoryId?: string,
+      options?: FactoryPreviewOptions,
+    ) => previewFactory(definition, factoryId, { repinWorkflow: options?.repinWorkflow === true }),
   );
   ipcMain.handle('factories:save', (_event, input: FactorySaveInput) => saveFactory(input));
   ipcMain.handle('factories:activate', (_event, input: FactoryActivateInput) =>
@@ -37,9 +44,7 @@ export function registerFactoryHandlers(): void {
   );
   ipcMain.handle('factories:list', (_event, workspaceId?: string) => listFactories(workspaceId));
   ipcMain.handle('factories:get', (_event, factoryId: string) => getFactory(factoryId));
-  ipcMain.handle('factories:list-runs', (_event, factoryId: string) =>
-    listFactoryRuns(factoryId),
-  );
+  ipcMain.handle('factories:list-runs', (_event, factoryId: string) => listFactoryRuns(factoryId));
   ipcMain.handle('factories:get-run', (_event, runId: string) => getFactoryRun(runId));
   ipcMain.handle('factories:control', (_event, input: FactoryControlInput) =>
     controlFactory(input),
@@ -51,8 +56,14 @@ export function registerFactoryHandlers(): void {
   ipcMain.handle('factories:organization-members', (_event, organizationId: string) =>
     listFactoryOrganizationMembers(organizationId),
   );
-  ipcMain.handle('factories:organization-team', (_event, organizationId: string, source: { host: 'github.com'; owner: string; repo: string }, teamId: string) =>
-    validateFactoryOrganizationTeam(organizationId, source, teamId),
+  ipcMain.handle(
+    'factories:organization-team',
+    (
+      _event,
+      organizationId: string,
+      source: { host: 'github.com'; owner: string; repo: string },
+      teamId: string,
+    ) => validateFactoryOrganizationTeam(organizationId, source, teamId),
   );
   ipcMain.handle('factories:organization-key-register', (_event, organizationId: string) =>
     registerFactoryOrganizationKey(organizationId),

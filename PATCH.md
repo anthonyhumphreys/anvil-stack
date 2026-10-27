@@ -503,6 +503,18 @@ candidate before every publication. Controller candidate sealing disables repo
 hooks/signing commands; reviewed sandboxed checks supply verification instead.
 Do not weaken C4's separate interactive delivery or C2's Cloud boundaries.
 
+Each saved revision pins a copy of a saved workflow. A revision keeps the
+previous pinned graph unless its template changes or the owner explicitly sets
+`repinWorkflow` on preview and save; the review confirmation covers the graph
+that will be pinned, so a re-pin is reviewed and activated like any other
+revision and never alters runs already in progress. Remote revisions refuse to
+re-pin or change the graph. `factoryWorkflowIssues` is the one isolation rule for
+activation and the renderer's workflow picker. Factory worker threads are named
+by `factoryWorkerThreadId`; that name is the provenance key the Workflows view
+uses to label factory-started runs and send control back to the factory. The
+renderer may save a pinned graph as a new workflow or relink a factory to a
+matching saved workflow, but only through a new reviewed revision.
+
 Supported limits are observed shell command count across workers and repairs,
 wall-clock duration, concurrency and repair rounds. Reserve acceptance and
 post-merge command capacity, meter command-start events, deduplicate observations
@@ -529,6 +541,10 @@ Verification passed: desktop suite (348 files, 3,177 tests; 4 files and 12 tests
 skipped), full Node/web TypeScript checks, lint, production build, hosted backend
 suite (43 files, 483 tests) and backend typecheck. `git diff --check` is clean.
 No live GitHub write, production migration or deployment was performed or tested.
+The workflow re-pin and renderer change re-ran the desktop suite (362 files,
+3,335 tests; 4 files and 12 tests skipped), both TypeScript checks, lint and the
+production build. Its layouts were checked against the synthetic `?factories`
+replay fixture only, not a live factory.
 
 ### C9: GitHub Work Item connection identity
 

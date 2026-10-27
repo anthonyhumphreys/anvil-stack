@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { FactoryDefinitionInput, FactoryPreview } from '../../shared/factories.js';
+import { factoryWorkflowIssues } from '../../shared/factories.js';
 import type { WorkflowTemplate } from '../../shared/types.js';
 
 function record(value: unknown): Record<string, unknown> {
@@ -138,28 +139,8 @@ export function validateFactoryDefinition(value: unknown): FactoryDefinitionInpu
   return result;
 }
 export function validateFactoryWorkflow(workflow: WorkflowTemplate): void {
-  if (!workflow.nodes.length || workflow.nodes.length > 32)
-    throw new Error('Choose a bounded saved workflow.');
-  for (const node of workflow.nodes) {
-    if (node.target && node.target.kind !== 'local')
-      throw new Error('Factory workers must run in the isolated local execution checkout.');
-    if (node.kind !== 'human' && !['codex'].includes(node.provider ?? 'codex'))
-      throw new Error(
-        'Factory workers require a Codex app-server provider with enforced sandbox isolation.',
-      );
-    if (node.requiresValidation)
-      throw new Error(
-        'Factory acceptance checks run independently in the controller; remove inline privileged validation from the worker graph.',
-      );
-  }
-  for (const profile of workflow.orchestration?.profiles ?? [])
-    if (
-      (profile.target && profile.target.kind !== 'local') ||
-      !['codex'].includes(profile.provider)
-    )
-      throw new Error(
-        'Factory specialist profiles must use isolated local Codex app-server execution.',
-      );
+  const [issue] = factoryWorkflowIssues(workflow);
+  if (issue) throw new Error(issue);
 }
 export function factoryPreview(
   definition: FactoryDefinitionInput,

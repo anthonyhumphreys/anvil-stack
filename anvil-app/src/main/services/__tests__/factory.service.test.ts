@@ -212,6 +212,62 @@ describe('factory service reviewed activation and remote projections', () => {
     expect(next.activeRevision).toBe(1);
     expect(new FactoryStore(state.db).getRevision(factory.id, 1)?.definition.name).toBe('Factory');
   });
+  it('keeps the pinned graph across revisions until the owner explicitly re-pins it', async () => {
+    const factory = await saved();
+    const edited = structuredClone(workflow);
+    edited.nodes[0].prompt = 'Implement with a regression test first';
+    edited.updatedAt = 'later';
+    vi.mocked(getWorkflowTemplate).mockReturnValue(edited);
+
+    const kept = await previewFactory(definition, factory.id);
+    const next = await saveFactory({
+      id: factory.id,
+      expectedRevision: 1,
+      definition,
+      confirmation: kept.confirmation,
+    });
+    expect(next.workflow.nodes[0].prompt).toBe('Implement');
+
+    const repinned = await previewFactory(definition, factory.id, { repinWorkflow: true });
+    expect(repinned.confirmation).not.toBe(kept.confirmation);
+    await expect(
+      saveFactory({
+        id: factory.id,
+        expectedRevision: 2,
+        definition,
+        confirmation: kept.confirmation,
+        repinWorkflow: true,
+      }),
+    ).rejects.toThrow('changed since review');
+    const third = await saveFactory({
+      id: factory.id,
+      expectedRevision: 2,
+      definition,
+      confirmation: repinned.confirmation,
+      repinWorkflow: true,
+    });
+    expect(third.revision).toBe(3);
+    expect(third.workflow.nodes[0].prompt).toBe('Implement with a regression test first');
+    const store = new FactoryStore(state.db);
+    expect(store.getRevision(factory.id, 2)?.workflow.nodes[0].prompt).toBe('Implement');
+  });
+  it('refuses to re-pin a remote revision away from the designated executor', async () => {
+    const remote = remoteFactory();
+    state.remote.set(remote.id, remote);
+    state.actor = { id: 'recipient-account', accountScope: 'recipient-scope' };
+    await expect(
+      previewFactory(remote.definition, remote.id, { repinWorkflow: true }),
+    ).rejects.toThrow('designated executor');
+    await expect(
+      saveFactory({
+        id: remote.id,
+        expectedRevision: 1,
+        definition: remote.definition,
+        confirmation: 'reviewed',
+        repinWorkflow: true,
+      }),
+    ).rejects.toThrow('designated executor');
+  });
   it('rejects stale review, widened source, and failed daemon preparation', async () => {
     const factory = await saved();
     await expect(

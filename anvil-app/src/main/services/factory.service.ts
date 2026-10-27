@@ -9,10 +9,12 @@ import type {
   FactoryDefinition,
   FactoryDefinitionInput,
   FactoryPreview,
+  FactoryPreviewOptions,
   FactoryRun,
   FactoryRunControlInput,
   FactorySaveInput,
 } from '../../shared/factories.js';
+import { factoryWorkerThreadId } from '../../shared/factories.js';
 import { getDb } from '../db/database.js';
 import { FactoryStore } from './factory-persistence.service.js';
 import { FactoryRuntime, type FactoryWorker } from './factory-runtime.service.js';
@@ -131,24 +133,40 @@ function validateWorkerAvailability(workflow: FactoryDefinition['workflow']): vo
   if (!process.env.OPENAI_API_KEY && !fs.existsSync(path.join(codexHome, 'auth.json')))
     throw new Error('Sign in to Codex before activating an isolated factory worker.');
 }
+/**
+ * A revision keeps its existing pinned graph unless the template changes or the owner
+ * explicitly re-pins the current saved template. Remote revisions never change the graph.
+ */
+function revisionWorkflow(
+  definition: FactoryDefinitionInput,
+  existing: FactoryDefinition | null,
+  remote: boolean,
+  options: FactoryPreviewOptions,
+): FactoryDefinition['workflow'] {
+  const sameTemplate =
+    existing !== null && definition.workflowTemplateId === existing.definition.workflowTemplateId;
+  if (remote && (!sameTemplate || options.repinWorkflow))
+    throw new Error(
+      'Remote revisions preserve the pinned workflow; change it on the designated executor.',
+    );
+  const workflow =
+    sameTemplate && !options.repinWorkflow
+      ? existing.workflow
+      : getWorkflowTemplate(definition.workflowTemplateId);
+  if (!workflow) throw new Error('Choose an existing saved workflow.');
+  return workflow;
+}
 export async function previewFactory(
   value: FactoryDefinitionInput,
   factoryId?: string,
+  options: FactoryPreviewOptions = {},
 ): Promise<FactoryPreview> {
   const definition = validateFactoryDefinition(value);
   const existing = factoryId ? await findFactory(factoryId) : null;
   if (factoryId && !existing) throw new Error('Factory not found.');
   if (existing) await authorize(existing, 'edit');
   const remote = existing && !localOwner(existing) ? existing : undefined;
-  if (remote && definition.workflowTemplateId !== remote.definition.workflowTemplateId)
-    throw new Error(
-      'Remote revisions preserve the pinned workflow; change it on the designated executor.',
-    );
-  const workflow =
-    existing && definition.workflowTemplateId === existing.definition.workflowTemplateId
-      ? existing.workflow
-      : getWorkflowTemplate(definition.workflowTemplateId);
-  if (!workflow) throw new Error('Choose an existing saved workflow.');
+  const workflow = revisionWorkflow(definition, existing, Boolean(remote), options);
   if (!remote) validateLocalSource(definition);
   return factoryPreview(definition, workflow, remote?.accountScope ?? actor().accountScope);
 }
@@ -203,16 +221,8 @@ export async function saveFactory(input: FactorySaveInput): Promise<FactoryDefin
     )
       throw new Error('An organisation factory cannot be silently made private.');
   }
-  const remote = current && !localOwner(current);
-  if (remote && definition.workflowTemplateId !== current.definition.workflowTemplateId)
-    throw new Error(
-      'Change the pinned workflow on its designated executor; remote edits preserve the existing graph.',
-    );
-  const workflow =
-    current && definition.workflowTemplateId === current.definition.workflowTemplateId
-      ? current.workflow
-      : getWorkflowTemplate(definition.workflowTemplateId);
-  if (!workflow) throw new Error('Choose an existing saved workflow.');
+  const remote = current !== null && !localOwner(current);
+  const workflow = revisionWorkflow(definition, current, remote, input);
   if (!remote) validateLocalSource(definition);
   const who = actor(),
     preview = factoryPreview(definition, workflow, current?.accountScope ?? who.accountScope);
@@ -249,6 +259,7 @@ export async function saveFactory(input: FactorySaveInput): Promise<FactoryDefin
   store().audit(factory.id, who.id, 'save-revision', {
     revision: factory.revision,
     visibility: definition.access,
+    ...(input.repinWorkflow ? { repinnedWorkflow: workflow.updatedAt } : {}),
   });
   return view(factory);
 }
@@ -443,7 +454,7 @@ function createTakeoverThread(
 }
 const worker: FactoryWorker = {
   async start(run, key, prompt) {
-    const threadId = `factory-worker-${run.id}`;
+    const threadId = factoryWorkerThreadId(run.id);
     if (!getChatThread(threadId))
       createChatThread(
         {
