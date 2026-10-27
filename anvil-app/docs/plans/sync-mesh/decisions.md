@@ -1,6 +1,6 @@
 # Sync and Mesh decisions
 
-Current product, architecture, and rollout decisions, updated 19 October 2026. This record governs
+Current product, architecture, and rollout decisions, updated 27 October 2026. This record governs
 the feature. The [implementation plan](host-local-sync-mesh-implementation-plan.md) holds technical
 detail; the [implementation review](host-local-implementation-review.md) holds audit evidence and
 acceptance limits.
@@ -74,6 +74,17 @@ acceptance limits.
   retains accepted-job ownership, approvals, cancellation, handoff, and supported recovery
   decisions; it does not replace host-only reads. Anvil application services do not relay encrypted
   machine-session frames. A managed tunnel still proxies network traffic through its provider.
+- Desktop/daemon and native mobile prefer validated LAN-address candidates, then other private
+  routes, explicit HTTPS and managed ingress. Reachability probes are bounded and carry no account
+  credentials. A replacement session must authenticate and catch up before it takes ownership;
+  requests already sent remain on their original connection and mutations are never replayed by
+  transport migration. Hosts must advertise `machine.stream-handoff/1` for proactive upgrades.
+  Route hints are preferences, not trust or physical-locality evidence: UI labels use `Direct`
+  with host LAN-address detail. Network changes refresh discovery without rotating host identity.
+  Admission and continuing authorization still require the backend; this is not offline Mesh.
+  See the [LAN connectivity implementation record](lan-first-connectivity.md) for controls and
+  pending physical acceptance. Existing managed connector lifecycle and execution grants remain
+  independent of route selection.
 - Hosted durability is limited to what coordination and recovery require. R2 holds verified,
   encrypted current and previous Sync snapshots. Sync changes, tombstones, and push receipts have a
   90-day retention. Mesh artifacts default to seven days, with a 30-day maximum; durable event

@@ -73,6 +73,12 @@ jobs:
           pnpm exec tsc --noEmit -p tsconfig.node.json
           pnpm exec tsc --noEmit -p tsconfig.web.json
 
+      - name: Verify mobile Mesh connections
+        run: |
+          pnpm --dir mobile test:mesh-session
+          pnpm --dir mobile typecheck
+          pnpm --dir mobile lint
+
       - name: Build headless daemon
         run: pnpm build:daemon
 

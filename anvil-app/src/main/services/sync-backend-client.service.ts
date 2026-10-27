@@ -12,7 +12,12 @@ import {
   SOCKET_SUBPROTOCOL,
   type ContractLimits,
 } from '../../../cloud/contract/version.js';
-import type { SocketFrame, SocketFrameType } from '../../../cloud/contract/socket.js';
+import {
+  MACHINE_ROUTES_CHANGED_FEATURE,
+  SOCKET_FEATURES_HEADER,
+  type SocketFrame,
+  type SocketFrameType,
+} from '../../../cloud/contract/socket.js';
 
 /**
  * Generic v1 backend connection client (BYOB-01).
@@ -34,6 +39,7 @@ const KNOWN_SOCKET_FRAME_TYPES: ReadonlyArray<SocketFrameType> = [
   'unsubscribe',
   'sync.invalidate',
   'worker.available',
+  'machine.routes-changed',
   'job.available',
   'activity',
   'gap',
@@ -447,7 +453,10 @@ export function openSocket(
     throw new Error('socket URL must not carry credentials');
   }
   const socket = createSocket(connection.socketUrl, protocols, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      [SOCKET_FEATURES_HEADER]: MACHINE_ROUTES_CHANGED_FEATURE,
+    },
   });
   const frameListeners = new Set<(frame: SocketFrame) => void>();
   const protocolErrorListeners = new Set<(error: Error) => void>();
@@ -498,6 +507,17 @@ export function openSocket(
     }
     if (!KNOWN_SOCKET_FRAME_TYPE_SET.has(parsed['type'])) {
       failProtocol(`unknown socket frame type: ${parsed['type']}`);
+      return;
+    }
+    if (
+      parsed['type'] === 'machine.routes-changed' &&
+      (parsed['version'] !== 1 ||
+        typeof parsed['id'] !== 'string' ||
+        typeof parsed['enrollmentId'] !== 'string' ||
+        parsed['enrollmentId'].length === 0 ||
+        parsed['enrollmentId'].length > 128)
+    ) {
+      failProtocol('malformed machine route invalidation');
       return;
     }
     for (const listener of frameListeners) {

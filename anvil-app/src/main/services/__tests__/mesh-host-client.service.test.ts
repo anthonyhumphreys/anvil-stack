@@ -93,10 +93,14 @@ describe('mesh host route and frame helpers', () => {
     expect(safeMeshRouteBase({ kind: 'private', url: 'http://100.64.0.1:4312' })?.origin).toBe(
       'http://100.64.0.1:4312',
     );
-    expect(safeMeshRouteBase({ kind: 'private', url: 'http://100.127.255.254:4312' })).not.toBeNull();
+    expect(
+      safeMeshRouteBase({ kind: 'private', url: 'http://100.127.255.254:4312' }),
+    ).not.toBeNull();
     expect(safeMeshRouteBase({ kind: 'private', url: 'http://100.63.255.255:4312' })).toBeNull();
     expect(safeMeshRouteBase({ kind: 'private', url: 'http://100.128.0.1:4312' })).toBeNull();
-    expect(safeMeshRouteBase({ kind: 'private', url: 'http://[fd7a:115c:a1e0::1]:4312' })).not.toBeNull();
+    expect(
+      safeMeshRouteBase({ kind: 'private', url: 'http://[fd7a:115c:a1e0::1]:4312' }),
+    ).not.toBeNull();
     expect(safeMeshRouteBase({ kind: 'private', url: 'http://8.8.8.8:4312' })).toBeNull();
     expect(safeMeshRouteBase({ kind: 'https', url: 'https://user:secret@host.test' })).toBeNull();
     expect(safeMeshRouteBase({ kind: 'private', url: 'https://host.test/path' })).toBeNull();
@@ -167,38 +171,41 @@ describe('mesh host route and frame helpers', () => {
       onEvent,
     });
 
-    const broker = setup.calls.find((call) =>
-      new URL(call.url).pathname === '/v1/mesh/hosts/machine-target/admission-tickets',
+    const broker = setup.calls.find(
+      (call) => new URL(call.url).pathname === '/v1/mesh/hosts/machine-target/admission-tickets',
     );
     expect(broker?.headers.get('authorization')).toBe('Bearer source-device-secret');
     expect(new URL(broker!.url).protocol).toBe('https:');
     expect(broker?.init.redirect).toBe('error');
-    const hostCalls = setup.calls.filter((call) =>
-      new URL(call.url).hostname === 'private.example.test',
+    const hostCalls = setup.calls.filter(
+      (call) => new URL(call.url).hostname === 'private.example.test',
     );
     expect(hostCalls.length).toBeGreaterThanOrEqual(3);
     for (const call of hostCalls) {
       expect(call.headers.has('authorization')).toBe(false);
       expect(call.init.redirect).toBe('error');
     }
-    expect(setup.socketURLs).toEqual([
-      'wss://private.example.test/api/machine/v1/sessions/socket',
-    ]);
-    setup.sockets[0]?.emitServerPayload({
-      kind: 'event',
-      epoch: 'stream-epoch',
-      sequence: 1,
-      workspaceId: 'workspace-1',
-      jobId: 'job-1',
-      eventKind: 'activity',
-      payload: { attemptId: 'attempt-1', streamId: 'attempt:attempt-1', sequence: 1 },
-    }, 2);
+    expect(setup.socketURLs).toEqual(['wss://private.example.test/api/machine/v1/sessions/socket']);
+    setup.sockets[0]?.emitServerPayload(
+      {
+        kind: 'event',
+        epoch: 'stream-epoch',
+        sequence: 1,
+        workspaceId: 'workspace-1',
+        jobId: 'job-1',
+        eventKind: 'activity',
+        payload: { attemptId: 'attempt-1', streamId: 'attempt:attempt-1', sequence: 1 },
+      },
+      2,
+    );
     await vi.waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
-    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
-      eventKind: 'activity',
-      workspaceId: 'workspace-1',
-      jobId: 'job-1',
-    }));
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKind: 'activity',
+        workspaceId: 'workspace-1',
+        jobId: 'job-1',
+      }),
+    );
     connection.close();
   });
 
@@ -215,6 +222,114 @@ describe('mesh host route and frame helpers', () => {
       }),
     ).rejects.toThrow('authorization-unavailable');
     expect(setup.socketURLs).toEqual([]);
+  });
+
+  it('reports protocol termination once and rejects outstanding requests', async () => {
+    const setup = makeAdmissionHandshake();
+    const onClosed = vi.fn();
+    const connection = await connectMeshMachineHost(host(Date.now()), {
+      apiUrl: 'https://account.example.test/v1/',
+      accessToken: 'source-device-secret',
+      accountId: 'account-1',
+      enrollmentId: 'source-device',
+      fetchFn: setup.fetchFn,
+      socketFactory: setup.socketFactory,
+      onClosed,
+    });
+    const request = connection.request('read.job', {});
+    const rejected = expect(request).rejects.toThrow('machine-frame-malformed');
+    setup.sockets[0]!.emitServerPayload({ kind: 'refreshed', requestId: 'none' }, 99);
+    await rejected;
+    expect(connection.isOpen).toBe(false);
+    expect(onClosed).toHaveBeenCalledTimes(1);
+    connection.close();
+    expect(onClosed).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes expiry of one transport session from device revocation', async () => {
+    const setup = makeAdmissionHandshake();
+    const onClosed = vi.fn();
+    const connection = await connectMeshMachineHost(host(Date.now()), {
+      apiUrl: 'https://account.example.test/v1/',
+      accessToken: 'source-device-secret',
+      accountId: 'account-1',
+      enrollmentId: 'source-device',
+      fetchFn: setup.fetchFn,
+      socketFactory: setup.socketFactory,
+      onClosed,
+    });
+    setup.sockets[0]!.emitServerPayload({ kind: 'session.revoked', reason: 'expired' }, 2);
+    await vi.waitFor(() =>
+      expect(onClosed).toHaveBeenCalledWith('device-target', 'machine-session-expired'),
+    );
+    connection.close();
+  });
+
+  it.each(['serialization', 'socket'] as const)(
+    'terminates after a %s send failure without sending a later sequence',
+    async (cause) => {
+      const setup = makeAdmissionHandshake();
+      const onClosed = vi.fn();
+      const connection = await connectMeshMachineHost(host(Date.now()), {
+        apiUrl: 'https://account.example.test/v1/',
+        accessToken: 'source-device-secret',
+        accountId: 'account-1',
+        enrollmentId: 'source-device',
+        fetchFn: setup.fetchFn,
+        socketFactory: setup.socketFactory,
+        onClosed,
+      });
+      const send = vi.spyOn(setup.sockets[0]!, 'send');
+      if (cause === 'socket')
+        send.mockImplementation(() => {
+          throw new Error('socket-write');
+        });
+      const payload: Record<string, unknown> = {};
+      if (cause === 'serialization') payload.self = payload;
+      await expect(connection.request('command.submit', payload)).rejects.toThrow(
+        'machine-send-failed',
+      );
+      expect(connection.isOpen).toBe(false);
+      expect(onClosed).toHaveBeenCalledExactlyOnceWith('device-target', 'machine-send-failed');
+      await expect(connection.request('read.job', {})).rejects.toThrow('machine-session-closed');
+      expect(send).toHaveBeenCalledTimes(cause === 'socket' ? 1 : 0);
+      connection.close();
+      expect(onClosed).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('erases the decrypted token when socket construction fails', async () => {
+    const setup = makeAdmissionHandshake();
+    const target = host(Date.now());
+    target.routes = target.routes.filter((route) => route.kind === 'private');
+    const secret = Buffer.alloc(32, 0x21);
+    const erased: Buffer[] = [];
+    const original = Buffer.prototype.fill;
+    const spy = vi.spyOn(Buffer.prototype, 'fill').mockImplementation(function (
+      this: Buffer,
+      ...args: Parameters<typeof original>
+    ) {
+      if (args[0] === 0 && this.equals(secret)) erased.push(this);
+      return Reflect.apply(original, this, args);
+    });
+    try {
+      await expect(
+        connectMeshMachineHost(target, {
+          apiUrl: 'https://account.example.test/v1/',
+          accessToken: 'source-device-secret',
+          accountId: 'account-1',
+          enrollmentId: 'source-device',
+          fetchFn: setup.fetchFn,
+          socketFactory: () => {
+            throw new Error('socket-construction-failed');
+          },
+        }),
+      ).rejects.toThrow('route-unavailable');
+      expect(erased).toHaveLength(1);
+      expect(erased[0]).toEqual(Buffer.alloc(32));
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('cancels an oversized streaming response as soon as the byte limit is crossed', async () => {
@@ -351,7 +466,8 @@ function makeAdmissionHandshake(options: { forgeHostProof?: boolean } = {}): {
       return jsonResponse(challenge);
     }
     if (url.pathname === '/api/machine/v1/sessions/bootstrap') {
-      if (claims === null || challenge === null) throw new Error('Challenge should precede bootstrap.');
+      if (claims === null || challenge === null)
+        throw new Error('Challenge should precede bootstrap.');
       bootstrapRequestSeen = true;
       const request = JSON.parse(String(init.body)) as { proof: string };
       expect(request.proof).toBe(
@@ -366,7 +482,12 @@ function makeAdmissionHandshake(options: { forgeHostProof?: boolean } = {}): {
       );
       const sessionClaims: MeshMachineBootstrapResponse['sessionClaims'] = {
         accountId: 'account-1',
-        principal: { kind: 'enrollment', accountId: 'account-1', sourceEnrollmentId: 'source-device', tier: 'steer' },
+        principal: {
+          kind: 'enrollment',
+          accountId: 'account-1',
+          sourceEnrollmentId: 'source-device',
+          tier: 'steer',
+        },
         machineId: 'machine-target',
         endpointGeneration: 'generation-1',
         sessionId: 'session-1',
@@ -424,11 +545,16 @@ class TestMachineSocket {
   private closed = false;
 
   constructor(private readonly sessionToken: Buffer) {
-    queueMicrotask(() => this.emit('message', JSON.stringify({
-      type: 'auth-challenge',
-      nonce: 'socket-nonce',
-      epoch: 'stream-epoch',
-    })));
+    queueMicrotask(() =>
+      this.emit(
+        'message',
+        JSON.stringify({
+          type: 'auth-challenge',
+          nonce: 'socket-nonce',
+          epoch: 'stream-epoch',
+        }),
+      ),
+    );
   }
 
   on(event: string, listener: (...args: unknown[]) => void): void {
@@ -446,13 +572,15 @@ class TestMachineSocket {
       endpointGeneration: 'generation-1',
       direction: 'host-to-client',
     });
-    const key = Buffer.from(hkdfSync(
-      'sha256',
-      this.sessionToken,
-      Buffer.from(derivation.salt, 'utf8'),
-      Buffer.from(derivation.info, 'utf8'),
-      32,
-    ));
+    const key = Buffer.from(
+      hkdfSync(
+        'sha256',
+        this.sessionToken,
+        Buffer.from(derivation.salt, 'utf8'),
+        Buffer.from(derivation.info, 'utf8'),
+        32,
+      ),
+    );
     const payload = {
       kind: 'ready',
       sessionId: 'session-1',
@@ -473,12 +601,15 @@ class TestMachineSocket {
       payload,
     });
     queueMicrotask(() => {
-      this.emit('message', JSON.stringify({
-        type: 'data',
-        sessionId: 'session-1',
-        sequence: 1,
-        envelope,
-      }));
+      this.emit(
+        'message',
+        JSON.stringify({
+          type: 'data',
+          sessionId: 'session-1',
+          sequence: 1,
+          envelope,
+        }),
+      );
     });
   }
 
@@ -489,13 +620,15 @@ class TestMachineSocket {
       endpointGeneration: 'generation-1',
       direction: 'host-to-client',
     });
-    const key = Buffer.from(hkdfSync(
-      'sha256',
-      this.sessionToken,
-      Buffer.from(derivation.salt, 'utf8'),
-      Buffer.from(derivation.info, 'utf8'),
-      32,
-    ));
+    const key = Buffer.from(
+      hkdfSync(
+        'sha256',
+        this.sessionToken,
+        Buffer.from(derivation.salt, 'utf8'),
+        Buffer.from(derivation.info, 'utf8'),
+        32,
+      ),
+    );
     const envelope = sealMeshMachineFrame({
       key,
       sessionId: 'session-1',
@@ -506,12 +639,17 @@ class TestMachineSocket {
       sequence: outerSequence,
       payload,
     });
-    queueMicrotask(() => this.emit('message', JSON.stringify({
-      type: 'data',
-      sessionId: 'session-1',
-      sequence: outerSequence,
-      envelope,
-    })));
+    queueMicrotask(() =>
+      this.emit(
+        'message',
+        JSON.stringify({
+          type: 'data',
+          sessionId: 'session-1',
+          sequence: outerSequence,
+          envelope,
+        }),
+      ),
+    );
   }
 
   close(): void {

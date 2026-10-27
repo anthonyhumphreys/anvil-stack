@@ -8,9 +8,10 @@ import type {
   SessionAttestResult,
 } from '../../contract/companion';
 import { MESH_MACHINE_OPERATIONS, MESH_MACHINE_PROTOCOL_VERSION } from '../../contract/machine';
+import { MACHINE_ROUTES_CHANGED_FEATURE, SOCKET_FEATURES_HEADER } from '../../contract/socket';
 import { isRpcError } from '../../contract/envelope';
 import type { AccountCoordinator } from '../src/account-coordinator';
-import { expectSuccess, postRpc, spikeBearer, uniqueIds, withSelfHostedBackend } from './helpers';
+import { expectSuccess, nextFrameOfType, postRpc, spikeBearer, uniqueIds, withSelfHostedBackend } from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
 
@@ -74,6 +75,66 @@ function machineAd(
 }
 
 describe('device.advertise + device.presence', () => {
+  it('coalesces effective machine route changes without heartbeat or cross-account notifications', async () => {
+    const accountId = `acct-${crypto.randomUUID()}`;
+    const host = await enroll((await issueCode(accountId)).code, 'routes-host');
+    const peer = await enroll((await issueCode(accountId)).code, 'routes-peer');
+    const outsider = await enroll((await issueCode(`other-${crypto.randomUUID()}`)).code, 'routes-outsider');
+    const legacy = await enroll((await issueCode(accountId)).code, 'routes-legacy');
+    const sockets: WebSocket[] = [];
+    const frames: Record<string, unknown>[][] = [];
+    try {
+      for (const session of [host, peer, outsider, legacy]) {
+        const response = await SELF.fetch('https://spike.test/v1/connect', {
+          headers: {
+            Upgrade: 'websocket', Authorization: `Bearer ${session.accessToken}`,
+            ...(session === legacy ? {} : { [SOCKET_FEATURES_HEADER]: MACHINE_ROUTES_CHANGED_FEATURE }),
+          },
+        });
+        expect(response.status).toBe(101);
+        const socket = response.webSocket!;
+        socket.accept();
+        const received: Record<string, unknown>[] = [];
+        socket.addEventListener('message', (event) => {
+          const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+          if (frame['type'] === 'machine.routes-changed') received.push(frame);
+        });
+        sockets.push(socket);
+        frames.push(received);
+      }
+      const advertisement = machineAd(`machine-${crypto.randomUUID()}`, host.enrollmentId);
+      const first = nextFrameOfType(sockets[1]!, 'machine.routes-changed');
+      expectSuccess(await postRpc('device.advertise', advertisement, `Bearer ${host.accessToken}`));
+      expect(await first).toEqual({
+        type: 'machine.routes-changed', version: 1, id: expect.any(String), enrollmentId: host.enrollmentId,
+      });
+      expectSuccess(await postRpc('device.advertise', {
+        ...advertisement,
+        endpoints: [...advertisement.endpoints].reverse(),
+      }, `Bearer ${host.accessToken}`));
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      expect(frames.map((items) => items.length)).toEqual([0, 1, 0, 0]);
+
+      const changed = nextFrameOfType(sockets[1]!, 'machine.routes-changed');
+      for (const address of ['192.168.1.31', '192.168.1.32']) {
+        expectSuccess(await postRpc('device.advertise', {
+          ...advertisement,
+          endpoints: [{ kind: 'lan', host: address, port: 47631, meshNetworkKind: 'lan' }],
+        }, `Bearer ${host.accessToken}`));
+      }
+      await changed;
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      expect(frames.map((items) => items.length)).toEqual([0, 2, 0, 0]);
+
+      const removed = nextFrameOfType(sockets[1]!, 'machine.routes-changed');
+      expectSuccess(await postRpc('device.advertise', { endpoints: [], capabilities: [] }, `Bearer ${host.accessToken}`));
+      await removed;
+      expect(frames.map((items) => items.length)).toEqual([0, 3, 0, 0]);
+    } finally {
+      for (const socket of sockets) socket.close(1000, 'done');
+    }
+  });
+
   it('publishes self-scoped endpoints and lists them in presence', async () => {
     const accountId = `acct-${crypto.randomUUID()}`;
     const host = await enroll((await issueCode(accountId)).code, 'install-host');

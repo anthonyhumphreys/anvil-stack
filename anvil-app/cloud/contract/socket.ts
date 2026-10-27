@@ -8,6 +8,9 @@
 import { ErrorCode } from './envelope';
 
 export const SOCKET_FRAME_VERSION = 1;
+/** Opt in to additive frames so older strict parsers keep their existing live channel. */
+export const SOCKET_FEATURES_HEADER = 'X-Anvil-Socket-Features';
+export const MACHINE_ROUTES_CHANGED_FEATURE = 'machine.routes-changed/1';
 
 export type SocketFrameType =
   | 'hello'
@@ -15,6 +18,7 @@ export type SocketFrameType =
   | 'unsubscribe'
   | 'sync.invalidate'
   | 'worker.available'
+  | 'machine.routes-changed'
   | 'job.available'
   | 'activity'
   | 'gap'
@@ -60,6 +64,14 @@ export interface WorkerAvailableFrame {
   id: string;
   enrollmentId: string;
   incarnation: string;
+}
+
+/** Replaceable discovery hint. Addresses and credentials remain in authenticated discovery. */
+export interface MachineRoutesChangedFrame {
+  type: 'machine.routes-changed';
+  version: typeof SOCKET_FRAME_VERSION;
+  id: string;
+  enrollmentId: string;
 }
 
 export interface JobAvailableFrame {
@@ -119,6 +131,7 @@ export type SocketFrame =
   | UnsubscribeFrame
   | SyncInvalidateFrame
   | WorkerAvailableFrame
+  | MachineRoutesChangedFrame
   | JobAvailableFrame
   | ActivityFrame
   | GapFrame

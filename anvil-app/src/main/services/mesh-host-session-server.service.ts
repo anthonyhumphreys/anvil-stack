@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import {
   MESH_MACHINE_MAX_FRAME_BYTES,
+  MESH_MACHINE_REPLAY_MAX_BYTES,
+  MESH_MACHINE_REPLAY_MAX_EVENTS,
   MESH_MACHINE_ROUTE_PATHS,
   MESH_MACHINE_SOCKET_SUBPROTOCOL,
   type MeshMachineBootstrapRequest,
@@ -16,6 +18,7 @@ const MAX_HTTP_BODY_BYTES = 16 * 1024;
 const MAX_SOCKET_MESSAGE_BYTES = MESH_MACHINE_MAX_FRAME_BYTES * 2;
 const SOCKET_AUTH_TIMEOUT_MS = 5_000;
 const MAX_SOCKET_CONNECTIONS = 64;
+const MAX_QUEUED_CONTROL_FRAMES = 64;
 
 interface WebSocketPeer {
   readyState: number;
@@ -61,7 +64,21 @@ interface AuthenticatedSocket {
   sessionId: string;
   origin: string | undefined;
   authenticated: boolean;
+  ownerToken: symbol;
   authTimer: ReturnType<typeof setTimeout>;
+  replaying: boolean;
+  outbound: QueuedSocketPayload[];
+  heldEvents: QueuedSocketPayload[];
+  inFlight: QueuedSocketPayload | null;
+  queuedEvents: number;
+  queuedEventBytes: number;
+  queuedControls: number;
+  queuedControlBytes: number;
+}
+
+interface QueuedSocketPayload {
+  payload: MeshMachineServerPayload;
+  bytes: number;
 }
 
 /** HTTP bootstrap and encrypted WebSocket transport for a single listener authority. */
@@ -69,7 +86,6 @@ export class MeshHostSessionServer {
   private readonly options: MeshHostSessionServerOptions;
   private readonly webSockets: WebSocketServerLike;
   private readonly sockets = new Map<WebSocketPeer, AuthenticatedSocket>();
-  private readonly socketBySession = new Map<string, WebSocketPeer>();
   private readonly unsubscribeEvents: () => void;
   private disposed = false;
 
@@ -86,7 +102,7 @@ export class MeshHostSessionServer {
       void byteLength;
       for (const [socket, connection] of this.sockets) {
         if (
-          connection.authenticated &&
+          this.isCurrentSocket(socket, connection) &&
           options.sessions.isSessionSubscribedToWorkspace(connection.sessionId, event.workspaceId)
         ) {
           this.sendPayload(socket, connection.sessionId, { kind: 'event', ...payload });
@@ -212,13 +228,11 @@ export class MeshHostSessionServer {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeEvents();
-    for (const [client, socket] of this.sockets) {
-      clearTimeout(socket.authTimer);
-      client.close(1001, 'listener-stopped');
+    for (const client of this.sockets.keys()) {
+      this.closeSocket(client, 1001, 'listener-stopped');
       client.terminate();
     }
     this.sockets.clear();
-    this.socketBySession.clear();
     this.webSockets.close();
   }
 
@@ -228,14 +242,23 @@ export class MeshHostSessionServer {
       sessionId: '',
       origin,
       authenticated: false,
-      authTimer: setTimeout(() => client.close(1008, 'auth-timeout'), SOCKET_AUTH_TIMEOUT_MS),
+      ownerToken: Symbol('mesh-socket'),
+      authTimer: setTimeout(() => this.closeSocket(client, 1008, 'auth-timeout'), SOCKET_AUTH_TIMEOUT_MS),
+      replaying: false,
+      outbound: [],
+      heldEvents: [],
+      inFlight: null,
+      queuedEvents: 0,
+      queuedEventBytes: 0,
+      queuedControls: 0,
+      queuedControlBytes: 0,
     };
     state.authTimer.unref?.();
     this.sockets.set(client, state);
     client.send(JSON.stringify({ type: 'auth-challenge', ...challenge }));
     client.on('message', (raw) => {
       void this.handleSocketMessage(client, raw, challenge.nonce).catch(() => {
-        client.close(1008, 'invalid-session-frame');
+        this.closeSocket(client, 1008, 'invalid-session-frame');
       });
     });
     client.once('close', () => this.forgetSocket(client));
@@ -251,67 +274,150 @@ export class MeshHostSessionServer {
     if (state === undefined) return;
     const text = socketMessageText(raw);
     if (text === null || Buffer.byteLength(text, 'utf8') > MAX_SOCKET_MESSAGE_BYTES) {
-      client.close(1009, 'message-too-large');
+      this.closeSocket(client, 1009, 'message-too-large');
       return;
     }
     let frame: unknown;
     try {
       frame = JSON.parse(text) as unknown;
     } catch {
-      client.close(1007, 'malformed-frame');
+      this.closeSocket(client, 1007, 'malformed-frame');
       return;
     }
     if (!state.authenticated) {
       if (!isAuthFrame(frame)) {
-        client.close(1008, 'auth-required');
+        this.closeSocket(client, 1008, 'auth-required');
         return;
       }
       const expectedOrigin = this.options.sessions.getSessionOrigin(frame.sessionId);
+      const validProof = this.options.sessions.authenticateSocket(frame.sessionId, nonce, frame.proof);
       if (
-        !this.options.sessions.authenticateSocket(frame.sessionId, nonce, frame.proof) ||
+        !validProof ||
         (expectedOrigin === null ? state.origin !== undefined : expectedOrigin !== state.origin)
       ) {
-        client.close(1008, 'session-not-authorized');
+        // A guessed session ID must not let an unauthenticated peer retire someone else's session.
+        if (validProof) this.options.sessions.discardUnattachedSession(frame.sessionId);
+        this.closeSocket(client, 1008, 'session-not-authorized');
         return;
       }
       clearTimeout(state.authTimer);
-      const previous = this.socketBySession.get(frame.sessionId);
-      if (previous !== undefined && previous !== client) previous.close(4001, 'session-reconnected');
       state.sessionId = frame.sessionId;
       state.authenticated = true;
-      this.socketBySession.set(frame.sessionId, client);
+      if (!this.options.sessions.attachSocket(frame.sessionId, state.ownerToken, (reason) => {
+        this.closeSocket(client, reason === 'replaced' ? 4001 : 1008,
+          reason === 'replaced' ? 'session-reconnected' : 'session-retired');
+      })) {
+        this.closeSocket(client, 1008, 'session-expired');
+        return;
+      }
       this.sendPayload(client, frame.sessionId, this.options.sessions.readyPayload(frame.sessionId));
       return;
     }
 
+    if (!this.isCurrentSocket(client, state)) return;
     if (!isEncryptedClientFrame(frame) || frame.sessionId !== state.sessionId) {
-      client.close(1008, 'encrypted-frame-required');
+      this.closeSocket(client, 1008, 'encrypted-frame-required');
       return;
     }
     try {
       const decoded = this.options.sessions.decryptClientFrame(frame);
+      if (decoded.payload.kind === 'subscribe') {
+        state.replaying = true;
+        const payloads = this.options.sessions.processSubscription(decoded.sessionId, decoded.payload);
+        this.enqueuePayloads(client, state, payloads, true);
+        state.outbound.push(...state.heldEvents);
+        state.heldEvents.length = 0;
+        state.replaying = false;
+        this.flushOutbound(client, state);
+        return;
+      }
       const payloads = await this.options.sessions.processClientPayload(decoded.sessionId, decoded.payload);
-      for (const payload of payloads) this.sendPayload(client, decoded.sessionId, payload);
+      // Application requests stay concurrent; only ordered outbound writes share this queue.
+      this.enqueuePayloads(client, state, payloads);
     } catch {
-      client.close(1008, 'encrypted-frame-invalid');
+      this.closeSocket(client, 1008, 'encrypted-frame-invalid');
     }
   }
 
   private sendPayload(client: WebSocketPeer, sessionId: string, payload: MeshMachineServerPayload): void {
-    if (client.readyState !== 1 || !this.options.sessions.isSessionActive(sessionId)) return;
+    const state = this.sockets.get(client);
+    if (state === undefined || state.sessionId !== sessionId) return;
+    this.enqueuePayloads(client, state, [payload]);
+  }
+
+  private enqueuePayloads(
+    client: WebSocketPeer,
+    state: AuthenticatedSocket,
+    payloads: MeshMachineServerPayload[],
+    subscriptionBatch = false,
+  ): void {
+    if (!this.isCurrentSocket(client, state)) return;
+    for (const payload of payloads) {
+      const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+      if (payload.kind === 'event') {
+        state.queuedEvents += 1;
+        state.queuedEventBytes += bytes;
+      } else {
+        state.queuedControls += 1;
+        state.queuedControlBytes += bytes;
+      }
+      if (
+        state.queuedEvents > MESH_MACHINE_REPLAY_MAX_EVENTS ||
+        state.queuedEventBytes > MESH_MACHINE_REPLAY_MAX_BYTES ||
+        state.queuedControls > MAX_QUEUED_CONTROL_FRAMES ||
+        state.queuedControlBytes > MESH_MACHINE_MAX_FRAME_BYTES
+      ) {
+        this.closeSocket(client, 1009, 'stream-buffer-overflow');
+        return;
+      }
+      const queue = state.replaying && payload.kind === 'event' && !subscriptionBatch
+        ? state.heldEvents : state.outbound;
+      queue.push({ payload, bytes });
+    }
+    if (!state.replaying) this.flushOutbound(client, state);
+  }
+
+  private flushOutbound(client: WebSocketPeer, state: AuthenticatedSocket): void {
+    if (state.replaying || state.inFlight !== null || !this.isCurrentSocket(client, state)) return;
+    const next = state.outbound.shift();
+    if (next === undefined) return;
+    state.inFlight = next;
     try {
-      const frame = this.options.sessions.encryptServerPayload(sessionId, payload);
+      const frame = this.options.sessions.encryptServerPayload(state.sessionId, next.payload);
       const text = JSON.stringify(frame);
       if (Buffer.byteLength(text, 'utf8') > MAX_SOCKET_MESSAGE_BYTES) {
-        client.close(1009, 'response-too-large');
+        this.closeSocket(client, 1009, 'response-too-large');
         return;
       }
       client.send(text, (error) => {
-        if (error) client.close(1011, 'send-failed');
+        if (this.sockets.get(client) !== state || state.inFlight !== next) return;
+        if (error) {
+          this.closeSocket(client, 1011, 'send-failed');
+          return;
+        }
+        state.inFlight = null;
+        if (next.payload.kind === 'event') {
+          state.queuedEvents -= 1;
+          state.queuedEventBytes -= next.bytes;
+        } else {
+          state.queuedControls -= 1;
+          state.queuedControlBytes -= next.bytes;
+        }
+        this.flushOutbound(client, state);
       });
     } catch {
-      client.close(1008, 'session-expired');
+      this.closeSocket(client, 1008, 'session-expired');
     }
+  }
+
+  private isCurrentSocket(client: WebSocketPeer, state: AuthenticatedSocket): boolean {
+    return this.sockets.get(client) === state && state.authenticated && client.readyState === 1 &&
+      this.options.sessions.ownsSocket(state.sessionId, state.ownerToken);
+  }
+
+  private closeSocket(client: WebSocketPeer, code: number, reason: string): void {
+    this.forgetSocket(client);
+    client.close(code, reason);
   }
 
   private forgetSocket(client: WebSocketPeer): void {
@@ -319,9 +425,10 @@ export class MeshHostSessionServer {
     if (state === undefined) return;
     clearTimeout(state.authTimer);
     this.sockets.delete(client);
-    if (state.sessionId !== '' && this.socketBySession.get(state.sessionId) === client) {
-      this.socketBySession.delete(state.sessionId);
-    }
+    state.outbound.length = 0;
+    state.heldEvents.length = 0;
+    state.inFlight = null;
+    if (state.authenticated) this.options.sessions.detachSocket(state.sessionId, state.ownerToken);
   }
 }
 

@@ -8,6 +8,7 @@ import {
   timingSafeEqual,
 } from 'node:crypto';
 import {
+  MESH_MACHINE_CAPABILITIES,
   MESH_MACHINE_MAX_FRAME_BYTES,
   MESH_MACHINE_OPERATIONS,
   MESH_MACHINE_SESSION_AUTHORIZATION_MAX_AGE_MS,
@@ -53,6 +54,7 @@ const MAX_FRAME_BYTES = MESH_MACHINE_MAX_FRAME_BYTES;
 const SESSION_MAX_AGE_MS = MESH_MACHINE_SESSION_TTL_MS;
 const AUTHORIZATION_MAX_AGE_MS = MESH_MACHINE_SESSION_AUTHORIZATION_MAX_AGE_MS;
 const REFRESH_INTERVAL_MS = MESH_MACHINE_SESSION_REFRESH_INTERVAL_MS;
+export const MESH_HOST_UNATTACHED_SESSION_TTL_MS = 30_000;
 
 export interface MeshHostDashboardContext {
   accountId: string;
@@ -230,7 +232,12 @@ interface SessionRecord {
   nextClientSequence: number;
   nextServerSequence: number;
   lastAcknowledged: MeshMachineCursor | null;
+  subscriptionInstalled: boolean;
   subscribedWorkspaceIds: Set<string>;
+  socketOwner: { token: symbol; close: (reason: 'replaced' | 'retired') => void } | null;
+  attachExpiresAt: number | null;
+  attachDeadlineMonotonic: number | null;
+  attachTimer: ReturnType<typeof setTimeout> | null;
   receipts: Map<string, RequestReceipt>;
   revoked: boolean;
 }
@@ -275,7 +282,7 @@ export class MeshHostSessionService {
       machineId,
       endpointGeneration,
       protocolVersion: 1,
-      capabilities: ['machine.session/1', 'machine.stream/1', 'dashboard.command.wake/1'],
+      capabilities: [...MESH_MACHINE_CAPABILITIES],
       operations: [...MESH_MACHINE_OPERATIONS],
       transport: {
         socketPath: '/api/machine/v1/sessions/socket',
@@ -456,7 +463,7 @@ export class MeshHostSessionService {
       machineId: identity.machineId,
       endpointGeneration: identity.endpointGeneration,
       clientPublicKey: request.clientPublicKey,
-      capabilities: ['machine.session/1', 'machine.stream/1', 'dashboard.command.wake/1'],
+      capabilities: [...MESH_MACHINE_CAPABILITIES],
       principal: {
         kind: 'dashboard',
         accountId: dashboard.accountId,
@@ -702,7 +709,9 @@ export class MeshHostSessionService {
       }
       if (hostProof === null) throw new MeshHostAdmissionError('authorization-unavailable');
 
-      this.sessions.set(sessionId, {
+      // Admission can await policy checks; reserve capacity only after those complete.
+      if (this.sessions.size >= MAX_SESSIONS) throw new Error('session-capacity');
+      const session: SessionRecord = {
         sessionId,
         sessionToken: token,
         accountId,
@@ -722,10 +731,22 @@ export class MeshHostSessionService {
         nextClientSequence: 1,
         nextServerSequence: 1,
         lastAcknowledged: null,
+        subscriptionInstalled: false,
         subscribedWorkspaceIds: new Set(),
+        socketOwner: null,
+        attachExpiresAt: now + MESH_HOST_UNATTACHED_SESSION_TTL_MS,
+        attachDeadlineMonotonic: nowMonotonic + MESH_HOST_UNATTACHED_SESSION_TTL_MS,
+        attachTimer: null,
         receipts: new Map(),
         revoked: false,
-      });
+      };
+      this.sessions.set(sessionId, session);
+      session.attachTimer = setTimeout(() => {
+        if (this.sessions.get(sessionId) === session && session.socketOwner === null) {
+          this.retireSession(session);
+        }
+      }, MESH_HOST_UNATTACHED_SESSION_TTL_MS);
+      session.attachTimer.unref?.();
       stored = true;
       return { ...responseWithoutHostProof, hostProof };
     } finally {
@@ -756,6 +777,60 @@ export class MeshHostSessionService {
     const valid = actual !== null && timingSafeEqual(expected, actual);
     actual?.fill(0);
     return valid;
+  }
+
+  /** Ownership spans all ingress listeners backed by this authority. Call after proof checks. */
+  attachSocket(
+    sessionId: string,
+    ownerToken: symbol,
+    close: (reason: 'replaced' | 'retired') => void,
+  ): boolean {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined || !this.isSessionFresh(session)) return false;
+    if (session.socketOwner?.token === ownerToken) return true;
+    const previous = session.socketOwner;
+    session.socketOwner = { token: ownerToken, close };
+    session.subscriptionInstalled = false;
+    session.subscribedWorkspaceIds.clear();
+    session.attachExpiresAt = null;
+    session.attachDeadlineMonotonic = null;
+    if (session.attachTimer !== null) clearTimeout(session.attachTimer);
+    session.attachTimer = null;
+    // Publish the replacement before notifying the old socket, whose close may be synchronous.
+    previous?.close('replaced');
+    return this.sessions.get(sessionId) === session && session.socketOwner?.token === ownerToken;
+  }
+
+  ownsSocket(sessionId: string, ownerToken: symbol): boolean {
+    const session = this.sessions.get(sessionId);
+    return session !== undefined && this.isSessionUnexpired(session) &&
+      session.socketOwner?.token === ownerToken;
+  }
+
+  detachSocket(sessionId: string, ownerToken: symbol): void {
+    const session = this.sessions.get(sessionId);
+    if (session?.socketOwner?.token === ownerToken) {
+      session.socketOwner = null;
+      this.retireSession(session);
+    }
+  }
+
+  /** Only a caller that already verified possession may discard a failed socket attachment. */
+  discardUnattachedSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session !== undefined && session.socketOwner === null) this.retireSession(session);
+  }
+
+  /** Synchronous replay capture lets the transport enqueue a complete stream barrier atomically. */
+  processSubscription(
+    sessionId: string,
+    payload: Extract<MeshMachineClientPayload, { kind: 'subscribe' }>,
+  ): MeshMachineServerPayload[] {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined || !this.isSessionFresh(session)) {
+      return [{ kind: 'session.revoked', reason: 'expired' }];
+    }
+    return this.subscribe(session, payload);
   }
 
   decryptClientFrame(frame: MeshMachineClientFrame): {
@@ -831,7 +906,7 @@ export class MeshHostSessionService {
       session.lastAcknowledged = { ...payload.cursor };
       return [{ kind: 'response', requestId: payload.requestId, result: { acknowledged: payload.cursor } }];
     }
-    if (payload.kind === 'subscribe') return this.subscribe(session, payload);
+    if (payload.kind === 'subscribe') return this.processSubscription(sessionId, payload);
     if (!this.isAuthorizedForOperation(session, payload.operation)) {
       return [{ kind: 'error', requestId: payload.requestId, code: 'operation-forbidden', message: 'Operation is outside this session scope.' }];
     }
@@ -920,7 +995,8 @@ export class MeshHostSessionService {
           activeScope.datasetEpoch !== sourceScope.datasetEpoch))
     ) return null;
     this.ensureScope(activeScope);
-    const json = JSON.stringify(input);
+    const payload = { kind: 'event' as const, ...input, epoch: this.epoch, sequence: this.nextEventSequence };
+    const json = JSON.stringify(payload);
     const byteLength = Buffer.byteLength(json, 'utf8');
     if (byteLength > MAX_FRAME_BYTES) throw new Error('mesh event exceeds the frame limit');
     const event: StreamEvent = {
@@ -958,6 +1034,7 @@ export class MeshHostSessionService {
     return (
       session !== undefined &&
       this.isSessionFresh(session) &&
+      session.subscriptionInstalled &&
       (session.subscribedWorkspaceIds.has(workspaceId) ||
         (session.principal.kind === 'enrollment' &&
           session.scope.workspaceIds.length === 0 &&
@@ -1003,10 +1080,8 @@ export class MeshHostSessionService {
     const revoked: string[] = [];
     for (const session of this.sessions.values()) {
       if (predicate(session.principal)) {
-        session.revoked = true;
-        session.sessionToken.fill(0);
-        this.sessions.delete(session.sessionId);
         revoked.push(session.sessionId);
+        this.retireSession(session);
       }
     }
     return revoked;
@@ -1026,24 +1101,29 @@ export class MeshHostSessionService {
       : null;
   }
 
-  private async subscribe(
+  private subscribe(
     session: SessionRecord,
     payload: Extract<MeshMachineClientPayload, { kind: 'subscribe' }>,
-  ): Promise<MeshMachineServerPayload[]> {
+  ): MeshMachineServerPayload[] {
     const requestedWorkspaces = payload.workspaceIds ?? session.scope.workspaceIds;
     const unrestrictedEnrollment =
       session.principal.kind === 'enrollment' && session.scope.workspaceIds.length === 0;
     if (
       !Array.isArray(requestedWorkspaces) ||
+      requestedWorkspaces.some((id) => typeof id !== 'string' || id.length === 0 || id.length > 128) ||
       (!unrestrictedEnrollment && requestedWorkspaces.some((id) => !session.scope.workspaceIds.includes(id)))
     ) {
       return [{ kind: 'error', requestId: payload.requestId, code: 'scope-forbidden', message: 'Subscription is outside the session scope.' }];
     }
-    session.subscribedWorkspaceIds = new Set(requestedWorkspaces);
+    if (payload.cursor?.epoch === this.epoch && payload.cursor.sequence >= this.nextEventSequence) {
+      return [{ kind: 'error', requestId: payload.requestId, code: 'cursor-invalid', message: 'Subscription cursor is invalid.' }];
+    }
     const replay = this.eventsAfter(payload.cursor, requestedWorkspaces);
+    session.subscribedWorkspaceIds = new Set(requestedWorkspaces);
+    session.subscriptionInstalled = true;
     return [
-      { kind: 'response', requestId: payload.requestId, result: { cursor: replay.cursor } },
       ...replay.payloads,
+      { kind: 'response', requestId: payload.requestId, result: { cursor: replay.cursor, replayComplete: true } },
     ];
   }
 
@@ -1141,11 +1221,11 @@ export class MeshHostSessionService {
       identity.machineId !== session.machineId ||
       identity.endpointGeneration !== session.endpointGeneration ||
       Date.parse(session.expiresAt) <= Date.now() ||
-      performance.now() >= session.expiresAtMonotonic
+      performance.now() >= session.expiresAtMonotonic ||
+      (session.attachExpiresAt !== null && Date.now() >= session.attachExpiresAt) ||
+      (session.attachDeadlineMonotonic !== null && performance.now() >= session.attachDeadlineMonotonic)
     ) {
-      session.revoked = true;
-      session.sessionToken.fill(0);
-      this.sessions.delete(session.sessionId);
+      this.retireSession(session);
       return false;
     }
     return true;
@@ -1188,16 +1268,28 @@ export class MeshHostSessionService {
 
   private resetSessionState(): void {
     for (const challenge of this.challenges.values()) challenge.proofKey?.fill(0);
-    for (const session of this.sessions.values()) {
-      session.revoked = true;
-      session.sessionToken.fill(0);
-    }
+    for (const session of this.sessions.values()) this.retireSession(session);
     this.challenges.clear();
     this.sessions.clear();
     this.events.length = 0;
     this.eventBytes = 0;
     this.nextEventSequence = 1;
     this.epoch = randomUUID();
+  }
+
+  private retireSession(session: SessionRecord): void {
+    if (session.revoked) return;
+    session.revoked = true;
+    this.sessions.delete(session.sessionId);
+    if (session.attachTimer !== null) clearTimeout(session.attachTimer);
+    session.attachTimer = null;
+    session.sessionToken.fill(0);
+    session.receipts.clear();
+    session.subscribedWorkspaceIds.clear();
+    session.subscriptionInstalled = false;
+    const owner = session.socketOwner;
+    session.socketOwner = null;
+    owner?.close('retired');
   }
 }
 
@@ -1245,7 +1337,7 @@ function isCanonicalIsoDate(value: string): boolean {
 }
 
 function isAllowedAdmissionClaims(claims: MeshMachineAdmissionClaims): boolean {
-  const allowedCapabilities = new Set(['machine.session/1', 'machine.stream/1', 'dashboard.command.wake/1']);
+  const allowedCapabilities = new Set<string>(MESH_MACHINE_CAPABILITIES);
   const allowedOperations = new Set<string>(MESH_MACHINE_OPERATIONS);
   if (claims.principal.kind === 'dashboard') {
     return (

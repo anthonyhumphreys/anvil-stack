@@ -13,6 +13,7 @@ export function remoteChatConnectionNotice(input: {
   approvalActionsAvailable: boolean;
   hostState: MeshHostState | undefined;
   hostError?: SyncRuntimeStatus['meshHosts'][number]['lastError'];
+  hostPath?: SyncRuntimeStatus['meshHosts'][number]['path'];
   targetName: string;
   fallbackLabel: string;
 }): RemoteChatConnectionNotice {
@@ -47,7 +48,20 @@ export function remoteChatConnectionNotice(input: {
 
   switch (input.hostState) {
     case 'live':
-      return { label: `Connected · ${input.targetName}`, detail: null, tone: 'muted' };
+      return {
+        label: `Connected · ${input.targetName}`,
+        detail:
+          input.hostPath === 'direct'
+            ? 'Direct · Host LAN address'
+            : input.hostPath === 'private-network'
+              ? 'Private Network'
+              : input.hostPath === 'https'
+                ? 'Direct HTTPS'
+                : input.hostPath === 'managed'
+                  ? 'Managed Tunnel'
+                  : null,
+        tone: 'muted',
+      };
     case 'connecting':
       return {
         label: `Connecting to ${input.targetName}`,

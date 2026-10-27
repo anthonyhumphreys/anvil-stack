@@ -18,7 +18,6 @@ import {
 } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
 import QRCode from 'qrcode';
@@ -102,6 +101,7 @@ import {
   attestDeviceAccessToken,
   activeSyncScope,
   getRuntimeStatus,
+  companionAdvertisementScopeKey,
   publishCompanionAdvertisement,
 } from './sync-runtime.service.js';
 import {
@@ -124,6 +124,7 @@ import {
 } from './mesh-host-session.service.js';
 import { MeshHostSessionServer } from './mesh-host-session-server.service.js';
 import { buildCompanionAdvertisementPayload } from './mobile-companion-advertisement.js';
+import { LatestMeshAdvertisementPublisher, meshAdvertisedInterfaces } from './mesh-network.service.js';
 import { setMeshMachineHostStatus } from './mesh-host-status.service.js';
 import {
   beginMeshCompanionAttachmentUpload,
@@ -797,6 +798,7 @@ export async function startMobileCompanionServer(): Promise<void> {
 
 export async function stopMobileCompanionServer(): Promise<void> {
   await stopMeshHostLifecycleLoop();
+  companionAdvertisementPublisher.stop();
   if (advertiseTimer !== null) {
     clearInterval(advertiseTimer);
     advertiseTimer = null;
@@ -820,7 +822,7 @@ export async function stopMobileCompanionServer(): Promise<void> {
 
 // ---- MOB-01 endpoint advertisement -------------------------------------
 // While the companion server runs and this host is signed in, publish its
-// dialable endpoints (TS → LAN → loopback) to the account object so
+// dialable endpoints and separate Mesh preference hints to the account object so
 // enrolled companions can find it. Refreshed well inside the ad TTL;
 // unsigned/offline hosts simply stay unadvertised.
 
@@ -829,18 +831,12 @@ let advertiseTimer: ReturnType<typeof setInterval> | null = null;
 
 function currentCompanionEndpoints(): CompanionEndpoint[] {
   const settings = ensureMobileCompanionSettings();
-  return getAdvertisedAddresses(settings.port).map((address) => {
-    const parsed = new URL(address.url);
-    return {
-      kind: address.kind,
-      host: parsed.hostname,
-      port: Number(parsed.port) || settings.port,
-    };
-  });
+  return meshAdvertisedInterfaces(settings.port).map(({ endpoint }) => endpoint);
 }
 
-async function advertiseCompanionPresence(): Promise<void> {
-  try {
+const companionAdvertisementPublisher = new LatestMeshAdvertisementPublisher({
+  scope: companionAdvertisementScopeKey,
+  build: () => {
     const settings = ensureMobileCompanionSettings();
     const owner = currentMeshHostOwner();
     const machine: MeshMachineAdvertisedEndpoint | undefined =
@@ -857,16 +853,26 @@ async function advertiseCompanionPresence(): Promise<void> {
             operations: [...MESH_MACHINE_OPERATIONS],
           }
         : undefined;
-    await publishCompanionAdvertisement(
-      buildCompanionAdvertisementPayload({
-        companionEnabled: settings.enabled !== 0,
-        machine,
-        endpoints: currentCompanionEndpoints(),
-      }),
-    );
-  } catch {
-    // Signed out or unreachable — this host simply isn't advertised.
-  }
+    return buildCompanionAdvertisementPayload({
+      companionEnabled: settings.enabled !== 0,
+      machine,
+      endpoints: currentCompanionEndpoints(),
+    });
+  },
+  publish: (payload, scope) => publishCompanionAdvertisement(payload, scope),
+});
+
+async function advertiseCompanionPresence(): Promise<void> {
+  await companionAdvertisementPublisher.request();
+}
+
+/** Network changes retain a dirty latest revision until its scoped publication succeeds. */
+export function refreshMobileCompanionAdvertisement(): Promise<void> {
+  return advertiseCompanionPresence();
+}
+
+export function cancelMobileCompanionAdvertisement(): void {
+  companionAdvertisementPublisher.stop();
 }
 
 function startAdvertisementLoop(): void {
@@ -1005,27 +1011,14 @@ function selectPairingBaseUrl(settings: MobileCompanionSettingsRow): string {
 }
 
 function getAdvertisedAddresses(port: number): MobileCompanionAdvertisedAddress[] {
-  const addresses: MobileCompanionAdvertisedAddress[] = [];
-
-  for (const [name, interfaces] of Object.entries(networkInterfaces())) {
-    for (const item of interfaces ?? []) {
-      if (item.family !== 'IPv4' || item.internal) continue;
-      const kind = item.address.startsWith('100.') ? 'tailscale' : 'lan';
-      addresses.push({
-        label: `${kind === 'tailscale' ? 'Tailscale' : 'LAN'} · ${name}`,
-        url: `http://${item.address}:${port}`,
-        kind,
-      });
-    }
-  }
-
-  addresses.push({
-    label: 'This Mac',
-    url: `http://127.0.0.1:${port}`,
-    kind: 'loopback',
-  });
-
-  return addresses;
+  return meshAdvertisedInterfaces(port).map(({ name, endpoint }) => ({
+    label:
+      endpoint.kind === 'loopback'
+        ? 'This Mac'
+        : `${endpoint.meshNetworkKind === 'lan' ? 'LAN' : 'Private Network'} · ${name}`,
+    url: `http://${endpoint.host}:${endpoint.port}`,
+    kind: endpoint.kind,
+  }));
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

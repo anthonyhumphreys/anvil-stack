@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import { PROTOCOL } from '../../cloud/contract/version';
 import type { DeviceListResult, DeviceSession, EnrollResult } from '../../cloud/contract/auth';
 import type { DevicePresenceResult } from '../../cloud/contract/companion';
+import { invalidateMobileMeshAccount, mobileMeshAccountScope } from './mesh-account-lifecycle';
 import {
   MESH_MACHINE_CAPABILITIES,
   MESH_MACHINE_OPERATIONS,
@@ -25,6 +26,20 @@ const SESSION_KEY = 'anvil.account.session.v1';
 const BACKEND_KEY = 'anvil.account.backend.v1';
 const INSTALLATION_KEY = 'anvil.account.installation.v1';
 const ACCOUNT_REQUEST_TIMEOUT_MS = 12_000;
+let accountGeneration = 0;
+let accountUnavailable = false;
+let accountWrites: Promise<unknown> = Promise.resolve();
+
+function serializeAccountWrite<T>(write: () => Promise<T>): Promise<T> {
+  const pending = accountWrites.then(write, write);
+  accountWrites = pending.catch(() => undefined);
+  return pending;
+}
+
+function assertAccountGeneration(generation: number): void {
+  if (generation !== accountGeneration)
+    throw new AccountRpcError('unauthenticated', false, 'The account connection changed.');
+}
 
 export interface AccountConnection {
   apiUrl: string;
@@ -57,7 +72,7 @@ function randomId(): string {
 
 async function fetchJson(
   url: string,
-  init: { body?: unknown; accessToken?: string; method?: 'GET' | 'POST' },
+  init: { body?: unknown; accessToken?: string; method?: 'GET' | 'POST'; signal?: AbortSignal },
 ): Promise<unknown> {
   const requestUrl = new URL(url);
   if (
@@ -74,6 +89,9 @@ async function fetchJson(
     );
   }
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (init.signal?.aborted) controller.abort();
+  else init.signal?.addEventListener('abort', abort, { once: true });
   const timeout = setTimeout(() => controller.abort(), ACCOUNT_REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
@@ -81,9 +99,7 @@ async function fetchJson(
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        ...(init.accessToken === undefined
-          ? {}
-          : { Authorization: `Bearer ${init.accessToken}` }),
+        ...(init.accessToken === undefined ? {} : { Authorization: `Bearer ${init.accessToken}` }),
       },
       redirect: 'error',
       signal: controller.signal,
@@ -99,11 +115,16 @@ async function fetchJson(
       );
     }
     if (!response.ok) {
-      throw new AccountRpcError('unavailable', true, `backend request failed: HTTP ${response.status}`);
+      throw new AccountRpcError(
+        'unavailable',
+        true,
+        `backend request failed: HTTP ${response.status}`,
+      );
     }
     return payload;
   } finally {
     clearTimeout(timeout);
+    init.signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -128,13 +149,33 @@ async function installationId(): Promise<string> {
   return created;
 }
 
-async function storeConnection(connection: AccountConnection): Promise<void> {
-  await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(connection.session));
-  await SecureStore.setItemAsync(BACKEND_KEY, connection.apiUrl);
+async function storeConnection(connection: AccountConnection, generation: number): Promise<void> {
+  await serializeAccountWrite(async () => {
+    assertAccountGeneration(generation);
+    const previous = await readStoredConnection();
+    assertAccountGeneration(generation);
+    if (
+      previous === null ||
+      mobileMeshAccountScope(previous) !== mobileMeshAccountScope(connection)
+    ) {
+      invalidateMobileMeshAccount();
+    }
+    await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(connection.session));
+    await SecureStore.setItemAsync(BACKEND_KEY, connection.apiUrl);
+  });
+  assertAccountGeneration(generation);
 }
 
 /** The stored account connection, or null when not enrolled. */
 export async function getAccountConnection(): Promise<AccountConnection | null> {
+  if (accountUnavailable) return null;
+  const generation = accountGeneration;
+  await accountWrites;
+  const connection = await readStoredConnection();
+  return generation === accountGeneration && !accountUnavailable ? connection : null;
+}
+
+async function readStoredConnection(): Promise<AccountConnection | null> {
   const [apiUrl, raw] = await Promise.all([
     SecureStore.getItemAsync(BACKEND_KEY),
     SecureStore.getItemAsync(SESSION_KEY),
@@ -170,21 +211,27 @@ export async function enrollWithCode(
   if (!normalizedApi) throw new Error('Backend URL is required.');
   const trimmedCode = code.trim();
   if (!trimmedCode) throw new Error('Enrollment code is required.');
+  const generation = ++accountGeneration;
+  accountUnavailable = true;
+  invalidateMobileMeshAccount();
+  try {
+    const session = (await fetchJson(routeUrl(normalizedApi, 'enroll'), {
+      body: {
+        proof: { method: 'enrollment-code', code: trimmedCode },
+        installationId: await installationId(),
+        displayName: displayName.trim() || 'Anvil Mobile',
+      },
+    })) as EnrollResult;
+    if (typeof session.accessToken !== 'string') {
+      throw new Error('Enrollment returned a malformed session.');
+    }
 
-  const session = (await fetchJson(routeUrl(normalizedApi, 'enroll'), {
-    body: {
-      proof: { method: 'enrollment-code', code: trimmedCode },
-      installationId: await installationId(),
-      displayName: displayName.trim() || 'Anvil Mobile',
-    },
-  })) as EnrollResult;
-  if (typeof session.accessToken !== 'string') {
-    throw new Error('Enrollment returned a malformed session.');
+    const connection = { apiUrl: normalizedApi, session };
+    await storeConnection(connection, generation);
+    return connection;
+  } finally {
+    if (generation === accountGeneration) accountUnavailable = false;
   }
-
-  const connection = { apiUrl: normalizedApi, session };
-  await storeConnection(connection);
-  return connection;
 }
 
 /**
@@ -192,6 +239,7 @@ export async function enrollWithCode(
  * refresh token is single-use — the rotated pair replaces it in storage.
  */
 export async function refreshAccountSession(): Promise<AccountConnection | null> {
+  const generation = accountGeneration;
   const connection = await getAccountConnection();
   if (!connection) return null;
   const session = (await fetchJson(routeUrl(connection.apiUrl, 'session/refresh'), {
@@ -201,21 +249,33 @@ export async function refreshAccountSession(): Promise<AccountConnection | null>
     },
   })) as DeviceSession;
   const next = { apiUrl: connection.apiUrl, session };
-  await storeConnection(next);
+  await storeConnection(next, generation);
   return next;
 }
 
-async function rpcOnce<R>(connection: AccountConnection, operation: string, params: unknown): Promise<R> {
+async function rpcOnce<R>(
+  connection: AccountConnection,
+  operation: string,
+  params: unknown,
+): Promise<R> {
   const requestId = randomId();
   const payload = (await fetchJson(routeUrl(connection.apiUrl, 'rpc'), {
     accessToken: connection.session.accessToken,
     body: { protocol: PROTOCOL, requestId, operation, params },
   })) as Record<string, unknown>;
   if (!isRecord(payload) || !('result' in payload)) {
-    throw new AccountRpcError('unavailable', true, `backend RPC ${operation} returned a malformed envelope`);
+    throw new AccountRpcError(
+      'unavailable',
+      true,
+      `backend RPC ${operation} returned a malformed envelope`,
+    );
   }
   if (typeof payload['requestId'] === 'string' && payload['requestId'] !== requestId) {
-    throw new AccountRpcError('unavailable', true, `backend RPC ${operation} returned a mismatched requestId`);
+    throw new AccountRpcError(
+      'unavailable',
+      true,
+      `backend RPC ${operation} returned a mismatched requestId`,
+    );
   }
   return payload['result'] as R;
 }
@@ -255,7 +315,7 @@ export async function getAccountPresence(): Promise<DevicePresenceResult> {
 }
 
 /** Account bearer stays on the verified HTTPS broker; it is never sent to an advertised host. */
-export async function listMeshMachineHosts(): Promise<MeshMachineHost[]> {
+export async function listMeshMachineHosts(signal?: AbortSignal): Promise<MeshMachineHost[]> {
   const connection = await getAccountConnection();
   if (!connection) {
     throw new AccountRpcError('unauthenticated', false, 'Sign in to your Anvil account first.');
@@ -264,8 +324,13 @@ export async function listMeshMachineHosts(): Promise<MeshMachineHost[]> {
     const result = await fetchJson(routeUrl(current.apiUrl, 'mesh/hosts'), {
       method: 'GET',
       accessToken: current.session.accessToken,
+      signal,
     });
-    if (!isRecord(result) || result.v !== MESH_MACHINE_PROTOCOL_VERSION || !Array.isArray(result.hosts)) {
+    if (
+      !isRecord(result) ||
+      result.v !== MESH_MACHINE_PROTOCOL_VERSION ||
+      !Array.isArray(result.hosts)
+    ) {
       throw new AccountRpcError('unavailable', true, 'The Mesh host list was malformed.');
     }
     return result.hosts.filter(isMeshMachineHost);
@@ -284,14 +349,7 @@ export async function listMeshMachineHosts(): Promise<MeshMachineHost[]> {
 
 function isMeshMachineHost(value: unknown): value is MeshMachineHost {
   if (!isRecord(value)) return false;
-  const allocationStates = [
-    'disabled',
-    'unallocated',
-    'allocating',
-    'ready',
-    'retiring',
-    'failed',
-  ];
+  const allocationStates = ['disabled', 'unallocated', 'allocating', 'ready', 'retiring', 'failed'];
   if (
     typeof value.enrollmentId !== 'string' ||
     value.enrollmentId.length === 0 ||
@@ -339,7 +397,16 @@ function isTimestamp(value: unknown): value is string {
 
 /** Revokes this device's session server-side and clears local storage. */
 export async function signOutAccount(): Promise<void> {
-  const connection = await getAccountConnection();
+  const generation = ++accountGeneration;
+  accountUnavailable = true;
+  invalidateMobileMeshAccount();
+  const connection = await serializeAccountWrite(async () => {
+    const previous = await readStoredConnection();
+    await SecureStore.deleteItemAsync(SESSION_KEY);
+    await SecureStore.deleteItemAsync(BACKEND_KEY);
+    return previous;
+  });
+  if (generation === accountGeneration) accountUnavailable = false;
   if (connection) {
     await fetchJson(routeUrl(connection.apiUrl, 'session/revoke'), {
       accessToken: connection.session.accessToken,
@@ -349,6 +416,4 @@ export async function signOutAccount(): Promise<void> {
       },
     }).catch(() => undefined);
   }
-  await SecureStore.deleteItemAsync(SESSION_KEY);
-  await SecureStore.deleteItemAsync(BACKEND_KEY);
 }

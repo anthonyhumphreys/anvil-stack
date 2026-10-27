@@ -1,5 +1,5 @@
 import { hkdfSync, randomBytes } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   meshMachineAdmissionBootstrapProofMessage,
   meshMachineBootstrapHostProofMessage,
@@ -18,6 +18,7 @@ import {
 import {
   MeshHostAdmissionError,
   MeshHostSessionService,
+  MESH_HOST_UNATTACHED_SESSION_TTL_MS,
   type MeshHostDashboardContext,
 } from '../mesh-host-session.service.js';
 
@@ -26,6 +27,15 @@ const identity = {
   machineId: 'machine-host',
   endpointGeneration: 'generation-host',
 };
+
+const testServices = new Set<MeshHostSessionService>();
+
+afterEach(() => {
+  for (const service of testServices) service.shutdown();
+  testServices.clear();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 function makeEnrollmentClaims(
   clientPublicKey: string,
@@ -99,6 +109,7 @@ function createEnrollmentService(input: {
     revalidateAdmission,
     dispatchOperation,
   });
+  testServices.add(service);
   return {
     service,
     claims,
@@ -279,6 +290,7 @@ describe('Mesh host sessions', () => {
       refreshDashboard: async () => true,
       dispatchOperation: async () => ({ ok: true }),
     });
+    testServices.add(service);
     const ephemeral = newMeshMachineEphemeralIdentity();
     const request = {
       v: 1 as const,
@@ -419,5 +431,106 @@ describe('Mesh host sessions', () => {
     const ticketClaims = makeEnrollmentClaims(newMeshMachineEphemeralIdentity().clientPublicKey);
     expect(JSON.stringify(ticketClaims)).not.toContain('accessToken');
     expect(Object.keys(ticketClaims)).not.toContain('proofKey');
+  });
+
+  it('installs subscriptions explicitly and places the replay barrier after filtered events', async () => {
+    const fixture = createEnrollmentService();
+    const { response } = await openEnrollmentSession(fixture);
+    const sessionId = response.sessionId;
+    expect(fixture.service.isSessionSubscribedToWorkspace(sessionId, 'workspace-1')).toBe(false);
+    for (const workspaceId of ['workspace-1', 'workspace-2', 'workspace-1', 'workspace-2']) {
+      fixture.service.publishEvent({ workspaceId, eventKind: 'output', payload: { workspaceId } });
+    }
+    const result = fixture.service.processSubscription(sessionId, {
+      kind: 'subscribe',
+      requestId: 'subscribe-0001',
+      cursor: { epoch: response.stream.epoch, sequence: 0 },
+      workspaceIds: ['workspace-1'],
+    });
+    expect(result.map((payload) => payload.kind)).toEqual(['event', 'event', 'response']);
+    expect(result.slice(0, 2)).toMatchObject([{ sequence: 1 }, { sequence: 3 }]);
+    expect(result[2]).toEqual({
+      kind: 'response',
+      requestId: 'subscribe-0001',
+      result: { cursor: { epoch: response.stream.epoch, sequence: 4 }, replayComplete: true },
+    });
+    expect(fixture.service.isSessionSubscribedToWorkspace(sessionId, 'workspace-1')).toBe(true);
+    expect(fixture.service.isSessionSubscribedToWorkspace(sessionId, 'workspace-2')).toBe(false);
+  });
+
+  it('does not claim replay continuity for an expired cursor or accept a future cursor', async () => {
+    const fixture = createEnrollmentService();
+    const { response } = await openEnrollmentSession(fixture);
+    const future = fixture.service.processSubscription(response.sessionId, {
+      kind: 'subscribe', requestId: 'future-cursor-0001',
+      cursor: { epoch: response.stream.epoch, sequence: 1 },
+    });
+    expect(future).toMatchObject([{ kind: 'error', code: 'cursor-invalid' }]);
+    expect(fixture.service.isSessionSubscribedToWorkspace(response.sessionId, 'workspace-1')).toBe(false);
+    for (let index = 0; index < 513; index += 1) {
+      fixture.service.publishEvent({ workspaceId: 'workspace-1', eventKind: 'output', payload: index });
+    }
+    expect(fixture.service.processSubscription(response.sessionId, {
+      kind: 'subscribe', requestId: 'expired-cursor-0001',
+      cursor: { epoch: response.stream.epoch, sequence: 0 },
+    })).toMatchObject([
+      { kind: 'resnapshot-required', reason: 'cursor-expired' },
+      { kind: 'response', result: { cursor: { sequence: 513 }, replayComplete: true } },
+    ]);
+  });
+
+  it('fences socket replacement across listeners and zeroes keys only when the current owner retires', async () => {
+    const fixture = createEnrollmentService();
+    const { response } = await openEnrollmentSession(fixture);
+    const record = (fixture.service as unknown as {
+      sessions: Map<string, { sessionToken: Buffer }>;
+    }).sessions.get(response.sessionId)!;
+    const first = Symbol('private-listener');
+    const second = Symbol('managed-listener');
+    const closeFirst = vi.fn(() => fixture.service.detachSocket(response.sessionId, first));
+    const closeSecond = vi.fn();
+    expect(fixture.service.attachSocket(response.sessionId, first, closeFirst)).toBe(true);
+    fixture.service.processSubscription(response.sessionId, {
+      kind: 'subscribe', requestId: 'subscribe-0001',
+    });
+    expect(fixture.service.attachSocket(response.sessionId, second, closeSecond)).toBe(true);
+    expect(closeFirst).toHaveBeenCalledExactlyOnceWith('replaced');
+    fixture.service.detachSocket(response.sessionId, first);
+    expect(fixture.service.ownsSocket(response.sessionId, second)).toBe(true);
+    expect(fixture.service.isSessionSubscribedToWorkspace(response.sessionId, 'workspace-1')).toBe(false);
+    expect(record.sessionToken.equals(Buffer.alloc(32))).toBe(false);
+    expect(fixture.service.activeSessionCount()).toBe(1);
+    fixture.service.detachSocket(response.sessionId, second);
+    expect(fixture.service.activeSessionCount()).toBe(0);
+    expect(record.sessionToken).toEqual(Buffer.alloc(32));
+    expect(closeSecond).not.toHaveBeenCalled();
+  });
+
+  it('expires abandoned bootstrap sessions promptly and cancels expiry after attachment', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    const fixture = createEnrollmentService();
+    const abandoned = await openEnrollmentSession(fixture);
+    const attached = await openEnrollmentSession(fixture);
+    const records = (fixture.service as unknown as {
+      sessions: Map<string, { sessionToken: Buffer }>;
+    }).sessions;
+    const abandonedKey = records.get(abandoned.response.sessionId)!.sessionToken;
+    const owner = Symbol('attached');
+    expect(fixture.service.attachSocket(attached.response.sessionId, owner, vi.fn())).toBe(true);
+    await vi.advanceTimersByTimeAsync(MESH_HOST_UNATTACHED_SESSION_TTL_MS + 1);
+    expect(fixture.service.activeSessionCount()).toBe(1);
+    expect(abandonedKey).toEqual(Buffer.alloc(32));
+    expect(fixture.service.ownsSocket(attached.response.sessionId, owner)).toBe(true);
+  });
+
+  it('reclaims more than the session capacity across sequential authenticated retirements', async () => {
+    const fixture = createEnrollmentService();
+    for (let index = 0; index < 70; index += 1) {
+      const { response } = await openEnrollmentSession(fixture);
+      const owner = Symbol('socket');
+      expect(fixture.service.attachSocket(response.sessionId, owner, vi.fn())).toBe(true);
+      fixture.service.detachSocket(response.sessionId, owner);
+      expect(fixture.service.activeSessionCount()).toBe(0);
+    }
   });
 });

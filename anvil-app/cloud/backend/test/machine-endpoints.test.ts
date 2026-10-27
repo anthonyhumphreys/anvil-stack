@@ -128,6 +128,39 @@ afterEach(() => {
 });
 
 describe('managed machine endpoint broker', () => {
+  it('preserves conservative network hints and omits loopback and unusable remote origins', async () => {
+    const accountId = randomId('acct-routes');
+    const source = await enroll(accountId, 'Mesh client');
+    const host = await pairEnrollment(source, 'Mesh host');
+    const advertisement = hostAdvertisement(host.enrollmentId, machineId(), generation());
+    expectSuccess(await postRpc('device.advertise', {
+      ...advertisement,
+      endpoints: [
+        { kind: 'lan', host: '192.168.1.21', port: 47631, meshNetworkKind: 'lan' },
+        { kind: 'lan', host: '192.168.1.22', port: 47631 },
+        { kind: 'lan', host: '10.1.2.3', port: 47631, meshNetworkKind: 'unknown' },
+        { kind: 'tailscale', host: '100.64.1.1', port: 47631 },
+        { kind: 'loopback', host: '127.0.0.1', port: 47631 },
+        { kind: 'lan', host: '127.1', port: 47631, meshNetworkKind: 'lan' },
+        { kind: 'lan', host: '8.8.8.8', port: 47631, meshNetworkKind: 'lan' },
+        { kind: 'lan', host: '192.168.1.21', port: 47631, meshNetworkKind: 'lan' },
+      ],
+    }, `Bearer ${host.accessToken}`));
+    const response = await SELF.fetch('https://spike.test/v1/mesh/hosts', {
+      headers: { authorization: `Bearer ${source.accessToken}` },
+    });
+    expect(response.status).toBe(200);
+    const result = await response.json() as MeshMachineHostsResponse;
+    const routes = result.hosts.find((item) => item.enrollmentId === host.enrollmentId)?.routes;
+    expect(routes).toHaveLength(4);
+    expect(routes?.map(({ url, networkKind }) => ({ url, networkKind }))).toEqual([
+      { url: 'http://10.1.2.3:47631', networkKind: undefined },
+      { url: 'http://100.64.1.1:47631', networkKind: 'private-network' },
+      { url: 'http://192.168.1.21:47631', networkKind: 'lan' },
+      { url: 'http://192.168.1.22:47631', networkKind: undefined },
+    ]);
+  });
+
   it('keeps a configured provider available for cleanup when allocation is disabled', () => {
     env.ANVIL_MESH_MANAGED_ENDPOINTS = 'false';
     env.CLOUDFLARE_TUNNEL_ACCOUNT_ID = 'test-cloudflare-account';

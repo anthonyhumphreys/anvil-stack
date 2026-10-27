@@ -64,6 +64,7 @@ export function RemoteThreadTranscript({
     approvalActionsAvailable: run.approvals.length > 0,
     hostState: activeHostConnection?.state,
     hostError: activeHostConnection?.lastError,
+    hostPath: activeHostConnection?.path,
     targetName: targetLabel,
     fallbackLabel: STATE_LABELS[record.state] ?? 'Remote work in progress',
   });

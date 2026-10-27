@@ -57,6 +57,7 @@ import {
   type WatchRequestEvent,
 } from '@/lib/widget-bridge';
 import { publishDriveModeState } from '@/lib/drive-mode-bridge';
+import { startMobileMeshNetworkMonitor } from '@/lib/mesh-network';
 import {
   loadCachedOverview,
   loadSelectedWorkspaceId,
@@ -283,6 +284,11 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     });
     return () => subscription.remove();
   }, [refresh]);
+
+  useEffect(() => {
+    if (connection?.authMode !== 'account') return;
+    return startMobileMeshNetworkMonitor();
+  }, [connection?.authMode]);
 
   const pairFromQr = useCallback(async (rawQrPayload: string, deviceName: string) => {
     setLoading(true);

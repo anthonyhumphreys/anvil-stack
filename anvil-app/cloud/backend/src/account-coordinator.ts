@@ -4,6 +4,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { SpikeAuth } from './auth';
 import { parseSpikeAuth, parseVerifiedAuth } from './auth';
 import type { MeshMachineAdvertisedEndpoint } from '../../contract/machine';
+import { meshMachinePrivateRoutes } from '../../contract/machine-route-policy';
 import { sha256Hex, utf8ByteLength } from './hash';
 import { openEventArchive, sealEventArchive } from './event-archive';
 import {
@@ -61,11 +62,14 @@ import {
 } from '../../contract/sync';
 import {
   SOCKET_FRAME_VERSION,
+  SOCKET_FEATURES_HEADER,
+  MACHINE_ROUTES_CHANGED_FEATURE,
   type ActivityFrame,
   type ActivityPayload,
   type GapFrame,
   type HelloFrame,
   type JobAvailableFrame,
+  type MachineRoutesChangedFrame,
   type SocketErrorFrame,
   type SocketFrame,
   type SyncInvalidateFrame,
@@ -270,6 +274,7 @@ interface SocketSubscription {
 interface SocketAttachment {
   accountId: string;
   enrollmentId: string;
+  machineRouteHints?: boolean;
   subscriptions?: SocketSubscription[];
 }
 
@@ -1014,6 +1019,34 @@ function parseMachineAdvertisement(raw: string | null): MeshMachineAdvertisedEnd
   }
 }
 
+/** Only effective machine discovery changes invalidate clients, not presence heartbeats. */
+function machineRouteFingerprint(
+  endpoints: readonly CompanionEndpoint[],
+  machine: MeshMachineAdvertisedEndpoint | null | undefined,
+): string {
+  if (machine === null || machine === undefined) return 'null';
+  return JSON.stringify({
+    hostEnrollmentId: machine.hostEnrollmentId,
+    machineId: machine.machineId,
+    endpointGeneration: machine.endpointGeneration,
+    protocolVersion: machine.protocolVersion,
+    capabilities: [...new Set(machine.capabilities)].sort(),
+    operations: [...new Set(machine.operations)].sort(),
+    routes: meshMachinePrivateRoutes(endpoints),
+  });
+}
+
+function storedMachineRouteFingerprint(row: { endpoints: string; machine: string | null } | undefined): string {
+  if (row === undefined) return 'null';
+  const machine = parseMachineAdvertisement(row.machine);
+  try {
+    const params: unknown = { endpoints: JSON.parse(row.endpoints), capabilities: [] };
+    return machineRouteFingerprint(validateDeviceAdvertiseParams(params) ? params.endpoints : [], machine);
+  } catch {
+    return machineRouteFingerprint([], machine);
+  }
+}
+
 function eventStreamFloors(rows: readonly EventRow[]): EventStreamFloor[] {
   const floors = new Map<string, EventStreamFloor>();
   for (const row of rows) {
@@ -1133,6 +1166,8 @@ export class AccountCoordinator extends DurableObject<Env> {
   private deliveries = new Map<WebSocket, PendingDelivery>();
   private flushTimerPending = false;
   private flushDueAt = 0;
+  /** Replaceable discovery hints share the existing short delivery-coalescing window. */
+  private machineRoutesChanged = new Set<string>();
   /** MESH-03: per-account socket-ingest rate window (in-memory burst cap). */
   private socketWindow = { start: 0, messages: 0, bytes: 0 };
 
@@ -1954,9 +1989,13 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
+    const features = request.headers.get(SOCKET_FEATURES_HEADER) ?? '';
     const attachment: SocketAttachment = {
       accountId: auth.accountId,
       enrollmentId: auth.enrollmentId,
+      machineRouteHints:
+        features.length <= 512 &&
+        features.split(',').some((value) => value.trim() === MACHINE_ROUTES_CHANGED_FEATURE),
     };
     pair[1].serializeAttachment(attachment);
     // `hello` opens the session — the client stays 'connecting' until it
@@ -4266,6 +4305,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       return rpcErrorResponse(requestId, 'malformed-request');
     }
     const now = Date.now();
+    let routesChanged = false;
     const result = this.commit((): DeviceAdvertiseResult => {
       this.assertNotRevoked(auth);
       if (params.machine !== undefined) {
@@ -4294,6 +4334,12 @@ export class AccountCoordinator extends DurableObject<Env> {
           }
         }
       }
+      const previous = this.ctx.storage.sql.exec<{ endpoints: string; machine: string | null }>(
+        'SELECT endpoints, machine FROM presence_advertisements WHERE enrollment_id = ?',
+        auth.enrollmentId,
+      ).toArray()[0];
+      routesChanged = storedMachineRouteFingerprint(previous) !==
+        machineRouteFingerprint(params.endpoints, params.machine);
       this.ctx.storage.sql.exec(
         `INSERT INTO presence_advertisements (
            enrollment_id, endpoints, capabilities, protocol, machine, updated_at
@@ -4314,7 +4360,40 @@ export class AccountCoordinator extends DurableObject<Env> {
       this.bumpCounter('presence_advertises', 1);
       return { advertised: true };
     });
+    if (routesChanged) this.queueMachineRoutesChanged(auth.enrollmentId);
     return rpcSuccessResponse(requestId, result);
+  }
+
+  private queueMachineRoutesChanged(enrollmentId: string): void {
+    // Keep the replaceable queue bounded even for accounts advertising many hosts at once.
+    if (this.machineRoutesChanged.size >= 128) this.flushMachineRoutesChanged();
+    this.machineRoutesChanged.add(enrollmentId);
+    this.ensureFlushScheduled();
+  }
+
+  private flushMachineRoutesChanged(): void {
+    const enrollments = [...this.machineRoutesChanged];
+    this.machineRoutesChanged.clear();
+    if (enrollments.length === 0) return;
+    const sockets = this.ctx.getWebSockets();
+    for (const enrollmentId of enrollments) {
+      const frame: MachineRoutesChangedFrame = {
+        type: 'machine.routes-changed',
+        version: SOCKET_FRAME_VERSION,
+        id: crypto.randomUUID(),
+        enrollmentId,
+      };
+      for (const socket of sockets) {
+        const attachment: unknown = socket.deserializeAttachment();
+        if (
+          !isSocketAttachment(attachment) ||
+          attachment.enrollmentId === enrollmentId ||
+          attachment.machineRouteHints !== true
+        ) continue;
+        // A closed peer must not stop notifications to the other account peers.
+        this.trySend(socket, frame);
+      }
+    }
   }
 
   /**
@@ -6467,6 +6546,7 @@ export class AccountCoordinator extends DurableObject<Env> {
    * that still cannot send stays lagging (bounded backlog, then dropped).
    */
   private flushDeliveries(): void {
+    this.flushMachineRoutesChanged();
     const live = new Set<WebSocket>(this.ctx.getWebSockets());
     for (const [ws, state] of this.deliveries) {
       if (!live.has(ws)) {

@@ -35,6 +35,8 @@ export type CompanionEndpointKind = (typeof COMPANION_ENDPOINT_KINDS)[number];
 
 export interface CompanionEndpoint {
   kind: CompanionEndpointKind;
+  /** Mesh-only classification; the separately paired companion transport policy is unchanged. */
+  meshNetworkKind?: 'lan' | 'private-network' | 'loopback' | 'unknown';
   /** IP literal or DNS name. Never a URL — scheme and path are rejected. */
   host: string;
   port: number;
@@ -118,6 +120,11 @@ function isEndpoint(value: unknown): value is CompanionEndpoint {
   const input = value as Record<string, unknown>;
   return (
     isEndpointKind(input['kind']) &&
+    (input['meshNetworkKind'] === undefined ||
+      input['meshNetworkKind'] === 'lan' ||
+      input['meshNetworkKind'] === 'private-network' ||
+      input['meshNetworkKind'] === 'loopback' ||
+      input['meshNetworkKind'] === 'unknown') &&
     typeof input['host'] === 'string' &&
     input['host'].length > 0 &&
     input['host'].length <= COMPANION_MAX_HOST_CHARS &&

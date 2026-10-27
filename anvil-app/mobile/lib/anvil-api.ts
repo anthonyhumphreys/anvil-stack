@@ -3,7 +3,7 @@ import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { MeshMachineOperation } from '../../cloud/contract/machine';
-import { getMeshMachineSession, type MeshMachineEvent } from './mesh-session';
+import { getMeshMachineSession, mobileMeshSessions, type MeshMachineEvent } from './mesh-session';
 import type {
   ChatMessage,
   ChatAttachment,
@@ -78,7 +78,7 @@ export interface CompanionStreamEvent {
   generatedAt?: string;
   ok?: boolean;
   event?: MeshMachineEvent;
-  resnapshotReason?: 'epoch-changed' | 'cursor-expired' | 'sequence-gap';
+  resnapshotReason?: 'epoch-changed' | 'cursor-expired' | 'sequence-gap' | 'delivery-failed';
 }
 
 const CONNECTION_KEY = 'anvil.mobile.connection.v1';
@@ -608,48 +608,11 @@ export function subscribeToCompanionEvents(
   onError?: () => void,
 ): () => void {
   if (connection.authMode === 'account') {
-    const enrollmentId = requireAccountHostEnrollment(connection);
-    let cancelled = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let reconnectDelayMs = 1_000;
-    let unsubscribe: (() => void) | null = null;
-    const scheduleReconnect = () => {
-      if (cancelled || reconnectTimer !== null) return;
-      const delay = reconnectDelayMs;
-      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        void connect();
-      }, delay);
-    };
-    const connect = async () => {
-      try {
-        const machine = await getMeshMachineSession(enrollmentId);
-        if (cancelled) return;
-        reconnectDelayMs = 1_000;
-        unsubscribe = machine.subscribe({
-          onEvent: (event) => onEvent({ type: 'machine-event', event }),
-          onResnapshot: (resnapshotReason) => onEvent({ type: 'machine-event', resnapshotReason }),
-          onClosed: () => {
-            if (cancelled) return;
-            onError?.();
-            scheduleReconnect();
-          },
-        });
-      } catch {
-        if (cancelled) return;
-        onError?.();
-        scheduleReconnect();
-      }
-    };
-    void connect();
-    return () => {
-      cancelled = true;
-      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-      unsubscribe?.();
-      unsubscribe = null;
-    };
+    return mobileMeshSessions.subscribe(requireAccountHostEnrollment(connection), {
+      onEvent: (event) => onEvent({ type: 'machine-event', event }),
+      onResnapshot: (resnapshotReason) => onEvent({ type: 'machine-event', resnapshotReason }),
+      onClosed: () => onError?.(),
+    });
   }
 
   const EventSourceCtor = (globalThis as unknown as { EventSource?: EventSourceConstructor })
@@ -1547,29 +1510,26 @@ function normalizeWorkQueue(
     .filter((item): item is MobileWorkQueueItem => Boolean(item));
   if (fromHost.length > 0) return fromHost;
 
-  const approvalItems = pendingApprovals.map(
-    (approval): MobileWorkQueueItem => ({
-      id: `approval:${approval.sessionId}:${approval.requestKey}`,
-      kind: 'approval',
-      priority: approval.policy?.risk === 'low' ? 'high' : 'critical',
-      title:
-        approval.policy?.summary ??
-        (approval.kind === 'command' ? 'Command approval' : 'File change approval'),
-      detail:
-        approval.reason ?? approval.command ?? approval.grantRoot ?? 'Codex needs a decision.',
-      statusLabel: approval.policy?.requiresFullReview ? 'Desktop review' : 'Needs approval',
-      updatedAt: approval.createdAt,
-      workspaceId: approval.workspaceId,
-      workspaceName: approval.workspaceName,
-      repoId: approval.repoId,
-      repoName: approval.repoName,
-      sessionId: approval.sessionId,
-      requestKey: approval.requestKey,
-      risk: approval.policy?.risk,
-      requiresDesktopReview: approval.policy?.requiresFullReview,
-      actionLabel: approval.policy?.requiresFullReview ? 'Open Mac' : 'Decide',
-    }),
-  );
+  const approvalItems = pendingApprovals.map((approval): MobileWorkQueueItem => ({
+    id: `approval:${approval.sessionId}:${approval.requestKey}`,
+    kind: 'approval',
+    priority: approval.policy?.risk === 'low' ? 'high' : 'critical',
+    title:
+      approval.policy?.summary ??
+      (approval.kind === 'command' ? 'Command approval' : 'File change approval'),
+    detail: approval.reason ?? approval.command ?? approval.grantRoot ?? 'Codex needs a decision.',
+    statusLabel: approval.policy?.requiresFullReview ? 'Desktop review' : 'Needs approval',
+    updatedAt: approval.createdAt,
+    workspaceId: approval.workspaceId,
+    workspaceName: approval.workspaceName,
+    repoId: approval.repoId,
+    repoName: approval.repoName,
+    sessionId: approval.sessionId,
+    requestKey: approval.requestKey,
+    risk: approval.policy?.risk,
+    requiresDesktopReview: approval.policy?.requiresFullReview,
+    actionLabel: approval.policy?.requiresFullReview ? 'Open Mac' : 'Decide',
+  }));
 
   const activeThreadIds = new Set<string>();
   const sessionItems = activeSessions.map((session): MobileWorkQueueItem => {
@@ -1616,25 +1576,23 @@ function normalizeWorkQueue(
   const threadItems = threads
     .filter((thread) => !activeThreadIds.has(thread.id) && thread.pendingApprovalCount === 0)
     .slice(0, 4)
-    .map(
-      (thread): MobileWorkQueueItem => ({
-        id: `thread:${thread.id}`,
-        kind: 'thread',
-        priority: 'low',
-        title: thread.title,
-        detail: thread.preview ?? `${thread.personaId} thread`,
-        statusLabel: 'Recent',
-        updatedAt: thread.updatedAt,
-        workspaceId: thread.workspaceId,
-        workspaceName:
-          thread.workspaceId && thread.workspaceId === activeWorkspace?.id
-            ? activeWorkspace.name
-            : undefined,
-        threadId: thread.id,
-        sessionId: thread.activeSessionId,
-        actionLabel: 'Continue',
-      }),
-    );
+    .map((thread): MobileWorkQueueItem => ({
+      id: `thread:${thread.id}`,
+      kind: 'thread',
+      priority: 'low',
+      title: thread.title,
+      detail: thread.preview ?? `${thread.personaId} thread`,
+      statusLabel: 'Recent',
+      updatedAt: thread.updatedAt,
+      workspaceId: thread.workspaceId,
+      workspaceName:
+        thread.workspaceId && thread.workspaceId === activeWorkspace?.id
+          ? activeWorkspace.name
+          : undefined,
+      threadId: thread.id,
+      sessionId: thread.activeSessionId,
+      actionLabel: 'Continue',
+    }));
 
   return [...approvalItems, ...sessionItems, ...threadItems]
     .sort(compareWorkQueueItems)

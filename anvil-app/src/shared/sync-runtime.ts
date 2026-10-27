@@ -346,6 +346,9 @@ export interface MeshHostConnectionStatus {
   state: 'offline' | 'connecting' | 'live' | 'degraded';
   /** Current route is diagnostic detail; normal UI should describe state only. */
   route: 'private' | 'https' | 'managed' | 'account' | null;
+  /** Sanitized selected path; only changes after authenticated stream promotion. */
+  path?: 'direct' | 'private-network' | 'https' | 'managed';
+  migration?: 'preparing' | 'draining';
   capabilities: string[];
   /** Sanitized error code only. Never include endpoint or transport error text. */
   lastError?: string;

@@ -12,6 +12,12 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import { isIP } from 'node:net';
+import { connectMeshRoutes } from '../../../cloud/contract/machine-route-connect.js';
+import {
+  isMeshLoopbackHost,
+  meshMachineRouteRank,
+  normalizeMeshNetworkKind,
+} from '../../../cloud/contract/machine-route-policy.js';
 import {
   MESH_MACHINE_SESSION_REFRESH_INTERVAL_MS,
   MESH_MACHINE_MAX_FRAME_BYTES,
@@ -41,7 +47,6 @@ import {
 
 const X25519_PUBLIC_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
 const WRAP_INFO = Buffer.from('anvil/keyring-wrap/v1', 'utf8');
-const hostCursors = new Map<string, MeshMachineCursor>();
 
 export type MeshHostRouteKind = MeshMachineRoute['kind'] | 'account';
 export type MeshHostConnectionState = 'offline' | 'connecting' | 'live' | 'degraded';
@@ -150,23 +155,27 @@ export function meshMachineRouteCandidates(
   host: MeshMachineHost,
   now = Date.now(),
 ): MeshMachineRoute[] {
-  const kindOrder: Record<MeshMachineRoute['kind'], number> = {
-    private: 0,
-    https: 1,
-    managed: 2,
-  };
+  const seen = new Set<string>();
   return host.routes
     .filter((route) => {
-      const reachableUntil = Date.parse(route.reachableUntil);
-      return (
-        route.machineId === host.machineId &&
-        route.endpointGeneration === host.endpointGeneration &&
-        Number.isFinite(reachableUntil) &&
-        reachableUntil > now &&
-        safeMeshRouteBase(route) !== null
-      );
+      const base = safeMeshRouteBase(route);
+      const expiry = Date.parse(route.reachableUntil);
+      if (
+        base === null ||
+        isMeshLoopbackHost(base.hostname) ||
+        route.networkKind === 'loopback' ||
+        route.machineId !== host.machineId ||
+        route.endpointGeneration !== host.endpointGeneration ||
+        !Number.isFinite(expiry) ||
+        expiry <= now ||
+        seen.has(base.origin)
+      )
+        return false;
+      seen.add(base.origin);
+      return true;
     })
-    .sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind]);
+    .map((route) => ({ ...route, networkKind: normalizeMeshNetworkKind(route.networkKind) }))
+    .sort((a, b) => meshMachineRouteRank(a) - meshMachineRouteRank(b));
 }
 
 /** Validates the advertised origin before constructing any host URL. */
@@ -521,6 +530,10 @@ export interface MeshMachineAdmissionContext {
   enrollmentId: string;
   fetchFn?: typeof fetch;
   socketFactory?: MeshMachineWebSocketFactory;
+  signal?: AbortSignal;
+  resumeCursor?: MeshMachineCursor;
+  workspaceIds?: readonly string[];
+  requireReplayComplete?: boolean;
   onEvent?: (event: {
     enrollmentId: string;
     epoch: string;
@@ -534,7 +547,7 @@ export interface MeshMachineAdmissionContext {
     enrollmentId: string;
     reason: 'epoch-changed' | 'cursor-expired';
   }) => void;
-  onClosed?: (enrollmentId: string) => void;
+  onClosed?: (enrollmentId: string, reason?: string) => void;
 }
 
 interface PendingMachineRequest {
@@ -549,6 +562,8 @@ export class MeshMachineSessionConnection {
   readonly machineId: string;
   readonly endpointGeneration: string;
   readonly routeKind: MeshMachineRoute['kind'];
+  readonly route: MeshMachineRoute;
+  readonly supportsHandoff: boolean;
   private readonly socket: MeshMachineWebSocketLike;
   private readonly context: MeshMachineAdmissionContext;
   private readonly sessionId: string;
@@ -559,7 +574,8 @@ export class MeshMachineSessionConnection {
   private serverSequence = 1;
   private authorizationValidUntil: string;
   private readyState = false;
-  private intentionalClose = false;
+  private terminated = false;
+  private subscriptionRevision = 0;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private cursor: MeshMachineCursor | null = null;
   private readonly pending = new Map<string, PendingMachineRequest>();
@@ -583,6 +599,9 @@ export class MeshMachineSessionConnection {
     this.machineId = input.host.machineId;
     this.endpointGeneration = input.host.endpointGeneration;
     this.routeKind = input.route.kind;
+    this.route = { ...input.route };
+    this.supportsHandoff = input.host.capabilities.includes('machine.stream-handoff/1');
+    for (const workspaceId of input.context.workspaceIds ?? []) this.workspaces.add(workspaceId);
     this.context = input.context;
     this.socket = input.socket;
     this.sessionId = input.sessionId;
@@ -621,13 +640,19 @@ export class MeshMachineSessionConnection {
     authorizationValidUntil: string;
   }): Promise<MeshMachineSessionConnection> {
     const connection = new MeshMachineSessionConnection(input);
+    const abort = (): void => connection.finish(new Error('machine-session-cancelled'), true);
+    input.context.signal?.addEventListener('abort', abort, { once: true });
     connection.attach();
     try {
+      if (input.context.signal?.aborted) abort();
       await connection.readyPromise;
+      if (input.context.signal?.aborted) throw new Error('machine-session-cancelled');
       return connection;
     } catch (error) {
       connection.close();
       throw error;
+    } finally {
+      input.context.signal?.removeEventListener('abort', abort);
     }
   }
 
@@ -635,33 +660,18 @@ export class MeshMachineSessionConnection {
 
   private attach(): void {
     this.socket.on('message', (...args) => {
-      const data = args[0];
-      void this.handleSocketMessage(data).catch((error: unknown) => {
-        const message = error instanceof Error ? error : new Error('machine-session-protocol');
-        this.rejectReady(message);
-        this.failPending(message);
-        this.close();
+      if (this.terminated) return;
+      // Decryption and sequence validation are synchronous before this async handler yields.
+      void this.handleSocketMessage(args[0]).catch((error: unknown) => {
+        this.finish(error instanceof Error ? error : new Error('machine-session-protocol'));
       });
     });
     this.socket.on('error', (...args) => {
-      const error =
-        args[0] instanceof Error ? (args[0] as Error) : new Error('machine-socket-error');
-      this.rejectReady(error);
-      this.failPending(error);
-      this.close();
+      this.finish(args[0] instanceof Error ? args[0] : new Error('machine-socket-error'));
     });
-    this.socket.on('close', () => {
-      const error = new Error('machine-session-closed');
-      this.rejectReady(error);
-      this.failPending(error);
-      this.cleanup();
-      if (!this.intentionalClose) this.context.onClosed?.(this.enrollmentId);
-    });
-    const timer = setTimeout(() => {
-      this.rejectReady(new Error('machine-session-timeout'));
-      this.close();
-    }, 15_000);
-    if (typeof timer.unref === 'function') timer.unref();
+    this.socket.on('close', () => this.finish(new Error('machine-session-closed')));
+    const timer = setTimeout(() => this.finish(new Error('machine-session-timeout')), 15_000);
+    timer.unref?.();
     this.readyPromise.finally(() => clearTimeout(timer)).catch(() => undefined);
   }
 
@@ -747,6 +757,7 @@ export class MeshMachineSessionConnection {
     switch (payload.kind) {
       case 'ready': {
         if (
+          this.readyState ||
           payload.sessionId !== this.sessionId ||
           payload.epoch !== this.epoch ||
           !Number.isSafeInteger(payload.nextClientSequence) ||
@@ -758,7 +769,7 @@ export class MeshMachineSessionConnection {
         }
         this.clientSequence = payload.nextClientSequence;
         this.authorizationValidUntil = payload.authorizationValidUntil;
-        const saved = hostCursors.get(`${this.enrollmentId}:${this.endpointGeneration}`);
+        const saved = this.context.resumeCursor;
         if (saved !== undefined && saved.epoch === payload.epoch) {
           this.cursor = saved;
         } else {
@@ -772,15 +783,19 @@ export class MeshMachineSessionConnection {
         }
         this.readyState = true;
         this.refreshTimer = setInterval(() => {
-          void this.sendControl({ kind: 'refresh', requestId: nextMeshMachineRequestId() }).catch(
-            () => {
-              this.close();
-            },
+          void this.sendRequest({ kind: 'refresh', requestId: nextMeshMachineRequestId() }).catch(
+            () => this.finish(new Error('authorization-unavailable')),
           );
         }, MESH_MACHINE_SESSION_REFRESH_INTERVAL_MS);
-        if (typeof this.refreshTimer.unref === 'function') this.refreshTimer.unref();
-        this.resolveReady();
-        void this.subscribe();
+        this.refreshTimer.unref?.();
+        if (this.context.requireReplayComplete && !this.supportsHandoff) {
+          this.finish(new Error('machine-handoff-unsupported'));
+          return;
+        }
+        if (!this.supportsHandoff) this.resolveReady();
+        void this.subscribe().catch((error: unknown) => {
+          this.finish(error instanceof Error ? error : new Error('machine-subscribe-failed'));
+        });
         return;
       }
       case 'response':
@@ -798,6 +813,8 @@ export class MeshMachineSessionConnection {
         return;
       }
       case 'event':
+        if (!Number.isSafeInteger(payload.sequence) || payload.sequence < 1)
+          throw new Error('machine-event-sequence-invalid');
         if (payload.epoch !== this.epoch || this.cursor?.epoch !== payload.epoch) {
           this.cursor = { epoch: payload.epoch, sequence: Math.max(0, payload.sequence - 1) };
           this.context.onResnapshotRequired?.({
@@ -808,7 +825,6 @@ export class MeshMachineSessionConnection {
         }
         if (payload.sequence <= (this.cursor?.sequence ?? 0)) return;
         this.cursor = { epoch: payload.epoch, sequence: payload.sequence };
-        hostCursors.set(`${this.enrollmentId}:${this.endpointGeneration}`, this.cursor);
         this.context.onEvent?.({
           enrollmentId: this.enrollmentId,
           epoch: payload.epoch,
@@ -822,19 +838,20 @@ export class MeshMachineSessionConnection {
           kind: 'ack',
           requestId: nextMeshMachineRequestId(),
           cursor: this.cursor,
-        }).catch(() => this.close());
+        }).catch(() => this.finish(new Error('machine-ack-failed')));
         return;
       case 'resnapshot-required':
         this.cursor = { epoch: payload.epoch, sequence: Math.max(0, payload.nextSequence - 1) };
-        hostCursors.set(`${this.enrollmentId}:${this.endpointGeneration}`, this.cursor);
         this.context.onResnapshotRequired?.({
           enrollmentId: this.enrollmentId,
           reason: payload.reason,
         });
-        void this.subscribe();
+        this.finish(new Error('machine-resnapshot-required'));
         return;
       case 'session.revoked':
-        this.close(1008, payload.reason);
+        this.finish(
+          new Error(payload.reason === 'expired' ? 'machine-session-expired' : 'device-denied'),
+        );
         return;
       case 'error': {
         const id = payload.requestId ?? outerRequestId;
@@ -856,7 +873,8 @@ export class MeshMachineSessionConnection {
   addWorkspace(workspaceId: string): void {
     if (workspaceId.trim() === '') return;
     this.workspaces.add(workspaceId);
-    if (this.readyState) void this.subscribe();
+    if (this.readyState)
+      void this.subscribe().catch(() => this.finish(new Error('machine-subscribe-failed')));
   }
 
   async request<T = unknown>(
@@ -865,11 +883,15 @@ export class MeshMachineSessionConnection {
     requestId = nextMeshMachineRequestId(),
   ): Promise<T> {
     await this.readyPromise;
+    if (this.terminated) throw new Error('machine-session-closed');
     return this.sendRequest<T>({ kind: 'request', requestId, operation, payload });
   }
 
   private async sendRequest<T>(
-    payload: Extract<MeshMachineClientPayload, { kind: 'request' }>,
+    payload: Extract<
+      MeshMachineClientPayload,
+      { kind: 'request' | 'subscribe' | 'refresh' | 'ping' }
+    >,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -891,45 +913,98 @@ export class MeshMachineSessionConnection {
     });
   }
 
+  get isOpen(): boolean {
+    return this.readyState && !this.terminated;
+  }
+
+  get streamCursor(): MeshMachineCursor | null {
+    return this.cursor === null ? null : { ...this.cursor };
+  }
+
   private async subscribe(): Promise<void> {
-    const cursor = this.cursor ?? undefined;
-    await this.sendControl({
+    const revision = ++this.subscriptionRevision;
+    const payload: Extract<MeshMachineClientPayload, { kind: 'subscribe' }> = {
       kind: 'subscribe',
       requestId: nextMeshMachineRequestId(),
-      ...(cursor === undefined ? {} : { cursor }),
+      ...(this.cursor === null ? {} : { cursor: this.cursor }),
       ...(this.workspaces.size === 0 ? {} : { workspaceIds: [...this.workspaces].sort() }),
-    });
+    };
+    if (!this.supportsHandoff) {
+      await this.sendControl(payload);
+      return;
+    }
+    const result = await this.sendRequest<unknown>(payload);
+    if (revision !== this.subscriptionRevision || this.terminated) return;
+    if (
+      !isRecord(result) ||
+      result.replayComplete !== true ||
+      !isRecord(result.cursor) ||
+      result.cursor.epoch !== this.epoch ||
+      !Number.isSafeInteger(result.cursor.sequence) ||
+      (result.cursor.sequence as number) < 0
+    )
+      throw new Error('machine-subscribe-incomplete');
+    this.cursor = {
+      epoch: this.epoch,
+      sequence: Math.max(this.cursor?.sequence ?? 0, result.cursor.sequence as number),
+    };
+    this.resolveReady();
   }
 
   private async sendControl(payload: MeshMachineClientPayload): Promise<void> {
-    if (!this.readyState) return;
-    const sequence = this.clientSequence++;
-    const envelope = sealMeshMachineFrame({
-      key: this.clientToHostKey,
-      sessionId: this.sessionId,
-      machineId: this.machineId,
-      endpointGeneration: this.endpointGeneration,
-      epoch: this.epoch,
-      direction: 'client-to-host',
-      requestId: payload.requestId,
-      sequence,
-      payload,
-    });
-    this.socket.send(
-      JSON.stringify({
+    if (!this.readyState || this.terminated) throw new Error('machine-session-closed');
+    const sequence = this.clientSequence;
+    try {
+      const envelope = sealMeshMachineFrame({
+        key: this.clientToHostKey,
+        sessionId: this.sessionId,
+        machineId: this.machineId,
+        endpointGeneration: this.endpointGeneration,
+        epoch: this.epoch,
+        direction: 'client-to-host',
+        requestId: payload.requestId,
+        sequence,
+        payload,
+      });
+      const frame = JSON.stringify({
         type: 'data',
         sessionId: this.sessionId,
         requestId: payload.requestId,
         sequence,
         envelope,
-      }),
-    );
+      });
+      this.clientSequence = sequence + 1;
+      this.socket.send(frame);
+    } catch {
+      // A failed send has an unknown wire outcome. Never reuse a possibly skipped sequence.
+      const error = new Error('machine-send-failed');
+      this.finish(error);
+      throw error;
+    }
   }
 
   close(code = 1000, reason = 'client-close'): void {
-    this.intentionalClose = true;
-    this.socket.close(code, reason);
+    this.finish(new Error('machine-session-closed'), true, code, reason);
+  }
+
+  private finish(error: Error, intentional = false, code = 1000, reason = 'session-ended'): void {
+    if (this.terminated) return;
+    this.terminated = true;
+    this.rejectReady(error);
+    this.failPending(error);
     this.cleanup();
+    try {
+      this.socket.close(code, reason);
+    } catch {
+      /* Already closed. */
+    }
+    if (!intentional) {
+      try {
+        this.context.onClosed?.(this.enrollmentId, error.message);
+      } catch {
+        // The terminal state and pending request failures do not depend on observer behavior.
+      }
+    }
   }
 
   private failPending(error: Error): void {
@@ -1016,35 +1091,44 @@ export async function connectMeshMachineHost(
   now = Date.now(),
 ): Promise<MeshMachineSessionConnection> {
   const fetchImpl = context.fetchFn ?? fetch;
-  let lastError: unknown;
-  for (const route of meshMachineRouteCandidates(host, now)) {
-    try {
-      const infoValue = await fetchMachineJson(
-        fetchImpl,
-        meshMachineRouteUrl(route, MESH_MACHINE_ROUTE_PATHS.info),
-        { method: 'GET' },
-      );
-      const info = parseMeshMachineEndpointInfo(infoValue);
-      if (
-        info === null ||
-        info.hostEnrollmentId !== host.enrollmentId ||
-        info.machineId !== host.machineId ||
-        info.endpointGeneration !== host.endpointGeneration ||
-        !info.capabilities.includes('machine.session/1') ||
-        !info.capabilities.includes('machine.stream/1')
-      ) {
-        throw new Error('protocol-mismatch');
-      }
-      const socket = await bootstrapMachineRoute(host, route, info, context, fetchImpl);
-      return socket;
-    } catch (error) {
-      lastError = error;
-    }
+  try {
+    return await connectMeshRoutes({
+      routes: meshMachineRouteCandidates(host, now),
+      signal: context.signal,
+      probe: async (route, signal) => {
+        const value = await fetchMachineJson(
+          fetchImpl,
+          meshMachineRouteUrl(route, MESH_MACHINE_ROUTE_PATHS.info),
+          { method: 'GET', signal },
+        );
+        const info = parseMeshMachineEndpointInfo(value);
+        if (
+          info === null ||
+          info.hostEnrollmentId !== host.enrollmentId ||
+          info.machineId !== host.machineId ||
+          info.endpointGeneration !== host.endpointGeneration ||
+          !info.capabilities.includes('machine.session/1') ||
+          !info.capabilities.includes('machine.stream/1')
+        ) {
+          throw new Error('protocol-mismatch');
+        }
+        return info;
+      },
+      connect: (route, info, signal) => {
+        if (Date.parse(route.reachableUntil) <= Date.now()) throw new Error('route-unavailable');
+        return bootstrapMachineRoute(host, route, info, { ...context, signal }, fetchImpl);
+      },
+      dispose: (connection) => connection.close(),
+    });
+  } catch (error) {
+    if (context.signal?.aborted) throw new Error('machine-session-cancelled');
+    if (
+      error instanceof Error &&
+      (error.message === 'protocol-mismatch' || safeMachineErrorCode(error) !== undefined)
+    )
+      throw error;
+    throw new Error('route-unavailable');
   }
-  if (lastError instanceof Error && lastError.message === 'protocol-mismatch') throw lastError;
-  if (lastError instanceof Error && lastError.message === 'authorization-unavailable')
-    throw lastError;
-  throw new Error('route-unavailable');
 }
 
 async function bootstrapMachineRoute(
@@ -1056,9 +1140,9 @@ async function bootstrapMachineRoute(
 ): Promise<MeshMachineSessionConnection> {
   const identity = newMeshMachineEphemeralIdentity();
   const bootstrapChallenge = randomBytes(32).toString('base64url');
-  const capabilities = (['machine.session/1', 'machine.stream/1'] as const).filter((capability) =>
-    host.capabilities.includes(capability),
-  );
+  const capabilities = (
+    ['machine.session/1', 'machine.stream/1', 'machine.stream-handoff/1'] as const
+  ).filter((capability) => host.capabilities.includes(capability));
   const operations = CLIENT_MACHINE_OPERATIONS.filter((operation) =>
     host.operations.includes(operation),
   );
@@ -1085,6 +1169,7 @@ async function bootstrapMachineRoute(
     new URL(`mesh/hosts/${encodeURIComponent(host.machineId)}/admission-tickets`, apiUrl).href,
     {
       method: 'POST',
+      signal: context.signal,
       headers: {
         authorization: `Bearer ${context.accessToken}`,
         'content-type': 'application/json',
@@ -1134,6 +1219,7 @@ async function bootstrapMachineRoute(
       meshMachineRouteUrl(route, MESH_MACHINE_ROUTE_PATHS.challenge),
       {
         method: 'POST',
+        signal: context.signal,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           v: 1,
@@ -1171,6 +1257,7 @@ async function bootstrapMachineRoute(
       meshMachineRouteUrl(route, MESH_MACHINE_ROUTE_PATHS.bootstrap),
       {
         method: 'POST',
+        signal: context.signal,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ v: 1, challengeId: challenge.challengeId, proof }),
       },
@@ -1211,26 +1298,35 @@ async function bootstrapMachineRoute(
       bootstrap.sessionToken,
       meshMachineSessionTokenAssociatedData(bootstrap.sessionClaims),
     );
-    if (sessionToken.byteLength !== 32) {
+    let socket: MeshMachineWebSocketLike | undefined;
+    try {
+      if (sessionToken.byteLength !== 32) throw new Error('authorization-unavailable');
+      if (context.signal?.aborted) throw new Error('machine-session-cancelled');
+      socket = (context.socketFactory ?? createMachineSocket)(
+        meshMachineRouteUrl(route, info.transport.socketPath, true),
+        machineSocketProtocol(),
+      );
+      return await MeshMachineSessionConnection.open({
+        host,
+        route,
+        context,
+        socket,
+        sessionId: bootstrap.sessionId,
+        sessionToken,
+        epoch: bootstrap.stream.epoch,
+        clientSequence: 1,
+        authorizationValidUntil: bootstrap.authorizationValidUntil,
+      });
+    } catch (error) {
+      try {
+        socket?.close();
+      } catch {
+        /* Already closed. */
+      }
+      throw error;
+    } finally {
       sessionToken.fill(0);
-      throw new Error('authorization-unavailable');
     }
-    const socket = (context.socketFactory ?? createMachineSocket)(
-      meshMachineRouteUrl(route, info.transport.socketPath, true),
-      machineSocketProtocol(),
-    );
-    const connection = await MeshMachineSessionConnection.open({
-      host,
-      route,
-      context,
-      socket,
-      sessionId: bootstrap.sessionId,
-      sessionToken,
-      epoch: bootstrap.stream.epoch,
-      clientSequence: 1,
-      authorizationValidUntil: bootstrap.authorizationValidUntil,
-    });
-    return connection;
   } catch (error) {
     proofKey.fill(0);
     throw error;
@@ -1257,13 +1353,23 @@ async function fetchMachineJson(
   url: string,
   init: RequestInit,
 ): Promise<unknown> {
+  if (init.signal?.aborted) throw new Error('machine-session-cancelled');
   const controller = new AbortController();
   const response = await fetchImpl(url, {
     ...init,
     redirect: 'error',
-    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+    signal: AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(10_000),
+      ...(init.signal ? [init.signal] : []),
+    ]),
     headers: { accept: 'application/json', ...init.headers },
   });
+  if (init.signal?.aborted) {
+    controller.abort();
+    void response.body?.cancel().catch(() => undefined);
+    throw new Error('machine-session-cancelled');
+  }
   const bodyBytes = await readBoundedResponseBody(
     response,
     MESH_MACHINE_MAX_FRAME_BYTES,

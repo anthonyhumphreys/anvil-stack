@@ -88,6 +88,7 @@ vi.mock('../sync-runtime.service.js', () => ({
   getRuntimeStatus: () => ({ auth: mocks.auth }),
   activeSyncScope: vi.fn(() => mocks.scope),
   attestDeviceAccessToken: mocks.attestDeviceAccessToken,
+  companionAdvertisementScopeKey: () => mocks.auth.state === 'signed-in' ? 'test-scope' : null,
   publishCompanionAdvertisement: mocks.publishCompanionAdvertisement,
   getDevicePresence: vi.fn(async () => ({ devices: [] })),
   listDevices: mocks.listDevices,

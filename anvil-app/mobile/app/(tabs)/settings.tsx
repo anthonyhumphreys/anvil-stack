@@ -1,5 +1,5 @@
 import { MaterialIcons } from '@react-native-vector-icons/material-icons';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Alert,
   ScrollView,
@@ -20,6 +20,8 @@ import {
 } from '@/lib/anvil-account';
 import { dialAccountHosts, type DialedHost } from '@/lib/account-dial';
 import { removeAccountConnections } from '@/lib/anvil-api';
+import { mobileMeshSessions } from '@/lib/mesh-session';
+import { meshPathLabel } from '@/lib/mesh-connection-status';
 import {
   ActionButton,
   EmptyState,
@@ -36,6 +38,8 @@ import {
   titleStyle,
 } from '@/components/companion-ui';
 import { useCompanion } from '@/contexts/companion-context';
+
+const subscribeMeshStatus = (listener: () => void) => mobileMeshSessions.onStatus(listener);
 
 export default function SettingsScreen() {
   const {
@@ -64,6 +68,12 @@ export default function SettingsScreen() {
   const [accountCode, setAccountCode] = useState('');
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const meshHostId = connection?.authMode === 'account' ? connection.enrollmentId : undefined;
+  const readMeshStatus = useCallback(
+    () => (meshHostId === undefined ? null : mobileMeshSessions.status(meshHostId)),
+    [meshHostId],
+  );
+  const meshStatus = useSyncExternalStore(subscribeMeshStatus, readMeshStatus, () => null);
 
   const refreshAccount = useCallback(async () => {
     const connection = await getAccountConnection();
@@ -195,8 +205,22 @@ export default function SettingsScreen() {
       <SignalGrid>
         <SignalTile
           label="Host"
-          value={connection ? 'Live' : 'None'}
-          detail={connection ? hostLabel(connection.baseUrl) : 'pair required'}
+          value={
+            meshStatus
+              ? meshStatus.state === 'live'
+                ? 'Live'
+                : 'Waiting'
+              : connection
+                ? 'Live'
+                : 'None'
+          }
+          detail={
+            meshStatus
+              ? meshPathLabel(meshStatus)
+              : connection
+                ? hostLabel(connection.baseUrl)
+                : 'pair required'
+          }
           tone={connection ? 'green' : 'amber'}
         />
         <SignalTile
@@ -225,7 +249,11 @@ export default function SettingsScreen() {
           <View style={{ flex: 1 }}>
             <Text style={titleStyle}>Active host</Text>
             <Text selectable style={bodyStyle}>
-              {connection ? connection.baseUrl : 'No desktop paired'}
+              {connection?.authMode === 'account'
+                ? `${connection.deviceName} · ${meshStatus ? meshPathLabel(meshStatus) : 'Connecting'}`
+                : connection
+                  ? connection.baseUrl
+                  : 'No desktop paired'}
             </Text>
           </View>
         </View>

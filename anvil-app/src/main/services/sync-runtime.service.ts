@@ -288,6 +288,7 @@ import {
 } from './mesh-managed-connector.service.js';
 import { isMeshMachineEndpointEnabled } from './mesh-machine-endpoint.service.js';
 import { getMeshMachineHostStatus } from './mesh-host-status.service.js';
+import { MeshNetworkMonitor } from './mesh-network.service.js';
 import type { MeshMachineAdmissionConsumeResponse } from '../../../cloud/contract/machine.js';
 import { MESH_MACHINE_OPERATIONS } from '../../../cloud/contract/machine.js';
 import {
@@ -418,6 +419,9 @@ let devSpikeEnabled = false;
 let fetchOverride: typeof fetch | undefined;
 let runtimeUserDataDir: string | null = null;
 let meshHostPool: MeshHostRuntimePool | null = null;
+let meshNetworkMonitor: MeshNetworkMonitor | null = null;
+let meshNetworkLifecycleRevision = 0;
+let meshNetworkBlocked = false;
 interface PendingPairingRedemption {
   backendId: string;
   accountId: string;
@@ -488,11 +492,48 @@ export interface SyncRuntimeInitOptions {
 
 function syncLocalMeshHostListener(): void {
   void import('./mobile-companion.service.js')
-    .then(({ syncMobileCompanionServer }) => syncMobileCompanionServer())
+    .then(async ({ syncMobileCompanionServer }) => {
+      await syncMobileCompanionServer();
+      meshNetworkMonitor?.sampleNow();
+    })
+    .catch(() => undefined);
+}
+
+function refreshMeshNetwork(): void {
+  if (meshNetworkBlocked) return;
+  const generation = runtimeGeneration;
+  meshHostPool?.networkChanged();
+  void import('./mobile-companion.service.js')
+    .then(({ refreshMobileCompanionAdvertisement }) => {
+      if (generation === runtimeGeneration && isSyncEnabled()) {
+        return refreshMobileCompanionAdvertisement();
+      }
+    })
+    .catch(() => undefined);
+}
+
+function startMeshNetworkMonitoring(): void {
+  if (meshNetworkBlocked) return;
+  meshNetworkLifecycleRevision += 1;
+  meshNetworkMonitor?.start();
+}
+
+function stopMeshNetworkMonitoring(): void {
+  meshNetworkBlocked = true;
+  meshNetworkMonitor?.stop();
+  const generation = runtimeGeneration;
+  const revision = ++meshNetworkLifecycleRevision;
+  void import('./mobile-companion.service.js')
+    .then(({ cancelMobileCompanionAdvertisement }) => {
+      if (generation === runtimeGeneration && revision === meshNetworkLifecycleRevision) {
+        cancelMobileCompanionAdvertisement();
+      }
+    })
     .catch(() => undefined);
 }
 
 export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOptions = {}): void {
+  meshNetworkBlocked = false;
   runtimeUserDataDir = userDataDir;
   auth = createSyncAuthService({
     userDataDir,
@@ -517,6 +558,14 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   }
   meshHostPool?.stop();
   meshHostPool = new MeshHostRuntimePool(getMeshHostRuntimeContext);
+  meshNetworkMonitor?.stop();
+  meshNetworkMonitor = new MeshNetworkMonitor({
+    isActive: () =>
+      isSyncEnabled() &&
+      (getMeshMachineHostStatus().running || meshHostPool?.hasActiveDemand() === true),
+    onChanged: refreshMeshNetwork,
+  });
+  startMeshNetworkMonitoring();
   configureMeshHostSessionRuntimeBindings();
   configureMeshManagedEndpointLifecycle({
     context: () => {
@@ -896,6 +945,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
 }
 
 function getMeshHostRuntimeContext(): MeshHostRuntimeContext | null {
+  if (meshNetworkBlocked) return null;
   const backend = getActiveBackend();
   const fields = auth?.getSessionScopeFields() ?? null;
   const token = auth?.getAccessToken() ?? null;
@@ -910,6 +960,8 @@ function getMeshHostRuntimeContext(): MeshHostRuntimeContext | null {
   }
   return {
     apiUrl: apiUrlFor(backend),
+    backendId: backend.id,
+    datasetEpoch: fields.datasetEpoch,
     accessToken: token,
     accountId: fields.accountId,
     enrollmentId: fields.enrollmentId,
@@ -1970,6 +2022,8 @@ function publishLocalMeshAttemptLifecycle(
 
 export function resetSyncRuntimeForTests(): void {
   runtimeGeneration += 1;
+  stopMeshNetworkMonitoring();
+  meshNetworkMonitor = null;
   stopPolling();
   deviceIdentityBindings.clear();
   stopDashboardCommandPump();
@@ -2067,6 +2121,7 @@ function ensureCurrentEnrollment(): void {
 }
 
 function resumeSyncAfterEnrollment(): void {
+  meshNetworkBlocked = false;
   ensureCurrentEnrollment();
   if (!isSyncEnabled()) {
     startKeyringOnboardingPoll();
@@ -2078,6 +2133,7 @@ function resumeSyncAfterEnrollment(): void {
 /** Resume an already-enabled account without touching enrollment or key state. */
 function resumeEnabledSyncRuntime(): Promise<void> {
   stopKeyringOnboardingPoll();
+  startMeshNetworkMonitoring();
   meshHostPool?.start();
   connectLiveChannel();
   armFallbackPoll();
@@ -2356,6 +2412,7 @@ export function spikeEnroll(input: SyncSpikeEnrollInput): SyncAuthPublicSnapshot
     displayName: hostname() || 'Anvil device',
   };
   const snapshot = requireAuth().installDeviceSession(session, backend.id);
+  meshNetworkBlocked = false;
   sessionExpired = false;
   return snapshot;
 }
@@ -4006,9 +4063,27 @@ export async function attestDeviceAccessToken(
  * account object. Best-effort presence metadata; callers tolerate failure
  * (offline, unsigned) by simply not advertising.
  */
+export function companionAdvertisementScopeKey(): string | null {
+  if (meshNetworkBlocked) return null;
+  const backend = getActiveBackend() ?? pinnedBackend();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  if (
+    backend === null || fields === null || auth?.getAccessToken() == null ||
+    !sessionBoundToBackend(backend, fields)
+  ) return null;
+  return JSON.stringify([
+    backend.id, fields.accountId, fields.enrollmentId, fields.datasetEpoch, runtimeGeneration,
+  ]);
+}
+
 export async function publishCompanionAdvertisement(
   params: DeviceAdvertiseParams,
+  expectedScope?: string,
 ): Promise<DeviceAdvertiseResult> {
+  const scope = companionAdvertisementScopeKey();
+  if (scope === null || (expectedScope !== undefined && expectedScope !== scope)) {
+    throw new Error('Companion advertisement scope changed.');
+  }
   return accountRpc<DeviceAdvertiseResult>('device.advertise', params);
 }
 
@@ -4426,6 +4501,7 @@ export function enableSync(): SyncRuntimeStatus {
   runtimeGeneration += 1;
   stopKeyringOnboardingPoll();
   activateBackend(backend.id);
+  meshNetworkBlocked = false;
   const scope: SyncScope = {
     backendId: backend.id,
     accountId: fields.accountId,
@@ -4439,6 +4515,7 @@ export function enableSync(): SyncRuntimeStatus {
   // also marks the first device trusted locally before key provisioning.
   initializeSyncCrypto();
   meshHostPool?.start();
+  startMeshNetworkMonitoring();
   syncLocalMeshHostListener();
   connectLiveChannel();
   armFallbackPoll();
@@ -4459,6 +4536,8 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   // Fence first: any in-flight engine work from the old session fails its
   // generation check at the next durable write.
   runtimeGeneration += 1;
+  stopMeshNetworkMonitoring();
+  meshHostPool?.stop();
   deviceIdentityBindings.clear();
   clearCompanionAuthCaches();
   stopPolling();
@@ -4476,7 +4555,6 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   }
   service.signOutLocal();
   disconnectBackend();
-  meshHostPool?.stop();
   syncLocalMeshHostListener();
   configureMeshManagedEndpointLifecycle(null);
   keyRotationBlockedScopeKey = null;
@@ -4567,6 +4645,7 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
  */
 export function stopSyncRuntimeForOneShot(): void {
   runtimeGeneration += 1;
+  stopMeshNetworkMonitoring();
   stopPolling();
   clearSessionRefresh();
   teardownLiveChannel();
@@ -4808,6 +4887,7 @@ function maybeRefreshHostedEntitlement(): void {
 export function onAppFocus(): void {
   maybeRefreshHostedEntitlement();
   kickKeyringOnboardingPoll();
+  meshNetworkMonitor?.sampleNow();
 }
 
 /** Opens the fixed hosted account page in the system browser. */
@@ -5043,6 +5123,7 @@ export async function requestSync(): Promise<void> {
 
 export function onBackendDisconnected(): void {
   runtimeGeneration += 1;
+  stopMeshNetworkMonitoring();
   stopPolling();
   teardownLiveChannel();
   meshHostPool?.stop();
@@ -5061,6 +5142,8 @@ export function onBackendDisconnected(): void {
  */
 export function onSystemResume(): void {
   if (isSyncEnabled()) {
+    startMeshNetworkMonitoring();
+    meshNetworkMonitor?.sampleNow(true);
     connectLiveChannel();
     void requestSync().catch(() => undefined);
   } else {
@@ -5238,6 +5321,8 @@ function connectLiveChannel(): void {
         reconnectAttempt = 0;
         armFallbackPoll();
         meshHostPool?.start();
+        startMeshNetworkMonitoring();
+        meshNetworkMonitor?.sampleNow(true);
         syncLocalMeshHostListener();
         // Catch up anything missed while the channel was down.
         meshWorkerOnSyncReady();
@@ -5259,6 +5344,9 @@ function connectLiveChannel(): void {
         void handleJobAvailable(frame.jobId).catch(() => undefined);
         break;
       case 'worker.available':
+        void meshHostPool?.refresh().catch(() => undefined);
+        break;
+      case 'machine.routes-changed':
         void meshHostPool?.refresh().catch(() => undefined);
         break;
       case 'activity':

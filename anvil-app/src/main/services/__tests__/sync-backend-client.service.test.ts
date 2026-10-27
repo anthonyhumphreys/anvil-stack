@@ -304,6 +304,24 @@ describe('discover over HTTP (127.0.0.1 fake server)', () => {
 });
 
 describe('openSocket', () => {
+  it('accepts account machine-route hints and rejects malformed invalidations', () => {
+    const fake = new FakeSocket();
+    const socket = openSocket({ socketUrl: 'wss://example.com/v1/connect' }, 'device-token', {
+      createSocket: () => fake,
+    });
+    const frames: unknown[] = [];
+    const errors: Error[] = [];
+    socket.onFrame((frame) => frames.push(frame));
+    socket.onProtocolError((error) => errors.push(error));
+    const hint = { type: 'machine.routes-changed', version: 1, id: 'hint', enrollmentId: 'host' };
+    fake.emit('message', JSON.stringify(hint));
+    expect(frames).toEqual([hint]);
+    fake.emit('message', JSON.stringify({ ...hint, enrollmentId: '' }));
+    expect(errors).toHaveLength(1);
+    expect(frames).toHaveLength(1);
+    expect(fake.closedWith?.code).toBe(1008);
+  });
+
   it('uses the mesh subprotocol with header auth and validates frames', () => {
     const captured: Array<{
       url: string;
@@ -324,7 +342,10 @@ describe('openSocket', () => {
       {
         url: 'wss://example.com/base/v1/connect',
         protocols: ['anvil.mesh.v1'],
-        headers: { Authorization: 'Bearer device-token' },
+        headers: {
+          Authorization: 'Bearer device-token',
+          'X-Anvil-Socket-Features': 'machine.routes-changed/1',
+        },
       },
     ]);
 

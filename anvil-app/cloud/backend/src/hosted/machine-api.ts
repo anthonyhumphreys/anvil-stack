@@ -1,5 +1,6 @@
 import { PROTOCOL } from '../../../contract/version';
 import { COMPANION_ADVERTISEMENT_TTL_MS, type DevicePresenceEntry, type DevicePresenceResult } from '../../../contract/companion';
+import { meshMachinePrivateRoutes } from '../../../contract/machine-route-policy';
 import {
   MESH_MACHINE_CAPABILITIES,
   MESH_MACHINE_OPERATIONS,
@@ -257,12 +258,9 @@ export async function listMachineHostsForAccount(
     const allocationGeneration = allocation?.allocationGeneration ?? 0;
     const routes: MeshMachineRoute[] = [];
     if (Array.isArray(device.endpoints)) {
-      for (const endpoint of device.endpoints) {
-        const endpointUrl = endpointUrlFor(endpoint.host, endpoint.port);
-        if (endpointUrl === null) continue;
+      for (const route of meshMachinePrivateRoutes(device.endpoints)) {
         routes.push({
-          kind: 'private',
-          url: endpointUrl,
+          ...route,
           machineId: machine.machineId,
           endpointGeneration: machine.endpointGeneration,
           reachableUntil: new Date(adExpiry).toISOString(),
@@ -539,17 +537,6 @@ function isAllocationView(value: unknown): value is MachineEndpointAllocationVie
     (value['url'] === undefined || typeof value['url'] === 'string') &&
     (value['lastReachableAt'] === undefined || typeof value['lastReachableAt'] === 'number')
   );
-}
-
-function endpointUrlFor(host: string, port: number): string | null {
-  if (host.length > 253 || host.includes('://') || host.includes('/') || !Number.isInteger(port) || port < 1 || port > 65535) return null;
-  try {
-    const url = new URL(`http://${host}:${port}`);
-    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) return null;
-    return url.origin;
-  } catch {
-    return null;
-  }
 }
 
 async function machineAccessDenial(env: Env, accountId: string): Promise<Response | null> {

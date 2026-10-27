@@ -43,6 +43,9 @@ account balance and eligibility before using it as budget.
 ## Supporting documents
 
 - [Detailed implementation plan](host-local-sync-mesh-implementation-plan.md)
+- [LAN first connectivity implementation plan](lan-first-connectivity.md) — implemented route
+  selection, network refresh and safe session migration for desktop, daemon and native mobile;
+  physical acceptance remains pending.
 - [Implementation and security review](host-local-implementation-review.md)
 - [PR 91 review history](pr-91-review.md)
 - [FinOps projection](finops-projection.md), [assumptions](finops-assumptions.json), and

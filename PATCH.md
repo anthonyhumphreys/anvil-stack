@@ -389,3 +389,58 @@ explicit on-request access override; the recipient chooses model and access
 before sending. Validate filenames and references, write only app-owned files,
 and roll back failed imports without removing unrelated data. Preview builds
 remain isolated from OS file/protocol association registration.
+
+### C10: LAN first Mesh route selection and session migration
+
+Status: implemented locally; automated verification passed; physical-device acceptance and deployment pending
+Owner project: `anvil-app`
+
+Prefer validated host LAN-address candidates, other private routes, explicit HTTPS
+and managed ingress in that order. Route hints never grant trust or weaken URL,
+identity, enrollment, endpoint-generation or authorization checks. Cross-machine
+clients exclude loopback. Read-only reachability probes carry no account bearer
+or admission ticket, use bounded concurrency/deadlines and reserve prompt fallback
+capacity. Authenticate one candidate per host at a time with fresh session keys;
+close late and abandoned results. No new transport protocol or subnet scanning.
+
+Desktop/daemon and native mobile own stable consumers across active, preparing
+and draining connections. Only hosts advertising `machine.stream-handoff/1` can
+upgrade proactively. The authenticated subscription completion watermark follows
+ordered replay; live events cannot precede subscription. Bound candidate buffers,
+recheck current scope/generation/health/demand and stream coverage at promotion,
+and deliver each accepted event once. Keep already-sent requests on their original
+connection until completion or deadline. Route changes never resend mutations;
+uncertain results remain uncertain for operation-specific receipt reconciliation.
+Sign-out, account replacement and revocation fence delayed callbacks, pending
+responses and advertisements before they can reach a new scope. Final subscriber
+release cancels proactive work without interrupting a pending mutation.
+
+Session ownership spans private and managed ingress listeners. Retiring a stale
+socket must not erase its replacement's keys; retire abandoned bootstrap records
+and authenticated sessions promptly without raising the 64-session cap. Keep
+command receipts separate from transient session state. Preserve backend admission
+and the existing continuing authorization deadlines; LAN routing is not offline
+Mesh and does not grant worker execution.
+
+Monitor local interfaces only while hosting or serving demand. Changed endpoints
+publish the latest scoped revision; unchanged samples do not write to the backend.
+Account route-change hints contain enrollment IDs only and require the explicit
+`machine.routes-changed/1` socket feature opt-in, since old parsers reject unknown
+frames. Periodic active-client discovery covers missed hints. Repeated failures
+respect dwell/backoff, and background mobile clients cancel network preparation.
+`ANVIL_MESH_ROUTE_UPGRADES=false` disables desktop/daemon upgrades;
+`EXPO_PUBLIC_ANVIL_MESH_ROUTE_UPGRADES=false` does so for a native mobile build.
+Neither switch disables ordinary reconnect or changes authorization.
+
+Selected-path UI is sanitized. `Direct` with host LAN-address detail is a preference
+hint, not proof of physical LAN routing. iOS uses the maintained local-network
+purpose/ATS settings. Android permits private-IP HTTP/WS through maintained Expo
+configuration; application URL restrictions, HTTPS broker credentials and encrypted
+machine sessions remain mandatory. Generated config and loopback wire tests do
+not establish physical permission, LAN latency or native release acceptance.
+
+Owner modules: shared machine route contracts/policy/scheduler, hosted discovery
+and account socket hints, Mesh client/runtime/session services, network monitor
+and advertisement integration, mobile account/session/network adapters and the
+existing connection status surfaces. Verification and outstanding physical cases
+are recorded in `anvil-app/docs/plans/sync-mesh/lan-first-connectivity.md`.

@@ -52,6 +52,8 @@ vi.mock('electron', () => ({
 
 import {
   bindLocalEntities,
+  companionAdvertisementScopeKey,
+  publishCompanionAdvertisement,
   deviceVerificationCode,
   enableSync,
   enrollWithEnrollmentCode,
@@ -86,6 +88,7 @@ import {
   listCloudEnvironments,
   resumeCloudEnvironment,
 } from '../sync-runtime.service';
+import { MeshHostRuntimePool } from '../mesh-host-runtime.service';
 import {
   configureSecretVault,
   lockSecretVault,
@@ -2143,6 +2146,62 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const status = await signOutSync();
     expect(status.auth.state).toBe('signed-out');
     expect(backend.calls.some((c) => c.path === '/v1/session/revoke')).toBe(true);
+  });
+
+  it('fences outbound Mesh and advertisements before a pending sign-out revocation completes', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    let releaseRevoke: (() => void) | undefined;
+    const revokePending = new Promise<void>((resolve) => { releaseRevoke = resolve; });
+    const fetchFn: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (new URL(url).pathname === '/v1/session/revoke') await revokePending;
+      return backend.fetchFn(input, init);
+    };
+    const pools: MeshHostRuntimePool[] = [];
+    const originalStart = MeshHostRuntimePool.prototype.start;
+    const capturePool = vi.spyOn(MeshHostRuntimePool.prototype, 'start').mockImplementation(function (this: MeshHostRuntimePool) {
+      pools.push(this);
+      originalStart.call(this);
+    });
+    try {
+      initSyncRuntime(dir, { fetchFn });
+      pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+      const minted = (await (
+        await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+          body: JSON.stringify({ accountId: 'account-1' }),
+        })
+      ).json()) as { code: string };
+      await enrollWithEnrollmentCode(minted.code);
+      enableSync();
+      await requestSync();
+      const activePool = pools.at(-1);
+      expect(activePool).toBeDefined();
+      const scope = companionAdvertisementScopeKey();
+      expect(scope).not.toBeNull();
+      const pending = signOutSync();
+      expect(getRuntimeStatus().auth.state).toBe('signed-in');
+      expect(companionAdvertisementScopeKey()).toBeNull();
+      const before = backend.calls.length;
+      await expect(publishCompanionAdvertisement({ endpoints: [], capabilities: [] }, scope!))
+        .rejects.toThrow('scope changed');
+      await expect(publishCompanionAdvertisement({ endpoints: [], capabilities: [] }))
+        .rejects.toThrow('scope changed');
+      await expect(activePool!.request('peer', 'read.snapshot', {})).resolves.toBeNull();
+      const release = activePool!.retain('peer');
+      await activePool!.refresh();
+      release();
+      expect(backend.calls.slice(before).some((call) =>
+        call.path.startsWith('/v1/mesh/') || call.operation === 'device.advertise',
+      )).toBe(false);
+      releaseRevoke?.();
+      await pending;
+    } finally {
+      releaseRevoke?.();
+      capturePool.mockRestore();
+    }
   });
 
   it('flags sessionExpired when the backend rejects the refresh credential', async () => {

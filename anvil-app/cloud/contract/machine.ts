@@ -9,6 +9,7 @@ export const MESH_MACHINE_SOCKET_SUBPROTOCOL = 'anvil.machine.v1' as const;
 export const MESH_MACHINE_CAPABILITIES = [
   'machine.session/1',
   'machine.stream/1',
+  'machine.stream-handoff/1',
   'dashboard.command.wake/1',
 ] as const;
 export type MeshMachineCapability = (typeof MESH_MACHINE_CAPABILITIES)[number];
@@ -63,6 +64,8 @@ export const MESH_MACHINE_REPLAY_MAX_BYTES = 2 * 1024 * 1024;
 /** Route advertised by the broker. Allocation generation is independent of host identity. */
 export interface MeshMachineRoute {
   kind: 'private' | 'https' | 'managed';
+  /** Preference hint only; never proof of locality, host identity or authorization. */
+  networkKind?: 'lan' | 'private-network' | 'loopback';
   url: string;
   machineId: string;
   endpointGeneration: string;

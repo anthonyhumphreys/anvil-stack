@@ -9,6 +9,19 @@ const base = {
 };
 
 describe('remote chat connection notice', () => {
+  it.each([
+    ['direct', 'Direct · Host LAN address'],
+    ['private-network', 'Private Network'],
+    ['https', 'Direct HTTPS'],
+    ['managed', 'Managed Tunnel'],
+  ] as const)('shows sanitized selected path %s while remaining connected', (hostPath, detail) => {
+    expect(remoteChatConnectionNotice({ ...base, hostState: 'live', hostPath })).toEqual({
+      label: 'Connected · Build machine',
+      detail,
+      tone: 'muted',
+    });
+  });
+
   it('states when the target is connected', () => {
     expect(remoteChatConnectionNotice({ ...base, hostState: 'live' })).toEqual({
       label: 'Connected · Build machine',

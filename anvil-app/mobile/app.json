@@ -11,7 +11,14 @@
       "supportsTablet": true,
       "bundleIdentifier": "dev.anthonyhumphreys.anvil.app.companion",
       "appleTeamId": "43W273J2TJ",
-      "buildNumber": "3"
+      "buildNumber": "3",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Connect securely to your Anvil hosts on your local network.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSAllowsLocalNetworking": true
+        }
+      }
     },
     "android": {
       "package": "dev.anthonyhumphreys.anvil.mobile",
@@ -32,6 +39,7 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      "./plugins/withAnvilMeshNetworking",
       "./plugins/withAnvilCompanionSurfaces",
       "./plugins/withAnvilDriveModeCarPlay",
       [
