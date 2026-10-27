@@ -74,7 +74,7 @@ function retainedProfile(directory: string) {
   return (allowAdditionalFiles = false) => {
     if (!allowAdditionalFiles) expect(readdirSync(directory).sort()).toEqual(files);
     for (const [name, original] of bytes) {
-      expect(readFileSync(path.join(directory, name)), name).toEqual(original);
+      expect(readFileSync(path.join(directory, name)).equals(original), name).toBe(true);
     }
   };
 }
