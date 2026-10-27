@@ -1,0 +1,282 @@
+/*
+ * The Line: a factory's lifecycle drawn as one rail with eight stations.
+ * Passed track is solid, track ahead is faint, and the station holding live
+ * work carries the same heat as a working turn card. Colour always pairs with
+ * an icon or a word; motion only marks live work and stops for reduced motion.
+ */
+
+.factory-line {
+  --line-marker: 18px;
+  --line-track: color-mix(in srgb, var(--color-text-tertiary) 55%, transparent);
+  --line-track-ahead: var(--color-border-subtle);
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  container-type: inline-size;
+}
+
+.factory-line-station {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+/* Connector from this station's marker to the next one. */
+.factory-line-station:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: calc(var(--line-offset, 0px) + var(--line-marker) / 2);
+  left: calc(50% + var(--line-marker) / 2 + 4px);
+  right: calc(-50% + var(--line-marker) / 2 + 4px);
+  height: 1px;
+  background: var(--line-track-ahead);
+}
+.factory-line-station[data-track='passed']::after {
+  background: var(--line-track);
+}
+
+.factory-line-marker {
+  --line-track: color-mix(in srgb, var(--color-text-tertiary) 55%, transparent);
+  position: relative;
+  display: inline-grid;
+  width: var(--line-marker, 18px);
+  height: var(--line-marker, 18px);
+  flex: none;
+  place-items: center;
+  border: 1.5px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-tertiary);
+  transition:
+    border-color 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.factory-line-marker[data-mark='passed'] {
+  border-color: var(--line-track);
+  background: var(--line-track);
+}
+.factory-line-marker[data-mark='live'] {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 18%, var(--color-bg-primary));
+  color: var(--color-accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+.factory-line-marker[data-mark='waiting'] {
+  border-color: var(--color-info);
+  color: var(--color-info);
+}
+.factory-line-marker[data-mark='attention'] {
+  border-color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 16%, var(--color-bg-primary));
+  color: var(--color-warning);
+}
+.factory-line-marker[data-mark='blocked'] {
+  border-color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 16%, var(--color-bg-primary));
+  color: var(--color-error);
+}
+.factory-line-marker[data-mark='paused'] {
+  border-color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
+}
+.factory-line-marker[data-mark='done'] {
+  border-color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 18%, var(--color-bg-primary));
+  color: var(--color-success);
+}
+
+/* Live work breathes like hot metal; the ring is the shared live glyph. */
+.factory-line-marker[data-mark='live'] .live-glyph {
+  position: absolute;
+  inset: -5px;
+  width: auto;
+  height: auto;
+}
+
+.factory-line-label {
+  margin-top: 8px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--color-text-tertiary);
+}
+.factory-line-station[data-current] .factory-line-label {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.factory-line-station[data-track='passed'] .factory-line-label {
+  color: var(--color-text-secondary);
+}
+.factory-line-note {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Station board: the same rail, with live load counted above each marker. */
+.factory-board .factory-line-station {
+  --line-offset: 46px;
+  border-radius: 10px;
+  padding: 10px 2px 12px;
+  transition: background-color 160ms ease-out;
+}
+.factory-board button.factory-line-station:hover {
+  background: color-mix(in srgb, var(--color-bg-hover) 45%, transparent);
+}
+.factory-board button.factory-line-station:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.factory-board .factory-line-station[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+.factory-board .factory-line-station:not(:last-child)::after {
+  top: calc(var(--line-offset) + 10px + var(--line-marker) / 2);
+}
+.factory-board-count {
+  height: 28px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.factory-board-count[data-empty] {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+.factory-board-name {
+  height: 18px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-tertiary);
+}
+.factory-board .factory-line-marker {
+  margin-top: 0;
+}
+
+/* Compact eight-segment track for list rows. */
+.factory-track {
+  display: inline-grid;
+  grid-template-columns: repeat(8, 8px);
+  gap: 2px;
+  flex: none;
+}
+.factory-track > span {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-border-subtle);
+}
+.factory-track > span[data-mark='passed'] {
+  background: var(--line-track, color-mix(in srgb, var(--color-text-tertiary) 55%, transparent));
+}
+.factory-track > span[data-mark='live'] {
+  background: var(--color-accent);
+}
+.factory-track > span[data-mark='waiting'] {
+  background: var(--color-info);
+}
+.factory-track > span[data-mark='attention'] {
+  background: var(--color-warning);
+}
+.factory-track > span[data-mark='blocked'] {
+  background: var(--color-error);
+}
+.factory-track > span[data-mark='paused'] {
+  background: var(--color-text-tertiary);
+}
+.factory-track > span[data-mark='done'] {
+  background: var(--color-success);
+}
+
+/* Budget meters: a value and a hairline, never a ring. */
+.factory-meter {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--color-border-subtle);
+}
+.factory-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-text-tertiary);
+  transform-origin: left center;
+  transition: transform 400ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.factory-meter[data-tone='warning'] > span {
+  background: var(--color-warning);
+}
+.factory-meter[data-tone='exhausted'] > span {
+  background: var(--color-error);
+}
+
+/* Narrow panes keep every marker but only name the current station. */
+@container (max-width: 520px) {
+  .factory-line:not(.factory-board) .factory-line-station:not([data-current]) .factory-line-label,
+  .factory-line:not(.factory-board) .factory-line-station:not([data-current]) .factory-line-note {
+    visibility: hidden;
+  }
+  .factory-line:not(.factory-board) .factory-line-station[data-current] .factory-line-label,
+  .factory-line:not(.factory-board) .factory-line-station[data-current] .factory-line-note {
+    overflow: visible;
+  }
+}
+
+/* Master/detail collapses to one column in narrow panes. */
+.factory-floor {
+  container-type: inline-size;
+}
+.factory-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+@container (min-width: 880px) {
+  .factory-split {
+    flex: 1 1 0%;
+    grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+    min-height: 0;
+  }
+  .factory-split > * {
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .factory-split > :first-child {
+    border-right: 1px solid var(--color-border-subtle);
+  }
+}
+@container (max-width: 879px) {
+  .factory-split > :first-child {
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+}
+
+/* Fields draw their own ring; the global outline would double it. */
+.factory-field:focus-visible {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .factory-line-marker,
+  .factory-board .factory-line-station,
+  .factory-meter > span {
+    transition: none;
+  }
+  .factory-line .live-glyph-ring {
+    animation: none;
+  }
+}

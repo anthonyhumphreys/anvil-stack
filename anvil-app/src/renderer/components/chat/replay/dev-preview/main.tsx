@@ -14,7 +14,11 @@ import { ComposerPreview } from '../ComposerPreview';
 import { ChatInteractionPreview } from '../ChatInteractionPreview';
 import { PreviewToolbarPreview } from '../PreviewToolbarPreview';
 import { ValidationPreview } from '../ValidationPreview';
-import { SkillsRecommendationsPreview, installSkillsRecommendationsPreview } from '../SkillsRecommendationsPreview';
+import {
+  SkillsRecommendationsPreview,
+  installSkillsRecommendationsPreview,
+} from '../SkillsRecommendationsPreview';
+import { FactoriesPreview, installFactoriesPreviewBridge } from '../FactoriesPreview';
 import {
   DeliveryReadinessPreview,
   installDeliveryPreviewBridge,
@@ -239,13 +243,17 @@ const deliveryPreview = new URLSearchParams(window.location.search).has('deliver
 const composerPreview = new URLSearchParams(window.location.search).has('composer');
 const validationPreview = new URLSearchParams(window.location.search).has('validation');
 const skillsPreview = new URLSearchParams(window.location.search).has('skills');
+const factoriesPreview = new URLSearchParams(window.location.search).has('factories');
 if (deliveryPreview) installDeliveryPreviewBridge();
 if (skillsPreview) installSkillsRecommendationsPreview();
+if (factoriesPreview) installFactoriesPreviewBridge();
 
 createRoot(rootElement).render(
   <StrictMode>
     <MemoryRouter>
-      {skillsPreview ? (
+      {factoriesPreview ? (
+        <FactoriesPreview />
+      ) : skillsPreview ? (
         <SkillsRecommendationsPreview />
       ) : toolbarPreview ? (
         <PreviewToolbarPreview />

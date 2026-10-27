@@ -1,321 +1,196 @@
 import {
-  Activity,
-  ArrowRight,
-  CheckCircle2,
   CircleAlert,
-  ExternalLink,
-  Factory,
-  GitPullRequest,
+  CheckCircle2,
+  Hand,
+  KeyRound,
+  Lock,
+  MoreHorizontal,
   Pause,
   Play,
   Plus,
   RefreshCw,
-  ShieldCheck,
   Sparkles,
-  UserRoundCheck,
+  X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import type {
-  FactoryAccess,
-  FactoryDefinition,
-  FactoryDefinitionInput,
-  FactoryDirectoryItem,
-  FactoryOrganizationMember,
-  FactoryOrganizationOption,
-  FactoryPreview,
-  FactoryRole,
-  FactoryRun,
-  FactoryRunControlInput,
+import {
+  factoryWorkflowDrift,
+  type FactoryDefinition,
+  type FactoryDefinitionInput,
+  type FactoryDirectoryItem,
+  type FactoryOrganizationOption,
+  type FactoryPreview,
+  type FactoryRun,
+  type FactoryRunControlInput,
 } from '../../../shared/factories';
-import type {
-  Persona,
-  RepoInfo,
-  WorkflowTemplate,
-  WorkspaceWithRepos,
-} from '../../../shared/types';
+import type { Persona, WorkflowTemplate } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { Button } from '../ui/Button';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { IconButton } from '../ui/IconButton';
+import { Menu, MenuItem } from '../ui/Menu';
+import { SegmentedControl } from '../ui/SegmentedControl';
+import { cx } from '../ui/cx';
 import {
   canManageFactory,
   canOperateFactory,
+  canReadFactorySource,
   canReadRunSource,
   effectiveFactoryRole,
 } from './factory-ui-policy';
 import { recipientPickupThread, takeoverControlInput } from './factory-pickup';
+import { DRAFT_EXAMPLES, githubIdentity, isGithubRepo, newDefinition } from './factory-definition';
+import {
+  FACTORY_STATIONS,
+  groupRuns,
+  relativeTime,
+  runPosition,
+  stationLoads,
+  stationOf,
+  summarizeRuns,
+  type FactoryRunSummary,
+  type FactoryStationId,
+  type RunGroup,
+} from './factory-line';
+import { LiveGlyph, RUN_STATE_META, RunStateIcon, RunTrack, StationBoard } from './FactoryLine';
+import { FactoryRunDetail, type TakeoverContext } from './FactoryRunDetail';
+import { FactoryEditor } from './FactoryEditor';
+import { FactoryAuthority } from './FactoryAuthority';
+import { FactoryDefinitionPanel } from './FactoryDefinitionPanel';
+import { FactoryStatus, Mono, Notice, factoryStatusKey } from './FactoryPrimitives';
 
-const DEFAULT_LIMITS = {
-  repairRounds: 2,
-  maxRunMinutes: 90,
-  maxCommands: 40,
-  maxConcurrentRuns: 2,
+interface Banner {
+  tone: 'error' | 'notice';
+  text: string;
+  action?: { label: string; onClick: () => void };
+}
+
+const GROUP_LABELS: Record<RunGroup, string> = {
+  attention: 'Needs you',
+  active: 'In progress',
+  finished: 'Finished',
 };
 
-const STAGE_LABELS: Record<FactoryRun['stage'], string> = {
-  received: 'Received',
-  implementing: 'Implementing',
-  validating: 'Validating',
-  publishing: 'Publishing',
-  'waiting-checks': 'Waiting for checks',
-  repairing: 'Repairing',
-  'awaiting-merge-approval': 'Awaiting merge approval',
-  merging: 'Merging',
-  'verifying-merge': 'Verifying merge',
-  cancelling: 'Cancellation pending',
-  completed: 'Completed',
-  blocked: 'Blocked',
-  paused: 'Paused',
-  cancelled: 'Cancelled',
-  'taken-over': 'Picked up',
-};
-
-function splitLines(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function githubIdentity(repo: RepoInfo): FactoryDefinitionInput['github'] {
-  const remote = repo.remoteUrl ?? '';
-  const match =
-    remote.match(/^(?:https?:\/\/|ssh:\/\/git@)([^/:]+)[/:]([^/]+)\/([^/#]+?)(?:\.git)?$/i) ??
-    remote.match(/^git@([^:]+):([^/]+)\/([^/#]+?)(?:\.git)?$/i);
-  return {
-    host: match?.[1] ?? 'github.com',
-    owner: match?.[2] ?? '',
-    repo: match?.[3] ?? repo.name,
-    label: 'ready-for-agent',
-    baseBranch: repo.defaultBranch || 'main',
-  };
-}
-
-function newDefinition(workspaceId: string, repo?: RepoInfo): FactoryDefinitionInput {
-  const github = repo
-    ? githubIdentity(repo)
-    : {
-        host: 'github.com',
-        owner: '',
-        repo: '',
-        label: 'ready-for-agent',
-        baseBranch: 'main',
-      };
-  return {
-    name: 'Issue to reviewed PR',
-    workspaceId,
-    repoId: repo?.id ?? '',
-    github,
-    workflowTemplateId: '',
-    criteria: ['The configured pre-PR check command exits successfully.'],
-    checks: ['pnpm test'],
-    postMergeChecks: ['pnpm test'],
-    limits: { ...DEFAULT_LIMITS },
-    publication: { enabled: true, draft: true },
-    merge: {
-      mode: 'human-approved',
-      method: 'squash',
-      requiredChecks: [],
-      requireApproval: true,
-    },
-    access: { kind: 'private' },
-  };
-}
-
-function withAccess(current: FactoryAccess, kind: 'private' | 'organization'): FactoryAccess {
-  if (kind === 'private') return { kind: 'private' };
-  if (current.kind === 'organization') return current;
-  return {
-    kind: 'organization',
-    organizationId: '',
-    visibility: 'team',
-    teamId: '',
-    members: [],
-  };
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label className="block min-w-0 text-sm text-text-primary">
-      <span className="font-medium">{label}</span>
-      {children}
-      {hint && (
-        <span className="mt-1 block text-xs leading-relaxed text-text-tertiary">{hint}</span>
-      )}
-    </label>
-  );
-}
-
-function inputClass(disabled = false): string {
-  return `mt-1.5 w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent ${disabled ? 'opacity-60' : ''}`;
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
 }
 
 export function FactoriesView() {
   const { activeWorkspace, repos, workspaces } = useWorkspace();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const now = useNow(15_000);
+  const [loaded, setLoaded] = useState(false);
   const [factories, setFactories] = useState<FactoryDefinition[]>([]);
   const [organizations, setOrganizations] = useState<FactoryOrganizationOption[]>([]);
   const [directory, setDirectory] = useState<FactoryDirectoryItem[]>([]);
-  const [organizationMembers, setOrganizationMembers] = useState<FactoryOrganizationMember[]>([]);
   const [keyRegistrationBusy, setKeyRegistrationBusy] = useState<string | null>(null);
   const [runs, setRuns] = useState<FactoryRun[]>([]);
+  const [runSummaries, setRunSummaries] = useState<Record<string, FactoryRunSummary>>({});
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [selectedFactoryId, setSelectedFactoryId] = useState<string | null>(
     searchParams.get('factory'),
   );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(searchParams.get('run'));
   const [runsFactoryId, setRunsFactoryId] = useState<string | null>(null);
+  const [runsLoadedAt, setRunsLoadedAt] = useState<number | null>(null);
+  const [tab, setTab] = useState<'runs' | 'definition'>('runs');
+  const [stationFilter, setStationFilter] = useState<FactoryStationId | null>(null);
   const [editingFactoryId, setEditingFactoryId] = useState<string | null>(null);
   const [draft, setDraft] = useState<FactoryDefinitionInput | null>(null);
   const [preview, setPreview] = useState<FactoryPreview | null>(null);
+  const [repinWorkflow, setRepinWorkflow] = useState(false);
   const [request, setRequest] = useState('');
   const [draftBusy, setDraftBusy] = useState(false);
+  const [draftedFromRequest, setDraftedFromRequest] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingCopy, setSavingCopy] = useState(false);
   const [activating, setActivating] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [inviteUserId, setInviteUserId] = useState('');
-  const [inviteRole, setInviteRole] = useState<FactoryRole>('viewer');
+  const [banner, setBanner] = useState<Banner | null>(null);
   const [activationPreview, setActivationPreview] = useState<FactoryPreview | null>(null);
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false);
   const [personas, setPersonas] = useState<Persona[]>([]);
-  const [pickupRunId, setPickupRunId] = useState<string | null>(null);
-  const [pickupWorkspaceId, setPickupWorkspaceId] = useState(activeWorkspace?.id ?? '');
-  const [pickupWorkspace, setPickupWorkspace] = useState<WorkspaceWithRepos | null>(
-    activeWorkspace,
-  );
-  const [pickupPersonaId, setPickupPersonaId] = useState('coder');
-  const [pickupRepoId, setPickupRepoId] = useState('');
-  const [pickupWorkspaceLoading, setPickupWorkspaceLoading] = useState(false);
-  const pickupWorkspaceGeneration = useRef(0);
   const selectedFactoryRef = useRef(selectedFactoryId);
   const selectedRunRef = useRef(selectedRunId);
+  const runsFactoryRef = useRef<string | null>(null);
   const draftOpenRef = useRef(false);
   const loadGenerationRef = useRef(0);
   const runGenerationRef = useRef(0);
   const workspaceIdRef = useRef(activeWorkspace?.id);
   const previousWorkspaceIdRef = useRef(activeWorkspace?.id);
+  // Read at load time so selecting a run (a URL change) never triggers a full reload.
+  const searchParamsRef = useRef(searchParams);
   workspaceIdRef.current = activeWorkspace?.id;
+  searchParamsRef.current = searchParams;
+
+  const setError = useCallback(
+    (text: string | null) => setBanner(text ? { tone: 'error', text } : null),
+    [],
+  );
+  const setNotice = (text: string, action?: Banner['action']) =>
+    setBanner({ tone: 'notice', text, action });
 
   const selectedFactory = factories.find((item) => item.id === selectedFactoryId) ?? null;
-  const selectedRun =
-    runsFactoryId === selectedFactoryId
-      ? (runs.find((item) => item.id === selectedRunId) ?? null)
-      : null;
-  const githubRepos = useMemo(
-    () => repos.filter((repo) => /github\.com|github/i.test(repo.remoteUrl ?? '')),
-    [repos],
-  );
-  const matchingPickupRepos = useMemo(() => {
-    const source = selectedRun?.snapshot.definition.github ?? selectedFactory?.definition.github;
-    if (!source || !pickupWorkspace) return [];
-    return pickupWorkspace.repos.filter((repo) => {
-      const local = githubIdentity(repo);
-      return (
-        local.host.toLowerCase() === source.host.toLowerCase() &&
-        local.owner.toLowerCase() === source.owner.toLowerCase() &&
-        local.repo.toLowerCase() === source.repo.toLowerCase()
-      );
-    });
-  }, [pickupWorkspace, selectedFactory, selectedRun]);
+  const factoryRuns = runsFactoryId === selectedFactoryId ? runs : [];
+  const selectedRun = factoryRuns.find((item) => item.id === selectedRunId) ?? null;
+  const githubRepos = useMemo(() => repos.filter(isGithubRepo), [repos]);
 
   useEffect(() => {
     window.anvil.chat
       .getPersonas()
-      .then((items) => {
-        setPersonas(items);
-        setPickupPersonaId((current) =>
-          items.some((persona) => persona.id === current) ? current : (items[0]?.id ?? 'coder'),
-        );
-      })
+      .then(setPersonas)
       .catch(() => setPersonas([]));
   }, []);
 
-  useEffect(() => {
-    const organizationId = draft?.access.kind === 'organization' ? draft.access.organizationId : '';
-    if (!organizationId) {
-      setOrganizationMembers([]);
-      return;
-    }
-    let current = true;
-    window.anvil.factories
-      .listOrganizationMembers(organizationId)
-      .then((items) => {
-        if (current) setOrganizationMembers(items);
-      })
-      .catch(() => {
-        if (current) setOrganizationMembers([]);
-      });
-    return () => {
-      current = false;
-    };
-  }, [draft?.access.kind === 'organization' ? draft.access.organizationId : '']);
-
-  useEffect(() => {
-    if (!pickupWorkspaceId) {
-      setPickupWorkspace(null);
-      setPickupRepoId('');
-      return;
-    }
-    const generation = ++pickupWorkspaceGeneration.current;
-    setPickupWorkspaceLoading(true);
-    window.anvil.workspace
-      .get(pickupWorkspaceId)
-      .then((workspace) => {
-        if (generation !== pickupWorkspaceGeneration.current) return;
-        setPickupWorkspace(workspace);
-        setPickupRepoId('');
-      })
-      .catch((cause) => {
-        if (generation !== pickupWorkspaceGeneration.current) return;
-        setPickupWorkspace(null);
-        setPickupRepoId('');
-        setError(
-          cause instanceof Error ? cause.message : 'Could not load the selected pickup workspace.',
-        );
-      })
-      .finally(() => {
-        if (generation === pickupWorkspaceGeneration.current) setPickupWorkspaceLoading(false);
-      });
-    return () => {
-      pickupWorkspaceGeneration.current += 1;
-    };
-  }, [pickupWorkspaceId]);
-
-  const loadRuns = useCallback(async (factoryId: string) => {
-    const generation = ++runGenerationRef.current;
-    setRuns([]);
-    setRunsFactoryId(factoryId);
-    try {
-      const nextRuns = await window.anvil.factories.listRuns(factoryId);
-      if (generation !== runGenerationRef.current || selectedFactoryRef.current !== factoryId)
-        return;
-      setRuns(nextRuns);
-      const runId = selectedRunRef.current;
-      if (!runId || !nextRuns.some((item) => item.id === runId)) {
-        const firstRunId = nextRuns[0]?.id ?? null;
-        selectedRunRef.current = firstRunId;
-        setSelectedRunId(firstRunId);
+  const loadRuns = useCallback(
+    async (factoryId: string) => {
+      const generation = ++runGenerationRef.current;
+      // Only clear when switching factories; polling must not blank the list.
+      if (runsFactoryRef.current !== factoryId) {
+        setRuns([]);
+        setRunsLoadedAt(null);
       }
-    } catch (cause) {
-      if (generation !== runGenerationRef.current || selectedFactoryRef.current !== factoryId)
-        return;
-      setRuns([]);
-      setRunsFactoryId(null);
-      selectedRunRef.current = null;
-      setSelectedRunId(null);
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Run access changed. Reload after permissions are restored.',
-      );
-    }
-  }, []);
+      runsFactoryRef.current = factoryId;
+      setRunsFactoryId(factoryId);
+      try {
+        const nextRuns = await window.anvil.factories.listRuns(factoryId);
+        if (generation !== runGenerationRef.current || selectedFactoryRef.current !== factoryId)
+          return;
+        setRuns(nextRuns);
+        setRunsLoadedAt(Date.now());
+        setRunSummaries((current) => ({ ...current, [factoryId]: summarizeRuns(nextRuns) }));
+        const runId = selectedRunRef.current;
+        if (!runId || !nextRuns.some((item) => item.id === runId)) {
+          const groups = groupRuns(nextRuns);
+          const firstRunId =
+            [...groups.attention, ...groups.active, ...groups.finished][0]?.id ?? null;
+          selectedRunRef.current = firstRunId;
+          setSelectedRunId(firstRunId);
+        }
+      } catch (cause) {
+        if (generation !== runGenerationRef.current || selectedFactoryRef.current !== factoryId)
+          return;
+        setRuns([]);
+        setRunsFactoryId(null);
+        runsFactoryRef.current = null;
+        selectedRunRef.current = null;
+        setSelectedRunId(null);
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : 'Run access changed. Reload after permissions are restored.',
+        );
+      }
+    },
+    [setError],
+  );
 
   const reload = useCallback(async () => {
     const workspaceId = activeWorkspace?.id;
@@ -345,19 +220,39 @@ export function FactoriesView() {
             setDirectory([]);
           }
         });
-      if (draftOpenRef.current) return;
-      const requestedId = searchParams.get('factory');
+      const requestedId = searchParamsRef.current.get('factory');
       const currentId = selectedFactoryRef.current;
       const targetId = items.some((item) => item.id === requestedId)
         ? requestedId
         : items.some((item) => item.id === currentId)
           ? currentId
           : (items[0]?.id ?? null);
+      // Attention counts for every factory in the rail; the selected one refreshes with its runs.
+      void Promise.all(
+        items
+          .filter((item) => !item.accessPending && item.id !== targetId)
+          .map((item) =>
+            window.anvil.factories
+              .listRuns(item.id)
+              .then((list) => [item.id, summarizeRuns(list)] as const)
+              .catch(() => null),
+          ),
+      ).then((entries) => {
+        if (generation !== loadGenerationRef.current) return;
+        setRunSummaries((current) => ({
+          ...Object.fromEntries(
+            Object.entries(current).filter(([id]) => items.some((item) => item.id === id)),
+          ),
+          ...Object.fromEntries(entries.filter((entry) => entry !== null)),
+        }));
+      });
+      if (draftOpenRef.current) return;
       selectedFactoryRef.current = targetId;
       setSelectedFactoryId(targetId);
       if (!targetId) {
         setRuns([]);
         setRunsFactoryId(null);
+        runsFactoryRef.current = null;
         selectedRunRef.current = null;
         setSelectedRunId(null);
         return;
@@ -369,13 +264,14 @@ export function FactoriesView() {
       setRuns([]);
       setRunsFactoryId(null);
       setError(cause instanceof Error ? cause.message : 'Could not load software factories.');
+    } finally {
+      if (generation === loadGenerationRef.current) setLoaded(true);
     }
-  }, [activeWorkspace?.id, loadRuns, searchParams]);
+  }, [activeWorkspace?.id, loadRuns, setError]);
 
   const registerOrganizationKey = async (organizationId: string) => {
     setKeyRegistrationBusy(organizationId);
-    setError(null);
-    setNotice(null);
+    setBanner(null);
     try {
       await window.anvil.factories.registerOrganizationKey(organizationId);
       setNotice(
@@ -393,24 +289,31 @@ export function FactoriesView() {
     }
   };
 
+  const closeEditor = () => {
+    draftOpenRef.current = false;
+    setEditingFactoryId(null);
+    setDraft(null);
+    setPreview(null);
+    setRepinWorkflow(false);
+    setDraftedFromRequest(false);
+  };
+
   useEffect(() => {
-    setError(null);
     if (previousWorkspaceIdRef.current !== activeWorkspace?.id) {
+      setBanner(null);
       // A draft belongs to the workspace in which it was composed. Never let a
       // late response or an open editor bleed into another workspace.
       previousWorkspaceIdRef.current = activeWorkspace?.id;
-      draftOpenRef.current = false;
-      setDraft(null);
-      setPreview(null);
+      closeEditor();
       setActivationPreview(null);
-      setEditingFactoryId(null);
+      setRunSummaries({});
       selectedFactoryRef.current = null;
       selectedRunRef.current = null;
     }
     reload().catch((cause) =>
       setError(cause instanceof Error ? cause.message : 'Could not load software factories.'),
     );
-  }, [activeWorkspace?.id, reload]);
+  }, [activeWorkspace?.id, reload, setError]);
 
   useEffect(() => {
     if (!selectedFactoryId || !activeWorkspace?.id) return;
@@ -420,61 +323,89 @@ export function FactoriesView() {
     return () => window.clearInterval(timer);
   }, [selectedFactoryId, activeWorkspace?.id, loadRuns]);
 
-  useEffect(() => {
-    const selectedId = searchParams.get('factory');
-    if (selectedId && selectedId !== selectedFactoryId) {
-      draftOpenRef.current = false;
-      setDraft(null);
+  const startNew = useCallback(
+    (workflowTemplateId = '') => {
+      if (!activeWorkspace?.id) return;
+      draftOpenRef.current = true;
+      selectedFactoryRef.current = null;
+      selectedRunRef.current = null;
+      setSelectedFactoryId(null);
+      setSelectedRunId(null);
       setEditingFactoryId(null);
+      setDraft(newDefinition(activeWorkspace.id, githubRepos[0] ?? repos[0], workflowTemplateId));
+      setPreview(null);
+      setRepinWorkflow(false);
+      setDraftedFromRequest(false);
+      setActivationPreview(null);
+      setRuns([]);
+      runsFactoryRef.current = null;
+      setSearchParams({}, { replace: true });
+      setBanner(null);
+    },
+    [activeWorkspace?.id, githubRepos, repos, setSearchParams],
+  );
+
+  useEffect(() => {
+    if (!activeWorkspace?.id) return;
+    if (searchParams.get('new') !== null) {
+      startNew(searchParams.get('workflow') ?? '');
+      return;
+    }
+    const selectedId = searchParams.get('factory');
+    const runId = searchParams.get('run');
+    if (runId && !selectedId) {
+      // Deep links from Workflows know the run, not its factory.
+      window.anvil.factories
+        .getRun(runId)
+        .then((run) => {
+          if (workspaceIdRef.current !== activeWorkspace.id) return;
+          if (!run) throw new Error('That factory run is not available to this account.');
+          setSearchParams({ factory: run.factoryId, run: run.id }, { replace: true });
+        })
+        .catch((cause) =>
+          setError(cause instanceof Error ? cause.message : 'Could not open that factory run.'),
+        );
+      return;
+    }
+    if (selectedId && selectedId !== selectedFactoryRef.current) {
+      closeEditor();
+      setTab('runs');
+      setStationFilter(null);
       selectedFactoryRef.current = selectedId;
       setSelectedFactoryId(selectedId);
       void loadRuns(selectedId);
     }
-    const runId = searchParams.get('run');
-    if (runId && runId !== selectedRunId) {
+    if (runId && runId !== selectedRunRef.current) {
       selectedRunRef.current = runId;
       setSelectedRunId(runId);
+      setTab('runs');
     }
-  }, [searchParams, selectedFactoryId, selectedRunId, loadRuns]);
+  }, [searchParams, activeWorkspace?.id, loadRuns, startNew, setSearchParams, setError]);
 
   const setDefinition = (update: (current: FactoryDefinitionInput) => FactoryDefinitionInput) => {
     setDraft((current) => (current ? update(current) : current));
     setPreview(null);
     setActivationPreview(null);
-    setError(null);
-    setNotice(null);
+    setBanner(null);
   };
 
   const chooseFactory = (factory: FactoryDefinition) => {
-    draftOpenRef.current = false;
+    closeEditor();
     selectedFactoryRef.current = factory.id;
     selectedRunRef.current = null;
     setSelectedFactoryId(factory.id);
     setSelectedRunId(null);
-    setEditingFactoryId(null);
-    setDraft(null);
-    setPreview(null);
     setActivationPreview(null);
+    setTab('runs');
+    setStationFilter(null);
     setSearchParams({ factory: factory.id }, { replace: true });
     void loadRuns(factory.id);
   };
 
-  const startNew = () => {
-    if (!activeWorkspace?.id) return;
-    const value = newDefinition(activeWorkspace.id, githubRepos[0] ?? repos[0]);
-    draftOpenRef.current = true;
-    selectedFactoryRef.current = null;
-    selectedRunRef.current = null;
-    setSelectedFactoryId(null);
-    setSelectedRunId(null);
-    setEditingFactoryId(null);
-    setDraft(value);
-    setPreview(null);
-    setActivationPreview(null);
-    setRuns([]);
-    setSearchParams({}, { replace: true });
-    setNotice(null);
-    setError(null);
+  const selectRun = (run: FactoryRun) => {
+    selectedRunRef.current = run.id;
+    setSelectedRunId(run.id);
+    setSearchParams({ factory: run.factoryId, run: run.id }, { replace: true });
   };
 
   const startConversationalDraft = async () => {
@@ -484,8 +415,7 @@ export function FactoriesView() {
     draftOpenRef.current = true;
     setEditingFactoryId(null);
     selectedFactoryRef.current = null;
-    setError(null);
-    setNotice(null);
+    setBanner(null);
     try {
       const proposed = await window.anvil.factories.draft(request.trim(), workspaceId);
       if (workspaceIdRef.current !== workspaceId) return;
@@ -499,16 +429,14 @@ export function FactoriesView() {
       selectedFactoryRef.current = null;
       selectedRunRef.current = null;
       setDraft(proposed);
+      setPreview(null);
+      setDraftedFromRequest(true);
       setSelectedFactoryId(null);
       setSelectedRunId(null);
-      setEditingFactoryId(null);
       setRuns([]);
-      const nextPreview = await window.anvil.factories.preview(proposed);
-      if (workspaceIdRef.current === workspaceId) setPreview(nextPreview);
       setSearchParams({}, { replace: true });
     } catch (cause) {
       if (workspaceIdRef.current !== workspaceId) return;
-      draftOpenRef.current = false;
       setError(cause instanceof Error ? cause.message : 'Could not draft a factory.');
     } finally {
       setDraftBusy(false);
@@ -518,27 +446,35 @@ export function FactoriesView() {
   const updateRepo = (repoId: string) => {
     const repo = repos.find((item) => item.id === repoId);
     if (!repo) return;
-    setDefinition((current) => ({ ...current, repoId, github: githubIdentity(repo) }));
+    setDefinition((current) => ({
+      ...current,
+      repoId,
+      github: { ...githubIdentity(repo), label: current.github.label },
+    }));
   };
 
-  const makePreview = async () => {
-    if (!draft) return;
+  const makePreview = async (definition: FactoryDefinitionInput) => {
     setSaving(true);
-    setError(null);
-    setNotice(null);
+    setBanner(null);
     try {
-      if (draft.access.kind === 'organization' && draft.access.visibility === 'team') {
-        if (!draft.access.teamId?.trim())
+      if (definition.access.kind === 'organization' && definition.access.visibility === 'team') {
+        if (!definition.access.teamId?.trim())
           throw new Error('Choose a GitHub team slug for team visibility.');
         const valid = await window.anvil.factories.validateOrganizationTeam(
-          draft.access.organizationId,
-          { host: 'github.com', owner: draft.github.owner, repo: draft.github.repo },
-          draft.access.teamId.trim(),
+          definition.access.organizationId,
+          { host: 'github.com', owner: definition.github.owner, repo: definition.github.repo },
+          definition.access.teamId.trim(),
         );
         if (!valid)
           throw new Error('The selected GitHub team is not authorized for this repository.');
       }
-      setPreview(await window.anvil.factories.preview(draft, editingFactoryId ?? undefined));
+      setPreview(
+        await window.anvil.factories.preview(
+          definition,
+          editingFactoryId ?? undefined,
+          repinWorkflow ? { repinWorkflow } : undefined,
+        ),
+      );
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : 'Factory definition could not be validated.',
@@ -551,8 +487,7 @@ export function FactoriesView() {
   const saveDraft = async () => {
     if (!draft || !preview) return;
     setSaving(true);
-    setError(null);
-    setNotice(null);
+    setBanner(null);
     try {
       const saved = await window.anvil.factories.save({
         definition: preview.definition,
@@ -560,18 +495,25 @@ export function FactoriesView() {
         ...(editingFactoryId && selectedFactory
           ? { id: editingFactoryId, expectedRevision: selectedFactory.revision }
           : {}),
+        ...(repinWorkflow ? { repinWorkflow } : {}),
       });
-      draftOpenRef.current = false;
+      closeEditor();
       selectedFactoryRef.current = saved.id;
       selectedRunRef.current = null;
-      setFactories((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+      setFactories((current) =>
+        current.some((item) => item.id === saved.id)
+          ? current.map((item) => (item.id === saved.id ? saved : item))
+          : [saved, ...current],
+      );
       setSelectedFactoryId(saved.id);
-      setEditingFactoryId(null);
-      setDraft(null);
-      setPreview(null);
+      setTab('runs');
       setSearchParams({ factory: saved.id }, { replace: true });
       void loadRuns(saved.id);
-      setNotice('Draft saved. It will not process issues until you activate it.');
+      setNotice(
+        saved.status === 'active'
+          ? `Revision ${saved.revision} saved. Revision ${saved.activeRevision} keeps processing issues until you activate this one.`
+          : 'Draft saved. It will not process issues until you activate it.',
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Factory draft could not be saved.');
     } finally {
@@ -582,7 +524,7 @@ export function FactoriesView() {
   const prepareActivation = async () => {
     if (!selectedFactory) return;
     setActivating(true);
-    setError(null);
+    setBanner(null);
     try {
       const exact = await window.anvil.factories.get(selectedFactory.id);
       if (!exact || exact.revision !== selectedFactory.revision)
@@ -600,7 +542,7 @@ export function FactoriesView() {
   const confirmActivation = async () => {
     if (!selectedFactory || !activationPreview) return;
     setActivating(true);
-    setError(null);
+    setBanner(null);
     try {
       const current = await window.anvil.factories.get(selectedFactory.id);
       if (!current || current.revision !== selectedFactory.revision)
@@ -612,7 +554,7 @@ export function FactoriesView() {
       });
       setFactories((items) => items.map((item) => (item.id === activated.id ? activated : item)));
       setActivationPreview(null);
-      setNotice('Factory activated. Matching issues will be processed under this reviewed policy.');
+      setNotice('Factory activated. Matching issues are processed under this reviewed policy.');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not activate factory.');
     } finally {
@@ -623,8 +565,7 @@ export function FactoriesView() {
   const doFactoryAction = async (action: 'pause' | 'resume' | 'deactivate') => {
     if (!selectedFactory) return;
     setBusyAction(action);
-    setError(null);
-    setNotice(null);
+    setBanner(null);
     try {
       const updated = await window.anvil.factories.control({
         factoryId: selectedFactory.id,
@@ -636,84 +577,97 @@ export function FactoriesView() {
       setError(cause instanceof Error ? cause.message : `Could not ${action} factory.`);
     } finally {
       setBusyAction(null);
+      setConfirmDeactivate(false);
     }
   };
 
-  const doRunAction = async (action: FactoryRunControlInput['action']) => {
-    if (!selectedRun) return;
+  const doRunAction = async (
+    action: FactoryRunControlInput['action'],
+    context?: TakeoverContext,
+  ): Promise<boolean> => {
+    if (!selectedRun) return false;
     setBusyAction(action);
-    setError(null);
-    setNotice(null);
+    setBanner(null);
     try {
       const controlInput =
-        action === 'takeover' && pickupWorkspaceId && pickupPersonaId
-          ? takeoverControlInput(selectedRun.id, {
-              workspaceId: pickupWorkspaceId,
-              ...(pickupRepoId ? { repoId: pickupRepoId } : {}),
-              personaId: pickupPersonaId,
-            })
+        action === 'takeover' && context
+          ? takeoverControlInput(selectedRun.id, context)
           : { runId: selectedRun.id, action };
       const updated = await window.anvil.factories.controlRun({
         ...controlInput,
         ...(action === 'approve-merge' && selectedRun.observation?.headSha
           ? { expectedHeadSha: selectedRun.observation.headSha }
           : {}),
-        ...(action === 'takeover' && pickupWorkspaceId && pickupPersonaId
-          ? {
-              takeoverContext: {
-                workspaceId: pickupWorkspaceId,
-                ...(pickupRepoId ? { repoId: pickupRepoId } : {}),
-                personaId: pickupPersonaId,
-              },
-            }
-          : {}),
       });
       setRuns((items) => items.map((item) => (item.id === updated.id ? updated : item)));
       selectedRunRef.current = updated.id;
       setSelectedRunId(updated.id);
       const pickupThreadId = action === 'takeover' ? recipientPickupThread(updated) : null;
-      if (pickupThreadId) {
+      if (pickupThreadId && context) {
         navigate(
-          `/chat?thread=${encodeURIComponent(pickupThreadId)}&persona=${encodeURIComponent(pickupPersonaId)}`,
+          `/chat?thread=${encodeURIComponent(pickupThreadId)}&persona=${encodeURIComponent(context.personaId)}`,
         );
-        setPickupRunId(null);
       } else if (action === 'takeover') {
         setNotice(
-          'Run was claimed for pickup, but no private chat link was returned. Refresh the run.',
+          'Run claimed for pickup. The private chat appears here once the owner’s device confirms.',
         );
       }
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : `Could not ${action} issue run.`);
+      return false;
     } finally {
       setBusyAction(null);
     }
   };
 
-  const addMember = () => {
-    if (!draft || draft.access.kind !== 'organization' || !inviteUserId.trim()) return;
-    const next = draft.access.members.filter((member) => member.userId !== inviteUserId.trim());
-    next.push({ userId: inviteUserId.trim(), role: inviteRole });
-    setDefinition((current) => ({
-      ...current,
-      access:
-        current.access.kind === 'organization'
-          ? { ...current.access, members: next }
-          : current.access,
-    }));
-    setInviteUserId('');
+  const openEditor = (repin = false, workflowTemplateId?: string) => {
+    if (!selectedFactory) return;
+    draftOpenRef.current = true;
+    setEditingFactoryId(selectedFactory.id);
+    setDraft({
+      ...structuredClone(selectedFactory.definition),
+      ...(workflowTemplateId ? { workflowTemplateId } : {}),
+    });
+    setPreview(null);
+    setRepinWorkflow(repin);
+    setActivationPreview(null);
+    setBanner(null);
   };
 
-  const removeMember = (userId: string) => {
-    setDefinition((current) => ({
-      ...current,
-      access:
-        current.access.kind === 'organization'
-          ? {
-              ...current.access,
-              members: current.access.members.filter((member) => member.userId !== userId),
-            }
-          : current.access,
-    }));
+  const saveWorkflowCopy = async () => {
+    if (!selectedFactory) return;
+    const pinned = selectedFactory.workflow;
+    const missing = !templates.some(
+      (item) => item.id === selectedFactory.definition.workflowTemplateId,
+    );
+    setSavingCopy(true);
+    setBanner(null);
+    try {
+      const saved = await window.anvil.workflow.saveTemplate({
+        name: missing
+          ? pinned.name
+          : `${pinned.name} (pinned in revision ${selectedFactory.revision})`,
+        description: pinned.description,
+        nodes: pinned.nodes,
+        edges: pinned.edges,
+        orchestration: pinned.orchestration,
+      });
+      setTemplates((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+      setNotice(
+        missing ? `Restored “${saved.name}” to Workflows.` : `Saved “${saved.name}” to Workflows.`,
+        {
+          label: 'Open in Workflows',
+          onClick: () => navigate(`/workflows?template=${encodeURIComponent(saved.id)}`),
+        },
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : 'Could not save the pinned graph as a workflow.',
+      );
+    } finally {
+      setSavingCopy(false);
+    }
   };
 
   if (!activeWorkspace) {
@@ -722,1578 +676,940 @@ export function FactoriesView() {
     );
   }
 
+  const editingFactory = editingFactoryId ? selectedFactory : null;
+  const pendingDirectory = directory.filter((item) => item.accessPending || item.accessRequired);
+
   return (
-    <div className="flex h-full min-h-0 flex-col bg-bg-primary">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border-subtle px-6 py-4">
-        <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-accent/10 text-accent">
-            <Factory size={20} />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold text-text-primary">Software factories</h1>
-            <p className="text-xs text-text-secondary">Issue intake through verified merge</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="secondary" size="sm" onClick={() => void reload()}>
-            <RefreshCw size={14} /> Refresh
-          </Button>
-          <Button size="sm" onClick={startNew}>
-            <Plus size={15} /> New factory
-          </Button>
-        </div>
-      </header>
+    <div className="flex h-full min-h-0 bg-bg-primary">
+      <FactoryRail
+        factories={factories}
+        loaded={loaded}
+        selectedId={draft && !editingFactoryId ? null : selectedFactoryId}
+        creating={Boolean(draft && !editingFactoryId)}
+        summaries={runSummaries}
+        pendingDirectory={pendingDirectory}
+        keyRegistrationBusy={keyRegistrationBusy}
+        onSelect={chooseFactory}
+        onNew={() => startNew()}
+        onRegisterKey={(id) => void registerOrganizationKey(id)}
+      />
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="flex w-72 shrink-0 flex-col border-r border-border-subtle bg-bg-secondary/50">
-          <div className="border-b border-border-subtle p-3">
-            <label className="sr-only" htmlFor="factory-request">
-              Describe a factory
-            </label>
-            <textarea
-              id="factory-request"
-              value={request}
-              onChange={(event) => setRequest(event.target.value)}
-              placeholder="Describe the issue-to-PR process you want…"
-              rows={3}
-              className="w-full resize-y rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary outline-none placeholder:text-text-tertiary focus:border-accent"
-            />
-            <Button
-              className="mt-2 w-full"
-              size="sm"
-              disabled={draftBusy || !request.trim()}
-              onClick={() => void startConversationalDraft()}
-            >
-              <Sparkles size={14} /> {draftBusy ? 'Drafting…' : 'Draft from chat'}
-            </Button>
-          </div>
-          <div className="flex items-center justify-between px-4 py-3">
-            <span className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-              Factories
-            </span>
-            <span className="text-xs text-text-tertiary">{factories.length}</span>
-          </div>
-          {directory
-            .filter((item) => item.accessPending || item.accessRequired)
-            .map((item) => {
-              const organizationId = item.policy.organizationId;
-              return (
-                <div
-                  key={`pending-${item.id}`}
-                  className="mx-2 mb-2 rounded-lg border border-warning/30 bg-warning/5 p-3"
-                >
-                  <p className="text-xs font-medium text-text-primary">
-                    Shared factory access needs setup
-                  </p>
-                  <p className="mt-1 text-[11px] text-text-tertiary">
-                    {item.accessRequired
-                      ? 'An organization owner must grant this account factory access.'
-                      : item.accessPending
-                        ? 'Encrypted factory content is not available to this account yet.'
-                        : 'Access is waiting for organization setup.'}
-                  </p>
-                  {item.accessPending && !item.accessRequired && organizationId && (
-                    <Button
-                      className="mt-2"
-                      variant="secondary"
-                      size="sm"
-                      disabled={keyRegistrationBusy !== null}
-                      onClick={() => void registerOrganizationKey(organizationId)}
-                    >
-                      {keyRegistrationBusy === organizationId
-                        ? 'Enrolling…'
-                        : 'Enroll encryption key'}
-                    </Button>
-                  )}
-                </div>
-              );
-            })}
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-            {factories.length === 0 ? (
-              <p className="px-3 py-5 text-xs leading-relaxed text-text-tertiary">
-                No saved factories yet. Draft one from a request above or create a blank definition.
-              </p>
-            ) : (
-              factories.map((factory) => (
-                <button
-                  key={factory.id}
-                  type="button"
-                  onClick={() => chooseFactory(factory)}
-                  className={`mb-1 w-full rounded-lg px-3 py-3 text-left ${
-                    selectedFactoryId === factory.id
-                      ? 'bg-accent/10 text-text-primary ring-1 ring-accent/30'
-                      : 'text-text-secondary hover:bg-bg-tertiary'
-                  }`}
-                >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="truncate text-sm font-medium">
-                      {factory.accessPending
-                        ? 'Shared factory access pending'
-                        : factory.definition.name}
-                    </span>
-                    <span
-                      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${factory.status === 'active' ? 'bg-success/10 text-success' : 'bg-bg-tertiary text-text-tertiary'}`}
-                    >
-                      {factory.accessPending ? 'pending' : factory.status}
-                    </span>
-                  </span>
-                  <span className="mt-1 flex items-center gap-1.5 text-[11px] text-text-tertiary">
-                    {!factory.accessPending && (
-                      <>
-                        <span>r{factory.revision}</span>
-                        <span aria-hidden="true">·</span>
-                        <span className="truncate">
-                          {factory.sourceAccess === true
-                            ? `${factory.definition.github.owner}/${factory.definition.github.repo}`
-                            : 'Source details pending'}
-                        </span>
-                      </>
-                    )}
-                  </span>
-                </button>
-              ))
+      <main className="flex min-w-0 flex-1 flex-col">
+        {banner && (
+          <div
+            role={banner.tone === 'error' ? 'alert' : 'status'}
+            className={cx(
+              'flex shrink-0 items-start gap-2.5 border-b px-6 py-2.5 text-sm',
+              banner.tone === 'error'
+                ? 'border-error/30 bg-error/[0.07] text-text-primary'
+                : 'border-success/25 bg-success/[0.06] text-text-primary',
             )}
+          >
+            {banner.tone === 'error' ? (
+              <CircleAlert size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-error" />
+            ) : (
+              <CheckCircle2 size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-success" />
+            )}
+            <span className="min-w-0 flex-1">{banner.text}</span>
+            {banner.action && (
+              <button
+                type="button"
+                className="shrink-0 text-sm text-text-secondary underline decoration-border underline-offset-4 hover:text-text-primary"
+                onClick={banner.action.onClick}
+              >
+                {banner.action.label}
+              </button>
+            )}
+            <IconButton icon={X} label="Dismiss" onClick={() => setBanner(null)} />
           </div>
-        </aside>
+        )}
 
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-          {(error || notice) && (
-            <div
-              className={`mx-6 mt-4 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm ${error ? 'border-error/30 bg-error/5 text-error' : 'border-success/30 bg-success/5 text-success'}`}
-              role={error ? 'alert' : 'status'}
-            >
-              {error ? (
-                <CircleAlert size={16} className="mt-0.5 shrink-0" />
-              ) : (
-                <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
-              )}
-              <span>{error ?? notice}</span>
-            </div>
-          )}
-
-          {draft ? (
+        {draft ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <FactoryEditor
               draft={draft}
+              editing={editingFactory}
               templates={templates}
               repos={githubRepos.length ? githubRepos : repos}
               organizations={organizations}
-              organizationMembers={organizationMembers}
               preview={preview}
               busy={saving}
-              inviteUserId={inviteUserId}
-              inviteRole={inviteRole}
-              onInviteUserId={setInviteUserId}
-              onInviteRole={setInviteRole}
+              repinWorkflow={repinWorkflow}
+              request={request}
+              drafting={draftBusy}
+              draftedFromRequest={draftedFromRequest}
+              onRequest={setRequest}
+              onDraftFromRequest={() => void startConversationalDraft()}
               onDefinition={setDefinition}
               onRepo={updateRepo}
-              onAddMember={addMember}
-              onRemoveMember={removeMember}
-              onMemberRole={(userId, role) =>
-                setDefinition((current) => ({
-                  ...current,
-                  access:
-                    current.access.kind === 'organization'
-                      ? {
-                          ...current.access,
-                          members: current.access.members.map((member) =>
-                            member.userId === userId ? { ...member, role } : member,
-                          ),
-                        }
-                      : current.access,
-                }))
-              }
-              onPreview={() => void makePreview()}
+              onRepin={(value) => {
+                setRepinWorkflow(value);
+                setPreview(null);
+              }}
+              onPreview={(definition) => void makePreview(definition)}
               onSave={() => void saveDraft()}
               onCancel={() => {
-                draftOpenRef.current = false;
-                setEditingFactoryId(null);
-                setDraft(null);
-                setPreview(null);
-                setActivationPreview(null);
+                closeEditor();
                 void reload();
               }}
-              editing={Boolean(selectedFactory)}
-              editingRemote={selectedFactory?.remote === true}
             />
-          ) : selectedFactory ? (
-            <FactoryDetails
-              factory={selectedFactory}
-              runs={runs}
-              selectedRun={selectedRun}
-              activationPreview={activationPreview}
-              activating={activating}
-              busyAction={busyAction}
-              onEdit={() => {
-                draftOpenRef.current = true;
-                setEditingFactoryId(selectedFactory.id);
-                setDraft(structuredClone(selectedFactory.definition));
-                setPreview(null);
-                setActivationPreview(null);
-              }}
-              onPrepareActivation={() => void prepareActivation()}
-              onConfirmActivation={() => void confirmActivation()}
-              onCancelActivation={() => setActivationPreview(null)}
-              onFactoryAction={(action) => void doFactoryAction(action)}
-              onSelectRun={(run) => {
-                selectedRunRef.current = run.id;
-                setSelectedRunId(run.id);
-                setSearchParams({ factory: selectedFactory.id, run: run.id }, { replace: true });
-              }}
-              onRunAction={(action) => void doRunAction(action)}
-              onOpenPickupThread={(threadId) =>
-                navigate(`/chat?thread=${encodeURIComponent(threadId)}`)
-              }
-              pickupRunId={pickupRunId}
-              pickupWorkspaceId={pickupWorkspaceId}
-              pickupWorkspace={pickupWorkspace}
-              pickupWorkspaceLoading={pickupWorkspaceLoading}
-              pickupPersonaId={pickupPersonaId}
-              pickupRepoId={pickupRepoId}
-              workspaces={workspaces}
-              personas={personas}
-              matchingPickupRepos={matchingPickupRepos}
-              onRequestPickup={(run) => {
-                setPickupRunId(run.id);
-                setPickupWorkspaceId(activeWorkspace?.id ?? '');
-                setPickupRepoId('');
-                setError(null);
-              }}
-              onPickupWorkspace={setPickupWorkspaceId}
-              onPickupPersona={setPickupPersonaId}
-              onPickupRepo={setPickupRepoId}
-              onCancelPickup={() => setPickupRunId(null)}
-            />
-          ) : (
-            <EmptyFactories onCreate={startNew} />
-          )}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-function FactoryEditor({
-  draft,
-  templates,
-  repos,
-  organizations,
-  organizationMembers,
-  preview,
-  busy,
-  inviteUserId,
-  inviteRole,
-  onInviteUserId,
-  onInviteRole,
-  onDefinition,
-  onRepo,
-  onAddMember,
-  onRemoveMember,
-  onMemberRole,
-  onPreview,
-  onSave,
-  onCancel,
-  editing,
-  editingRemote,
-}: {
-  draft: FactoryDefinitionInput;
-  templates: WorkflowTemplate[];
-  repos: RepoInfo[];
-  organizations: FactoryOrganizationOption[];
-  organizationMembers: FactoryOrganizationMember[];
-  preview: FactoryPreview | null;
-  busy: boolean;
-  inviteUserId: string;
-  inviteRole: FactoryRole;
-  onInviteUserId: (value: string) => void;
-  onInviteRole: (value: FactoryRole) => void;
-  onDefinition: (update: (current: FactoryDefinitionInput) => FactoryDefinitionInput) => void;
-  onRepo: (repoId: string) => void;
-  onAddMember: () => void;
-  onRemoveMember: (userId: string) => void;
-  onMemberRole: (userId: string, role: FactoryRole) => void;
-  onPreview: () => void;
-  onSave: () => void;
-  onCancel: () => void;
-  editing: boolean;
-  editingRemote: boolean;
-}) {
-  const orgAccess = draft.access.kind === 'organization' ? draft.access : null;
-  const criteriaChecksMatch =
-    draft.criteria.length > 0 && draft.criteria.length === draft.checks.length;
-  return (
-    <div className="mx-auto max-w-5xl space-y-5 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="text-xs font-medium uppercase tracking-wide text-accent">
-            {editing ? 'Revise' : 'New'} definition
           </div>
-          <h2 className="mt-1 text-xl font-semibold text-text-primary">
-            Review the factory definition
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm text-text-secondary">
-            This is an inactive draft. Preview the typed configuration before saving; activate it
-            separately after reviewing its authority.
-          </p>
-        </div>
-        <Button variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-
-      <section className="grid gap-4 rounded-xl border border-border-subtle bg-bg-secondary/40 p-4 md:grid-cols-2">
-        <Field label="Factory name">
-          <input
-            className={inputClass()}
-            value={draft.name}
-            onChange={(event) =>
-              onDefinition((current) => ({ ...current, name: event.target.value }))
+        ) : selectedFactory ? (
+          <FactoryFloor
+            factory={selectedFactory}
+            runs={factoryRuns}
+            runsLoaded={runsLoadedAt !== null}
+            runsLoadedAt={runsLoadedAt}
+            selectedRun={selectedRun}
+            templates={templates}
+            tab={tab}
+            stationFilter={stationFilter}
+            activationPreview={activationPreview}
+            activating={activating}
+            busyAction={busyAction}
+            savingCopy={savingCopy}
+            now={now}
+            personas={personas}
+            workspaces={workspaces}
+            activeWorkspaceId={activeWorkspace.id}
+            onTab={setTab}
+            onStationFilter={setStationFilter}
+            onRefresh={() => void loadRuns(selectedFactory.id)}
+            onSelectRun={selectRun}
+            onRunAction={doRunAction}
+            onEdit={() => openEditor(false)}
+            onRepin={() => openEditor(true)}
+            onPrepareActivation={() => void prepareActivation()}
+            onConfirmActivation={() => void confirmActivation()}
+            onCancelActivation={() => setActivationPreview(null)}
+            onFactoryAction={(action) =>
+              action === 'deactivate' ? setConfirmDeactivate(true) : void doFactoryAction(action)
             }
+            onOpenThread={(threadId, personaId) =>
+              navigate(
+                `/chat?thread=${encodeURIComponent(threadId)}${personaId ? `&persona=${encodeURIComponent(personaId)}` : ''}`,
+              )
+            }
+            onOpenWorkflowRun={(runId) => navigate(`/workflows?run=${encodeURIComponent(runId)}`)}
+            onOpenTemplate={(templateId) =>
+              navigate(`/workflows?template=${encodeURIComponent(templateId)}`)
+            }
+            onSaveWorkflowCopy={() => void saveWorkflowCopy()}
+            onLinkTemplate={(templateId) => openEditor(false, templateId)}
           />
-        </Field>
-        <Field
-          label="Repository"
-          hint={
-            editingRemote
-              ? 'The designated executor’s local repository identity is retained. Repository ownership cannot be changed in a shared revision.'
-              : 'The first slice processes GitHub issues in one repository.'
-          }
-        >
-          {editingRemote ? (
-            <div className={`${inputClass(true)} cursor-not-allowed`}>
-              {draft.github.owner}/{draft.github.repo}
-            </div>
-          ) : (
-            <select
-              className={inputClass()}
-              value={draft.repoId}
-              onChange={(event) => onRepo(event.target.value)}
-            >
-              <option value="">Select a GitHub repository</option>
-              {repos.map((repo) => (
-                <option key={repo.id} value={repo.id}>
-                  {repo.name}
-                </option>
-              ))}
-            </select>
-          )}
-        </Field>
-        <Field label="Issue label" hint="Only open issues carrying this label are eligible.">
-          <input
-            className={inputClass()}
-            value={draft.github.label}
-            onChange={(event) =>
-              onDefinition((current) => ({
-                ...current,
-                github: { ...current.github, label: event.target.value },
-              }))
-            }
+        ) : loaded && factories.length === 0 ? (
+          <EmptyFactories
+            onStart={(text) => {
+              setRequest(text);
+              startNew();
+            }}
           />
-        </Field>
-        <Field label="Base branch">
-          <input
-            className={inputClass()}
-            value={draft.github.baseBranch}
-            onChange={(event) =>
-              onDefinition((current) => ({
-                ...current,
-                github: { ...current.github, baseBranch: event.target.value },
-              }))
-            }
-          />
-        </Field>
-        <Field
-          label="Workflow graph"
-          hint="Saved workflow graphs are pinned by the backend when this revision is saved."
-        >
-          <select
-            className={inputClass()}
-            value={draft.workflowTemplateId}
-            onChange={(event) =>
-              onDefinition((current) => ({ ...current, workflowTemplateId: event.target.value }))
-            }
-          >
-            <option value="">Select a saved workflow</option>
-            {templates.map((template) => (
-              <option key={template.id} value={template.id}>
-                {template.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field
-          label="Acceptance criteria"
-          hint="One criterion per line; each requires evidence before publication."
-        >
-          <textarea
-            className={`${inputClass()} min-h-24 resize-y`}
-            value={draft.criteria.join('\n')}
-            onChange={(event) =>
-              onDefinition((current) => ({ ...current, criteria: splitLines(event.target.value) }))
-            }
-          />
-        </Field>
-        <Field
-          label="Pre-PR checks"
-          hint="One command per line, run in the selected repository scope."
-        >
-          <textarea
-            className={`${inputClass()} min-h-24 resize-y font-mono text-xs`}
-            value={draft.checks.join('\n')}
-            onChange={(event) =>
-              onDefinition((current) => ({ ...current, checks: splitLines(event.target.value) }))
-            }
-          />
-        </Field>
-        <Field
-          label="Post-merge checks"
-          hint="One command per line, run after the provider confirms the merge."
-        >
-          <textarea
-            className={`${inputClass()} min-h-24 resize-y font-mono text-xs`}
-            value={draft.postMergeChecks.join('\n')}
-            onChange={(event) =>
-              onDefinition((current) => ({
-                ...current,
-                postMergeChecks: splitLines(event.target.value),
-              }))
-            }
-          />
-        </Field>
-      </section>
-      <p
-        className={`-mt-3 text-xs ${criteriaChecksMatch ? 'text-text-tertiary' : 'text-warning'}`}
-        role={criteriaChecksMatch ? undefined : 'alert'}
-      >
-        Each acceptance criterion needs one exact standing-approved check command.{' '}
-        {draft.criteria.length} criteria · {draft.checks.length} checks.
-      </p>
-
-      <section className="rounded-xl border border-border-subtle p-4">
-        <h3 className="text-sm font-semibold text-text-primary">Limits and publication</h3>
-        <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <NumberField
-            label="Repair rounds"
-            value={draft.limits.repairRounds}
-            max={5}
-            onChange={(value) =>
-              onDefinition((current) => ({
-                ...current,
-                limits: { ...current.limits, repairRounds: value },
-              }))
-            }
-          />
-          <NumberField
-            label="Run minutes"
-            value={draft.limits.maxRunMinutes}
-            max={1440}
-            onChange={(value) =>
-              onDefinition((current) => ({
-                ...current,
-                limits: { ...current.limits, maxRunMinutes: value },
-              }))
-            }
-          />
-          <NumberField
-            label="Command budget"
-            value={draft.limits.maxCommands}
-            max={1000}
-            onChange={(value) =>
-              onDefinition((current) => ({
-                ...current,
-                limits: { ...current.limits, maxCommands: value },
-              }))
-            }
-          />
-          <NumberField
-            label="Concurrent issues"
-            value={draft.limits.maxConcurrentRuns}
-            max={20}
-            onChange={(value) =>
-              onDefinition((current) => ({
-                ...current,
-                limits: { ...current.limits, maxConcurrentRuns: value },
-              }))
-            }
-          />
-        </div>
-        <div className="mt-4 flex flex-wrap gap-5 text-sm">
-          <label className="flex items-center gap-2 text-text-primary">
-            <input
-              type="checkbox"
-              checked={draft.publication.enabled}
-              disabled={draft.merge.mode === 'auto-merge'}
-              onChange={(event) =>
-                onDefinition((current) => ({
-                  ...current,
-                  publication: { ...current.publication, enabled: event.target.checked },
-                }))
-              }
-            />
-            Allow branch and PR publication
-          </label>
-          <label className="flex items-center gap-2 text-text-primary">
-            <input
-              type="checkbox"
-              checked={draft.publication.draft}
-              disabled={!draft.publication.enabled}
-              onChange={(event) =>
-                onDefinition((current) => ({
-                  ...current,
-                  publication: { ...current.publication, draft: event.target.checked },
-                }))
-              }
-            />
-            Open as draft PR
-          </label>
-        </div>
-        <p className="mt-2 text-xs text-text-tertiary">
-          Publication authorizes pushing the factory branch and opening/updating its PR. It never
-          grants permission to merge.
-        </p>
-        {draft.merge.mode === 'auto-merge' && (
-          <p className="mt-2 text-xs text-warning">
-            Auto-merge needs publication permission. Switch to human-approved merge before disabling
-            publication.
-          </p>
-        )}
-      </section>
-
-      <section className="rounded-xl border border-border-subtle p-4">
-        <div className="flex items-start gap-3">
-          <ShieldCheck size={18} className="mt-0.5 text-accent" />
-          <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold text-text-primary">Merge authority</h3>
-            <p className="mt-1 text-xs text-text-secondary">
-              Choose whether a person approves each current PR head or the factory may request merge
-              when these gates pass.
-            </p>
-          </div>
-        </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
-          <Field label="Merge mode">
-            <select
-              className={inputClass()}
-              value={draft.merge.mode}
-              onChange={(event) =>
-                onDefinition((current) => ({
-                  ...current,
-                  merge: {
-                    ...current.merge,
-                    mode: event.target.value as FactoryDefinitionInput['merge']['mode'],
-                  },
-                }))
-              }
-            >
-              <option value="human-approved">Human-approved merge</option>
-              <option value="auto-merge" disabled={!draft.publication.enabled}>
-                Auto-merge under policy
-              </option>
-            </select>
-          </Field>
-          <Field label="Merge method">
-            <select
-              className={inputClass()}
-              value={draft.merge.method}
-              onChange={(event) =>
-                onDefinition((current) => ({
-                  ...current,
-                  merge: {
-                    ...current.merge,
-                    method: event.target.value as FactoryDefinitionInput['merge']['method'],
-                  },
-                }))
-              }
-            >
-              <option value="squash">Squash</option>
-              <option value="merge">Merge commit</option>
-              <option value="rebase">Rebase</option>
-            </select>
-          </Field>
-          <Field label="Required CI checks" hint="One exact provider check name per line.">
-            <textarea
-              className={`${inputClass()} min-h-20 resize-y`}
-              value={draft.merge.requiredChecks.join('\n')}
-              onChange={(event) =>
-                onDefinition((current) => ({
-                  ...current,
-                  merge: { ...current.merge, requiredChecks: splitLines(event.target.value) },
-                }))
-              }
-            />
-          </Field>
-          <label className="flex items-start gap-2 rounded-lg border border-border-subtle bg-bg-secondary/40 p-3 text-sm text-text-primary">
-            <input
-              className="mt-1"
-              type="checkbox"
-              checked={draft.merge.requireApproval}
-              onChange={(event) =>
-                onDefinition((current) => ({
-                  ...current,
-                  merge: { ...current.merge, requireApproval: event.target.checked },
-                }))
-              }
-            />
-            <span>
-              <span className="font-medium">Require human review approval</span>
-              <span className="mt-1 block text-xs text-text-secondary">
-                A factory-authored review does not satisfy a required human approval.
-              </span>
-            </span>
-          </label>
-        </div>
-        {draft.merge.mode === 'auto-merge' && (
-          <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-text-secondary">
-            Auto-merge is standing authority. It is limited to this repository, base branch, merge
-            method and gates, and requires owner authorization at activation.
+        ) : (
+          <div className="grid flex-1 place-items-center p-8 text-sm text-text-tertiary">
+            {loaded ? 'Choose a factory to see its line.' : ''}
           </div>
         )}
-      </section>
+      </main>
 
-      <section className="rounded-xl border border-border-subtle p-4">
-        <h3 className="text-sm font-semibold text-text-primary">Visibility and roles</h3>
-        <p className="mt-1 text-xs text-text-secondary">
-          Visibility controls who can discover runs. Source repository, ticket and artifact
-          permissions still apply to details and evidence.
-        </p>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
-          <Field label="Factory access">
-            <select
-              className={inputClass()}
-              value={draft.access.kind}
-              onChange={(event) =>
-                onDefinition((current) => ({
-                  ...current,
-                  access: withAccess(
-                    current.access,
-                    event.target.value as 'private' | 'organization',
-                  ),
-                }))
-              }
-            >
-              <option value="private">Private to owner</option>
-              <option value="organization">Share within organization</option>
-            </select>
-          </Field>
-          {orgAccess && (
-            <Field label="Organization">
-              <select
-                className={inputClass()}
-                value={orgAccess.organizationId}
-                onChange={(event) =>
-                  onDefinition((current) => ({
-                    ...current,
-                    access:
-                      current.access.kind === 'organization'
-                        ? { ...current.access, organizationId: event.target.value, members: [] }
-                        : current.access,
-                  }))
-                }
-              >
-                <option value="">Choose an organization</option>
-                {organizations.map((organization) => (
-                  <option key={organization.id} value={organization.id}>
-                    {organization.id} · {organization.role}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          )}
-        </div>
-        {orgAccess && (
-          <>
-            <div className="mt-3 grid gap-4 md:grid-cols-2">
-              <Field label="Visibility">
-                <select
-                  className={inputClass()}
-                  value={orgAccess.visibility}
-                  onChange={(event) =>
-                    onDefinition((current) => ({
-                      ...current,
-                      access:
-                        current.access.kind === 'organization'
-                          ? {
-                              ...current.access,
-                              visibility: event.target.value as
-                                'organization' | 'team' | 'restricted',
-                            }
-                          : current.access,
-                    }))
-                  }
-                >
-                  <option value="organization">Organization-wide</option>
-                  <option value="team">Team/project (default)</option>
-                  <option value="restricted">Restricted members</option>
-                </select>
-              </Field>
-              {orgAccess.visibility === 'team' && (
-                <Field
-                  label="GitHub team slug"
-                  hint="Current team membership is checked when reading or operating runs."
-                >
-                  <input
-                    className={inputClass()}
-                    value={orgAccess.teamId ?? ''}
-                    onChange={(event) =>
-                      onDefinition((current) => ({
-                        ...current,
-                        access:
-                          current.access.kind === 'organization'
-                            ? { ...current.access, teamId: event.target.value }
-                            : current.access,
-                      }))
-                    }
-                  />
-                </Field>
-              )}
-            </div>
-            <div className="mt-4 rounded-lg border border-border-subtle p-3">
-              <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-text-primary">
-                <UserRoundCheck size={14} />
-                Member roles
-              </div>
-              <p className="mb-2 text-xs text-text-tertiary">
-                Assign enrolled organization members as viewers, operators or factory owners. New
-                recipients stay pending until their encryption key is enrolled. Organization
-                administrator authority is verified by the service and cannot be assigned here; team
-                and organization visibility still require current membership.
-              </p>
-              <div className="grid gap-2 sm:grid-cols-[1fr_180px_auto]">
-                <select
-                  className={inputClass(false)}
-                  aria-label="Organization member"
-                  value={inviteUserId}
-                  onChange={(event) => onInviteUserId(event.target.value)}
-                >
-                  <option value="">Choose an organization member</option>
-                  {organizationMembers
-                    .filter(
-                      (member) =>
-                        !orgAccess.members.some((current) => current.userId === member.userId),
-                    )
-                    .map((member) => (
-                      <option key={member.userId} value={member.userId}>
-                        {member.userId} · {member.role}
-                      </option>
-                    ))}
-                </select>
-                <select
-                  className={inputClass(false)}
-                  aria-label="Factory role"
-                  value={inviteRole}
-                  onChange={(event) => onInviteRole(event.target.value as FactoryRole)}
-                >
-                  <option value="viewer">Viewer</option>
-                  <option value="operator">Operator</option>
-                  <option value="owner">Owner</option>
-                </select>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!inviteUserId || !orgAccess.organizationId}
-                  onClick={onAddMember}
-                >
-                  Add member
-                </Button>
-              </div>
-              <div className="mt-3 space-y-1">
-                {orgAccess.members.map((member) => (
-                  <div
-                    key={member.userId}
-                    className="flex items-center justify-between gap-3 rounded-md bg-bg-secondary px-3 py-2 text-xs"
-                  >
-                    <span className="min-w-0 truncate text-text-primary">{member.userId}</span>
-                    <select
-                      aria-label={`Role for ${member.userId}`}
-                      className="rounded border border-border bg-bg-primary px-2 py-1 capitalize text-text-secondary"
-                      value={member.role}
-                      onChange={(event) =>
-                        onMemberRole(member.userId, event.target.value as FactoryRole)
-                      }
-                    >
-                      <option value="viewer">Viewer</option>
-                      <option value="operator">Operator</option>
-                      <option value="owner">Owner</option>
-                    </select>
-                    <button
-                      type="button"
-                      className="shrink-0 text-error hover:underline"
-                      onClick={() => onRemoveMember(member.userId)}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                {orgAccess.members.length === 0 && (
-                  <p className="text-xs text-text-tertiary">
-                    Add named members as operators or owners. Viewers can be granted read access.
-                  </p>
-                )}
-              </div>
-            </div>
-          </>
-        )}
-        <p className="mt-3 text-xs text-text-tertiary">
-          Guests only see content explicitly shared with them. Organization visibility never grants
-          repository access or credentials.
-        </p>
-      </section>
-
-      {preview && <PreviewPanel preview={preview} title="Typed definition preview" />}
-      <div className="flex flex-wrap justify-end gap-2 border-t border-border-subtle pt-4">
-        <Button variant="secondary" onClick={onPreview} disabled={busy || !criteriaChecksMatch}>
-          <RefreshCw size={14} />
-          {busy ? 'Validating…' : 'Preview definition'}
-        </Button>
-        <Button onClick={onSave} disabled={busy || !preview}>
-          <CheckCircle2 size={14} />
-          Save inactive draft
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function NumberField({
-  label,
-  value,
-  max,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  max: number;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <Field label={label}>
-      <input
-        className={inputClass()}
-        type="number"
-        min={0}
-        max={max}
-        value={value}
-        onChange={(event) => onChange(Math.max(0, Math.min(max, Number(event.target.value) || 0)))}
+      <ConfirmDialog
+        open={confirmDeactivate}
+        title="Deactivate this factory?"
+        description="No new issues will be claimed. Runs already in progress keep their recorded policy and stay controllable."
+        confirmLabel="Deactivate"
+        cancelLabel="Keep active"
+        tone="danger"
+        loading={busyAction === 'deactivate'}
+        onCancel={() => setConfirmDeactivate(false)}
+        onConfirm={() => void doFactoryAction('deactivate')}
       />
-    </Field>
+    </div>
   );
 }
 
-function PreviewPanel({ preview, title }: { preview: FactoryPreview; title: string }) {
+function FactoryRail({
+  factories,
+  loaded,
+  selectedId,
+  creating,
+  summaries,
+  pendingDirectory,
+  keyRegistrationBusy,
+  onSelect,
+  onNew,
+  onRegisterKey,
+}: {
+  factories: FactoryDefinition[];
+  loaded: boolean;
+  selectedId: string | null;
+  creating: boolean;
+  summaries: Record<string, FactoryRunSummary>;
+  pendingDirectory: FactoryDirectoryItem[];
+  keyRegistrationBusy: string | null;
+  onSelect: (factory: FactoryDefinition) => void;
+  onNew: () => void;
+  onRegisterKey: (organizationId: string) => void;
+}) {
   return (
-    <section className="rounded-xl border border-accent/30 bg-accent/5 p-4" aria-label={title}>
-      <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
-      <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-text-secondary">
-        {preview.summary.map((line, index) => (
-          <li key={`${line}-${index}`}>{line}</li>
-        ))}
-      </ul>
-      <details className="mt-3">
-        <summary className="cursor-pointer text-xs font-medium text-accent">
-          Inspect exact definition
-        </summary>
-        <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-bg-primary p-3 text-[11px] text-text-secondary">
-          {JSON.stringify(preview.definition, null, 2)}
-        </pre>
-      </details>
-    </section>
+    <aside className="flex w-64 shrink-0 flex-col border-r border-border-subtle bg-bg-secondary">
+      <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-4">
+        <h1 className="text-sm font-semibold text-text-primary">Factories</h1>
+        <IconButton icon={Plus} label="New factory" size="md" variant="secondary" onClick={onNew} />
+      </div>
+      <nav aria-label="Factories" className="min-h-0 flex-1 overflow-y-auto p-2">
+        {!loaded && (
+          <div className="space-y-2 p-2" aria-hidden="true">
+            {[0, 1, 2].map((item) => (
+              <div
+                key={item}
+                className="h-12 animate-pulse rounded-lg bg-bg-tertiary/60 motion-reduce:animate-none"
+              />
+            ))}
+          </div>
+        )}
+        {creating && (
+          <div className="mb-1 flex items-center gap-2.5 rounded-lg bg-accent/[0.08] px-3 py-2.5 text-sm font-medium text-text-primary ring-1 ring-accent/30 ring-inset">
+            <Sparkles size={14} aria-hidden="true" className="text-accent" />
+            New factory
+          </div>
+        )}
+        <ul className="space-y-0.5">
+          {factories.map((factory) => {
+            const summary = summaries[factory.id];
+            const selected = selectedId === factory.id;
+            const source = canReadFactorySource(factory)
+              ? `${factory.definition.github.owner}/${factory.definition.github.repo}`
+              : 'Source hidden';
+            return (
+              <li key={factory.id}>
+                <button
+                  type="button"
+                  aria-current={selected ? 'page' : undefined}
+                  onClick={() => onSelect(factory)}
+                  className={cx(
+                    'w-full rounded-lg px-3 py-2.5 text-left transition-colors',
+                    selected
+                      ? 'bg-accent/[0.08] ring-1 ring-accent/30 ring-inset'
+                      : 'hover:bg-bg-tertiary',
+                  )}
+                >
+                  <span className="flex items-center gap-2">
+                    <FactoryStatus status={factoryStatusKey(factory)} iconOnly />
+                    <span
+                      className={cx(
+                        'min-w-0 flex-1 truncate text-sm font-medium',
+                        selected ? 'text-text-primary' : 'text-text-secondary',
+                      )}
+                    >
+                      {factory.accessPending ? 'Shared factory' : factory.definition.name}
+                    </span>
+                    {summary?.attention ? (
+                      <span
+                        className="inline-flex shrink-0 items-center gap-1 rounded-full bg-warning/15 px-1.5 py-0.5 text-xs font-semibold text-warning tabular-nums"
+                        title={`${summary.attention} ${summary.attention === 1 ? 'run needs' : 'runs need'} you`}
+                      >
+                        <Hand size={11} aria-hidden="true" />
+                        {summary.attention}
+                        <span className="sr-only">
+                          {summary.attention === 1 ? 'run needs you' : 'runs need you'}
+                        </span>
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="mt-1 flex items-center gap-2 pl-[21px] text-xs text-text-tertiary">
+                    <span className="min-w-0 truncate font-mono">
+                      {factory.accessPending ? 'Access pending' : source}
+                    </span>
+                    {summary?.live ? (
+                      <span className="ml-auto inline-flex shrink-0 items-center gap-1.5">
+                        <LiveGlyph small />
+                        {summary.live} running
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        {loaded && factories.length === 0 && !creating && (
+          <p className="px-3 py-4 text-xs leading-5 text-text-tertiary">
+            No factories in this workspace yet.
+          </p>
+        )}
+        {pendingDirectory.length > 0 && (
+          <div className="mt-4 border-t border-border-subtle pt-3">
+            <h2 className="px-3 text-xs font-medium text-text-tertiary">Shared with you</h2>
+            <ul className="mt-2 space-y-2">
+              {pendingDirectory.map((item) => {
+                const organizationId = item.policy.organizationId;
+                return (
+                  <li key={`pending-${item.id}`} className="rounded-lg px-3 py-2">
+                    <p className="flex items-center gap-2 text-sm text-text-secondary">
+                      <Lock size={13} aria-hidden="true" className="shrink-0 text-warning" />
+                      Shared factory
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-text-tertiary">
+                      {item.accessRequired
+                        ? 'An organization owner must grant this account factory access.'
+                        : item.accessPending
+                          ? 'Enrol an encryption key to read this factory.'
+                          : 'Access is waiting for organization setup.'}
+                    </p>
+                    {item.accessPending && !item.accessRequired && organizationId && (
+                      <Button
+                        className="mt-2"
+                        variant="secondary"
+                        size="sm"
+                        disabled={keyRegistrationBusy !== null}
+                        onClick={() => onRegisterKey(organizationId)}
+                      >
+                        <KeyRound size={13} aria-hidden="true" />
+                        {keyRegistrationBusy === organizationId
+                          ? 'Enrolling…'
+                          : 'Enrol encryption key'}
+                      </Button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+      </nav>
+    </aside>
   );
 }
 
-function FactoryDetails({
+function FactoryFloor({
   factory,
   runs,
+  runsLoaded,
+  runsLoadedAt,
   selectedRun,
+  templates,
+  tab,
+  stationFilter,
   activationPreview,
   activating,
   busyAction,
+  savingCopy,
+  now,
+  personas,
+  workspaces,
+  activeWorkspaceId,
+  onTab,
+  onStationFilter,
+  onRefresh,
+  onSelectRun,
+  onRunAction,
   onEdit,
+  onRepin,
   onPrepareActivation,
   onConfirmActivation,
   onCancelActivation,
   onFactoryAction,
-  onSelectRun,
-  onRunAction,
-  onOpenPickupThread,
-  pickupRunId,
-  pickupWorkspaceId,
-  pickupWorkspace,
-  pickupWorkspaceLoading,
-  pickupPersonaId,
-  pickupRepoId,
-  workspaces,
-  personas,
-  matchingPickupRepos,
-  onRequestPickup,
-  onPickupWorkspace,
-  onPickupPersona,
-  onPickupRepo,
-  onCancelPickup,
+  onOpenThread,
+  onOpenWorkflowRun,
+  onOpenTemplate,
+  onSaveWorkflowCopy,
+  onLinkTemplate,
 }: {
   factory: FactoryDefinition;
   runs: FactoryRun[];
+  runsLoaded: boolean;
+  runsLoadedAt: number | null;
   selectedRun: FactoryRun | null;
+  templates: WorkflowTemplate[];
+  tab: 'runs' | 'definition';
+  stationFilter: FactoryStationId | null;
   activationPreview: FactoryPreview | null;
   activating: boolean;
   busyAction: string | null;
+  savingCopy: boolean;
+  now: number;
+  personas: Persona[];
+  workspaces: Array<{ id: string; name: string }>;
+  activeWorkspaceId: string;
+  onTab: (tab: 'runs' | 'definition') => void;
+  onStationFilter: (station: FactoryStationId | null) => void;
+  onRefresh: () => void;
+  onSelectRun: (run: FactoryRun) => void;
+  onRunAction: (
+    action: FactoryRunControlInput['action'],
+    context?: TakeoverContext,
+  ) => Promise<boolean>;
   onEdit: () => void;
+  onRepin: () => void;
   onPrepareActivation: () => void;
   onConfirmActivation: () => void;
   onCancelActivation: () => void;
   onFactoryAction: (action: 'pause' | 'resume' | 'deactivate') => void;
-  onSelectRun: (run: FactoryRun) => void;
-  onRunAction: (action: FactoryRunControlInput['action']) => void;
-  onOpenPickupThread: (threadId: string) => void;
-  pickupRunId: string | null;
-  pickupWorkspaceId: string;
-  pickupWorkspace: WorkspaceWithRepos | null;
-  pickupWorkspaceLoading: boolean;
-  pickupPersonaId: string;
-  pickupRepoId: string;
-  workspaces: Array<{ id: string; name: string }>;
-  personas: Persona[];
-  matchingPickupRepos: RepoInfo[];
-  onRequestPickup: (run: FactoryRun) => void;
-  onPickupWorkspace: (workspaceId: string) => void;
-  onPickupPersona: (personaId: string) => void;
-  onPickupRepo: (repoId: string) => void;
-  onCancelPickup: () => void;
+  onOpenThread: (threadId: string, personaId?: string) => void;
+  onOpenWorkflowRun: (runId: string) => void;
+  onOpenTemplate: (templateId: string) => void;
+  onSaveWorkflowCopy: () => void;
+  onLinkTemplate: (templateId: string) => void;
 }) {
+  const loads = useMemo(() => stationLoads(runs), [runs]);
+  const detailRef = useRef<HTMLDivElement>(null);
   if (factory.accessPending) {
     return (
-      <div className="space-y-4 p-6">
-        <div>
-          <span className="rounded-full bg-warning/10 px-2.5 py-1 text-xs text-warning">
-            Access pending
-          </span>
-          <h2 className="mt-3 text-xl font-semibold text-text-primary">Shared factory</h2>
+      <div className="space-y-4 px-6 py-6">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold text-text-primary">Shared factory</h2>
+          <FactoryStatus status="pending" />
         </div>
-        <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-3 text-sm text-text-secondary">
-          The shared record is encrypted for enrolled members. Your account has not completed key
-          enrollment, so factory details and runs remain hidden until the owner completes
-          enrollment.
-        </div>
+        <Notice tone="warning" icon={Lock}>
+          This shared record is encrypted for enrolled members. Your account has not completed key
+          enrolment, so the factory’s details and runs stay hidden until it does.
+        </Notice>
       </div>
     );
   }
   const isActive = factory.status === 'active';
   const hasUnactivatedRevision = factory.activeRevision !== factory.revision;
-  const effectiveRole = effectiveFactoryRole(factory);
+  const role = effectiveFactoryRole(factory);
   const canOperate = canOperateFactory(factory);
   const canManage = canManageFactory(factory);
+  const sourceVisible = factory.sourceAccess !== false && !factory.redacted;
+  const template = templates.find((item) => item.id === factory.definition.workflowTemplateId);
+  // Template ids of shared factories belong to the executing device, so drift is local-only.
+  const drift =
+    !factory.remote && canReadFactorySource(factory)
+      ? factoryWorkflowDrift(factory.workflow, template)
+      : 'current';
+  const activateLabel =
+    factory.status === 'draft' || !factory.activeRevision
+      ? 'Review and activate'
+      : `Activate revision ${factory.revision}`;
+
   return (
-    <div className="space-y-5 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="shrink-0 border-b border-border-subtle px-6 pt-4 pb-3">
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+          <div className="min-w-0 flex-1 basis-80">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <h2 className="truncate text-lg font-semibold text-text-primary">
+                {factory.definition.name}
+              </h2>
+              <FactoryStatus status={factoryStatusKey(factory)} />
+            </div>
+            <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-tertiary">
+              {sourceVisible ? (
+                <>
+                  <Mono className="text-text-secondary">
+                    {factory.definition.github.owner}/{factory.definition.github.repo}
+                  </Mono>
+                  <span>
+                    issues labelled <Mono>{factory.definition.github.label}</Mono>
+                  </span>
+                  <span>
+                    into <Mono>{factory.definition.github.baseBranch}</Mono>
+                  </span>
+                </>
+              ) : (
+                <span>Source repository details are unavailable for your account.</span>
+              )}
+              {role && (
+                <span>
+                  Your role <span className="capitalize text-text-secondary">{role}</span>
+                </span>
+              )}
+            </p>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-xl font-semibold text-text-primary">{factory.definition.name}</h2>
-            <span className="rounded-full bg-bg-tertiary px-2.5 py-1 text-xs capitalize text-text-secondary">
-              {factory.status}
-            </span>
-            {factory.organizationAdmin && (
-              <span className="rounded-full bg-accent/10 px-2.5 py-1 text-xs text-accent">
-                Verified organization admin
-              </span>
+            {canManage &&
+              !activationPreview &&
+              (!isActive || hasUnactivatedRevision) &&
+              factory.status !== 'paused' && (
+                <Button size="sm" disabled={activating} onClick={onPrepareActivation}>
+                  <Play size={13} aria-hidden="true" />
+                  {activating ? 'Reviewing…' : activateLabel}
+                </Button>
+              )}
+            {canOperate && isActive && !hasUnactivatedRevision && (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busyAction !== null}
+                onClick={() => onFactoryAction('pause')}
+              >
+                <Pause size={13} aria-hidden="true" />
+                Pause factory
+              </Button>
             )}
-            <span className="text-xs text-text-tertiary">
-              Revision {factory.revision}
-              {factory.activeRevision && factory.activeRevision !== factory.revision
-                ? ` · active r${factory.activeRevision}`
-                : ''}
+            {canOperate && factory.status === 'paused' && !hasUnactivatedRevision && (
+              <Button
+                size="sm"
+                disabled={busyAction !== null}
+                onClick={() => onFactoryAction('resume')}
+              >
+                <Play size={13} aria-hidden="true" />
+                Resume factory
+              </Button>
+            )}
+            {canManage && (
+              <Button variant="secondary" size="sm" onClick={onEdit}>
+                Edit
+              </Button>
+            )}
+            {canManage && factory.status !== 'inactive' && (
+              <Menu
+                label="Factory actions"
+                trigger={(props) => (
+                  <IconButton
+                    {...props}
+                    icon={MoreHorizontal}
+                    label="More factory actions"
+                    size="md"
+                  />
+                )}
+              >
+                <MenuItem destructive onSelect={() => onFactoryAction('deactivate')}>
+                  Deactivate factory
+                </MenuItem>
+              </Menu>
+            )}
+          </div>
+        </div>
+        <div className="mt-3 space-y-2 empty:hidden">
+          {hasUnactivatedRevision && factory.activeRevision && (
+            <Notice tone="info" icon={CircleAlert}>
+              Revision {factory.revision} is saved but not active. Revision {factory.activeRevision}{' '}
+              keeps processing issues until you activate it.
+            </Notice>
+          )}
+          {factory.commandPending && (
+            <Notice tone="warning" icon={RefreshCw}>
+              Your request was accepted and is waiting for the factory owner’s device to apply it.
+              The status shown may lag until then.
+            </Notice>
+          )}
+          {factory.redacted && (
+            <Notice tone="neutral" icon={Lock}>
+              Some source details are hidden because you do not have permission to read them.
+            </Notice>
+          )}
+          {factory.organizationAdmin && (
+            <p className="text-xs text-text-tertiary">
+              Organization administrator authority verified by the service.
+            </p>
+          )}
+        </div>
+      </header>
+
+      {activationPreview ? (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl px-6 py-6">
+            <FactoryAuthority
+              preview={activationPreview}
+              workflow={factory.workflow}
+              mode="activate"
+              revision={factory.revision}
+              localExecutor={!factory.remote}
+            >
+              <Button variant="ghost" onClick={onCancelActivation}>
+                Cancel
+              </Button>
+              <Button disabled={activating} onClick={onConfirmActivation}>
+                <Play size={14} aria-hidden="true" />
+                {activating ? 'Activating…' : `Activate revision ${factory.revision}`}
+              </Button>
+            </FactoryAuthority>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border-subtle px-6 py-2">
+            <SegmentedControl
+              label="Factory view"
+              value={tab}
+              onChange={onTab}
+              options={[
+                { value: 'runs', label: `Runs ${runs.length ? runs.length : ''}`.trim() },
+                {
+                  value: 'definition',
+                  label: (
+                    <>
+                      Definition
+                      {drift !== 'current' && (
+                        <span
+                          aria-hidden="true"
+                          className={cx(
+                            'h-1.5 w-1.5 rounded-full',
+                            drift === 'missing' ? 'bg-warning' : 'bg-info',
+                          )}
+                        />
+                      )}
+                    </>
+                  ),
+                  ariaLabel:
+                    drift === 'current'
+                      ? 'Definition'
+                      : drift === 'missing'
+                        ? 'Definition: pinned workflow source deleted'
+                        : 'Definition: pinned workflow changed',
+                },
+              ]}
+            />
+            <span className="ml-auto flex items-center gap-1.5 text-xs text-text-tertiary">
+              {runsLoadedAt && (
+                <span>Updated {relativeTime(new Date(runsLoadedAt).toISOString(), now)}</span>
+              )}
+              <IconButton icon={RefreshCw} label="Refresh runs" onClick={onRefresh} />
             </span>
           </div>
-          {factory.sourceAccess !== false && !factory.redacted ? (
-            <p className="mt-1 text-sm text-text-secondary">
-              {factory.definition.github.owner}/{factory.definition.github.repo} · issues labeled “
-              {factory.definition.github.label}” · base {factory.definition.github.baseBranch}
-            </p>
+          {tab === 'definition' ? (
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <FactoryDefinitionPanel
+                factory={factory}
+                templates={templates}
+                canManage={canManage}
+                now={now}
+                savingCopy={savingCopy}
+                onEdit={onEdit}
+                onRepin={onRepin}
+                onOpenTemplate={onOpenTemplate}
+                onSaveCopy={onSaveWorkflowCopy}
+                onLinkTemplate={onLinkTemplate}
+              />
+            </div>
           ) : (
-            <p className="mt-1 text-sm text-text-secondary">
-              Source repository details are unavailable for your account.
-            </p>
+            <div className="factory-floor flex min-h-0 flex-1 flex-col overflow-y-auto">
+              <div className="shrink-0 border-b border-border-subtle px-4 py-2">
+                <StationBoard loads={loads} selected={stationFilter} onSelect={onStationFilter} />
+              </div>
+              {runsLoaded && runs.length === 0 ? (
+                <EmptyRuns
+                  factory={factory}
+                  canManage={canManage}
+                  activating={activating}
+                  onActivate={onPrepareActivation}
+                />
+              ) : (
+                <div className="factory-split">
+                  <RunList
+                    factory={factory}
+                    runs={runs}
+                    loaded={runsLoaded}
+                    selectedId={selectedRun?.id ?? null}
+                    stationFilter={stationFilter}
+                    now={now}
+                    onClearFilter={() => onStationFilter(null)}
+                    onSelect={(run) => {
+                      onSelectRun(run);
+                      // Single-column panes put the detail below the list; bring it into view.
+                      const detail = detailRef.current;
+                      if (detail && detail.offsetLeft === 0 && detail.offsetTop > 0)
+                        requestAnimationFrame(() =>
+                          detail.scrollIntoView({ block: 'start', behavior: 'smooth' }),
+                        );
+                    }}
+                  />
+                  <div ref={detailRef} className="min-w-0 scroll-mt-2">
+                    {selectedRun ? (
+                      <FactoryRunDetail
+                        run={selectedRun}
+                        canOperate={canOperate}
+                        busyAction={busyAction}
+                        now={now}
+                        personas={personas}
+                        workspaces={workspaces}
+                        activeWorkspaceId={activeWorkspaceId}
+                        onAction={onRunAction}
+                        onOpenThread={onOpenThread}
+                        onOpenWorkflowRun={onOpenWorkflowRun}
+                      />
+                    ) : (
+                      runsLoaded &&
+                      runs.length > 0 && (
+                        <p className="px-6 py-10 text-sm text-text-tertiary">
+                          Select a run to see where it is and what it needs.
+                        </p>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {canManage && (
-            <Button variant="secondary" size="sm" onClick={onEdit}>
-              Edit definition
-            </Button>
-          )}
-          {canManage && (!isActive || hasUnactivatedRevision) && (
-            <Button size="sm" disabled={activating} onClick={onPrepareActivation}>
-              <Play size={14} />
-              {activating ? 'Reviewing…' : 'Review & activate'}
-            </Button>
-          )}
-          {canOperate && isActive && !hasUnactivatedRevision && (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busyAction !== null}
-              onClick={() => onFactoryAction('pause')}
-            >
-              <Pause size={14} />
-              Pause factory
-            </Button>
-          )}
-          {canOperate && factory.status === 'paused' && !hasUnactivatedRevision && (
-            <Button
-              size="sm"
-              disabled={busyAction !== null}
-              onClick={() => onFactoryAction('resume')}
-            >
-              <Play size={14} />
-              Resume factory
-            </Button>
-          )}
-          {canManage && factory.status !== 'inactive' && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busyAction !== null}
-              onClick={() => onFactoryAction('deactivate')}
-            >
-              Deactivate
-            </Button>
-          )}
-        </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RunList({
+  factory,
+  runs,
+  loaded,
+  selectedId,
+  stationFilter,
+  now,
+  onClearFilter,
+  onSelect,
+}: {
+  factory: FactoryDefinition;
+  runs: FactoryRun[];
+  loaded: boolean;
+  selectedId: string | null;
+  stationFilter: FactoryStationId | null;
+  now: number;
+  onClearFilter: () => void;
+  onSelect: (run: FactoryRun) => void;
+}) {
+  const optionRefs = useRef(new Map<string, HTMLButtonElement>());
+  const visible = useMemo(
+    () => (stationFilter ? runs.filter((run) => runPosition(run).station === stationFilter) : runs),
+    [runs, stationFilter],
+  );
+  const groups = useMemo(() => groupRuns(visible), [visible]);
+  const ordered = [...groups.attention, ...groups.active, ...groups.finished];
+  const focusIndex = Math.max(
+    0,
+    ordered.findIndex((run) => run.id === selectedId),
+  );
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const keys: Record<string, number> = {
+      ArrowDown: focusIndex + 1,
+      ArrowUp: focusIndex - 1,
+      j: focusIndex + 1,
+      k: focusIndex - 1,
+      Home: 0,
+      End: ordered.length - 1,
+    };
+    if (!(event.key in keys) || !ordered.length) return;
+    event.preventDefault();
+    const next = ordered[Math.min(ordered.length - 1, Math.max(0, keys[event.key]))];
+    onSelect(next);
+    optionRefs.current.get(next.id)?.focus();
+  };
+
+  if (!loaded)
+    return (
+      <div className="space-y-2 p-4" aria-hidden="true">
+        {[0, 1, 2, 3].map((item) => (
+          <div
+            key={item}
+            className="h-14 animate-pulse rounded-lg bg-bg-tertiary/50 motion-reduce:animate-none"
+          />
+        ))}
       </div>
-      {factory.accessPending && (
-        <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-text-secondary">
-          This factory is shared, but your account has not completed key enrollment. You can only
-          see this pending-access notice until the owner completes enrollment.
+    );
+  if (!runs.length)
+    return (
+      <div className="px-5 py-8">
+        <p className="text-sm font-medium text-text-primary">No issues on the line yet</p>
+        <p className="mt-1 max-w-prose text-xs leading-5 text-text-tertiary">
+          {factory.status === 'active' ? (
+            <>
+              Label an open issue <Mono>{factory.definition.github.label}</Mono> in{' '}
+              <Mono>
+                {factory.definition.github.owner}/{factory.definition.github.repo}
+              </Mono>{' '}
+              and it appears here within a minute.
+            </>
+          ) : (
+            'Activate the factory to start claiming matching issues.'
+          )}
+        </p>
+      </div>
+    );
+
+  return (
+    <div className="py-2">
+      {stationFilter && (
+        <div className="flex items-center justify-between gap-2 px-4 pt-1 pb-2 text-xs text-text-tertiary">
+          <span>
+            At <span className="text-text-secondary">{stationOf(stationFilter).label}</span>
+          </span>
+          <button
+            type="button"
+            className="underline decoration-border underline-offset-4 hover:text-text-primary"
+            onClick={onClearFilter}
+          >
+            Show all runs
+          </button>
         </div>
       )}
-      {factory.commandPending && (
-        <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-text-secondary">
-          Your request was accepted and is waiting for the factory owner’s device to apply it. The
-          displayed status may not reflect the change yet.
-        </div>
-      )}
-      {!factory.accessPending && effectiveRole && (
-        <p className="text-xs text-text-tertiary">
-          Your factory role: <span className="capitalize">{effectiveRole}</span>
-          {factory.organizationAdmin
-            ? ' · organization administrator authority verified by the service'
-            : ''}
-          {factory.sourceAccess === false ? ' · source repository access is unavailable' : ''}
+      {!ordered.length && (
+        <p className="px-4 py-6 text-xs text-text-tertiary">
+          No runs at {stationFilter ? stationOf(stationFilter).label : 'this station'} right now.
         </p>
       )}
-      {factory.redacted && (
-        <div className="rounded-lg border border-border-subtle bg-bg-secondary px-3 py-2 text-xs text-text-secondary">
-          Some source details are hidden because you do not have permission to read them.
-        </div>
-      )}
-
-      {activationPreview && (
-        <section
-          className="space-y-3 rounded-xl border border-warning/40 bg-warning/5 p-4"
-          aria-label="Factory activation review"
-        >
-          <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
-            <ShieldCheck size={17} />
-            Review standing authority before activation
-          </div>
-          <p className="text-xs text-text-secondary">
-            Activation starts issue polling under revision {factory.revision}. Confirm the
-            organization, repository, user roles, publication permission, and merge policy below.
-          </p>
-          {!factory.remote && (
-            <p className="rounded-lg border border-border-subtle bg-bg-secondary/60 px-3 py-2 text-xs text-text-secondary">
-              Confirming activation also sets up and starts this device’s per-user background
-              service so issue processing can continue while the app is closed. Manage the service
-              from Watchtower.
-            </p>
-          )}
-          <PreviewPanel preview={activationPreview} title="Exact activation policy" />
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={onCancelActivation}>
-              Cancel
-            </Button>
-            <Button disabled={activating} onClick={onConfirmActivation}>
-              {activating ? 'Activating…' : 'Confirm activation'}
-            </Button>
-          </div>
-        </section>
-      )}
-
-      <div className="grid gap-5 xl:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
-        <section className="rounded-xl border border-border-subtle bg-bg-secondary/30 p-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-text-primary">Issue runs</h3>
-            <span className="text-xs text-text-tertiary">{runs.length}</span>
-          </div>
-          <div className="mt-3 space-y-1">
-            {runs.length === 0 ? (
-              <p className="py-4 text-xs text-text-tertiary">No matching issue runs yet.</p>
-            ) : (
-              runs.map((run) => (
-                <button
-                  key={run.id}
-                  type="button"
-                  onClick={() => onSelectRun(run)}
-                  className={`w-full rounded-lg px-3 py-3 text-left ${selectedRun?.id === run.id ? 'bg-accent/10 ring-1 ring-accent/30' : 'hover:bg-bg-tertiary'}`}
-                >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="truncate text-sm font-medium text-text-primary">
-                      {canReadRunSource(run)
-                        ? `#${run.issue.number} ${run.issue.title}`
-                        : 'Issue source unavailable'}
-                    </span>
-                    <span className="shrink-0 text-[11px] text-text-tertiary">
-                      {STAGE_LABELS[run.stage]}
-                    </span>
-                  </span>
-                  <span className="mt-1 flex items-center gap-1.5 text-[11px] text-text-tertiary">
-                    <Activity size={12} />
-                    {run.repairRounds} repair rounds · {formatDate(run.updatedAt)}
-                  </span>
-                </button>
-              ))
-            )}
-          </div>
-        </section>
-        <RunDetails
-          run={selectedRun}
-          onAction={onRunAction}
-          onOpenPickupThread={onOpenPickupThread}
-          busyAction={busyAction}
-          canOperate={canOperate}
-          pickupOpen={selectedRun ? pickupRunId === selectedRun.id : false}
-          pickupWorkspaceId={pickupWorkspaceId}
-          pickupWorkspace={pickupWorkspace}
-          pickupWorkspaceLoading={pickupWorkspaceLoading}
-          pickupPersonaId={pickupPersonaId}
-          pickupRepoId={pickupRepoId}
-          workspaces={workspaces}
-          personas={personas}
-          matchingPickupRepos={matchingPickupRepos}
-          onRequestPickup={onRequestPickup}
-          onPickupWorkspace={onPickupWorkspace}
-          onPickupPersona={onPickupPersona}
-          onPickupRepo={onPickupRepo}
-          onCancelPickup={onCancelPickup}
-        />
+      <div
+        role="listbox"
+        aria-label="Issue runs"
+        aria-orientation="vertical"
+        onKeyDown={onKeyDown}
+        className={ordered.length ? undefined : 'hidden'}
+      >
+        {(Object.keys(GROUP_LABELS) as RunGroup[]).map((group) =>
+          groups[group].length ? (
+            <div
+              key={group}
+              role="group"
+              aria-label={`${GROUP_LABELS[group]}, ${groups[group].length}`}
+              className="mb-2"
+            >
+              <div
+                aria-hidden="true"
+                className={cx(
+                  'flex items-center gap-2 px-4 pt-2 pb-1.5 text-xs font-medium',
+                  group === 'attention' ? 'text-warning' : 'text-text-tertiary',
+                )}
+              >
+                {GROUP_LABELS[group]}
+                <span className="tabular-nums text-text-muted">{groups[group].length}</span>
+              </div>
+              <div className="space-y-0.5 px-2">
+                {groups[group].map((run) => {
+                  const position = runPosition(run);
+                  const selected = run.id === selectedId;
+                  const sourceAccess = canReadRunSource(run);
+                  return (
+                    <button
+                      key={run.id}
+                      ref={(element) => {
+                        if (element) optionRefs.current.set(run.id, element);
+                        else optionRefs.current.delete(run.id);
+                      }}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      tabIndex={run.id === ordered[focusIndex]?.id ? 0 : -1}
+                      onClick={() => onSelect(run)}
+                      className={cx(
+                        'flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+                        selected
+                          ? 'bg-accent/[0.08] ring-1 ring-accent/30 ring-inset'
+                          : 'hover:bg-bg-tertiary',
+                      )}
+                    >
+                      <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center">
+                        <RunStateIcon state={position.state} size={14} />
+                        <span className="sr-only">{RUN_STATE_META[position.state].label}</span>
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-baseline gap-2">
+                          {sourceAccess && (
+                            <span className="shrink-0 font-mono text-xs text-text-tertiary">
+                              #{run.issue.number}
+                            </span>
+                          )}
+                          <span
+                            className={cx(
+                              'truncate text-sm',
+                              selected ? 'text-text-primary' : 'text-text-secondary',
+                            )}
+                          >
+                            {sourceAccess ? run.issue.title : 'Issue source unavailable'}
+                          </span>
+                        </span>
+                        <span className="mt-1.5 flex items-center gap-2.5 text-xs text-text-tertiary">
+                          <RunTrack run={run} />
+                          <span className="truncate">
+                            {group === 'finished'
+                              ? RUN_STATE_META[position.state].label
+                              : stationOf(position.station).label}
+                          </span>
+                          <time className="ml-auto shrink-0" dateTime={run.updatedAt}>
+                            {relativeTime(run.updatedAt, now)}
+                          </time>
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null,
+        )}
       </div>
     </div>
   );
 }
 
-function RunDetails({
-  run,
-  onAction,
-  onOpenPickupThread,
-  busyAction,
-  canOperate,
-  pickupOpen,
-  pickupWorkspaceId,
-  pickupWorkspace,
-  pickupWorkspaceLoading,
-  pickupPersonaId,
-  pickupRepoId,
-  workspaces,
-  personas,
-  matchingPickupRepos,
-  onRequestPickup,
-  onPickupWorkspace,
-  onPickupPersona,
-  onPickupRepo,
-  onCancelPickup,
+function EmptyRuns({
+  factory,
+  canManage,
+  activating,
+  onActivate,
 }: {
-  run: FactoryRun | null;
-  onAction: (
-    action: 'pause' | 'resume' | 'cancel' | 'retry' | 'approve-merge' | 'takeover',
-  ) => void;
-  onOpenPickupThread: (threadId: string) => void;
-  busyAction: string | null;
-  canOperate: boolean;
-  pickupOpen: boolean;
-  pickupWorkspaceId: string;
-  pickupWorkspace: WorkspaceWithRepos | null;
-  pickupWorkspaceLoading: boolean;
-  pickupPersonaId: string;
-  pickupRepoId: string;
-  workspaces: Array<{ id: string; name: string }>;
-  personas: Persona[];
-  matchingPickupRepos: RepoInfo[];
-  onRequestPickup: (run: FactoryRun) => void;
-  onPickupWorkspace: (workspaceId: string) => void;
-  onPickupPersona: (personaId: string) => void;
-  onPickupRepo: (repoId: string) => void;
-  onCancelPickup: () => void;
+  factory: FactoryDefinition;
+  canManage: boolean;
+  activating: boolean;
+  onActivate: () => void;
 }) {
-  if (!run)
-    return (
-      <section className="grid min-h-48 place-items-center rounded-xl border border-dashed border-border p-6 text-sm text-text-tertiary">
-        Select an issue run to inspect its progress and receipts.
-      </section>
-    );
-  const terminal = ['completed', 'cancelled', 'taken-over'].includes(run.stage);
-  const isAutoMerge = run.snapshot.definition.merge.mode === 'auto-merge';
-  const sourceAccess = canReadRunSource(run);
+  const { github, limits } = factory.definition;
   return (
-    <section
-      className="min-w-0 rounded-xl border border-border-subtle p-4"
-      aria-label="Factory run details"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="text-xs font-medium uppercase tracking-wide text-accent">
-            {sourceAccess ? `Issue #${run.issue.number}` : 'Issue source'}
-          </div>
-          <h3 className="mt-1 text-base font-semibold text-text-primary">
-            {sourceAccess ? run.issue.title : 'Source issue details are unavailable'}
-          </h3>
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-tertiary">
-            <span>{STAGE_LABELS[run.stage]}</span>
-            <span>Revision {run.revision}</span>
-            <span>{run.commandsUsed} commands</span>
-            <span>{run.repairRounds} repairs</span>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {sourceAccess && run.issue.url && (
-            <a
-              className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary"
-              href={run.issue.url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Source issue <ExternalLink size={12} />
-            </a>
+    <div className="px-6 py-10">
+      <div className="max-w-xl">
+        <h3 className="text-sm font-semibold text-text-primary">No issues on the line yet</h3>
+        <p className="mt-1.5 text-sm leading-6 text-text-secondary">
+          {factory.status === 'active' ? (
+            <>
+              Label an open issue <Mono>{github.label}</Mono> in{' '}
+              <Mono>
+                {github.owner}/{github.repo}
+              </Mono>
+              . It appears here on the factory’s next check, and up to {limits.maxConcurrentRuns}{' '}
+              run at once.
+            </>
+          ) : factory.status === 'paused' ? (
+            'The factory is paused. Resume it to claim matching issues again.'
+          ) : (
+            <>
+              Activating lets this factory claim open issues labelled <Mono>{github.label}</Mono>{' '}
+              and publish pull requests under the policy you review first.
+            </>
           )}
-          {sourceAccess && run.pullRequest && (
-            <a
-              className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary"
-              href={run.pullRequest.url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              PR #{run.pullRequest.number} <ExternalLink size={12} />
-            </a>
-          )}
-        </div>
-      </div>
-      {run.pendingControl === 'cancel' && (
-        <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-text-secondary">
-          Cancellation is awaiting provider reconciliation. The run is not marked cancelled until
-          GitHub confirms the queued or automatic merge work is clear.
-        </div>
-      )}
-      {run.pendingControl === 'takeover' && !run.takeoverThreadId && (
-        <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-text-secondary">
-          Pickup is waiting for the owner’s device to pause the live run. A private chat will be
-          created on this device after the claimed run snapshot is available.
-        </div>
-      )}
-      {run.takeoverThreadId && (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/30 bg-accent/5 px-3 py-2 text-xs text-text-secondary">
-          <span>A private pickup chat is ready in your selected workspace.</span>
-          <Button size="sm" onClick={() => onOpenPickupThread(run.takeoverThreadId!)}>
-            Open pickup chat
-          </Button>
-        </div>
-      )}
-      {sourceAccess && run.error && (
-        <p className="mt-3 rounded-lg border border-error/30 bg-error/5 px-3 py-2 text-xs text-error">
-          {run.error}
         </p>
-      )}
-      {sourceAccess && run.issue.body && (
-        <details className="mt-3">
-          <summary className="cursor-pointer text-xs text-text-secondary">
-            Issue description
-          </summary>
-          <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-text-primary">
-            {run.issue.body}
-          </p>
-        </details>
-      )}
-      {sourceAccess && run.observation && (
-        <div className="mt-4 rounded-lg bg-bg-secondary p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold text-text-primary">
-              PR status at {formatDate(run.observation.observedAt)}
-            </h4>
-            <span className="text-xs capitalize text-text-secondary">
-              {run.observation.state} · {run.observation.review.replaceAll('-', ' ')}
-            </span>
-          </div>
-          <p className="mt-1 break-all font-mono text-[11px] text-text-tertiary">
-            Head {run.observation.headSha}
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {run.observation.checks.map((check) => (
-              <span
-                key={`${check.name}-${check.headSha}`}
-                className={`rounded-full px-2 py-1 text-[10px] ${check.status === 'passed' ? 'bg-success/10 text-success' : check.status === 'failed' ? 'bg-error/10 text-error' : 'bg-bg-tertiary text-text-tertiary'}`}
-              >
-                {check.name}: {check.status}
+        {canManage && (factory.status === 'draft' || factory.status === 'inactive') && (
+          <Button className="mt-5" disabled={activating} onClick={onActivate}>
+            <Play size={14} aria-hidden="true" />
+            {activating ? 'Reviewing…' : 'Review and activate'}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EmptyFactories({ onStart }: { onStart: (request: string) => void }) {
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-4xl px-8 py-14">
+        <h2 className="max-w-xl text-xl font-semibold leading-snug text-balance text-text-primary">
+          Turn labelled issues into merged, verified pull requests
+        </h2>
+        <p className="mt-2 max-w-prose text-sm leading-6 text-text-secondary">
+          A factory watches one repository for a label and runs every matching issue down the same
+          line. You decide what it must prove, whether it may publish, and who approves each merge.
+        </p>
+        <ol className="factory-line mt-10" aria-label="The factory line">
+          {FACTORY_STATIONS.map((station) => (
+            <li key={station.id} className="factory-line-station px-1">
+              <span className="factory-line-marker" data-mark="idle" />
+              <span className="factory-line-label">{station.label}</span>
+              <span className="mt-1 hidden text-xs leading-5 text-text-tertiary @[640px]:block">
+                {station.description}
               </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {sourceAccess && run.evidence && (
-        <EvidencePanel title="Pre-publication evidence" evidence={run.evidence} />
-      )}
-      {sourceAccess && run.postMergeEvidence && (
-        <EvidencePanel title="Post-merge evidence" evidence={run.postMergeEvidence} />
-      )}
-      <div className="mt-4 border-t border-border-subtle pt-3">
-        <h4 className="text-xs font-semibold text-text-primary">Receipts</h4>
-        <ol className="mt-2 space-y-2">
-          {run.receipts.map((receipt) => (
-            <li key={receipt.id} className="flex min-w-0 items-start justify-between gap-3 text-xs">
-              <span className="min-w-0">
-                <span className="font-medium capitalize text-text-primary">
-                  {receipt.kind.replaceAll('-', ' ')}
-                </span>
-                <span className="ml-2 text-text-tertiary">{receipt.status}</span>
-                {sourceAccess && receipt.error && (
-                  <span className="mt-0.5 block break-words text-error">{receipt.error}</span>
-                )}
-              </span>
-              <time className="shrink-0 text-[10px] text-text-tertiary">
-                {formatDate(receipt.updatedAt)}
-              </time>
             </li>
           ))}
         </ol>
-      </div>
-      {!terminal && (
-        <div className="mt-4 flex flex-wrap gap-2 border-t border-border-subtle pt-3">
-          {canOperate && run.stage !== 'paused' && (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busyAction !== null}
-              onClick={() => onAction('pause')}
-            >
-              <Pause size={13} />
-              Pause
+        <div className="mt-12 flex flex-wrap items-center gap-2">
+          <Button onClick={() => onStart('')}>
+            <Plus size={15} aria-hidden="true" />
+            Describe a factory
+          </Button>
+          {DRAFT_EXAMPLES.map((example) => (
+            <Button key={example.label} variant="ghost" onClick={() => onStart(example.request)}>
+              {example.label}
             </Button>
-          )}
-          {canOperate && run.stage === 'paused' && (
-            <Button size="sm" disabled={busyAction !== null} onClick={() => onAction('resume')}>
-              <Play size={13} />
-              Resume
-            </Button>
-          )}
-          {canOperate && run.stage === 'blocked' && (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busyAction !== null}
-              onClick={() => onAction('retry')}
-            >
-              <RefreshCw size={13} />
-              Retry after reconcile
-            </Button>
-          )}
-          {canOperate && run.stage === 'awaiting-merge-approval' && !isAutoMerge && (
-            <Button
-              size="sm"
-              disabled={busyAction !== null || !run.observation?.headSha}
-              onClick={() => onAction('approve-merge')}
-            >
-              <GitPullRequest size={13} />
-              Approve merge at current head
-            </Button>
-          )}
-          {canOperate && run.stage === 'awaiting-merge-approval' && isAutoMerge && (
-            <span className="rounded-lg border border-border-subtle px-3 py-2 text-xs text-text-secondary">
-              This run follows its active auto-merge policy.
-            </span>
-          )}
-          {canOperate && (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busyAction !== null || Boolean(run.pendingControl)}
-              onClick={() => onRequestPickup(run)}
-            >
-              <ArrowRight size={13} />
-              Pick up thread
-            </Button>
-          )}
-          {canOperate && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busyAction !== null}
-              onClick={() => onAction('cancel')}
-            >
-              Cancel run
-            </Button>
-          )}
-        </div>
-      )}
-      {pickupOpen && !terminal && canOperate && (
-        <section
-          className="mt-4 space-y-3 rounded-lg border border-accent/30 bg-accent/5 p-3"
-          aria-label="Pick up issue run"
-        >
-          <div>
-            <h4 className="text-sm font-semibold text-text-primary">
-              Create a private pickup chat
-            </h4>
-            <p className="mt-1 text-xs text-text-secondary">
-              Choose your own workspace and persona. A matching local repository adds source
-              context; otherwise the chat receives the shared issue and run snapshot only. Nothing
-              is sent and no agent turn starts.
-            </p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Your workspace">
-              <select
-                className={inputClass()}
-                value={pickupWorkspaceId}
-                onChange={(event) => onPickupWorkspace(event.target.value)}
-              >
-                <option value="">Choose workspace</option>
-                {workspaces.map((workspace) => (
-                  <option key={workspace.id} value={workspace.id}>
-                    {workspace.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Persona">
-              <select
-                className={inputClass()}
-                value={pickupPersonaId}
-                onChange={(event) => onPickupPersona(event.target.value)}
-              >
-                {personas.map((persona) => (
-                  <option key={persona.id} value={persona.id}>
-                    {persona.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-          <Field
-            label="Local source repository"
-            hint="Only a local checkout matching the shared GitHub source can be attached for code context."
-          >
-            <select
-              className={inputClass(pickupWorkspaceLoading)}
-              value={pickupRepoId}
-              disabled={pickupWorkspaceLoading || !pickupWorkspaceId}
-              onChange={(event) => onPickupRepo(event.target.value)}
-            >
-              <option value="">Snapshot only — no local checkout</option>
-              {matchingPickupRepos.map((repo) => (
-                <option key={repo.id} value={repo.id}>
-                  {repo.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {pickupWorkspaceId && !pickupWorkspaceLoading && matchingPickupRepos.length === 0 && (
-            <p className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-text-secondary">
-              No matching local checkout is available in {pickupWorkspace?.name ?? 'this workspace'}
-              . The pickup chat will have the approved shared snapshot, but no live repository
-              context for commands.
-            </p>
-          )}
-          <div className="flex flex-wrap justify-end gap-2 border-t border-border-subtle pt-3">
-            <Button variant="secondary" size="sm" onClick={onCancelPickup}>
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              disabled={
-                busyAction !== null ||
-                !pickupWorkspaceId ||
-                !pickupPersonaId ||
-                pickupWorkspaceLoading
-              }
-              onClick={() => onAction('takeover')}
-            >
-              <ArrowRight size={13} />
-              Create private pickup chat
-            </Button>
-          </div>
-        </section>
-      )}
-      {run.stage === 'completed' && sourceAccess && (
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-xs text-success">
-          <CheckCircle2 size={14} />
-          Provider confirmed merge and post-merge verification completed.
-        </div>
-      )}
-    </section>
-  );
-}
-
-function EvidencePanel({
-  title,
-  evidence,
-}: {
-  title: string;
-  evidence: NonNullable<FactoryRun['evidence']>;
-}) {
-  return (
-    <details className="mt-3 rounded-lg border border-border-subtle p-3">
-      <summary className="cursor-pointer text-xs font-semibold text-text-primary">
-        {title} · {evidence.passed ? 'passed' : 'needs attention'} · {evidence.criteria.length}{' '}
-        criteria
-      </summary>
-      <div className="mt-2 space-y-2">
-        {evidence.criteria.map((criterion, index) => (
-          <div
-            key={`${criterion.criterion}-${index}`}
-            className="rounded-md bg-bg-secondary px-3 py-2 text-xs"
-          >
-            <div className="font-medium text-text-primary">
-              {criterion.status === 'passed' ? '✓' : criterion.status === 'failed' ? '✕' : '•'}{' '}
-              {criterion.criterion}
-            </div>
-            <p className="mt-1 whitespace-pre-wrap break-words text-text-secondary">
-              {criterion.evidence}
-            </p>
-          </div>
-        ))}
-      </div>
-      <details className="mt-2">
-        <summary className="cursor-pointer text-[11px] text-text-tertiary">
-          Commands and outputs
-        </summary>
-        <div className="mt-2 space-y-2">
-          {evidence.commands.map((command, index) => (
-            <div key={`${command.command}-${index}`} className="rounded-md bg-bg-primary p-2">
-              <code className="break-all text-[11px] text-text-primary">{command.command}</code>
-              <span className="ml-2 text-[10px] text-text-tertiary">
-                exit {command.exitCode ?? 'unknown'}
-              </span>
-              <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words text-[10px] text-text-secondary">
-                {command.output}
-              </pre>
-            </div>
           ))}
         </div>
-      </details>
-    </details>
-  );
-}
-
-function EmptyFactories({ onCreate }: { onCreate: () => void }) {
-  return (
-    <div className="mx-auto grid min-h-full max-w-xl place-items-center p-8 text-center">
-      <div>
-        <Factory className="mx-auto text-accent" size={34} />
-        <h2 className="mt-4 text-lg font-semibold text-text-primary">
-          Turn a ticket into a reviewed change
-        </h2>
-        <p className="mt-2 text-sm leading-relaxed text-text-secondary">
-          Describe the issue trigger, workflow, checks and merge policy. Anvil will show the exact
-          typed definition before saving or activating it.
-        </p>
-        <Button className="mt-4" onClick={onCreate}>
-          <Plus size={15} />
-          Create factory
-        </Button>
       </div>
     </div>
   );

@@ -50,7 +50,13 @@ import {
   UserCheck,
   PanelLeftClose,
   PanelLeftOpen,
+  Factory,
 } from 'lucide-react';
+import {
+  factoryRunIdFromWorkerThread,
+  factoryWorkflowIssues,
+  type FactoryDefinition,
+} from '../../../shared/factories';
 import type {
   AgentProvider,
   AppSettings,
@@ -192,6 +198,8 @@ export function WorkflowsView() {
     return () => media.removeEventListener('change', changed);
   }, []);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
+  const [factories, setFactories] = useState<FactoryDefinition[]>([]);
+  const [pendingTemplateId, setPendingTemplateId] = useState<string | null>(null);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [draft, setDraft] = useState<WorkflowTemplate>(EMPTY_TEMPLATE);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -237,18 +245,35 @@ export function WorkflowsView() {
     null;
   const canvasTemplate = runTemplate ?? draft;
   const isLaunching = !selectedRun && draft.nodes.length === 0;
+  // Local factories pin a copy of a saved workflow; shared factories pin from another device.
+  const pinnedBy = useMemo(() => {
+    const map = new Map<string, FactoryDefinition[]>();
+    for (const factory of factories) {
+      if (factory.remote || factory.accessPending) continue;
+      const id = factory.definition.workflowTemplateId;
+      map.set(id, [...(map.get(id) ?? []), factory]);
+    }
+    return map;
+  }, [factories]);
+  const draftPinnedBy = draft.id ? (pinnedBy.get(draft.id) ?? []) : [];
+  const draftFactoryIssues = draft.nodes.length ? factoryWorkflowIssues(draft) : [];
+  const selectedFactoryRunId = factoryRunIdFromWorkerThread(selectedRun?.chatOrigin?.threadId);
 
   const refresh = useCallback(async () => {
-    const [nextTemplates, nextPersonas, nextRuns, nextSettings] = await Promise.all([
+    const [nextTemplates, nextPersonas, nextRuns, nextSettings, nextFactories] = await Promise.all([
       window.anvil.workflow.listTemplates(),
       window.anvil.chat.getPersonas(),
       activeWorkspace ? window.anvil.workflow.listRuns(activeWorkspace.id) : Promise.resolve([]),
       window.anvil.settings.get(),
+      activeWorkspace
+        ? window.anvil.factories.list(activeWorkspace.id).catch(() => [])
+        : Promise.resolve([]),
     ]);
     setTemplates(nextTemplates);
     setPersonas(nextPersonas);
     setRuns(nextRuns);
     setAgentSettings(nextSettings);
+    setFactories(nextFactories);
   }, [activeWorkspace]);
 
   useEffect(() => {
@@ -276,7 +301,9 @@ export function WorkflowsView() {
     const draftRequest = searchParams.get('draft');
     const kickoffMessage = searchParams.get('kickoff');
     const preset = searchParams.get('preset');
-    if (!runId && !draftRequest && !kickoffMessage && !preset) return;
+    const templateId = searchParams.get('template');
+    if (!runId && !draftRequest && !kickoffMessage && !preset && !templateId) return;
+    if (templateId) setPendingTemplateId(templateId);
     if (preset || draftRequest || kickoffMessage) {
       setWorkItemRef(parseWorkItemReference(searchParams));
     }
@@ -304,6 +331,7 @@ export function WorkflowsView() {
     next.delete('draft');
     next.delete('kickoff');
     next.delete('preset');
+    next.delete('template');
     next.delete('workItemId');
     next.delete('workItemProvider');
     next.delete('workItemConnection');
@@ -328,6 +356,20 @@ export function WorkflowsView() {
         .finally(() => setDrafting(false));
     }
   }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    // Deep links from Factories name a saved template; open it once the library has loaded.
+    if (!pendingTemplateId || loading) return;
+    const template = templates.find((item) => item.id === pendingTemplateId);
+    setPendingTemplateId(null);
+    if (!template) {
+      setError('That workflow is no longer saved. Factories that pinned it keep their copy.');
+      return;
+    }
+    setDraft(template);
+    setSelectedRunId(null);
+    setSelectedNodeId(null);
+  }, [pendingTemplateId, templates, loading]);
 
   useEffect(() => {
     if (
@@ -655,6 +697,19 @@ export function WorkflowsView() {
                     <span>
                       {template.nodes.length} {template.nodes.length === 1 ? 'step' : 'steps'}
                     </span>
+                    {pinnedBy.get(template.id)?.length ? (
+                      <span
+                        className="inline-flex items-center gap-1"
+                        title={`Pinned by ${pinnedBy
+                          .get(template.id)!
+                          .map((factory) => factory.definition.name)
+                          .join(', ')}`}
+                      >
+                        <Factory size={11} aria-hidden="true" />
+                        {pinnedBy.get(template.id)!.length}{' '}
+                        {pinnedBy.get(template.id)!.length === 1 ? 'factory' : 'factories'}
+                      </span>
+                    ) : null}
                   </div>
                 </button>
               ))
@@ -684,6 +739,15 @@ export function WorkflowsView() {
                     <span className="truncate text-sm font-medium text-text-primary">
                       {run.templateName}
                     </span>
+                    {factoryRunIdFromWorkerThread(run.chatOrigin?.threadId) && (
+                      <span
+                        className="ml-auto inline-flex shrink-0 items-center gap-1 text-xs text-text-tertiary"
+                        title="Started by a software factory"
+                      >
+                        <Factory size={11} aria-hidden="true" />
+                        Factory
+                      </span>
+                    )}
                   </div>
                   <div className="mt-1 truncate text-xs text-text-tertiary">{run.kickoff}</div>
                 </button>
@@ -823,13 +887,38 @@ export function WorkflowsView() {
                           .catch((caught) => setError(messageFrom(caught)));
                       }}
                       onBlur={() => setDeleteArmed(false)}
+                      title={
+                        draftPinnedBy.length
+                          ? 'Factories that pinned this workflow keep running their copy.'
+                          : undefined
+                      }
                       className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition ${
                         deleteArmed
                           ? 'border-error/45 bg-error/10 text-error'
                           : 'border-border text-text-tertiary hover:border-error/35 hover:text-error'
                       }`}
                     >
-                      <Trash2 size={15} /> {deleteArmed ? 'Delete?' : 'Delete'}
+                      <Trash2 size={15} />{' '}
+                      {deleteArmed
+                        ? draftPinnedBy.length
+                          ? 'Delete? Pinned copies stay'
+                          : 'Delete?'
+                        : 'Delete'}
+                    </button>
+                  )}
+                  {draft.id && (
+                    <button
+                      onClick={() =>
+                        navigate(`/factories?new=1&workflow=${encodeURIComponent(draft.id)}`)
+                      }
+                      disabled={draftFactoryIssues.length > 0}
+                      title={
+                        draftFactoryIssues[0] ??
+                        'Create a factory that runs this workflow for labelled issues'
+                      }
+                      className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Factory size={15} /> Use in a factory
                     </button>
                   )}
                   <button
@@ -857,6 +946,21 @@ export function WorkflowsView() {
         )}
 
         {selectedRun && <RuntimeSummary run={selectedRun} />}
+        {selectedRun && selectedFactoryRunId && (
+          <div className="flex flex-wrap items-center gap-3 border-b border-border-subtle bg-bg-secondary px-5 py-2.5 text-xs text-text-secondary">
+            <Factory size={14} aria-hidden="true" className="shrink-0 text-text-tertiary" />
+            <span className="min-w-0 flex-1">
+              A software factory started this run for an issue. Pause, retry or cancel it from the
+              factory so the issue lifecycle, budgets and receipts stay consistent.
+            </span>
+            <button
+              onClick={() => navigate(`/factories?run=${encodeURIComponent(selectedFactoryRunId)}`)}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary transition hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              Open in Factories
+            </button>
+          </div>
+        )}
         {!selectedRun && !isLaunching && (
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-5 py-2.5 text-xs text-text-tertiary">
             <span>
@@ -864,6 +968,26 @@ export function WorkflowsView() {
               {orchestrationConfig(draft.orchestration).profiles.length} specialists
               <span className="ml-3 text-text-secondary">Select a step to adjust it</span>
             </span>
+            {draftPinnedBy.length > 0 && (
+              <span className="flex w-full flex-wrap items-center gap-x-1.5 gap-y-1 text-text-tertiary">
+                <Factory size={12} aria-hidden="true" />
+                Pinned by
+                {draftPinnedBy.map((factory, index) => (
+                  <span key={factory.id}>
+                    <button
+                      className="text-text-secondary underline decoration-border underline-offset-4 hover:text-text-primary"
+                      onClick={() =>
+                        navigate(`/factories?factory=${encodeURIComponent(factory.id)}`)
+                      }
+                    >
+                      {factory.definition.name}
+                    </button>
+                    {index < draftPinnedBy.length - 1 ? ',' : '.'}
+                  </span>
+                ))}
+                Saved edits reach a factory only when its owner re-pins them in a reviewed revision.
+              </span>
+            )}
             {!draft.id && (
               <button
                 onClick={() => {

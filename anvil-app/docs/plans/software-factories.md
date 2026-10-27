@@ -45,6 +45,34 @@ the existing pinned workflow; graph/provider changes are prepared on the
 executor. Role/source/visibility checks remain authoritative in the backend;
 remote owner-local IDs never supply recipient repository authority.
 
+## Factories and workflows
+
+A factory pins a copy of a saved workflow when a revision is saved. A later
+revision keeps that pinned graph unless the owner chooses another template or
+explicitly re-pins the current version (`repinWorkflow` on preview and save, also
+available to the chat tools). Re-pinning is a reviewed revision like any other:
+its confirmation covers the new graph, existing runs keep their snapshot, and the
+active revision keeps processing issues until the new one is activated. Remote
+revisions refuse to re-pin. `factoryWorkflowIssues` in `shared/factories.ts` is
+the single compatibility rule used by activation and the editor's workflow
+picker, and `factoryWorkflowDrift` compares a pinned graph with its template by
+behaviour (canvas positions and labels are ignored).
+
+The two views link both ways. Factories show the pinned graph, flag a changed or
+deleted source template, offer review-and-re-pin, restore a deleted source as a
+saved workflow (or save any pinned graph as a new one), and relink a factory to a
+saved workflow that matches its graph. Run details show the worker graph's live
+step progress and open the worker run in Workflows or its chat. Workflows show
+which local factories pin each template, offer "Use in a factory"
+(`/factories?new=1&workflow=<id>`), warn that deleting a pinned template leaves
+the pinned copies running, and label factory-started runs with a link back
+(`/factories?run=<id>`). Factory worker threads are named by
+`factoryWorkerThreadId`, which is also the provenance key.
+
+The renderer layout and state vocabulary are described under Factory Line in
+`DESIGN.md`. A synthetic fixture runs at `?factories` (and `?factories&workflows`)
+in the standalone replay; see `src/renderer/components/chat/replay/README.md`.
+
 ## Setup and operating the first slice
 
 1. Apply desktop migration 116 (automatic on app startup) and the accompanying

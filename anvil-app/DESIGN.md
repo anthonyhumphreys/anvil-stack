@@ -170,6 +170,12 @@ Use familiar desktop rails and toolbars. Active workspace, route, and thread mus
 
 Preview uses two compact rows. The first holds the Web/Simulator switch, a note toggle and window actions. Web navigation and the address field share the second row; Simulator shows its state, reload and start/stop controls. Agent connection setup and technical connection details live in menus. The note field opens only when requested. Keep controls usable at 320px pane width.
 
+### Factory Line
+
+Software factories draw every issue run on one eight-station rail: Intake, Build, Verify, PR, Checks, Merge, Confirm, Done (`components/factories/factory-line.ts`, `styles/factory-line.css`). The same rail appears as the factory's station board (live load per station, a filter toggle), a run's journey (passed track solid, ahead faint, notes such as repairs, PR number and check counts), an eight-segment track in list rows, and vertically in the definition editor, where each section configures the station it is named after. Blocked and paused runs keep the station where they stopped.
+
+State vocabulary is fixed and always pairs colour with an icon or word: live work carries the turn card's accent heat and breathing glyph; waiting on GitHub is info; a person's approval is warning ("Needs you"); blocked is error; done is success; paused, cancelled and picked-up runs are neutral. Budgets are a value plus a hairline meter, never a ring. The run list groups Needs you, In progress and Finished, and supports arrow keys, j/k, Home and End. Granting standing authority (save and activation) uses the authority sheet: plain-language rows for what the revision may do, the exact policy text and definition behind disclosures, and the review fingerprint beside the confirming action.
+
 ### Activity Group
 
 Agent commands, file edits, reads, approvals, plans, and goals form progressively disclosed activity groups between conversation content. Keep answers, inline results, question receipts and subsequent activity in first-appearance order as text streams. Pending sends retain their place without becoming the owner of the executing turn's output. It may summarize counts and failures, but it must not split assistant prose into sentence fragments.

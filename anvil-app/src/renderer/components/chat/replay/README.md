@@ -75,6 +75,16 @@ verification command runs from this fixture. It is layout and interaction
 evidence only; service tests use real temporary Git repositories.
 `chat-replay.test.ts` validates every fixture payload against its kind schema.
 
+Open `http://127.0.0.1:4179/?factories` for the production Factories view backed by
+a synthetic in-memory factory backend: runs at every station (live, waiting, needs
+approval, blocked, merging with an uncertain receipt, completed, picked up,
+cancelled), a shared paused auto-merge factory with operator role, a draft whose
+source workflow was deleted, and a pinned graph whose template changed. Draft,
+review, save, re-pin, restore, relink, activation and run controls update the
+fixture only. Add `&factories-empty` for the first-run state and `&workflows` to see
+the same data from the Workflows side (pinned-by counts, "Use in a factory" and
+factory-run provenance). No GitHub, Codex or daemon call is made.
+
 Open `http://127.0.0.1:4179/?composer` to try the production chat input with local
 callbacks. Switch themes, pane widths, and ready/working/unavailable states; use
 the sample draft to check wrapping, model selection, access controls, and send
