@@ -1,5 +1,5 @@
 import { env, runInDurableObject, SELF } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { isRpcError } from '../../contract/envelope';
 import type {
@@ -162,8 +162,10 @@ async function waitForFrame<T>(
   pick: (frame: Frame) => T | null,
   timeoutMs = 4_000,
 ): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  // Socket rate tests pin Date.now(); keep this I/O deadline on a real,
+  // monotonic clock so a missing frame still fails within the usual bound.
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
     for (const frame of frames) {
       const hit = pick(frame);
       if (hit !== null) {
@@ -1669,17 +1671,47 @@ describe('socket observation', () => {
 
   it('throttles inbound frame bursts with a typed retryable error', async () => {
     const f = fixture('obs-rate');
-    await runningJob(f);
     const socket = await openSocket(f.sourceAuth);
     const frames = collectFrames(socket);
+    let now = Date.now();
+    // A queued WebSocket burst can take over a second to reach the handler
+    // on a busy runner. Pin its clock, not the transport or rate limiter.
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      for (let i = 0; i < 65; i++) {
+        send(socket, { type: 'unsubscribe', version: 1, id: `u-${i}`, subscriptionId: 'none' });
+      }
+      const throttled = await waitForFrame(frames, (fr) =>
+        fr['id'] === 'u-64' ? fr : null,
+      );
+      expect(throttled).toMatchObject({
+        type: 'error',
+        code: 'throttled',
+        message: 'socket-rate',
+        retryable: true,
+      });
+      expect(frames.filter((fr) => fr['type'] === 'error').map((fr) => fr['id'])).toEqual([
+        'u-64',
+      ]);
 
-    for (let i = 0; i < 70; i++) {
-      send(socket, { type: 'unsubscribe', version: 1, id: `u-${i}`, subscriptionId: 'none' });
+      now += 999;
+      send(socket, { type: 'unsubscribe', version: 1, id: 'before-reset', subscriptionId: 'none' });
+      expect(
+        await waitForFrame(frames, (fr) => (fr['id'] === 'before-reset' ? fr : null)),
+      ).toMatchObject({ type: 'error', code: 'throttled', retryable: true });
+
+      now += 1;
+      send(socket, { type: 'unsubscribe', version: 1, id: 'after-reset', subscriptionId: 'none' });
+      // A reply on the same ordered socket is a delivery barrier: both
+      // messages reached the handler after the one-second window reset.
+      send(socket, { type: 'unknown', version: 1, id: 'reset-barrier' });
+      expect(
+        await waitForFrame(frames, (fr) => (fr['id'] === 'reset-barrier' ? fr : null)),
+      ).toMatchObject({ type: 'error', code: 'unsupported-operation', retryable: false });
+      expect(frames.some((fr) => fr['id'] === 'after-reset')).toBe(false);
+    } finally {
+      clock.mockRestore();
+      socket.close(1000, 'done');
     }
-    const throttled = await waitForFrame(frames, (fr) =>
-      fr['type'] === 'error' && fr['code'] === 'throttled' ? fr : null,
-    );
-    expect(throttled['retryable']).toBe(true);
-    socket.close(1000, 'done');
   });
 });
