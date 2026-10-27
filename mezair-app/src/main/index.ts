@@ -5,7 +5,6 @@ import { fixPath } from './utils/fix-path.js';
 fixPath();
 
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session } from 'electron';
-import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { expirePendingAgentUIQuestions } from './services/agent-ui-intent.service.js';
 import { initDatabase } from './db/database.js';
@@ -92,7 +91,7 @@ import {
 } from './services/factory.service.js';
 import { isAutomationDaemonMode } from './services/automation-daemon.service.js';
 import { LEGACY_PROTOCOL, PRIMARY_PROTOCOL } from '../shared/app-identity.js';
-import { getLegacyUserDataPaths, getPrimaryUserDataPath } from './utils/app-paths.js';
+import { configureUserDataPath } from './utils/app-paths.js';
 import {
   stopMobileCompanionServer,
   syncMobileCompanionServer,
@@ -117,30 +116,6 @@ function getAppIconPath(): string {
     : path.join(process.cwd(), 'resources', 'mezair.png');
 }
 
-function configureUserDataPath(): void {
-  if (previewBuild) {
-    const previewPath = path.join(app.getPath('appData'), previewProfileDirectory(previewBuild));
-    mkdirSync(previewPath, { recursive: true });
-    app.setPath('userData', previewPath);
-    app.setPath('sessionData', previewPath);
-    return;
-  }
-  const isolatedDevPath = process.env.MEZAIR_DEV_USER_DATA_PATH?.trim();
-  if (isolatedDevPath) {
-    app.setPath('userData', path.resolve(isolatedDevPath));
-    return;
-  }
-
-  const targetPath = getPrimaryUserDataPath();
-  if (!existsSync(targetPath)) {
-    const legacyPath = getLegacyUserDataPaths().find((candidate) => existsSync(candidate));
-    if (legacyPath) {
-      cpSync(legacyPath, targetPath, { recursive: true });
-    }
-  }
-  app.setPath('userData', targetPath);
-}
-
 app.setName(
   previewBuild
     ? `${brand.appName} Preview PR ${previewBuild.pullRequestNumber} (${previewBuild.headSha.slice(0, 8)})`
@@ -148,7 +123,10 @@ app.setName(
       ? `${brand.appName} (${path.basename(path.resolve(isolatedDevUserDataPath))})`
       : brand.appName,
 );
-configureUserDataPath();
+configureUserDataPath({
+  previewDirectory: previewBuild ? previewProfileDirectory(previewBuild) : undefined,
+  developmentPath: isolatedDevUserDataPath,
+});
 initDatabase(brand.defaultTheme);
 expirePendingAgentUIQuestions();
 // The spike enrollment fixture is deliberately opt-in. Development builds

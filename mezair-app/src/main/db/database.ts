@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'node:path';
 import { LEGACY_SCHEMA_REPAIR_SQL, SCHEMA_SQL, SCHEMA_VERSION, MIGRATIONS } from './schema.js';
 import { repairMissingColumns } from './schema-repair.js';
-import { LEGACY_DB_FILENAME, PRIMARY_DB_FILENAME } from '../../shared/app-identity.js';
+import { PRIMARY_DB_FILENAME } from '../../shared/app-identity.js';
 import type { AppTheme } from '../../shared/types.js';
 
 let db: Database.Database | null = null;
@@ -19,10 +19,7 @@ export function getDb(): Database.Database {
 export function initDatabase(defaultTheme: AppTheme = 'dark'): void {
   const userDataPath = app.getPath('userData');
   mkdirSync(userDataPath, { recursive: true });
-  const primaryDbPath = path.join(userDataPath, PRIMARY_DB_FILENAME);
-  const legacyDbPaths = [path.join(userDataPath, LEGACY_DB_FILENAME)];
-  const dbPath =
-    [primaryDbPath, ...legacyDbPaths].find((candidate) => existsSync(candidate)) ?? primaryDbPath;
+  const dbPath = path.join(userDataPath, PRIMARY_DB_FILENAME);
   console.log(`[Database] Opening database at ${dbPath}`);
 
   db = new Database(dbPath);

@@ -618,8 +618,12 @@ and dark presentation, reduced motion and accessible live text intact.
 This is a coordinated breaking identity cutover. Renamed AAD/HKDF/proof contexts,
 stored ownership values and message/file namespaces are not a data migration.
 Do not weaken validation or silently adopt ciphertext, credentials or databases
-from another identity. Retain original profile data. Any future migration needs
-explicit key custody, export/import validation and recovery evidence.
+from another identity. Startup selects only the Mezair profile and its
+`mezair.db`; retained profile directories are never copied and alternate
+database filenames are never selected implicitly. Existing Mezair profiles and
+explicit development/preview profile selection remain supported. Retain original
+profile data. Any future migration needs explicit key custody, export/import
+validation and recovery evidence.
 
 Keep the four workspaces independent. Desktop uses the built local CLI package
 surfaces; `.github/scripts/prepare-desktop-clis.mjs` prepares them before a

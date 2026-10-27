@@ -27,6 +27,11 @@ new npm scope. Production publishing still requires control of `@mezairstack`.
 Desktop uses the Mezair application identity, `mezair.db`, `.mezair` directories,
 `mezair://` protocol, `window.mezair` preload bridge and `MEZAIR_*` configuration.
 The existing development profile override is `MEZAIR_DEV_USER_DATA_PATH`.
+Startup selects the Mezair profile without copying any retained profile directory,
+and opens only `mezair.db` inside the selected profile. A differently named
+retained database beside it is left untouched, not opened or migrated. Existing
+Mezair databases remain in use. Explicit development overrides and isolated
+preview user/session directories keep their existing precedence.
 
 The preceding product identity's profile files are not rewritten or removed by
 this source change. This release does not provide an automatic migration of
