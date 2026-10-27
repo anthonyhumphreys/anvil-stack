@@ -1,19 +1,19 @@
 # Security Policy
 
-Anvil is an alpha-stage open source project. Security reports are welcome, and
+Mezair is an alpha-stage open source project. Security reports are welcome, and
 we ask that exploitable issues are reported privately before public discussion.
 
 ## Supported Scope
 
-This policy covers the Anvil Stack monorepo:
+This policy covers the Mezair Stack monorepo:
 
-- `anvil-app/`: the Electron desktop app, mobile companion, video project, and
+- `mezair-app/`: the Electron desktop app, mobile companion, video project, and
   Raycast extension.
-- `anvil-cloud/`: the Cloud runtime, CLI, SDK packages, local runtime, and
+- `mezair-cloud/`: the Cloud runtime, CLI, SDK packages, local runtime, and
   deployment adapters.
-- `anvil-registry/`: the npm registry gateway, package analysis pipeline,
+- `mezair-registry/`: the npm registry gateway, package analysis pipeline,
   policy engine, admin app, CLI, infrastructure, and Node Base image.
-- `anvil-website/`: the public website and documentation.
+- `mezair-website/`: the public website and documentation.
 
 The project is still moving quickly, so supported versions are generally the
 current `main` branch and the latest published release artifacts for each
@@ -70,7 +70,7 @@ is already public.
 
 ## Security Boundaries
 
-The Anvil projects include security-sensitive systems, especially the registry
+The Mezair projects include security-sensitive systems, especially the registry
 gateway, dependency policy engine, package analysis pipeline, generated clients,
 auth handling, deployment adapters, and local developer tooling. Useful reports
 include, but are not limited to:

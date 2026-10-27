@@ -1,0 +1,403 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mezair.dev/schemas/application-backends-evidence-1.json",
+  "title": "Mezair Cloud application backend rehearsal evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "rehearsalId",
+    "evidenceKind",
+    "startedAt",
+    "finishedAt",
+    "target",
+    "checks",
+    "cleanup",
+    "liveCloudEvidence"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "rehearsalId": { "type": "string", "minLength": 1 },
+    "evidenceKind": {
+      "enum": ["local-acceptance", "provider-preflight", "live-provider"]
+    },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "target": { "$ref": "#/$defs/target" },
+    "checks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "cleanup": { "$ref": "#/$defs/cleanup" },
+    "liveCloudEvidence": { "type": "boolean" },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "evidenceKind": { "const": "local-acceptance" } }
+      },
+      "then": {
+        "properties": {
+          "target": { "properties": { "provider": { "const": "local" } } },
+          "liveCloudEvidence": { "const": false },
+          "checks": {
+            "allOf": [
+              { "$ref": "#/$defs/hasAuthenticatedHttp" },
+              { "$ref": "#/$defs/hasConditionalCommit" },
+              { "$ref": "#/$defs/hasPrivateFiles" },
+              { "$ref": "#/$defs/hasScheduledOutbox" },
+              { "$ref": "#/$defs/hasDuplicateReceipt" },
+              { "$ref": "#/$defs/hasPoisonVisibility" },
+              { "$ref": "#/$defs/hasLocalRestart" },
+              { "$ref": "#/$defs/hasFailureRestart" },
+              { "$ref": "#/$defs/hasPrivateFileDeletion" },
+              { "$ref": "#/$defs/hasLocalCleanup" }
+            ]
+          },
+          "cleanup": {
+            "properties": {
+              "status": { "const": "verified" },
+              "verifiedAt": { "type": "string", "format": "date-time" },
+              "resourcesRemaining": { "maxItems": 0 }
+            },
+            "required": ["verifiedAt"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "evidenceKind": { "const": "provider-preflight" } }
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "properties": { "provider": { "enum": ["aws", "cloudflare"] } }
+          },
+          "liveCloudEvidence": { "const": false },
+          "checks": { "$ref": "#/$defs/hasCredentialPreflight" },
+          "cleanup": {
+            "properties": { "status": { "const": "not-applicable" } }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "evidenceKind": { "const": "live-provider" } } },
+      "then": {
+        "properties": {
+          "target": {
+            "properties": { "provider": { "enum": ["aws", "cloudflare"] } }
+          },
+          "liveCloudEvidence": { "const": true },
+          "checks": {
+            "allOf": [
+              { "$ref": "#/$defs/hasAuthenticatedHttp" },
+              { "$ref": "#/$defs/hasConditionalCommit" },
+              { "$ref": "#/$defs/hasPrivateFiles" },
+              { "$ref": "#/$defs/hasScheduledOutbox" },
+              { "$ref": "#/$defs/hasDuplicateReceipt" },
+              { "$ref": "#/$defs/hasPoisonVisibility" },
+              { "$ref": "#/$defs/hasCrashRecovery" },
+              { "$ref": "#/$defs/hasBackupRestore" },
+              { "$ref": "#/$defs/hasMigrationRollback" },
+              { "$ref": "#/$defs/hasSecretRedaction" },
+              { "$ref": "#/$defs/hasResourceCleanup" }
+            ]
+          },
+          "cleanup": {
+            "properties": {
+              "status": { "const": "verified" },
+              "verifiedAt": { "type": "string", "format": "date-time" },
+              "resourcesRemaining": { "maxItems": 0 }
+            },
+            "required": ["verifiedAt"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "cell", "stage", "resources"],
+      "properties": {
+        "provider": { "enum": ["local", "aws", "cloudflare"] },
+        "cell": { "type": "string", "minLength": 1 },
+        "stage": { "type": "string", "minLength": 1 },
+        "accountRef": { "type": "string", "minLength": 1 },
+        "region": { "type": "string", "minLength": 1 },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "logicalName", "resourceRef"],
+            "properties": {
+              "kind": { "type": "string", "minLength": 1 },
+              "logicalName": { "type": "string", "minLength": 1 },
+              "resourceRef": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "method", "summary", "artifacts"],
+      "properties": {
+        "id": {
+          "enum": [
+            "credential_and_account_access",
+            "authenticated_http",
+            "conditional_commit_conflict",
+            "private_file_access",
+            "scheduled_outbox_dispatch",
+            "duplicate_delivery_receipt",
+            "poison_failure_visibility",
+            "outbox_crash_recovery",
+            "local_server_restart",
+            "failure_state_restart",
+            "private_file_deletion",
+            "local_state_cleanup",
+            "backup_restore",
+            "migration_apply_and_rollback",
+            "secret_redaction",
+            "resource_cleanup"
+          ]
+        },
+        "status": { "enum": ["passed", "failed", "blocked", "not-run"] },
+        "method": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "artifacts": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "resourcesCreated",
+        "resourcesDeleted",
+        "resourcesRemaining"
+      ],
+      "properties": {
+        "status": { "enum": ["verified", "failed", "not-applicable"] },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "resourcesCreated": { "type": "array", "items": { "type": "string" } },
+        "resourcesDeleted": { "type": "array", "items": { "type": "string" } },
+        "resourcesRemaining": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["resourceRef", "reason", "owner"],
+            "properties": {
+              "resourceRef": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 },
+              "owner": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "hasCredentialPreflight": {
+      "contains": { "$ref": "#/$defs/passedCredentialPreflight" },
+      "minContains": 1
+    },
+    "passedCredentialPreflight": {
+      "type": "object",
+      "properties": { "id": { "const": "credential_and_account_access" } },
+      "required": ["id"]
+    },
+    "hasAuthenticatedHttp": {
+      "contains": { "$ref": "#/$defs/passedAuthenticatedHttp" },
+      "minContains": 1
+    },
+    "passedAuthenticatedHttp": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "authenticated_http" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasConditionalCommit": {
+      "contains": { "$ref": "#/$defs/passedConditionalCommit" },
+      "minContains": 1
+    },
+    "passedConditionalCommit": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "conditional_commit_conflict" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasPrivateFiles": {
+      "contains": { "$ref": "#/$defs/passedPrivateFiles" },
+      "minContains": 1
+    },
+    "passedPrivateFiles": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "private_file_access" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasScheduledOutbox": {
+      "contains": { "$ref": "#/$defs/passedScheduledOutbox" },
+      "minContains": 1
+    },
+    "passedScheduledOutbox": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "scheduled_outbox_dispatch" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasDuplicateReceipt": {
+      "contains": { "$ref": "#/$defs/passedDuplicateReceipt" },
+      "minContains": 1
+    },
+    "passedDuplicateReceipt": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "duplicate_delivery_receipt" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasPoisonVisibility": {
+      "contains": { "$ref": "#/$defs/passedPoisonVisibility" },
+      "minContains": 1
+    },
+    "passedPoisonVisibility": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "poison_failure_visibility" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasCrashRecovery": {
+      "contains": { "$ref": "#/$defs/passedCrashRecovery" },
+      "minContains": 1
+    },
+    "passedCrashRecovery": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "outbox_crash_recovery" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasBackupRestore": {
+      "contains": { "$ref": "#/$defs/passedBackupRestore" },
+      "minContains": 1
+    },
+    "passedBackupRestore": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "backup_restore" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasMigrationRollback": {
+      "contains": { "$ref": "#/$defs/passedMigrationRollback" },
+      "minContains": 1
+    },
+    "passedMigrationRollback": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "migration_apply_and_rollback" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasSecretRedaction": {
+      "contains": { "$ref": "#/$defs/passedSecretRedaction" },
+      "minContains": 1
+    },
+    "passedSecretRedaction": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "secret_redaction" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasResourceCleanup": {
+      "contains": { "$ref": "#/$defs/passedResourceCleanup" },
+      "minContains": 1
+    },
+    "passedResourceCleanup": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "resource_cleanup" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasLocalRestart": {
+      "contains": { "$ref": "#/$defs/passedLocalRestart" },
+      "minContains": 1
+    },
+    "passedLocalRestart": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "local_server_restart" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasFailureRestart": {
+      "contains": { "$ref": "#/$defs/passedFailureRestart" },
+      "minContains": 1
+    },
+    "passedFailureRestart": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "failure_state_restart" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasPrivateFileDeletion": {
+      "contains": { "$ref": "#/$defs/passedPrivateFileDeletion" },
+      "minContains": 1
+    },
+    "passedPrivateFileDeletion": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "private_file_deletion" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    },
+    "hasLocalCleanup": {
+      "contains": { "$ref": "#/$defs/passedLocalCleanup" },
+      "minContains": 1
+    },
+    "passedLocalCleanup": {
+      "type": "object",
+      "properties": {
+        "id": { "const": "local_state_cleanup" },
+        "status": { "const": "passed" }
+      },
+      "required": ["id", "status"]
+    }
+  }
+}

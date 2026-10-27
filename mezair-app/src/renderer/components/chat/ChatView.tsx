@@ -1,0 +1,1263 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
+import type {
+  AgentProvider,
+  ChatAttachment,
+  ChatLayout,
+  Persona,
+  ReasoningEffort,
+  UserRole,
+} from '../../../shared/types';
+import { ROLE_FEATURES, ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
+import { ChatInput, type ChatSlashCommand } from './ChatInput';
+import { ChatThreadRail } from './ChatThreadRail';
+import { WorkItemThreadRail } from './WorkItemThreadRail';
+import { ChatHeader } from './ChatHeader';
+import { ChatTranscript } from './ChatTranscript';
+import { deriveChatPaneState, type ChatPaneKind } from './ChatPaneState';
+import { ChatPersonaPicker } from './ChatPersonaPicker';
+import { ChatSidePanels } from './ChatSidePanels';
+import { ChatReviewFeedbackProvider } from './ChatReviewFeedbackContext';
+import {
+  formatChatReviewFeedbackPrompt,
+  type ChatReviewFeedbackDraft,
+} from './chat-review-feedback';
+import { useChatScroll } from './useChatScroll';
+import { buildFindingFollowUpPrompt } from './ChatFindingCard';
+import { PendingQuestionPrompt, PlanChip, WorkflowActionConfirmation } from './ChatPromptOverlays';
+import { useChatErrorRecovery } from './useChatErrorRecovery';
+import { composeChatTurns } from './chat-turns';
+import { buildChatRequestTargetDomId, getPendingQuestionTarget } from './chat-run-outcome';
+import { useChatContext } from '../../contexts/ChatContext';
+import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
+import { WorkspaceReadinessStrip } from '../workspace/WorkspaceReadinessStrip';
+import { getStarterPrompts } from '../../utils/starter-prompts';
+import { DesignProvider } from '../../contexts/DesignContext';
+import { RepoSelector } from '../shared/RepoSelector';
+import { GovernanceSelector } from '../shared/GovernanceSelector';
+import { extractFindings, type ExtractedFinding } from '../../utils/finding-parser';
+import type { ExecutionStrategy } from '../../utils/execution-strategy';
+import { useChatRunTarget } from './useChatRunTarget';
+import { ChatRunTargetSelect } from './ChatRunTargetSelect';
+import { RemoteThreadTranscript } from './RemoteThreadTranscript';
+import { SettingsLink } from '../shared/SettingsLink';
+import { SessionOwnershipChip } from './SessionOwnershipChip';
+import { buildExecutionTopology } from '../../utils/execution-topology';
+import { CHAT_PREFILL_EVENT, CHAT_SEND_EVENT } from './chat-prefill';
+import { resolveChatFastModeTarget } from '../../utils/chat-fast-mode';
+import { useChatPanels, type ChatPanelId } from './useChatPanels';
+import { SurfacesProvider } from '../surfaces/SurfacesProvider';
+import { SurfaceStage } from '../surfaces/SurfaceStage';
+import { useChatViewData } from './useChatViewData';
+import { useChatRouteIntents } from './useChatRouteIntents';
+import { useChatWorkflowAction } from './useChatWorkflowAction';
+import { useThreadAccess } from './useThreadAccess';
+import {
+  chatAccessOptionsForProvider,
+  expectedAcpAppliedMode,
+  type ChatAccessOption,
+} from './thread-access';
+import { isAcpAgentProvider } from '../../../shared/agent-providers';
+import { agentProviderLabel } from '../../utils/agent-display';
+import { buildMessageReusePrefill, shouldFocusChatComposerFromKey } from './chat-view-utils';
+import { WORKSPACE_REPOSITORIES_PATH } from '../../utils/sidebar-navigation';
+
+// Re-exported for the existing `../ChatView` import path used by tests.
+export {
+  buildMessageReusePrefill,
+  getChatTurnLiveState,
+  getNewChatThreadActionLabel,
+  isNearChatBottom,
+  shouldFocusChatComposerFromKey,
+  shouldShowTurnActivityStatus,
+} from './chat-view-utils';
+
+const ITSM_PERSONA_IDS = new Set(ROLE_RECOMMENDED_PERSONAS.itsm ?? []);
+
+/** H13 — slash-command copy names the agent the thread actually runs on. */
+function buildSlashCommands(agentLabel: string): ChatSlashCommand[] {
+  return [
+    {
+      id: 'new',
+      command: '/new',
+      label: 'New thread',
+      description: 'Start a fresh chat thread.',
+      insertText: '/new',
+    },
+    {
+      id: 'plan',
+      command: '/plan',
+      label: 'Plan work item',
+      description: `Ask ${agentLabel} to plan an ADO work item.`,
+      insertText: '/plan ADO-',
+    },
+    {
+      id: 'fix',
+      command: '/fix',
+      label: 'Fix work item',
+      description: `Ask ${agentLabel} to implement an ADO work item.`,
+      insertText: '/fix ADO-',
+    },
+    {
+      id: 'review',
+      command: '/review',
+      label: 'Review my changes',
+      description: `Ask ${agentLabel} to review your current changes as a Review surface.`,
+      insertText: 'Review my current changes and publish a review surface.',
+    },
+    {
+      id: 'review-item',
+      command: '/review-item',
+      label: 'Review work item',
+      description: `Ask ${agentLabel} to review an ADO work item.`,
+      insertText: '/review ADO-',
+    },
+    {
+      id: 'visualize',
+      command: '/visualize',
+      label: 'Visualize',
+      description: `Ask ${agentLabel} to answer visually with a sketch.`,
+      insertText: 'Answer visually with a sketch: ',
+    },
+  ];
+}
+
+interface ChatViewProps {
+  userRole: UserRole;
+}
+
+export function ChatView({ userRole }: ChatViewProps) {
+  const {
+    personas,
+    activePersona,
+    session,
+    entries,
+    activeRepos,
+    selectedGovernanceDocs,
+    setSelectedGovernanceDocs,
+    scaffoldModeActive,
+    scaffoldStatus,
+    busy,
+    error,
+    model,
+    modelProvider,
+    modelOptions,
+    modelPickerPreferences,
+    reasoningLevel,
+    reasoningOptions,
+    threads,
+    activeThread,
+    activeThreadId,
+    isTemporaryChat,
+    endTemporaryChat,
+    liveThreadStatuses,
+    collaborationMode,
+    activePlan,
+    agentUIIntents,
+    activeGoal,
+    activeArtifacts,
+    discardArtifact,
+    chatLayout,
+    send,
+    followUp,
+    startSideQuestion,
+    returnFromSideQuestion,
+    sideQuestion,
+    historyReady,
+    threadViewSnapshot,
+    setActiveRepos,
+    switchPersona,
+    interrupt,
+    stopSession,
+    startNewSession,
+    ensureChatThread,
+    setModel,
+    setReasoningLevel,
+    selectThread,
+    renameThread,
+    settleThread,
+    deleteThread,
+    forkThread,
+    setCollaborationMode,
+    setChatLayout,
+    selectWorkItemThread,
+    startWorkItemThread,
+  } = useChatContext();
+  const {
+    repos,
+    featureAvailability,
+    activeScaffoldSession,
+    activeWorkspace,
+    workspaceAccessDefault,
+    setWorkspaceAccessDefault,
+  } = useWorkspace();
+  const navigate = useNavigate();
+
+  const [showFindings, setShowFindings] = useState(true);
+  const [dismissedFindings, setDismissedFindings] = useState<Set<number>>(new Set());
+  const [composerPrefill, setComposerPrefill] = useState<{
+    id: string;
+    text: string;
+    attachments?: ChatAttachment[];
+  } | null>(null);
+  const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
+  const [fastMode, setFastMode] = useState(false);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  // H2 — transient composer notice (queued-send ack / rejected send).
+  const [pendingChatActions, setPendingChatActions] = useState<
+    Array<{
+      id: string;
+      text: string;
+      threadId?: string;
+      personaId?: string;
+    }>
+  >([]);
+  const pendingChatAction = pendingChatActions[0] ?? null;
+  const [actionSubmitting, setActionSubmitting] = useState(false);
+  const actionInFlight = useRef(false);
+  const requestChatAction = useCallback((text: string, threadId?: string, personaId?: string) => {
+    const action = { id: crypto.randomUUID(), text, threadId, personaId };
+    setPendingChatActions((pending) =>
+      pending.some(
+        (item) => item.text === text && item.threadId === threadId && item.personaId === personaId,
+      )
+        ? pending
+        : [...pending, action],
+    );
+  }, []);
+  const [sendNotice, setSendNotice] = useState<string | null>(null);
+  const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const panelsGroupRef = useRef<HTMLDivElement>(null);
+  const appliedItsmDefaultRef = useRef(false);
+
+  const focusPanelsControl = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      panelsGroupRef.current
+        ?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"], [role="radio"]')
+        ?.focus();
+    });
+  }, []);
+
+  // --- Extracted hooks -------------------------------------------------------
+
+  const isBaPersona = activePersona?.id === 'ba';
+  const isDesignPersona = activePersona?.id === 'design';
+  const isDbExpertPersona = activePersona?.id === 'db-expert';
+  const isItsmPersona = activePersona ? ITSM_PERSONA_IDS.has(activePersona.id) : false;
+  const isWorkItemLayout = !isTemporaryChat && chatLayout === 'workitems';
+  const browserAvailable = ROLE_FEATURES[userRole].includes('browser');
+
+  const planIntents = useMemo(
+    () => agentUIIntents.filter((intent): intent is AgentUIPlanIntent => intent.kind === 'plan'),
+    [agentUIIntents],
+  );
+  const visiblePlanIntent = planIntents.find(
+    (intent) =>
+      intent.lifecycle !== 'dismissed' &&
+      intent.lifecycle !== 'expired' &&
+      intent.payload.lifecycle !== 'archived' &&
+      !intent.presentation.hidden,
+  );
+
+  // The sticky Plan chip follows the plan still in progress.
+  const stickyPlanIntent =
+    visiblePlanIntent?.payload.lifecycle === 'active' ? visiblePlanIntent : undefined;
+  const stickyPlanSnapshot =
+    !visiblePlanIntent && activePlan?.steps.some((step) => step.status !== 'completed')
+      ? activePlan
+      : null;
+
+  const panels = useChatPanels();
+
+  const { recentRuns, activeSessions, executionSessionStates, setExecutionSessionStates } =
+    useChatViewData(activeWorkspace?.id);
+
+  const {
+    pendingWorkflowAction,
+    confirmingWorkflowAction,
+    workflowActionError,
+    handleComposerSend,
+    confirmWorkflowAction,
+    keepWorkflowPromptInChat,
+  } = useChatWorkflowAction({
+    activeWorkspace,
+    executionStrategy,
+    fastMode,
+    send,
+    startNewSession,
+  });
+
+  // CH1 — per-thread access level, persisted per workspace. ST9: the
+  // Settings → Workspace default applies to threads without an override.
+  const threadAccess = useThreadAccess(activeWorkspace?.id, activeThreadId, {
+    workspaceDefault: workspaceAccessDefault,
+    onWorkspaceDefaultChange: setWorkspaceAccessDefault,
+  });
+
+  const handleSuggestionClick = requestChatAction;
+
+  useChatRouteIntents({
+    personas,
+    activePersona,
+    switchPersona,
+    selectThread,
+    onPrefill: (text) => setComposerPrefill({ id: `route-${Date.now()}`, text }),
+    onSend: requestChatAction,
+    openPreview: panels.openPreview,
+    threadCount: threads.length,
+  });
+
+  // --- Persona / layout derivations ------------------------------------------
+
+  const fastModeTarget = useMemo(
+    () => resolveChatFastModeTarget(modelProvider, model, modelOptions),
+    [model, modelOptions, modelProvider],
+  );
+  const mentionRepoIds = useMemo(() => activeRepos.map((repo) => repo.id), [activeRepos]);
+
+  useEffect(() => {
+    if (!fastModeTarget.available && fastMode) setFastMode(false);
+  }, [fastMode, fastModeTarget.available]);
+
+  // ITSM role defaults to the service-desk persona once.
+  useEffect(() => {
+    if (userRole !== 'itsm') {
+      appliedItsmDefaultRef.current = false;
+      return;
+    }
+    if (appliedItsmDefaultRef.current || personas.length === 0 || !activePersona) return;
+    appliedItsmDefaultRef.current = true;
+    if (activePersona.id !== 'coder') return;
+    const serviceDesk = personas.find((persona) => persona.id === 'service-desk');
+    if (serviceDesk) void switchPersona(serviceDesk);
+  }, [activePersona, personas, switchPersona, userRole]);
+
+  // --- Findings (BA persona) --------------------------------------------------
+
+  const findings = useMemo(() => {
+    if (!isBaPersona) return [];
+    const all: (ExtractedFinding & { idx: number })[] = [];
+    let idx = 0;
+    for (const entry of entries) {
+      if (entry.kind === 'assistant') {
+        for (const f of extractFindings(entry.content)) {
+          all.push({ ...f, idx: idx++ });
+        }
+      }
+    }
+    return all;
+  }, [entries, isBaPersona]);
+
+  const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
+  const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
+  const transcriptSurfaces = useMemo(
+    () => composedTurns.flatMap((turn) => turn.surfaces.map((surface) => surface.intent)),
+    [composedTurns],
+  );
+
+  const pendingQuestionTarget = useMemo(
+    () => getPendingQuestionTarget(composedTurns),
+    [composedTurns],
+  );
+  const handleJumpToQuestion = useCallback((targetId: string) => {
+    const target = document.getElementById(buildChatRequestTargetDomId(targetId));
+    if (!target) return;
+    target.scrollIntoView({ block: 'center', behavior: 'auto' });
+    const control = target.querySelector<HTMLElement>(
+      'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), select:not([disabled])',
+    );
+    (control ?? target).focus({ preventScroll: true });
+  }, []);
+
+  const { showJumpToLatest, jumpToLatest: handleJumpToLatest } = useChatScroll({
+    containerRef: messagesContainerRef,
+    scopeKey: activeThreadId ? `${activeWorkspace?.id ?? 'no-workspace'}:${activeThreadId}` : null,
+    contentVersion: entries,
+    contentReady: historyReady,
+  });
+  const feedbackThreadRef = useRef(activeThreadId);
+  feedbackThreadRef.current = activeThreadId;
+  const handleComposeFeedback = useCallback(
+    (draft: ChatReviewFeedbackDraft) => {
+      if (draft.threadId !== feedbackThreadRef.current) {
+        setSendNotice('Open the source conversation to add this review feedback.');
+        return;
+      }
+      requestChatAction(formatChatReviewFeedbackPrompt(draft), draft.threadId);
+    },
+    [requestChatAction],
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!shouldFocusChatComposerFromKey(event)) return;
+      event.preventDefault();
+      setComposerFocusRequest((request) => request + 1);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Agent-UI surfaces can prefill the composer via a window event.
+  useEffect(() => {
+    const handlePrefill = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail;
+      if (!detail?.text) return;
+      setComposerPrefill({ id: `agent-ui-${Date.now()}`, text: detail.text });
+      setComposerFocusRequest((current) => current + 1);
+    };
+    window.addEventListener(CHAT_PREFILL_EVENT, handlePrefill);
+    return () => window.removeEventListener(CHAT_PREFILL_EVENT, handlePrefill);
+  }, []);
+
+  // --- Handlers ---------------------------------------------------------------
+
+  const handleSwitchPersona = (persona: Persona) => {
+    panels.closeActivity();
+    switchPersona(persona);
+  };
+
+  const runTarget = useChatRunTarget({
+    workspaceId: isTemporaryChat || scaffoldModeActive ? undefined : activeWorkspace?.id,
+    threadId: activeThreadId,
+    sourceSessionId: session?.id,
+    provider: modelProvider,
+    model,
+    permissionMode:
+      isItsmPersona || activeThread?.purpose === 'side-question' ? 'read-only' : threadAccess.level,
+    reasoningEffort: reasoningLevel,
+    ensureThread: ensureChatThread,
+  });
+  // H13 — label strings name the provider the session actually runs on.
+  const agentProvider = runTarget.record?.provider ?? session?.provider ?? modelProvider;
+  const agentLabel = agentProviderLabel(agentProvider) ?? 'The agent';
+  // H12 — goals are a Codex capability; when no session is live yet, fall back
+  // to provider truth (ACP providers never support them).
+  const capabilities = runTarget.remote ? undefined : session?.capabilities;
+  const goalsSupported =
+    !runTarget.remote && (capabilities?.goals ?? !isAcpAgentProvider(agentProvider));
+  // H9 — provider-truthful access options and the applied provider-side mode.
+  const accessOptions = useMemo(
+    () =>
+      chatAccessOptionsForProvider(agentProvider, capabilities?.accessModes).filter(
+        (option) => !runTarget.remote || option.collaborationMode !== 'plan',
+      ),
+    [agentProvider, capabilities?.accessModes, runTarget.remote],
+  );
+  const appliedAccessMode =
+    (!runTarget.remote ? session?.appliedMode : undefined) ??
+    expectedAcpAppliedMode(
+      agentProvider,
+      threadAccess.level,
+      runTarget.remote ? 'default' : collaborationMode,
+    );
+  const slashCommands = useMemo(() => buildSlashCommands(agentLabel), [agentLabel]);
+  const combinedThreadStatuses = { ...liveThreadStatuses, ...runTarget.threadStatuses };
+
+  const sendInFlight = useRef(false);
+  const handleChatInputSend = useCallback(
+    async (message: string, attachments: ChatAttachment[] = []): Promise<boolean> => {
+      if (sendInFlight.current) return false;
+      sendInFlight.current = true;
+      try {
+        if (runTarget.remote) return await runTarget.send(message, attachments);
+        if (busy) {
+          setSendNotice(
+            'Choose Guide current run or Queue next to send while the agent is working.',
+          );
+          return Promise.resolve(false);
+        }
+        const accepted = await handleComposerSend(message, attachments);
+        if (accepted) setSendNotice(null);
+        return accepted;
+      } finally {
+        sendInFlight.current = false;
+      }
+    },
+    [busy, handleComposerSend, runTarget],
+  );
+
+  const handleAccessOptionSelect = useCallback(
+    (option: ChatAccessOption) => {
+      if (option.collaborationMode === 'plan') {
+        if (collaborationMode !== 'plan') setCollaborationMode('plan');
+        return;
+      }
+      // Leaving plan via the access chip must reset the collaboration mode —
+      // otherwise the provider keeps applying 'plan' regardless of level.
+      if (collaborationMode === 'plan') setCollaborationMode('default');
+      if (option.level) threadAccess.setLevel(option.level);
+    },
+    [collaborationMode, setCollaborationMode, threadAccess],
+  );
+
+  const handleModelChange = useCallback(
+    (nextModel: string, nextProvider: AgentProvider, reasoningEffort?: ReasoningEffort) => {
+      setFastMode(false);
+      setModel(nextModel, nextProvider, reasoningEffort);
+    },
+    [setModel],
+  );
+
+  const handleReasoningChange = useCallback(
+    (nextLevel: ReasoningEffort) => {
+      setReasoningLevel(nextLevel);
+    },
+    [setReasoningLevel],
+  );
+
+  const handleChatLayoutChange = useCallback(
+    (layout: ChatLayout) => {
+      void setChatLayout(layout);
+    },
+    [setChatLayout],
+  );
+
+  const handleFindingFollowUp = useCallback(
+    (finding: ExtractedFinding & { idx: number }) => {
+      requestChatAction(buildFindingFollowUpPrompt(finding));
+    },
+    [requestChatAction],
+  );
+
+  const handleSetGoal = useCallback(
+    (objective: string, tokenBudget: string) => {
+      if (!goalsSupported) return;
+      const trimmedObjective = objective.trim();
+      if (!trimmedObjective) return;
+
+      const parsedBudget = Number.parseInt(tokenBudget, 10);
+      const budgetText =
+        Number.isFinite(parsedBudget) && parsedBudget > 0
+          ? ` with a ${parsedBudget.toLocaleString()} token budget`
+          : '';
+
+      panels.setGoalPopoverOpen(false);
+      void send(`Set a goal${budgetText}: ${trimmedObjective}`);
+    },
+    [panels, send, goalsSupported],
+  );
+
+  const handleCompleteGoal = useCallback(() => {
+    if (!goalsSupported) return;
+    panels.setGoalPopoverOpen(false);
+    void send('Mark the active goal complete.');
+  }, [panels, send, goalsSupported]);
+
+  const handleBranch = useCallback(
+    (messageIndex: number) => {
+      void forkThread(messageIndex);
+    },
+    [forkThread],
+  );
+
+  const handleReuseMessage = useCallback((messageIndex: number, content: string) => {
+    setComposerPrefill({
+      id: `reuse-${messageIndex}-${Date.now()}`,
+      text: buildMessageReusePrefill(content),
+    });
+    setComposerFocusRequest((prev) => prev + 1);
+  }, []);
+
+  const availableChatModelOptions = useMemo(
+    () =>
+      isTemporaryChat || activeThread?.purpose === 'side-question'
+        ? modelOptions.filter((option) => !isAcpAgentProvider(option.provider))
+        : modelOptions,
+    [activeThread?.purpose, isTemporaryChat, modelOptions],
+  );
+
+  // CH5 — classified error notice with retry / provider-switch recovery.
+  const errorRecovery = useChatErrorRecovery({
+    entries,
+    modelOptions: availableChatModelOptions,
+    modelProvider,
+    onReusePrompt: (message, attachments) => {
+      setComposerPrefill({ id: `recover-${Date.now()}`, text: message, attachments });
+      setComposerFocusRequest((current) => current + 1);
+    },
+    onModelChange: handleModelChange,
+  });
+
+  // --- Derived view state ------------------------------------------------------
+
+  // C5 — fall back to the accent token, not a hard-coded red.
+  const personaColour = activePersona?.colour ?? 'var(--color-accent)';
+  // C2/3.5 — repo-grounded starter prompts once a repo is mapped; persona
+  // suggestions stay as the fallback in ChatEmptyState.
+  const starterPrompts = useMemo(
+    () =>
+      !isTemporaryChat && repos.some(repoIsMapped)
+        ? getStarterPrompts({ repos, userRole })
+        : undefined,
+    [isTemporaryChat, repos, userRole],
+  );
+  const scaffoldBusy = scaffoldStatus === 'syncing' || scaffoldStatus === 'indexing';
+  const workspaceChatReady =
+    isTemporaryChat || scaffoldModeActive || featureAvailability.chatEnabled;
+  const chatInputDisabled =
+    scaffoldBusy || !workspaceChatReady || (isWorkItemLayout && !activeThread?.workItemId);
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
+      if (text?.trim()) requestChatAction(text, activeThreadId ?? undefined);
+    };
+    window.addEventListener(CHAT_SEND_EVENT, receive);
+    return () => window.removeEventListener(CHAT_SEND_EVENT, receive);
+  }, [activeThreadId, requestChatAction]);
+
+  useEffect(() => {
+    if (!pendingChatAction || actionInFlight.current || !historyReady) return;
+    if (
+      (pendingChatAction.threadId && pendingChatAction.threadId !== activeThreadId) ||
+      (pendingChatAction.personaId && pendingChatAction.personaId !== activePersona?.id)
+    ) {
+      setPendingChatActions((pending) =>
+        pending.filter((action) => action.id !== pendingChatAction.id),
+      );
+      setSendNotice(
+        'The requested conversation could not be opened or is no longer active. No prompt was sent. Open it and try the action again.',
+      );
+      return;
+    }
+    actionInFlight.current = true;
+    setActionSubmitting(true);
+    const submit = async () => {
+      try {
+        if (chatInputDisabled || pendingWorkflowAction || runTarget.record?.state === 'ended') {
+          throw new Error('Chat is not ready. The requested prompt is in the composer.');
+        }
+        if (!runTarget.remote && busy && session?.capabilities?.followUp.queue) {
+          const result = await followUp('queue', pendingChatAction.text, [], pendingChatAction.id);
+          if (result.status === 'failed')
+            throw new Error(result.error ?? 'The action could not be queued.');
+          setSendNotice(result.status === 'queued' ? 'Queued after the current run.' : null);
+        } else {
+          const accepted = await handleChatInputSend(pendingChatAction.text);
+          if (!accepted)
+            throw new Error('The action was not sent. The requested prompt is in the composer.');
+        }
+      } catch (error) {
+        setComposerPrefill({ id: pendingChatAction.id, text: pendingChatAction.text });
+        setSendNotice(error instanceof Error ? error.message : 'The action could not be sent.');
+      } finally {
+        actionInFlight.current = false;
+        setActionSubmitting(false);
+        setPendingChatActions((pending) =>
+          pending.filter((action) => action.id !== pendingChatAction.id),
+        );
+      }
+    };
+    void submit();
+  }, [
+    pendingChatAction,
+    actionSubmitting,
+    historyReady,
+    activeThreadId,
+    activePersona?.id,
+    chatInputDisabled,
+    pendingWorkflowAction,
+    runTarget.record?.state,
+    runTarget.remote,
+    busy,
+    session?.capabilities?.followUp.queue,
+    followUp,
+    handleChatInputSend,
+  ]);
+
+  const composerDraftKey = [
+    'mezair:chat-draft',
+    activeThreadId ?? 'no-thread',
+    isWorkItemLayout ? 'workitem-layout' : (activePersona?.id ?? 'no-persona'),
+  ].join(':');
+
+  const isEmpty = entries.length === 0 && !error;
+  const pendingQuestions = useMemo(
+    () =>
+      agentUIIntents.filter(
+        (intent): intent is AgentUIQuestionIntent =>
+          intent.kind === 'question' &&
+          (intent.lifecycle === 'pending' || intent.lifecycle === 'presented'),
+      ),
+    [agentUIIntents],
+  );
+  const executionTopology = useMemo(
+    () =>
+      buildExecutionTopology({
+        entries,
+        sessions: session
+          ? [session, ...activeSessions.filter((item) => item.id !== session.id)]
+          : activeSessions,
+        sessionStates: executionSessionStates,
+        threadId: activeThreadId,
+        rootLabel: activeThread?.title ?? 'New thread',
+        rootSummary: activeThread?.summary,
+      }),
+    [
+      activeSessions,
+      session,
+      executionSessionStates,
+      activeThread?.title,
+      activeThread?.summary,
+      activeThreadId,
+      entries,
+    ],
+  );
+  const visibleSessionId = executionTopology.nodes.find(
+    (node) => node.kind === 'session',
+  )?.sessionId;
+
+  // C4 — one enum drives every non-transcript pane state.
+  const paneKind: ChatPaneKind = deriveChatPaneState({
+    scaffoldModeActive,
+    chatEnabled: isTemporaryChat || featureAvailability.chatEnabled,
+    isEmpty,
+    hasError: Boolean(error),
+    isWorkItemLayout,
+    activeThreadHasWorkItem: Boolean(activeThread?.workItemId),
+  });
+
+  // Local-only activation events. The main process keeps only the first
+  // composer-enabled event for the active journey, so ChatView remounts do not
+  // create duplicate funnel steps.
+  const composerEnabledWorkspacesRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (chatInputDisabled) return;
+    const key = activeWorkspace?.id ?? 'no-workspace';
+    if (composerEnabledWorkspacesRef.current.has(key)) return;
+    composerEnabledWorkspacesRef.current.add(key);
+    void window.mezair.metrics.track('chat_composer_enabled').catch(() => {});
+  }, [chatInputDisabled, activeWorkspace?.id]);
+
+  const prevPaneKindRef = useRef<ChatPaneKind | null>(null);
+  useEffect(() => {
+    if (paneKind === 'blocked' && prevPaneKindRef.current !== 'blocked') {
+      void window.mezair.metrics.track('chat_blocked_shown').catch(() => {});
+    }
+    prevPaneKindRef.current = paneKind;
+  }, [paneKind, activeWorkspace?.id, featureAvailability.repoFeatureReason]);
+
+  const showItsmWorkbench =
+    !isTemporaryChat &&
+    userRole === 'itsm' &&
+    isItsmPersona &&
+    panels.itsmWorkbenchOpen &&
+    !panels.previewMode;
+  const showPanelsCluster = !isTemporaryChat && !isDesignPersona && !isBaPersona;
+  const showActivitySidebar =
+    panels.activityOpen &&
+    !scaffoldModeActive &&
+    showPanelsCluster &&
+    !showItsmWorkbench &&
+    !panels.previewMode;
+  const content = (
+    <div className="flex h-full flex-col">
+      {/* CH4 — title + PR chip + one segmented Panels control. */}
+      <ChatHeader
+        title={
+          isTemporaryChat
+            ? 'Temporary chat'
+            : activeThread && !scaffoldModeActive
+              ? activeThread.title
+              : 'New thread'
+        }
+        workspaceName={
+          isTemporaryChat ? 'Temporary chat' : (activeWorkspace?.name ?? 'No workspace')
+        }
+        scaffoldModeActive={scaffoldModeActive}
+        scaffoldStatus={scaffoldStatus}
+        pullRequestThread={
+          !isTemporaryChat && activeThread && !scaffoldModeActive
+            ? {
+                threadId: activeThread.id,
+                preferredRepoId: activeThread.activeRepoId ?? undefined,
+                repoIds: activeThread.repoIds ?? [],
+              }
+            : null
+        }
+        showPanels={showPanelsCluster}
+        activePanel={showActivitySidebar ? 'activity' : panels.previewMode ? 'preview' : null}
+        onSelectPanel={(panel: ChatPanelId | null) => panels.setActivePanel(panel)}
+        goal={isTemporaryChat ? null : activeGoal}
+        onOpenGoal={
+          showPanelsCluster && !scaffoldModeActive
+            ? () => {
+                panels.setActivePanel('activity');
+                panels.setGoalPopoverOpen(true);
+              }
+            : undefined
+        }
+        showSurfaces={!isTemporaryChat && !scaffoldModeActive}
+        previewAvailable={browserAvailable}
+        activityRunningCount={executionTopology.runningCount}
+        showItsmToggle={userRole === 'itsm' && isItsmPersona}
+        itsmWorkbenchActive={showItsmWorkbench}
+        onToggleItsmWorkbench={panels.toggleItsmWorkbench}
+        panelsGroupRef={panelsGroupRef}
+      />
+
+      {isTemporaryChat && (
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5 xl:px-6">
+          <p className="min-w-0 text-xs text-text-secondary">
+            Temporary chat · Text only, with no workspace or repository context. Kept only while
+            Mezair is open.
+          </p>
+          <button
+            type="button"
+            onClick={() => void endTemporaryChat().then(() => navigate('/chat', { replace: true }))}
+            className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            End temporary chat
+          </button>
+        </div>
+      )}
+
+      {!scaffoldModeActive && visibleSessionId && (
+        <SessionOwnershipChip
+          key={visibleSessionId}
+          sessionId={visibleSessionId}
+          provider={agentProvider}
+        />
+      )}
+
+      <div className="flex flex-1 overflow-hidden">
+        {!isTemporaryChat &&
+          !scaffoldModeActive &&
+          (isWorkItemLayout ? (
+            <WorkItemThreadRail
+              threads={threads}
+              activeThreadId={activeThreadId}
+              liveThreadStatuses={combinedThreadStatuses}
+              onSelectWorkItem={(workItem) => void selectWorkItemThread(workItem)}
+              onSelectThread={(threadId) => void selectThread(threadId)}
+              onCreateThread={(workItem) => void startWorkItemThread(workItem)}
+              onRenameThread={(threadId, title) => void renameThread(threadId, title)}
+              onSettleThread={(threadId, settled) => void settleThread(threadId, settled)}
+              onDeleteThread={(threadId) => void deleteThread(threadId)}
+              chatLayout={chatLayout}
+              onChatLayoutChange={handleChatLayoutChange}
+              accessLevels={threadAccess.threadLevels}
+              defaultAccessLevel={threadAccess.defaultLevel}
+            />
+          ) : (
+            <ChatThreadRail
+              personas={personas}
+              repos={repos}
+              threads={threads}
+              activeThreadId={activeThreadId}
+              liveThreadStatuses={combinedThreadStatuses}
+              onSelectThread={(threadId) => void selectThread(threadId)}
+              onCreateThread={() => void startNewSession()}
+              onRenameThread={(threadId, title) => void renameThread(threadId, title)}
+              onSettleThread={(threadId, settled) => void settleThread(threadId, settled)}
+              onDeleteThread={(threadId) => void deleteThread(threadId)}
+              chatLayout={chatLayout}
+              onChatLayoutChange={handleChatLayoutChange}
+              accessLevels={threadAccess.threadLevels}
+              defaultAccessLevel={threadAccess.defaultLevel}
+            />
+          ))}
+
+        {/* Chat column — the surface stage overlays it; rail and sidebar stay visible. */}
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          <SurfaceStage />
+          {/* Readiness where the user is (§3) — compact strip above the
+            transcript while repos are being prepared. */}
+          {!isTemporaryChat && !scaffoldModeActive && repos.length > 0 && (
+            <WorkspaceReadinessStrip
+              hideWhenReady
+              className="mx-4 mt-3 shrink-0 xl:mx-6"
+              onOpenWorkspace={() => navigate(WORKSPACE_REPOSITORIES_PATH)}
+            />
+          )}
+          {runTarget.record && !isTemporaryChat ? (
+            <RemoteThreadTranscript
+              run={runTarget}
+              priorTurns={runTarget.legacyId ? [] : composedTurns}
+              personaName={activePersona?.name ?? 'Assistant'}
+              personaColour={personaColour}
+              onReuseMessage={handleReuseMessage}
+            />
+          ) : (
+            <ChatTranscript
+              paneKind={paneKind}
+              scaffoldRootPath={activeScaffoldSession?.rootPath}
+              blockedReason={
+                isTemporaryChat
+                  ? 'Temporary chat is ready.'
+                  : (featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.')
+              }
+              onOpenWorkspace={() => navigate(WORKSPACE_REPOSITORIES_PATH)}
+              personaId={activePersona?.id ?? 'coder'}
+              hasRepos={activeRepos.length > 0}
+              hasGovernanceDocs={selectedGovernanceDocs.length > 0}
+              isDbExpertPersona={isDbExpertPersona}
+              starterPrompts={starterPrompts}
+              onSuggestionClick={handleSuggestionClick}
+              scaffoldBusyMessage={
+                scaffoldBusy
+                  ? scaffoldStatus === 'syncing'
+                    ? 'Scaffold completion was detected. Mezair is connecting the new repositories to this workspace.'
+                    : 'Repositories are being indexed now. Other views stay locked until indexing finishes, then the rest of the workspace will unlock.'
+                  : undefined
+              }
+              turns={composedTurns}
+              activeThreadId={activeThreadId}
+              changeReviewThreadId={!isTemporaryChat ? (activeThreadId ?? undefined) : undefined}
+              busy={busy}
+              isBaPersona={isBaPersona}
+              personaName={activePersona?.name ?? 'Assistant'}
+              personaColour={personaColour}
+              onBranch={isTemporaryChat || isWorkItemLayout ? undefined : handleBranch}
+              onReuseMessage={handleReuseMessage}
+              changesRepos={isTemporaryChat ? [] : repos}
+              changesPreferredRepoId={isTemporaryChat ? undefined : activeThread?.activeRepoId}
+              error={error}
+              errorProviders={errorRecovery.providers}
+              onErrorRetry={errorRecovery.onRetry}
+              errorRetryLabel={errorRecovery.retryLabel}
+              onSwitchProvider={errorRecovery.onSwitchProvider}
+              messagesContainerRef={messagesContainerRef}
+              messagesEndRef={messagesEndRef}
+              showJumpToLatest={showJumpToLatest}
+              onJumpToLatest={handleJumpToLatest}
+            />
+          )}
+
+          {/* Input */}
+          {!pendingQuestions[0] && !isTemporaryChat && (stickyPlanIntent || stickyPlanSnapshot) && (
+            <PlanChip
+              key={stickyPlanIntent?.id ?? 'snapshot'}
+              intent={stickyPlanIntent}
+              snapshot={stickyPlanIntent ? null : stickyPlanSnapshot}
+            />
+          )}
+          {pendingQuestions[0] && (
+            <PendingQuestionPrompt
+              key={pendingQuestions[0].id}
+              intent={pendingQuestions[0]}
+              additionalCount={Math.max(0, pendingQuestions.length - 1)}
+            />
+          )}
+          {pendingWorkflowAction && (
+            <WorkflowActionConfirmation
+              pending={pendingWorkflowAction}
+              confirming={confirmingWorkflowAction}
+              error={workflowActionError}
+              onConfirm={() => void confirmWorkflowAction()}
+              onKeepInChat={keepWorkflowPromptInChat}
+            />
+          )}
+          {/* H2 — live queue depth or a transient notice for rejected sends. */}
+          {(() => {
+            const queuedCount = session?.queuedSendCount ?? 0;
+            const composerNotice =
+              sendNotice ??
+              (queuedCount > 0
+                ? `Queued — ${agentLabel} will pick ${
+                    queuedCount === 1 ? 'it' : `all ${queuedCount} messages`
+                  } up when the current turn finishes.`
+                : null);
+            if (!composerNotice) return null;
+            return (
+              <div className="mx-auto w-full max-w-[1040px] px-4 pb-2 xl:px-6">
+                <div
+                  role="status"
+                  className="flex items-center justify-between gap-3 rounded-lg border border-info/25 bg-info/5 px-3 py-2 text-xs text-text-secondary"
+                >
+                  <span className="min-w-0">{composerNotice}</span>
+                  {sendNotice && (
+                    <button
+                      type="button"
+                      onClick={() => setSendNotice(null)}
+                      className="shrink-0 rounded-md px-1.5 py-0.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                      aria-label="Dismiss notice"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+          {activeThread?.purpose === 'side-question' && (
+            <div
+              className="mx-4 mb-2 flex items-center justify-between gap-3 rounded-lg border border-border-subtle px-3 py-2 text-xs text-text-secondary"
+              role="status"
+            >
+              <span>Side question · Read-only conversation.</span>
+              {sideQuestion?.sideThreadId === activeThreadId && (
+                <button
+                  type="button"
+                  onClick={() => void returnFromSideQuestion()}
+                  className="shrink-0 rounded-md px-2 py-1 font-medium text-accent hover:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                >
+                  Back to main task
+                </button>
+              )}
+            </div>
+          )}
+          {runTarget.legacyRecords.length > 0 && (
+            <label className="mx-4 mb-2 flex items-center gap-2 text-xs text-text-secondary xl:mx-6">
+              Earlier remote chats
+              <select
+                aria-label="Earlier remote chats"
+                value={runTarget.legacyId ?? ''}
+                disabled={runTarget.sending}
+                onChange={(event) => runTarget.setLegacyId(event.target.value || null)}
+                className="max-w-72 rounded-md border border-border bg-bg-secondary px-2 py-1 text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <option value="">Current chat</option>
+                {runTarget.legacyRecords.map((chat) => (
+                  <option key={chat.id} value={chat.id}>
+                    {chat.turns[0]?.prompt.slice(0, 60) ?? 'Remote chat'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {runTarget.remote && runTarget.error && (
+            <p
+              role="alert"
+              className="mx-auto w-full max-w-[1040px] px-4 pb-2 text-sm text-error xl:px-6"
+            >
+              {runTarget.error}
+            </p>
+          )}
+          {runTarget.hosted && !runTarget.record && !runTarget.providerReady && (
+            <p className="mx-auto w-full max-w-[1040px] px-4 pb-2 text-xs text-text-secondary xl:px-6">
+              Enable and connect {agentProviderLabel(modelProvider)} in{' '}
+              <SettingsLink to="sync#cloud-agents">Cloud agent settings</SettingsLink>.
+            </p>
+          )}
+          {runTarget.hosted && !runTarget.record && runTarget.sessionLimitSeconds !== null && (
+            <p className="mx-auto w-full max-w-[1040px] px-4 pb-2 text-xs text-text-secondary xl:px-6">
+              Pauses after 5 idle minutes. Your account allows up to{' '}
+              {runTarget.sessionLimitSeconds >= 3600
+                ? `${runTarget.sessionLimitSeconds / 3600} hours`
+                : `${runTarget.sessionLimitSeconds / 60} minutes`}{' '}
+              per active cloud session.
+            </p>
+          )}
+          {runTarget.remote && !runTarget.record && modelProvider === 'codex' && (
+            <details className="mx-auto w-full max-w-[1040px] px-4 pb-2 text-xs text-text-secondary xl:px-6">
+              <summary className="cursor-pointer">Codex sign-in options</summary>
+              <select
+                aria-label="Codex remote authentication"
+                className="mt-2 rounded-md border border-border bg-surface px-2 py-1.5 text-xs text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                value={runTarget.credentialChoice}
+                onChange={(event) =>
+                  runTarget.setCredentialChoice(
+                    event.target.value as typeof runTarget.credentialChoice,
+                  )
+                }
+              >
+                {!runTarget.hosted && (
+                  <option value="target-local">Use the destination's existing login</option>
+                )}
+                <option value="codex-host-auth">Use my Codex login from this device</option>
+                <option value="codex-account">Sign in on the destination</option>
+                <option value="openai-api-key">Use my saved OpenAI API key</option>
+              </select>
+            </details>
+          )}
+          <ChatInput
+            onSend={handleChatInputSend}
+            followUpCapabilities={runTarget.remote ? undefined : session?.capabilities?.followUp}
+            onFollowUp={runTarget.remote ? undefined : followUp}
+            sideQuestionAvailable={
+              !isTemporaryChat &&
+              !runTarget.remote &&
+              !scaffoldModeActive &&
+              !isWorkItemLayout &&
+              session?.capabilities?.readOnlySession === true &&
+              activeThread?.purpose !== 'side-question'
+            }
+            onSideQuestion={startSideQuestion}
+            onStop={runTarget.remote ? () => void runTarget.stop() : interrupt}
+            disabled={
+              chatInputDisabled ||
+              pendingWorkflowAction !== null ||
+              runTarget.record?.state === 'ended'
+            }
+            busy={runTarget.remote ? runTarget.busy : busy}
+            personaColour={personaColour}
+            model={runTarget.record?.model ?? model}
+            modelProvider={runTarget.record?.provider ?? modelProvider}
+            modelOptions={availableChatModelOptions}
+            modelPickerPreferences={modelPickerPreferences}
+            onModelChange={runTarget.record ? undefined : handleModelChange}
+            reasoningLevel={reasoningLevel}
+            reasoningOptions={reasoningOptions}
+            onReasoningChange={handleReasoningChange}
+            executionStrategy={executionStrategy}
+            onExecutionStrategyChange={runTarget.remote ? undefined : setExecutionStrategy}
+            codexMode={
+              isTemporaryChat || isItsmPersona || activeThread?.purpose === 'side-question'
+                ? 'read-only'
+                : threadAccess.level
+            }
+            onCodexModeChange={
+              scaffoldModeActive || isTemporaryChat ? undefined : threadAccess.setLevel
+            }
+            codexModeDisabled={
+              isTemporaryChat || isItsmPersona || activeThread?.purpose === 'side-question'
+            }
+            accessOptions={accessOptions}
+            accessAppliedMode={appliedAccessMode}
+            onAccessOptionSelect={scaffoldModeActive ? undefined : handleAccessOptionSelect}
+            collaborationMode={runTarget.remote ? 'default' : collaborationMode}
+            onCollaborationModeChange={
+              scaffoldModeActive || isTemporaryChat || runTarget.remote
+                ? undefined
+                : setCollaborationMode
+            }
+            fastMode={fastMode}
+            fastModeAvailable={!runTarget.remote && fastModeTarget.available}
+            onFastModeChange={scaffoldModeActive || runTarget.remote ? undefined : setFastMode}
+            showSyntaxHint={isEmpty}
+            setupSummary={[
+              activePersona?.name ?? 'Agent',
+              runTarget.hosted
+                ? 'Mezair Cloud Agents'
+                : runTarget.remote
+                  ? (runTarget.devices.find((device) => device.enrollmentId === runTarget.target)
+                      ?.displayName ?? 'Remote device')
+                  : 'This device',
+            ].join(' · ')}
+            leadingControls={
+              !scaffoldModeActive && !isTemporaryChat ? (
+                <>
+                  <ChatPersonaPicker
+                    personas={personas}
+                    activePersona={activePersona}
+                    userRole={userRole}
+                    personaColour={personaColour}
+                    onSelect={handleSwitchPersona}
+                  />
+                  <ChatRunTargetSelect run={runTarget} disabled={busy || !activeWorkspace} />
+                </>
+              ) : undefined
+            }
+            contextControls={
+              scaffoldModeActive || isTemporaryChat ? null : (
+                <>
+                  <RepoSelector
+                    variant="dropdown"
+                    mode="multi"
+                    indexedOnly={false}
+                    placement="top"
+                    selectedRepoIds={activeRepos.map((repo) => repo.id)}
+                    onMultiSelect={setActiveRepos}
+                  />
+                  <GovernanceSelector
+                    placement="top"
+                    selectedDocIds={selectedGovernanceDocs.map((document) => document.id)}
+                    onSelectionChange={setSelectedGovernanceDocs}
+                  />
+                </>
+              )
+            }
+            prefill={isTemporaryChat ? null : composerPrefill}
+            draftKey={isTemporaryChat ? undefined : composerDraftKey}
+            allowAttachments={!isTemporaryChat}
+            mentionRepoIds={mentionRepoIds}
+            slashCommands={isTemporaryChat ? [] : slashCommands}
+            focusRequest={composerFocusRequest}
+          />
+        </div>
+
+        <ChatSidePanels
+          previewMode={isTemporaryChat ? null : panels.previewMode}
+          previewInitialUrl={panels.previewInitialUrl}
+          onClosePreview={() => panels.setActivePanel(null)}
+          isBaPersona={isBaPersona}
+          hasFindings={findings.length > 0}
+          openFindings={openFindings}
+          showFindings={showFindings}
+          onToggleFindings={() => setShowFindings((open) => !open)}
+          onFindingFollowUp={handleFindingFollowUp}
+          onDismissFinding={(idx) => setDismissedFindings((prev) => new Set(prev).add(idx))}
+          isDesignPersona={isDesignPersona && !isTemporaryChat}
+          designSidebarCollapsed={designSidebarCollapsed}
+          onToggleDesignSidebar={() => setDesignSidebarCollapsed((c) => !c)}
+          showItsmWorkbench={showItsmWorkbench}
+          workspaceId={isTemporaryChat ? null : (activeWorkspace?.id ?? null)}
+          onItsmPrompt={requestChatAction}
+          showActivitySidebar={showActivitySidebar}
+          activity={{
+            workspaceName: isTemporaryChat
+              ? 'Temporary chat'
+              : (activeWorkspace?.name ?? 'workspace'),
+            runs: recentRuns,
+            topology: executionTopology,
+            lastViewedAt:
+              threadViewSnapshot?.threadId === activeThreadId
+                ? threadViewSnapshot.lastViewedAt
+                : null,
+            attentionUpdatedAt: activeThread?.attentionUpdatedAt,
+            attentionState: activeThread?.attentionState,
+            pendingQuestionTarget,
+            onJumpToQuestion: handleJumpToQuestion,
+            activeGoal,
+            busy,
+            goalOpen: panels.goalPopoverOpen,
+            onGoalOpenChange: panels.setGoalPopoverOpen,
+            onSetGoal: handleSetGoal,
+            onCompleteGoal: handleCompleteGoal,
+            onClose: () => {
+              panels.closeActivity();
+              focusPanelsControl();
+            },
+            onOpenThread: (threadId) => void selectThread(threadId),
+            onStop: (sessionId) => {
+              setExecutionSessionStates((states) => ({ ...states, [sessionId]: 'stopped' }));
+              void stopSession(sessionId);
+            },
+            goalsSupported,
+            agentLabel,
+          }}
+        />
+      </div>
+    </div>
+  );
+
+  const surfacesContent = (
+    <SurfacesProvider
+      threadId={activeThreadId}
+      workspaceName={isTemporaryChat ? 'Temporary chat' : (activeWorkspace?.name ?? '')}
+      transcriptSurfaces={transcriptSurfaces}
+      intents={agentUIIntents}
+      artifacts={activeArtifacts}
+      discardArtifact={discardArtifact}
+      readOnly={
+        isItsmPersona ||
+        activeThread?.purpose === 'side-question' ||
+        threadAccess.level === 'read-only'
+      }
+    >
+      {content}
+    </SurfacesProvider>
+  );
+
+  if (isDesignPersona) {
+    return (
+      <ChatReviewFeedbackProvider
+        threadId={activeThreadId}
+        onComposeFeedback={handleComposeFeedback}
+      >
+        <DesignProvider>{surfacesContent}</DesignProvider>
+      </ChatReviewFeedbackProvider>
+    );
+  }
+
+  return (
+    <ChatReviewFeedbackProvider threadId={activeThreadId} onComposeFeedback={handleComposeFeedback}>
+      {surfacesContent}
+    </ChatReviewFeedbackProvider>
+  );
+}

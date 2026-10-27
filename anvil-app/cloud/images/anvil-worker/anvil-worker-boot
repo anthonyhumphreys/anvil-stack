@@ -1,3 +1,0 @@
-#!/bin/sh
-# Stable entrypoint provisioners invoke. All logic lives in boot.mjs.
-exec node /opt/anvil/boot.mjs "$@"

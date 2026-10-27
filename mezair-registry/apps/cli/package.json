@@ -1,0 +1,31 @@
+{
+  "name": "@mezairstack/registry-cli",
+  "version": "0.1.4",
+  "license": "MIT",
+  "description": "Command-line client for Mezair Registry package decisions, lockfile scans, reports, and overrides.",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anthonyhumphreys/mezair-stack.git"
+  },
+  "type": "module",
+  "bin": {
+    "mezair-registry": "dist/index.js"
+  },
+  "files": [
+    "dist/index.d.ts",
+    "dist/index.js",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm run build && pnpm run test",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

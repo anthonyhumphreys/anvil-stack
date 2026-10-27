@@ -1,4 +1,4 @@
-name: Stage @anvilstack/cli for npm approval
+name: Stage @mezairstack/cli for npm approval
 
 on:
   push:
@@ -18,7 +18,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: anvil-registry
+    working-directory: mezair-registry
 
 jobs:
   publish:
@@ -42,7 +42,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-registry/pnpm-lock.yaml
+          cache-dependency-path: mezair-registry/pnpm-lock.yaml
 
       - name: Update npm for trusted publishing
         run: npm install -g npm@latest
@@ -58,18 +58,18 @@ jobs:
           package_version="$(node -p "require('./apps/cli-wrapper/package.json').version")"
           expected_tag="cli-v${package_version}"
           if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match @anvilstack/cli version ${package_version} (${expected_tag})." >&2
+            echo "Tag ${GITHUB_REF_NAME} does not match @mezairstack/cli version ${package_version} (${expected_tag})." >&2
             exit 1
           fi
 
       - name: Build
-        run: pnpm --filter @anvilstack/cli build
+        run: pnpm --filter @mezairstack/cli build
 
       - name: Test
-        run: pnpm --filter @anvilstack/cli test
+        run: pnpm --filter @mezairstack/cli test
 
       - name: Stage package on npm
-        working-directory: anvil-registry/apps/cli-wrapper
+        working-directory: mezair-registry/apps/cli-wrapper
         run: |
           extra_args=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
@@ -84,6 +84,6 @@ jobs:
           {
             echo "## npm approval required"
             echo
-            echo "\`@anvilstack/cli@${package_version}\` is staged, not yet public."
+            echo "\`@mezairstack/cli@${package_version}\` is staged, not yet public."
             echo "Review and approve it in npm within seven days."
           } >> "${GITHUB_STEP_SUMMARY}"

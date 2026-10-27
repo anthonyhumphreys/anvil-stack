@@ -1,0 +1,274 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { NpmDownloadsClient, NpmRegistryRouter, encodePackagePath, filterMetadataVersions, resolveMetadataVersion, rewriteMetadataTarballs, toVersionMetadata } from "./index.js";
+
+describe("npm registry helpers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("encodes scoped package metadata paths without collapsing the slash", () => {
+    expect(encodePackagePath("@scope/pkg")).toBe("%40scope/pkg");
+  });
+
+  it("rewrites tarball URLs using the requested package metadata name", () => {
+    const rewritten = rewriteMetadataTarballs(
+      {
+        name: "@scope/pkg",
+        versions: {
+          "1.0.0": {
+            name: "mismatched-name",
+            version: "1.0.0",
+            dist: {
+              tarball: "https://registry.example/mismatched-name/-/pkg-1.0.0.tgz"
+            }
+          }
+        }
+      },
+      "https://mezair.example"
+    );
+
+    expect(rewritten.versions?.["1.0.0"]?.dist?.tarball).toBe("https://mezair.example/@scope/pkg/-/pkg-1.0.0.tgz");
+  });
+
+  it("resolves exact versions and arbitrary dist-tags from metadata", () => {
+    const metadata = {
+      name: "pkg",
+      "dist-tags": { latest: "1.0.0", beta: "2.0.0-beta.1" },
+      versions: {
+        "1.0.0": { name: "pkg", version: "1.0.0" },
+        "2.0.0-beta.1": { name: "pkg", version: "2.0.0-beta.1" }
+      }
+    };
+
+    expect(resolveMetadataVersion(metadata, "1.0.0")).toBe("1.0.0");
+    expect(resolveMetadataVersion(metadata, "latest")).toBe("1.0.0");
+    expect(resolveMetadataVersion(metadata, "beta")).toBe("2.0.0-beta.1");
+    expect(resolveMetadataVersion(metadata, "missing")).toBeUndefined();
+  });
+
+  it("removes filtered versions from npm time metadata", () => {
+    const filtered = filterMetadataVersions(
+      {
+        name: "pkg",
+        "dist-tags": { latest: "2.0.0" },
+        time: {
+          created: "2020-01-01T00:00:00.000Z",
+          modified: "2020-01-03T00:00:00.000Z",
+          "1.0.0": "2020-01-01T00:00:00.000Z",
+          "2.0.0": "2020-01-02T00:00:00.000Z"
+        },
+        versions: {
+          "1.0.0": { name: "pkg", version: "1.0.0" },
+          "2.0.0": { name: "pkg", version: "2.0.0" }
+        }
+      },
+      new Map([
+        [
+          "2.0.0",
+          {
+            action: "block",
+            score: 95,
+            reasons: [{ code: "NEW_INSTALL_SCRIPT", message: "blocked", severity: "critical" }],
+            explanation: "blocked"
+          }
+        ]
+      ]),
+      { hideQuarantined: true }
+    );
+
+    expect(filtered.versions).not.toHaveProperty("2.0.0");
+    expect(filtered.time).toMatchObject({ created: "2020-01-01T00:00:00.000Z", modified: "2020-01-03T00:00:00.000Z", "1.0.0": "2020-01-01T00:00:00.000Z" });
+    expect(filtered.time).not.toHaveProperty("2.0.0");
+  });
+
+  it("fetches weekly download counts from the npm downloads API", async () => {
+    const fetch = vi.fn(async () => Response.json({ downloads: 42 }));
+    vi.stubGlobal("fetch", fetch);
+
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads/" });
+    await expect(client.getWeeklyDownloads("@scope/pkg")).resolves.toBe(42);
+
+    expect(fetch).toHaveBeenCalledWith("https://api.npmjs.org/downloads/point/last-week/%40scope%2Fpkg");
+  });
+
+  it("coalesces concurrent download-stat requests and caches the result", async () => {
+    const fetch = vi.fn(async () => Response.json({ downloads: 42 }));
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch });
+
+    await expect(Promise.all([client.getWeeklyDownloads("pkg"), client.getWeeklyDownloads("pkg")])).resolves.toEqual([42, 42]);
+    await expect(client.getWeeklyDownloads("pkg")).resolves.toBe(42);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries unavailable download-stat requests", async () => {
+    const fetch = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ downloads: 73 }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch, sleep, retryBaseDelayMs: 10 });
+
+    await expect(client.getWeeklyDownloads("pkg")).resolves.toBe(73);
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenNthCalledWith(1, 10);
+  });
+
+  it("opens a shared quiet cooldown when npm rate limits download stats", async () => {
+    let now = Date.parse("2026-08-09T12:00:00.000Z");
+    const fetch = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(new Response("slow down", { status: 429, headers: { "retry-after": "120" } }))
+      .mockResolvedValueOnce(Response.json({ downloads: 73 }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch, sleep, now: () => now });
+
+    await expect(client.getWeeklyDownloads("first-package")).resolves.toBeUndefined();
+    await expect(client.getWeeklyDownloads("another-package")).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+
+    now += 120_001;
+    await expect(client.getWeeklyDownloads("another-package")).resolves.toBe(73);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries transient network errors while fetching download stats", async () => {
+    const fetch = vi.fn<() => Promise<Response>>().mockRejectedValueOnce(new Error("socket closed")).mockResolvedValueOnce(Response.json({ downloads: 91 }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch, sleep });
+
+    await expect(client.getWeeklyDownloads("pkg")).resolves.toBe(91);
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
+  it("bounds concurrent download-stat requests", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const fetch = vi.fn(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return Response.json({ downloads: 1 });
+    });
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch, maxConcurrency: 2 });
+
+    await Promise.all(Array.from({ length: 6 }, (_, index) => client.getWeeklyDownloads(`pkg-${index}`)));
+
+    expect(maximumActive).toBe(2);
+  });
+
+  it("routes scoped package metadata to matching upstream registries", async () => {
+    const fetch = vi.fn(async (url: string) => Response.json({ name: url.includes("npm.pkg.example.test") ? "@internal/pkg" : "left-pad" }));
+    vi.stubGlobal("fetch", fetch);
+    const router = new NpmRegistryRouter([
+      { name: "npmjs", baseUrl: "https://registry.npmjs.org" },
+      { name: "internal", baseUrl: "https://npm.pkg.example.test", scopes: ["@internal"], authToken: "secret" }
+    ]);
+
+    await expect(router.fetchMetadata("@internal/pkg")).resolves.toMatchObject({ name: "@internal/pkg" });
+    await expect(router.fetchMetadata("left-pad")).resolves.toMatchObject({ name: "left-pad" });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://npm.pkg.example.test/%40internal/pkg",
+      expect.objectContaining({ headers: { authorization: "Bearer secret" } })
+    );
+    expect(fetch).toHaveBeenNthCalledWith(2, "https://registry.npmjs.org/left-pad", expect.objectContaining({ headers: undefined }));
+    expect(router.resolveRegistryName("@internal/pkg")).toBe("internal");
+  });
+
+  it("uses registry-matched credentials when fetching tarballs", async () => {
+    const fetch = vi.fn(async () => new Response(new Uint8Array([1, 2, 3])));
+    vi.stubGlobal("fetch", fetch);
+    const router = new NpmRegistryRouter([
+      { name: "npmjs", baseUrl: "https://registry.npmjs.org" },
+      { name: "internal", baseUrl: "https://npm.pkg.example.test/npm/", scopes: ["@internal"], authToken: "secret" }
+    ]);
+
+    await expect(router.fetchTarball("https://npm.pkg.example.test/npm/@internal/pkg/-/pkg-1.0.0.tgz")).resolves.toEqual(new Uint8Array([1, 2, 3]));
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://npm.pkg.example.test/npm/@internal/pkg/-/pkg-1.0.0.tgz",
+      expect.objectContaining({ headers: { authorization: "Bearer secret" } })
+    );
+  });
+
+  it("treats missing download stats as unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
+
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads" });
+
+    await expect(client.getWeeklyDownloads("private-ish")).resolves.toBeUndefined();
+  });
+
+  it("maps npm provenance attestations from version metadata", () => {
+    const version = toVersionMetadata(
+      {
+        name: "pkg",
+        versions: {
+          "1.0.0": {
+            name: "pkg",
+            version: "1.0.0",
+            dist: {
+              tarball: "https://registry.example/pkg/-/pkg-1.0.0.tgz",
+              attestations: {
+                url: "https://registry.example/-/npm/v1/attestations/pkg@1.0.0"
+              }
+            }
+          }
+        }
+      },
+      "1.0.0"
+    );
+
+    expect(version?.provenance).toEqual({
+      present: true,
+      source: "dist.attestations",
+      attestationUrl: "https://registry.example/-/npm/v1/attestations/pkg@1.0.0",
+      raw: {
+        url: "https://registry.example/-/npm/v1/attestations/pkg@1.0.0"
+      }
+    });
+  });
+
+  it("marks provenance as absent when npm metadata has no provenance fields", () => {
+    const version = toVersionMetadata(
+      {
+        name: "pkg",
+        versions: {
+          "1.0.0": {
+            name: "pkg",
+            version: "1.0.0"
+          }
+        }
+      },
+      "1.0.0"
+    );
+
+    expect(version?.provenance).toEqual({ present: false });
+  });
+
+  it("preserves the package private flag from npm version metadata", () => {
+    const version = toVersionMetadata(
+      {
+        name: "@scope/private-pkg",
+        versions: {
+          "1.0.0": {
+            name: "@scope/private-pkg",
+            version: "1.0.0",
+            private: true
+          }
+        }
+      },
+      "1.0.0"
+    );
+
+    expect(version?.private).toBe(true);
+  });
+});

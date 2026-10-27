@@ -1,4 +1,4 @@
-name: Anvil candidate preview
+name: Mezair candidate preview
 
 on:
   workflow_dispatch:
@@ -31,10 +31,10 @@ jobs:
             platform: linux
             arch: x64
     runs-on: ${{ matrix.runner }}
-    environment: anvil-staging
+    environment: mezair-staging
     env:
-      ANVIL_DEPLOYMENT_ENV: staging
-      ANVIL_STAGING_HOSTED_BACKEND_URL: ${{ vars.ANVIL_STAGING_HOSTED_BACKEND_URL }}
+      MEZAIR_DEPLOYMENT_ENV: staging
+      MEZAIR_STAGING_HOSTED_BACKEND_URL: ${{ vars.MEZAIR_STAGING_HOSTED_BACKEND_URL }}
     steps:
       - name: Verify candidate
         id: candidate
@@ -71,11 +71,15 @@ jobs:
           )
           sudo apt-get "${packaging_apt_options[@]}" update
           sudo apt-get "${packaging_apt_options[@]}" install --yes libarchive-tools
+      - name: Prepare local product CLIs
+        working-directory: .
+        run: node .github/scripts/prepare-desktop-clis.mjs
+
       - name: Install dependencies
-        working-directory: anvil-app
+        working-directory: mezair-app
         run: pnpm install --frozen-lockfile
       - name: Build isolated unsigned preview
-        working-directory: anvil-app
+        working-directory: mezair-app
         env:
           PR: ${{ inputs.pull_request }}
           HEAD_SHA: ${{ inputs.head_sha }}
@@ -83,7 +87,7 @@ jobs:
           PREVIEW_ARCH: ${{ matrix.arch }}
         run: node scripts/build-candidate-preview.mjs "$PR" "$HEAD_SHA" "$PREVIEW_ARCH" "$PREVIEW_PLATFORM"
       - name: Verify package identity and record checksums
-        working-directory: anvil-app
+        working-directory: mezair-app
         env:
           PR: ${{ inputs.pull_request }}
           HEAD_SHA: ${{ inputs.head_sha }}
@@ -105,7 +109,7 @@ jobs:
           assert.equal(manifest.platform, process.env.PREVIEW_PLATFORM);
           assert.equal(manifest.arch, process.env.PREVIEW_ARCH);
           if (manifest.platform === 'linux') {
-            const packageName = `anvil-preview-pr${process.env.PR}-h${manifest.headSha.slice(0, 8)}`;
+            const packageName = `mezair-preview-pr${process.env.PR}-h${manifest.headSha.slice(0, 8)}`;
             const deb = manifest.artifacts.find(({ file }) => file.endsWith('.deb'));
             const pacman = manifest.artifacts.find(({ file }) => file.endsWith('.pacman'));
             assert.equal(execFileSync('dpkg-deb', ['--field', join(directory, deb.file), 'Package'], { encoding: 'utf8' }).trim(), packageName);
@@ -120,13 +124,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: anvil-preview-pr-${{ inputs.pull_request }}-${{ inputs.head_sha }}-${{ matrix.platform }}-${{ matrix.arch }}
+          name: mezair-preview-pr-${{ inputs.pull_request }}-${{ inputs.head_sha }}-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            anvil-app/dist/previews/**/*.dmg
-            anvil-app/dist/previews/**/*.zip
-            anvil-app/dist/previews/**/*.AppImage
-            anvil-app/dist/previews/**/*.deb
-            anvil-app/dist/previews/**/*.pacman
-            anvil-app/dist/previews/**/preview-manifest.json
+            mezair-app/dist/previews/**/*.dmg
+            mezair-app/dist/previews/**/*.zip
+            mezair-app/dist/previews/**/*.AppImage
+            mezair-app/dist/previews/**/*.deb
+            mezair-app/dist/previews/**/*.pacman
+            mezair-app/dist/previews/**/preview-manifest.json
           if-no-files-found: warn
           retention-days: 14

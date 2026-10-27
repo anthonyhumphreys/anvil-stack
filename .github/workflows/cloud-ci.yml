@@ -1,16 +1,16 @@
-name: Anvil Cloud CI
+name: Mezair Cloud CI
 
 on:
   pull_request:
     paths:
       - ".github/workflows/cloud-ci.yml"
-      - "anvil-cloud/**"
+      - "mezair-cloud/**"
   push:
     branches:
       - main
     paths:
       - ".github/workflows/cloud-ci.yml"
-      - "anvil-cloud/**"
+      - "mezair-cloud/**"
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,7 @@ env:
 
 defaults:
   run:
-    working-directory: anvil-cloud
+    working-directory: mezair-cloud
 
 jobs:
   validate:
@@ -46,7 +46,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-cloud/pnpm-lock.yaml
+          cache-dependency-path: mezair-cloud/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

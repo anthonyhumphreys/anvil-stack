@@ -1,0 +1,30 @@
+/* Default desktop chat palette, shared by the Electron and browser surfaces. */
+:root,
+.mezair-chat-theme {
+  --mezair-chat-font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mezair-chat-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --mezair-chat-bg-primary: #0b1020;
+  --mezair-chat-bg-secondary: #111827;
+  --mezair-chat-bg-tertiary: #172033;
+  --mezair-chat-bg-elevated: #1f2a44;
+  --mezair-chat-bg-hover: #24314f;
+  --mezair-chat-border: #33415f;
+  --mezair-chat-border-subtle: #25304a;
+  --mezair-chat-text-primary: #f8fbff;
+  --mezair-chat-text-secondary: #cbd6e6;
+  --mezair-chat-text-tertiary: #95a3b8;
+  --mezair-chat-text-muted: #8492a8;
+  --mezair-chat-accent: #ff8a3d;
+  --mezair-chat-accent-glow: rgba(255, 138, 61, 0.22);
+  --mezair-chat-accent-foreground: #0b1020;
+  --mezair-chat-scrim: rgba(0, 0, 0, 0.55);
+  --mezair-chat-success: #48d597;
+  --mezair-chat-warning: #ffd166;
+  --mezair-chat-info: #5ec8ff;
+  --mezair-chat-error: #ff6b8a;
+  --mezair-chat-persona-coder: #48d597;
+  --mezair-chat-persona-architect: #5ec8ff;
+  --mezair-chat-persona-security: #ff6b8a;
+  --mezair-chat-persona-reviewer: #ffd166;
+  --mezair-chat-persona-docs: #a78bfa;
+}

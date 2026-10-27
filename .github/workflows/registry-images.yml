@@ -1,17 +1,17 @@
-name: Anvil Registry Images and Release
+name: Mezair Registry Images and Release
 
 on:
   pull_request:
     paths:
       - ".github/workflows/registry-images.yml"
-      - "anvil-registry/apps/**"
-      - "anvil-registry/infra/docker/release/**"
-      - "anvil-registry/package.json"
-      - "anvil-registry/packages/**"
-      - "anvil-registry/pnpm-lock.yaml"
-      - "anvil-registry/pnpm-workspace.yaml"
-      - "anvil-registry/turbo.json"
-      - "anvil-registry/tsconfig.base.json"
+      - "mezair-registry/apps/**"
+      - "mezair-registry/infra/docker/release/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/packages/**"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/turbo.json"
+      - "mezair-registry/tsconfig.base.json"
   push:
     branches:
       - main
@@ -19,14 +19,14 @@ on:
       - "registry-v*"
     paths:
       - ".github/workflows/registry-images.yml"
-      - "anvil-registry/apps/**"
-      - "anvil-registry/infra/docker/release/**"
-      - "anvil-registry/package.json"
-      - "anvil-registry/packages/**"
-      - "anvil-registry/pnpm-lock.yaml"
-      - "anvil-registry/pnpm-workspace.yaml"
-      - "anvil-registry/turbo.json"
-      - "anvil-registry/tsconfig.base.json"
+      - "mezair-registry/apps/**"
+      - "mezair-registry/infra/docker/release/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/packages/**"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/turbo.json"
+      - "mezair-registry/tsconfig.base.json"
   workflow_dispatch:
 
 permissions:
@@ -47,13 +47,13 @@ jobs:
       matrix:
         include:
           - name: gateway
-            dockerfile: anvil-registry/apps/gateway/Dockerfile
+            dockerfile: mezair-registry/apps/gateway/Dockerfile
           - name: worker
-            dockerfile: anvil-registry/apps/worker/Dockerfile
+            dockerfile: mezair-registry/apps/worker/Dockerfile
           - name: admin
-            dockerfile: anvil-registry/apps/admin/Dockerfile
+            dockerfile: mezair-registry/apps/admin/Dockerfile
           - name: migrate
-            dockerfile: anvil-registry/packages/persistence/Dockerfile
+            dockerfile: mezair-registry/packages/persistence/Dockerfile
 
     steps:
       - name: Checkout
@@ -77,10 +77,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}/anvil-registry-${{ matrix.name }}
+          images: ghcr.io/${{ github.repository }}/mezair-registry-${{ matrix.name }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Anvil Registry ${{ matrix.name }} image
+            org.opencontainers.image.description=Mezair Registry ${{ matrix.name }} image
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-
@@ -89,7 +89,7 @@ jobs:
       - name: Build and publish image
         uses: docker/build-push-action@v7
         with:
-          context: anvil-registry
+          context: mezair-registry
           file: ${{ matrix.dockerfile }}
           platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           push: ${{ github.event_name != 'pull_request' }}
@@ -102,7 +102,7 @@ jobs:
         if: github.event_name != 'pull_request'
         shell: bash
         env:
-          IMAGE: ghcr.io/${{ github.repository }}/anvil-registry-${{ matrix.name }}
+          IMAGE: ghcr.io/${{ github.repository }}/mezair-registry-${{ matrix.name }}
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
@@ -137,10 +137,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package_version="$(node -p "require('./anvil-registry/package.json').version")"
+          package_version="$(node -p "require('./mezair-registry/package.json').version")"
           expected_tag="registry-v${package_version}"
           if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match Anvil Registry version ${package_version} (${expected_tag})." >&2
+            echo "Tag ${GITHUB_REF_NAME} does not match Mezair Registry version ${package_version} (${expected_tag})." >&2
             exit 1
           fi
 
@@ -148,13 +148,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bundle_name="anvil-registry-${GITHUB_REF_NAME}"
+          bundle_name="mezair-registry-${GITHUB_REF_NAME}"
           bundle_dir="dist/${bundle_name}"
           mkdir -p "${bundle_dir}"
-          cp anvil-registry/infra/docker/release/docker-compose.yml "${bundle_dir}/docker-compose.yml"
-          cp anvil-registry/infra/docker/release/docker-compose.codex.yml "${bundle_dir}/docker-compose.codex.yml"
-          cp anvil-registry/infra/docker/release/.env.example "${bundle_dir}/.env.example"
-          cp anvil-registry/infra/docker/release/README.md "${bundle_dir}/README.md"
+          cp mezair-registry/infra/docker/release/docker-compose.yml "${bundle_dir}/docker-compose.yml"
+          cp mezair-registry/infra/docker/release/docker-compose.codex.yml "${bundle_dir}/docker-compose.codex.yml"
+          cp mezair-registry/infra/docker/release/.env.example "${bundle_dir}/.env.example"
+          cp mezair-registry/infra/docker/release/README.md "${bundle_dir}/README.md"
           tar -C dist -czf "dist/${bundle_name}.tar.gz" "${bundle_name}"
           (cd dist && zip -qr "${bundle_name}.zip" "${bundle_name}")
           (cd dist && sha256sum "${bundle_name}.tar.gz" "${bundle_name}.zip" > SHA256SUMS)
@@ -165,24 +165,24 @@ jobs:
           set -euo pipefail
           notes_file="$(mktemp)"
           cat > "${notes_file}" <<EOF
-          Anvil Registry ${GITHUB_REF_NAME} is an alpha release for deliberate local, NAS, and CI pilots.
+          Mezair Registry ${GITHUB_REF_NAME} is an alpha release for deliberate local, NAS, and CI pilots.
 
           The attached release bundle contains a hardened Docker Compose stack for Linux AMD64 and ARM64 hosts. Copy \`.env.example\` to \`.env\`, replace every placeholder secret, set \`PUBLIC_BASE_URL\`, and read the included operator guide before starting the stack.
 
           Published images:
 
-          - \`ghcr.io/${GITHUB_REPOSITORY}/anvil-registry-gateway:${GITHUB_REF_NAME}\`
-          - \`ghcr.io/${GITHUB_REPOSITORY}/anvil-registry-worker:${GITHUB_REF_NAME}\`
-          - \`ghcr.io/${GITHUB_REPOSITORY}/anvil-registry-admin:${GITHUB_REF_NAME}\`
-          - \`ghcr.io/${GITHUB_REPOSITORY}/anvil-registry-migrate:${GITHUB_REF_NAME}\`
+          - \`ghcr.io/${GITHUB_REPOSITORY}/mezair-registry-gateway:${GITHUB_REF_NAME}\`
+          - \`ghcr.io/${GITHUB_REPOSITORY}/mezair-registry-worker:${GITHUB_REF_NAME}\`
+          - \`ghcr.io/${GITHUB_REPOSITORY}/mezair-registry-admin:${GITHUB_REF_NAME}\`
+          - \`ghcr.io/${GITHUB_REPOSITORY}/mezair-registry-migrate:${GITHUB_REF_NAME}\`
 
           Keep the gateway on a trusted network, seed representative lockfiles in development mode, and review policy decisions before enabling stricter enforcement.
           EOF
 
           gh release create "${GITHUB_REF_NAME}" \
-            "dist/anvil-registry-${GITHUB_REF_NAME}.tar.gz" \
-            "dist/anvil-registry-${GITHUB_REF_NAME}.zip" \
+            "dist/mezair-registry-${GITHUB_REF_NAME}.tar.gz" \
+            "dist/mezair-registry-${GITHUB_REF_NAME}.zip" \
             "dist/SHA256SUMS" \
-            --title "Anvil Registry ${GITHUB_REF_NAME}" \
+            --title "Mezair Registry ${GITHUB_REF_NAME}" \
             --notes-file "${notes_file}" \
             --prerelease

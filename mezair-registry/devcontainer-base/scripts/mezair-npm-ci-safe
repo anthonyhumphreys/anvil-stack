@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPORT_DIR="${MEZAIR_REPORT_DIR:-.mezair/reports}"
+mkdir -p "$REPORT_DIR"
+
+echo "[mezair] Running safe npm install: npm ci --ignore-scripts"
+npm ci --ignore-scripts
+
+echo "[mezair] Scanning dependency lifecycle scripts"
+mezair-scan-lifecycle-scripts > "$REPORT_DIR/lifecycle-scripts.json"
+
+echo "[mezair] Report written to $REPORT_DIR/lifecycle-scripts.json"
+mezair-submit-report-if-configured "$REPORT_DIR/lifecycle-scripts.json" lifecycle
+mezair-risk-gate "$REPORT_DIR/lifecycle-scripts.json" lifecycle

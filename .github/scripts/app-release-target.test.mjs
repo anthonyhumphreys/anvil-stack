@@ -35,7 +35,7 @@ function target(overrides = {}) {
 }
 
 function withTempDir(callback) {
-  const directory = mkdtempSync(path.join(os.tmpdir(), 'anvil-release-target-'));
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'mezair-release-target-'));
   try {
     return callback(directory);
   } finally {
@@ -46,7 +46,7 @@ function withTempDir(callback) {
 test('resolves an absent manual tag to the candidate version and build SHA', () => {
   assert.deepEqual(resolveAppReleaseTarget(target()), {
     tag: 'app-v1.2.3',
-    name: 'Anvil app-v1.2.3',
+    name: 'Mezair app-v1.2.3',
     tagExists: false,
   });
 });
@@ -233,7 +233,7 @@ function runEnsureTarget(directory, envOverrides = {}, tagExisted = 'false') {
   const mocks = makeReleaseCommandMocks(directory);
   const result = spawnSync(
     'bash',
-    [ensureTargetPath, 'app-v1.2.3', buildSha, tagExisted, 'Anvil app-v1.2.3', mocks.notesPath],
+    [ensureTargetPath, 'app-v1.2.3', buildSha, tagExisted, 'Mezair app-v1.2.3', mocks.notesPath],
     {
       encoding: 'utf8',
       env: { ...mocks.env, ...envOverrides },

@@ -6,7 +6,7 @@ Progress log: [MARKET_READINESS_PROGRESS.md](MARKET_READINESS_PROGRESS.md)
 
 ## Intended result
 
-A developer can understand Anvil's value, install it, optionally connect sync during first-run setup, choose whether this device accepts mesh work, and find useful status and recovery controls in Desktop and the web dashboard. Cloud execution has a provider-neutral contract that users and workflows can use without inheriting provider APIs. Marketing must distinguish implemented behavior from unverified or future capabilities.
+A developer can understand Mezair's value, install it, optionally connect sync during first-run setup, choose whether this device accepts mesh work, and find useful status and recovery controls in Desktop and the web dashboard. Cloud execution has a provider-neutral contract that users and workflows can use without inheriting provider APIs. Marketing must distinguish implemented behavior from unverified or future capabilities.
 
 This work includes implementation, not just recommendations. Implementation agents use `gpt-5.6-luna` with `xhigh` reasoning. Each owns separate files; the primary agent owns integration review, this plan, and the progress log. No production deployment, paid resources, release, or shared-system changes are included.
 
@@ -15,10 +15,10 @@ This work includes implementation, not just recommendations. Implementation agen
 - Desktop settings currently put backend selection, enrollment, sync adoption, device management, security, dashboard grants, portability, and mesh activity in one large panel. Review the complete interaction before rearranging it.
 - Sync carries portable workspace definitions, settings, workflows, and agent definitions. It does not automatically sync repository files or chat transcripts. Copy and onboarding must preserve this distinction.
 - Mesh jobs already have durable attempts, approval, cancellation, isolation, and handoff machinery. Readiness depends on recovery and truthful terminal states, not just the happy path.
-- There are two cloud paths. Mesh cloud environments already implement AWS Lambda MicroVM, Vercel Sandbox, Cloudflare Sandbox, and Anvil-managed adapters in `anvil-app/src/main/services/cloud-environment.service.ts`. They run mesh workers and are accessible through daemon commands and workflow targets. The main usability gap is bringing their connection and environment lifecycle into Desktop UI.
-- Separately, `PATCH.md` C2 protects the Anvil Cloud execution control plane, credential boundaries, immutable sources, cursor recovery, bounded costs and TTL, and verified cleanup. AWS is that path's current production-target adapter and remains read-only. Do not confuse its limits with mesh environment adapter availability. Both paths need live-provider verification before production claims.
+- There are two cloud paths. Mesh cloud environments already implement AWS Lambda MicroVM, Vercel Sandbox, Cloudflare Sandbox, and Mezair-managed adapters in `mezair-app/src/main/services/cloud-environment.service.ts`. They run mesh workers and are accessible through daemon commands and workflow targets. The main usability gap is bringing their connection and environment lifecycle into Desktop UI.
+- Separately, `PATCH.md` C2 protects the Mezair Cloud execution control plane, credential boundaries, immutable sources, cursor recovery, bounded costs and TTL, and verified cleanup. AWS is that path's current production-target adapter and remains read-only. Do not confuse its limits with mesh environment adapter availability. Both paths need live-provider verification before production claims.
 - The cloud execution architecture explicitly lists missing production work, including a compatible worker image, real-account smoke tests, concrete subscription login drivers, credential brokering, hosted concurrent persistence, and reviewed patch artifacts.
-- Preserve the existing restrained Anvil visual identity. Desktop and dashboard prioritize operating tasks; public pages prioritize understanding the product and taking a useful next action.
+- Preserve the existing restrained Mezair visual identity. Desktop and dashboard prioritize operating tasks; public pages prioritize understanding the product and taking a useful next action.
 
 ## Work sequence
 
@@ -72,7 +72,7 @@ Acceptance: a tested caller can start and inspect execution through a provider-n
 - [x] Provide useful empty, expired-access, loading, and failure states; maintain keyboard and responsive behavior. Authenticated dashboard behavior still needs live acceptance.
 - [x] Apply Impeccable clarify, delight, and polish after the information hierarchy is sound. Web visual checks completed; authenticated dashboard remains a live acceptance gate.
 
-Acceptance: visitors can explain what Anvil does and choose a working setup route; dashboard users can identify work needing attention and act without deciphering protocol terminology.
+Acceptance: visitors can explain what Mezair does and choose a working setup route; dashboard users can identify work needing attention and act without deciphering protocol terminology.
 
 ### 6. Integration and verification
 
@@ -96,8 +96,8 @@ This is a source-code inventory, not a claim that an account or provider is depl
 | Mesh on AWS Lambda MicroVM | Desktop provider adapter | Daemon environment commands and workflow cloud target; Desktop setup being added | Compatible image, account credentials, bootstrap, job, teardown |
 | Mesh on Vercel Sandbox | Desktop provider adapter | Same mesh environment contract | Image compatibility, subscription/API permissions, live lifecycle |
 | Mesh on Cloudflare Sandbox | Desktop adapter plus `cloud/provisioner` | Same mesh environment contract | Deployed provisioner, token, image, live lifecycle |
-| Anvil-managed mesh worker | Backend provisioner binding | Managed environment request | Hosted identity/entitlement, service binding, D1, quotas and teardown |
-| Anvil Cloud execution control plane | AWS transport plus fake conformance provider | Optional Desktop Cloud panel and CLI | Worker/login drivers, hosted persistence, credential broker, real-account smoke test |
+| Mezair-managed mesh worker | Backend provisioner binding | Managed environment request | Hosted identity/entitlement, service binding, D1, quotas and teardown |
+| Mezair Cloud execution control plane | AWS transport plus fake conformance provider | Optional Desktop Cloud panel and CLI | Worker/login drivers, hosted persistence, credential broker, real-account smoke test |
 
 Desktop must explain that provisioning a cloud worker prepares capacity; assigning a job or workflow gives it work. A submitted request is not an enrolled worker, and requested cleanup is not verified teardown.
 
@@ -105,12 +105,12 @@ Desktop must explain that provisioning a cloud worker prepares capacity; assigni
 
 | Workstream | Owned files |
 | --- | --- |
-| Desktop experience | `anvil-app/src/renderer/`, narrow shared UI helpers |
-| Sync and mesh reliability | `anvil-app/src/main/`, `anvil-app/cloud/backend/`, associated tests |
-| Cloud execution | `anvil-cloud/`, relevant `PATCH.md` entry |
+| Desktop experience | `mezair-app/src/renderer/`, narrow shared UI helpers |
+| Sync and mesh reliability | `mezair-app/src/main/`, `mezair-app/cloud/backend/`, associated tests |
+| Cloud execution | `mezair-cloud/`, relevant `PATCH.md` entry |
 | Mesh cloud environments | Desktop cloud environment service, typed IPC, new settings panel, workflow target UI |
 | Desktop remote execution | Desktop cloud execution service, its renderer panel and tests |
-| Website and dashboard | `anvil-website/` |
+| Website and dashboard | `mezair-website/` |
 | Integration and readiness record | Root plan and progress documents, combined review |
 
 Revise this plan as inspection establishes narrower defects or required dependencies. Record scope decisions in the progress log instead of silently dropping requested work.

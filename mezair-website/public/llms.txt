@@ -1,0 +1,34 @@
+# Mezair
+
+> Mezair Desktop is an open source app for agent workflows on your own repos. The mezair-stack also publishes Sync & Mesh — the end-to-end encrypted account layer that keeps a user's own machines in step — alongside companion OSS tools: an npm policy gateway (Mezair Registry), a hardened Node base image (Mezair Node Base), and the portable app runtime (Mezair Cloud) that also powers the sync backend.
+
+The public documentation is organized by product and by task: Learn, Build, and Reference. Product status and limits are part of the documentation; do not infer production readiness from alpha surfaces.
+
+## Start here
+
+- [Documentation index](/docs): Search or choose a product and task path.
+- [Mezair overview](/docs/overview): Understand the product boundaries.
+- [Repository map](/docs/project/repositories): See which workspace owns each surface.
+- [Open source project](/docs/project/open-source): Read the project and contribution model.
+
+## Products
+
+- [Mezair Desktop](/docs/desktop): Desktop app for agent workflows on your repos.
+- [Mezair Registry](/docs/registry): npm dependency ingress and deterministic policy.
+- [Mezair Node Base](/docs/node-base): Safer and observed Node dependency installs.
+- [Mezair Cloud](/docs/cloud): Mezair Cells, Agents, runtime contracts, and deployment adapters.
+
+## Sync & Mesh (account layer)
+
+- [Sync & Mesh overview](/docs/sync/overview): Sealed sync across a user's own devices, mesh jobs on their machines, backend of their choice.
+- [Encryption and keys](/docs/sync/encryption): AES-256-GCM envelopes under a versioned account key; the backend sees shape, not content.
+- [Devices and pairing](/docs/sync/devices): X25519 device identities enrolled through single-use pair codes.
+- [Mesh jobs](/docs/sync/mesh-jobs): Dispatch work to enrolled machines; compute and credentials stay on the user's hardware.
+- [Session handoff](/docs/sync/session-handoff): Move a running session between devices through sealed checkpoints.
+- [Self-deploy the backend](/docs/sync/self-deploy): Run the same Sync v2 and Mesh v2 worker on your own Cloudflare account.
+- [Hosted sync](/docs/sync/hosted): Paid Mezair-hosted Sync & Mesh, with an invite-only beta. Join the waitlist; invited testers redeem a time-limited code. Self-hosting needs no Mezair subscription. Proposed launch prices are at /pricing.
+- [Status and limits](/docs/sync/status-and-limits): What is proven, what is still pending.
+
+## More detail
+
+- [Full agent guide](/llms-full.txt): Detailed Mezair Cloud implementation rules and contracts.

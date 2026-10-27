@@ -1,0 +1,566 @@
+/*
+ * The homepage workbench: an illustration of Mezair Desktop built from the
+ * app's own vocabulary (thread rail, turn card with activity edge, diff, changes
+ * footer). A bounded artifact-dark artifact that looks the same in both themes.
+ */
+
+@property --wb-activity {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 20%;
+}
+
+.wb-window {
+  --wb-bg: oklch(var(--artifact-bg));
+  --wb-raised: oklch(var(--artifact-raised));
+  --wb-line: color-mix(in oklch, oklch(var(--artifact-line)) 75%, transparent);
+  --wb-text: oklch(var(--artifact-text));
+  --wb-dim: oklch(var(--artifact-dim));
+  --wb-accent: oklch(var(--artifact-accent));
+  --wb-ok: oklch(var(--artifact-ok));
+  --wb-del: oklch(0.72 0.15 22);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklch, oklch(var(--artifact-line)) 70%, transparent);
+  border-radius: 14px;
+  background: var(--wb-bg);
+  color: var(--wb-text);
+  font-size: 13px;
+  line-height: 1.5;
+  box-shadow:
+    0 1px 0 color-mix(in oklch, white 6%, transparent) inset,
+    0 30px 70px -30px oklch(0.15 0.04 265 / 0.55),
+    0 12px 24px -16px oklch(0.15 0.04 265 / 0.4);
+}
+
+.wb-titlebar {
+  display: flex;
+  height: 2.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--wb-line);
+  padding: 0 0.9rem;
+  color: var(--wb-dim);
+  font-size: 12px;
+}
+
+.wb-lights {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.wb-lights span {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--wb-dim) 40%, transparent);
+}
+
+.wb-lights span:first-child {
+  background: var(--wb-accent);
+}
+
+.wb-title {
+  font-weight: 600;
+  color: var(--wb-text);
+}
+
+.wb-branch {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--wb-line);
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.wb-body {
+  display: grid;
+  grid-template-columns: 11.5rem minmax(0, 1fr);
+  height: 31rem;
+}
+
+.wb-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border-right: 1px solid var(--wb-line);
+  padding: 0.85rem 0.6rem;
+  background: color-mix(in oklch, var(--wb-raised) 45%, var(--wb-bg));
+}
+
+.wb-rail-label {
+  padding: 0 0.45rem 0.35rem;
+  color: var(--wb-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.wb-thread {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  border-radius: 8px;
+  padding: 0.45rem;
+  color: var(--wb-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color 400ms ease, color 400ms ease;
+}
+
+.wb-thread span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-thread.is-current {
+  background: color-mix(in oklch, var(--wb-accent) 12%, transparent);
+  color: var(--wb-text);
+}
+
+.wb-dot {
+  flex: none;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--wb-dim) 60%, transparent);
+  transition: background-color 400ms ease, box-shadow 400ms ease;
+}
+
+.wb-dot.is-working {
+  background: var(--wb-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--wb-accent) 22%, transparent);
+}
+
+.wb-dot.is-done {
+  background: var(--wb-ok);
+}
+
+.wb-device {
+  margin-top: auto;
+  border-top: 1px solid var(--wb-line);
+  padding-top: 0.75rem;
+  opacity: 0.55;
+  transition: opacity 500ms ease;
+}
+
+.wb-device.is-on {
+  opacity: 1;
+}
+
+.wb-device-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.45rem;
+  color: var(--wb-dim);
+  font-size: 12px;
+}
+
+.wb-device-row.is-target {
+  color: var(--wb-text);
+}
+
+.wb-device-status {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--wb-dim);
+}
+
+.wb-device.is-on .wb-device-status {
+  color: var(--wb-ok);
+}
+
+.wb-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.wb-feed {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  padding: 1rem 1.1rem 0.5rem;
+}
+
+/* Blocks fold in with the grid-rows technique, so the feed grows from the
+   bottom like a real conversation. */
+.wb-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(10px);
+  transition:
+    grid-template-rows 520ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 380ms ease,
+    transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wb-reveal[data-on="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: none;
+}
+
+.wb-reveal-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.wb-reveal[data-on="true"] > .wb-reveal-inner > * {
+  margin-bottom: 0.75rem;
+}
+
+.wb-repo {
+  border: 1px solid var(--wb-line);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+}
+
+.wb-repo-name {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.wb-repo-meta {
+  margin-top: 0.15rem;
+  color: var(--wb-dim);
+  font-size: 12px;
+}
+
+.wb-tree {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.3rem;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--wb-dim);
+}
+
+.wb-tree li::before {
+  content: "";
+  display: inline-block;
+  width: 0.55rem;
+  height: 1px;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+  background: var(--wb-line);
+}
+
+.wb-user {
+  margin-left: auto;
+  max-width: 82%;
+  border: 1px solid var(--wb-line);
+  border-radius: 12px;
+  background: var(--wb-raised);
+  padding: 0.7rem 0.85rem;
+}
+
+/* The turn card with Mezair Desktop's activity edge: a highlight that wanders the
+   rim while work runs, and cools when it settles. */
+.wb-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border: 1px solid var(--wb-line);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+  background: color-mix(in oklch, var(--wb-raised) 55%, var(--wb-bg));
+  transition: border-color 700ms ease;
+}
+
+.wb-card::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 13px;
+  padding: 1px;
+  background: radial-gradient(
+    34% 160% at var(--wb-activity) 0%,
+    var(--wb-accent),
+    color-mix(in oklch, var(--wb-accent) 45%, transparent) 50%,
+    transparent 78%
+  );
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 700ms ease;
+}
+
+.wb-card.is-working {
+  border-color: color-mix(in oklch, var(--wb-accent) 35%, var(--wb-line));
+}
+
+.wb-card.is-working::before {
+  opacity: 1;
+}
+
+.wb-window[data-live] .wb-card.is-working::before {
+  animation: wb-activity 5.5s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+
+@keyframes wb-activity {
+  from { --wb-activity: 6%; }
+  to { --wb-activity: 92%; }
+}
+
+.wb-card-mark {
+  display: grid;
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: none;
+  place-items: center;
+  color: var(--wb-ok);
+}
+
+.wb-live {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--wb-accent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--wb-accent) 25%, transparent);
+}
+
+.wb-window[data-live] .wb-live {
+  animation: wb-breathe 2.2s ease-in-out infinite;
+}
+
+@keyframes wb-breathe {
+  50% { box-shadow: 0 0 0 6px color-mix(in oklch, var(--wb-accent) 0%, transparent); }
+}
+
+.wb-card-text {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+
+.wb-card-title {
+  display: flex;
+  gap: 0.6rem;
+  font-weight: 600;
+}
+
+.wb-card-count {
+  color: var(--wb-dim);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-card-detail {
+  overflow: hidden;
+  color: var(--wb-dim);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: wb-ticker 380ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes wb-ticker {
+  from { opacity: 0; transform: translateY(60%); }
+}
+
+.wb-card-time {
+  color: var(--wb-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-answer {
+  padding: 0 0.15rem;
+}
+
+.wb-agent {
+  margin-bottom: 0.2rem;
+  color: var(--wb-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.wb-answer code,
+.wb-diff pre {
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+.wb-answer code {
+  border-radius: 4px;
+  background: var(--wb-raised);
+  padding: 0.05rem 0.3rem;
+  font-size: 12px;
+}
+
+.wb-diff {
+  overflow: hidden;
+  border: 1px solid var(--wb-line);
+  border-radius: 10px;
+}
+
+.wb-diff-head {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--wb-line);
+  padding: 0.45rem 0.75rem;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--wb-dim);
+}
+
+.wb-diff pre {
+  display: grid;
+  padding: 0.5rem 0;
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.wb-diff pre span {
+  padding: 0 0.75rem;
+}
+
+.wb-diff pre .is-ctx { color: var(--wb-dim); }
+.wb-diff pre .is-del { background: color-mix(in oklch, var(--wb-del) 14%, transparent); color: var(--wb-del); }
+.wb-diff pre .is-add { background: color-mix(in oklch, var(--wb-ok) 13%, transparent); color: var(--wb-ok); }
+
+.is-add { color: var(--wb-ok); }
+.is-del { color: var(--wb-del); }
+
+.wb-checks {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border-top: 1px solid var(--wb-line);
+  padding: 0.45rem 0.75rem;
+  color: var(--wb-ok);
+  font-size: 12px;
+}
+
+.wb-changes {
+  border: 1px solid var(--wb-line);
+  border-radius: 10px;
+  padding: 0.75rem 0.85rem;
+}
+
+.wb-changes-head {
+  font-weight: 600;
+}
+
+.wb-actions {
+  margin-top: 0.65rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.wb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--wb-line);
+  border-radius: 7px;
+  padding: 0.3rem 0.6rem;
+  color: var(--wb-text);
+  font-size: 12px;
+}
+
+.wb-btn.is-primary {
+  border-color: transparent;
+  background: var(--wb-accent);
+  color: oklch(0.18 0.02 265);
+  font-weight: 600;
+}
+
+.wb-composer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.4rem 1.1rem 1rem;
+  border: 1px solid var(--wb-line);
+  border-radius: 12px;
+  padding: 0.6rem 0.65rem 0.6rem 0.85rem;
+  color: var(--wb-dim);
+}
+
+.wb-composer-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-composer-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.wb-chip {
+  border: 1px solid var(--wb-line);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 11px;
+}
+
+.wb-send {
+  display: grid;
+  width: 1.6rem;
+  height: 1.6rem;
+  place-items: center;
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--wb-accent) 85%, black);
+  color: oklch(0.18 0.02 265);
+}
+
+.wb-marker {
+  display: grid;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  transition: color 400ms ease;
+}
+
+/* Small screens: each step shows a still, so the rail goes and the window
+   gets shorter. */
+@media (max-width: 1023px) {
+  .wb-body {
+    grid-template-columns: minmax(0, 1fr);
+    height: 25rem;
+  }
+
+  .wb-rail {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-reveal,
+  .wb-thread,
+  .wb-dot,
+  .wb-card,
+  .wb-card::before,
+  .wb-device {
+    transition: none;
+  }
+
+  .wb-card-detail,
+  .wb-window .wb-live,
+  .wb-window .wb-card.is-working::before {
+    animation: none !important;
+  }
+}

@@ -1,0 +1,1111 @@
+import { useEffect, useState } from 'react';
+import { ArrowRight, Bot, GitFork, Plus, Trash2, UserCheck } from 'lucide-react';
+import type {
+  AgentProvider,
+  CodexCliStatus,
+  CursorCliStatus,
+  DevinCliStatus,
+  LlmGatewayStatus,
+  Persona,
+  WorkflowAgentProfile,
+  WorkflowNode,
+  WorkflowOrchestration,
+  WorkflowRun,
+  WorkflowTargetPolicy,
+} from '../../../shared/types';
+import type {
+  CloudEnvironmentProviderConnection,
+  CloudEnvironmentRecord,
+  SyncDevice,
+} from '../../../shared/sync-runtime';
+import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
+import { isAcpAgentProvider } from '../../../shared/agent-providers';
+import { supportsRemoteWorkflowProvider } from '../../../shared/workflow-target';
+import {
+  orchestrationConfig,
+  specialistNode,
+  TEAM_STRATEGIES,
+} from '../../../shared/workflow-orchestration';
+import { buildProviderModelOptions } from '../../utils/chat-model-options';
+import { SettingsLink } from '../shared/SettingsLink';
+
+const fieldClass = 'workflow-input';
+
+function CapabilitiesInput({
+  values,
+  onCommit,
+}: {
+  values: string[];
+  onCommit: (values: string[]) => void;
+}) {
+  const saved = values.join(', ');
+  const [draft, setDraft] = useState(saved);
+  useEffect(() => setDraft(saved), [saved]);
+  return (
+    <input
+      className={`${fieldClass} mt-1`}
+      placeholder="typescript, security, testing"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() =>
+        onCommit([
+          ...new Set(
+            draft
+              .split(',')
+              .map((value) => value.trim())
+              .filter(Boolean),
+          ),
+        ])
+      }
+    />
+  );
+}
+
+export function OrchestrationPanel({
+  value,
+  onChange,
+  providers,
+  personas,
+  codexStatus,
+  cursorStatus,
+  devinStatus,
+  llmGatewayStatus,
+}: {
+  value?: WorkflowOrchestration;
+  onChange: (value: WorkflowOrchestration) => void;
+  providers: AgentProvider[];
+  personas: Persona[];
+  codexStatus: CodexCliStatus | null;
+  cursorStatus: CursorCliStatus | null;
+  devinStatus: DevinCliStatus | null;
+  llmGatewayStatus: LlmGatewayStatus | null;
+}) {
+  const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
+  const config = orchestrationConfig(value);
+  const update = (patch: Partial<WorkflowOrchestration>) => onChange({ ...config, ...patch });
+  const updateProfile = (id: string, patch: Partial<WorkflowAgentProfile>) =>
+    update({
+      profiles: config.profiles.map((profile) =>
+        profile.id === id ? { ...profile, ...patch } : profile,
+      ),
+    });
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <h3 className="text-base font-semibold text-text-primary">Team & limits</h3>
+      <p className="mt-2 text-sm text-text-secondary">
+        Choose each specialist’s provider, model and destination. The coordinating agent delegates
+        within this pool.
+      </p>
+      <div className="mb-3 mt-6 flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-text-primary">Specialist pool</h4>
+        <button
+          className="inline-flex items-center gap-1 text-xs text-accent"
+          onClick={() => {
+            const id = crypto.randomUUID();
+            const provider = providers[0] ?? 'codex';
+            const model = buildProviderModelOptions(
+              provider,
+              null,
+              codexStatus,
+              cursorStatus,
+              llmGatewayStatus,
+              devinStatus,
+            )[0];
+            update({
+              profiles: [
+                ...config.profiles,
+                {
+                  id,
+                  name: `Specialist ${config.profiles.length + 1}`,
+                  personaId: 'coder',
+                  provider,
+                  model: model?.id ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL),
+                  reasoningEffort: model?.defaultReasoningEffort ?? 'medium',
+                  capabilities: [],
+                },
+              ],
+            });
+            setExpandedProfile(id);
+          }}
+        >
+          <Plus size={14} /> Add specialist
+        </button>
+      </div>
+      {!config.profiles.length && (
+        <p className="text-sm text-text-tertiary">
+          Add a specialist to enable teams and autonomous delegation. Profiles can use different
+          providers and models.
+        </p>
+      )}
+      <div className="divide-y divide-border">
+        {config.profiles.map((profile) => {
+          const modelOptions = buildProviderModelOptions(
+            profile.provider,
+            profile.model,
+            codexStatus,
+            cursorStatus,
+            llmGatewayStatus,
+            devinStatus,
+          );
+          const selectedModel = modelOptions.find((model) => model.id === profile.model);
+          return (
+            <div key={profile.id} className="py-1">
+              <button
+                type="button"
+                aria-expanded={expandedProfile === profile.id}
+                aria-controls={`specialist-${profile.id}`}
+                onClick={() =>
+                  setExpandedProfile(expandedProfile === profile.id ? null : profile.id)
+                }
+                className="flex w-full items-center gap-3 rounded-lg px-2 py-3 text-left transition hover:bg-bg-tertiary focus-visible:outline focus-visible:outline-accent"
+              >
+                <Bot size={17} className="shrink-0 text-text-tertiary" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-text-primary">
+                    {profile.name}
+                  </span>
+                  <span className="mt-1 block truncate text-xs text-text-tertiary">
+                    {profile.provider} · {profile.model}
+                    {!isAcpAgentProvider(profile.provider) ? ` · ${profile.reasoningEffort}` : ''}
+                  </span>
+                </span>
+                <span className="text-xs text-accent">
+                  {expandedProfile === profile.id ? 'Done' : 'Edit'}
+                </span>
+              </button>
+              {expandedProfile === profile.id && (
+                <div id={`specialist-${profile.id}`} className="space-y-3 px-2 pb-5 pt-2">
+                  <div className="flex items-center gap-2">
+                    <Bot size={16} className="shrink-0 text-accent" />
+                    <input
+                      aria-label="Specialist name"
+                      value={profile.name}
+                      onChange={(event) => updateProfile(profile.id, { name: event.target.value })}
+                      className={fieldClass}
+                    />
+                    <button
+                      aria-label={`Remove ${profile.name}`}
+                      className="p-2 text-text-tertiary hover:text-error"
+                      onClick={() =>
+                        update({
+                          profiles: config.profiles.filter((item) => item.id !== profile.id),
+                        })
+                      }
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                  <label className="block text-xs text-text-secondary">
+                    Persona
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={profile.personaId}
+                      onChange={(event) =>
+                        updateProfile(profile.id, { personaId: event.target.value })
+                      }
+                    >
+                      {personas.map((persona) => (
+                        <option key={persona.id} value={persona.id}>
+                          {persona.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-xs text-text-secondary">
+                    Provider
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={profile.provider}
+                      onChange={(event) => {
+                        const provider = event.target.value as AgentProvider;
+                        const model = buildProviderModelOptions(
+                          provider,
+                          null,
+                          codexStatus,
+                          cursorStatus,
+                          llmGatewayStatus,
+                          devinStatus,
+                        )[0];
+                        updateProfile(profile.id, {
+                          provider,
+                          ...(!supportsRemoteWorkflowProvider(provider)
+                            ? { target: undefined }
+                            : {}),
+                          model:
+                            model?.id ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL),
+                          reasoningEffort: model?.defaultReasoningEffort ?? 'medium',
+                        });
+                      }}
+                    >
+                      {[...new Set([...providers, profile.provider])].map((provider) => (
+                        <option key={provider} value={provider}>
+                          {provider}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-xs text-text-secondary">
+                    Model
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={profile.model}
+                      onChange={(event) => {
+                        const model = modelOptions.find(
+                          (option) => option.id === event.target.value,
+                        );
+                        updateProfile(profile.id, {
+                          model: event.target.value,
+                          reasoningEffort:
+                            (model?.supportedReasoningEfforts.includes(profile.reasoningEffort) ??
+                            false)
+                              ? profile.reasoningEffort
+                              : (model?.defaultReasoningEffort ?? profile.reasoningEffort),
+                        });
+                      }}
+                    >
+                      {modelOptions.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label} · {model.id}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-xs text-text-tertiary">
+                      {profile.provider === 'cursor' ? (
+                        cursorStatus?.models.length ? (
+                          `${cursorStatus.models.length} models detected from Cursor CLI.`
+                        ) : (
+                          "Cursor's model catalog is unavailable. Auto uses Cursor's default."
+                        )
+                      ) : profile.provider === 'devin' ? (
+                        devinStatus?.models.length ? (
+                          `${devinStatus.models.length} models detected from Devin CLI.`
+                        ) : (
+                          "Devin's model catalog is unavailable. Auto uses Devin's default."
+                        )
+                      ) : profile.provider === 'llmgateway' ? (
+                        llmGatewayStatus?.models.length ? (
+                          `${llmGatewayStatus.models.filter((model) => !model.hidden).length} models available from LLMGateway.`
+                        ) : (
+                          <>
+                            LLMGateway model catalog is unavailable.{' '}
+                            <SettingsLink to="providers#agent-providers">
+                              Connect or refresh it in Settings
+                            </SettingsLink>
+                            .
+                          </>
+                        )
+                      ) : codexStatus?.models?.length ? (
+                        `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
+                      ) : (
+                        'Using the built-in model catalog.'
+                      )}
+                    </p>
+                  </label>
+                  {profile.provider === 'llmgateway' &&
+                  !selectedModel?.supportedReasoningEfforts.length ? (
+                    <p className="text-xs text-text-tertiary">
+                      No configurable reasoning levels for this model.
+                    </p>
+                  ) : !isAcpAgentProvider(profile.provider) ? (
+                    <label className="block text-xs text-text-secondary">
+                      Reasoning
+                      <select
+                        className={`${fieldClass} mt-1`}
+                        value={profile.reasoningEffort}
+                        onChange={(event) =>
+                          updateProfile(profile.id, {
+                            reasoningEffort: event.target
+                              .value as WorkflowAgentProfile['reasoningEffort'],
+                          })
+                        }
+                      >
+                        {(
+                          selectedModel?.supportedReasoningEfforts ??
+                          (profile.provider === 'llmgateway'
+                            ? []
+                            : getCodexModelReasoningOptions(profile.model)
+                                .supportedReasoningEfforts)
+                        ).map((effort) => (
+                          <option key={effort} value={effort}>
+                            {effort}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <p className="text-xs text-text-tertiary">
+                      {profile.provider === 'devin' ? 'Devin' : 'Cursor'} reasoning is selected
+                      through its model ID.
+                    </p>
+                  )}
+                  <label className="block text-xs text-text-secondary">
+                    Capabilities, separated by commas
+                    <CapabilitiesInput
+                      values={profile.capabilities}
+                      onCommit={(capabilities) => updateProfile(profile.id, { capabilities })}
+                    />
+                  </label>
+                  <details className="border-t border-border-subtle pt-3">
+                    <summary className="cursor-pointer text-xs font-medium text-text-secondary">
+                      Execution destination
+                    </summary>
+                    <div className="mt-3">
+                      <TeamSettings
+                        targetOnly
+                        node={specialistNode(profile, profile.id, profile.name, 'Specialist task')}
+                        profiles={[]}
+                        onChange={(patch) => updateProfile(profile.id, { target: patch.target })}
+                      />
+                    </div>
+                  </details>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <details className="mt-6 border-t border-border pt-4">
+        <summary className="cursor-pointer text-sm font-medium text-text-secondary">
+          Run limits
+          <span className="mt-1 block text-xs font-normal text-text-tertiary">
+            {config.maxConcurrency} at a time · {config.timeoutMinutes} minutes · {config.maxNodes}{' '}
+            nodes maximum
+          </span>
+        </summary>
+        <div className="grid grid-cols-2 gap-3 border-y border-border py-4">
+          {(
+            [
+              ['maxConcurrency', 'Concurrent agents', 1, 16],
+              ['maxNodes', 'Total nodes', 1, 256],
+              ['maxDepth', 'Delegation depth', 0, 6],
+              ['maxAttempts', 'Attempts per agent', 1, 10],
+              ['timeoutMinutes', 'Run budget, minutes', 1, 1440],
+              ['handoffChars', 'Handoff characters', 1000, 100000],
+            ] as const
+          ).map(([key, label, min, max]) => (
+            <label key={key} className="text-xs text-text-secondary">
+              {label}
+              <input
+                type="number"
+                min={min}
+                max={max}
+                value={config[key]}
+                onChange={(event) => update({ [key]: Number(event.target.value) })}
+                className={`${fieldClass} mt-1`}
+              />
+            </label>
+          ))}
+        </div>
+        <p className="mt-3 text-xs leading-relaxed text-text-tertiary">
+          Agents share this run's workspace. Use concurrency above one only for work with separate
+          edit scopes. Limits cover Mezair-managed agents. Provider-native delegation is disabled by
+          instruction, not sandbox enforcement. The wall-clock budget includes pauses.
+        </p>
+      </details>
+    </div>
+  );
+}
+
+export function TeamSettings({
+  node,
+  profiles,
+  onChange,
+  targetOnly = false,
+}: {
+  targetOnly?: boolean;
+  node: WorkflowNode;
+  profiles: WorkflowAgentProfile[];
+  onChange: (patch: Partial<WorkflowNode>) => void;
+}) {
+  const [devices, setDevices] = useState<SyncDevice[] | null>(null);
+  const [deviceError, setDeviceError] = useState(false);
+  const [environments, setEnvironments] = useState<CloudEnvironmentRecord[] | null>(null);
+  const [providerConnections, setProviderConnections] = useState<
+    CloudEnvironmentProviderConnection[] | null
+  >(null);
+  const [environmentError, setEnvironmentError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const remoteSupported = supportsRemoteWorkflowProvider(node.provider ?? 'codex');
+
+  useEffect(() => {
+    if (node.target?.kind !== 'device') return;
+    let active = true;
+    setDeviceError(false);
+    setDevices(null);
+    void window.mezair.syncRuntime.listDevices().then(
+      (list) => {
+        if (active) {
+          setDevices(list.filter((device) => !device.revoked && !device.self));
+          setDeviceError(false);
+        }
+      },
+      () => {
+        if (active) setDeviceError(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [node.target?.kind, loadAttempt]);
+
+  useEffect(() => {
+    if (
+      node.target?.kind !== 'existing-environment' &&
+      node.target?.kind !== 'provisioned-environment'
+    ) {
+      return;
+    }
+    let active = true;
+    setEnvironmentError(false);
+    setEnvironments(null);
+    setProviderConnections(null);
+    void Promise.all([
+      window.mezair.syncRuntime.listCloudEnvironments(false),
+      window.mezair.syncRuntime.listCloudProviderConnections(),
+    ]).then(
+      ([environmentResult, connectionResult]) => {
+        if (!active) return;
+        setEnvironments(environmentResult.environments);
+        setProviderConnections(connectionResult);
+        setEnvironmentError(false);
+      },
+      () => {
+        if (active) setEnvironmentError(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [node.target?.kind, loadAttempt]);
+  const selectedEnrollmentId = node.target?.kind === 'device' ? node.target.enrollmentId : '';
+  const automaticTarget = node.target?.kind === 'auto' ? node.target : null;
+  const existingEnvironmentTarget =
+    node.target?.kind === 'existing-environment' ? node.target : null;
+  const provisionedEnvironmentTarget =
+    node.target?.kind === 'provisioned-environment' ? node.target : null;
+  const activeEnvironments = environments?.filter((environment) =>
+    ['provisioning', 'enrolled', 'running', 'suspended'].includes(environment.state),
+  );
+
+  return (
+    <div className={`space-y-3 ${targetOnly ? '' : 'border-t border-border pt-4'}`}>
+      {!targetOnly && (
+        <label className="block text-xs font-semibold text-text-secondary">
+          Step type
+          <select
+            className={`${fieldClass} mt-2`}
+            value={node.kind ?? 'agent'}
+            onChange={(event) => onChange({ kind: event.target.value as 'agent' | 'human' })}
+          >
+            <option value="agent">Agent</option>
+            <option value="human">Human decision</option>
+          </select>
+        </label>
+      )}
+      {node.kind === 'human' ? (
+        <p className="text-xs text-text-secondary">
+          Wait for an explicit acceptance or rejection. The decision and note stay in this run's
+          history.
+        </p>
+      ) : (
+        <>
+          {!targetOnly && (
+            <>
+              <label className="block text-xs font-semibold text-text-secondary">
+                Mezair team strategy
+                <select
+                  className={`${fieldClass} mt-2`}
+                  value={node.teamStrategy ?? 'manual'}
+                  onChange={(event) =>
+                    onChange({ teamStrategy: event.target.value as WorkflowNode['teamStrategy'] })
+                  }
+                >
+                  {TEAM_STRATEGIES.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id}>
+                      {strategy.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="text-xs text-text-secondary">
+                {
+                  TEAM_STRATEGIES.find(
+                    (strategy) => strategy.id === (node.teamStrategy ?? 'manual'),
+                  )?.description
+                }
+              </p>
+              {node.teamStrategy && node.teamStrategy !== 'manual' && (
+                <div className="space-y-2">
+                  <p className="text-xs text-text-tertiary">
+                    {node.teamStrategy === 'autonomous'
+                      ? 'Allowed specialists. No selection allows the entire pool.'
+                      : 'Specialists assigned to this team.'}
+                  </p>
+                  {profiles.length ? (
+                    profiles.map((profile) => (
+                      <label
+                        key={profile.id}
+                        className="flex items-start gap-2 text-xs text-text-secondary"
+                      >
+                        <input
+                          className="mt-0.5"
+                          type="checkbox"
+                          checked={node.teamProfileIds?.includes(profile.id) ?? false}
+                          onChange={(event) =>
+                            onChange({
+                              teamProfileIds: event.target.checked
+                                ? [...(node.teamProfileIds ?? []), profile.id]
+                                : node.teamProfileIds?.filter((id) => id !== profile.id),
+                            })
+                          }
+                        />
+                        <span>
+                          {profile.name}
+                          <span className="block text-text-tertiary">
+                            {profile.provider} · {profile.model}
+                            {!isAcpAgentProvider(profile.provider)
+                              ? ` · ${profile.reasoningEffort}`
+                              : ''}
+                          </span>
+                        </span>
+                      </label>
+                    ))
+                  ) : (
+                    <p className="text-xs text-warning">Add specialists in Orchestration first.</p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+          <div className={`space-y-2 ${targetOnly ? '' : 'border-t border-border pt-4'}`}>
+            <label className="block text-xs font-semibold text-text-secondary">
+              Where should this step run?
+              <select
+                className={`${fieldClass} mt-2`}
+                value={node.target?.kind ?? 'local'}
+                onChange={(event) => {
+                  const kind = event.target.value as WorkflowTargetPolicy['kind'];
+                  onChange(
+                    kind === 'local'
+                      ? { target: undefined }
+                      : kind === 'device'
+                        ? { target: { kind, enrollmentId: '' } }
+                        : kind === 'auto'
+                          ? { target: { kind, requirements: { capabilities: [] } } }
+                          : kind === 'existing-environment'
+                            ? { target: { kind, environmentId: '' } }
+                            : {
+                                target: {
+                                  kind,
+                                  provider: 'mezair-managed',
+                                  ttlSeconds: 1800,
+                                },
+                              },
+                  );
+                }}
+              >
+                <option value="local">On this device</option>
+                <option value="device" disabled={!remoteSupported}>
+                  On another device
+                </option>
+                <option value="auto" disabled={!remoteSupported}>
+                  On any available device
+                </option>
+                <option value="existing-environment" disabled={!remoteSupported}>
+                  In an existing cloud environment
+                </option>
+                <option value="provisioned-environment" disabled={!remoteSupported}>
+                  In a new cloud environment
+                </option>
+              </select>
+            </label>
+            {!remoteSupported && (
+              <p className="text-xs text-text-secondary">
+                This provider runs locally in workflows. Fleet and cloud steps currently require
+                Codex, OpenAI or Azure.
+              </p>
+            )}
+            <p className="text-xs leading-relaxed text-text-tertiary">
+              {node.target?.kind === 'device'
+                ? 'Choose an enrolled device. On that device, enable its Mesh worker and keep the daemon running; signing in alone does not allow jobs.'
+                : node.target?.kind === 'auto'
+                  ? 'Mezair chooses an available device that allows jobs and meets the requirements below.'
+                  : node.target?.kind === 'existing-environment'
+                    ? 'Use a cloud environment already connected to this account.'
+                    : node.target?.kind === 'provisioned-environment'
+                      ? 'Create a temporary cloud environment for this step.'
+                      : 'Run this step here, without sending it to another device.'}
+            </p>
+            {node.target?.kind === 'device' && (
+              <label className="block text-xs font-semibold text-text-secondary">
+                Device
+                <select
+                  className={`${fieldClass} mt-2`}
+                  value={selectedEnrollmentId}
+                  onChange={(event) =>
+                    onChange({ target: { kind: 'device', enrollmentId: event.target.value } })
+                  }
+                  disabled={devices === null}
+                >
+                  <option value="">Choose a device</option>
+                  {selectedEnrollmentId &&
+                    !devices?.some((device) => device.enrollmentId === selectedEnrollmentId) && (
+                      <option value={selectedEnrollmentId}>Saved device (unavailable)</option>
+                    )}
+                  {devices?.map((device) => (
+                    <option key={device.enrollmentId} value={device.enrollmentId}>
+                      {device.displayName || `Device ${device.enrollmentId.slice(0, 8)}`}
+                    </option>
+                  ))}
+                </select>
+                {devices?.length === 0 && (
+                  <span className="mt-2 block font-normal text-text-tertiary">
+                    No other devices are connected to this account yet.
+                  </span>
+                )}
+                {deviceError && (
+                  <span className="mt-2 block font-normal text-warning">
+                    Could not load devices. Check your Mesh connection.{' '}
+                    <button
+                      type="button"
+                      className="text-accent underline underline-offset-2"
+                      onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+                    >
+                      Retry
+                    </button>
+                  </span>
+                )}
+              </label>
+            )}
+            {automaticTarget && (
+              <label className="block text-xs font-semibold text-text-secondary">
+                Required capabilities, separated by commas
+                <CapabilitiesInput
+                  values={automaticTarget.requirements.capabilities}
+                  onCommit={(capabilities) =>
+                    onChange({
+                      target: {
+                        ...automaticTarget,
+                        requirements: {
+                          ...automaticTarget.requirements,
+                          capabilities,
+                        },
+                      },
+                    })
+                  }
+                />
+              </label>
+            )}
+            {(existingEnvironmentTarget || provisionedEnvironmentTarget) && environmentError && (
+              <p className="text-xs text-warning" role="status">
+                Could not load cloud environments and connections. Check your Mesh connection.{' '}
+                <button
+                  type="button"
+                  className="text-accent underline underline-offset-2"
+                  onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+                >
+                  Retry
+                </button>
+              </p>
+            )}
+            {existingEnvironmentTarget && (
+              <div>
+                <select
+                  className={fieldClass}
+                  aria-label="Existing environment"
+                  value={existingEnvironmentTarget.environmentId}
+                  required
+                  onChange={(event) =>
+                    onChange({
+                      target: { ...existingEnvironmentTarget, environmentId: event.target.value },
+                    })
+                  }
+                  disabled={environments === null && !environmentError}
+                >
+                  <option value="">Choose an active environment</option>
+                  {existingEnvironmentTarget.environmentId &&
+                    !activeEnvironments?.some(
+                      (environment) =>
+                        environment.environmentId === existingEnvironmentTarget.environmentId,
+                    ) && (
+                      <option value={existingEnvironmentTarget.environmentId}>
+                        Saved environment (unavailable)
+                      </option>
+                    )}
+                  {activeEnvironments?.map((environment) => (
+                    <option key={environment.environmentId} value={environment.environmentId}>
+                      {environment.environmentId} · {environment.provider} · {environment.state}
+                    </option>
+                  ))}
+                </select>
+                {activeEnvironments?.length === 0 && (
+                  <span className="mt-2 block text-xs font-normal text-text-tertiary">
+                    No active environments yet.{' '}
+                    <SettingsLink to="sync#sync-mesh">
+                      Start one in Settings → Sync &amp; Mesh
+                    </SettingsLink>
+                    .
+                  </span>
+                )}
+                {environmentError && (
+                  <>
+                    <span className="mt-2 block text-xs font-normal text-warning">
+                      You can also paste an environment id below.
+                    </span>
+                    <input
+                      className={`${fieldClass} mt-2`}
+                      placeholder="Environment id"
+                      aria-label="Existing environment id"
+                      value={existingEnvironmentTarget.environmentId}
+                      onChange={(event) =>
+                        onChange({
+                          target: {
+                            ...existingEnvironmentTarget,
+                            environmentId: event.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </>
+                )}
+              </div>
+            )}
+            {provisionedEnvironmentTarget && (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block text-xs font-semibold text-text-secondary">
+                    Environment provider
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={provisionedEnvironmentTarget.provider}
+                      required
+                      onChange={(event) =>
+                        onChange({
+                          target: {
+                            ...provisionedEnvironmentTarget,
+                            provider: event.target.value as Extract<
+                              WorkflowTargetPolicy,
+                              { kind: 'provisioned-environment' }
+                            >['provider'],
+                            connectionId: undefined,
+                          },
+                        })
+                      }
+                    >
+                      <option value="mezair-managed">Mezair managed</option>
+                      <option value="aws-lambda-microvm">AWS microVM</option>
+                      <option value="cloudflare-sandbox">Cloudflare Sandbox</option>
+                      <option value="vercel-sandbox">Vercel Sandbox</option>
+                    </select>
+                  </label>
+                  <label className="block text-xs font-semibold text-text-secondary">
+                    Lifetime, seconds
+                    <input
+                      className={`${fieldClass} mt-1`}
+                      type="number"
+                      min={60}
+                      max={604800}
+                      step={60}
+                      value={provisionedEnvironmentTarget.ttlSeconds}
+                      required
+                      onChange={(event) =>
+                        onChange({
+                          target: {
+                            ...provisionedEnvironmentTarget,
+                            ttlSeconds: Number(event.target.value),
+                          },
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+                {provisionedEnvironmentTarget.provider !== 'mezair-managed' && (
+                  <>
+                    <select
+                      className={fieldClass}
+                      aria-label="Provider connection"
+                      value={provisionedEnvironmentTarget.connectionId ?? ''}
+                      onChange={(event) =>
+                        onChange({
+                          target: {
+                            ...provisionedEnvironmentTarget,
+                            connectionId: event.target.value || undefined,
+                          },
+                        })
+                      }
+                      disabled={providerConnections === null}
+                    >
+                      <option value="">Use first matching connection</option>
+                      {providerConnections
+                        ?.filter(
+                          (connection) =>
+                            connection.provider === provisionedEnvironmentTarget.provider,
+                        )
+                        .map((connection) => (
+                          <option key={connection.id} value={connection.id}>
+                            {connection.displayName ?? connection.provider}
+                          </option>
+                        ))}
+                    </select>
+                    {providerConnections?.filter(
+                      (connection) => connection.provider === provisionedEnvironmentTarget.provider,
+                    ).length === 0 && (
+                      <span className="block text-xs font-normal text-warning">
+                        No matching provider connection is saved on this device. Add one in
+                        Settings.
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            <p className="text-xs leading-relaxed text-text-tertiary">
+              Remote steps use the run&apos;s frozen repository pins.
+            </p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function RunInspector({
+  busy = false,
+  run,
+  nodeId,
+  onCommand,
+  onOpenThread,
+}: {
+  busy?: boolean;
+  run: WorkflowRun;
+  nodeId: string | null;
+  onCommand: (command: () => Promise<WorkflowRun>) => void;
+  onOpenThread: (threadId: string, personaId: string) => void;
+}) {
+  const [note, setNote] = useState('');
+  const node = run.nodes.find((item) => item.id === nodeId);
+  const state = run.nodeRuns.find((item) => item.nodeId === nodeId);
+  return (
+    <div className="border-b border-border p-4">
+      {node && state ? (
+        <>
+          <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+            {node.kind === 'human' ? <UserCheck size={16} /> : <Bot size={16} />}
+            {node.name}
+          </div>
+          <p className="mt-2 text-xs text-text-secondary">
+            {state.status} · depth {node.depth ?? 0} · {state.attempts?.length ?? 0} attempts
+          </p>
+          {!run.convergence &&
+            run.nodeRuns.some((candidate) => candidate.remote?.dispatchId !== undefined) &&
+            run.nodeRuns.every((candidate) => candidate.status === 'completed') && (
+              <button
+                disabled={busy}
+                className="mt-3 rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                onClick={() => onCommand(() => window.mezair.workflow.convergeRun(run.id))}
+              >
+                Converge Mesh results
+              </button>
+            )}
+          {state.remote && (
+            <p className="mt-1 break-words text-xs text-text-tertiary">
+              Dispatch {state.remote.dispatchId}
+              {state.remote.jobId ? ` · job ${state.remote.jobId}` : ''}
+              {state.remote.resolvedEnrollmentId
+                ? ` · worker ${state.remote.resolvedEnrollmentId}`
+                : ''}
+            </p>
+          )}
+          {state.status === 'waiting' && node.kind === 'human' && (
+            <div className="mt-3 space-y-2">
+              <p className="text-xs leading-relaxed text-text-secondary">{node.prompt}</p>
+              <textarea
+                aria-label="Decision note"
+                className={fieldClass}
+                rows={3}
+                placeholder="Record your decision and any conditions"
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+              />
+              <div className="flex gap-2">
+                <button
+                  disabled={busy}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                  onClick={() =>
+                    onCommand(() => window.mezair.workflow.decideNode(run.id, node.id, true, note))
+                  }
+                >
+                  Accept
+                </button>
+                <button
+                  disabled={busy}
+                  className="rounded-lg border border-border px-3 py-2 text-xs text-text-primary disabled:opacity-40"
+                  onClick={() =>
+                    onCommand(() => window.mezair.workflow.decideNode(run.id, node.id, false, note))
+                  }
+                >
+                  Reject
+                </button>
+              </div>
+              <p className="text-xs text-text-tertiary">
+                Resume the run after resolving its decisions.
+              </p>
+            </div>
+          )}
+          {state.status === 'waiting' && node.kind !== 'human' && state.remote && (
+            <div className="mt-3 space-y-2 rounded-lg border border-warning/30 bg-warning/5 p-3">
+              <p className="text-xs text-text-secondary">
+                Remote execution is waiting on {state.remote.state.replaceAll('-', ' ')}.
+              </p>
+              {state.remote.placementExplanation && (
+                <p className="text-xs text-text-tertiary">{state.remote.placementExplanation}</p>
+              )}
+              {state.remote.state === 'unknown-outcome' ? (
+                <button
+                  disabled={busy}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                  onClick={() =>
+                    onCommand(() => window.mezair.workflow.inspectNode(run.id, node.id))
+                  }
+                >
+                  Mark inspected
+                </button>
+              ) : (
+                <button
+                  disabled={busy}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                  onClick={() => onCommand(() => window.mezair.workflow.resumeRun(run.id))}
+                >
+                  Check again
+                </button>
+              )}
+            </div>
+          )}
+          {['failed', 'interrupted'].includes(state.status) && node.kind !== 'human' && (
+            <button
+              className="mt-3 text-xs text-accent"
+              onClick={() => onCommand(() => window.mezair.workflow.retryNode(run.id, node.id))}
+            >
+              Queue retry after inspection
+            </button>
+          )}
+          {state.error && <p className="mt-2 text-xs text-error">{state.error}</p>}
+          {state.output && (
+            <details className="mt-3 text-xs text-text-secondary">
+              <summary className="cursor-pointer">
+                {node.kind === 'human' ? 'Decision record' : 'Agent handoff'}
+              </summary>
+              {node.kind !== 'human' && (
+                <p className="mt-2 text-text-tertiary">
+                  Agent analysis is not observed verification evidence.
+                </p>
+              )}
+              <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-sans">
+                {state.output}
+              </pre>
+            </details>
+          )}
+          {!!state.attempts?.length && (
+            <details className="mt-3 text-xs text-text-secondary">
+              <summary className="cursor-pointer">Attempt history</summary>
+              <div className="mt-2 space-y-3">
+                {state.attempts.map((attempt, index) => (
+                  <div key={attempt.id}>
+                    <div>
+                      Attempt {index + 1} · {attempt.status}
+                    </div>
+                    <div className="break-words text-text-tertiary">
+                      {attempt.provider} · {attempt.model} · {attempt.reasoningEffort}
+                    </div>
+                    {attempt.error && <p className="text-error">{attempt.error}</p>}
+                    {attempt.threadId && (
+                      <button
+                        className="mt-1 text-accent"
+                        onClick={() => onOpenThread(attempt.threadId!, node.personaId)}
+                      >
+                        Open attempt thread <ArrowRight size={12} className="inline" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </>
+      ) : (
+        <p className="text-xs text-text-secondary">
+          Select a graph node to inspect its attempts, handoff, or human decision.
+        </p>
+      )}
+      {run.convergence && (
+        <details
+          className="mt-4 text-xs text-text-secondary"
+          open={run.convergence.state !== 'integrated'}
+        >
+          <summary className="cursor-pointer">Mesh convergence · {run.convergence.state}</summary>
+          <p className="mt-2 break-words text-text-tertiary">
+            Integration {run.convergence.integrationId} retained its worktrees for inspection.
+          </p>
+          {run.convergence.repositories.flatMap((repository) => repository.conflicts).length >
+            0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-error">
+              {run.convergence.repositories
+                .flatMap((repository) => repository.conflicts)
+                .map((conflict) => (
+                  <li key={`${conflict.dispatchId}:${conflict.ref}`}>
+                    {conflict.dispatchId}: {conflict.conflictedFiles.join(', ') || 'conflict'}
+                  </li>
+                ))}
+            </ul>
+          )}
+        </details>
+      )}
+      <details className="mt-4 text-xs text-text-secondary">
+        <summary className="cursor-pointer">
+          Execution timeline · {run.events?.length ?? 0} events
+        </summary>
+        <ol className="mt-3 max-h-72 space-y-3 overflow-auto">
+          {[...(run.events ?? [])].reverse().map((event) => (
+            <li key={event.id}>
+              <time className="text-text-tertiary">{new Date(event.at).toLocaleTimeString()}</time>
+              <p className="mt-0.5">{event.message}</p>
+            </li>
+          ))}
+        </ol>
+      </details>
+    </div>
+  );
+}
+
+export function RuntimeSummary({ run }: { run: WorkflowRun }) {
+  const config = orchestrationConfig(run.orchestration);
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-border bg-bg-secondary px-5 py-2 text-xs text-text-secondary">
+      <span className="inline-flex items-center gap-1.5">
+        <GitFork size={13} />
+        {run.nodes.filter((node) => node.parentNodeId).length} delegated
+      </span>
+      <span>
+        {run.nodeRuns.filter((state) => state.status === 'running').length}/{config.maxConcurrency}{' '}
+        running
+      </span>
+      <span>
+        {run.nodes.length}/{config.maxNodes} nodes
+      </span>
+      <span>
+        {
+          new Set(
+            run.nodes
+              .filter((node) => node.kind !== 'human')
+              .map((node) => node.provider ?? 'codex'),
+          ).size
+        }{' '}
+        providers
+      </span>
+      <span>
+        {run.nodeRuns.filter((state) => state.status === 'waiting').length} decisions pending
+      </span>
+      {run.error && <span className="text-error">{run.error}</span>}
+    </div>
+  );
+}

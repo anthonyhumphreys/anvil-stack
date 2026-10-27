@@ -4,13 +4,13 @@ import { publishR2ImmutableObject } from "./publish-r2-immutable.mjs";
 
 const sha256 = "a".repeat(64);
 const options = {
-  bucket: "anvil-desktop-releases",
+  bucket: "mezair-desktop-releases",
   cacheControl: "public, max-age=31536000, immutable",
-  contentDisposition: 'attachment; filename="Anvil-1.2.3-arm64.dmg"',
+  contentDisposition: 'attachment; filename="Mezair-1.2.3-arm64.dmg"',
   contentType: "application/x-apple-diskimage",
   endpoint: "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
-  file: "/tmp/Anvil-1.2.3-arm64.dmg",
-  key: "macos/arm64/releases/1.2.3/Anvil-1.2.3-arm64.dmg",
+  file: "/tmp/Mezair-1.2.3-arm64.dmg",
+  key: "macos/arm64/releases/1.2.3/Mezair-1.2.3-arm64.dmg",
 };
 
 test("creates a versioned object with an atomic no-overwrite condition", async () => {

@@ -52,7 +52,7 @@ export function resolveAppReleaseTarget({
 
   return {
     tag: releaseTag,
-    name: `Anvil ${releaseTag}`,
+    name: `Mezair ${releaseTag}`,
     tagExists: Boolean(normalizedTagCommit),
   };
 }
