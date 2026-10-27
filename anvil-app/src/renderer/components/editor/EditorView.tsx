@@ -1,3 +1,4 @@
+import { chatPromptPath } from '../../utils/sidebar-navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -372,7 +373,7 @@ export function EditorView() {
       resolvedTarget?.repoName;
     if (!targetPath) return;
 
-    navigate(`/chat?prompt=${encodeURIComponent(buildEditorChatPrompt(snapshot, resolvedTarget))}`);
+    navigate(chatPromptPath(buildEditorChatPrompt(snapshot, resolvedTarget)));
   }, [
     navigate,
     resolvedTarget?.absolutePath,

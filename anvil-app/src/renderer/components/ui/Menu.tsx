@@ -54,7 +54,7 @@ interface MenuContextValue {
 
 const MenuContext = createContext<MenuContextValue | null>(null);
 
-const MENU_ITEM_SELECTOR = '[role="menuitem"]';
+const MENU_ITEM_SELECTOR = '[role="menuitem"], [role="menuitemradio"]';
 
 function menuItems(panel: HTMLElement): HTMLElement[] {
   return Array.from(panel.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)).filter(
@@ -136,7 +136,10 @@ export function Menu({
     if (!open) return;
 
     const panel = panelRef.current;
-    if (panel) menuItems(panel)[0]?.focus();
+    if (panel) {
+      const selected = panel.querySelector<HTMLElement>('[aria-checked="true"]');
+      (selected ?? menuItems(panel)[0])?.focus();
+    }
 
     const closeOnOutsidePointer = (event: globalThis.MouseEvent) => {
       if (
@@ -225,6 +228,8 @@ export interface MenuItemProps {
   onSelect: () => void;
   children?: ReactNode;
   className?: string;
+  /** Radio selection, distinct from the keyboard focus indicator. */
+  checked?: boolean;
 }
 
 export function MenuItem({
@@ -234,12 +239,14 @@ export function MenuItem({
   onSelect,
   children,
   className,
+  checked,
 }: MenuItemProps) {
   const context = useContext(MenuContext);
   return (
     <button
       type="button"
-      role="menuitem"
+      role={checked === undefined ? 'menuitem' : 'menuitemradio'}
+      aria-checked={checked}
       tabIndex={-1}
       disabled={disabled}
       onClick={() => {
@@ -247,7 +254,7 @@ export function MenuItem({
         context?.close(true);
       }}
       className={cx(
-        'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+        'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors',
         'focus:bg-bg-tertiary focus:outline-none disabled:cursor-not-allowed disabled:opacity-50',
         destructive
           ? 'text-error hover:bg-error/10 focus:bg-error/10'

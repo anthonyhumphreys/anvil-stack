@@ -1,3 +1,4 @@
+import { chatPromptPath } from '../../utils/sidebar-navigation';
 import { Component, lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
 import {
   Background,
@@ -226,7 +227,7 @@ export function RepositoryMap({
 
   const askChat = (node: RepositoryMapGraphNode, question?: string) => {
     const prompt = buildRepositoryNodePrompt(repositoryName, node, selectedChanges, question);
-    navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+    navigate(chatPromptPath(prompt));
   };
 
   return (

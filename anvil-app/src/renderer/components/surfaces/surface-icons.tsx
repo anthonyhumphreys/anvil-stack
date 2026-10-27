@@ -1,6 +1,7 @@
 import {
   Braces,
   ChartColumn,
+  ListChecks,
   Database,
   Eye,
   FileSearch,
@@ -18,6 +19,7 @@ const KIND_ICONS: Record<string, LucideIcon> = {
   artifact: FileText,
   sketch: Shapes,
   review: FileSearch,
+  validation: ListChecks,
   findings: ShieldAlert,
   dependencies: Package,
   pipeline: Workflow,

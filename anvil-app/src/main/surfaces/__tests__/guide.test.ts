@@ -22,8 +22,11 @@ afterEach(() => resetAgentToolProvidersForTests());
 describe('buildSurfaceGuide', () => {
   it('builds a concise generic guide with the fence fallback', () => {
     const guide = buildSurfaceGuide();
-    expect(wordCount(guide)).toBeLessThan(900);
+    expect(wordCount(guide)).toBeLessThan(1100);
     expect(guide).toContain('**Sketch or Artifact?**');
+    expect(guide).toContain('only when the user asks');
+    expect(guide).toContain('never suggest it automatically');
+    expect(guide).toContain('`validation_*`');
     expect(guide).toContain('`review_*`');
     expect(guide).toContain('--anvil-series-1');
     expect(guide).toContain('window.AnvilKit');
@@ -45,7 +48,7 @@ describe('buildSurfaceGuide', () => {
     expect(guide).toContain('`sketch_show`');
     expect(guide).not.toContain('deps_');
     expect(guide).not.toContain('```artifact:');
-    expect(wordCount(guide)).toBeLessThan(900);
+    expect(wordCount(guide)).toBeLessThan(1100);
   });
 
   it('describes only fences when the session has no tools', () => {

@@ -1,3 +1,4 @@
+import { chatPromptPath } from '../../utils/sidebar-navigation';
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type {
@@ -235,7 +236,7 @@ export function CodeReviewReport({ review, repoName, onVisualisePullRequest }: P
   const handleSendFixPromptToChat = useCallback(() => {
     const prompt = generatedFixPrompt.trim();
     if (!prompt) return;
-    navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+    navigate(chatPromptPath(prompt));
   }, [generatedFixPrompt, navigate]);
 
   const handleInspect = useCallback(

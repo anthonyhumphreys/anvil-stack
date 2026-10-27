@@ -12,6 +12,8 @@ import migration0003 from '../migrations/hosted-billing/0003_preview_flag.sql?ra
 import migration0004 from '../migrations/hosted-billing/0004_organizations.sql?raw';
 import migration0005 from '../migrations/hosted-billing/0005_team_billing.sql?raw';
 import migration0006 from '../migrations/hosted-billing/0006_beta_codes.sql?raw';
+import migration0007 from '../migrations/hosted-billing/0007_factories.sql?raw';
+import migration0008 from '../migrations/hosted-billing/0008_skill_recommendations.sql?raw';
 
 const MIGRATIONS: { id: string; sql: string }[] = [
   { id: '0001_init', sql: migration0001 },
@@ -20,6 +22,8 @@ const MIGRATIONS: { id: string; sql: string }[] = [
   { id: '0004_organizations', sql: migration0004 },
   { id: '0005_team_billing', sql: migration0005 },
   { id: '0006_beta_codes', sql: migration0006 },
+  { id: '0007_factories', sql: migration0007 },
+  { id: '0008_skill_recommendations', sql: migration0008 },
 ];
 
 function statementsOf(sql: string): string[] {

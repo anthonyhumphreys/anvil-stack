@@ -7,6 +7,7 @@ const TOOL_GROUPS: ReadonlyArray<{ intent: string; prefixes: readonly string[] }
   { intent: 'Delegate tracked work across local agents, fleet and cloud', prefixes: ['workflow_'] },
   { intent: 'Ask the user a question', prefixes: ['question_'] },
   { intent: 'Code review (turn, working tree, PR)', prefixes: ['review_'] },
+  { intent: 'Explicit validation against a request or work item', prefixes: ['validation_'] },
   { intent: 'Security or audit findings', prefixes: ['findings_', 'security_'] },
   { intent: 'Dependencies, licences, SBOM', prefixes: ['deps_'] },
   { intent: 'CI/CD pipelines', prefixes: ['cicd_', 'pipeline_'] },
@@ -29,6 +30,7 @@ const SELECTION = [
 ];
 
 const TOOL_RULES = [
+  'Introduce validation only when the user asks or a workflow explicitly specifies it; never suggest it automatically after edits. Use validation_context for the request and work-item criteria, then validation_publish to show an inline plan. Ask question_ask only for material ambiguity. Run saved command checks with validation_run under existing access; record browser/manual/inspection evidence with validation_record, labelled agent-reported. Use blocked or unchecked when proof is missing. Revising criteria or changing source invalidates prior evidence. Validation is separate from code review and human acceptance.',
   'For ordinary chat delegation use delegation_discover, then delegation_propose. No saved workflow is required. Honour explicit user requests. You may also propose delegation when a discovered capability, a different platform, isolation or independent review gives a concrete benefit; explain why and wait for the inline decision. Keep simple or tightly coupled work local. Never launch native subagents to bypass that review, invent a fleet destination, or claim a remote result is integrated. Use delegation_read after resuming a chat. Delegated jobs continue if the coordinator stops; cancel them explicitly when the user asks.',
   'For tracked delegation use workflow_list, workflow_start and workflow_read. Use a saved workflow’s approved specialist pool and targets. The local chat remains the coordinator. Cloud and fleet workers use pinned isolated workspaces; returned code is not integrated until the user explicitly converges it. Read failed or waiting results honestly; do not treat an agent handoff as verification.',
   'When you need the user to choose or clarify, use `question_ask`. It works across providers and modes, pauses until the user answers, and returns their answers. Ask only what you need to proceed. Do not duplicate the question in prose. If cancelled or expired, continue only where their answer is not required.',

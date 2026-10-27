@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type { AgentUIQuestionIntent } from '../../../shared/agent-ui-intents.js';
 import { AGENT_PROVIDERS } from '../../../shared/agent-providers.js';
 import { SCHEMA_SQL } from '../../db/schema.js';
+import { mintAgentMcpToken, resetAgentMcpRegistryForTests } from '../agent-mcp/registry.js';
 import {
   callAgentTool,
   listAgentTools,
@@ -15,7 +16,7 @@ const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
 const session = vi.hoisted(() => ({
   broadcastAgentUIIntent: vi.fn(),
-  getCodexSession: vi.fn(() => ({ id: 'session-1' })),
+  getCodexSession: vi.fn<() => { id: string } | undefined>(() => ({ id: 'session-1' })),
 }));
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('../codex-session.service.js', () => session);
@@ -72,6 +73,8 @@ beforeEach(() => {
     'Question test',
   );
   vi.clearAllMocks();
+  session.getCodexSession.mockReturnValue({ id: 'session-1' });
+  resetAgentMcpRegistryForTests();
   resetAgentToolProvidersForTests();
   registerAgentToolProvider(questionToolProvider);
 });
@@ -82,6 +85,17 @@ afterEach(() => {
 afterAll(() => db.close());
 
 describe('shared question tool', () => {
+  it('keeps workflow questions live while their scoped tool session is active', async () => {
+    vi.useFakeTimers();
+    session.getCodexSession.mockReturnValue(undefined);
+    mintAgentMcpToken(ctx.sessionId, () => ctx);
+    const waiting = callAgentTool(ctx, 'question_ask', args);
+    const intent = latest();
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(getAgentUIIntent(intent.id)?.lifecycle).toBe('pending');
+    answer(intent);
+    expect((await waiting).structuredContent).toMatchObject({ status: 'answered' });
+  });
   it('keeps a deferred approval across completed turns and transport aborts, until the session stops', async () => {
     vi.useFakeTimers();
     const waiting = askAgentQuestion(

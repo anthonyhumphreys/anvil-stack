@@ -109,7 +109,7 @@ export function AgentsCategory() {
       <SettingsPanel
         panelId="codex-registry"
         title="Codex Registry"
-        description="Inspect registered Codex skills and MCP servers, then install new skills from skills.sh."
+        description="Browse recommended skill collections, manage your installed library and MCP servers, or search skills.sh."
       >
         <Button variant="secondary" onClick={() => navigate('/settings/codex-registry')}>
           <Puzzle size={14} />

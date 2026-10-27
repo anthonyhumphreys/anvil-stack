@@ -14,6 +14,7 @@ import {
   upsertAgentUIIntent,
 } from './agent-ui-intent.service.js';
 import { broadcastAgentUIIntent, getCodexSession } from './codex-session.service.js';
+import { getAgentMcpTokenForSession, resolveAgentMcpToken } from './agent-mcp/registry.js';
 
 export const AGENT_QUESTION_TIMEOUT_MS = 10 * 60_000;
 export interface AgentQuestionResult {
@@ -101,7 +102,8 @@ export function askAgentQuestion(
     };
     const timeout = setTimeout(expire, AGENT_QUESTION_TIMEOUT_MS);
     const poll = setInterval(() => {
-      if (!getCodexSession(ctx.sessionId)) expire();
+      const token = getAgentMcpTokenForSession(ctx.sessionId);
+      if (!getCodexSession(ctx.sessionId) && !(token && resolveAgentMcpToken(token))) expire();
       else {
         const current = getAgentUIIntentRecord(saved.id)?.intent;
         if (current?.lifecycle === 'expired' || current?.lifecycle === 'dismissed') expire();

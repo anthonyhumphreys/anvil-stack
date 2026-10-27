@@ -1,6 +1,8 @@
+import type { AgentUISurfaceIntent } from '../../../../shared/agent-ui-intents';
 import { describe, expect, it } from 'vitest';
 import {
   buildApprovalAwareWorkSegments,
+  buildChatTurnTimeline,
   composeChatTurns,
   shouldJoinAssistantSegments,
 } from '../chat-turns';
@@ -98,7 +100,7 @@ describe('composeChatTurns', () => {
     ]);
 
     expect(turns[0].work).toEqual([
-      { kind: 'progress', content: 'The deployment is progressing normally.', sourceIndex: 3 },
+      { kind: 'progress', content: 'The deployment is progressing normally.', sourceIndex: 1 },
       expect.objectContaining({ kind: 'event' }),
     ]);
     expect(turns[0].answer?.content).toBe('The release is now complete.');
@@ -118,7 +120,7 @@ describe('composeChatTurns', () => {
       {
         kind: 'thinking',
         content: 'First, check the config. It points at staging.',
-        sourceIndex: 2,
+        sourceIndex: 1,
       },
       expect.objectContaining({ kind: 'event' }),
       { kind: 'thinking', content: 'Now read the file.', sourceIndex: 4 },
@@ -214,10 +216,16 @@ describe('composeChatTurns', () => {
       { kind: 'user', content: 'Follow-up', delivery: 'queued' },
     ]);
 
-    expect(turns).toHaveLength(2);
-    expect(turns[1].user?.delivery).toBe('queued');
-    expect(turns[1].work).toEqual([]);
-    expect(turns[1].answer).toBeNull();
+    expect(turns).toHaveLength(1);
+    expect(turns[0].user?.content).toBe('First');
+    expect(turns[0].pendingMessages?.[0]).toMatchObject({
+      content: 'Follow-up',
+      delivery: 'queued',
+    });
+    expect(buildChatTurnTimeline(turns[0]).map((item) => item.kind)).toEqual([
+      'work',
+      'pending-message',
+    ]);
   });
 
   it('keeps a final answer separate from an untagged trailing progress update', () => {
@@ -470,5 +478,135 @@ describe('question receipts', () => {
     expect(turn.work).toEqual([]);
     expect(turn.questionReceipts?.[0].payload.response?.answers.layout).toBe(false);
     expect(turn.answer?.content).toBe('Roomy it is.');
+  });
+});
+
+describe('live turn ordering', () => {
+  it('keeps an answer and late work in first-appearance order', () => {
+    const [turn] = composeChatTurns(
+      [
+        { kind: 'user', content: 'Check it' },
+        { kind: 'assistant', itemId: 'answer', phase: 'final', content: 'The result' },
+        { kind: 'event', event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 } },
+        { kind: 'assistant', itemId: 'answer', phase: 'final', content: ' is ready.' },
+      ],
+      { active: true },
+    );
+    expect(turn.answer).toMatchObject({ sourceIndex: 1, content: 'The result is ready.' });
+    expect(buildChatTurnTimeline(turn).map((item) => [item.kind, item.sourceIndex])).toEqual([
+      ['answer', 1],
+      ['work', 2],
+    ]);
+  });
+
+  it('keeps progress and reasoning anchors stable as fragments arrive', () => {
+    const [turn] = composeChatTurns(
+      [
+        { kind: 'user', content: 'Check it' },
+        { kind: 'thinking', content: 'Inspect' },
+        { kind: 'thinking', content: ' first' },
+        { kind: 'assistant', itemId: 'progress', phase: 'progress', content: 'Checking' },
+        { kind: 'event', event: { type: 'command_exec', command: 'ls' } },
+        { kind: 'assistant', itemId: 'progress', phase: 'progress', content: ' the files.' },
+      ],
+      { active: true },
+    );
+    expect(turn.work.map((item) => item.sourceIndex)).toEqual([1, 3, 4]);
+  });
+
+  it.each(['queued', 'uncertain', 'failed'] as const)(
+    'keeps %s sends visible without claiming live output',
+    (delivery) => {
+      const turns = composeChatTurns(
+        [
+          { kind: 'user', id: 'original', content: 'Finish the current work' },
+          {
+            kind: 'user',
+            id: 'next',
+            content: 'Then review it',
+            delivery,
+            deliveryIntent: 'queue',
+          },
+          { kind: 'assistant', content: 'Current work is complete.', phase: 'final' },
+        ],
+        { active: true },
+      );
+      expect(turns[0].answer?.content).toBe('Current work is complete.');
+      expect(turns).toHaveLength(1);
+      expect(turns[0].pendingMessages?.[0]).toMatchObject({ id: 'next', delivery });
+      expect(buildChatTurnTimeline(turns[0]).map((item) => item.kind)).toEqual([
+        'pending-message',
+        'answer',
+      ]);
+    },
+  );
+});
+
+it('retains historical failed receipts before later successful turns', () => {
+  const turns = composeChatTurns([
+    { kind: 'user', content: 'First request' },
+    { kind: 'user', id: 'failed-request', content: 'Never delivered', delivery: 'failed' },
+    { kind: 'assistant', content: 'First request complete.', phase: 'final' },
+    { kind: 'user', content: 'Next request' },
+    { kind: 'assistant', content: 'Next request complete.', phase: 'final' },
+  ]);
+  expect(turns).toHaveLength(2);
+  expect(buildChatTurnTimeline(turns[0]).map((item) => item.kind)).toEqual([
+    'pending-message',
+    'answer',
+  ]);
+  expect(turns[1].pendingMessages).toBeUndefined();
+});
+
+it('does not move a published result above an answer when the same answer continues streaming', () => {
+  const surface: AgentUISurfaceIntent = {
+    protocolVersion: 1,
+    id: 'result',
+    kind: 'surface',
+    revision: 1,
+    scope: { threadId: 'thread' },
+    lifecycle: 'presented',
+    presentation: { collapsed: false, hidden: false },
+    createdAt: '2026-10-21T10:00:00Z',
+    updatedAt: '2026-10-21T10:00:00Z',
+    payload: {
+      surfaceKind: 'findings',
+      title: 'Review',
+      streaming: false,
+      digest: 'No findings',
+      data: {},
+    },
+  };
+  const entries = [
+    { kind: 'user' as const, content: 'Review it' },
+    {
+      kind: 'assistant' as const,
+      id: 'first-fragment',
+      itemId: 'answer',
+      phase: 'final' as const,
+      content: 'Review complete.',
+    },
+    { kind: 'event' as const, event: { type: 'agent_ui_intent' as const, agentUIIntent: surface } },
+  ];
+  const before = composeChatTurns(entries, { active: true })[0];
+  const after = composeChatTurns(
+    [
+      ...entries,
+      {
+        kind: 'assistant',
+        id: 'second-fragment',
+        itemId: 'answer',
+        phase: 'final',
+        content: ' Details are attached.',
+      },
+    ],
+    { active: true },
+  )[0];
+  expect(buildChatTurnTimeline(before).map((item) => item.kind)).toEqual(['answer', 'surface']);
+  expect(buildChatTurnTimeline(after).map((item) => item.kind)).toEqual(['answer', 'surface']);
+  expect(after.answer).toMatchObject({
+    id: 'first-fragment',
+    sourceIndex: 1,
+    content: 'Review complete. Details are attached.',
   });
 });

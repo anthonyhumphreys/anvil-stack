@@ -73,6 +73,9 @@ importers:
       globby:
         specifier: ^16.2.4
         version: 16.2.4
+      ignore:
+        specifier: ^7.0.12
+        version: 7.0.12
       ms:
         specifier: ^2.1.3
         version: 2.1.3

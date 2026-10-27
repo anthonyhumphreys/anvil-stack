@@ -1,6 +1,80 @@
-export const SCHEMA_VERSION = 114;
+export const SCHEMA_VERSION = 117;
 
 export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS factory_definitions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_factory_definitions_workspace ON factory_definitions(workspace_id);
+CREATE TABLE IF NOT EXISTS factory_revisions (
+  factory_id TEXT NOT NULL REFERENCES factory_definitions(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  record_json TEXT NOT NULL,
+  PRIMARY KEY(factory_id,revision)
+);
+CREATE TABLE IF NOT EXISTS factory_runs (
+  id TEXT PRIMARY KEY,
+  factory_id TEXT NOT NULL REFERENCES factory_definitions(id) ON DELETE CASCADE,
+  issue_key TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  lease_owner TEXT,
+  lease_until TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE(issue_key)
+);
+CREATE INDEX IF NOT EXISTS idx_factory_runs_factory ON factory_runs(factory_id,updated_at DESC);
+CREATE TABLE IF NOT EXISTS factory_receipts (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  receipt_key TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  UNIQUE(run_id,receipt_key)
+);
+CREATE TABLE IF NOT EXISTS factory_cursors (
+  factory_id TEXT PRIMARY KEY REFERENCES factory_definitions(id) ON DELETE CASCADE,
+  cursor TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS factory_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  factory_id TEXT NOT NULL,
+  run_id TEXT,
+  actor_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS factory_takeovers (
+  run_id TEXT NOT NULL,
+  account_scope TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  context_json TEXT NOT NULL,
+  thread_id TEXT,
+  PRIMARY KEY(run_id,account_scope)
+);
+CREATE TABLE IF NOT EXISTS factory_commands (
+  command_id TEXT PRIMARY KEY,
+  factory_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result_json TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS factory_worker_usage (
+  run_id TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  worker_key TEXT NOT NULL,
+  command_ids_json TEXT NOT NULL DEFAULT '[]',
+  commands INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(run_id,worker_key)
+);
+CREATE TABLE IF NOT EXISTS factory_access_keys (
+  scope_key TEXT PRIMARY KEY,
+  private_key BLOB NOT NULL,
+  public_key TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS change_reviews (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -369,7 +443,7 @@ CREATE TABLE IF NOT EXISTS share_ticket_publications (
   id TEXT PRIMARY KEY,
   share_record_id TEXT NOT NULL,
   connection_id TEXT NOT NULL,
-  provider TEXT NOT NULL CHECK(provider IN ('linear','jira','ado')),
+  provider TEXT NOT NULL CHECK(provider IN ('linear','jira','ado','github')),
   ticket_id TEXT NOT NULL,
   ticket_title TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','published','uncertain')),
@@ -1075,6 +1149,7 @@ CREATE TABLE IF NOT EXISTS automation_definitions (
   enabled INTEGER NOT NULL DEFAULT 0,
   allow_repo_write INTEGER NOT NULL DEFAULT 0,
   allow_command_run INTEGER NOT NULL DEFAULT 0,
+  allow_remote_publishing INTEGER NOT NULL DEFAULT 0,
   loop_config_json TEXT,
   execution_mode TEXT NOT NULL DEFAULT 'disposable-worktree',
   last_run_at TEXT,
@@ -4007,6 +4082,105 @@ CREATE TABLE IF NOT EXISTS share_ticket_publications (
   UNIQUE(share_record_id, connection_id, provider, ticket_id)
 );
 CREATE INDEX IF NOT EXISTS idx_share_ticket_publications_share ON share_ticket_publications(share_record_id);
+`,
+  115: `
+ALTER TABLE automation_definitions ADD COLUMN allow_remote_publishing INTEGER NOT NULL DEFAULT 0;
+`,
+  116: `
+
+CREATE TABLE IF NOT EXISTS factory_definitions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_factory_definitions_workspace ON factory_definitions(workspace_id);
+CREATE TABLE IF NOT EXISTS factory_revisions (
+  factory_id TEXT NOT NULL REFERENCES factory_definitions(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  record_json TEXT NOT NULL,
+  PRIMARY KEY(factory_id,revision)
+);
+CREATE TABLE IF NOT EXISTS factory_runs (
+  id TEXT PRIMARY KEY,
+  factory_id TEXT NOT NULL REFERENCES factory_definitions(id) ON DELETE CASCADE,
+  issue_key TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  lease_owner TEXT,
+  lease_until TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE(issue_key)
+);
+CREATE INDEX IF NOT EXISTS idx_factory_runs_factory ON factory_runs(factory_id,updated_at DESC);
+CREATE TABLE IF NOT EXISTS factory_receipts (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  receipt_key TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  UNIQUE(run_id,receipt_key)
+);
+CREATE TABLE IF NOT EXISTS factory_cursors (
+  factory_id TEXT PRIMARY KEY REFERENCES factory_definitions(id) ON DELETE CASCADE,
+  cursor TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS factory_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  factory_id TEXT NOT NULL,
+  run_id TEXT,
+  actor_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS factory_takeovers (
+  run_id TEXT NOT NULL,
+  account_scope TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  context_json TEXT NOT NULL,
+  thread_id TEXT,
+  PRIMARY KEY(run_id,account_scope)
+);
+CREATE TABLE IF NOT EXISTS factory_commands (
+  command_id TEXT PRIMARY KEY,
+  factory_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result_json TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS factory_worker_usage (
+  run_id TEXT NOT NULL REFERENCES factory_runs(id) ON DELETE CASCADE,
+  worker_key TEXT NOT NULL,
+  command_ids_json TEXT NOT NULL DEFAULT '[]',
+  commands INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(run_id,worker_key)
+);
+CREATE TABLE IF NOT EXISTS factory_access_keys (
+  scope_key TEXT PRIMARY KEY,
+  private_key BLOB NOT NULL,
+  public_key TEXT NOT NULL
+);
+`,
+
+  117: `
+CREATE TABLE share_ticket_publications_v117 (
+  id TEXT PRIMARY KEY,
+  share_record_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK(provider IN ('linear','jira','ado','github')),
+  ticket_id TEXT NOT NULL,
+  ticket_title TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','published','uncertain')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  published_at TEXT,
+  UNIQUE(share_record_id, connection_id, provider, ticket_id)
+);
+INSERT INTO share_ticket_publications_v117 SELECT * FROM share_ticket_publications;
+DROP TABLE share_ticket_publications;
+ALTER TABLE share_ticket_publications_v117 RENAME TO share_ticket_publications;
+CREATE INDEX idx_share_ticket_publications_share ON share_ticket_publications(share_record_id);
 `,
 };
 

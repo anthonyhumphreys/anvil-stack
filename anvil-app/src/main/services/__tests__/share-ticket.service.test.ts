@@ -1,13 +1,9 @@
+import { SCHEMA_SQL } from '../../db/schema.js';
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const db = new Database(':memory:');
-db.exec(`CREATE TABLE share_ticket_publications (
-  id TEXT PRIMARY KEY, share_record_id TEXT NOT NULL, connection_id TEXT NOT NULL,
-  provider TEXT NOT NULL, ticket_id TEXT NOT NULL, ticket_title TEXT NOT NULL,
-  status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  published_at TEXT, UNIQUE(share_record_id, connection_id, provider, ticket_id)
-)`);
+db.exec(SCHEMA_SQL);
 const mocks = vi.hoisted(() => ({
   settings: {
     workItemConnections: [] as Array<{ id: string; provider: string; [key: string]: unknown }>,
@@ -142,4 +138,19 @@ describe('share-ticket.service', () => {
     expect(mocks.postCount).toBe(0);
     expect(getShareTicketReceipt(ref, 'share-1')).toBeUndefined();
   });
+});
+
+it('persists a GitHub publication in the real schema', async () => {
+  const id = `https://${'enterprise.'.repeat(15)}example.com/acme/widgets/issues/42`;
+  mocks.settings = { workItemConnections: [{ id: 'github', provider: 'github' }] };
+  mocks.getItem.mockResolvedValue({ ...mocks.item, id, provider: 'github' });
+  mocks.publishLink.mockImplementation(async (_id, _input, guard) => {
+    await guard?.();
+  });
+  const receipt = await attachShareToTicket(
+    { connectionId: 'github', provider: 'github', id },
+    { ...input, shareRecordId: 'github-share' },
+  );
+  expect(receipt.status).toBe('published');
+  expect(receipt.provider).toBe('github');
 });

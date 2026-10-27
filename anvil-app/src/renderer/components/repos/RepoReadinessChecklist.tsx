@@ -47,7 +47,7 @@ export function RepoReadinessChecklist({ repo }: { repo: RepoInfo }) {
     navigate(
       `/chat?prompt=${encodeURIComponent(
         `In the ${repo.name} repository (${repo.path}), ${task}`,
-      )}`,
+      )}&send=1`,
     );
 
   const items: Array<{

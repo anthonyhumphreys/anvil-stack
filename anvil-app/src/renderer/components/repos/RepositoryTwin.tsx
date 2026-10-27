@@ -93,7 +93,7 @@ export function RepositoryTwin({
     navigate(
       `/chat?prompt=${encodeURIComponent(
         `Inspect the live repository state for ${repositoryName}. Branch ${snapshot.branch} has ${snapshot.changedFileCount} changed files. Impacted districts: ${districtSummary || 'none detected'}. Explain risk, likely blast radius, and the next useful verification.`,
-      )}`,
+      )}&send=1`,
     );
   };
 

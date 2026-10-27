@@ -25,7 +25,7 @@ import type {
   AgentUIQuestionIntent,
 } from '../../../shared/agent-ui-intents';
 import { SurfaceHost } from '../surfaces/SurfaceHost';
-import { CHAT_PREFILL_EVENT } from './chat-prefill';
+import { requestChatSend } from './chat-prefill';
 import { useChatRequest } from './useChatRequest';
 
 export { CHAT_PREFILL_EVENT } from './chat-prefill';
@@ -135,11 +135,7 @@ export function PlanIntentSurface({
   };
 
   const askAboutStep = (step: AgentUIPlanStep) => {
-    window.dispatchEvent(
-      new CustomEvent(CHAT_PREFILL_EVENT, {
-        detail: { text: `Tell me more about the plan step “${step.title}”.` },
-      }),
-    );
+    requestChatSend(`Tell me more about the plan step “${step.title}”.`);
   };
 
   if (intent.presentation.hidden || intent.lifecycle === 'dismissed') {

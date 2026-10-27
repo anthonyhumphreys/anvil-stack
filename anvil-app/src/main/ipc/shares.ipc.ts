@@ -37,8 +37,8 @@ const MAX_FINDING_IDS = 500;
 /** Pre-rendered diagram SVG ceiling (the bundle builder re-checks). */
 const MAX_DIAGRAM_SVG_CHARS = 2 * 1024 * 1024;
 
-function isId(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH;
+function isId(value: unknown, maxLength = MAX_ID_LENGTH): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength;
 }
 
 function isItemType(value: unknown): value is ShareItemType {
@@ -135,9 +135,9 @@ function parseTicket(value: unknown): WorkItemReference {
   if (!value || typeof value !== 'object') throw new Error('Select a ticket.');
   const ref = value as Record<string, unknown>;
   if (
-    !isId(ref['id']) ||
+    !isId(ref['id'], 2048) ||
     !isId(ref['connectionId']) ||
-    !['jira', 'linear', 'ado'].includes(String(ref['provider']))
+    !['jira', 'linear', 'ado', 'github'].includes(String(ref['provider']))
   )
     throw new Error('Invalid ticket reference.');
   return {

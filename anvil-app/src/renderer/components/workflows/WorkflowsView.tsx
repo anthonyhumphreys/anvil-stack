@@ -69,6 +69,7 @@ import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildProviderModelOptions } from '../../utils/chat-model-options';
 import { SettingsLink } from '../shared/SettingsLink';
+import { parseWorkItemReference } from '../../utils/workitem-route';
 
 type WorkflowCanvasData = {
   node: WorkflowNode;
@@ -276,17 +277,8 @@ export function WorkflowsView() {
     const kickoffMessage = searchParams.get('kickoff');
     const preset = searchParams.get('preset');
     if (!runId && !draftRequest && !kickoffMessage && !preset) return;
-    const itemId = searchParams.get('workItemId');
-    const itemProvider = searchParams.get('workItemProvider');
-    const itemConnection = searchParams.get('workItemConnection');
     if (preset || draftRequest || kickoffMessage) {
-      setWorkItemRef(
-        itemId &&
-          itemConnection &&
-          (itemProvider === 'ado' || itemProvider === 'linear' || itemProvider === 'jira')
-          ? { id: itemId, connectionId: itemConnection, provider: itemProvider }
-          : undefined,
-      );
+      setWorkItemRef(parseWorkItemReference(searchParams));
     }
     if (isContextualWorkflowPreset(preset)) {
       setContextualPreset(preset);

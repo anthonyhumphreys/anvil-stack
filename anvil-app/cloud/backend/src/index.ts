@@ -9,6 +9,8 @@ import { MachineEndpointCoordinator, machineEndpointStub } from './hosted/machin
 import { runHostedReconcile } from './hosted/reconciler';
 import { runHostedOrganizationReconcile } from './hosted/organization-webhooks';
 import { prepareHostedAccountDeletion } from './hosted/organizations';
+import { handleFactoryOperation } from './hosted/factories';
+import { handleSkillRecommendationsOperation } from './hosted/skill-recommendations';
 import { isRecord, parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
 import { OPERATIONS, type OperationName } from '../../contract/operations';
 import type { ErrorCode } from '../../contract/envelope';
@@ -525,6 +527,35 @@ async function handleRpcInternal(
   const auth = await authenticate(request, env);
   if (auth === null) {
     return rpcErrorResponse(envelope.request.requestId, 'unauthenticated');
+  }
+  if (envelope.request.operation.startsWith('skills.recommendations.')) {
+    try {
+      const result = await handleSkillRecommendationsOperation(envelope.request.operation, envelope.request.params, auth, env);
+      const value = await result.json() as { error?: { code?: ErrorCode; details?: Record<string, unknown> } };
+      const output = result.ok ? rpcSuccessResponse(envelope.request.requestId, value)
+        : rpcErrorResponse(envelope.request.requestId, value.error?.code ?? 'forbidden', value.error?.details);
+      output.headers.set('cache-control', 'private, no-store');
+      return output;
+    } catch {
+      const output = rpcErrorResponse(envelope.request.requestId, 'unavailable');
+      output.headers.set('cache-control', 'private, no-store');
+      return output;
+    }
+  }
+  if (envelope.request.operation.startsWith('factory.')) {
+    try {
+      const result = await handleFactoryOperation(envelope.request.operation, envelope.request.params, auth, env);
+      const value = await result.json() as {error?: {code?: ErrorCode;details?:Record<string,unknown>}};
+      const output = result.ok
+        ? rpcSuccessResponse(envelope.request.requestId, value)
+        : rpcErrorResponse(envelope.request.requestId, value.error?.code ?? 'forbidden', value.error?.details);
+      output.headers.set('cache-control', 'private, no-store');
+      return output;
+    } catch {
+      const output = rpcErrorResponse(envelope.request.requestId, 'unavailable');
+      output.headers.set('cache-control', 'private, no-store');
+      return output;
+    }
   }
   switch (envelope.request.operation) {
     // Device lifecycle lives on the session object — `device_sessions` is

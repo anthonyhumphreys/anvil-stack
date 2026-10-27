@@ -7,6 +7,16 @@ import type {
   SurfaceCommentInput,
 } from './types.js';
 import type { ChatArtifact } from '../types.js';
+import type { WorkItemReference } from '../change-review-types.js';
+
+export interface ValidationHistoryEntry {
+  surfaceId: string;
+  threadId: string;
+  repoId: string;
+  title: string;
+  summary: string;
+  updatedAt: string;
+}
 
 export interface ChatArtifactRevision {
   artifactId: string;
@@ -18,6 +28,10 @@ export interface ChatArtifactRevision {
 }
 
 export interface SurfacesApi {
+  listValidations(
+    workspaceId: string,
+    workItemRef?: WorkItemReference,
+  ): Promise<ValidationHistoryEntry[]>;
   runAction(request: SurfaceActionRequest): Promise<SurfaceActionResult>;
   listComments(surfaceId: string): Promise<SurfaceComment[]>;
   addComment(input: SurfaceCommentInput): Promise<SurfaceComment>;

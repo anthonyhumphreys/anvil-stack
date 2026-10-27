@@ -22,8 +22,7 @@ export const SETTINGS_SECRET_COLUMNS = {
 
 export function getCredentialStorageStatus(): CredentialStorageStatus {
   const row = getDb().prepare('SELECT * FROM settings WHERE id = 1').get() as
-    | Record<string, Buffer | null>
-    | undefined;
+    Record<string, Buffer | null> | undefined;
   const credentials: CredentialStorageStatus['credentials'] = {};
   for (const [name, column] of Object.entries(SETTINGS_SECRET_COLUMNS))
     credentials[name] = readStoredSecret(row?.[column] ?? null).state;
@@ -38,10 +37,12 @@ export function maskSavedSettings(settings: AppSettings): AppSettings {
     if (name !== 'workItemConnections' && status.credentials[name] !== 'not-configured')
       Object.assign(masked, { [name]: '••••••••' });
   }
+  masked.githubToken = settings.githubToken ? '••••••••' : undefined;
   masked.workItemConnections = settings.workItemConnections.map((connection) => ({
     ...connection,
     adoPat: connection.adoPat ? '••••••••' : undefined,
     linearApiKey: connection.linearApiKey ? '••••••••' : undefined,
+    githubToken: connection.githubToken ? '••••••••' : undefined,
     jiraApiToken: connection.jiraApiToken ? '••••••••' : undefined,
   }));
   return masked;

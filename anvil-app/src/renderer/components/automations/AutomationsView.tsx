@@ -75,6 +75,7 @@ function emptyDraft(repoIds: string[]): AutomationDefinitionInput {
     enabled: true,
     allowRepoWrite: true,
     allowCommandRun: true,
+    allowRemotePublishing: false,
     loopConfig: DEFAULT_LOOP_CONFIG,
   };
 }
@@ -93,6 +94,7 @@ function automationToDraft(automation: AutomationDefinition): AutomationDefiniti
     enabled: automation.enabled,
     allowRepoWrite: automation.allowRepoWrite,
     allowCommandRun: automation.allowCommandRun,
+    allowRemotePublishing: automation.allowRemotePublishing ?? false,
     loopConfig: automation.loopConfig ?? DEFAULT_LOOP_CONFIG,
     workflowTemplateId: automation.workflowTemplateId,
   };
@@ -1161,7 +1163,7 @@ export function AutomationsView() {
                 </div>
               </div>
 
-              <div className="grid gap-2 md:grid-cols-3">
+              <div className="grid gap-2 md:grid-cols-2">
                 <label className="flex items-center gap-2 rounded-md border border-border-subtle bg-bg-primary px-3 py-2 text-sm text-text-primary">
                   <input
                     type="checkbox"
@@ -1176,9 +1178,16 @@ export function AutomationsView() {
                   <input
                     type="checkbox"
                     checked={draft.allowRepoWrite}
-                    onChange={(event) =>
-                      setDraft((current) => ({ ...current, allowRepoWrite: event.target.checked }))
-                    }
+                    onChange={(event) => {
+                      const allowRepoWrite = event.target.checked;
+                      setDraft((current) => ({
+                        ...current,
+                        allowRepoWrite,
+                        ...(!allowRepoWrite || !current.allowCommandRun
+                          ? { allowRemotePublishing: false }
+                          : {}),
+                      }));
+                    }}
                   />
                   Allow repo writes
                 </label>
@@ -1186,12 +1195,51 @@ export function AutomationsView() {
                   <input
                     type="checkbox"
                     checked={draft.allowCommandRun}
-                    onChange={(event) =>
-                      setDraft((current) => ({ ...current, allowCommandRun: event.target.checked }))
-                    }
+                    onChange={(event) => {
+                      const allowCommandRun = event.target.checked;
+                      setDraft((current) => ({
+                        ...current,
+                        allowCommandRun,
+                        ...(!allowCommandRun || !current.allowRepoWrite
+                          ? { allowRemotePublishing: false }
+                          : {}),
+                      }));
+                    }}
                   />
                   Allow shell commands
                 </label>
+              </div>
+
+              <div className="rounded-md border border-border-subtle bg-bg-primary px-3 py-3">
+                <label className="flex items-start gap-2 text-sm text-text-primary">
+                  <input
+                    type="checkbox"
+                    checked={draft.allowRemotePublishing ?? false}
+                    disabled={!draft.allowRepoWrite || !draft.allowCommandRun}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        allowRemotePublishing:
+                          current.allowRepoWrite && current.allowCommandRun && event.target.checked,
+                      }))
+                    }
+                    className="mt-0.5 accent-accent"
+                    aria-describedby="automation-remote-publishing-description"
+                  />
+                  <span className="font-medium">Publish branches and pull requests</span>
+                </label>
+                <p
+                  id="automation-remote-publishing-description"
+                  className="ml-6 mt-1 text-xs leading-relaxed text-text-secondary"
+                >
+                  Allows pushing branches, opening or updating pull requests, and posting related
+                  review comments. It does not grant permission to merge pull requests.
+                  {(!draft.allowRepoWrite || !draft.allowCommandRun) && (
+                    <span className="block text-text-tertiary">
+                      Enable repo writes and shell commands to allow remote publishing.
+                    </span>
+                  )}
+                </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -1445,12 +1493,15 @@ function metadataText(
 
 function PrFeedbackDetail({ run, events }: { run: AutomationRun; events: AutomationRunEvent[] }) {
   const navigate = useNavigate();
-  const decision = events.find((event) =>
-    ['accepted', 'rejected', 'deferred'].includes(String(event.metadata?.feedbackDisposition)),
-  );
+  const decision = [...events]
+    .reverse()
+    .find((event) =>
+      ['accepted', 'rejected', 'deferred'].includes(String(event.metadata?.feedbackDisposition)),
+    );
   if (!decision) return null;
   const metadata = decision.metadata;
   const disposition = metadataText(metadata, 'feedbackDisposition');
+  const repairRounds = metadata?.repairRounds;
   const repoId = metadataText(metadata, 'repoId') ?? run.triggerContext?.repoIds[0];
   const prNumber = metadata?.pullRequestNumber ?? run.triggerContext?.metadata?.pullRequestNumber;
   const pullRequestId =
@@ -1468,9 +1519,11 @@ function PrFeedbackDetail({ run, events }: { run: AutomationRun; events: Automat
     <section aria-label="PR feedback decision" className="mt-4 border-t border-border-subtle pt-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-sm font-medium text-text-primary">
-          {disposition === 'rejected'
-            ? 'Feedback needs a fresh review'
-            : 'Feedback awaits manual review'}
+          {disposition === 'accepted'
+            ? 'Feedback accepted for repair'
+            : disposition === 'rejected'
+              ? 'Feedback rejected'
+              : 'Feedback deferred'}
         </h3>
         {repoId && pullRequestId && (
           <button
@@ -1491,7 +1544,7 @@ function PrFeedbackDetail({ run, events }: { run: AutomationRun; events: Automat
       </p>
       <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs">
         <div>
-          <dt className="text-text-tertiary">Decision</dt>
+          <dt className="text-text-tertiary">Status</dt>
           <dd className="mt-0.5 capitalize text-text-primary">{disposition}</dd>
         </div>
         {branch && (
@@ -1516,10 +1569,14 @@ function PrFeedbackDetail({ run, events }: { run: AutomationRun; events: Automat
             </div>
           ) : null,
         )}
-        <div>
-          <dt className="text-text-tertiary">Automatic repairs</dt>
-          <dd className="mt-0.5 text-text-primary">Not run</dd>
-        </div>
+        {typeof repairRounds === 'number' &&
+          Number.isSafeInteger(repairRounds) &&
+          repairRounds >= 0 && (
+            <div>
+              <dt className="text-text-tertiary">Repair rounds</dt>
+              <dd className="mt-0.5 text-text-primary">{repairRounds}</dd>
+            </div>
+          )}
       </dl>
       {body && (
         <details className="mt-3 text-xs">

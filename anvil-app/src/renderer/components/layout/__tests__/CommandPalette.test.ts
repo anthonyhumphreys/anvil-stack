@@ -140,11 +140,12 @@ describe('groupPaletteCommands', () => {
 describe('buildAskAgentCommands (spec §12)', () => {
   const commands = buildAskAgentCommands();
 
-  it('offers the four agent-backed replacements for removed tools', () => {
+  it('offers explicit agent-backed actions for removed tools', () => {
     expect(commands.map((command) => command.label)).toEqual([
       'Ask the agent: Run a security audit',
       'Ask the agent: Check dependencies',
       'Ask the agent: Analyse CI/CD',
+      'Ask the agent: Validate my changes',
       'Ask the agent: Review my changes',
     ]);
     expect(commands.every((command) => command.section === ASK_AGENT_SECTION)).toBe(true);
@@ -157,6 +158,7 @@ describe('buildAskAgentCommands (spec §12)', () => {
       'dependencies',
       'cicd',
       'codereview',
+      'codereview',
     ]);
     expect(commands.every((command) => command.prompt.length > 40)).toBe(true);
   });
@@ -168,6 +170,7 @@ describe('buildAskAgentCommands (spec §12)', () => {
     expect(findable('dependencies')).toContain('ask-agent-dependencies');
     expect(findable('pipeline')).toContain('ask-agent-cicd');
     expect(findable('review')).toContain('ask-agent-review-changes');
+    expect(findable('acceptance')).toContain('ask-agent-validate-changes');
   });
 });
 

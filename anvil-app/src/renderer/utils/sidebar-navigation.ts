@@ -96,6 +96,13 @@ export const AUTOMATE_NAV_ITEMS: SidebarNavItemDefinition[] = [
     feature: 'automations',
   },
   {
+    path: '/factories',
+    label: 'Factories',
+    description: 'Issue-to-PR work with durable progress, policy and oversight.',
+    keywords: ['software factory', 'issue to pr', 'delivery', 'agent'],
+    feature: 'automations',
+  },
+  {
     path: '/workflows',
     label: 'Workflows',
     description: 'Reusable multi-step agent pipelines.',
@@ -157,13 +164,6 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
         description: 'Tickets and backlog from your work-item provider.',
         keywords: ['tickets', 'ado', 'backlog'],
         feature: 'workitems',
-      },
-      {
-        path: '/review',
-        label: 'Changes',
-        description: 'Review uncommitted working-tree changes.',
-        keywords: ['diff', 'working tree', 'uncommitted'],
-        feature: 'codereview',
       },
       {
         path: '/codereview',
@@ -565,9 +565,9 @@ export function chatItemPath(
   return `/chat?${params.toString()}`;
 }
 
-/** Start a chat with a prefilled (not sent) prompt via the `?prompt=` route intent. */
+/** Explicit chat action: submit once the destination conversation is ready. */
 export function chatPromptPath(prompt: string): string {
-  return `/chat?prompt=${encodeURIComponent(prompt)}`;
+  return `/chat?prompt=${encodeURIComponent(prompt)}&send=1`;
 }
 
 /** Carry legacy query params (auditId, workspaceId, toolWindow…) onto the new target. */

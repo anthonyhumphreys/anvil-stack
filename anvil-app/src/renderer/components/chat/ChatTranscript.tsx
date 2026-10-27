@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type RefObject } from 'react';
 import { AlertTriangle, ArrowDown } from 'lucide-react';
 import type { AgentProvider, RepoInfo } from '../../../shared/types';
-import type { ChatTurnSurface, ComposedChatTurn } from './chat-turns';
+import { buildChatTurnTimeline, type ComposedChatTurn } from './chat-turns';
 import { SurfaceHost } from '../surfaces/SurfaceHost';
 import { QuestionIntentSurface } from './AgentUIIntentSurface';
 import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
@@ -101,6 +101,7 @@ export function ChatTranscript({
   const reviewRequestSequence = useRef(0);
   const pendingQuestionTarget = getPendingQuestionTarget(turns);
   const centered = paneKind !== 'transcript';
+  const liveTurnIndex = turns.length - 1;
   const laterEditedPathsByTurn = useMemo(() => {
     const result = new Map<string, string[]>();
     const seen = new Set<string>();
@@ -166,14 +167,16 @@ export function ChatTranscript({
               {turns.map((turn, turnIndex) => {
                 const liveState = getChatTurnLiveState({
                   busy,
-                  isLatest: turnIndex === turns.length - 1,
+                  isLatest: turnIndex === liveTurnIndex,
                   hasWork: turn.work.length > 0,
                   hasAnswer: Boolean(turn.answer),
                   hasTrailingWork: turn.trailingWork.length > 0,
                 });
                 const turnComplete = liveState === null;
+                const timeline = buildChatTurnTimeline(turn);
+                const lastWorkIndex = timeline.findLastIndex((item) => item.kind === 'work');
                 const runSummary = summarizeChatTurnRun(turn, {
-                  busy: busy && turnIndex === turns.length - 1,
+                  busy: busy && turnIndex === liveTurnIndex,
                   pendingTarget: pendingQuestionTarget,
                 });
 
@@ -195,46 +198,58 @@ export function ChatTranscript({
                         onBranch={onBranch ? () => onBranch(turn.user!.sourceIndex) : undefined}
                       />
                     )}
-                    {(turn.work.length > 0 ||
-                      turn.trailingWork.length > 0 ||
-                      liveState ||
-                      turn.runOutcome) && (
-                      <TurnWorkMessage
-                        items={[...turn.work, ...turn.trailingWork]}
-                        active={liveState !== null}
-                        outcome={turn.runOutcome}
-                        waiting={runSummary?.state === 'awaiting-user'}
-                        answering={liveState === 'responding'}
-                        startedAt={turn.startedAt}
-                        endedAt={turn.endedAt}
-                      />
-                    )}
-                    <TurnSurfaces
-                      surfaces={turn.surfaces.filter(
-                        (surface) => !turn.answer || surface.sourceIndex < turn.answer.sourceIndex,
-                      )}
-                    />
-                    {turn.questionReceipts?.map((intent) => (
-                      <div key={intent.id} className="max-w-[72ch]">
-                        <QuestionIntentSurface intent={intent} />
-                      </div>
-                    ))}
-                    {turn.answer && (
-                      <AssistantMessage
-                        content={turn.answer.content}
-                        transformContent={isBaPersona ? stripFindingMarkers : undefined}
-                        label={personaName}
-                        colour={personaColour}
-                        active={liveState === 'responding'}
-                        onBranch={onBranch ? () => onBranch(turn.answer!.sourceIndex) : undefined}
-                      />
-                    )}
-                    {turn.answer && (
-                      <TurnSurfaces
-                        surfaces={turn.surfaces.filter(
-                          (surface) => surface.sourceIndex > turn.answer!.sourceIndex,
-                        )}
-                      />
+                    {timeline.map((item, index) => {
+                      if (item.kind === 'work') {
+                        const currentWork = index === lastWorkIndex;
+                        return (
+                          <TurnWorkMessage
+                            key={item.key}
+                            items={item.items}
+                            active={currentWork && liveState !== null}
+                            outcome={turnComplete ? turn.runOutcome : undefined}
+                            waiting={currentWork && runSummary?.state === 'awaiting-user'}
+                            answering={liveState === 'responding'}
+                            startedAt={turn.startedAt}
+                            endedAt={turn.endedAt}
+                          />
+                        );
+                      }
+                      if (item.kind === 'pending-message')
+                        return (
+                          <UserMessage
+                            key={item.key}
+                            content={item.entry.content}
+                            attachments={item.entry.attachments}
+                            delivery={item.entry.delivery}
+                            deliveryError={item.entry.deliveryError}
+                            deliveryIntent={item.entry.deliveryIntent}
+                            onEdit={() =>
+                              onReuseMessage(item.entry.sourceIndex, item.entry.content)
+                            }
+                          />
+                        );
+                      if (item.kind === 'surface')
+                        return <SurfaceHost key={item.key} intent={item.intent} />;
+                      if (item.kind === 'receipt')
+                        return (
+                          <div key={item.key} className="max-w-[72ch]">
+                            <QuestionIntentSurface intent={item.intent} />
+                          </div>
+                        );
+                      return (
+                        <AssistantMessage
+                          key={item.key}
+                          content={item.entry.content}
+                          transformContent={isBaPersona ? stripFindingMarkers : undefined}
+                          label={personaName}
+                          colour={personaColour}
+                          active={liveState === 'responding'}
+                          onBranch={onBranch ? () => onBranch(item.entry.sourceIndex) : undefined}
+                        />
+                      );
+                    })}
+                    {lastWorkIndex < 0 && !turn.answer && liveState && (
+                      <TurnWorkMessage items={[]} active startedAt={turn.startedAt} />
                     )}
                     {/* H5 — usage/context/cost rollup for the turn. */}
                     {turn.usage && <TurnUsageFooter usage={turn.usage} />}
@@ -273,7 +288,9 @@ export function ChatTranscript({
             </div>
           )}
 
-          {activeThreadId && paneKind === 'transcript' && <ChatDelegations key={activeThreadId} threadId={activeThreadId} />}
+          {activeThreadId && paneKind === 'transcript' && (
+            <ChatDelegations key={activeThreadId} threadId={activeThreadId} />
+          )}
           {error && (
             <ChatErrorNotice
               error={error}
@@ -296,18 +313,6 @@ export function ChatTranscript({
           {busy ? 'Jump to live work' : 'Jump to latest'}
         </button>
       )}
-    </div>
-  );
-}
-
-/** Inline surfaces sit in the reply column, on the thread background. */
-export function TurnSurfaces({ surfaces }: { surfaces: ChatTurnSurface[] }) {
-  if (surfaces.length === 0) return null;
-  return (
-    <div className="message-bubble flex w-full flex-col items-start gap-5">
-      {surfaces.map((surface) => (
-        <SurfaceHost key={surface.intent.id} intent={surface.intent} />
-      ))}
     </div>
   );
 }

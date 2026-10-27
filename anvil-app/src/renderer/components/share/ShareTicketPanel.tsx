@@ -4,6 +4,7 @@ import type { WorkItemReference } from '../../../shared/change-review-types';
 import type { ShareTicketPreview, ShareTicketReceipt } from '../../../shared/share-ticket';
 import type { ShareRecord } from '../../../shared/shares-ipc';
 import type { WorkItemConnection, WorkItemProvider } from '../../../shared/types';
+import { normalizeGitHubIssueUrl } from '../../utils/github-workitem-reference';
 import { Button } from '../ui';
 
 export interface ShareTicketPanelProps {
@@ -60,12 +61,17 @@ export function ShareTicketPanel({ record, suggestedTicket }: ShareTicketPanelPr
     () => connections.find((connection) => connection.id === connectionId),
     [connections, connectionId],
   );
+  const referenceId = selectedConnection
+    ? selectedConnection.provider === 'github'
+      ? normalizeGitHubIssueUrl(ticketId, selectedConnection)
+      : ticketId.trim()
+    : undefined;
   const reference: WorkItemReference | null =
-    selectedConnection && ticketId.trim()
+    selectedConnection && referenceId
       ? {
           connectionId: selectedConnection.id,
           provider: selectedConnection.provider,
-          id: ticketId.trim(),
+          id: referenceId,
         }
       : null;
 
@@ -122,7 +128,7 @@ export function ShareTicketPanel({ record, suggestedTicket }: ShareTicketPanelPr
       <div>
         <h3 className="text-sm font-semibold text-text-primary">Attach to ticket</h3>
         <p className="mt-1 text-xs text-text-tertiary">
-          Add a comment with the shared thread link to a Linear, Jira, or Azure DevOps ticket.
+          Add a comment with the shared thread link to a GitHub issue, Linear, Jira, or Azure DevOps ticket.
         </p>
       </div>
 
@@ -150,23 +156,36 @@ export function ShareTicketPanel({ record, suggestedTicket }: ShareTicketPanelPr
               {connections.map((connection) => (
                 <option key={connection.id} value={connection.id}>
                   {connection.name} ·{' '}
-                  {connection.provider === 'ado' ? 'Azure DevOps' : connection.provider}
+                  {connection.provider === 'ado'
+                    ? 'Azure DevOps'
+                    : connection.provider === 'github'
+                      ? 'GitHub Issues'
+                      : connection.provider}
                 </option>
               ))}
             </select>
           </label>
           <label className="space-y-1 text-xs font-medium text-text-secondary">
-            Ticket ID
+            {selectedConnection?.provider === 'github' ? 'GitHub issue URL' : 'Ticket ID'}
             <input
               className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary"
               value={ticketId}
               disabled={disabled}
-              placeholder="e.g. APP-123"
+              placeholder={
+                selectedConnection?.provider === 'github'
+                  ? 'https://github.com/owner/repo/issues/123'
+                  : 'e.g. APP-123'
+              }
               onChange={(event) => {
                 setTicketId(event.target.value);
                 resetReview();
               }}
             />
+            {selectedConnection?.provider === 'github' ? (
+              <span className="text-xs font-normal text-text-tertiary sm:col-start-2">
+                Paste the full issue URL so the connection can identify the repository and issue.
+              </span>
+            ) : null}
           </label>
         </div>
       ) : null}

@@ -1,4 +1,5 @@
 import { cleanupChangeReviews } from './services/change-review.service.js';
+import { cleanupValidations } from './services/validation.service.js';
 import { registerChangeReviewHandlers } from './ipc/change-review.ipc.js';
 import { fixPath } from './utils/fix-path.js';
 fixPath();
@@ -46,6 +47,7 @@ import { registerTerminalHandlers, cleanupTerminals } from './ipc/terminal.ipc.j
 import { registerGovernanceHandlers } from './ipc/governance.ipc.js';
 import { registerDbInsightsHandlers } from './ipc/db-insights.ipc.js';
 import { registerAutomationHandlers } from './ipc/automation.ipc.js';
+import { registerFactoryHandlers } from './ipc/factory.ipc.js';
 import { registerDojoHandlers } from './ipc/dojo.ipc.js';
 import { registerWorkflowHandlers } from './ipc/workflow.ipc.js';
 import { registerAgentRunHandlers } from './ipc/agent-run.ipc.js';
@@ -84,6 +86,10 @@ import {
   initializeAutomationRuntime,
   shutdownAutomationRuntime,
 } from './services/automation.service.js';
+import {
+  initializeFactoryRuntime,
+  shutdownFactoryRuntime,
+} from './services/factory.service.js';
 import { isAutomationDaemonMode } from './services/automation-daemon.service.js';
 import { LEGACY_PROTOCOL, PRIMARY_PROTOCOL } from '../shared/app-identity.js';
 import { getLegacyUserDataPaths, getPrimaryUserDataPath } from './utils/app-paths.js';
@@ -413,6 +419,7 @@ app.whenReady().then(() => {
     app.dock.setIcon(getAppIconPath());
   }
   initializeAutomationRuntime();
+  initializeFactoryRuntime();
 
   if (daemonMode) {
     app.dock?.hide();
@@ -459,6 +466,7 @@ app.whenReady().then(() => {
   registerGovernanceHandlers();
   registerDbInsightsHandlers();
   registerAutomationHandlers();
+  registerFactoryHandlers();
   registerDojoHandlers();
   registerWorkflowHandlers();
   registerAgentRunHandlers();
@@ -541,6 +549,7 @@ app.on('window-all-closed', () => {
 // Only tear down services after every window has accepted quitting.
 app.on('will-quit', () => {
   shutdownAutomationRuntime();
+  shutdownFactoryRuntime();
   cleanupChatSessions();
   void stopAgentMcpEndpoint();
   cleanupBaSessions();
@@ -549,6 +558,7 @@ app.on('will-quit', () => {
   disposeBrowserWorkspaceExecutor();
   cleanupBrowser();
   cleanupChangeReviews();
+  cleanupValidations();
   cleanupSimulatorPreview();
   void stopMobileCompanionServer();
   void cleanupEmbeddedEditor();

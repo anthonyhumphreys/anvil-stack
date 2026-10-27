@@ -333,6 +333,37 @@ Verify Desktop Node/web TypeScript checks, lint, service/real-Git tests and the
 full Desktop suite; run backend tests and typecheck for capability changes.
 Native UI and physical-device acceptance remain separate evidence.
 
+### C5: Explicit conversational validation
+
+Status: active
+Owner project: `anvil-app`
+
+Validation is introduced only by a user request or an explicit workflow step.
+Resolve acceptance criteria from the linked work item or the original request
+and clarifications. Plans and per-criterion evidence render as a native inline
+surface; there is no separate Changes navigation or scenario form. Explicit
+review and validation chat actions submit their scoped prompt once the target
+conversation is ready, queueing behind an active run when the provider supports
+it. They keep the thread's existing permissions.
+
+Keep source snapshots, criteria versions and execution provenance explicit.
+Only the verification executor records command outcomes. Browser, manual and
+inspection observations are labelled agent-reported and do not constitute human
+acceptance. Changing source or criteria invalidates evidence. Workflow checks
+must use the retained execution checkout, not another copy of the repository.
+Revisions clear prior outcomes; interrupted or unobserved checks cannot pass.
+Preserve existing review records, screenshots and decisions through chat and
+work-item history. Save reusable workflow instructions without copying evidence.
+
+Owner modules: `validation.service.ts`, the validation surface triple and its
+registry entries, work-item launch/history, legacy review route handling,
+workflow validation tools and the shared question lifecycle. Local workflow
+tool sessions allow only validation, surface reads and conversational questions,
+with current role/access checks and revocation when the worker exits. Saved
+validation steps cannot complete without current per-criterion evidence.
+Verify Node/web typechecks, lint, service/real-Git tests, the Desktop suite and
+production build. Browser replay is presentation evidence, not native acceptance.
+
 ### C6: Reviewed thread shares and explicit ticket publication
 
 Status: active
@@ -389,6 +420,135 @@ explicit on-request access override; the recipient chooses model and access
 before sending. Validate filenames and references, write only app-owned files,
 and roll back failed imports without removing unrelated data. Preview builds
 remain isolated from OS file/protocol association registration.
+
+### C7: Opt-in automation publication and current-head PR repair
+
+Status: active
+Owner project: `anvil-app`
+
+Replace the blanket automation publication ban with an explicit saved
+`allowRemotePublishing` choice. Existing definitions default to disabled.
+Publication requires repository writes and command execution, remains under
+the current provider/persona access ceiling, and covers branches, pull requests
+and related review comments in the selected repositories. It does not grant
+merge, force-push, branch-deletion or unrelated external-mutation authority.
+Carry the instructions into persona, loop, ACP and workflow runs, including
+the saved workflow kickoff used after a pause. These instructions express
+authorisation for trusted CLI workers; they are not a credential-isolation
+boundary or a replacement for provider permissions.
+Workflow publication authority is frozen in that run's kickoff. Editing the
+automation definition does not revoke a paused workflow's existing grant;
+cancel the workflow or narrow its execution access to stop that work.
+
+PR feedback may run automatically with publication enabled. Bind it to the
+configured repository and PR, re-read the current provider state, and prepare
+an isolated checkout at the verified head. Reject stale, unknown or changed
+heads and unsupported fork targets rather than guessing their source. Treat
+feedback as task input, never as additional permission. Retain committed
+publication checkouts even when their working trees are clean, and suppress
+head-change repairs for commits already produced by that automation. Agent
+reports and local commits do not establish that publication succeeded.
+
+Owner modules: automation services and persistence, Watchtower sources,
+automation shared contracts, database migration 115 and Automations editor.
+Verify migration retention, permission defaults and prerequisites, execution
+context, PR identity/head races, retained worktrees and feedback suppression;
+run desktop typechecks, lint and tests. Live provider publication is separate
+acceptance evidence. Full factory intake, durable PR lifecycle control and
+policy-based merging remain planned in `anvil-app/docs/plans/software-factories.md`.
+
+### C8: Reviewed software factories and typed GitHub delivery
+
+Status: implemented; automated verification passed
+Owner project: `anvil-app`
+
+A factory is a reviewed typed definition and immutable workflow revision. Saving
+or drafting does not activate it. Activation grants standing authority for its
+specified source, label, verification commands, publication and merge policy;
+never derive those permissions from an issue, comment, model output or operator
+retry. Source repository identity is immutable. Workflow revisions and expanded
+grants apply to future intake; current pauses, account/source revocations and
+reductions in merge authority fence active effects. Visibility changes apply to
+existing history and require current membership, source permission and role on
+all discovery, detail and control paths. Organisation membership alone grants no
+repository access or execution identity. Backend WorkOS users, sync accounts and
+designated executor enrollments are distinct identity domains.
+
+Persist one issue lifecycle, immutable graph/source evidence, leases, command
+observations and operation intent/result receipts. Typed provider writes must
+reconcile uncertain outcomes using stable operation keys before retrying. Hold
+and renew a fenced run lease across external effects. Guard again after awaits
+and immediately before publication or merge. Bind acceptance commands and each
+criterion to the exact produced commit/tree, recheck the PR source head and all
+required checks/reviews before requesting a merge, and invalidate stale evidence
+and head approval after changes. An asynchronous request or queue entry is not a
+merge. Observe merge and execute post-merge checks before claiming completion.
+Cancellation and takeover remain pending while a merge outcome is unknown;
+late acknowledgements must be adopted from receipts even if the run CAS changed.
+A merge that wins a cancellation race is irreversible and remains visible as a
+merged outcome requiring post-merge verification. Takeover claims/stops the run
+before creating a fresh private recipient chat; remote claim correlation never
+reuses the executor's private thread ID or local repository IDs as authority.
+
+The first execution slice supports GitHub and local Codex app-server workflow
+nodes only. Reject unsupported provider, remote node or privileged inline
+validation configurations before activation. Isolate HOME/CODEX_HOME, retain
+only model authentication, disable inherited MCP tools and provider-native
+subagents, clamp to the originating/current sandbox and explicitly disable tool
+network access. Factory workers cannot invoke main-process validation, delivery,
+factory mutation or merge tools. The controller independently seals, scans and
+verifies the candidate and performs typed publication/merge. Host reads are not
+fully isolated by the provider workspace sandbox; secret-scan the complete
+candidate before every publication. Controller candidate sealing disables repo
+hooks/signing commands; reviewed sandboxed checks supply verification instead.
+Do not weaken C4's separate interactive delivery or C2's Cloud boundaries.
+
+Supported limits are observed shell command count across workers and repairs,
+wall-clock duration, concurrency and repair rounds. Reserve acceptance and
+post-merge command capacity, meter command-start events, deduplicate observations
+and terminate promptly when exhausted. This is not a hard pre-execution command
+allowlist or a spend/dollar ceiling. Pin model/persona choices in the graph. The
+pure state machine/store can run without Electron; the shipped runtime binding
+is the existing trusted Electron automation daemon on a supported, awake host.
+Activation must prepare that service successfully and keep it installed while
+factory work needs it; no standalone headless server deployment is claimed.
+
+Organisation definitions and runs use recipient-encrypted snapshots. Authorise
+and CAS registry metadata separately from encrypted payload claims; only the
+designated executor may claim jobs, publish runs or consume commands. Verified
+owners/admins revise and activate policies through the authoritative registry.
+Current policy/source gates and recipient enrollment govern history rewrap;
+never reuse another member's account encryption key. Keep remote source identity
+separate from recipient workspace/repository mapping and maintain idempotent,
+leased control receipts on both server and executor.
+
+Owner modules: `shared/factories.ts`, `factory-*.service.ts`, factory IPC/preload,
+chat tools and renderer, schema migration116, hosted factory registry/access
+routes and migration, and the narrow isolated worker/daemon integration.
+Verification passed: desktop suite (348 files, 3,177 tests; 4 files and 12 tests
+skipped), full Node/web TypeScript checks, lint, production build, hosted backend
+suite (43 files, 483 tests) and backend typecheck. `git diff --check` is clean.
+No live GitHub write, production migration or deployment was performed or tested.
+
+### C9: GitHub Work Item connection identity
+
+GitHub Work Items bind credentials to the selected named connection, independently
+of GitHub Code credentials. Preserve encrypted storage and masked settings reads;
+never fall back to the general GitHub token. Canonical issue URLs bind host,
+repository and issue number; canonical service references reject bare numbers,
+mismatched sources and pull requests. Search accepts `42` or `#42` within the
+selected connection and resolves them to canonical references. Scope cached
+results to connection/source and credential identity.
+Explicit review/share publication revalidates its target, retains the existing
+pre-publication connection guard and does not retry ambiguous writes. This
+connector does not expand C8's factory intake or organisation source permissions.
+
+Owner modules: `github-workitems.service.ts`, Work Item provider/context/settings,
+review publication, shared Work Item references, Settings/Work Items UI and schema
+migration117, which additively permits GitHub share receipts and preserves old rows.
+Verification passed: desktop suite (354 files, 3,203 tests; 4 files and 12 tests
+skipped), Node/web TypeScript checks, lint, production build and `git diff --check`.
+No live GitHub write, commit or deployment was performed.
 
 ### C10: LAN first Mesh route selection and session migration
 

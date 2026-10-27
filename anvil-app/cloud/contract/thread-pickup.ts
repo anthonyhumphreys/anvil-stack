@@ -14,7 +14,7 @@ export interface ThreadContinuation {
   }>;
   context: {
     repoNames: string[];
-    ticket?: { id: string; provider: 'jira' | 'linear' | 'ado'; title?: string };
+    ticket?: { id: string; provider: 'jira' | 'linear' | 'ado' | 'github'; title?: string };
     plan?: string;
     goal?: string;
   };
@@ -95,12 +95,12 @@ export function validateThreadContinuation(value: unknown, fileCount = 0): Threa
   let ticket: ThreadContinuation['context']['ticket'];
   if (c.ticket !== undefined) {
     const t = object(c.ticket, ['id', 'provider', 'title']);
-    if (!['jira', 'linear', 'ado'].includes(String(t.provider))) return invalid();
-    const id = text(t.id, 200);
+    if (!['jira', 'linear', 'ado', 'github'].includes(String(t.provider))) return invalid();
+    const id = text(t.id, 2048);
     if (!id.trim()) return invalid();
     ticket = {
       id,
-      provider: t.provider as 'jira' | 'linear' | 'ado',
+      provider: t.provider as 'jira' | 'linear' | 'ado' | 'github',
       ...(t.title !== undefined ? { title: text(t.title, 1000) } : {}),
     };
   }

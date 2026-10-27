@@ -130,6 +130,7 @@ describe('automation persistence', () => {
 
     expect(created.workspaceId).toBe('ws-1');
     expect(created.workflowTemplateId).toBe('workflow-team');
+    expect(created.allowRemotePublishing).toBe(false);
     expect(created.repoIds).toEqual(['repo-1']);
     expect(listAutomations('ws-1')).toHaveLength(1);
 
@@ -153,6 +154,38 @@ describe('automation persistence', () => {
     expect(updated?.name).toBe('Morning triage updated');
     expect(updated?.enabled).toBe(false);
     expect(updated?.nextRunAt).toBeUndefined();
+  });
+
+  it('persists publishing opt-in and clears it when a prerequisite is removed', () => {
+    const input = {
+      name: 'Publish fixes',
+      personaId: 'coder',
+      prompt: 'Implement fixes and open a pull request.',
+      repoIds: ['repo-1'],
+      scheduleCron: '0 9 * * 1-5',
+      timezone: 'UTC',
+      enabled: true,
+      allowRepoWrite: true,
+      allowCommandRun: true,
+      allowRemotePublishing: true,
+    };
+    const created = createAutomationRecord('ws-1', input, null);
+    expect(getAutomation(created.id)?.allowRemotePublishing).toBe(true);
+    expect(listAutomations('ws-1')[0].allowRemotePublishing).toBe(true);
+
+    expect(
+      updateAutomationRecord(created.id, { ...input, allowRepoWrite: false }, null)
+        ?.allowRemotePublishing,
+    ).toBe(false);
+    expect(
+      updateAutomationRecord(created.id, { ...input, allowCommandRun: false }, null)
+        ?.allowRemotePublishing,
+    ).toBe(false);
+    expect(updateAutomationRecord(created.id, input, null)?.allowRemotePublishing).toBe(true);
+    expect(
+      updateAutomationRecord(created.id, { ...input, allowRemotePublishing: false }, null)
+        ?.allowRemotePublishing,
+    ).toBe(false);
   });
 
   it('persists automation loop configuration', () => {

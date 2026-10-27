@@ -25,3 +25,12 @@ html[data-theme='light'] body {
   scrollbar-color: var(--color-border) transparent;
   scrollbar-width: thin;
 }
+
+/* This standalone document preview scrolls; the desktop app owns its own chat scroller. */
+html:has([data-validation-preview]),
+body:has([data-validation-preview]),
+#root:has([data-validation-preview]) {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}

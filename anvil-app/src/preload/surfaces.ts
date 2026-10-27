@@ -2,6 +2,8 @@ import { ipcRenderer } from 'electron';
 import type { SurfacesApi } from '../shared/surfaces/ipc.js';
 
 export const surfacesBridge: SurfacesApi = {
+  listValidations: (workspaceId, workItemRef) =>
+    ipcRenderer.invoke('surfaces:list-validations', workspaceId, workItemRef),
   runAction: (request) => ipcRenderer.invoke('surfaces:run-action', request),
   listComments: (surfaceId) => ipcRenderer.invoke('surfaces:list-comments', surfaceId),
   addComment: (input) => ipcRenderer.invoke('surfaces:add-comment', input),

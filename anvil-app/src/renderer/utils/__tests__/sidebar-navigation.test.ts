@@ -57,11 +57,11 @@ describe('sidebar navigation (spec §12)', () => {
       'Overview',
       'Chat',
       'Automations',
+      'Factories',
       'Workflows',
       'Dojo',
       'Editor',
       'Work Items',
-      'Changes',
       'PR Review',
       'Git',
       'Cloud',
@@ -97,7 +97,7 @@ describe('sidebar navigation (spec §12)', () => {
   it('groups tools by workflow', () => {
     expect(TOOL_NAV_GROUPS.map((group) => [group.label, group.items.map((i) => i.label)])).toEqual([
       ['Build', ['Editor']],
-      ['Delivery', ['Work Items', 'Changes', 'PR Review', 'Git']],
+      ['Delivery', ['Work Items', 'PR Review', 'Git']],
       ['Inspect', ['Cloud']],
       ['Knowledge', ['Notes', 'Library']],
       ['Governance', ['Lifecycle']],
@@ -119,6 +119,7 @@ describe('sidebar navigation (spec §12)', () => {
 
     expect(developer.automate.map((item) => item.path)).toEqual([
       '/automations',
+      '/factories',
       '/workflows',
       '/dojo',
     ]);
@@ -163,8 +164,8 @@ describe('sidebar navigation (spec §12)', () => {
     expect(entries.some(({ item }) => item.path === '/cloud')).toBe(false);
   });
 
-  it('labels the two review surfaces distinctly (NV1)', () => {
-    expect(findTool('/review').label).toBe('Changes');
+  it('keeps PR review while removing the separate Changes destination', () => {
+    expect(toolItems().find((item) => item.path === '/review')).toBeUndefined();
     expect(findTool('/codereview').label).toBe('PR Review');
   });
 
@@ -322,7 +323,9 @@ describe('consolidated destinations', () => {
     expect(notesPath('meeting')).toBe('/notes?tab=meeting');
     expect(chatItemPath('t1', { surfaceId: 's1' })).toBe('/chat?thread=t1&surface=s1');
     expect(chatItemPath('t1', { artifactId: 'a1' })).toBe('/chat?thread=t1&artifact=a1');
-    expect(chatPromptPath('Run a security audit')).toBe('/chat?prompt=Run%20a%20security%20audit');
+    expect(chatPromptPath('Run a security audit')).toBe(
+      '/chat?prompt=Run%20a%20security%20audit&send=1',
+    );
   });
 });
 

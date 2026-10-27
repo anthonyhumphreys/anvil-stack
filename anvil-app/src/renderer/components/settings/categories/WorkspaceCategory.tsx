@@ -301,7 +301,9 @@ export function WorkspaceCategory() {
       >
         <ul className="space-y-2 text-sm">
           <li className="flex items-center justify-between gap-3">
-            <span className="text-text-secondary">Work-item connection (ADO, Linear, Jira)</span>
+            <span className="text-text-secondary">
+              Work-item connection (GitHub Issues, ADO, Linear, Jira)
+            </span>
             <SettingsLink to="delivery#work-items">Open work-item settings</SettingsLink>
           </li>
           <li className="flex items-center justify-between gap-3">

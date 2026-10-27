@@ -15,7 +15,7 @@ Built on `develop`:
 - Sharing, including interactive shares and `share.update` (§11).
 - Sidebar consolidation, the Library, and repo Health/Setup (§12).
 - Read-only threads hide mutation actions.
-- The old PR Review and Changes screens launch reviews in chat.
+- PR Review launches reviews in chat. Changes navigation is removed; legacy evidence links open a validation request in chat.
 - Replay fixtures exist for every surface kind, plus a 30-surface heavy thread.
 
 Verified live:
@@ -352,6 +352,20 @@ Keyboard: `j`/`k` move between findings, `]`/`[` move between files, `a` accept,
 - The stage is fully keyboard-operable.
 - The old views are deleted, or reduced to launchers that open a Review.
 
+### 8.1a Conversational validation
+
+Validation begins only when the user asks or a saved workflow explicitly includes it. It is not automatically suggested after edits. The Changes navigation entry and replay configuration form are removed from the user flow. Code review remains a separate assessment of the diff.
+
+- `validation_context` resolves the thread request, linked work-item acceptance criteria and the source snapshot. A workflow uses its retained execution checkout and work-item scope.
+- The agent proposes observable criteria and how to check them with `validation_publish`. Ambiguity is resolved through conversational questions. Publishing or revising a plan executes nothing; revised criteria clear prior results.
+- `validation_run` executes saved command checks through the existing verification executor. Session and current device permissions cap access. On-request access asks once for the selected commands; workspace-auto keeps the sandbox. Results contain Anvil-observed exit status and output.
+- Browser, manual and inspection checks use provider tools and `validation_record`. These observations are explicitly agent-reported. Missing proof remains unchecked or blocked; it cannot be recorded as a command receipt or human acceptance.
+- The inline Validation surface shows each criterion and its outcome. Commands, logs and original criteria expand on demand. Actions send requests to run, retry or refine the plan in the same thread. Save as workflow persists only the prompt and expectations, with fresh context required on each run.
+- Source or acceptance-criteria changes make earlier evidence stale. Interrupted commands become blocked rather than continuing to display a running or passing result.
+- Work items link to their validation threads and saved evidence. Legacy `/review` links submit a chat request to import the original record once the destination thread is ready. Historical screenshots, logs, native observations and decisions remain readable without the scenario form.
+
+Acceptance: exercise context scoping, snapshots, revision conflicts, permissions, execution receipts, cancellation and changed-source invalidation; verify compact and expanded views, keyboard controls, long evidence and historical links. Synthetic replays prove presentation only.
+
 ### 8.2 Changes
 
 This is the per-turn diff: an evolution of `TurnChangesFooter`. It has the file list with stats, an inline diff on expand, Undo turn, Review this (promotes to 8.1 with turn scope), and Commit / Open PR (mutations). Anchors: `diff-range`.
@@ -677,7 +691,7 @@ Sharing publishes outside the workspace boundary, which is a real-world side eff
 | Repo setup | Remove → repo detail checklist | Repo readiness (8.15), Artifact (8.9) |
 | Argent | Remove → Settings for config | Preview snapshot (8.12), Test results (8.13) |
 | Work Items | Keep (queue) | Entity card (8.14) |
-| Changes | Keep as the working-tree queue; visuals are the Review surface | Changes (8.2), Review (8.1) |
+| Changes | Remove; validation is explicitly requested in chat or a workflow, with evidence linked from work items | Validation (8.1a), Review (8.1) |
 | PR Review | Keep as the PR queue; opening a PR opens a Review | Review (8.1) |
 | CI/CD | Remove → repo detail status | Pipeline (8.4) |
 | Git | Keep | — |

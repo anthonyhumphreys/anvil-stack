@@ -1,6 +1,6 @@
 // "Review in chat" launchers (docs/plans/inline-artifacts-and-canvas-tools.md §8.1, §12).
 // The PR Review and Changes screens stay as queues; reviewing opens chat with a
-// prefilled (never auto-sent) prompt that asks the agent to call review_context
+// submitted prompt that asks the agent to call review_context
 // for the scope and publish a Review surface.
 
 import type { CodeReviewScopeRef, CodeReviewScopeType } from '../../../shared/types';
@@ -71,7 +71,7 @@ export function describeReviewInChatScope(scope: ReviewInChatScope): string {
   }
 }
 
-/** The prefilled chat prompt. The user reviews and sends it; nothing is sent automatically. */
+/** Prompt submitted by the explicit review action. */
 export function buildReviewInChatPrompt(scope: ReviewInChatScope): string {
   const repo = scope.repoName?.trim();
   return [

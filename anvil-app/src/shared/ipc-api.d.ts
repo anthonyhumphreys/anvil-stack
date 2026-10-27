@@ -12,7 +12,26 @@ import type {
 } from './remote-chat.js';
 import type { ChatThreadPullRequestInput, ChatThreadPullRequestLink } from './types.js';
 import type { RepoIndexJob } from './index-jobs';
+import type {
+  SaveSkillRecommendationsInput,
+  SkillCollectionInspection,
+  SkillRecommendationCatalog,
+  SkillRecommendationSelection,
+} from './skill-recommendations';
 import type { ChangeReviewApi } from './change-review-types.js';
+import type {
+  FactoryActivateInput,
+  FactoryControlInput,
+  FactoryDefinition,
+  FactoryDefinitionInput,
+  FactoryDirectoryItem,
+  FactoryOrganizationMember,
+  FactoryOrganizationOption,
+  FactoryPreview,
+  FactoryRun,
+  FactoryRunControlInput,
+  FactorySaveInput,
+} from './factories.js';
 import type {
   DojoAnalytics,
   DojoPrice,
@@ -596,6 +615,24 @@ export interface AnvilAPI {
     reconcileDaemon: () => Promise<AutomationDaemonStatus>;
   };
 
+  factories: {
+    draft: (request: string, workspaceId: string) => Promise<FactoryDefinitionInput>;
+    preview: (definition: FactoryDefinitionInput, factoryId?: string) => Promise<FactoryPreview>;
+    save: (input: FactorySaveInput) => Promise<FactoryDefinition>;
+    activate: (input: FactoryActivateInput) => Promise<FactoryDefinition>;
+    list: (workspaceId?: string) => Promise<FactoryDefinition[]>;
+    get: (factoryId: string) => Promise<FactoryDefinition | null>;
+    listRuns: (factoryId: string) => Promise<FactoryRun[]>;
+    getRun: (runId: string) => Promise<FactoryRun | null>;
+    control: (input: FactoryControlInput) => Promise<FactoryDefinition>;
+    controlRun: (input: FactoryRunControlInput) => Promise<FactoryRun>;
+    listOrganizations: () => Promise<FactoryOrganizationOption[]>;
+    listOrganizationMembers: (organizationId: string) => Promise<FactoryOrganizationMember[]>;
+    validateOrganizationTeam: (organizationId: string, source: { host: 'github.com'; owner: string; repo: string }, teamId: string) => Promise<boolean>;
+    registerOrganizationKey: (organizationId: string) => Promise<string>;
+    directory: (organizationId?: string) => Promise<FactoryDirectoryItem[]>;
+  };
+
   dojo: {
     setDelivery: (workspaceId: string, workItem: string, completed: boolean) => Promise<void>;
 
@@ -853,6 +890,10 @@ export interface AnvilAPI {
 
   codexRegistry: {
     snapshot: () => Promise<CodexRegistrySnapshot>;
+    recommendations: () => Promise<SkillRecommendationCatalog>;
+    inspectCollection: (input: SkillRecommendationSelection) => Promise<SkillCollectionInspection>;
+    installCollection: (input: SkillRecommendationSelection & { skillName?: string }) => Promise<CodexRegistryActionResult>;
+    saveRecommendations: (input: SaveSkillRecommendationsInput) => Promise<void>;
     searchSkills: (query: string) => Promise<CodexSkillSearchResult[]>;
     installSkill: (input: CodexSkillInstallInput) => Promise<CodexRegistryActionResult>;
     registerMcp: (input: CodexMcpRegisterInput) => Promise<CodexRegistryActionResult>;

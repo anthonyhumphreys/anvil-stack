@@ -766,6 +766,7 @@ const WORK_ITEM_PROVIDER_LABEL: Record<WorkItemProvider, string> = {
   ado: 'Azure DevOps',
   linear: 'Linear',
   jira: 'Jira',
+  github: 'GitHub Issues',
 };
 
 async function loadTickets(

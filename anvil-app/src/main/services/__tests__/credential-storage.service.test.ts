@@ -142,3 +142,33 @@ describe('credential migration', () => {
     expect(saved().openai_api_key).toBeDefined();
   });
 });
+
+it('round trips GitHub Work Item credentials in encrypted connections and masks their projection', async () => {
+  await configureSecretVault({ mode: 'passphrase', passphrase: 'test vault passphrase' });
+  updateSettings({
+    workItemConnections: [
+      {
+        id: 'github-one',
+        name: 'GitHub',
+        provider: 'github',
+        githubHost: 'https://github.com',
+        githubOwner: 'acme',
+        githubRepo: 'widgets',
+        githubToken: 'private-issue-token',
+      },
+    ],
+    activeWorkItemConnectionId: 'github-one',
+  });
+  const settings = getSettings();
+  expect(settings.githubToken).toBe('private-issue-token');
+  expect(settings.githubOwner).toBe('acme');
+  const masked = maskSavedSettings(settings);
+  expect(masked.githubToken).toBe('••••••••');
+  expect(masked.workItemConnections[0].githubToken).toBe('••••••••');
+  updateSettings({ workItemConnections: masked.workItemConnections });
+  expect(getSettings().githubToken).toBe('private-issue-token');
+  const row = db.prepare('SELECT work_item_connections FROM settings WHERE id = 1').get() as {
+    work_item_connections: Buffer;
+  };
+  expect(row.work_item_connections.toString()).not.toContain('private-issue-token');
+});

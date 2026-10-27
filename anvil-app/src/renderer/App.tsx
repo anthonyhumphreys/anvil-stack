@@ -76,6 +76,11 @@ const AutomationsView = lazy(() =>
     default: module.AutomationsView,
   })),
 );
+const FactoriesView = lazy(() =>
+  import('./components/factories/FactoriesView').then((module) => ({
+    default: module.FactoriesView,
+  })),
+);
 const DojoView = lazy(() =>
   import('./components/dojo/DojoView').then((module) => ({ default: module.DojoView })),
 );
@@ -682,6 +687,19 @@ function AppContent() {
                         <WorkspaceGate>
                           <ErrorBoundary>
                             <AutomationsView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )}
+                    />
+                    <Route
+                      path="/factories"
+                      element={guard(
+                        'automations',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <Suspense fallback={<SplashScreen label="Loading factories" />}>
+                              <FactoriesView />
+                            </Suspense>
                           </ErrorBoundary>
                         </WorkspaceGate>,
                       )}

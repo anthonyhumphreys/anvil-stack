@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CheckCircle2, MessageSquarePlus, RotateCcw, Send, Trash2, X } from 'lucide-react';
 import type { ChatArtifact, ChatArtifactAnnotation } from '../../../shared/types';
-import { CHAT_PREFILL_EVENT } from './AgentUIIntentSurface';
+import { requestChatSend } from './chat-prefill';
 import { ConfirmDialog } from '../ui';
 import { useChatReviewFeedback } from './ChatReviewFeedbackContext';
 import {
@@ -244,11 +244,7 @@ export function ArtifactAnnotationsPanel({
   };
 
   const askAgent = (annotation: ChatArtifactAnnotation) => {
-    window.dispatchEvent(
-      new CustomEvent(CHAT_PREFILL_EVENT, {
-        detail: { text: buildArtifactAnnotationPrompt(artifact, annotation) },
-      }),
-    );
+    requestChatSend(buildArtifactAnnotationPrompt(artifact, annotation));
   };
 
   const visibleAnnotations = annotations.filter(

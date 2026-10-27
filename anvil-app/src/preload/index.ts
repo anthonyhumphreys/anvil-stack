@@ -60,6 +60,19 @@ import type {
   WorkspaceUpdateOptions,
 } from '../shared/types.js';
 import type { RepoIndexJob } from '../shared/index-jobs.js';
+import type {
+  FactoryActivateInput,
+  FactoryControlInput,
+  FactoryDefinition,
+  FactoryDefinitionInput,
+  FactoryDirectoryItem,
+  FactoryOrganizationMember,
+  FactoryOrganizationOption,
+  FactoryPreview,
+  FactoryRun,
+  FactoryRunControlInput,
+  FactorySaveInput,
+} from '../shared/factories.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type { SyncBackendPinInput } from '../shared/sync-backend.js';
 import type {
@@ -483,6 +496,34 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('automations:reconcile-daemon') as Promise<AutomationDaemonStatus>,
   },
 
+  factories: {
+    draft: (request: string, workspaceId: string) =>
+      ipcRenderer.invoke('factories:draft', request, workspaceId) as Promise<FactoryDefinitionInput>,
+    preview: (definition: FactoryDefinitionInput, factoryId?: string) =>
+      ipcRenderer.invoke('factories:preview', definition, factoryId) as Promise<FactoryPreview>,
+    save: (input: FactorySaveInput) =>
+      ipcRenderer.invoke('factories:save', input) as Promise<FactoryDefinition>,
+    activate: (input: FactoryActivateInput) =>
+      ipcRenderer.invoke('factories:activate', input) as Promise<FactoryDefinition>,
+    list: (workspaceId?: string) =>
+      ipcRenderer.invoke('factories:list', workspaceId) as Promise<FactoryDefinition[]>,
+    get: (factoryId: string) =>
+      ipcRenderer.invoke('factories:get', factoryId) as Promise<FactoryDefinition | null>,
+    listRuns: (factoryId: string) =>
+      ipcRenderer.invoke('factories:list-runs', factoryId) as Promise<FactoryRun[]>,
+    getRun: (runId: string) =>
+      ipcRenderer.invoke('factories:get-run', runId) as Promise<FactoryRun | null>,
+    control: (input: FactoryControlInput) =>
+      ipcRenderer.invoke('factories:control', input) as Promise<FactoryDefinition>,
+    controlRun: (input: FactoryRunControlInput) =>
+      ipcRenderer.invoke('factories:control-run', input) as Promise<FactoryRun>,
+    listOrganizations: () => ipcRenderer.invoke('factories:organizations') as Promise<FactoryOrganizationOption[]>,
+    listOrganizationMembers: (organizationId: string) => ipcRenderer.invoke('factories:organization-members', organizationId) as Promise<FactoryOrganizationMember[]>,
+    validateOrganizationTeam: (organizationId: string, source: { host: 'github.com'; owner: string; repo: string }, teamId: string) => ipcRenderer.invoke('factories:organization-team', organizationId, source, teamId) as Promise<boolean>,
+    registerOrganizationKey: (organizationId: string) => ipcRenderer.invoke('factories:organization-key-register', organizationId) as Promise<string>,
+    directory: (organizationId?: string) => ipcRenderer.invoke('factories:directory', organizationId) as Promise<FactoryDirectoryItem[]>,
+  },
+
   dojo: {
     setDelivery: (workspaceId: string, workItem: string, completed: boolean) =>
       ipcRenderer.invoke('dojo:delivery', workspaceId, workItem, completed) as Promise<void>,
@@ -816,6 +857,10 @@ const api: AnvilAPI = {
 
   codexRegistry: {
     snapshot: () => ipcRenderer.invoke('codex-registry:snapshot'),
+    recommendations: () => ipcRenderer.invoke('codex-registry:recommendations'),
+    inspectCollection: (input) => ipcRenderer.invoke('codex-registry:inspect-collection', input),
+    installCollection: (input) => ipcRenderer.invoke('codex-registry:install-collection', input),
+    saveRecommendations: (input) => ipcRenderer.invoke('codex-registry:save-recommendations', input),
     searchSkills: (query: string) => ipcRenderer.invoke('codex-registry:search-skills', query),
     installSkill: (input) => ipcRenderer.invoke('codex-registry:install-skill', input),
     registerMcp: (input) => ipcRenderer.invoke('codex-registry:register-mcp', input),

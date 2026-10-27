@@ -1,3 +1,5 @@
+import { getSettings } from '../services/settings.service.js';
+import { githubIssueNumber, githubWorkItemTarget } from '../services/github-workitems.service.js';
 import { ipcMain } from 'electron';
 import type { Iteration, WorkItem, WorkItemFilters } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
@@ -77,8 +79,22 @@ export function registerWorkItemsHandlers(): void {
 
     const directMatches: WorkItem[] = [];
 
-    const idCandidate = trimmed.replace(/^#/, '');
-    if (/^[A-Za-z0-9-]+$/.test(idCandidate)) {
+    let idCandidate = trimmed.replace(/^#/, '');
+    const github = getSettings().workItemProvider === 'github';
+    let directLookup = /^[A-Za-z0-9-]+$/.test(idCandidate);
+    if (github) {
+      directLookup = false;
+      try {
+        if (/^[1-9]\d*$/.test(idCandidate))
+          idCandidate = `${githubWorkItemTarget().repositoryUrl}/issues/${idCandidate}`;
+        const number = githubIssueNumber(idCandidate);
+        idCandidate = `${githubWorkItemTarget().repositoryUrl}/issues/${number}`;
+        directLookup = true;
+      } catch {
+        /* Free text and other repositories use list search only. */
+      }
+    }
+    if (directLookup) {
       try {
         const item = await provider.getItem(idCandidate);
         directMatches.push(item);

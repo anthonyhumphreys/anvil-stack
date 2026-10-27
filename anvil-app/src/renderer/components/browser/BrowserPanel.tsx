@@ -2,24 +2,16 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Globe,
-  ArrowLeft,
-  ArrowRight,
-  RotateCw,
   Plug,
-  PlugZap,
   Loader2,
-  ChevronDown,
-  Plus,
-  Wifi,
-  WifiOff,
   ExternalLink,
   MessageSquare,
   MonitorSmartphone,
-  Square,
-  PanelRightOpen,
-  PictureInPicture2,
   X,
 } from 'lucide-react';
+import { PreviewToolbar } from './PreviewToolbar';
+import { IconButton } from '../ui';
+import { chatPromptPath } from '../../utils/sidebar-navigation';
 import type {
   BrowserAnnotation,
   DevServerTarget,
@@ -58,7 +50,6 @@ export function BrowserPanel({
   const [pageTitle, setPageTitle] = useState('');
 
   const [targets, setTargets] = useState<DevServerTarget[]>([]);
-  const [showTargets, setShowTargets] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState<BrowserBridgeStatus>({ running: false });
   const [mcpStatus, setMcpStatus] = useState<'idle' | 'registering' | 'registered' | 'error'>(
     'idle',
@@ -67,7 +58,7 @@ export function BrowserPanel({
   const [simStatus, setSimStatus] = useState<SimulatorPreviewStatus>({ running: false });
   const [simStarting, setSimStarting] = useState(false);
   const [annotationNote, setAnnotationNote] = useState('');
-  const [annotations, setAnnotations] = useState<BrowserAnnotation[]>([]);
+  const [annotating, setAnnotating] = useState(false);
   const isDetachedWindow = searchParams.get('toolWindow') === '1';
 
   // Poll for targets
@@ -198,11 +189,12 @@ export function BrowserPanel({
   };
 
   const handleStartBridge = async () => {
+    if (!webviewEl || !activeWorkspace) return;
     setBridgeStarting(true);
     try {
       const { port } = await window.anvil.browser.startBridge(
-        webviewEl!.getWebContentsId(),
-        activeWorkspace!.id,
+        webviewEl.getWebContentsId(),
+        activeWorkspace.id,
       );
       setBridgeStatus({ running: true, port });
     } catch (err) {
@@ -224,7 +216,6 @@ export function BrowserPanel({
 
   const handleTargetSelect = (target: DevServerTarget) => {
     navigate(target.url);
-    setShowTargets(false);
   };
 
   const handleAddManualUrl = async () => {
@@ -260,7 +251,7 @@ export function BrowserPanel({
       .filter((line): line is string => Boolean(line))
       .join('\n');
 
-    routerNavigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+    routerNavigate(chatPromptPath(prompt));
   };
 
   const handleStartSimulator = async () => {
@@ -305,8 +296,8 @@ export function BrowserPanel({
       },
       createdAt: new Date().toISOString(),
     };
-    setAnnotations((prev) => [annotation, ...prev].slice(0, 8));
     setAnnotationNote('');
+    setAnnotating(false);
 
     const prompt = [
       previewMode === 'simulator'
@@ -324,7 +315,7 @@ export function BrowserPanel({
       .filter((line): line is string => Boolean(line))
       .join('\n');
 
-    routerNavigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+    routerNavigate(chatPromptPath(prompt));
   };
 
   const handleOpenAlongsideChat = () => {
@@ -358,299 +349,73 @@ export function BrowserPanel({
   }
 
   return (
-    <div className="flex h-full flex-col">
-      {/* Toolbar */}
-      <div
-        className={`flex items-center gap-2 border-b border-border bg-bg-secondary py-2 ${
-          presentation === 'pane' ? 'flex-wrap px-2' : 'px-4'
-        }`}
-      >
-        <div className="flex items-center gap-1 rounded-lg border border-border bg-bg-primary p-0.5">
-          <button
-            type="button"
-            onClick={() => setPreviewMode('browser')}
-            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-              previewMode === 'browser'
-                ? 'bg-accent/15 text-accent'
-                : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-            }`}
-          >
-            <Globe size={13} />
-            Web
-          </button>
-          <button
-            type="button"
-            onClick={() => setPreviewMode('simulator')}
-            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-              previewMode === 'simulator'
-                ? 'bg-info/15 text-info'
-                : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-            }`}
-          >
-            <MonitorSmartphone size={13} />
-            Sim
-          </button>
-        </div>
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <PreviewToolbar
+        mode={previewMode}
+        onModeChange={setPreviewMode}
+        url={urlInput}
+        onUrlChange={setUrlInput}
+        onNavigate={handleUrlSubmit}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        onBack={() => webviewEl?.goBack()}
+        onForward={() => webviewEl?.goForward()}
+        onReload={() => webviewEl?.reload()}
+        loading={isLoading}
+        hasUrl={hasUrl}
+        targets={targets}
+        onTargetSelect={handleTargetSelect}
+        onAddTarget={() => void handleAddManualUrl()}
+        bridge={bridgeStatus}
+        bridgeStarting={bridgeStarting}
+        onStartBridge={() => void handleStartBridge()}
+        mcpStatus={mcpStatus}
+        onRegisterMcp={() => void handleRegisterMcp()}
+        simulator={simStatus}
+        simulatorStarting={simStarting}
+        onStartSimulator={() => void handleStartSimulator()}
+        onStopSimulator={() => void handleStopSimulator()}
+        annotating={annotating}
+        onToggleAnnotation={() => setAnnotating((open) => !open)}
+        onSendToChat={() => void handleSendToChat()}
+        onOpenAlongsideChat={
+          presentation === 'route' && !isDetachedWindow ? handleOpenAlongsideChat : undefined
+        }
+        onDetach={!isDetachedWindow ? handleDetach : undefined}
+        onClose={presentation === 'pane' ? onClose : undefined}
+      />
 
-        {/* Nav buttons */}
-        <button
-          onClick={() => webviewEl?.goBack()}
-          disabled={!canGoBack || previewMode === 'simulator'}
-          className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-30"
-          title="Back"
-        >
-          <ArrowLeft size={16} />
-        </button>
-        <button
-          onClick={() => webviewEl?.goForward()}
-          disabled={!canGoForward || previewMode === 'simulator'}
-          className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-30"
-          title="Forward"
-        >
-          <ArrowRight size={16} />
-        </button>
-        <button
-          onClick={() => webviewEl?.reload()}
-          disabled={!hasUrl}
-          className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-30"
-          title="Reload"
-        >
-          {isLoading ? <Loader2 size={16} className="animate-spin" /> : <RotateCw size={16} />}
-        </button>
-        <button
-          onClick={() => void handleSendToChat()}
-          disabled={!hasUrl}
-          className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-30"
-          title="Send browser context to chat"
-          aria-label="Send browser context to chat"
-        >
-          <MessageSquare size={16} />
-        </button>
-
-        {/* URL bar */}
+      {hasUrl && annotating && (
         <form
-          onSubmit={handleUrlSubmit}
-          className={`flex flex-1 items-center gap-2 ${presentation === 'pane' ? 'order-last w-full' : ''}`}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleAnnotate();
+          }}
+          className="flex items-center gap-2 border-b border-border-subtle bg-bg-secondary/70 px-4 py-2"
         >
-          <div className="relative flex flex-1 items-center">
-            <Globe size={14} className="absolute left-3 text-text-tertiary" />
-            <input
-              type="text"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              disabled={previewMode === 'simulator'}
-              placeholder="Enter URL or select a detected dev server..."
-              className="w-full rounded-lg border border-border bg-bg-primary py-1.5 pl-9 pr-3 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 focus:outline-none disabled:opacity-50"
-            />
-          </div>
-        </form>
-
-        {/* Detected targets dropdown */}
-        <div className="relative">
-          <button
-            onClick={() => setShowTargets(!showTargets)}
-            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
-              targets.length > 0
-                ? 'border-success/30 bg-success/10 text-success hover:bg-success/20'
-                : 'border-border text-text-secondary hover:bg-bg-tertiary'
-            }`}
-            title={`${targets.length} detected dev server${targets.length !== 1 ? 's' : ''}`}
-          >
-            {targets.length > 0 ? <Wifi size={14} /> : <WifiOff size={14} />}
-            {targets.length}
-            <ChevronDown size={12} />
-          </button>
-
-          {showTargets && (
-            <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-lg border border-border bg-bg-secondary shadow-xl">
-              <div className="border-b border-border-subtle px-3 py-2 text-xs font-semibold uppercase tracking-wider text-text-tertiary">
-                Detected Dev Servers
-              </div>
-              {targets.length === 0 ? (
-                <div className="px-3 py-4 text-center text-sm text-text-tertiary">
-                  No dev servers detected yet.
-                  <br />
-                  <span className="text-xs">
-                    Start a dev server in the terminal to auto-detect it.
-                  </span>
-                </div>
-              ) : (
-                <div className="max-h-48 overflow-y-auto">
-                  {targets.map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => handleTargetSelect(t)}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary transition-colors hover:bg-bg-tertiary"
-                    >
-                      <Globe size={14} className="shrink-0 text-accent" />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">{t.label}</div>
-                        <div className="truncate text-xs text-text-tertiary">{t.url}</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="border-t border-border-subtle p-2">
-                <button
-                  onClick={handleAddManualUrl}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                >
-                  <Plus size={12} />
-                  Add current URL as target
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* CDP bridge status bar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-bg-primary px-3 py-1.5 text-xs">
-        <div className="flex items-center gap-1.5">
-          <span
-            className={`inline-block h-2 w-2 rounded-full ${bridgeStatus.running ? 'bg-success' : 'bg-text-tertiary'}`}
-          />
-          <span className="text-text-secondary">
-            CDP Bridge: {bridgeStatus.running ? `Port ${bridgeStatus.port}` : 'Off'}
-          </span>
-        </div>
-
-        {!bridgeStatus.running && (
-          <button
-            onClick={handleStartBridge}
-            disabled={bridgeStarting}
-            className="flex items-center gap-1 rounded border border-accent/30 bg-accent/10 px-2 py-0.5 text-accent transition-colors hover:bg-accent/20"
-          >
-            {bridgeStarting ? <Loader2 size={10} className="animate-spin" /> : <Plug size={10} />}
-            Start Bridge
-          </button>
-        )}
-
-        {bridgeStatus.running && mcpStatus !== 'registered' && (
-          <button
-            onClick={handleRegisterMcp}
-            disabled={mcpStatus === 'registering'}
-            className="flex items-center gap-1 rounded border border-accent/30 bg-accent/10 px-2 py-0.5 text-accent transition-colors hover:bg-accent/20"
-          >
-            {mcpStatus === 'registering' ? (
-              <Loader2 size={10} className="animate-spin" />
-            ) : (
-              <PlugZap size={10} />
-            )}
-            Register Chrome MCP
-          </button>
-        )}
-
-        {mcpStatus === 'registered' && (
-          <span className="flex items-center gap-1 text-success">
-            <PlugZap size={10} />
-            Chrome MCP registered with Codex
-          </span>
-        )}
-
-        {mcpStatus === 'error' && <span className="text-error">MCP registration failed</span>}
-
-        {pageTitle && (
-          <span className="ml-auto truncate text-text-tertiary" title={pageTitle}>
-            {pageTitle}
-          </span>
-        )}
-
-        <div className="ml-auto flex items-center gap-1">
-          {presentation === 'route' && !isDetachedWindow && (
-            <button
-              type="button"
-              onClick={handleOpenAlongsideChat}
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              title="Open preview alongside chat"
-            >
-              <PanelRightOpen size={12} />
-              Alongside chat
-            </button>
-          )}
-          {!isDetachedWindow && (
-            <button
-              type="button"
-              onClick={handleDetach}
-              className="rounded-md p-1 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              title="Open preview in new window"
-              aria-label="Open preview in new window"
-            >
-              <PictureInPicture2 size={13} />
-            </button>
-          )}
-          {presentation === 'pane' && onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md p-1 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              title="Close preview"
-              aria-label="Close preview"
-            >
-              <X size={13} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {previewMode === 'simulator' && (
-        <div className="flex items-center gap-2 border-b border-border-subtle bg-bg-primary px-4 py-1.5 text-xs">
-          <span
-            className={`inline-block h-2 w-2 rounded-full ${simStatus.running ? 'bg-success' : 'bg-text-tertiary'}`}
-          />
-          <span className="text-text-secondary">
-            serve-sim: {simStatus.running ? simStatus.url : 'Off'}
-          </span>
-          {!simStatus.running ? (
-            <button
-              type="button"
-              onClick={handleStartSimulator}
-              disabled={simStarting}
-              className="flex items-center gap-1 rounded border border-info/30 bg-info/10 px-2 py-0.5 text-info transition-colors hover:bg-info/20 disabled:opacity-50"
-            >
-              {simStarting ? <Loader2 size={10} className="animate-spin" /> : <Plug size={10} />}
-              Start serve-sim
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={handleStopSimulator}
-              className="flex items-center gap-1 rounded border border-border px-2 py-0.5 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            >
-              <Square size={10} />
-              Stop
-            </button>
-          )}
-          {simStatus.metroUrl && (
-            <span className="ml-auto truncate text-text-tertiary">
-              Metro mount: {simStatus.metroUrl}
-            </span>
-          )}
-        </div>
-      )}
-
-      {hasUrl && (
-        <div className="flex items-center gap-2 border-b border-border-subtle bg-bg-secondary/70 px-4 py-2">
           <input
+            aria-label="Preview note"
+            autoFocus
             value={annotationNote}
             onChange={(event) => setAnnotationNote(event.target.value)}
             placeholder="Annotate the current preview..."
             className="min-w-0 flex-1 rounded-lg border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 focus:outline-none"
           />
           <button
-            type="button"
-            onClick={handleAnnotate}
+            type="submit"
             disabled={!annotationNote.trim()}
             className="flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <MessageSquare size={14} />
             Send note
           </button>
-          {annotations.length > 0 && (
-            <span className="text-xs text-text-tertiary">{annotations.length} recent</span>
-          )}
-        </div>
+          <IconButton
+            icon={X}
+            label="Close preview note"
+            onClick={() => setAnnotating(false)}
+            className="h-8 w-8"
+          />
+        </form>
       )}
 
       {/* Webview or empty state */}
@@ -658,7 +423,7 @@ export function BrowserPanel({
         <webview
           ref={webviewRefCallback as React.Ref<Electron.WebviewTag>}
           src={webviewSrc}
-          className="flex-1"
+          className="min-h-0 min-w-0 flex-1"
           style={{ display: 'flex', flex: 1 }}
           allowpopups
         />
@@ -734,9 +499,6 @@ export function BrowserPanel({
           </div>
         </div>
       )}
-
-      {/* Click-away backdrop for targets dropdown */}
-      {showTargets && <div className="fixed inset-0 z-40" onClick={() => setShowTargets(false)} />}
     </div>
   );
 }

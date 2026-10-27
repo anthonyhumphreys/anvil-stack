@@ -1,3 +1,4 @@
+import { isPendingChatUserEntry } from '../utils/chat-entry-order';
 import { createChatNavigationRequests } from '../utils/chat-navigation-request';
 import {
   createContext,
@@ -1939,7 +1940,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       if (activeThread?.workItemId) {
         const providerLabel = activeThread.workItemProvider
-          ? activeThread.workItemProvider.toUpperCase()
+          ? activeThread.workItemProvider === 'github'
+            ? 'GitHub Issues'
+            : activeThread.workItemProvider.toUpperCase()
           : 'Work item';
         sections.push(
           [
@@ -2484,6 +2487,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         throw new Error(unavailableError);
       }
       if (activeThreadRef.current?.id === threadId) {
+        flushPendingStreamEntry();
         setEntries((previous) => upsertFollowUpEntry(previous, userEntry));
       }
 
@@ -2598,7 +2602,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       return result;
     },
-    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession, isTemporaryChat],
+    [
+      buildEnrichedMessage,
+      bumpThreadSummary,
+      findThreadIdForSession,
+      isTemporaryChat,
+      flushPendingStreamEntry,
+    ],
   );
 
   const startSideQuestion = useCallback(
@@ -3977,10 +3987,12 @@ function releaseQueuedUserEntries(entries: ChatEntry[], depth: number): ChatEntr
   });
   if (queuedIndexes.length <= depth) return entries;
   const released = new Set(queuedIndexes.slice(0, queuedIndexes.length - depth));
-  return entries.map((entry, index) => {
-    if (!released.has(index) || entry.kind !== 'user') return entry;
-    return { ...entry, delivery: undefined };
-  });
+  return [
+    ...entries.filter((_, index) => !released.has(index)),
+    ...entries.flatMap((entry, index): ChatEntry[] =>
+      released.has(index) && entry.kind === 'user' ? [{ ...entry, delivery: undefined }] : [],
+    ),
+  ];
 }
 
 function followUpStatusToEntryDelivery(
@@ -3999,16 +4011,26 @@ function upsertFollowUpEntry(entries: ChatEntry[], incoming: Extract<ChatEntry, 
   );
 }
 
-function updateFollowUpEntry(
+export function updateFollowUpEntry(
   entries: ChatEntry[],
   requestId: string,
   patch: Partial<Extract<ChatEntry, { kind: 'user' }>>,
 ): ChatEntry[] {
-  return entries.map((entry) =>
-    entry.kind === 'user' && (entry.requestId === requestId || entry.id === requestId)
-      ? { ...entry, requestId, ...patch }
-      : entry,
+  const index = entries.findIndex(
+    (entry) => entry.kind === 'user' && (entry.requestId === requestId || entry.id === requestId),
   );
+  const existing = entries[index];
+  if (existing?.kind !== 'user') return entries;
+  const updated = { ...existing, requestId, ...patch };
+  // Queue delivery marks the start of the next turn, after all output already received.
+  if (
+    existing.deliveryIntent === 'queue' &&
+    isPendingChatUserEntry(existing) &&
+    patch.delivery === 'delivered'
+  ) {
+    return [...entries.filter((_, position) => position !== index), updated];
+  }
+  return entries.map((entry, position) => (position === index ? updated : entry));
 }
 
 function buildSideQuestionContext(threadTitle: string, entries: ChatEntry[]): string {
@@ -4042,6 +4064,25 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
     { status: ChatFollowUpStatus; intent?: ChatFollowUpIntent; error?: string }
   >();
 
+  const initialDeliveries = new Map<
+    string,
+    { delivery: ChatFollowUpStatus; deliveryIntent?: ChatFollowUpIntent }
+  >();
+  for (const message of history) {
+    const event = message.event;
+    if (
+      event?.type === 'follow_up_delivery' &&
+      event.followUpRequestId &&
+      event.followUpStatus &&
+      !initialDeliveries.has(event.followUpRequestId)
+    ) {
+      initialDeliveries.set(event.followUpRequestId, {
+        delivery: event.followUpStatus,
+        deliveryIntent: event.followUpIntent,
+      });
+    }
+  }
+
   for (const message of history) {
     const event =
       message.event && message.sessionId && !message.event.sessionId
@@ -4069,6 +4110,12 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
         intent: event.followUpIntent,
         error: event.followUpError,
       });
+      const next = updateFollowUpEntry(entries, event.followUpRequestId, {
+        delivery: event.followUpStatus,
+        deliveryIntent: event.followUpIntent,
+        deliveryError: event.followUpError,
+      });
+      entries.splice(0, entries.length, ...next);
       if (message.role !== 'user') continue;
     }
 
@@ -4083,6 +4130,9 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
         attachments: message.attachments,
         id: message.id,
         timestamp: message.timestamp,
+        ...(initialDeliveries.has(message.id)
+          ? { requestId: message.id, ...initialDeliveries.get(message.id) }
+          : {}),
       });
       continue;
     }
@@ -4256,7 +4306,11 @@ function resolveAssistantSegmentPhases(
 
 export function resolveCompletedAssistantEntries(entries: ChatEntry[]): ChatEntry[] {
   let turnStart = entries.length - 1;
-  while (turnStart >= 0 && entries[turnStart].kind !== 'user') turnStart -= 1;
+  while (
+    turnStart >= 0 &&
+    (entries[turnStart].kind !== 'user' || isPendingChatUserEntry(entries[turnStart]))
+  )
+    turnStart -= 1;
 
   const turnEntries = entries.slice(turnStart + 1);
   const firstUnknown = turnEntries.findIndex((entry) => entry.kind === 'assistant' && !entry.phase);

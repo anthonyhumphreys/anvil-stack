@@ -33,6 +33,10 @@ export const WORK_ITEM_CREDENTIAL_KEYS = [
   'jiraAcceptanceCriteriaField',
   'jiraEmail',
   'jiraApiToken',
+  'githubHost',
+  'githubOwner',
+  'githubRepo',
+  'githubToken',
 ] as const satisfies ReadonlyArray<keyof AppSettings>;
 
 export const DOCS_CREDENTIAL_KEYS = [

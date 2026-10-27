@@ -12,6 +12,7 @@ import {
   Compass,
   Database,
   FileDiff,
+  Factory,
   FolderMinus,
   GitBranch,
   GitFork,
@@ -149,7 +150,8 @@ export type AskAgentCommandId =
   | 'ask-agent-security-audit'
   | 'ask-agent-dependencies'
   | 'ask-agent-cicd'
-  | 'ask-agent-review-changes';
+  | 'ask-agent-review-changes'
+  | 'ask-agent-validate-changes';
 
 export interface AskAgentCommandMetadata {
   id: AskAgentCommandId;
@@ -168,7 +170,7 @@ export const ASK_AGENT_SECTION = 'Ask the agent';
 /**
  * Security, Dependencies and CI/CD stopped being destinations (spec §12):
  * their results now arrive as chat surfaces. These commands start a chat with
- * a prefilled (not sent) prompt via the `/chat?prompt=` route intent.
+ * a prompt submitted through the `/chat?prompt=&send=1` route intent.
  */
 export function buildAskAgentCommands(): AskAgentCommandMetadata[] {
   return [
@@ -201,6 +203,16 @@ export function buildAskAgentCommands(): AskAgentCommandMetadata[] {
       feature: 'cicd',
       prompt:
         'Analyse the CI/CD pipelines in this workspace. Map the stages and gates, flag failing, flaky, or slow steps, and suggest concrete improvements.',
+    },
+    {
+      id: 'ask-agent-validate-changes',
+      label: 'Ask the agent: Validate my changes',
+      description: 'Check the implementation against your request or work-item criteria.',
+      section: ASK_AGENT_SECTION,
+      keywords: ['validate', 'validation', 'acceptance', 'criteria', 'evidence', 'checks'],
+      feature: 'codereview',
+      prompt:
+        'Validate my changes against my request and any linked work-item acceptance criteria. Use validation_context and validation_publish to show the plan inline. Clarify only material ambiguity, run within existing permissions, and attach evidence per criterion. Leave unobserved behaviour unchecked or blocked.',
     },
     {
       id: 'ask-agent-review-changes',
@@ -293,6 +305,7 @@ function askAgentIcon(id: AskAgentCommandId): React.ReactNode {
       return <Boxes size={16} />;
     case 'ask-agent-cicd':
       return <Workflow size={16} />;
+    case 'ask-agent-validate-changes':
     case 'ask-agent-review-changes':
       return <GitPullRequest size={16} />;
   }
@@ -305,6 +318,7 @@ function navigationIconForPath(path: string): React.ReactNode {
     '/chat': <MessageSquare size={16} />,
     '/workspace': <LayoutDashboard size={16} />,
     '/automations': <RadioTower size={16} />,
+    '/factories': <Factory size={16} />,
     '/workflows': <GitFork size={16} />,
     '/dojo': <Target size={16} />,
     '/workitems': <TicketCheck size={16} />,

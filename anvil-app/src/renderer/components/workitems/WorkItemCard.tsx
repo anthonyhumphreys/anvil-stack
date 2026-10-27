@@ -35,7 +35,7 @@ export function WorkItemCard({ item, depth, activeId, onSelect }: WorkItemCardPr
           className="min-w-0 flex-1 rounded py-1 text-left focus-visible:outline-2 focus-visible:outline-accent"
         >
           <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-secondary">
-            <span>{item.id}</span>
+            <span>{displayWorkItemId(item)}</span>
             <span>{item.type}</span>
             <span className="ml-auto">{item.state}</span>
           </span>
@@ -61,4 +61,10 @@ export function WorkItemCard({ item, depth, activeId, onSelect }: WorkItemCardPr
         : null}
     </div>
   );
+}
+
+export function displayWorkItemId(item: WorkItem): string {
+  const issueNumber = item.extras?.issueNumber;
+  if (item.provider === 'github' && typeof issueNumber === 'number') return `#${issueNumber}`;
+  return item.id;
 }

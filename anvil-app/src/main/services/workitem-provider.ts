@@ -12,6 +12,7 @@ import type {
 import { getSettings, applyWorkItemConnection } from './settings.service.js';
 import { adoProvider } from './ado.service.js';
 import { linearProvider } from './linear.service.js';
+import { githubWorkItemsProvider } from './github-workitems.service.js';
 import { jiraProvider } from './jira.service.js';
 
 export interface WorkItemProviderService {
@@ -48,7 +49,9 @@ export function getActiveProvider(
         ? linearProvider
         : settings.workItemProvider === 'jira'
           ? jiraProvider
-          : null;
+          : settings.workItemProvider === 'github'
+            ? githubWorkItemsProvider
+            : null;
   if (!provider) return null;
   return {
     publishReview: (id, text) =>

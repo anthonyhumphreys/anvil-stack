@@ -11,6 +11,10 @@ import type { SurfacesApi } from '../../../../../shared/surfaces/ipc';
 import type { SurfaceComment } from '../../../../../shared/surfaces/types';
 import { ChatReplayPreview } from '../ChatReplayPreview';
 import { ComposerPreview } from '../ComposerPreview';
+import { ChatInteractionPreview } from '../ChatInteractionPreview';
+import { PreviewToolbarPreview } from '../PreviewToolbarPreview';
+import { ValidationPreview } from '../ValidationPreview';
+import { SkillsRecommendationsPreview, installSkillsRecommendationsPreview } from '../SkillsRecommendationsPreview';
 import {
   DeliveryReadinessPreview,
   installDeliveryPreviewBridge,
@@ -35,6 +39,7 @@ let localSurfaceComments: SurfaceComment[] = [];
 let nextSurfaceCommentId = 0;
 
 const localSurfaces: SurfacesApi = {
+  listValidations: async () => [],
   runAction: async (request) => ({
     ok: true,
     message: `Synthetic replay: "${request.action}" was not executed.`,
@@ -135,6 +140,7 @@ const localShares = {
 
 const localAnvilBridge = {
   chat: {
+    listDelegations: async () => [],
     prepareAttachments: async () => [],
     selectAttachments: async () => [],
     searchFileMentions: async () => [],
@@ -227,14 +233,27 @@ Object.defineProperty(window, 'anvil', {
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('Chat replay root element is missing.');
+const toolbarPreview = new URLSearchParams(window.location.search).has('preview');
+const interactionsPreview = new URLSearchParams(window.location.search).has('interactions');
 const deliveryPreview = new URLSearchParams(window.location.search).has('delivery');
 const composerPreview = new URLSearchParams(window.location.search).has('composer');
+const validationPreview = new URLSearchParams(window.location.search).has('validation');
+const skillsPreview = new URLSearchParams(window.location.search).has('skills');
 if (deliveryPreview) installDeliveryPreviewBridge();
+if (skillsPreview) installSkillsRecommendationsPreview();
 
 createRoot(rootElement).render(
   <StrictMode>
     <MemoryRouter>
-      {composerPreview ? (
+      {skillsPreview ? (
+        <SkillsRecommendationsPreview />
+      ) : toolbarPreview ? (
+        <PreviewToolbarPreview />
+      ) : interactionsPreview ? (
+        <ChatInteractionPreview />
+      ) : validationPreview ? (
+        <ValidationPreview />
+      ) : composerPreview ? (
         <ComposerPreview />
       ) : deliveryPreview ? (
         <DeliveryReadinessPreview />

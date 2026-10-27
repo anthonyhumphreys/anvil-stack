@@ -1,76 +1,26 @@
-import { useSearchParams } from 'react-router-dom';
-import { CheckCheck } from 'lucide-react';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
-import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
-import { ChangeReviewPanel } from './ChangeReviewPanel';
-import { ReviewInChatButton } from '../codereview/ReviewInChat';
-import { readReviewOrigin, type ChangeReviewEntrySource } from '../../utils/change-review-context';
+import { validationInChatPath } from '../../utils/validation-in-chat';
+
+/** Compatibility for saved evidence links. Validation is defined in chat. */
 export function ChangeReviewView() {
+  const [params] = useSearchParams();
   const { activeWorkspace } = useWorkspace();
-  const [params, setParams] = useSearchParams();
-  const repoId = params.get('repo') ?? '';
-  const source = params.get('source');
-  const entrySource: ChangeReviewEntrySource | undefined =
-    source === 'chat' || source === 'git' || source === 'pull-request' ? source : undefined;
-  const selected = repoId
-    ? activeWorkspace?.repos.find((repo) => repo.id === repoId)
-    : activeWorkspace?.repos[0];
+  const repo =
+    activeWorkspace?.repos.find((repo) => repo.id === params.get('repo')) ??
+    activeWorkspace?.repos[0];
   return (
-    <div className="flex h-full flex-col">
-      <ViewHeader
-        icon={CheckCheck}
-        title="Change review"
-        description="Review local changes in chat, or accept them here with captured evidence."
-        actions={
-          <>
-            <select
-              aria-label="Review repository"
-              value={selected?.id ?? ''}
-              onChange={(e) => setParams({ repo: e.target.value })}
-              className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm"
-            >
-              {activeWorkspace?.repos.map((repo) => (
-                <option key={repo.id} value={repo.id}>
-                  {repo.name}
-                </option>
-              ))}
-            </select>
-            <ReviewInChatButton
-              size="md"
-              scope={
-                selected
-                  ? { type: 'working-tree', repoId: selected.id, repoName: selected.name }
-                  : null
-              }
-            />
-          </>
-        }
-      />
-      <div className="min-h-0 flex-1 overflow-auto">
-        {activeWorkspace && selected ? (
-          <ChangeReviewPanel
-            key={`${activeWorkspace.id}:${selected.id}:${params.toString()}`}
-            workspaceId={activeWorkspace.id}
-            repoId={selected.id}
-            initialReviewId={params.get('review') ?? undefined}
-            initialRunId={params.get('run') ?? undefined}
-            initialCaptureId={params.get('capture') ?? undefined}
-            initialFindingId={params.get('finding') ?? undefined}
-            initialCriterionId={params.get('criterion') ?? undefined}
-            initialScenarioVersion={params.get('scenario') ?? undefined}
-            initialBaseRef={params.get('baseRef') ?? undefined}
-            origin={readReviewOrigin(params)}
-            entrySource={entrySource}
-            entryThreadId={params.get('thread') ?? undefined}
-          />
-        ) : (
-          <EmptyState
-            icon={CheckCheck}
-            title="Connect a repository"
-            description="Add a local Git repository to review a change. No chat session or Work Item provider is required."
-          />
-        )}
-      </div>
-    </div>
+    <Navigate
+      replace
+      to={
+        repo
+          ? validationInChatPath(
+              repo.id,
+              params.get('review') ?? undefined,
+              params.get('thread') ?? undefined,
+            )
+          : '/chat'
+      }
+    />
   );
 }

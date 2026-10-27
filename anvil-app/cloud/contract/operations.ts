@@ -7,6 +7,24 @@
 // self-authorize approvals.
 
 export const OPERATIONS = [
+  'skills.recommendations.list',
+  'skills.recommendations.set',
+  'factory.organizations',
+  'factory.source.check',
+  'factory.issue.claim',
+  'factory.key.register',
+  'factory.members',
+  'factory.registry.upsert',
+  'factory.registry.list',
+  'factory.registry.read',
+  'factory.registry.authorize',
+  'factory.snapshot.publish',
+  'factory.snapshot.rewrap',
+  'factory.run.list',
+  'factory.run.read',
+  'factory.command.send',
+  'factory.command.take',
+  'factory.command.complete',
   // Session/account
   'session.describe',
   'session.attest',
@@ -102,6 +120,25 @@ export type OperationProfile = 'sync/2' | 'mesh/2';
 export type ActorRole = 'user' | 'worker' | 'either';
 
 export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
+  'skills.recommendations.list': 'sync/2',
+  'skills.recommendations.set': 'sync/2',
+  'factory.organizations': 'sync/2',
+  'factory.source.check': 'sync/2',
+  'factory.key.register': 'sync/2',
+  'factory.members': 'sync/2',
+  'factory.registry.upsert': 'sync/2',
+  'factory.registry.list': 'sync/2',
+  'factory.registry.read': 'sync/2',
+  'factory.registry.authorize': 'sync/2',
+  'factory.snapshot.publish': 'sync/2',
+  'factory.snapshot.rewrap': 'sync/2',
+  'factory.run.list': 'sync/2',
+  'factory.run.read': 'sync/2',
+  'factory.command.send': 'sync/2',
+  'factory.command.take': 'sync/2',
+  'factory.command.complete': 'sync/2',
+  'factory.issue.claim': 'sync/2',
+
   'session.describe': 'sync/2',
   'session.attest': 'sync/2',
   'account.delete': 'sync/2',
@@ -183,6 +220,25 @@ export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
  * `either` is safe for both (typically reads or generation-fenced writes).
  */
 export const OPERATION_ROLE: Record<OperationName, ActorRole> = {
+  'skills.recommendations.list': 'user',
+  'skills.recommendations.set': 'user',
+  'factory.organizations': 'user',
+  'factory.source.check': 'user',
+  'factory.key.register': 'user',
+  'factory.members': 'user',
+  'factory.registry.upsert': 'user',
+  'factory.registry.list': 'user',
+  'factory.registry.read': 'user',
+  'factory.registry.authorize': 'user',
+  'factory.snapshot.publish': 'user',
+  'factory.snapshot.rewrap': 'user',
+  'factory.run.list': 'user',
+  'factory.run.read': 'user',
+  'factory.command.send': 'user',
+  'factory.command.take': 'user',
+  'factory.command.complete': 'user',
+  'factory.issue.claim': 'user',
+
   'session.describe': 'either',
   'session.attest': 'either',
   'account.delete': 'user',
@@ -335,6 +391,25 @@ export function ephemeralOperationAllowed(operation: OperationName): boolean {
 export type HostedOperationClass = 'mutating' | 'control';
 
 export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass> = {
+  'skills.recommendations.list': 'control',
+  'skills.recommendations.set': 'control',
+  'factory.organizations': 'control',
+  'factory.source.check': 'control',
+  'factory.key.register': 'control',
+  'factory.members': 'control',
+  'factory.registry.upsert': 'mutating',
+  'factory.registry.list': 'control',
+  'factory.registry.read': 'control',
+  'factory.registry.authorize': 'control',
+  'factory.snapshot.publish': 'mutating',
+  'factory.snapshot.rewrap': 'mutating',
+  'factory.run.list': 'control',
+  'factory.run.read': 'control',
+  'factory.command.send': 'control',
+  'factory.command.take': 'control',
+  'factory.command.complete': 'control',
+  'factory.issue.claim': 'mutating',
+
   'session.describe': 'control',
   'session.attest': 'control',
   'account.delete': 'control',

@@ -1257,3 +1257,8 @@ export function setShareLinkStoreForTests(store: ShareLinkStore | null): void {
 export function setKnownSecretsProviderForTests(provider: KnownSecretsProvider | null): void {
   knownSecretsProvider = provider ?? defaultKnownSecrets;
 }
+
+/** Used by other outbound publication paths to compare candidates against credentials Anvil already holds. */
+export async function getKnownSecretsForPublication(): Promise<string[]> {
+  return knownSecretsProvider();
+}

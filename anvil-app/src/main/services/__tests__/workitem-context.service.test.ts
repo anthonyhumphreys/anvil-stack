@@ -139,3 +139,24 @@ describe('Work Item connection and intent', () => {
     );
   });
 });
+
+it('isolates GitHub cache when repository, host or account token changes', () => {
+  const base = {
+    workItemProvider: 'github',
+    githubHost: 'https://github.com',
+    githubOwner: 'acme',
+    githubRepo: 'widgets',
+    githubToken: 'token-one',
+  } as AppSettings;
+  withWorkItemContext(base, false, () => cacheWorkItems([item('GitHub')]));
+  for (const change of [
+    { githubRepo: 'other' },
+    { githubHost: 'https://enterprise.example' },
+    { githubToken: 'token-two' },
+  ]) {
+    expect(
+      withWorkItemContext({ ...base, ...change }, false, () => getCachedWorkItems()),
+    ).toBeNull();
+  }
+  expect(withWorkItemContext(base, false, () => getCachedWorkItems()?.[0].title)).toBe('GitHub');
+});

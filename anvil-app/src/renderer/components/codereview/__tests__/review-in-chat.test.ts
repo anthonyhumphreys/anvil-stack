@@ -57,9 +57,10 @@ describe('review in chat launchers', () => {
     ).toMatchObject({ baseRef: 'main', headRef: 'HEAD' });
   });
 
-  it('builds a prefill-only /chat?prompt= path', () => {
+  it('builds a chat action that submits the scoped review prompt', () => {
     const path = reviewInChatPath({ type: 'working-tree', repoId: 'repo 1' });
     expect(path.startsWith('/chat?prompt=')).toBe(true);
+    expect(new URLSearchParams(path.split('?')[1]).get('send')).toBe('1');
     const prompt = new URLSearchParams(path.slice('/chat?'.length)).get('prompt');
     expect(prompt).toBe(buildReviewInChatPrompt({ type: 'working-tree', repoId: 'repo 1' }));
   });

@@ -1,5 +1,12 @@
 import { validateWorkflowTarget } from '../../shared/workflow-target.js';
 import { constrainPermissionMode } from '../../../cloud/contract/permissions.js';
+import {
+  assertFactoryWorkerActive,
+  factoryRunIdFromRequest,
+  factorySandboxPolicy,
+  isolatedFactoryEnvironment,
+  observeFactoryWorkerEvent,
+} from './factory-worker-policy.service.js';
 import { bootstrapManifestPolicy } from '../../../cloud/contract/permissions.js';
 import { writeGatewayCodexCatalog } from './llm-gateway-runtime.service.js';
 import { randomUUID } from 'node:crypto';
@@ -57,6 +64,9 @@ import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { triggerWatchtowerEvent } from './automation.service.js';
 import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
+import { ROLE_FEATURES } from '../../shared/types.js';
+import { openWorkflowValidationTools } from './workflow-validation-tools.js';
+import { cancelAgentQuestionsForSession } from './agent-question.service.js';
 import { providerSpawnEnv } from './agent-spawn-env.js';
 import { acpProviderLabel, buildAcpPrintInvocation } from './acp-print-cli.js';
 import { computeBootstrapDigest, getWorkspaceBootstrap } from './bootstrap-policy.service.js';
@@ -165,6 +175,11 @@ export function validateWorkflowGraph(nodes: WorkflowNode[], edges: WorkflowEdge
       throw new Error('Unknown workflow provider.');
     if (!getPersonaById(node.personaId)) throw new Error(`Unknown persona: ${node.personaId}`);
     validateWorkflowTarget(node.target, node.provider ?? 'codex', node.name);
+    if (
+      node.requiresValidation &&
+      (isAcpAgentProvider(node.provider) || (node.target && node.target.kind !== 'local'))
+    )
+      throw new Error(`${node.name} needs a local provider with inline validation tools.`);
     if (node.target && node.target.kind !== 'local' && node.teamStrategy === 'autonomous')
       throw new Error(`${node.name} cannot use autonomous delegation on a remote target.`);
   }
@@ -808,6 +823,7 @@ async function runCodexThread(input: {
   displayPrompt?: string;
   resumeProviderThreadId?: string;
   signal?: AbortSignal;
+  factoryRunId?: string;
 }): Promise<CodexThreadResult> {
   const status = await detectCodexCli();
   if (!status.installed) throw new Error('Codex CLI is not installed.');
@@ -819,23 +835,63 @@ async function runCodexThread(input: {
     { workspace: { workspaceId: input.workspaceId } },
     app.getPath('userData'),
   );
-  const env = await buildCodexProcessEnvironment(input.provider, settings);
+  let env: NodeJS.ProcessEnv = await buildCodexProcessEnvironment(input.provider, settings);
+  if (input.factoryRunId) {
+    assertFactoryWorkerActive(input.factoryRunId);
+    env = isolatedFactoryEnvironment(input.factoryRunId, input.key, env);
+  }
 
   const args = buildCodexWorkflowArgs(input.provider);
+  if (input.factoryRunId) args.push('-c', 'mcp_servers={}', '-c', 'features.multi_agent=false');
   const executable = input.provider === 'llmgateway' ? await resolveCodexRuntime() : 'codex';
   const gatewayConfig =
     input.provider === 'llmgateway'
       ? await resolveLlmGatewayModelConfig(input.model, input.reasoningEffort)
       : undefined;
   const model = gatewayConfig?.model ?? input.model;
-  if (gatewayConfig)
+  if (gatewayConfig) {
+    if (!env.CODEX_HOME)
+      throw new Error('The model runtime configuration directory is unavailable.');
     args.push(...(await writeGatewayCodexCatalog(env.CODEX_HOME, gatewayConfig.models)));
+  }
   const effort = gatewayConfig
     ? gatewayConfig.effort
     : resolveCodexReasoningEffort(model, input.reasoningEffort);
-  const proc = spawn(executable, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
-  activeProcesses.set(input.key, proc);
   const sessionId = randomUUID();
+  const accessMode = constrainPermissionMode(
+    input.permissionMode ?? settings.codexMode ?? 'on-request',
+    settings.codexMode ?? 'on-request',
+  );
+  const personaPolicy = resolvePersonaCodexPolicy(accessMode, input.personaId);
+  const toolAccess = input.factoryRunId
+    ? { args: [] as string[], env: {} as NodeJS.ProcessEnv, close() {} }
+    : await openWorkflowValidationTools(sessionId, () => {
+        if (input.signal?.aborted) return undefined;
+        const currentSettings = getSettings();
+        return {
+          sessionId,
+          appThreadId: input.threadId,
+          workspaceId: input.workspaceId,
+          repoIds: input.repoRows.map((repo) => repo.id),
+          provider: input.provider,
+          mode: constrainPermissionMode(
+            personaPolicy.sandbox === 'read-only' ? 'read-only' : accessMode,
+            currentSettings.codexMode ?? 'on-request',
+          ),
+          features: currentSettings.userRole ? ROLE_FEATURES[currentSettings.userRole] : [],
+        };
+      });
+  args.push(...toolAccess.args);
+  Object.assign(env, toolAccess.env);
+  let proc: ChildProcess;
+  try {
+    input.signal?.throwIfAborted();
+    proc = spawn(executable, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (error) {
+    toolAccess.close();
+    throw error;
+  }
+  activeProcesses.set(input.key, proc);
   createChatSession(
     input.threadId,
     input.repoRows[0]?.id ?? null,
@@ -860,10 +916,22 @@ async function runCodexThread(input: {
     let finalAnswer = '';
     let providerThreadId: string | undefined;
     let completed = false;
+    const factoryWatch = input.factoryRunId
+      ? setInterval(() => {
+          try {
+            assertFactoryWorkerActive(input.factoryRunId!);
+          } catch (error) {
+            finish(error instanceof Error ? error : new Error(String(error)));
+          }
+        }, 500)
+      : undefined;
 
     const finish = (error?: Error) => {
       if (completed) return;
       completed = true;
+      if (factoryWatch) clearInterval(factoryWatch);
+      toolAccess.close();
+      cancelAgentQuestionsForSession(sessionId);
       input.signal?.removeEventListener('abort', abort);
       activeProcesses.delete(input.key);
       proc.stdout?.removeAllListeners();
@@ -895,6 +963,14 @@ async function runCodexThread(input: {
     }
 
     const persistEvent = (event: CodexEvent) => {
+      if (input.factoryRunId) {
+        try {
+          observeFactoryWorkerEvent(input.factoryRunId, input.key, event);
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+      }
       if (event.type === 'approval_request') {
         finish(
           new Error(
@@ -941,6 +1017,12 @@ async function runCodexThread(input: {
               threadId: state.threadId,
               input: [{ type: 'text', text: input.prompt }],
               model,
+              ...(input.factoryRunId
+                ? {
+                    sandboxPolicy: factorySandboxPolicy(cwd, personaPolicy.sandbox === 'read-only'),
+                    approvalPolicy: 'never',
+                  }
+                : {}),
               ...(effort ? { effort } : {}),
             });
           },
@@ -963,13 +1045,6 @@ async function runCodexThread(input: {
     sendCodexJsonRpc(proc, 'initialize', {
       clientInfo: { name: 'anvil-workflow', version: '1.0.0' },
     });
-    const personaPolicy = resolvePersonaCodexPolicy(
-      constrainPermissionMode(
-        input.permissionMode ?? settings.codexMode ?? 'on-request',
-        settings.codexMode ?? 'on-request',
-      ),
-      input.personaId,
-    );
     const threadParams = {
       cwd,
       developerInstructions: input.systemPrompt,
@@ -1153,6 +1228,8 @@ async function runAgentThread(
     );
   }
   if (isAcpAgentProvider(input.provider)) {
+    if (input.factoryRunId)
+      throw new Error('Factory workers require an isolated Codex app-server provider.');
     return runAcpCliThread({ ...input, provider: input.provider });
   }
   return runCodexThread({
@@ -1469,6 +1546,7 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
           persistRun(current);
           const result = await runAgentThread({
             key: `${current.id}:${node.id}`,
+            factoryRunId: factoryRunIdFromRequest(current.chatOrigin?.requestId),
             threadId: thread.id,
             repoRows: current.executionPaths ?? getRepoRows(current.repoIds),
             workspaceId: current.workspaceId,
@@ -1491,7 +1569,26 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
             ].join('\n\n'),
             prompt: workflowTaskPrompt(current, node),
           });
-          return { ...result, threadId: thread.id };
+          const { finishThreadValidations } = await import('./validation.service.js');
+          const validation = await finishThreadValidations(
+            thread.id,
+            signal,
+            node.requiresValidation,
+          );
+          if (validation && !validation.complete) {
+            return {
+              ...result,
+              threadId: thread.id,
+              outcome: 'attention' as const,
+              error: 'Validation has failed, blocked, stale or unchecked criteria.',
+              output: `${result.output}\n\n${validation.summary}`,
+            };
+          }
+          return {
+            ...result,
+            threadId: thread.id,
+            output: validation ? `${result.output}\n\n${validation.summary}` : result.output,
+          };
         },
       }),
     )
@@ -1639,7 +1736,7 @@ function startPreparedWorkflowRun(
       !input.workItemRef.id.trim() ||
       typeof input.workItemRef.connectionId !== 'string' ||
       !input.workItemRef.connectionId.trim() ||
-      !['ado', 'linear', 'jira'].includes(input.workItemRef.provider))
+      !['ado', 'linear', 'jira', 'github'].includes(input.workItemRef.provider))
   )
     throw new Error('Work Item reference requires an id, connection and supported provider.');
   let template = savedTemplate;

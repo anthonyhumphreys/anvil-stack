@@ -182,14 +182,7 @@ export interface CicdPipelineAnalysis {
 }
 
 export type CicdPackageManager =
-  | 'pnpm'
-  | 'npm'
-  | 'yarn'
-  | 'bun'
-  | 'pip'
-  | 'go'
-  | 'cargo'
-  | 'dotnet';
+  'pnpm' | 'npm' | 'yarn' | 'bun' | 'pip' | 'go' | 'cargo' | 'dotnet';
 
 export interface CicdStackProfile {
   language: 'node' | 'python' | 'go' | 'rust' | 'dotnet' | 'unknown';
@@ -347,7 +340,7 @@ export type OnboardAction =
   | 'generate-env-template'
   | 'generate-readme';
 
-export type WorkItemProvider = 'ado' | 'linear' | 'jira';
+export type WorkItemProvider = 'ado' | 'linear' | 'jira' | 'github';
 
 export interface WorkItemConnection {
   id: string;
@@ -366,6 +359,10 @@ export interface WorkItemConnection {
   jiraAcceptanceCriteriaField?: string;
   jiraEmail?: string;
   jiraApiToken?: string;
+  githubHost?: string;
+  githubOwner?: string;
+  githubRepo?: string;
+  githubToken?: string;
 }
 export type DocsProvider = 'confluence' | 'notion' | 'linear';
 
@@ -649,14 +646,7 @@ export interface ChatAttachmentInput {
 
 /** Reasoning effort levels supported by Codex (`model_reasoning_effort` / app-server `effort`). */
 export type ReasoningEffort =
-  | 'none'
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max'
-  | 'ultra';
+  'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 export type WorkflowExecutionStrategy = 'focused' | 'adaptive' | 'parallel' | 'review-team';
 export type AgentProvider = 'azure' | 'openai' | 'codex' | 'cursor' | 'devin' | 'llmgateway';
@@ -719,13 +709,7 @@ export interface WorkflowAttempt {
   startedAt: string;
   completedAt?: string;
   status:
-    | 'running'
-    | 'waiting'
-    | 'attention'
-    | 'completed'
-    | 'failed'
-    | 'cancelled'
-    | 'interrupted';
+    'running' | 'waiting' | 'attention' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
   provider: AgentProvider;
   model: string;
   reasoningEffort: ReasoningEffort;
@@ -798,6 +782,8 @@ export interface WorkflowNode {
   target?: WorkflowTargetPolicy;
   repositoryIds?: string[];
   verification?: string[];
+  /** Saved conversational validation must publish current per-criterion evidence. */
+  requiresValidation?: boolean;
   /** Chosen running mode; remote execution also obeys the target node ceiling. */
   permissionMode?: CodexMode;
 }
@@ -828,12 +814,7 @@ export interface WorkflowTemplateInput {
 }
 
 export type WorkflowRunStatus =
-  | 'queued'
-  | 'running'
-  | 'paused'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+  'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 export type WorkflowNodeRunStatus =
   | 'waiting'
@@ -1060,12 +1041,7 @@ export interface ChatThread {
 }
 
 export type ChatThreadAttentionState =
-  | 'idle'
-  | 'working'
-  | 'approval'
-  | 'input'
-  | 'failed'
-  | 'complete';
+  'idle' | 'working' | 'approval' | 'input' | 'failed' | 'complete';
 
 export interface WorkflowNavigationTarget {
   workspaceId: string;
@@ -1107,14 +1083,7 @@ export interface ChatGoalSnapshot {
 }
 
 export type TurnEvidenceItemType =
-  | 'file_edit'
-  | 'file_read'
-  | 'command'
-  | 'approval'
-  | 'tool'
-  | 'error'
-  | 'plan'
-  | 'goal';
+  'file_edit' | 'file_read' | 'command' | 'approval' | 'tool' | 'error' | 'plan' | 'goal';
 
 export interface TurnEvidenceItem {
   id: string;
@@ -1174,19 +1143,9 @@ export type ChatAssistantPhase = 'progress' | 'final';
 export type CodexSubagentTool = 'spawnAgent' | 'sendInput' | 'resumeAgent' | 'wait' | 'closeAgent';
 export type CodexSubagentToolStatus = 'inProgress' | 'completed' | 'failed';
 export type CodexSubagentStatus =
-  | 'pendingInit'
-  | 'running'
-  | 'interrupted'
-  | 'completed'
-  | 'errored'
-  | 'shutdown'
-  | 'notFound';
+  'pendingInit' | 'running' | 'interrupted' | 'completed' | 'errored' | 'shutdown' | 'notFound';
 export type CodexSubagentActivityKind =
-  | 'started'
-  | 'interacted'
-  | 'completed'
-  | 'errored'
-  | 'interrupted';
+  'started' | 'interacted' | 'completed' | 'errored' | 'interrupted';
 
 export interface CodexSubagentState {
   threadId: string;
@@ -1499,13 +1458,7 @@ export interface MobileCompanionStatus {
 export type CompanionSurface = 'desktop' | 'mobile' | 'watch' | 'widget' | 'carplay' | 'siri';
 
 export type MobileCompanionClientType =
-  | 'mobile'
-  | 'raycast'
-  | 'watch'
-  | 'widget'
-  | 'menubar'
-  | 'carplay'
-  | 'siri';
+  'mobile' | 'raycast' | 'watch' | 'widget' | 'menubar' | 'carplay' | 'siri';
 
 export interface MobilePairingTicket {
   ticket: string;
@@ -1546,13 +1499,7 @@ export interface CompanionEnrollmentPolicy {
 }
 
 export type CompanionEventType =
-  | 'overview'
-  | 'approvals'
-  | 'sessions'
-  | 'settings'
-  | 'notes'
-  | 'carplay'
-  | 'handover';
+  'overview' | 'approvals' | 'sessions' | 'settings' | 'notes' | 'carplay' | 'handover';
 
 export interface CompanionEvent {
   type: CompanionEventType;
@@ -1952,11 +1899,7 @@ export type CodeReviewMode = 'quick_glance' | 'senior_dev';
 export type CodeReviewVerificationStatus = 'not_run' | 'passed' | 'failed' | 'partial';
 export type CodeReviewVerificationStepStatus = 'passed' | 'failed' | 'skipped';
 export type CodeReviewScopeType =
-  | 'latest_commit'
-  | 'commit_range'
-  | 'branch_diff'
-  | 'pull_request'
-  | 'full_codebase';
+  'latest_commit' | 'commit_range' | 'branch_diff' | 'pull_request' | 'full_codebase';
 
 export interface CodeReviewPullRequestRef {
   id: string;
@@ -1993,21 +1936,9 @@ export interface CodeReviewPullRequest {
 
 export type PullRequestVisualisationStatus = 'generating' | 'ready' | 'failed';
 export type PullRequestVisualisationTone =
-  | 'neutral'
-  | 'action'
-  | 'data'
-  | 'verified'
-  | 'risk'
-  | 'logic'
-  | 'uncertainty';
+  'neutral' | 'action' | 'data' | 'verified' | 'risk' | 'logic' | 'uncertainty';
 export type PullRequestVisualisationNodeKind =
-  | 'entry'
-  | 'service'
-  | 'data'
-  | 'file'
-  | 'test'
-  | 'external'
-  | 'risk';
+  'entry' | 'service' | 'data' | 'file' | 'test' | 'external' | 'risk';
 export type PullRequestVisualisationChangeState = 'before' | 'after' | 'both';
 
 export interface PullRequestVisualisationNode {
@@ -2154,12 +2085,7 @@ export interface CodeReviewFinding {
 
 export type WorkspaceCreationMode = 'empty' | 'existing' | 'scaffold';
 export type WorkspaceScaffoldStatus =
-  | 'active'
-  | 'syncing'
-  | 'indexing'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+  'active' | 'syncing' | 'indexing' | 'completed' | 'failed' | 'cancelled';
 
 export interface Workspace {
   id: string;
@@ -2486,14 +2412,7 @@ export type AutomationRunTrigger = 'manual' | 'schedule' | 'watchtower';
 export type AutomationRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AutomationLoopMode = 'sequence' | 'dynamic';
 export type AutomationEventType =
-  | 'status'
-  | 'text'
-  | 'thinking'
-  | 'file_edit'
-  | 'command_exec'
-  | 'tool_call'
-  | 'error'
-  | 'system';
+  'status' | 'text' | 'thinking' | 'file_edit' | 'command_exec' | 'tool_call' | 'error' | 'system';
 
 export interface AutomationLoopConfig {
   enabled: boolean;
@@ -2546,17 +2465,20 @@ export interface AutomationDefinitionInput {
   enabled: boolean;
   allowRepoWrite: boolean;
   allowCommandRun: boolean;
+  /** Authorise branch/PR publication within this automation's scope. Does not authorise merging. */
+  allowRemotePublishing?: boolean;
   loopConfig?: AutomationLoopConfig;
   workflowTemplateId?: string;
 }
 
 export interface AutomationDefinition extends Omit<
   AutomationDefinitionInput,
-  'triggerMode' | 'watchEvent' | 'watchTarget'
+  'triggerMode' | 'watchEvent' | 'watchTarget' | 'allowRemotePublishing'
 > {
   id: string;
   workspaceId: string;
   triggerMode: AutomationTriggerMode;
+  allowRemotePublishing: boolean;
   watchEvent?: WatchtowerEventType;
   watchTarget?: WatchtowerTarget;
   watchState?: WatchtowerState;
@@ -2922,6 +2844,10 @@ export interface AppSettings {
   jiraAcceptanceCriteriaField?: string;
   jiraEmail?: string;
   jiraApiToken?: string;
+  githubHost?: string;
+  githubOwner?: string;
+  githubRepo?: string;
+  githubToken?: string;
 
   confluenceBaseUrl: string;
   confluenceSpaceKey: string;
@@ -2968,12 +2894,7 @@ export interface CodexRegistryCliStatus {
 }
 
 export type CodexSkillScope =
-  | 'codex-global'
-  | 'codex-system'
-  | 'user-agents'
-  | 'project'
-  | 'plugin'
-  | 'unknown';
+  'codex-global' | 'codex-system' | 'user-agents' | 'project' | 'plugin' | 'unknown';
 
 export interface CodexRegisteredSkill {
   id: string;
@@ -3079,6 +3000,7 @@ export interface CodexSkillSearchResult {
 export interface CodexSkillInstallInput {
   source: string;
   skillName?: string;
+  skillNames?: string[];
   global?: boolean;
 }
 
@@ -3792,13 +3714,7 @@ export interface EmbeddedEditorFocusResult {
 // ---------------------------------------------------------------------------
 
 export type GitFileStatus =
-  | 'modified'
-  | 'added'
-  | 'deleted'
-  | 'renamed'
-  | 'copied'
-  | 'untracked'
-  | 'conflicted';
+  'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'conflicted';
 
 export interface GitFileChange {
   path: string;

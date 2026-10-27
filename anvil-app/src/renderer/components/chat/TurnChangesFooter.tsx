@@ -8,7 +8,7 @@ import { buildEditorUrl } from '../../utils/editor-link';
 import { useSurfaces } from '../surfaces/surfaces-context';
 import { Button, cx } from '../ui';
 import { DiffViewer } from './DiffViewer';
-import { requestChatPrefill } from './chat-prefill';
+import { requestChatSend } from './chat-prefill';
 import type { ChatTurnUsage, ChatTurnWorkItem } from './chat-turns';
 import {
   buildTurnReviewPrompt,
@@ -92,8 +92,7 @@ export function FileEditReviewGrid({
  * line ("N files changed · +a −d" with status glyphs) and discloses on demand:
  * the file list with per-file stats and diffs, "Open in editor", "Open in
  * Changes", and the mutations (Undo turn, Commit, Open PR) behind confirms.
- * "Review these changes" drafts a prompt that asks the agent for a Review
- * surface (§8.1) — it never sends on its own.
+ * "Review these changes" sends a prompt that asks the agent for a Review surface.
  */
 export function TurnChangesFooter({
   workItems,
@@ -245,7 +244,7 @@ export function TurnChangesFooter({
       : undefined;
 
   const reviewTheseChanges = () =>
-    requestChatPrefill(
+    requestChatSend(
       buildTurnReviewPrompt({
         repoId,
         paths: summary.files.map(displayPath),

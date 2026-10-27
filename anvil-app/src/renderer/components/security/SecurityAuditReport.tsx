@@ -1,3 +1,4 @@
+import { chatPromptPath } from '../../utils/sidebar-navigation';
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { SecurityAudit, SecurityFinding } from '../../../shared/types';
@@ -80,7 +81,7 @@ export function SecurityAuditReport({ audit }: Props) {
         .filter(Boolean)
         .join('\n\n');
 
-      navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+      navigate(chatPromptPath(prompt));
     },
     [navigate],
   );

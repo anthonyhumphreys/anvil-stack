@@ -1,3 +1,4 @@
+import { chatPromptPath } from '../../utils/sidebar-navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -149,7 +150,7 @@ export function ArgentView() {
       'If Argent is not connected, diagnose setup first and name the missing command or device state.',
     ].join('\n');
 
-    navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+    navigate(chatPromptPath(prompt));
   }
 
   async function copyResult() {

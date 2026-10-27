@@ -1,4 +1,15 @@
 import { writeGatewayCodexCatalog } from './llm-gateway-runtime.service.js';
+import {
+  automationAccessMode,
+  automationGit,
+  isPrFeedbackEvent,
+  matchesRepairTarget,
+  prepareAutomationRepairTarget,
+  remotePublishingAllowed,
+  remotePublishingInstructions,
+  repairTargetInstructions,
+  type AutomationRepairTarget,
+} from './automation-remote-publishing.service.js';
 import { previewBuild } from '../../shared/preview-build.js';
 import { app } from 'electron';
 import {
@@ -101,6 +112,7 @@ interface PreparedWorktree {
   originalPath: string;
   branchName: string;
   path: string;
+  startHead?: string;
 }
 
 let schedulerTimer: NodeJS.Timeout | null = null;
@@ -113,8 +125,7 @@ function getRepoRows(repoIds: string[]): RepoRow[] {
   const rows = repoIds
     .map((repoId): RepoRow | undefined => {
       const row = query.get(repoId) as
-        | { id: string; name: string; path: string; remote_url: string | null }
-        | undefined;
+        { id: string; name: string; path: string; remote_url: string | null } | undefined;
       return row
         ? { id: row.id, name: row.name, path: row.path, remoteUrl: row.remote_url ?? undefined }
         : undefined;
@@ -124,12 +135,18 @@ function getRepoRows(repoIds: string[]): RepoRow[] {
 }
 
 function validateAutomationInput(input: AutomationDefinitionInput): void {
+  if (input.allowRemotePublishing !== undefined && typeof input.allowRemotePublishing !== 'boolean')
+    throw new Error('Remote publishing permission must be a boolean.');
   if (!input.name.trim()) throw new Error('Automation name is required.');
   if (!input.prompt.trim()) throw new Error('Automation prompt is required.');
   if (!input.personaId.trim()) throw new Error('Automation persona is required.');
   if (!getPersonaById(input.personaId)) {
     throw new Error(`Unknown persona: ${input.personaId}`);
   }
+  if (input.allowRemotePublishing && (!input.allowRepoWrite || !input.allowCommandRun))
+    throw new Error(
+      'Remote publishing requires repository write and command execution permissions.',
+    );
   if (input.workflowTemplateId) {
     if (!getWorkflowTemplate(input.workflowTemplateId))
       throw new Error('Choose an existing workflow template.');
@@ -230,10 +247,29 @@ function getActiveLoopConfig(automation: AutomationDefinition): AutomationLoopCo
   };
 }
 
+function currentAutomationPolicy(automation: AutomationDefinition): AutomationDefinition {
+  const current = getAutomation(automation.id);
+  if (!current || automation.repoIds.some((id) => !current.repoIds.includes(id)))
+    throw new Error('Automation was deleted or its repository scope changed.');
+  if (JSON.stringify(current.watchTarget) !== JSON.stringify(automation.watchTarget))
+    throw new Error('Automation watch target changed before execution.');
+  return {
+    ...automation,
+    allowRepoWrite: automation.allowRepoWrite && current.allowRepoWrite,
+    allowCommandRun: automation.allowCommandRun && current.allowCommandRun,
+    allowRemotePublishing: automation.allowRemotePublishing && current.allowRemotePublishing,
+  };
+}
+
 function buildAutomationInstructions(
   automation: AutomationDefinition,
   worktrees: PreparedWorktree[],
+  personaId: string | null = automation.personaId,
 ): string {
+  const mode = automationAccessMode(automation, getSettings().codexMode ?? 'on-request');
+  // Workflow nodes use their own personas. Their sandbox is clamped at execution.
+  const personaCanWrite =
+    personaId === null || resolvePersonaCodexPolicy(mode, personaId).sandbox !== 'read-only';
   const repoLines = worktrees
     .map((worktree) => `- ${worktree.repoName}: ${worktree.path}`)
     .join('\n');
@@ -250,7 +286,7 @@ function buildAutomationInstructions(
     '- Operate only within the disposable worktrees listed below.',
     repoWriteLine,
     commandLine,
-    '- Do not push branches, open pull requests, mutate remote systems, or create external tickets/docs/comments.',
+    remotePublishingInstructions(remotePublishingAllowed(automation, mode) && personaCanWrite),
     '- Summarise what you changed or learned at the end of the run.',
     '- If you hit a blocker, explain it clearly and stop.',
     '### Worktree Paths',
@@ -363,6 +399,7 @@ async function prepareWorktrees(
   automation: AutomationDefinition,
   runId: string,
   repoRows: RepoRow[],
+  repairTarget?: AutomationRepairTarget,
 ): Promise<PreparedWorktree[]> {
   const prepared: PreparedWorktree[] = [];
   const baseBranch = sanitiseBranchName(automation.name) || 'automation';
@@ -372,13 +409,14 @@ async function prepareWorktrees(
     const safeRepoName = sanitiseBranchName(repo.name).replaceAll('/', '-') || 'repo';
     const branchName = `anvil/automation/${baseBranch}-${suffix}-${safeRepoName}`;
     const worktreePath = buildWorktreePath(automation.id, runId, repo.name);
-    await addWorktree(repo.path, worktreePath, branchName);
+    await addWorktree(repo.path, worktreePath, branchName, repairTarget?.headSha ?? 'HEAD');
     prepared.push({
       repoId: repo.id,
       repoName: repo.name,
       originalPath: repo.path,
       branchName,
       path: worktreePath,
+      startHead: repairTarget?.headSha,
     });
   }
 
@@ -448,9 +486,12 @@ async function runCodexAutomation(
     worktrees.map((worktree) => [worktree.repoId, worktree.path]),
   );
   const personaId = options?.personaId ?? automation.personaId;
+  // A later edit can narrow an active run, never expand its original grants.
+  automation = currentAutomationPolicy(automation);
+  const accessMode = automationAccessMode(automation, settings.codexMode ?? 'on-request');
   const systemPrompt = [
     buildSystemPrompt(personaId, automation.repoIds, automation.workspaceId, pathOverrides),
-    buildAutomationInstructions(automation, worktrees),
+    buildAutomationInstructions(automation, worktrees, personaId),
     options?.extraInstructions,
   ]
     .filter(Boolean)
@@ -481,7 +522,7 @@ async function runCodexAutomation(
       systemPrompt,
       prompt,
       model: settings.openaiModel,
-      accessMode: settings.codexMode ?? 'on-request',
+      accessMode,
     });
   }
 
@@ -585,7 +626,7 @@ async function runCodexAutomation(
     sendCodexJsonRpc(proc, 'initialize', {
       clientInfo: { name: 'anvil-automation', version: '0.1.0' },
     });
-    const personaPolicy = resolvePersonaCodexPolicy(settings.codexMode ?? 'on-request', personaId);
+    const personaPolicy = resolvePersonaCodexPolicy(accessMode, personaId);
     sendCodexJsonRpc(proc, 'thread/start', {
       cwd,
       developerInstructions: systemPrompt,
@@ -805,9 +846,7 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
     });
     return;
   }
-  // Feedback is untrusted input. The existing persona and workflow runners do not
-  // enforce separate remote push/comment capabilities, so stop before even creating
-  // a worktree. Generic repo-write or command permission must not bypass this gate.
+  // Feedback cannot grant publication authority. Legacy definitions remain disabled.
   const contextEventType = run.triggerContext?.type;
   const feedbackEventType =
     contextEventType === 'pull_request.review_comment' ||
@@ -833,56 +872,130 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
     );
     const unknownScope =
       !observedHead || (feedbackEventType === 'pull_request.review_comment' && !commentHead);
+    const allowed = remotePublishingAllowed(
+      storedAutomation,
+      automationAccessMode(storedAutomation, getSettings().codexMode ?? 'on-request'),
+    );
     const stopReason = stale
       ? 'stale-head'
       : unknownScope
         ? 'unknown-head'
-        : 'remote-write-capabilities-unavailable';
-    const reason = stale
-      ? 'PR feedback refers to an older head. Refresh the pull request and review the current changes.'
-      : unknownScope
-        ? 'PR feedback has no verified head SHA. Open the pull request and verify its current changes.'
-        : 'PR feedback needs manual review. Automatic repairs are disabled until push and comment permissions can be enforced separately. Open the pull request in Change Review.';
-    appendAutomationRunEvent(run.id, 'system', reason, {
-      repoId: storedAutomation.watchTarget?.repoId,
-      pullRequestNumber: storedAutomation.watchTarget?.pullRequestNumber,
-      feedbackDisposition: stale || unknownScope ? 'rejected' : 'deferred',
-      stopReason,
-      eventId: run.triggerContext?.id,
-      sourceId: run.triggerContext?.sourceId,
-      feedbackId: feedback?.id,
-      feedbackBody: typeof feedback?.body === 'string' ? feedback.body : undefined,
-      feedbackUrl: typeof feedback?.url === 'string' ? feedback.url : undefined,
-      feedbackAuthor: typeof feedback?.author === 'string' ? feedback.author : undefined,
-      observedHead,
-      commentHead,
-      latestHead,
-      repairRounds: 0,
-    });
-    completeAutomationRun(run.id, {
-      status: 'failed',
-      errorMessage: reason,
-      assistantMessage: reason,
-      changedFileCount: 0,
-      worktrees: [],
-    });
-    return;
+        : !allowed
+          ? 'remote-publishing-disabled'
+          : undefined;
+    if (stopReason) {
+      const reason = stale
+        ? 'PR feedback refers to an older head. Refresh the pull request and review the current changes.'
+        : unknownScope
+          ? 'PR feedback has no verified head SHA. Open the pull request and verify its current changes.'
+          : 'PR feedback repair requires remote publishing, repository write and command execution to be enabled, and a writable current access mode.';
+      appendAutomationRunEvent(run.id, 'system', reason, {
+        repoId: storedAutomation.watchTarget?.repoId,
+        pullRequestNumber: storedAutomation.watchTarget?.pullRequestNumber,
+        feedbackDisposition: stale || unknownScope ? 'rejected' : 'deferred',
+        stopReason,
+        eventId: run.triggerContext?.id,
+        sourceId: run.triggerContext?.sourceId,
+        feedbackId: feedback?.id,
+        feedbackBody: typeof feedback?.body === 'string' ? feedback.body : undefined,
+        feedbackUrl: typeof feedback?.url === 'string' ? feedback.url : undefined,
+        feedbackAuthor: typeof feedback?.author === 'string' ? feedback.author : undefined,
+        observedHead,
+        commentHead,
+        latestHead,
+        repairRounds: 0,
+      });
+      completeAutomationRun(run.id, {
+        status: 'failed',
+        errorMessage: reason,
+        assistantMessage: reason,
+        changedFileCount: 0,
+        worktrees: [],
+      });
+      return;
+    }
   }
-  const automation = withWatchtowerContext(storedAutomation, run.triggerContext);
+  let automation = withWatchtowerContext(storedAutomation, run.triggerContext);
 
   if (activeAutomationIds.has(automation.id)) return;
   activeAutomationIds.add(automation.id);
 
-  const repoRows = getRepoRows(automation.repoIds);
+  let repoRows = getRepoRows(automation.repoIds);
   let preparedWorktrees: PreparedWorktree[] = [];
+  let repairTarget: AutomationRepairTarget | undefined;
 
   try {
     if (repoRows.length === 0) {
       throw new Error('No repositories are available for this automation run.');
     }
 
+    if (isPrFeedbackEvent(feedbackEventType)) {
+      const event = run.triggerContext;
+      if (!event || !matchesRepairTarget(automation, event))
+        throw new Error('PR feedback does not match the configured repository and pull request.');
+      const repo = repoRows.find((row) => row.id === automation.watchTarget?.repoId);
+      if (!repo) throw new Error('The watched repository is unavailable.');
+      if (
+        isOwnPublishedHead(automation, event) ||
+        (await isRetainedWorkflowHead(automation, event))
+      ) {
+        const reason =
+          'This head change matches a retained commit from this automation; no repair is needed.';
+        appendAutomationRunEvent(run.id, 'system', reason, {
+          feedbackDisposition: 'accepted',
+          stopReason: 'own-head',
+          sourceId: event.sourceId,
+          observedHead: event.metadata?.headSha,
+        });
+        completeAutomationRun(run.id, {
+          status: 'completed',
+          assistantMessage: reason,
+          changedFileCount: 0,
+          worktrees: [],
+        });
+        return;
+      }
+      repairTarget = await prepareAutomationRepairTarget(automation, event, repo, run.id);
+      repoRows = [repo];
+      automation = {
+        ...automation,
+        repoIds: [repo.id],
+        prompt: [automation.prompt, repairTargetInstructions(repairTarget)].join('\n\n'),
+      };
+    }
     appendAutomationRunEvent(run.id, 'status', 'running');
-    preparedWorktrees = await prepareWorktrees(automation, run.id, repoRows);
+    preparedWorktrees = await prepareWorktrees(automation, run.id, repoRows, repairTarget);
+    if (repairTarget) {
+      const head = await automationGit(preparedWorktrees[0].path, ['rev-parse', 'HEAD']);
+      if (head !== repairTarget.headSha)
+        throw new Error('The repair checkout does not match the verified PR head.');
+      // Fetch/worktree creation must not hide a concurrent PR update.
+      const fresh = await observeExternalWatchtowerSource(automation);
+      if (
+        fresh.repo.id !== repairTarget.repoId ||
+        fresh.observation.status !== 'open' ||
+        fresh.observation.headSha !== repairTarget.headSha ||
+        fresh.observation.sourceId !== repairTarget.sourceId ||
+        fresh.observation.metadata.isCrossRepository !== false ||
+        fresh.observation.metadata.headBranch !== repairTarget.sourceBranch
+      )
+        throw new Error('The PR target changed before repair execution.');
+      appendAutomationRunEvent(run.id, 'system', 'Starting opted-in current-head PR repair.', {
+        feedbackDisposition: 'accepted',
+        repoId: repairTarget.repoId,
+        pullRequestNumber: repairTarget.pullRequestNumber,
+        observedHead: repairTarget.headSha,
+        headBranch: repairTarget.sourceBranch,
+        sourceId: repairTarget.sourceId,
+        feedbackBody: (
+          run.triggerContext?.metadata?.feedback as Record<string, unknown> | undefined
+        )?.body,
+        feedbackUrl: (run.triggerContext?.metadata?.feedback as Record<string, unknown> | undefined)
+          ?.url,
+        repairTarget,
+        repairRounds: 1,
+      });
+    }
     updateAutomationRunWorktrees(
       run.id,
       preparedWorktrees.map((worktree) => ({
@@ -897,13 +1010,29 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
     let assistantMessage: string;
     let retainWorkflowWorktrees = false;
     let workflowOwnsDecision = false;
+    automation = currentAutomationPolicy(automation);
+    if (
+      repairTarget &&
+      !remotePublishingAllowed(
+        automation,
+        automationAccessMode(automation, getSettings().codexMode ?? 'on-request'),
+      )
+    )
+      throw new Error('Remote publication authority changed before PR repair execution.');
     if (automation.workflowTemplateId) {
       validateAutomationInput(automation);
       const workflow = startWorkflowRun({
         templateId: automation.workflowTemplateId,
         workspaceId: automation.workspaceId,
         repoIds: automation.repoIds,
-        kickoff: automation.prompt,
+        kickoff: [
+          buildAutomationInstructions(automation, preparedWorktrees, null),
+          automation.prompt,
+        ].join('\n\n'),
+        permissionCeiling: automationAccessMode(
+          automation,
+          getSettings().codexMode ?? 'on-request',
+        ),
         sourceAutomationRunId: run.id,
         trigger: {
           kind: run.triggerContext?.type ?? automation.watchEvent ?? run.trigger,
@@ -937,7 +1066,9 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
         : await runCodexAutomation(automation, run.id, preparedWorktrees));
     }
     const changedFileCount = await getChangedFileCount(preparedWorktrees);
-    const keepWorktrees = retainWorkflowWorktrees || changedFileCount > 0;
+    // Publication can leave a clean checkout after commits. Retain it for inspection.
+    const keepWorktrees =
+      retainWorkflowWorktrees || changedFileCount > 0 || automation.allowRemotePublishing;
 
     if (!keepWorktrees) {
       await cleanupWorktrees(preparedWorktrees);
@@ -984,6 +1115,28 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
       `${automation.name} failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
+    // A CLI may have committed/pushed even if its final response failed. Keep the
+    // local commit identity so a subsequent observed own-head change cannot loop.
+    if (repairTarget && preparedWorktrees[0]) {
+      try {
+        const localHead = await automationGit(preparedWorktrees[0].path, ['rev-parse', 'HEAD']);
+        if (localHead !== repairTarget.headSha)
+          appendAutomationRunEvent(
+            run.id,
+            'system',
+            'Recorded repair commit for future observed head-change suppression. This is not a publication receipt.',
+            {
+              repairCommit: {
+                sourceId: repairTarget.sourceId,
+                repoId: repairTarget.repoId,
+                headSha: localHead,
+              },
+            },
+          );
+      } catch {
+        /* retained checkout can still be inspected manually */
+      }
+    }
     activeAutomationIds.delete(automation.id);
   }
 }
@@ -1128,10 +1281,58 @@ export function runAutomationNow(automationId: string): AutomationRun {
   return run;
 }
 
+function isOwnPublishedHead(automation: AutomationDefinition, event: WatchtowerEvent): boolean {
+  if (event.type !== 'pull_request.head_changed' || typeof event.metadata?.headSha !== 'string')
+    return false;
+  return listAutomationRuns(automation.id)
+    .slice(0, 50)
+    .some((run) =>
+      listAutomationRunEvents(run.id).some((entry) => {
+        const commit = entry.metadata?.repairCommit as Record<string, unknown> | undefined;
+        return (
+          commit?.sourceId === event.sourceId &&
+          commit.repoId === automation.watchTarget?.repoId &&
+          commit.headSha === event.metadata!.headSha
+        );
+      }),
+    );
+}
+
+/** A paused workflow may later commit in its retained checkout after this wrapper returned. */
+async function isRetainedWorkflowHead(
+  automation: AutomationDefinition,
+  event: WatchtowerEvent,
+): Promise<boolean> {
+  if (event.type !== 'pull_request.head_changed' || typeof event.metadata?.headSha !== 'string')
+    return false;
+  for (const prior of listAutomationRuns(automation.id).slice(0, 50)) {
+    if (
+      prior.triggerContext?.sourceId !== event.sourceId ||
+      prior.triggerContext.metadata?.headSha === event.metadata.headSha
+    )
+      continue;
+    for (const tree of prior.worktrees) {
+      if (!tree.kept || !tree.path || tree.repoId !== automation.watchTarget?.repoId) continue;
+      try {
+        if ((await automationGit(tree.path, ['rev-parse', 'HEAD'])) === event.metadata.headSha)
+          return true;
+      } catch {
+        /* missing retained checkouts cannot establish provenance */
+      }
+    }
+  }
+  return false;
+}
+
 export function triggerWatchtowerEvent(event: WatchtowerEvent): AutomationRun[] {
   if (event.metadata?.sourceAutomationRunId) return [];
   const runs: AutomationRun[] = [];
   for (const automation of listWatchtowerAutomations(event.workspaceId, event.type)) {
+    if (
+      isPrFeedbackEvent(event.type) &&
+      (!matchesRepairTarget(automation, event) || isOwnPublishedHead(automation, event))
+    )
+      continue;
     if (
       event.repoIds.length > 0 &&
       !automation.repoIds.some((repoId) => event.repoIds.includes(repoId))
@@ -1180,7 +1381,12 @@ export function reconcileAutomationDaemon(): AutomationDaemonStatus {
     return getAutomationDaemonStatus();
   }
 
-  return countEnabledAutomations() + countEnabledDojoConfigs() > 0
+  const factories = getDb()
+    .prepare(
+      "SELECT COUNT(*) AS n FROM factory_definitions WHERE json_extract(record_json,'$.activatedAt') IS NOT NULL",
+    )
+    .get() as { n: number };
+  return countEnabledAutomations() + countEnabledDojoConfigs() + factories.n > 0
     ? installAutomationDaemon()
     : uninstallAutomationDaemon();
 }

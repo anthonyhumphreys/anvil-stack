@@ -44,7 +44,7 @@ import { RemoteThreadTranscript } from './RemoteThreadTranscript';
 import { SettingsLink } from '../shared/SettingsLink';
 import { SessionOwnershipChip } from './SessionOwnershipChip';
 import { buildExecutionTopology } from '../../utils/execution-topology';
-import { CHAT_PREFILL_EVENT } from './AgentUIIntentSurface';
+import { CHAT_PREFILL_EVENT, CHAT_SEND_EVENT } from './chat-prefill';
 import { resolveChatFastModeTarget } from '../../utils/chat-fast-mode';
 import { useChatPanels, type ChatPanelId } from './useChatPanels';
 import { SurfacesProvider } from '../surfaces/SurfacesProvider';
@@ -205,6 +205,27 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [fastMode, setFastMode] = useState(false);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   // H2 — transient composer notice (queued-send ack / rejected send).
+  const [pendingChatActions, setPendingChatActions] = useState<
+    Array<{
+      id: string;
+      text: string;
+      threadId?: string;
+      personaId?: string;
+    }>
+  >([]);
+  const pendingChatAction = pendingChatActions[0] ?? null;
+  const [actionSubmitting, setActionSubmitting] = useState(false);
+  const actionInFlight = useRef(false);
+  const requestChatAction = useCallback((text: string, threadId?: string, personaId?: string) => {
+    const action = { id: crypto.randomUUID(), text, threadId, personaId };
+    setPendingChatActions((pending) =>
+      pending.some(
+        (item) => item.text === text && item.threadId === threadId && item.personaId === personaId,
+      )
+        ? pending
+        : [...pending, action],
+    );
+  }, []);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
   const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -276,10 +297,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     onWorkspaceDefaultChange: setWorkspaceAccessDefault,
   });
 
-  const handleSuggestionClick = useCallback((prompt: string) => {
-    setComposerPrefill({ id: `suggestion-${Date.now()}`, text: prompt });
-    setComposerFocusRequest((request) => request + 1);
-  }, []);
+  const handleSuggestionClick = requestChatAction;
 
   useChatRouteIntents({
     personas,
@@ -287,6 +305,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     switchPersona,
     selectThread,
     onPrefill: (text) => setComposerPrefill({ id: `route-${Date.now()}`, text }),
+    onSend: requestChatAction,
     openPreview: panels.openPreview,
     threadCount: threads.length,
   });
@@ -361,17 +380,16 @@ export function ChatView({ userRole }: ChatViewProps) {
   });
   const feedbackThreadRef = useRef(activeThreadId);
   feedbackThreadRef.current = activeThreadId;
-  const handleComposeFeedback = useCallback((draft: ChatReviewFeedbackDraft) => {
-    if (draft.threadId !== feedbackThreadRef.current) {
-      setSendNotice('Open the source conversation to add this review feedback.');
-      return;
-    }
-    setComposerPrefill({
-      id: `review-${crypto.randomUUID()}`,
-      text: formatChatReviewFeedbackPrompt(draft),
-    });
-    setComposerFocusRequest((current) => current + 1);
-  }, []);
+  const handleComposeFeedback = useCallback(
+    (draft: ChatReviewFeedbackDraft) => {
+      if (draft.threadId !== feedbackThreadRef.current) {
+        setSendNotice('Open the source conversation to add this review feedback.');
+        return;
+      }
+      requestChatAction(formatChatReviewFeedbackPrompt(draft), draft.threadId);
+    },
+    [requestChatAction],
+  );
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -440,17 +458,25 @@ export function ChatView({ userRole }: ChatViewProps) {
   const slashCommands = useMemo(() => buildSlashCommands(agentLabel), [agentLabel]);
   const combinedThreadStatuses = { ...liveThreadStatuses, ...runTarget.threadStatuses };
 
+  const sendInFlight = useRef(false);
   const handleChatInputSend = useCallback(
-    (message: string, attachments: ChatAttachment[] = []): Promise<boolean> => {
-      if (runTarget.remote) return runTarget.send(message, attachments);
-      if (busy) {
-        setSendNotice('Choose Guide current run or Queue next to send while the agent is working.');
-        return Promise.resolve(false);
-      }
-      return handleComposerSend(message, attachments).then((accepted) => {
+    async (message: string, attachments: ChatAttachment[] = []): Promise<boolean> => {
+      if (sendInFlight.current) return false;
+      sendInFlight.current = true;
+      try {
+        if (runTarget.remote) return await runTarget.send(message, attachments);
+        if (busy) {
+          setSendNotice(
+            'Choose Guide current run or Queue next to send while the agent is working.',
+          );
+          return Promise.resolve(false);
+        }
+        const accepted = await handleComposerSend(message, attachments);
         if (accepted) setSendNotice(null);
         return accepted;
-      });
+      } finally {
+        sendInFlight.current = false;
+      }
     },
     [busy, handleComposerSend, runTarget],
   );
@@ -491,12 +517,12 @@ export function ChatView({ userRole }: ChatViewProps) {
     [setChatLayout],
   );
 
-  const handleFindingFollowUp = useCallback((finding: ExtractedFinding & { idx: number }) => {
-    setComposerPrefill({
-      id: `${finding.idx}-${Date.now()}`,
-      text: buildFindingFollowUpPrompt(finding),
-    });
-  }, []);
+  const handleFindingFollowUp = useCallback(
+    (finding: ExtractedFinding & { idx: number }) => {
+      requestChatAction(buildFindingFollowUpPrompt(finding));
+    },
+    [requestChatAction],
+  );
 
   const handleSetGoal = useCallback(
     (objective: string, tokenBudget: string) => {
@@ -575,6 +601,74 @@ export function ChatView({ userRole }: ChatViewProps) {
     isTemporaryChat || scaffoldModeActive || featureAvailability.chatEnabled;
   const chatInputDisabled =
     scaffoldBusy || !workspaceChatReady || (isWorkItemLayout && !activeThread?.workItemId);
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
+      if (text?.trim()) requestChatAction(text, activeThreadId ?? undefined);
+    };
+    window.addEventListener(CHAT_SEND_EVENT, receive);
+    return () => window.removeEventListener(CHAT_SEND_EVENT, receive);
+  }, [activeThreadId, requestChatAction]);
+
+  useEffect(() => {
+    if (!pendingChatAction || actionInFlight.current || !historyReady) return;
+    if (
+      (pendingChatAction.threadId && pendingChatAction.threadId !== activeThreadId) ||
+      (pendingChatAction.personaId && pendingChatAction.personaId !== activePersona?.id)
+    ) {
+      setPendingChatActions((pending) =>
+        pending.filter((action) => action.id !== pendingChatAction.id),
+      );
+      setSendNotice(
+        'The requested conversation could not be opened or is no longer active. No prompt was sent. Open it and try the action again.',
+      );
+      return;
+    }
+    actionInFlight.current = true;
+    setActionSubmitting(true);
+    const submit = async () => {
+      try {
+        if (chatInputDisabled || pendingWorkflowAction || runTarget.record?.state === 'ended') {
+          throw new Error('Chat is not ready. The requested prompt is in the composer.');
+        }
+        if (!runTarget.remote && busy && session?.capabilities?.followUp.queue) {
+          const result = await followUp('queue', pendingChatAction.text, [], pendingChatAction.id);
+          if (result.status === 'failed')
+            throw new Error(result.error ?? 'The action could not be queued.');
+          setSendNotice(result.status === 'queued' ? 'Queued after the current run.' : null);
+        } else {
+          const accepted = await handleChatInputSend(pendingChatAction.text);
+          if (!accepted)
+            throw new Error('The action was not sent. The requested prompt is in the composer.');
+        }
+      } catch (error) {
+        setComposerPrefill({ id: pendingChatAction.id, text: pendingChatAction.text });
+        setSendNotice(error instanceof Error ? error.message : 'The action could not be sent.');
+      } finally {
+        actionInFlight.current = false;
+        setActionSubmitting(false);
+        setPendingChatActions((pending) =>
+          pending.filter((action) => action.id !== pendingChatAction.id),
+        );
+      }
+    };
+    void submit();
+  }, [
+    pendingChatAction,
+    actionSubmitting,
+    historyReady,
+    activeThreadId,
+    activePersona?.id,
+    chatInputDisabled,
+    pendingWorkflowAction,
+    runTarget.record?.state,
+    runTarget.remote,
+    busy,
+    session?.capabilities?.followUp.queue,
+    followUp,
+    handleChatInputSend,
+  ]);
+
   const composerDraftKey = [
     'anvil:chat-draft',
     activeThreadId ?? 'no-thread',
@@ -1093,10 +1187,7 @@ export function ChatView({ userRole }: ChatViewProps) {
           onToggleDesignSidebar={() => setDesignSidebarCollapsed((c) => !c)}
           showItsmWorkbench={showItsmWorkbench}
           workspaceId={isTemporaryChat ? null : (activeWorkspace?.id ?? null)}
-          onItsmPrompt={(prompt) => {
-            setComposerPrefill({ id: `itsm-${Date.now()}`, text: prompt });
-            setComposerFocusRequest((current) => current + 1);
-          }}
+          onItsmPrompt={requestChatAction}
           showActivitySidebar={showActivitySidebar}
           activity={{
             workspaceName: isTemporaryChat

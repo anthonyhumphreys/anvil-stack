@@ -116,7 +116,7 @@ export function ChatAccessLevelChip({
             <ChevronDown size={11} className="shrink-0 opacity-70" aria-hidden="true" />
           </button>
         )}
-        menuClassName="w-72"
+        menuClassName="w-80"
       >
         <MenuLabel>Thread access</MenuLabel>
         {resolvedOptions.map((option, index) => {
@@ -127,6 +127,7 @@ export function ChatAccessLevelChip({
                 <MenuSeparator />
               )}
               <MenuItem
+                checked={selected}
                 icon={
                   option.level === 'read-only' ? (
                     <Lock size={13} />
@@ -139,15 +140,18 @@ export function ChatAccessLevelChip({
                   )
                 }
                 onSelect={() => requestSelect(option)}
-                className={
-                  option.elevated ? 'text-warning hover:bg-warning/10 focus:bg-warning/10' : ''
-                }
+                className={cx(
+                  'items-start gap-2.5 [&>svg]:mt-0.5 [&>svg]:shrink-0',
+                  'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60',
+                  selected && 'bg-bg-tertiary text-text-primary',
+                  option.elevated && '[&>svg]:text-warning',
+                )}
               >
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2">
-                    <span className="font-medium">{option.label}</span>
+                    <span className="flex-1 font-medium">{option.label}</span>
                     {selected && (
-                      <Check size={12} className="shrink-0 text-accent" aria-hidden="true" />
+                      <Check size={14} className="shrink-0 text-accent" aria-hidden="true" />
                     )}
                   </span>
                   <span className="mt-0.5 block text-xs font-normal leading-4 text-text-tertiary">

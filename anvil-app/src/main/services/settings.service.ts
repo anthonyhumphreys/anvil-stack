@@ -224,7 +224,7 @@ function parseWorkItemConnections(value: Buffer | null): WorkItemConnection[] {
           (connection) =>
             typeof connection?.id === 'string' &&
             typeof connection?.name === 'string' &&
-            ['ado', 'linear', 'jira'].includes(connection.provider),
+            ['ado', 'linear', 'jira', 'github'].includes(connection.provider),
         )
       : [];
   } catch {
@@ -254,6 +254,10 @@ export function applyWorkItemConnection(
     jiraAcceptanceCriteriaField: connection.jiraAcceptanceCriteriaField,
     jiraEmail: connection.jiraEmail,
     jiraApiToken: connection.jiraApiToken,
+    githubHost: connection.githubHost,
+    githubOwner: connection.githubOwner,
+    githubRepo: connection.githubRepo,
+    githubToken: connection.githubToken,
   };
 }
 
@@ -270,6 +274,8 @@ function mergeMaskedConnectionSecrets(
         connection.linearApiKey === MASKED_SECRET
           ? previous?.linearApiKey
           : connection.linearApiKey,
+      githubToken:
+        connection.githubToken === MASKED_SECRET ? previous?.githubToken : connection.githubToken,
       jiraApiToken:
         connection.jiraApiToken === MASKED_SECRET
           ? previous?.jiraApiToken
@@ -812,8 +818,7 @@ function defaultSettings(): AppSettings {
 // rows in the activation_events table and are independent of this flag.
 export function isTelemetryEnabled(): boolean {
   const row = getDb().prepare('SELECT telemetry_enabled FROM settings WHERE id = 1').get() as
-    | { telemetry_enabled: number | null }
-    | undefined;
+    { telemetry_enabled: number | null } | undefined;
   return row?.telemetry_enabled === 1;
 }
 

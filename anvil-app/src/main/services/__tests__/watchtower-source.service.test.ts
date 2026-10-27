@@ -24,6 +24,7 @@ const automation: AutomationDefinition = {
   enabled: true,
   allowRepoWrite: false,
   allowCommandRun: false,
+  allowRemotePublishing: false,
   executionMode: 'disposable-worktree',
   createdAt: '2026-08-10T09:00:00.000Z',
   updatedAt: '2026-08-10T09:00:00.000Z',

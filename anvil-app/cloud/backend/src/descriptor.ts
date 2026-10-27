@@ -3,6 +3,7 @@ import { DEFAULT_LIMITS, DESCRIPTOR_VERSION, PROTOCOL } from '../../contract/ver
 import { isWorkosAuthKitIssuer } from './oidc';
 import { SHARE_AUDIENCES_FEATURE } from '../../contract/shares';
 import { shareAudiencesAvailable } from './hosted/share-access';
+import { SKILL_RECOMMENDATIONS_FEATURE } from '../../contract/skill-recommendations';
 
 /** Legacy staging identity. Keep until the staging deployment is intentionally migrated. */
 export const SPIKE_DEPLOYMENT_ID = 'spike-0000-0000-0000-backend01demo';
@@ -51,6 +52,8 @@ export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor 
     features: [
       'browser-workspace/1',
       'mesh-job-capability-requirements/1',
+      ...(env?.HOSTED_DB !== undefined && workosConfigured ? ['organization-factories/1'] : []),
+      ...(env?.HOSTED_DB !== undefined && workosConfigured ? [SKILL_RECOMMENDATIONS_FEATURE] : []),
       ...(env !== undefined && workosConfigured && shareAudiencesAvailable(env)
         ? [SHARE_AUDIENCES_FEATURE]
         : []),

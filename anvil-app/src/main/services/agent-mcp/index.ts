@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { app } from 'electron';
 import { registerAgentToolProvider } from '../../agent-tools/dispatch.js';
 import { workflowToolProvider } from '../../agent-tools/workflow-tools.js';
+import { factoryToolProvider } from '../../agent-tools/factory-tools.js';
 import { delegationToolProvider } from '../../agent-tools/delegation-tools.js';
 import { questionToolProvider } from '../../agent-tools/question-tools.js';
 import { browserToolProvider } from '../../agent-tools/browser-tools.js';
@@ -25,6 +26,7 @@ import { startAgentMcpServer, type AgentMcpServer } from './server.js';
 let server: AgentMcpServer | undefined;
 let startup: Promise<AgentMcpEndpointState | undefined> | undefined;
 let unregisterWorkflowTools: (() => void) | undefined;
+let unregisterFactoryTools: (() => void) | undefined;
 let unregisterDelegationTools: (() => void) | undefined;
 let unregisterQuestionTools: (() => void) | undefined;
 let unregisterBrowserTools: (() => void) | undefined;
@@ -44,6 +46,7 @@ export function resolveAnvilMcpShimPath(): string | undefined {
 export function startAgentMcpEndpoint(): Promise<AgentMcpEndpointState | undefined> {
   if (startup) return startup;
   unregisterWorkflowTools ??= registerAgentToolProvider(workflowToolProvider);
+  unregisterFactoryTools ??= registerAgentToolProvider(factoryToolProvider);
   unregisterDelegationTools ??= registerAgentToolProvider(delegationToolProvider);
   unregisterQuestionTools ??= registerAgentToolProvider(questionToolProvider);
   unregisterBrowserTools ??= registerAgentToolProvider(browserToolProvider);
@@ -87,6 +90,8 @@ export async function stopAgentMcpEndpoint(): Promise<void> {
   setAgentMcpEndpointStartup(undefined);
   unregisterWorkflowTools?.();
   unregisterWorkflowTools = undefined;
+  unregisterFactoryTools?.();
+  unregisterFactoryTools = undefined;
   unregisterDelegationTools?.();
   unregisterDelegationTools = undefined;
   unregisterQuestionTools?.();

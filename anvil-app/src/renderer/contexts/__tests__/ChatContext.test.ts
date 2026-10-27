@@ -9,6 +9,7 @@ import {
   threadBelongsToChatList,
   threadBelongsToWorkspace,
   upsertThreadForChatList,
+  updateFollowUpEntry,
 } from '../ChatContext';
 
 const personas: Persona[] = [
@@ -714,5 +715,87 @@ describe('saved answer receipt', () => {
         },
       },
     });
+  });
+});
+
+describe('queued follow-up ordering', () => {
+  it('promotes an accepted queued prompt after the preceding response only once', () => {
+    const entries = [
+      { kind: 'user' as const, id: 'original', content: 'Build it' },
+      {
+        kind: 'user' as const,
+        id: 'queued',
+        requestId: 'queued',
+        content: 'Review it',
+        delivery: 'queued' as const,
+        deliveryIntent: 'queue' as const,
+      },
+      { kind: 'assistant' as const, content: 'Built.', phase: 'final' as const },
+    ];
+    const delivered = updateFollowUpEntry(entries, 'queued', { delivery: 'delivered' });
+    expect(
+      delivered.map((entry) =>
+        entry.kind === 'user' ? entry.id : entry.kind === 'assistant' ? entry.content : entry.kind,
+      ),
+    ).toEqual(['original', 'Built.', 'queued']);
+    const responding = [...delivered, { kind: 'assistant' as const, content: 'Reviewing.' }];
+    expect(updateFollowUpEntry(responding, 'queued', { delivery: 'delivered' })).toEqual(
+      responding,
+    );
+  });
+
+  it('resolves the executing answer across an unaccepted prompt', () => {
+    const entries = resolveCompletedAssistantEntries([
+      { kind: 'user', content: 'Build it' },
+      { kind: 'assistant', content: 'Built.' },
+      { kind: 'user', content: 'Review later', delivery: 'queued', deliveryIntent: 'queue' },
+    ]);
+    expect(entries[1]).toMatchObject({ phase: 'final' });
+  });
+
+  it('reconstructs the same delivery boundary from saved receipts', () => {
+    const entries = chatMessagesToEntries([
+      { id: 'original', role: 'user', content: 'Build it', timestamp: '2026-10-21T10:00:00Z' },
+      { id: 'next', role: 'user', content: 'Review it', timestamp: '2026-10-21T10:00:01Z' },
+      {
+        id: 'queued',
+        role: 'system',
+        content: '',
+        timestamp: '2026-10-21T10:00:02Z',
+        event: {
+          type: 'follow_up_delivery',
+          followUpRequestId: 'next',
+          followUpIntent: 'queue',
+          followUpStatus: 'queued',
+        },
+      },
+      { id: 'answer', role: 'assistant', content: 'Built.', timestamp: '2026-10-21T10:00:03Z' },
+      {
+        id: 'outcome',
+        role: 'system',
+        content: '',
+        timestamp: '2026-10-21T10:00:04Z',
+        event: { type: 'turn_outcome', turnOutcome: 'completed' },
+      },
+      {
+        id: 'delivered',
+        role: 'system',
+        content: '',
+        timestamp: '2026-10-21T10:00:05Z',
+        event: {
+          type: 'follow_up_delivery',
+          followUpRequestId: 'next',
+          followUpIntent: 'queue',
+          followUpStatus: 'delivered',
+        },
+      },
+    ]);
+    expect(entries.map((entry) => (entry.kind === 'user' ? entry.id : entry.kind))).toEqual([
+      'original',
+      'assistant',
+      'event',
+      'next',
+    ]);
+    expect(entries[1]).toMatchObject({ content: 'Built.', phase: 'final' });
   });
 });

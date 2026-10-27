@@ -56,7 +56,9 @@ export function appendTemporaryChatMessage(threadId: string, message: ChatMessag
   const advancesConversation =
     message.role === 'user' ||
     (message.role === 'assistant' &&
-      (!message.event || message.event.type !== 'text' || message.event.assistantPhase !== 'progress'));
+      (!message.event ||
+        message.event.type !== 'text' ||
+        message.event.assistantPhase !== 'progress'));
   if (advancesConversation) {
     record.thread.updatedAt = message.timestamp;
     record.thread.lastMessageAt = message.timestamp;
@@ -332,7 +334,9 @@ function parseAttentionState(value: string | null | undefined): ChatThreadAttent
 }
 
 function parseWorkItemProvider(value: string | null | undefined): WorkItemProvider | undefined {
-  return value === 'ado' || value === 'linear' || value === 'jira' ? value : undefined;
+  return value === 'ado' || value === 'linear' || value === 'jira' || value === 'github'
+    ? value
+    : undefined;
 }
 
 export function listChatThreads(workspaceId: string | null, personaId?: string): ChatThread[] {
@@ -902,8 +906,7 @@ export function getChatThreadProviderBinding(
   const row = getDb()
     .prepare('SELECT provider_thread_id, provider_thread_provider FROM chat_threads WHERE id = ?')
     .get(threadId) as
-    | { provider_thread_id: string | null; provider_thread_provider: string | null }
-    | undefined;
+    { provider_thread_id: string | null; provider_thread_provider: string | null } | undefined;
   if (!row?.provider_thread_id) return null;
   const provider = row.provider_thread_provider;
   return {

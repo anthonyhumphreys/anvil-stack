@@ -8,6 +8,7 @@ import { dependenciesSurfaceHandler } from './kinds/dependencies.js';
 import { pipelineSurfaceHandler } from './kinds/pipeline.js';
 import { dataSurfaceHandler } from './kinds/data.js';
 import { diagramSurfaceHandler } from './kinds/diagram.js';
+import { validationSurfaceHandler } from './kinds/validation.js';
 
 export const MAIN_SURFACE_HANDLERS: readonly MainSurfaceHandler[] = [
   artifactSurfaceHandler,
@@ -18,6 +19,7 @@ export const MAIN_SURFACE_HANDLERS: readonly MainSurfaceHandler[] = [
   pipelineSurfaceHandler,
   dataSurfaceHandler,
   diagramSurfaceHandler,
+  validationSurfaceHandler,
 ];
 
 const BY_KIND = new Map(MAIN_SURFACE_HANDLERS.map((handler) => [handler.kind, handler]));

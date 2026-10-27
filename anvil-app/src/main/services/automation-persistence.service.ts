@@ -34,6 +34,7 @@ interface AutomationDefinitionRow {
   enabled: number;
   allow_repo_write: number;
   allow_command_run: number;
+  allow_remote_publishing: number;
   loop_config_json: string | null;
   workflow_template_id: string | null;
   execution_mode: string;
@@ -200,6 +201,7 @@ function mapAutomationDefinition(row: AutomationDefinitionRow): AutomationDefini
     enabled: row.enabled === 1,
     allowRepoWrite: row.allow_repo_write === 1,
     allowCommandRun: row.allow_command_run === 1,
+    allowRemotePublishing: row.allow_remote_publishing === 1,
     loopConfig: parseLoopConfig(row.loop_config_json),
     workflowTemplateId: row.workflow_template_id ?? undefined,
     executionMode: row.execution_mode as AutomationDefinition['executionMode'],
@@ -285,13 +287,14 @@ export function createAutomationRecord(
        enabled,
        allow_repo_write,
        allow_command_run,
+       allow_remote_publishing,
        workflow_template_id,
        loop_config_json,
        execution_mode,
        next_run_at,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disposable-worktree', ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disposable-worktree', ?, ?, ?)`,
   ).run(
     id,
     workspaceId,
@@ -307,6 +310,7 @@ export function createAutomationRecord(
     input.enabled ? 1 : 0,
     input.allowRepoWrite ? 1 : 0,
     input.allowCommandRun ? 1 : 0,
+    input.allowRemotePublishing === true && input.allowRepoWrite && input.allowCommandRun ? 1 : 0,
     input.workflowTemplateId || null,
     serialiseLoopConfig(input.loopConfig),
     nextRunAt,
@@ -339,6 +343,7 @@ export function updateAutomationRecord(
        enabled = ?,
        allow_repo_write = ?,
        allow_command_run = ?,
+       allow_remote_publishing = ?,
        workflow_template_id = ?,
        loop_config_json = ?,
        next_run_at = ?,
@@ -357,6 +362,7 @@ export function updateAutomationRecord(
     input.enabled ? 1 : 0,
     input.allowRepoWrite ? 1 : 0,
     input.allowCommandRun ? 1 : 0,
+    input.allowRemotePublishing === true && input.allowRepoWrite && input.allowCommandRun ? 1 : 0,
     input.workflowTemplateId || null,
     serialiseLoopConfig(input.loopConfig),
     nextRunAt,

@@ -1,3 +1,8 @@
+import {
+  githubIssueNumber,
+  githubWorkItemTarget,
+  githubWorkItemsProvider,
+} from './github-workitems.service.js';
 import { getWorkItemSettings } from './workitem-context.service.js';
 
 /** Called only after an explicit user action. Never retry a provider POST automatically. */
@@ -27,7 +32,14 @@ async function publishComment(
   let body: unknown;
   let headers: Record<string, string>;
   const markdown = link ? `${text}\n\n[${link.label}](${link.url})` : text;
-  if (s.workItemProvider === 'linear') {
+  if (s.workItemProvider === 'github') {
+    const number = githubIssueNumber(id);
+    await githubWorkItemsProvider.getItem(id);
+    const target = githubWorkItemTarget();
+    url = `${target.apiUrl}/issues/${number}/comments`;
+    headers = target.headers;
+    body = { body: markdown };
+  } else if (s.workItemProvider === 'linear') {
     url = 'https://api.linear.app/graphql';
     headers = { Authorization: s.linearApiKey ?? '', 'Content-Type': 'application/json' };
     const lookup = await fetch(url, {

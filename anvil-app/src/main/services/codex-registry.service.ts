@@ -647,13 +647,22 @@ function isSubsequence(needle: string, haystack: string): boolean {
   return needle.length === 0;
 }
 
-function buildSkillCliArgs(input: CodexSkillInstallInput): string[] {
+export function buildSkillCliArgs(input: CodexSkillInstallInput): string[] {
   const source = validateSource(input.source, 'Skill source');
-  const skillName = input.skillName ? validateSource(input.skillName, 'Skill name') : undefined;
+  if (
+    input.skillNames !== undefined &&
+    (!Array.isArray(input.skillNames) || !input.skillNames.length || input.skillNames.length > 200)
+  ) {
+    throw new Error('Choose between 1 and 200 skills.');
+  }
+  if (input.skillName && input.skillNames) throw new Error('Choose a skill or a collection.');
+  const skillNames = (input.skillNames ?? (input.skillName ? [input.skillName] : [])).map((name) =>
+    validateSource(name, 'Skill name'),
+  );
   const args = ['skills', 'add', source];
 
-  if (skillName) {
-    args.push('--skill', skillName);
+  if (skillNames.length) {
+    args.push('--skill', ...skillNames);
   }
 
   args.push('-a', 'codex');

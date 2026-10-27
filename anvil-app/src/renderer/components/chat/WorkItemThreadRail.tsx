@@ -876,6 +876,7 @@ function buildWorkItemKey(provider: WorkItemProvider, id: string): string {
 function formatProviderLabel(provider: WorkItemProvider): string {
   if (provider === 'ado') return 'Azure DevOps';
   if (provider === 'jira') return 'Jira';
+  if (provider === 'github') return 'GitHub Issues';
   return 'Linear';
 }
 

@@ -23,6 +23,25 @@ function applyMigration(db: Database.Database, migration: string): void {
   }
 }
 
+it('migration 115 preserves existing automation permissions without granting publishing', () => {
+  const db = new Database(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE automation_definitions (
+        id TEXT PRIMARY KEY, allow_repo_write INTEGER NOT NULL, allow_command_run INTEGER NOT NULL
+      );
+      INSERT INTO automation_definitions VALUES ('writer', 1, 1), ('reader', 0, 0);
+    `);
+    applyMigration(db, MIGRATIONS[115]!);
+    expect(db.prepare('SELECT * FROM automation_definitions ORDER BY id').all()).toEqual([
+      { id: 'reader', allow_repo_write: 0, allow_command_run: 0, allow_remote_publishing: 0 },
+      { id: 'writer', allow_repo_write: 1, allow_command_run: 1, allow_remote_publishing: 0 },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
 it('migrates existing worker nodes to approval mode without enabling them', () => {
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE mesh_worker_state (id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL, updated_at TEXT);
@@ -509,7 +528,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(114);
+      expect(SCHEMA_VERSION).toBe(117);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -1176,4 +1195,51 @@ describe('inline surfaces and shares migrations (v109, v110)', () => {
       db.close();
     }
   });
+});
+
+it('migration 117 preserves publication receipts and permits GitHub without losing uniqueness', () => {
+  const db = new Database(':memory:');
+  db.exec(SCHEMA_SQL.replace("'linear','jira','ado','github'", "'linear','jira','ado'"));
+  db.exec(
+    "INSERT INTO share_ticket_publications VALUES ('old','share','conn','linear','ANV-1','Old','uncertain','now','now',NULL)",
+  );
+  db.exec(MIGRATIONS[117]);
+  expect(
+    db.prepare('SELECT status FROM share_ticket_publications WHERE id = ?').get('old'),
+  ).toEqual({ status: 'uncertain' });
+  const insert = db.prepare('INSERT INTO share_ticket_publications VALUES (?,?,?,?,?,?,?,?,?,?)');
+  insert.run(
+    'new',
+    'share',
+    'github',
+    'github',
+    'https://github.com/acme/repo/issues/1',
+    'New',
+    'pending',
+    'now',
+    'now',
+    null,
+  );
+  expect(() =>
+    insert.run(
+      'duplicate',
+      'share',
+      'github',
+      'github',
+      'https://github.com/acme/repo/issues/1',
+      'New',
+      'pending',
+      'now',
+      'now',
+      null,
+    ),
+  ).toThrow();
+  expect(
+    db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_share_ticket_publications_share'",
+      )
+      .get(),
+  ).toBeDefined();
+  db.close();
 });

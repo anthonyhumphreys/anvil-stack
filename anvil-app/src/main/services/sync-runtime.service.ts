@@ -197,6 +197,7 @@ import {
   resetMeshArtifactForTests,
 } from './mesh-artifact.service.js';
 import { configureArtifactShareContext } from './artifact-share.service.js';
+import { configureSkillRecommendationsContext } from './skill-recommendations.service.js';
 import {
   CRYPTO_ENTITY_DEVICE_IDENTITY,
   decodePairingPayload,
@@ -668,6 +669,18 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       scopeKey: JSON.stringify([backend.id, fields?.accountId]),
       features: backend.descriptor.features,
       hosted: backend.connectionMode === 'hosted',
+    };
+  });
+  configureSkillRecommendationsContext(() => {
+    const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
+    const token = auth?.getAccessToken() ?? null;
+    if (backend === null || token === null || !sessionBoundToBackend(backend, fields)) return null;
+    return {
+      apiUrl: apiUrlFor(backend),
+      accessToken: token,
+      scopeKey: JSON.stringify([backend.id, fields?.accountId]),
+      features: backend.descriptor.features ?? [],
     };
   });
   // SESSION-03: handoff orchestration reads the same session context; the
@@ -2216,6 +2229,14 @@ export function activeSyncScope(): SyncScope | null {
   return currentScope();
 }
 
+/** Authenticated factory service read-only identity. */
+export function factorySyncIdentity(): { scope: SyncScope; enrollmentId: string } | null {
+  const scope = currentScope();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  if (!scope || !fields?.enrollmentId || fields.accountId !== scope.accountId) return null;
+  return { scope, enrollmentId: fields.enrollmentId };
+}
+
 /**
  * Complete the first one-shot sync cycle within a bounded headless budget.
  * The regular runtime has its own transport timeout, while this extra bound
@@ -3107,6 +3128,11 @@ async function accountRpc<R>(operation: string, params: unknown): Promise<R> {
     fetchFn: fetchOverride,
   });
   return result;
+}
+
+/** Factory access operations use the same authenticated device session as Sync. */
+export function factoryAccountRpc<R = unknown>(operation: string, params: unknown): Promise<R> {
+  return accountRpc<R>(operation, params);
 }
 
 interface SecurityView {

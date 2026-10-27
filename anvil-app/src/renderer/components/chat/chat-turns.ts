@@ -1,6 +1,7 @@
 import type { AgentUIQuestionIntent, AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
 import type { CodexEvent } from '../../../shared/types';
 import type { ChatEntry } from '../../contexts/ChatContext';
+import { isPendingChatUserEntry } from '../../utils/chat-entry-order';
 
 type AssistantEntry = Extract<ChatEntry, { kind: 'assistant' }> & {
   itemId?: string;
@@ -64,6 +65,8 @@ export interface ComposedChatTurn {
   usage?: ChatTurnUsage;
   /** Provider-reported turn lifecycle. Missing means the provider supplied no terminal outcome. */
   runOutcome?: NonNullable<CodexEvent['turnOutcome']>;
+  pendingMessages?: Array<IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>>>;
+  questionReceiptSourceIndexes?: Record<string, number>;
 }
 
 interface AssistantSegment {
@@ -85,6 +88,10 @@ export function composeChatTurns(
 
   for (const [sourceIndex, entry] of entries.entries()) {
     const indexed = { ...entry, sourceIndex } as IndexedChatEntry;
+    if (isPendingChatUserEntry(entry)) {
+      pending.push(indexed);
+      continue;
+    }
     if (entry.kind === 'user') flush();
     pending.push(indexed);
   }
@@ -165,8 +172,13 @@ function requestKey(event: CodexEvent, requestId: string | number): string {
 }
 
 function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): ComposedChatTurn {
-  const userEntry = entries.find((entry) => entry.kind === 'user') as
-    IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | undefined;
+  const userEntry = entries.find(
+    (entry) => entry.kind === 'user' && !isPendingChatUserEntry(entry),
+  ) as IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | undefined;
+  const pendingMessages = entries.filter(
+    (entry): entry is IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> =>
+      entry.kind === 'user' && isPendingChatUserEntry(entry),
+  );
   const assistantSegments = coalesceAssistantSegments(entries);
   const explicitFinal = [...assistantSegments]
     .reverse()
@@ -194,6 +206,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
   const trailingWork: ChatTurnWorkItem[] = [];
   const surfaces: ChatTurnSurface[] = [];
   const questionReceipts: AgentUIQuestionIntent[] = [];
+  const questionReceiptSourceIndexes: Record<string, number> = {};
   const usage = emptyTurnUsage();
   const seenUsageIds = new Set<string>();
   let sawUsage = false;
@@ -233,6 +246,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
       ['resolved', 'dismissed', 'expired'].includes(entry.event.agentUIIntent.lifecycle)
     ) {
       questionReceipts.push(entry.event.agentUIIntent);
+      questionReceiptSourceIndexes[entry.event.agentUIIntent.id] = entry.sourceIndex;
       continue;
     }
 
@@ -266,7 +280,6 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
       const previous = target[target.length - 1];
       if (previous?.kind === 'thinking') {
         previous.content += entry.content;
-        previous.sourceIndex = entry.sourceIndex;
       } else {
         target.push({ kind: 'thinking', content: entry.content, sourceIndex: entry.sourceIndex });
       }
@@ -292,6 +305,8 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     trailingWork,
     surfaces,
     ...(questionReceipts.length ? { questionReceipts } : {}),
+    ...(questionReceipts.length ? { questionReceiptSourceIndexes } : {}),
+    ...(pendingMessages.length ? { pendingMessages } : {}),
     usage: sawUsage ? usage : undefined,
     runOutcome,
   };
@@ -373,7 +388,8 @@ function coalesceAssistantSegments(entries: Array<IndexedChatEntry>): AssistantS
 
     if (previous && shouldJoinAssistantSegments(previous.entry, assistantEntry)) {
       previous.entry = {
-        ...assistantEntry,
+        ...previous.entry,
+        phase: assistantEntry.phase ?? previous.entry.phase,
         content: previous.entry.content + assistantEntry.content,
       };
       previous.sourceIndexes.push(entry.sourceIndex);
@@ -383,6 +399,78 @@ function coalesceAssistantSegments(entries: Array<IndexedChatEntry>): AssistantS
   }
 
   return segments;
+}
+
+export type ChatTurnTimelineItem =
+  | { kind: 'work'; key: string; sourceIndex: number; items: ChatTurnWorkItem[] }
+  | {
+      kind: 'answer';
+      key: string;
+      sourceIndex: number;
+      entry: NonNullable<ComposedChatTurn['answer']>;
+    }
+  | { kind: 'surface'; key: string; sourceIndex: number; intent: AgentUISurfaceIntent }
+  | { kind: 'receipt'; key: string; sourceIndex: number; intent: AgentUIQuestionIntent }
+  | {
+      kind: 'pending-message';
+      key: string;
+      sourceIndex: number;
+      entry: IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>>;
+    };
+
+/** Group routine work between conversation content, retaining first-appearance order. */
+export function buildChatTurnTimeline(turn: ComposedChatTurn): ChatTurnTimelineItem[] {
+  const content: ChatTurnTimelineItem[] = turn.surfaces.map(({ intent, sourceIndex }) => ({
+    kind: 'surface',
+    key: `surface-${intent.id}`,
+    sourceIndex,
+    intent,
+  }));
+  if (turn.answer)
+    content.push({
+      kind: 'answer',
+      key: 'answer',
+      sourceIndex: turn.answer.sourceIndex,
+      entry: turn.answer,
+    });
+  for (const intent of turn.questionReceipts ?? []) {
+    content.push({
+      kind: 'receipt',
+      key: `receipt-${intent.id}`,
+      sourceIndex: turn.questionReceiptSourceIndexes?.[intent.id] ?? Number.MAX_SAFE_INTEGER,
+      intent,
+    });
+  }
+  for (const entry of turn.pendingMessages ?? []) {
+    content.push({
+      kind: 'pending-message',
+      key: `pending-${entry.id ?? entry.sourceIndex}`,
+      sourceIndex: entry.sourceIndex,
+      entry,
+    });
+  }
+  content.sort((left, right) => left.sourceIndex - right.sourceIndex);
+  const work = [...turn.work, ...turn.trailingWork];
+  const timeline: ChatTurnTimelineItem[] = [];
+  let position = 0;
+  const flushWork = (before: number) => {
+    const items: ChatTurnWorkItem[] = [];
+    while (position < work.length && work[position].sourceIndex < before)
+      items.push(work[position++]);
+    if (items.length)
+      timeline.push({
+        kind: 'work',
+        key: `work-${items[0].sourceIndex}`,
+        sourceIndex: items[0].sourceIndex,
+        items,
+      });
+  };
+  for (const item of content) {
+    flushWork(item.sourceIndex);
+    timeline.push(item);
+  }
+  flushWork(Number.POSITIVE_INFINITY);
+  return timeline;
 }
 
 export function shouldJoinAssistantSegments(

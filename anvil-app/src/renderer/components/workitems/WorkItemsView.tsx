@@ -25,7 +25,8 @@ import { useChatContext } from '../../contexts/ChatContext';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 import { SettingsLink } from '../shared/SettingsLink';
 import { presentSetupError } from '../../utils/setup-error';
-import { ChangeReviewPanel } from '../review/ChangeReviewPanel';
+import { ValidationHistory } from '../review/ValidationHistory';
+import { displayWorkItemId } from './WorkItemCard';
 
 export function buildWorkItemTree(items: WorkItem[]): WorkItem[] {
   const map = new Map(items.map((item) => [item.id, { ...item, children: [] as WorkItem[] }]));
@@ -67,7 +68,6 @@ export function WorkItemsView() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [reviewing, setReviewing] = useState(false);
   const request = useRef(0);
   const workspaceId = activeWorkspace?.id;
   const selected = items.find((item) => item.id === selectedId);
@@ -77,7 +77,6 @@ export function WorkItemsView() {
     let cancelled = false;
     setSelectedId(undefined);
     setItems([]);
-    setReviewing(false);
     setError(undefined);
     setRepoId(activeRepos[0]?.id ?? activeWorkspace?.repos[0]?.id ?? '');
     setSelectedTags([]);
@@ -131,7 +130,6 @@ export function WorkItemsView() {
     setBusy(true);
     request.current++;
     setSelectedId(undefined);
-    setReviewing(false);
     setItems([]);
     try {
       await updatePreferences({
@@ -160,7 +158,7 @@ export function WorkItemsView() {
       setError(presentSetupError(err, 'Something went wrong. Try again.'));
     }
   }
-  async function launch(mode: 'plan' | 'implement' | 'impact') {
+  async function launch(mode: 'plan' | 'implement' | 'impact' | 'validate') {
     if (!selected) return;
     setBusy(true);
     setError(undefined);
@@ -178,13 +176,15 @@ export function WorkItemsView() {
           targetRepos.map((repo) => repo.name),
         );
       }
+      if (mode === 'validate')
+        message += `\n\nCall validation_context with ${JSON.stringify({ repoId, workItemRef: { connectionId, provider: fresh.provider, id: fresh.id } })}.`;
       await launchPreparedChat({
         personaId: mode === 'impact' ? 'ba' : 'coder',
         repoIds: targetRepos.map((repo) => repo.id),
         message,
-        collaborationMode: mode === 'implement' ? 'default' : 'plan',
+        collaborationMode: mode === 'implement' || mode === 'validate' ? 'default' : 'plan',
         workItem: fresh,
-        threadTitle: `${mode === 'plan' ? 'Plan' : mode === 'implement' ? 'Implement' : 'Impact'}: ${fresh.title}`,
+        threadTitle: `${mode === 'plan' ? 'Plan' : mode === 'implement' ? 'Implement' : mode === 'validate' ? 'Validate' : 'Impact'}: ${fresh.title}`,
       });
       navigate('/chat');
     } catch (err) {
@@ -219,9 +219,6 @@ export function WorkItemsView() {
         description="Choose the work, decide how to approach it, then review the evidence."
         actions={
           <>
-            <button className={button} onClick={() => navigate('/review')}>
-              Local review
-            </button>
             <select
               aria-label="Work item connection"
               value={connectionId}
@@ -270,7 +267,13 @@ export function WorkItemsView() {
                 iterations={iterations}
                 selected={selectedIterations}
                 onChange={(ids) => void changeIterations(ids)}
-                label={connection?.provider === 'linear' ? 'Cycle' : 'Sprint'}
+                label={
+                  connection?.provider === 'github'
+                    ? 'Milestone'
+                    : connection?.provider === 'linear'
+                      ? 'Cycle'
+                      : 'Sprint'
+                }
               />
               <select
                 aria-label="Filter by state"
@@ -303,7 +306,6 @@ export function WorkItemsView() {
                   activeId={selectedId}
                   onSelect={(item) => {
                     setSelectedId(item.id);
-                    setReviewing(false);
                   }}
                 />
               ))
@@ -317,7 +319,7 @@ export function WorkItemsView() {
                   ) : (
                     <>
                       <SettingsLink to="delivery#work-items">
-                        Add Azure DevOps, Linear or Jira in Settings
+                        Add GitHub Issues, Azure DevOps, Linear or Jira in Settings
                       </SettingsLink>{' '}
                       to bring your work here.
                     </>
@@ -341,7 +343,7 @@ export function WorkItemsView() {
                   >
                     Back to items
                   </button>
-                  <span>{selected.id}</span>
+                  <span>{displayWorkItemId(selected)}</span>
                   <span>{selected.type}</span>
                   <span>{selected.state}</span>
                   {selected.url && /^https?:\/\//i.test(selected.url) ? (
@@ -369,7 +371,6 @@ export function WorkItemsView() {
                     value={repoId}
                     onChange={(e) => {
                       setRepoId(e.target.value);
-                      setReviewing(false);
                     }}
                     className={`${button} min-w-0 max-w-full`}
                   >
@@ -401,10 +402,10 @@ export function WorkItemsView() {
                   <button
                     className={button}
                     disabled={!repoId || busy}
-                    onClick={() => setReviewing((value) => !value)}
+                    onClick={() => void launch('validate')}
                   >
                     <CheckCheck size={15} />
-                    {reviewing ? 'Show task' : 'Review change'}
+                    Validate in chat
                   </button>
                 </div>
                 <p className="max-w-prose text-xs leading-5 text-text-tertiary">
@@ -412,91 +413,88 @@ export function WorkItemsView() {
                   the work, asking for a decision when scope or risk needs your input.
                 </p>
               </div>
-              {reviewing && workspaceId ? (
-                <ChangeReviewPanel
-                  key={`${workspaceId}:${connectionId}:${selected.id}:${repoId}`}
-                  workspaceId={workspaceId}
-                  repoId={repoId}
-                  workItem={selected}
-                  connectionId={connectionId}
-                />
-              ) : (
-                <div className="space-y-6 p-5">
-                  <section>
-                    <h3 className="mb-2 text-sm font-semibold">Acceptance criteria</h3>
-                    <div className="min-w-0 max-w-prose">
-                      <MarkdownRenderer
-                        content={
-                          extractAcceptanceCriteria(selected) ||
-                          'No explicit acceptance criteria in this item. Confirm the expectations when planning; inferred criteria are not approved requirements.'
+              <div className="space-y-6 p-5">
+                <section>
+                  <h3 className="mb-2 text-sm font-semibold">Acceptance criteria</h3>
+                  <div className="min-w-0 max-w-prose">
+                    <MarkdownRenderer
+                      content={
+                        extractAcceptanceCriteria(selected) ||
+                        'No explicit acceptance criteria in this item. Confirm the expectations when planning; inferred criteria are not approved requirements.'
+                      }
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-text-tertiary">
+                    Maintained in {connection?.name ?? selected.provider}. Refreshed before starting
+                    work or accepting a review.
+                  </p>
+                </section>
+                <section>
+                  <h3 className="mb-2 text-sm font-semibold">Description</h3>
+                  <div className="min-w-0 max-w-prose">
+                    <MarkdownRenderer
+                      content={workItemText(selected.description) || 'No description provided.'}
+                    />
+                  </div>
+                </section>
+                {selected.tags?.length ? (
+                  <p className="text-xs text-text-tertiary">Tags: {selected.tags.join(', ')}</p>
+                ) : null}
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-text-secondary">
+                    Explore this work
+                  </summary>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {(['issue-investigation', 'change-preparation'] as const).map((preset) => (
+                      <button
+                        key={preset}
+                        className={button}
+                        disabled={!featureAvailability.repoFeaturesEnabled}
+                        onClick={() =>
+                          navigate(
+                            `/workflows?${new URLSearchParams({
+                              preset,
+                              workItemId: selected.id,
+                              workItemProvider: selected.provider,
+                              workItemConnection: connectionId,
+                              kickoff: [
+                                `Work item: ${selected.id} — ${selected.title}`,
+                                `Provider: ${selected.provider}`,
+                                `Description: ${workItemText(selected.description)}`,
+                                `Acceptance criteria: ${extractAcceptanceCriteria(selected) || 'Not supplied'}`,
+                              ].join('\n'),
+                            })}`,
+                          )
                         }
-                      />
-                    </div>
-                    <p className="mt-2 text-xs text-text-tertiary">
-                      Maintained in {connection?.name ?? selected.provider}. Refreshed before
-                      starting work or accepting a review.
-                    </p>
-                  </section>
-                  <section>
-                    <h3 className="mb-2 text-sm font-semibold">Description</h3>
-                    <div className="min-w-0 max-w-prose">
-                      <MarkdownRenderer
-                        content={workItemText(selected.description) || 'No description provided.'}
-                      />
-                    </div>
-                  </section>
-                  {selected.tags?.length ? (
-                    <p className="text-xs text-text-tertiary">Tags: {selected.tags.join(', ')}</p>
-                  ) : null}
-                  <details className="text-sm">
-                    <summary className="cursor-pointer text-text-secondary">
-                      Explore this work
-                    </summary>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {(['issue-investigation', 'change-preparation'] as const).map((preset) => (
-                        <button
-                          key={preset}
-                          className={button}
-                          disabled={!featureAvailability.repoFeaturesEnabled}
-                          onClick={() =>
-                            navigate(
-                              `/workflows?${new URLSearchParams({
-                                preset,
-                                workItemId: selected.id,
-                                workItemProvider: selected.provider,
-                                workItemConnection: connectionId,
-                                kickoff: [
-                                  `Work item: ${selected.id} — ${selected.title}`,
-                                  `Provider: ${selected.provider}`,
-                                  `Description: ${workItemText(selected.description)}`,
-                                  `Acceptance criteria: ${extractAcceptanceCriteria(selected) || 'Not supplied'}`,
-                                ].join('\n'),
-                              })}`,
-                            )
-                          }
-                        >
-                          {preset === 'issue-investigation'
-                            ? 'Investigate with a workflow'
-                            : 'Prepare a change workflow'}
-                        </button>
-                      ))}
-                      <button
-                        className={button}
-                        onClick={() => navigate(`/ba/${encodeURIComponent(selected.id)}`)}
                       >
-                        Discuss requirements
+                        {preset === 'issue-investigation'
+                          ? 'Investigate with a workflow'
+                          : 'Prepare a change workflow'}
                       </button>
-                      <button
-                        className={button}
-                        disabled={busy || !featureAvailability.repoFeaturesEnabled}
-                        onClick={() => void launch('impact')}
-                      >
-                        Assess impact
-                      </button>
-                    </div>
-                  </details>
-                </div>
-              )}
+                    ))}
+                    <button
+                      className={button}
+                      onClick={() => navigate(`/ba/${encodeURIComponent(selected.id)}`)}
+                    >
+                      Discuss requirements
+                    </button>
+                    <button
+                      className={button}
+                      disabled={busy || !featureAvailability.repoFeaturesEnabled}
+                      onClick={() => void launch('impact')}
+                    >
+                      Assess impact
+                    </button>
+                  </div>
+                </details>
+                {workspaceId && (
+                  <ValidationHistory
+                    workspaceId={workspaceId}
+                    repoId={repoId}
+                    workItemRef={{ connectionId, provider: selected.provider, id: selected.id }}
+                  />
+                )}
+              </div>
             </>
           ) : (
             <EmptyState

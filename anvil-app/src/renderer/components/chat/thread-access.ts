@@ -68,13 +68,13 @@ export function chatAccessLevelShortLabel(mode: CodexMode): string {
 export function chatAccessLevelDescription(mode: CodexMode): string {
   switch (mode) {
     case 'read-only':
-      return 'Anvil can read files and run read-only commands. Changes need your approval.';
+      return 'Read files and run read-only commands. Approve changes.';
     case 'on-request':
-      return 'Anvil can edit files and run commands in the workspace. It asks when it needs more access.';
+      return 'Edit and run commands in the workspace. Ask for more access.';
     case 'workspace-auto':
-      return 'Anvil edits files and runs commands in the workspace without asking. It cannot request more access.';
+      return 'Edit and run in the workspace. No requests for extra access.';
     case 'full-access':
-      return 'Anvil can act anywhere on this machine without asking. Use with care.';
+      return 'Act anywhere on this machine without asking.';
     default:
       return '';
   }

@@ -117,6 +117,10 @@ export function DeliveryCategory() {
         jiraAcceptanceCriteriaField: connection.jiraAcceptanceCriteriaField,
         jiraEmail: connection.jiraEmail,
         jiraApiToken: connection.jiraApiToken,
+        githubHost: connection.githubHost,
+        githubOwner: connection.githubOwner,
+        githubRepo: connection.githubRepo,
+        githubToken: connection.githubToken,
       },
       'manual',
     );
@@ -161,6 +165,10 @@ export function DeliveryCategory() {
             jiraAcceptanceCriteriaField: active.jiraAcceptanceCriteriaField,
             jiraEmail: active.jiraEmail,
             jiraApiToken: active.jiraApiToken,
+            githubHost: active.githubHost,
+            githubOwner: active.githubOwner,
+            githubRepo: active.githubRepo,
+            githubToken: active.githubToken,
           }
         : { workItemConnections: connections },
       'manual',
@@ -417,6 +425,12 @@ export function DeliveryCategory() {
                   active={wiProvider === 'jira'}
                   onClick={() => updateWorkItemConnection('provider', 'jira')}
                 />
+                <ProviderButton
+                  label="GitHub Issues"
+                  description="Repository issues and milestones"
+                  active={wiProvider === 'github'}
+                  onClick={() => updateWorkItemConnection('provider', 'github')}
+                />
               </ButtonGrid>
             </>
           )}
@@ -546,6 +560,39 @@ export function DeliveryCategory() {
               onChange={(v) => updateWorkItemConnection('jiraApiToken', v)}
               type="password"
             />
+          </>
+        )}
+
+        {wiProvider === 'github' && (
+          <>
+            <Field
+              label="GitHub host"
+              value={activeWorkItemConnection?.githubHost ?? 'https://github.com'}
+              onChange={(v) => updateWorkItemConnection('githubHost', v)}
+              placeholder="https://github.com"
+            />
+            <Field
+              label="Owner"
+              value={activeWorkItemConnection?.githubOwner ?? ''}
+              onChange={(v) => updateWorkItemConnection('githubOwner', v)}
+              placeholder="organisation or username"
+            />
+            <Field
+              label="Repository"
+              value={activeWorkItemConnection?.githubRepo ?? ''}
+              onChange={(v) => updateWorkItemConnection('githubRepo', v)}
+              placeholder="repository name"
+            />
+            <Field
+              label="Personal access token"
+              value={activeWorkItemConnection?.githubToken ?? ''}
+              onChange={(v) => updateWorkItemConnection('githubToken', v)}
+              type="password"
+            />
+            <p className="text-xs text-text-tertiary">
+              This token is saved with this work item connection and is separate from GitHub Code
+              settings.
+            </p>
           </>
         )}
 

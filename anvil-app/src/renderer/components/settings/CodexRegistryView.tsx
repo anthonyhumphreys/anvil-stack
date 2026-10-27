@@ -13,6 +13,7 @@ import {
   RefreshCcw,
   Search,
   Server,
+  Sparkles,
   Terminal,
 } from 'lucide-react';
 import type {
@@ -23,8 +24,9 @@ import type {
   CodexRegistrySnapshot,
   CodexSkillSearchResult,
 } from '../../../shared/types';
+import { RecommendedSkillCollections } from './RecommendedSkillCollections';
 
-type RegistryTab = 'installed' | 'discover' | 'mcp';
+type RegistryTab = 'recommended' | 'installed' | 'discover' | 'mcp';
 
 const MCP_PRESETS: Array<{
   label: string;
@@ -71,7 +73,7 @@ export function CodexRegistryView() {
   const [snapshot, setSnapshot] = useState<CodexRegistrySnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<RegistryTab>('installed');
+  const [tab, setTab] = useState<RegistryTab>('recommended');
   const [installedQuery, setInstalledQuery] = useState('');
   const [skillQuery, setSkillQuery] = useState('mcp');
   const [skillResults, setSkillResults] = useState<CodexSkillSearchResult[]>([]);
@@ -112,12 +114,15 @@ export function CodexRegistryView() {
   }, []);
 
   useEffect(() => {
+    if (tab !== 'discover') return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       setSearching(true);
       try {
         const results = await window.anvil.codexRegistry.searchSkills(skillQuery);
         if (!cancelled) setSkillResults(results);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Could not search skills.sh');
       } finally {
         if (!cancelled) setSearching(false);
       }
@@ -127,7 +132,7 @@ export function CodexRegistryView() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [skillQuery]);
+  }, [skillQuery, tab]);
 
   const filteredSkills = useMemo(() => {
     return (snapshot?.skills ?? []).filter((skill) => matchesInstalledQuery(skill, installedQuery));
@@ -214,7 +219,7 @@ export function CodexRegistryView() {
             <div>
               <h2 className="text-xl font-semibold text-text-primary">Codex Skills & MCPs</h2>
               <p className="text-sm text-text-secondary">
-                Registered Codex skills, MCP servers, and skills.sh installs.
+                Recommended skill collections, your installed library, and MCP servers.
               </p>
             </div>
           </div>
@@ -277,6 +282,12 @@ export function CodexRegistryView() {
 
         <div className="flex flex-wrap gap-2 border-b border-border-subtle pb-3">
           <TabButton
+            label="Recommended"
+            icon={<Sparkles size={14} />}
+            active={tab === 'recommended'}
+            onClick={() => setTab('recommended')}
+          />
+          <TabButton
             label="Installed"
             icon={<Puzzle size={14} />}
             active={tab === 'installed'}
@@ -295,6 +306,16 @@ export function CodexRegistryView() {
             onClick={() => setTab('mcp')}
           />
         </div>
+
+        {tab === 'recommended' && (
+          <RecommendedSkillCollections
+            refreshKey={snapshot?.refreshedAt}
+            onAction={(action) => {
+              setLastAction(action);
+              if (action.success) void loadSnapshot();
+            }}
+          />
+        )}
 
         {tab === 'installed' && (
           <div className="space-y-4">

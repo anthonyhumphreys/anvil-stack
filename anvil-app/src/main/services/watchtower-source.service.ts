@@ -65,6 +65,7 @@ interface GitHubPullRequestResponse {
   headRefName?: string;
   headRefOid?: string;
   baseRefName?: string;
+  isCrossRepository?: boolean;
   mergeCommit?: { oid?: string | null } | null;
 }
 
@@ -91,6 +92,7 @@ interface AdoPullRequestResponse {
   targetRefName?: string;
   lastMergeCommit?: { commitId?: string };
   lastMergeSourceCommit?: { commitId?: string };
+  forkSource?: unknown;
   _links?: { web?: { href?: string } };
 }
 
@@ -259,7 +261,7 @@ export async function observeExternalWatchtowerSource(automation: AutomationDefi
 }
 
 async function observeGitHubPullRequest(
-  repo: { owner: string; repo: string },
+  repo: { host?: string; owner: string; repo: string },
   pullRequestNumber?: number,
   eventType?: WatchtowerEventType,
 ): Promise<WatchtowerObservation> {
@@ -269,9 +271,9 @@ async function observeGitHubPullRequest(
     'view',
     String(pullRequestNumber),
     '--repo',
-    `${repo.owner}/${repo.repo}`,
+    `${repo.host ?? 'github.com'}/${repo.owner}/${repo.repo}`,
     '--json',
-    'number,title,state,mergedAt,closedAt,url,headRefName,headRefOid,baseRefName,mergeCommit',
+    'number,title,state,mergedAt,closedAt,url,headRefName,headRefOid,baseRefName,mergeCommit,isCrossRepository',
   ];
   const response = await runGhJson<GitHubPullRequestResponse>(args);
   const observation = normaliseGitHubPullRequest(response);
@@ -289,6 +291,8 @@ async function observeGitHubPullRequest(
       >
     >([
       'api',
+      '--hostname',
+      repo.host ?? 'github.com',
       '--paginate',
       '--slurp',
       `repos/${repo.owner}/${repo.repo}/pulls/${pullRequestNumber}/comments?per_page=100`,
@@ -403,6 +407,7 @@ async function observeAdoPullRequest(
       pullRequestNumber: response.pullRequestId,
       url: response._links?.web?.href,
       headBranch: stripRefPrefix(response.sourceRefName),
+      isCrossRepository: Boolean(response.forkSource),
       baseBranch: stripRefPrefix(response.targetRefName),
       mergeCommitSha: response.lastMergeCommit?.commitId,
     },
@@ -471,6 +476,7 @@ export function normaliseGitHubPullRequest(
       url: response.url,
       headSha: response.headRefOid,
       headBranch: response.headRefName,
+      isCrossRepository: response.isCrossRepository,
       baseBranch: response.baseRefName,
       mergeCommitSha: response.mergeCommit?.oid,
     },

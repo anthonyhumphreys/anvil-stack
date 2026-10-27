@@ -263,8 +263,8 @@ export const SETTINGS_CATEGORIES: SettingsCategoryMeta[] = [
       {
         id: 'work-items',
         title: 'Work Items',
-        description: 'Backlog and issue connections (ADO, Linear, Jira).',
-        keywords: ['ado', 'azure devops', 'linear', 'jira', 'tickets', 'backlog'],
+        description: 'Backlog and issue connections (GitHub Issues, ADO, Linear, Jira).',
+        keywords: ['github issues', 'ado', 'azure devops', 'linear', 'jira', 'tickets', 'backlog'],
       },
       {
         id: 'docs',

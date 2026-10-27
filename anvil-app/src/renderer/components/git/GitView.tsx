@@ -1,3 +1,4 @@
+import { chatPromptPath } from '../../utils/sidebar-navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -289,7 +290,7 @@ export function GitView() {
       .filter((line): line is string => Boolean(line))
       .join('\n');
 
-    navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+    navigate(chatPromptPath(prompt));
   }, [indexedRepos, navigate, reviewNote, selectedDiff, selectedRepoId]);
 
   const handleSwitchBranch = async (name: string) => {

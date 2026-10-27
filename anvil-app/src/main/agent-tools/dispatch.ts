@@ -15,6 +15,8 @@ export interface AgentToolSessionContext {
   provider: AgentProvider;
   mode: CodexMode;
   features: readonly Feature[];
+  /** Main-owned allowlist for narrowly scoped workers. Omitted for interactive chats. */
+  allowedToolNames?: readonly string[];
 }
 
 export interface AgentToolDefinition {
@@ -71,6 +73,7 @@ export function registerAgentToolProvider(provider: AgentToolProvider): () => vo
 }
 
 function isAllowed(ctx: AgentToolSessionContext, tool: AgentToolDefinition): boolean {
+  if (ctx.allowedToolNames && !ctx.allowedToolNames.includes(tool.name)) return false;
   if (tool.feature && !ctx.features.includes(tool.feature)) return false;
   if (tool.mutation && ctx.mode === 'read-only') return false;
   if ((tool.requiresThread ?? true) && !ctx.appThreadId) return false;

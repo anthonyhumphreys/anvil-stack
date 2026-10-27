@@ -12,7 +12,11 @@ vi.mock('../../db/database.js', () => ({
 }));
 vi.mock('../settings.service.js', () => ({ getSettings: () => ({}) }));
 vi.mock('../code-review-pr.service.js', () => ({
-  parseGitHubRemoteUrl: () => ({ owner: 'anvil', repo: 'app' }),
+  parseGitHubRemoteUrl: () => ({
+    host: new URL(repoRow.remote_url).hostname,
+    owner: 'anvil',
+    repo: 'app',
+  }),
   parseAdoRemoteUrl: () => null,
 }));
 import { observeExternalWatchtowerSource } from '../watchtower-source.service.js';
@@ -30,7 +34,10 @@ const pr = {
 };
 const response = (value: unknown) => ({ stdout: JSON.stringify(value) });
 
-beforeEach(() => execute.mockReset());
+beforeEach(() => {
+  execute.mockReset();
+  repoRow.remote_url = 'https://github.com/anvil/app.git';
+});
 
 describe('GitHub feedback polling', () => {
   it('reads all pages and retains each review comment commit as evidence', async () => {
@@ -51,10 +58,30 @@ describe('GitHub feedback polling', () => {
     ]);
     expect(execute.mock.calls[1][1]).toEqual([
       'api',
+      '--hostname',
+      'github.com',
       '--paginate',
       '--slurp',
       'repos/anvil/app/pulls/42/comments?per_page=100',
     ]);
+  });
+
+  it('binds PR state and feedback reads to the configured GitHub host', async () => {
+    repoRow.remote_url = 'https://github.acme.test/anvil/app.git';
+    execute
+      .mockResolvedValueOnce(response(pr))
+      .mockResolvedValueOnce(response([[]]))
+      .mockResolvedValueOnce(response(pr));
+    await observeExternalWatchtowerSource(automation);
+    expect(execute.mock.calls[0][1]).toEqual(
+      expect.arrayContaining(['--repo', 'github.acme.test/anvil/app']),
+    );
+    expect(execute.mock.calls[1][1]).toEqual(
+      expect.arrayContaining(['--hostname', 'github.acme.test']),
+    );
+    expect(execute.mock.calls[2][1]).toEqual(
+      expect.arrayContaining(['--repo', 'github.acme.test/anvil/app']),
+    );
   });
 
   it('does not advance an observation when the head changes during polling', async () => {

@@ -22,6 +22,10 @@ import {
   setSurfaceCommentStatus,
 } from '../surfaces/comments.js';
 import { keepSketchAndNotify } from '../surfaces/kinds/sketch.js';
+import { listValidationHistory } from '../services/validation.service.js';
+import { workItemReferenceSchema } from '../../shared/surfaces/kinds/validation.js';
+import { parseToolArgs } from '../surfaces/kinds/data/tool-kit.js';
+import type { WorkItemReference } from '../../shared/change-review-types.js';
 
 function requireId(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 500) {
@@ -37,6 +41,13 @@ function optionalText(value: unknown, max: number): string | undefined {
 }
 
 export function registerSurfacesHandlers(): void {
+  ipcMain.handle('surfaces:list-validations', (_event, workspaceId: unknown, ref: unknown) => {
+    if (ref !== undefined) parseToolArgs(workItemReferenceSchema, ref as Record<string, unknown>);
+    return listValidationHistory(
+      requireId(workspaceId, 'Workspace id'),
+      ref as WorkItemReference | undefined,
+    );
+  });
   ipcMain.handle(
     'surfaces:run-action',
     (_event, request: SurfaceActionRequest): Promise<SurfaceActionResult> => {

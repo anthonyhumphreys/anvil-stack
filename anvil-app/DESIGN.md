@@ -166,9 +166,13 @@ buttons to ordinary settings panels; do not autosave raw secrets on keystroke.
 
 Use familiar desktop rails and toolbars. Active workspace, route, and thread must remain unambiguous. Collapse lower-priority actions before shrinking labels into ambiguity.
 
+### Preview toolbar
+
+Preview uses two compact rows. The first holds the Web/Simulator switch, a note toggle and window actions. Web navigation and the address field share the second row; Simulator shows its state, reload and start/stop controls. Agent connection setup and technical connection details live in menus. The note field opens only when requested. Keep controls usable at 320px pane width.
+
 ### Activity Group
 
-Agent commands, file edits, reads, approvals, plans, and goals form one progressively disclosed activity surface per turn. It may summarize counts and failures, but it must not split assistant prose into sentence fragments.
+Agent commands, file edits, reads, approvals, plans, and goals form progressively disclosed activity groups between conversation content. Keep answers, inline results, question receipts and subsequent activity in first-appearance order as text streams. Pending sends retain their place without becoming the owner of the executing turn's output. It may summarize counts and failures, but it must not split assistant prose into sentence fragments.
 
 ## Do's and Don'ts
 
