@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { EnvelopeBoundary } from "@/components/site/envelope-boundary";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
-import { agentEnvironments, syncBackends } from "@/lib/site";
+import { agentEnvironments, featureBeta, syncBackends } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Sync & Mesh | Anvil",
@@ -91,16 +91,18 @@ export default function SyncPage() {
               </p>
               <div className="mt-8 flex flex-wrap gap-3">
                 <Button asChild size="lg">
-                  <Link href="/waitlist">Join the waitlist</Link>
+                  <Link href="/waitlist">Request beta access</Link>
                 </Button>
                 <Button asChild size="lg" variant="outline">
                   <Link href="/docs/sync/self-deploy">Run your own backend</Link>
                 </Button>
               </div>
               <p className="mt-6 max-w-[52ch] text-sm leading-6 text-muted-foreground">
-                Sync &amp; Mesh is in alpha. It works today on a backend you deploy to your own
-                Cloudflare account. Anvil hosting is paid, with plans starting at £6 a month when
-                signup opens. Join the waitlist; invited testers receive a beta access code.{" "}
+                Sync &amp; Mesh, including LAN-first Mesh routing, is in beta through{" "}
+                {featureBeta.endDate}. It works today on a backend you deploy to your own Cloudflare
+                account. Anvil hosting is invite-only during the beta: request access, and invited
+                testers receive a beta access code. Requesting access is not a purchase; paid plans
+                start at £6 a month when signup opens.{" "}
                 <Link href="/account/billing" className="font-medium text-foreground underline underline-offset-4">Redeem your code</Link>.{" "}
                 <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground">
                   What works today
@@ -198,6 +200,19 @@ export default function SyncPage() {
                   <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
                   When a job is stopping or a machine goes quiet, Anvil says so plainly instead of
                   guessing.
+                </li>
+                <li className="flex gap-3">
+                  <Check className="mt-1.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                  <span>
+                    <Link href="/docs/sync/lan-first-routes" className="font-medium underline decoration-border underline-offset-4 hover:decoration-foreground">
+                      LAN-first routes
+                    </Link>{" "}
+                    (beta through {featureBeta.endDate}). Mesh tries the host&apos;s LAN address
+                    first, then other private routes, HTTPS and managed ingress. A live session
+                    moves to a better route only after its replacement has authenticated and caught
+                    up, and commands are never resent. Your backend still admits and authorises
+                    every session, so this is not offline mode.
+                  </span>
                 </li>
               </ul>
             </div>
@@ -303,14 +318,15 @@ export default function SyncPage() {
 
         <section className="border-t py-24 lg:py-32">
           <div className="page-shell">
-            <h2 className="font-display text-display-1 max-w-[15ch]">Be first in when hosting opens.</h2>
+            <h2 className="font-display text-display-1 max-w-[15ch]">Try the hosted beta.</h2>
             <p className="lede mt-6">
-              Join the waitlist to get access as soon as hosted Sync &amp; Mesh opens. Until then,
-              you can run the whole thing yourself.
+              Hosted Sync &amp; Mesh is invite-only. Request access, and redeem the code you&apos;re
+              sent without a payment method. Paid plans aren&apos;t on sale yet. You can also run
+              the whole thing yourself.
             </p>
             <div className="mt-9 flex flex-wrap gap-3">
               <Button asChild size="lg">
-                <Link href="/waitlist">Join the waitlist</Link>
+                <Link href="/waitlist">Request beta access</Link>
               </Button>
               <Button asChild size="lg" variant="outline">
                 <Link href="/pricing">See pricing</Link>

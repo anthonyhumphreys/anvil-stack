@@ -64,3 +64,7 @@ Human workflow decisions record an operator's judgement. For acceptance tied to 
 An [automation](/docs/desktop/automations) can launch a saved workflow in its disposable repository worktrees. Configure both repository write and command permissions; restricted persona automations remain available separately. Workflow runs retain their worktrees for inspection and resume. Open a linked workflow from the automation's run details to resolve human steps.
 
 Workflow-originated automation events are filtered to prevent a workflow automation from recursively triggering another automation through its own completion event.
+
+## Workflows in software factories
+
+A [user-definable software factory](/docs/desktop/software-factories) pins one saved workflow graph for every issue it processes. In this beta, that graph's agent steps and specialist profiles must use local Codex app-server execution. The graph also can't include inline validation steps, because the factory controller runs the acceptance checks itself. Editing the workflow later doesn't change a factory's pinned revision: save and activate a new factory revision to use it.

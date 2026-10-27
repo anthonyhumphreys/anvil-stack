@@ -64,11 +64,13 @@ anvil registry doctor
 | Get a tour of the desktop app | [Desktop overview](/docs/desktop/overview) |
 | Understand how the desktop app is built | [Desktop architecture](/docs/desktop/architecture) |
 | Plan, build and review with an agent | [Agent workflows](/docs/desktop/agent-workflows) |
+| Take GitHub issues to confirmed merges under a policy you activate (beta through 30 November 2026) | [User-definable software factories](/docs/desktop/software-factories) |
 | Choose providers, models and personas | [Chat, personas and models](/docs/desktop/chat-personas-and-llm) |
 | Work with branches and commits | [Git workflows](/docs/desktop/git-workflows) |
 | Review code and security findings | [Security and review](/docs/desktop/security-and-review) |
 | Use your phone, watch, Raycast or the menu bar | [Companion surfaces](/docs/desktop/companion-surfaces) |
 | Sync your devices and run jobs on your own machines | [Sync & Mesh](/docs/sync/overview) |
+| See how Mesh prefers your LAN and switches routes (beta through 30 November 2026) | [LAN-first Mesh routes](/docs/sync/lan-first-routes) |
 | Try the registry locally | [Registry quickstart](/docs/registry/quickstart) |
 | Understand why a package was allowed or blocked | [Package decisions](/docs/registry/package-decisions) |
 | See what package analysis looks for | [Worker analysis](/docs/registry/worker-analysis) |
@@ -105,6 +107,7 @@ anvil registry doctor
 - [Companion surfaces](/docs/desktop/companion-surfaces)
 - [Terminal and editor](/docs/desktop/terminal-and-editor)
 - [Automations](/docs/desktop/automations)
+- [User-definable software factories](/docs/desktop/software-factories)
 - [Database guide](/docs/desktop/database-guide)
 - [Extending Anvil Desktop](/docs/desktop/extending-anvil)
 - [Build and release](/docs/desktop/build-and-release)
@@ -113,6 +116,7 @@ anvil registry doctor
 ### Sync & Mesh
 
 - [Sync & Mesh overview](/docs/sync/overview)
+- [LAN-first Mesh routes](/docs/sync/lan-first-routes)
 - [Run your own backend](/docs/sync/self-deploy)
 
 ### Anvil Registry

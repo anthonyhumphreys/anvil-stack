@@ -13,8 +13,8 @@ order: 110
 With Anvil-hosted Sync & Mesh, we run the backend for you. Hosted writes require
 a paid entitlement or a redeemed beta code. The current test path is invite-only
 and uses time-limited codes without a payment method; checkout stays closed.
-Production hosting is not yet available. Join the [waitlist](/waitlist) for
-updates. Proposed prices are £6 a month for one person or £12 per team member;
+Production hosting is not yet available. Request beta access through the
+[waitlist sign-up](/waitlist); requesting access is not a purchase. Proposed prices are £6 a month for one person or £12 per team member;
 see [pricing](/pricing) for the current proposal.
 
 You can also run the same backend yourself, from `anvil-app/cloud/backend`,

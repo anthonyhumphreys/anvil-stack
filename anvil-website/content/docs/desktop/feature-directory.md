@@ -28,6 +28,7 @@ Role selection controls which tools appear. Cloud is also hidden until you enabl
 | Feature | What it does | Guide |
 | --- | --- | --- |
 | Watchtower and schedules | Runs manual, scheduled, or repository-change-triggered automation in disposable worktrees and stores run events. | [Automations](/docs/desktop/automations) |
+| Factories | User-definable software factories, in beta through 30 November 2026. Drafts an issue-to-PR process from chat into a typed definition, activates it explicitly, and runs one durable lifecycle per labelled GitHub issue through checks, PR repair, confirmed merge and post-merge checks. | [User-definable software factories](/docs/desktop/software-factories) |
 | Workflows | Coordinates specialist teams across providers, records delegation and attempts, and supports pause, retry, cancellation, and human decisions. | [Workflow graphs](/docs/desktop/workflow-graphs) |
 | Change review | Replays base and candidate browser scenarios and binds acceptance to source snapshots, criteria, screenshots, and traces. | [Change review](/docs/desktop/change-review) |
 | Dojo | Inspects workspace agent activity, usage coverage, failures, and evidence-linked prompt and skill recommendations. | [Dojo](/docs/desktop/dojo) |

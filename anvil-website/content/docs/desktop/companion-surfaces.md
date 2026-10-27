@@ -36,6 +36,8 @@ Settings lists paired devices with their client type and last-seen state. Revoke
 
 Local pairing is not the only route in. The mobile companion can enroll against your Sync & Mesh account and then dial enrolled devices directly — useful when the desktop is reachable through the backend but not on the same network. The Raycast extension has an account-connected mode for the same kind of reach.
 
+In account mode, the native mobile app uses [LAN-first Mesh routes](/docs/sync/lan-first-routes), in beta through 30 November 2026. It tries the host's LAN address first and moves a live session to a better route only after the replacement has authenticated and caught up, without resending commands. The QR-paired companion connection described above keeps its own address preference.
+
 Enrollment produces the same device-scoped, revocable credential as desktop enrollment; enrolled companions appear in the account device roster alongside desktops. The enrollment mechanics are in [Devices](/docs/sync/devices); the account side is configured in [Sync and Mesh](/docs/desktop/sync-and-mesh) settings.
 
 ## Approval limits

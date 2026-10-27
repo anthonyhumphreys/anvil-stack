@@ -19,8 +19,9 @@ Sync & Mesh connects your Anvil installations:
   workspace preparation, diagnostics and provider sessions. The jobs run on
   those machines, and provider credentials stay there.
   Supported upgraded clients use an authenticated, encrypted host session for
-  live traffic when a route is enabled and reachable. Managed HTTPS routes use
-  an operator-configured provider proxy; they are not peer-to-peer. The account
+  live traffic when a route is enabled and reachable. Routing is LAN first: the
+  host's LAN address, then other private routes, HTTPS and managed ingress.
+  Managed routes use the provider's proxy; they are not peer-to-peer. The account
   service handles identity, discovery, and durable job decisions; it does not
   execute.
 
@@ -36,10 +37,11 @@ production hosting is not available yet. Proposed paid plans start at £6 a
 month for one person. You can run your own backend without paying Anvil; your
 infrastructure costs still apply. See [pricing](/pricing).
 
-This is alpha infrastructure. The architecture, contract, and lifecycle are
-implemented and tested, and the system has been rehearsed on real Cloudflare
-deployments, but a physical multi-device demo has not happened yet. See
-[Status and limits](/docs/sync/status-and-limits) before relying on it.
+Sync & Mesh, including [LAN-first Mesh routing](/docs/sync/lan-first-routes),
+is in beta through 30 November 2026. The architecture, contract, and lifecycle
+are implemented and tested, and the system has been rehearsed on real
+Cloudflare deployments. A recorded physical multi-device demo is still pending.
+See [Status and limits](/docs/sync/status-and-limits) before relying on it.
 
 ## Account backend modes
 
@@ -81,10 +83,11 @@ replicate repository trees.
 For Sync, devices hold the keys and the backend relays encrypted configuration.
 For Mesh, supported upgraded clients send live commands and receive live output
 over an encrypted session with the enrolled host when a supported route is
-enabled and reachable. The app chooses the route automatically. Managed HTTPS
-endpoints pass through an operator-configured provider proxy; they avoid the
-Anvil application relay, but are not peer-to-peer. They are off by default and
-are not enabled by choosing Sync. The account service remains responsible for
+enabled and reachable. The app chooses the route automatically and
+[prefers the host's LAN address](/docs/sync/lan-first-routes). Managed
+endpoints pass through the provider's proxy; they avoid the Anvil application
+relay, but are not peer-to-peer. They need a provisioned, enabled endpoint, and
+choosing Sync does not provision one. The account service remains responsible for
 identity, discovery, durable job decisions, and required recovery.
 
 - Each device generates an X25519 identity at enrollment and publishes the
@@ -108,6 +111,7 @@ claims, start there, then [How sync works](/docs/sync/sync-engine).
 | Move a running session between machines | [Session handoff](/docs/sync/session-handoff) |
 | Add or remove a device | [Devices and sign-in](/docs/sync/devices) |
 | Run jobs on my own hardware | [Mesh jobs and remote execution](/docs/sync/mesh-jobs) |
+| Understand how Mesh picks and switches routes | [LAN-first Mesh routes](/docs/sync/lan-first-routes) |
 | Share an artifact link | [Artifacts and share links](/docs/sync/artifacts-and-shares) |
 | Export, import, or delete my data | [Data portability and deletion](/docs/sync/data-portability) |
 | Deploy the backend myself | [Self-deploy the backend](/docs/sync/self-deploy) |

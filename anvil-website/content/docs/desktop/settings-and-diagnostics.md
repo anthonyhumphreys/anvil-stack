@@ -72,7 +72,7 @@ Once signed in, you can manage devices, follow remote jobs, enable the worker
 on this machine and export your data. Account security and deployment limits
 still apply.
 
-For supported upgraded clients, the app selects an encrypted live route to an enrolled host when that host is enabled and reachable. Managed HTTPS routes use an operator-configured provider proxy; they are off by default and are not peer-to-peer. Configuring a Sync backend alone does not provide a host route.
+For supported upgraded clients, the app selects an encrypted live route to an enrolled host when that host is enabled and reachable, trying the host's LAN address first ([LAN-first Mesh routes](/docs/sync/lan-first-routes), in beta through 30 November 2026). Managed routes need a provisioned, enabled endpoint and use the provider's proxy, so they are not peer-to-peer; availability depends on the deployment. Configuring a Sync backend alone does not provide a host route.
 
 The panel itself is covered in [Sync and Mesh](/docs/desktop/sync-and-mesh); the encryption, sync, job, handoff, and self-deploy mechanics behind it are in the [Sync & Mesh docs](/docs/sync/overview).
 

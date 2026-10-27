@@ -12,29 +12,39 @@ order: 150
 
 An automation runs an agent prompt against one or more repositories. It can start when you click **Run now**, on a schedule, or when Watchtower sees a matching workflow, pull request or pipeline event.
 
+To take GitHub issues all the way to a confirmed merge under a reviewed policy, use [user-definable software factories](/docs/desktop/software-factories) instead. Factories are a separate feature, in beta through 30 November 2026, with their own issue lifecycle, merge modes and controls.
+
 ## What an automation contains
 
 - a name and agent persona
 - the prompt to run
 - one or more repository targets
 - schedule or Watchtower trigger configuration
-- whether the agent may write repository files or run commands
+- whether the agent may write repository files or run commands, and whether it may publish branches and pull requests
 - an optional multi-persona loop and stop condition, or a saved workflow template
 - enabled state, timezone, last run, and next run
 
-Every run gets its own throwaway Git worktree. Persona automations are limited to those paths and are told not to push, open pull requests, change anything remote, or create tickets, documents or comments elsewhere. Workflow automations follow the chosen workflow's instructions and each provider's persona rules, and need permission to write files and run commands.
+Every run gets its own throwaway Git worktree. Persona automations are limited to those paths. Unless you enable publication, they are told not to push, open pull requests, change anything remote, or create tickets, documents or comments elsewhere. Workflow automations follow the chosen workflow's instructions and each provider's persona rules, and need permission to write files and run commands.
 
 ## Triggers
 
 | Trigger | Use it for |
 | --- | --- |
 | Schedule | Run on a cron schedule in the time zone you pick. |
-| Watchtower | Run when a workflow finishes or fails, a pull request is merged or closed, or a pipeline finishes or fails. |
+| Watchtower | Run when a workflow finishes or fails, a pull request is merged or closed, gets a review comment or changes head, or a pipeline finishes or fails. |
 | Run now | Start it by hand without changing its saved trigger. |
 
 Workflow events come from Anvil itself. Pull request and pipeline watchers check GitHub or Azure DevOps on a timer. A pull request watcher needs a pull request number; a pipeline watcher needs a pipeline name, workflow file or run ID.
 
 The view shows the latest state it saw and any watcher errors. A change only starts a run when it matches the event you configured.
+
+## Publishing branches and pull requests
+
+**Publish branches and pull requests** is off by default, and you can only turn it on once repository writes and shell commands are allowed. It lets the agent push branches, open or update pull requests, and post related review comments in the selected repositories, using your existing CLI tools and provider access. It never grants merge, force-push or branch deletion.
+
+The setting is an instruction to trusted workers, not a credential-isolation boundary. Your provider permissions still apply. A workflow launched by the automation keeps the publication grant from its kickoff, so editing the automation doesn't revoke a paused workflow's grant. Cancel the workflow, or narrow its execution access, to stop that work.
+
+With publication on, pull request feedback can run automatically. Anvil re-reads the pull request and prepares an isolated checkout at the verified current head. It rejects stale or changed heads and unsupported fork targets rather than guessing. Feedback counts as task input, never as extra permission. An agent's report or a local commit doesn't show that publication succeeded; check the pull request.
 
 ## Running in the background
 
@@ -86,9 +96,11 @@ Run history records what triggered each run, its status, the result, any error, 
 - Cancellation and failure do not reverse commands or external effects that already occurred.
 - External Watchtower polling depends on local provider credentials and API availability.
 - Automations sit alongside your CI. They don't prove a deployment pipeline passed.
+- Automations never merge pull requests. Merge policy belongs to [software factories](/docs/desktop/software-factories).
 
 ## Read next
 
 - [Operating guide](/docs/desktop/operating-guide)
 - [Workflow graphs](/docs/desktop/workflow-graphs)
+- [User-definable software factories](/docs/desktop/software-factories)
 - [Companion surfaces](/docs/desktop/companion-surfaces)

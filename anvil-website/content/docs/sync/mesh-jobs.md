@@ -64,9 +64,12 @@ nothing is declared finished on a heartbeat failure.
 host have a supported enabled route, live output from an encrypted host
 session. The account service remains responsible for durable job decisions
 and required recovery; it is not the live data path for those host sessions.
-Routes are selected automatically. Managed HTTPS endpoints use an operator-
-configured provider proxy, not a peer-to-peer connection. They are off by
-default and not available to every host or deployment.
+Routes are selected automatically, LAN first: the host's LAN-address
+candidates, then other private routes, explicit HTTPS and managed ingress. A
+managed route needs a provisioned, enabled endpoint and uses the provider's
+proxy, not a peer-to-peer connection; availability depends on the deployment.
+A watch can move to a better route mid-stream once the replacement session has
+authenticated and caught up. See [LAN-first Mesh routes](/docs/sync/lan-first-routes).
 
 The activity view combines saved history and live output:
 
@@ -105,9 +108,9 @@ every machine decides for itself, which is what keeps a laptop you forgot was
 enrolled from picking up work.
 
 Live host access is separate from worker opt-in. An upgraded client still
-needs a reachable host endpoint. Managed HTTPS endpoints require operator
-configuration and are disabled by default; when a direct route is unavailable,
-the supported account path continues to provide durable coordination.
+needs a reachable host endpoint. Managed endpoints need provisioning and must
+be enabled for the deployment; when no route is usable, the supported account
+path continues to provide durable coordination.
 
 ## Job history
 
@@ -128,5 +131,8 @@ already entities.
 - Placement requires the manifest's workspace readiness — a job targeting a
   workspace the worker can't materialize will not run there.
 - Direct live host traffic requires a compatible upgraded client and an enabled,
-  reachable host route. Managed HTTPS endpoint provisioning is off by default
-  and requires operator setup.
+  reachable host route. Managed endpoints need provisioning, and their
+  availability depends on the deployment.
+- Route choice never grants execution and never resends a command. LAN routes
+  still need backend admission and continuing authorization; they are not
+  offline Mesh.

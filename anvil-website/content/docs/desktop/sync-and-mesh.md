@@ -16,9 +16,10 @@ Synced content is encrypted before it leaves your device. Jobs run on your
 own machines, where provider credentials stay. For the technical details,
 see the [Sync & Mesh docs](/docs/sync/overview).
 
-Everything here is optional — new workspaces default to Local. It is also
-alpha: the lifecycle is implemented and tested and has been rehearsed against
-real Cloudflare deployments, but a physical multi-device demo is still
+Everything here is optional — new workspaces default to Local. Sync & Mesh,
+including LAN-first Mesh routing, is in beta through 30 November 2026. The
+lifecycle is implemented and tested and has been rehearsed against real
+Cloudflare deployments; a recorded physical multi-device demo is still
 pending.
 
 ## Account backend modes
@@ -52,11 +53,22 @@ stay on their machines.
 
 The app selects a route automatically. Supported upgraded clients send live
 commands and receive live output through an authenticated, encrypted session
-with the enrolled host when a route is enabled and reachable. Managed HTTPS
-endpoints use a provider proxy, are off by default, and require operator
-provisioning. They are not peer-to-peer. If a host route is unavailable, the
-supported account path continues to coordinate durable job decisions; it does
-not make a sleeping host available.
+with the enrolled host when a route is enabled and reachable. If a host route
+is unavailable, the supported account path continues to coordinate durable job
+decisions; it does not make a sleeping host available.
+
+Routing is LAN first. Desktop, the headless daemon and the native mobile app
+try the host's LAN-address candidates first, then other private routes,
+explicit HTTPS and managed ingress. A managed route needs a provisioned,
+enabled endpoint and passes through the provider's proxy, so it is not
+peer-to-peer; availability depends on the deployment. When a better route
+appears, the live session switches only after the replacement has
+authenticated and caught up. Requests already sent stay on their original
+connection, and commands are never resent. Connection details label a
+LAN-hinted route `Direct`: that is the host's address hint, not proof of a
+physical LAN path. Your backend still admits and authorises every session, so
+this is not offline operation. Details:
+[LAN-first Mesh routes](/docs/sync/lan-first-routes).
 
 ## Signing in and enrollment
 

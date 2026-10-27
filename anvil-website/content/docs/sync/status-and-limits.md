@@ -10,15 +10,16 @@ order: 120
 
 # Status and limits
 
-Sync & Mesh is alpha software. This page lists its current limits and the
-testing still needed before wider use.
+Sync & Mesh, including LAN-first Mesh routing, is in beta through
+30 November 2026. This page lists its current limits and the testing still
+pending during the beta.
 
 ## Maturity
 
-- **This is alpha infrastructure.** The architecture, wire contract, and
-  lifecycle are implemented and tested. That means the mechanisms described
-  across these docs exist in code and pass their suites — not that the
-  product is finished.
+- **This is a beta, running through 30 November 2026.** The architecture, wire
+  contract, and lifecycle are implemented and tested. That means the
+  mechanisms described across these docs exist in code and pass their suites —
+  not that the product is finished.
 - **Rehearsed on real deployments, not demoed on hardware.** The full
   lifecycle — deploy, conformance, upgrade, restore, remove — has been
   rehearsed against real Cloudflare deployments via
@@ -35,18 +36,31 @@ testing still needed before wider use.
   an unpackaged build plus `ANVIL_ENABLE_SYNC_SPIKE=1`; the source tree alone
   does not make hosted connectivity live.
 - **Live host routes are conditional.** Direct live traffic requires a
-  compatible upgraded client and an enabled, reachable host endpoint. Managed
-  HTTPS endpoint provisioning is off by default and requires operator setup;
-  it is not enabled by choosing Sync. A managed route uses a provider proxy,
-  not a peer-to-peer connection. Without a usable route, the account service
-  still handles durable coordination; host-local live output requires the
-  host to be reachable.
+  compatible upgraded client and an enabled, reachable host endpoint. A
+  managed route needs a provisioned, enabled endpoint, and availability
+  depends on the deployment; choosing Sync does not provision one. A managed
+  route uses a provider proxy, not a peer-to-peer connection. Without a usable
+  route, the account service still handles durable coordination; host-local
+  live output requires the host to be reachable.
+- **LAN-first routing.** Desktop, the headless daemon and native mobile prefer
+  validated host LAN-address candidates, then other private routes, explicit
+  HTTPS and managed ingress. Bounded fallback and network-change refresh keep
+  selection responsive. A replacement session must authenticate and catch up
+  before it takes over; already-sent requests stay on their original
+  connection and route changes never resend commands. If preparation fails,
+  the working connection stays in use; a broken connection goes through
+  ordinary reconnect and reports uncertain outcomes. The browser workspace
+  keeps its HTTPS routing. Details: [LAN-first Mesh routes](/docs/sync/lan-first-routes).
+- **LAN routing is not offline Mesh.** Backend admission and continuing
+  authorization still apply on every route. A `Direct` label is a host
+  address hint, not proof of a physical LAN path.
 - **Production provisioning is pending**: the production WorkOS app, D1
   database id, secrets bundle, and live-account verification are not recorded
   here. Stripe is not required for code-only beta access.
 - **Hosted plans are proposed, not available to buy.** Hosted Sync & Mesh will
   require a subscription or a redeemed beta code. Checkout stays closed during
-  the invite-only beta. Invited testers receive a time-limited code. Running
+  the invite-only beta; requesting beta access is not a purchase. Invited
+  testers receive a code whose access expiry is set in the invitation. Running
   your own backend remains free of Anvil charges. See [pricing](/pricing) and
   [Anvil-hosted sync](/docs/sync/hosted).
 
@@ -104,13 +118,15 @@ Hard numbers and boundaries that are real behavior, not planned work:
 Account-connected companion surfaces exist but are early:
 
 - **Mobile app (Expo)** — supports account enrollment and direct dial to
-  devices. See [Companion surfaces](/docs/desktop/companion-surfaces).
-- **Raycast extension** — has an account-connected mode.
+  devices, with LAN-first route selection and live session migration in
+  account mode. See [Companion surfaces](/docs/desktop/companion-surfaces).
+- **Raycast extension** — has an account-connected mode. It gets the improved
+  route selection but not live session migration.
 - **Headless daemon host mode (DAEMON-01)** — exists for always-on mesh
   workers.
 
-All three are alpha surfaces on top of alpha infrastructure; expect the
-edges described above to show through them.
+All three are early surfaces on beta infrastructure; expect the edges
+described above to show through them.
 
 ## Tracked follow-ups
 
@@ -120,6 +136,9 @@ Work that is known, named, and not yet done:
 - Active key-substitution and pairing-receipt audit, plus rollout of the
   upgraded wrap bindings and mutual SAS confirmation.
 - Physical multi-device acceptance demo — the market-readiness gate.
+- Physical LAN acceptance: MacBook and Mac mini route switching on a shared
+  LAN, and local network permission and route switching on native iOS and
+  Android release builds. Beta availability does not mean these have passed.
 - Production provisioning for hosted mode (WorkOS, production D1, secrets,
   and live-account verification), plus billing and access enforcement for
   the proposed paid plans.
@@ -134,6 +153,7 @@ Work that is known, named, and not yet done:
 | Handoff state machine | [Session handoff](/docs/sync/session-handoff) |
 | Enrollment, pairing, roster | [Devices and sign-in](/docs/sync/devices) |
 | Remote execution | [Mesh jobs](/docs/sync/mesh-jobs) |
+| Route order, switching and labels | [LAN-first Mesh routes](/docs/sync/lan-first-routes) |
 | Uploads, shares, browser decrypt | [Artifacts and share links](/docs/sync/artifacts-and-shares) |
 | Export, import, delete | [Data portability](/docs/sync/data-portability) |
 | Deploy your own | [Self-deploy](/docs/sync/self-deploy) |

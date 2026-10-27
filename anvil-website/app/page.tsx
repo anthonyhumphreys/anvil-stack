@@ -4,6 +4,7 @@ import {
   Bell,
   ClipboardList,
   Download,
+  Factory,
   Github,
   KeyRound,
   ShieldCheck,
@@ -19,12 +20,21 @@ import {
   companionProducts,
   desktopProviders,
   docsHighlights,
+  featureBeta,
   githubRepositoryUrl,
   latestDesktopDmgUrl,
   releasesUrl
 } from "@/lib/site";
 
-const capabilities = [
+type Capability = {
+  icon: typeof Bell;
+  title: string;
+  body: string;
+  status?: string;
+  href?: string;
+};
+
+const capabilities: Capability[] = [
   {
     icon: Bell,
     title: "Work keeps running",
@@ -44,6 +54,13 @@ const capabilities = [
     icon: Workflow,
     title: "Automations",
     body: "Schedule recurring checks and multi-agent workflows. Each run uses a separate working copy of your repo."
+  },
+  {
+    icon: Factory,
+    title: "User-definable software factories",
+    body: "Describe an issue-to-PR process in chat, review the typed definition, then activate it. Labelled GitHub issues run through checks, CI and review repair to a confirmed merge, with human-approved or standing automatic merge.",
+    status: featureBeta.label,
+    href: "/docs/desktop/software-factories"
   },
   {
     icon: KeyRound,
@@ -105,7 +122,7 @@ function Hero() {
             <Link href="/sync" className="font-medium text-foreground underline decoration-accent/60 underline-offset-4">
               Use Anvil across your machines
             </Link>
-            . Use your own server today, or join the hosted beta waitlist.
+            . Use your own server today, or request access to the invite-only hosted beta.
           </p>
           <p className="mt-5 max-w-[56ch] text-sm leading-6 text-muted-foreground">
             Also on{" "}
@@ -165,7 +182,16 @@ function Capabilities() {
           {capabilities.map((item) => (
             <li key={item.title}>
               <item.icon className="size-5 text-accent" aria-hidden="true" />
-              <h3 className="mt-4 text-lg font-semibold">{item.title}</h3>
+              <h3 className="mt-4 text-lg font-semibold">
+                {item.href ? (
+                  <Link href={item.href} className="underline decoration-border underline-offset-4 hover:decoration-foreground">
+                    {item.title}
+                  </Link>
+                ) : (
+                  item.title
+                )}
+              </h3>
+              {item.status ? <p className="mt-1 text-sm font-medium text-muted-foreground">{item.status}</p> : null}
               <p className="mt-2 text-[0.9375rem] leading-7 text-muted-foreground">{item.body}</p>
             </li>
           ))}
@@ -199,12 +225,23 @@ function SyncBand() {
             </li>
             <li className="flex gap-3">
               <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
+              <span>
+                <Link href="/docs/sync/lan-first-routes" className="font-medium underline decoration-border underline-offset-4 hover:decoration-foreground">
+                  LAN-first Mesh
+                </Link>{" "}
+                (beta through {featureBeta.endDate}) tries the host&apos;s LAN address first, then other
+                private routes, HTTPS and managed ingress. Your backend still admits and authorises
+                every session.
+              </span>
+            </li>
+            <li className="flex gap-3">
+              <span className="mt-2.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
               Planned Anvil hosting starts at £6 a month. Self-hosting has no Anvil fee; your hosting provider may charge.
             </li>
           </ul>
           <div className="mt-8 flex flex-wrap gap-3">
             <Button asChild>
-              <Link href="/waitlist">Join the Sync &amp; Mesh waitlist</Link>
+              <Link href="/waitlist">Request hosted beta access</Link>
             </Button>
             <Button asChild variant="outline">
               <Link href="/pricing">See pricing</Link>

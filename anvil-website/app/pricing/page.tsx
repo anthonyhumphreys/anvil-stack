@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
 import { cn } from "@/lib/utils";
-import { plans, pricingFaqs } from "@/lib/site";
+import { featureBeta, plans, pricingFaqs } from "@/lib/site";
 
 export const metadata: Metadata = {
   title: "Pricing | Anvil",
@@ -26,10 +26,10 @@ export default function PricingPage() {
             so your work follows you from one machine to the next.
           </p>
           <p className="mt-8 inline-flex max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-accent/40 bg-accent/[0.07] px-4 py-3 text-[0.9375rem]">
-            <span className="font-semibold">Hosted Sync &amp; Mesh is invite-only.</span>
-            <span className="text-muted-foreground">Planned launch prices below. Invited beta testers receive a code to redeem without a payment method.</span>
+            <span className="font-semibold">Hosted Sync &amp; Mesh is an invite-only beta through {featureBeta.endDate}.</span>
+            <span className="text-muted-foreground">Requesting access is not a purchase. Planned launch prices below; invited beta testers receive a code to redeem without a payment method.</span>
             <Link href="/waitlist" className="font-medium underline decoration-accent/50 underline-offset-4 hover:decoration-foreground">
-              Join the waitlist
+              Request beta access
             </Link>
           </p>
           <p className="mt-3 text-sm text-muted-foreground">Already invited? <Link href="/account/billing" className="underline underline-offset-4">Redeem your beta code</Link>.</p>

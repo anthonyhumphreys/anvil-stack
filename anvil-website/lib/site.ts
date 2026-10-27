@@ -3,6 +3,7 @@ import {
   Cloud,
   Code2,
   Cpu,
+  Factory,
   GitBranch,
   Hammer,
   LockKeyhole,
@@ -28,6 +29,13 @@ export const releasesUrl = "https://github.com/anthonyhumphreys/anvil-stack/rele
 
 export const latestDesktopDmgUrl =
   "https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg";
+
+/** Shared beta wording for LAN-first Mesh and user-definable software factories. */
+export const featureBeta = {
+  endDate: "30 November 2026",
+  endDateIso: "2026-11-30",
+  label: "Beta through 30 November 2026"
+} as const;
 
 /** Agent providers Anvil Desktop can drive today (anvil-app/src/shared/agent-providers.ts). */
 export const desktopProviders = ["Codex", "Cursor", "Devin", "OpenAI", "Azure OpenAI", "LLMGateway"] as const;
@@ -67,7 +75,7 @@ export const desktop: Product = {
     "Anvil Desktop gives each repo a workspace where you plan with an agent, watch it work, and review every change before you keep it. The app runs locally and connects to Codex, Cursor, Devin, OpenAI, Azure OpenAI or LLMGateway with your own provider account. No Anvil account is needed for local use.",
   boundary:
     "Runs your local workflow: repositories, agent sessions, terminals, reviews and the notes you hand on with finished work.",
-  status: "In active development. Builds for macOS (Apple silicon), Windows and Linux ship from GitHub releases.",
+  status: `In active development. Builds for macOS (Apple silicon), Windows and Linux ship from GitHub releases. User-definable software factories are in beta through ${featureBeta.endDate}.`,
   statusLabel: "In development",
   icon: Terminal,
   href: "/docs/desktop",
@@ -80,12 +88,14 @@ export const desktop: Product = {
     "Review diffs, test runs and security findings before you accept a change",
     "Threads and terminals keep running while you switch workspaces",
     "Work items, automations and multi-agent workflows with a human sign-off",
+    `User-definable software factories (beta through ${featureBeta.endDate}): take labelled GitHub issues to verified, confirmed merges under a policy you activate`,
     "Notifications take you to the exact thread that is waiting for you",
     "Companion controls for iPhone, Apple Watch, Raycast and the menu bar"
   ],
   links: [
     { label: "Install", href: "/docs/desktop/installation" },
     { label: "Agent workflows", href: "/docs/desktop/agent-workflows" },
+    { label: "Software factories", href: "/docs/desktop/software-factories" },
     { label: "Architecture", href: "/docs/desktop/architecture" }
   ]
 };
@@ -100,9 +110,8 @@ export const sync: Product = {
     "Sync carries your workspaces, templates, custom agents and settings between machines, encrypted on the device before anything leaves it. Mesh lets one machine send work to another, and you can move a running session to a different machine when you get up from your desk.",
   boundary:
     "Handles your account, paired devices, encrypted sync, jobs sent between your machines, share links and session handoff.",
-  status:
-    "Alpha. It runs on backends you deploy yourself today. Anvil-hosted plans are coming soon.",
-  statusLabel: "Alpha",
+  status: `Beta through ${featureBeta.endDate}, including LAN-first Mesh routing. It runs on backends you deploy yourself, and Anvil hosting is invite-only during the beta. Paid hosted plans are not on sale yet.`,
+  statusLabel: "Beta",
   icon: Network,
   href: "/docs/sync",
   startHref: "/docs/sync/overview",
@@ -114,12 +123,14 @@ export const sync: Product = {
     "Synced workspace contents are encrypted on your device; the server never has the key",
     "Workspace Sync excludes repository files, credentials and chat transcripts",
     "Send a job to another machine; it runs there at the exact commit you pinned",
+    `LAN-first Mesh (beta through ${featureBeta.endDate}): the host's LAN address first, then other private routes, HTTPS and managed ingress`,
     "Move a session to another machine with its progress encrypted in transit",
     "Share links decrypt in the recipient's browser"
   ],
   links: [
     { label: "Encryption and keys", href: "/docs/sync/encryption" },
     { label: "Mesh jobs", href: "/docs/sync/mesh-jobs" },
+    { label: "LAN-first routes", href: "/docs/sync/lan-first-routes" },
     { label: "Run your own backend", href: "/docs/sync/self-deploy" },
     { label: "Status and limits", href: "/docs/sync/status-and-limits" }
   ]
@@ -246,7 +257,7 @@ export const syncBackends = [
   },
   {
     name: "Anvil-hosted",
-    body: "We run the backend and keep it updated. Coming soon on the Sync and Team plans.",
+    body: "We run the backend and keep it updated. Invite-only beta now; request access and redeem an invitation code. The Sync and Team plans are not on sale yet.",
     cost: "From £6 a month"
   },
   {
@@ -304,8 +315,8 @@ export type Plan = {
 };
 
 /**
- * Proposed pricing. Anvil-hosted Sync & Mesh has not launched; these are the
- * plans we intend to launch with. Update the pricing page note if they change.
+ * Proposed paid pricing alongside the invite-only Sync & Mesh beta. These plans
+ * are not on sale yet. Update the pricing page note if they change.
  */
 export const plans: Plan[] = [
   {
@@ -338,7 +349,7 @@ export const plans: Plan[] = [
       "Encrypted share links, with 10 GB of storage",
       "Up to 5 devices"
     ],
-    cta: { label: "Join the waitlist", href: "/waitlist" },
+    cta: { label: "Request beta access", href: "/waitlist" },
     featured: true
   },
   {
@@ -356,7 +367,7 @@ export const plans: Plan[] = [
       "Up to 10 devices and 25 GB of share storage per member"
     ],
     note: "Minimum 5 members. Team sharing and device administration are planned features.",
-    cta: { label: "Join the waitlist", href: "/waitlist" }
+    cta: { label: "Request beta access", href: "/waitlist" }
   },
   {
     id: "self-host",
@@ -381,7 +392,7 @@ export const pricingFaqs = [
   },
   {
     q: "When do the paid plans start?",
-    a: "Paid signup opens after the invite-only beta. Join the waitlist; invited testers receive a code for time-limited access without a payment method. Self-hosting needs no Anvil subscription."
+    a: "Paid signup opens after the invite-only beta. Request beta access; invited testers receive a code for time-limited access without a payment method. Self-hosting needs no Anvil subscription."
   },
   {
     q: "Why charge for Sync?",
@@ -422,6 +433,12 @@ export const docsHighlights = [
     description: "Plan, build, review and hand off work with an agent."
   },
   {
+    label: "User-definable software factories",
+    href: "/docs/desktop/software-factories",
+    icon: Factory,
+    description: `GitHub issue to verified, confirmed merge under a policy you activate. Beta through ${featureBeta.endDate}.`
+  },
+  {
     label: "How Sync keeps your data private",
     href: "/docs/sync/encryption",
     icon: LockKeyhole,
@@ -432,6 +449,12 @@ export const docsHighlights = [
     href: "/docs/sync/mesh-jobs",
     icon: Cpu,
     description: "Run a job on another machine using the same saved version of your code."
+  },
+  {
+    label: "LAN-first Mesh routes",
+    href: "/docs/sync/lan-first-routes",
+    icon: Network,
+    description: `How Mesh prefers the host's LAN address and switches routes safely. Beta through ${featureBeta.endDate}.`
   },
   {
     label: "Run your own backend",
