@@ -1,4 +1,4 @@
-import simpleGit from 'simple-git';
+import { simpleGit } from 'simple-git';
 import path from 'node:path';
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';

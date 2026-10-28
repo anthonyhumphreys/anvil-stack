@@ -346,8 +346,8 @@ export const nodeBaseReportSubmissionSchema = z
       .min(1)
       .max(40)
       .regex(/^[a-z][a-z0-9_-]*$/),
-    summary: z.record(z.unknown()).optional(),
-    report: z.record(z.unknown())
+    summary: z.record(z.string(), z.unknown()).optional(),
+    report: z.record(z.string(), z.unknown())
   })
   .strict();
 

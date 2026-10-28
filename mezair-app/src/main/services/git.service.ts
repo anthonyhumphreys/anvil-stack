@@ -1,4 +1,4 @@
-import simpleGit, { type SimpleGit } from 'simple-git';
+import { simpleGit, type SimpleGit } from 'simple-git';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';

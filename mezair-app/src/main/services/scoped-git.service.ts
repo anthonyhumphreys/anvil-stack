@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import simpleGit from 'simple-git';
+import { simpleGit } from 'simple-git';
 import { TURN_DELIVERY_MAX_FILES, TURN_DELIVERY_MAX_PATH_LENGTH } from '../../shared/scoped-git.js';
 import type {
   PreparedTurnDelivery,

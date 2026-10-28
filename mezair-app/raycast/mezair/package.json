@@ -81,13 +81,13 @@
   },
   "dependencies": {
     "@raycast/api": "^1.104.24",
-    "@raycast/utils": "^1.19.1",
+    "@raycast/utils": "^2.3.3",
     "ws": "^8.22.0"
   },
   "overrides": {
-    "brace-expansion@2": "2.1.4",
-    "brace-expansion@5": "5.0.9",
-    "esbuild": "0.28.1"
+    "esbuild": "0.28.1",
+    "brace-expansion@2": "2.1.7",
+    "brace-expansion@5": "5.0.12"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

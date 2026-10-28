@@ -20,6 +20,6 @@
     "@mezairstack/policy-engine": "workspace:*",
     "@mezairstack/queue": "workspace:*",
     "@mezairstack/shared": "workspace:*",
-    "fastify": "^5.12.5"
+    "fastify": "^5.12.6"
   }
 }

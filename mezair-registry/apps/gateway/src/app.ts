@@ -774,8 +774,8 @@ function metadataInstallRelevantVersions(metadata: NpmPackageMetadata) {
   return versions;
 }
 
-function validationIssues(error: { issues: Array<{ path: Array<string | number>; message: string }> }) {
-  return error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message }));
+function validationIssues(error: { issues: Array<{ path: PropertyKey[]; message: string }> }) {
+  return error.issues.map((issue) => ({ path: issue.path.map(String).join("."), message: issue.message }));
 }
 
 function boundedQueueLimit(value: string | undefined) {

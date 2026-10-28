@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('simple-git', () => ({
-  default: vi.fn(() => ({
+  simpleGit: vi.fn(() => ({
     status: mocks.status,
     raw: mocks.raw,
     commit: mocks.commit,
