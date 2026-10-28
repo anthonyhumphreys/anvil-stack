@@ -95,7 +95,7 @@ acceptance limits.
   claim. Shared service baseline, storage growth, managed-route charges, and provider billing remain
   unknown until measured against real usage and invoices.
 
-## Rollout and cost limits
+## Rollout and operational acceptance
 
 - The host-local implementation was recorded at checkpoint `2ee256e`. Local project checks at
   `e50e2a9` and subsequent staging-workflow preparation are historical evidence for those revisions,
@@ -112,6 +112,3 @@ acceptance limits.
 - The immutable security review retains its coverage-metadata discrepancy and the mobile native
   WebSocket receive-buffering limit. Both remain visible in the
   [implementation review](host-local-implementation-review.md); neither clears public rollout.
-- The FinOps model assumes USD 10,000 in Cloudflare startup credit expiring on 18 September 2027.
-  The account balance, eligible charges, invoice treatment, and remaining storage/provider costs
-  have not been verified. Forecasts are planning inputs, not measured bills.

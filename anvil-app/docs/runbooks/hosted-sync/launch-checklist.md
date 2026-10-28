@@ -90,12 +90,11 @@ Anvil Cloud Agents provisioner and do not enable Cloud Agents. See
 
 - [ ] Measure idle, active, reconnect and fallback traffic on the staging
       workload. Compare requests, CPU, Durable Object awake time, storage growth
-      and cleanup with the FinOps assumptions and a real provider bill.
+      and cleanup with platform usage records and a real provider bill.
 - [ ] Confirm managed-route capacity, permitted traffic, hostname limits and
       prices before offering managed reachability beyond the controlled pilot.
 - [ ] Configure spend, error-rate, retention and quota alerts with a named
-      responder. Confirm the remaining Cloudflare startup credit and eligible
-      charges; the recorded expiry is 18 September 2027.
+      responder.
 - [ ] Restore a fresh device from verified Sync state and confirm that a pending
       change, an opt-out and a deletion survive recovery without resurrecting
       old data. Keep enough verified state and journal tail for recovery.

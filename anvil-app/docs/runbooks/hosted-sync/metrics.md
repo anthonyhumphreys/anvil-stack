@@ -158,7 +158,7 @@ the metric is a usage estimate, not an exact request ledger.
 `wallMs` includes downstream waits. It is neither billed Worker CPU nor Durable Object duration.
 Do not read or clone an object stream solely to populate a byte field. Use platform invocation,
 CPU, Durable Object request/duration/storage, D1 and R2 usage for the authoritative totals. Share
-included allowances once across the account when comparing the resulting invoice with the model.
+included allowances once across the account when reconciling platform usage and invoices.
 
 For each acceptance workload, collect these inputs over the same interval:
 
@@ -178,7 +178,6 @@ that a Durable Object hibernates; compare the platform duration during idle and 
 
 Run a three-device workload with eight connected hours, then an idle/disconnected workload and
 a forced fallback workload. Record jobs, active attempts, output bytes and recovery operations
-so both architectures perform equivalent work. Update the host-local case in
-`docs/plans/sync-mesh/finops-assumptions.json` using measured inputs. Keep unmeasured fields marked
-as estimates. Supplier tunnel pricing and capacity remain a rollout gate outside the core
-Workers/DO/D1/R2 estimate; they belong in Anvil's operating cost.
+so both architectures perform equivalent work. Record measured inputs and results with the
+acceptance evidence. Keep unmeasured fields marked as estimates. Managed-route capacity and
+billing verification remain rollout gates.

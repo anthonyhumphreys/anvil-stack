@@ -36,9 +36,7 @@ excluded from the Sync/Mesh staging workflow.
 
 The RPC contract is `anvil-backend/1` with `sync/2` and `mesh/2`. The cutover targets current clients;
 older-host compatibility is not required. This host-local design aims to keep idle per-host usage
-near zero, but shared baseline, storage growth, and provider charges remain unmeasured. The FinOps
-model assumes USD 10,000 in Cloudflare startup credit expiring 18 September 2027; verify the actual
-account balance and eligibility before using it as budget.
+near zero, but shared baseline, storage growth, and provider charges remain unmeasured.
 
 ## Supporting documents
 
@@ -48,8 +46,6 @@ account balance and eligibility before using it as budget.
   physical acceptance remains pending.
 - [Implementation and security review](host-local-implementation-review.md)
 - [PR 91 review history](pr-91-review.md)
-- [FinOps projection](finops-projection.md), [assumptions](finops-assumptions.json), and
-  [editable workbook](outputs/finops-2026-10/anvil-finops-projection.xlsx)
 - [Backend integration contract](anvil-backend-integration-contract.md)
 - [Cloud environment implementation](cloud-environments.md)
 - [Credential storage](credential-storage-fallback.md) and
