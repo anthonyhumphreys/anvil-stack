@@ -16,6 +16,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: baseUrl, changeFrequency: "weekly", priority: 1 },
     { url: `${baseUrl}/sync`, changeFrequency: "weekly", priority: 0.9 },
     { url: `${baseUrl}/pricing`, changeFrequency: "monthly", priority: 0.7 },
+    { url: `${baseUrl}/what-does-mezair-mean`, changeFrequency: "yearly", priority: 0.3 },
     { url: `${baseUrl}/docs`, changeFrequency: "weekly", priority: 0.9 },
     ...docEntries
   ];

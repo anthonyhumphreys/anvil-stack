@@ -3,6 +3,7 @@ import { Archivo, JetBrains_Mono } from "next/font/google";
 import { PrivateAnalytics } from "@/components/site/private-analytics";
 import { ThemeScript } from "@/components/site/theme-script";
 import "./globals.css";
+import "./marketing.css";
 
 // Variable Archivo with the width axis: normal width for text, set wide for display.
 const archivo = Archivo({
@@ -22,7 +23,7 @@ const description =
   "Mezair is a free, open-source desktop app for running coding agents on your own repos. Plan the work, watch it happen, and review every change. Add paid hosted Sync & Mesh to work across machines, or self-host for free.";
 
 export const metadata: Metadata = {
-  title: "Mezair | A workbench for coding agents",
+  title: "Mezair | Put your agents in motion",
   description,
   metadataBase: new URL("https://mezair.dev"),
   icons: {
@@ -31,13 +32,13 @@ export const metadata: Metadata = {
     apple: [{ url: "/mezair-icon.png", sizes: "512x512", type: "image/png" }]
   },
   openGraph: {
-    title: "Mezair | A workbench for coding agents",
+    title: "Mezair | Put your agents in motion",
     description,
     type: "website"
   },
   twitter: {
     card: "summary_large_image",
-    title: "Mezair | A workbench for coding agents",
+    title: "Mezair | Put your agents in motion",
     description
   }
 };

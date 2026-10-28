@@ -7,3 +7,6 @@ tsconfig.tsbuildinfo
 .env.local
 .env.*.local
 .vercel
+
+# Local design-review captures
+.impeccable/review/

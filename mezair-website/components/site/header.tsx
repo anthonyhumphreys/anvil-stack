@@ -14,7 +14,7 @@ const linkClass =
 const mobileLinkClass =
   "flex min-h-11 items-center gap-3 rounded-md px-3 text-sm font-medium text-foreground hover:bg-muted";
 
-export function SiteHeader({ active }: { active?: Active }) {
+export function SiteHeader({ active, showThemeToggle = true }: { active?: Active; showThemeToggle?: boolean }) {
   const accountEnabled = workosConfigured();
   return (
     <header className="sticky top-0 z-40 border-b border-border/70 bg-background/90 supports-[backdrop-filter]:bg-background/80 supports-[backdrop-filter]:backdrop-blur-lg">
@@ -69,7 +69,7 @@ export function SiteHeader({ active }: { active?: Active }) {
         </nav>
 
         <div className="hidden items-center gap-1 lg:flex">
-          <ThemeToggle />
+          {showThemeToggle ? <ThemeToggle /> : null}
           <Link href={githubRepositoryUrl} className={`${linkClass} gap-2`} aria-label="Mezair on GitHub">
             <Github className="size-4" aria-hidden="true" />
             <span className="hidden lg:inline">GitHub</span>
@@ -94,7 +94,7 @@ export function SiteHeader({ active }: { active?: Active }) {
         </div>
 
         <div className="flex items-center gap-1 lg:hidden">
-          <ThemeToggle />
+          {showThemeToggle ? <ThemeToggle /> : null}
           <NavMenu
             label="Menu"
             labelClassName="inline-flex size-11 cursor-pointer items-center justify-center rounded-md border transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

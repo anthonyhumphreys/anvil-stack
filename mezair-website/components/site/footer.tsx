@@ -25,6 +25,7 @@ const columns = [
       { label: "Monorepo map", href: repositoryUrl },
       { label: "Contributing", href: "/docs/project/contributing" },
       { label: "Why open source", href: "/docs/project/open-source" },
+      { label: "What does Mezair mean?", href: "/what-does-mezair-mean" },
       { label: "Account", href: "/account" }
     ]
   }

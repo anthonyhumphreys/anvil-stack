@@ -1,0 +1,1050 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-28T01:21:15Z",
+  "title": "Design System: Mezair website",
+  "extensions": {
+    "source": "DESIGN.md",
+    "worlds": [
+      {
+        "name": "Reading and operating",
+        "scope": [
+          "/docs",
+          "/account",
+          "/workspace",
+          "/auth",
+          "shared artifact routes"
+        ],
+        "theme": "Shared reading surfaces use light/dark tokens; workspace retains imported Desktop chat bindings.",
+        "sources": [
+          "app/globals.css",
+          "tailwind.config.ts"
+        ]
+      },
+      {
+        "name": "Projection room",
+        "scope": [
+          "/",
+          "/sync",
+          "/pricing",
+          "/what-does-mezair-mean"
+        ],
+        "selector": ".cine",
+        "theme": "Always dark; header theme toggle hidden.",
+        "sources": [
+          "app/marketing.css",
+          "components/marketing/product-reel.tsx",
+          "components/marketing/use-reel.ts",
+          "components/marketing/handoff-stage.tsx"
+        ]
+      },
+      {
+        "name": "Naming variation",
+        "scope": [
+          "/what-does-mezair-mean"
+        ],
+        "selector": ".page (CSS Module, combined with .cine)",
+        "theme": "Local navy/text/action overrides on the cinematic base.",
+        "sources": [
+          "app/what-does-mezair-mean/page.tsx",
+          "app/what-does-mezair-mean/meaning.module.css",
+          "components/site/horseplay.tsx"
+        ]
+      }
+    ],
+    "colorMeta": {
+      "reading-light-ground": {
+        "role": "neutral",
+        "displayName": "Cool paper",
+        "canonical": "oklch(0.986 0.004 245)",
+        "tonalRamp": [
+          "oklch(0.15 0.004 245)",
+          "oklch(0.26 0.004 245)",
+          "oklch(0.38 0.004 245)",
+          "oklch(0.49 0.004 245)",
+          "oklch(0.61 0.004 245)",
+          "oklch(0.72 0.004 245)",
+          "oklch(0.84 0.004 245)",
+          "oklch(0.95 0.004 245)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--background"
+        }
+      },
+      "reading-light-text": {
+        "role": "neutral",
+        "displayName": "Reading ink",
+        "canonical": "oklch(0.2 0.016 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.016 255)",
+          "oklch(0.26 0.016 255)",
+          "oklch(0.38 0.016 255)",
+          "oklch(0.49 0.016 255)",
+          "oklch(0.61 0.016 255)",
+          "oklch(0.72 0.016 255)",
+          "oklch(0.84 0.016 255)",
+          "oklch(0.95 0.016 255)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--foreground"
+        }
+      },
+      "reading-light-card": {
+        "role": "neutral",
+        "displayName": "Raised paper",
+        "canonical": "oklch(0.997 0.002 245)",
+        "tonalRamp": [
+          "oklch(0.15 0.002 245)",
+          "oklch(0.26 0.002 245)",
+          "oklch(0.38 0.002 245)",
+          "oklch(0.49 0.002 245)",
+          "oklch(0.61 0.002 245)",
+          "oklch(0.72 0.002 245)",
+          "oklch(0.84 0.002 245)",
+          "oklch(0.95 0.002 245)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--card"
+        }
+      },
+      "reading-light-muted": {
+        "role": "neutral",
+        "displayName": "Reading secondary text",
+        "canonical": "oklch(0.47 0.02 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.02 255)",
+          "oklch(0.26 0.02 255)",
+          "oklch(0.38 0.02 255)",
+          "oklch(0.49 0.02 255)",
+          "oklch(0.61 0.02 255)",
+          "oklch(0.72 0.02 255)",
+          "oklch(0.84 0.02 255)",
+          "oklch(0.95 0.02 255)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--muted-foreground"
+        }
+      },
+      "reading-light-rule": {
+        "role": "neutral",
+        "displayName": "Paper rule",
+        "canonical": "oklch(0.9 0.009 252)",
+        "tonalRamp": [
+          "oklch(0.15 0.009 252)",
+          "oklch(0.26 0.009 252)",
+          "oklch(0.38 0.009 252)",
+          "oklch(0.49 0.009 252)",
+          "oklch(0.61 0.009 252)",
+          "oklch(0.72 0.009 252)",
+          "oklch(0.84 0.009 252)",
+          "oklch(0.95 0.009 252)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--border"
+        }
+      },
+      "reading-light-primary": {
+        "role": "primary",
+        "displayName": "Light action orange",
+        "canonical": "oklch(0.68 0.19 48)",
+        "tonalRamp": [
+          "oklch(0.15 0.19 48)",
+          "oklch(0.26 0.19 48)",
+          "oklch(0.38 0.19 48)",
+          "oklch(0.49 0.19 48)",
+          "oklch(0.61 0.19 48)",
+          "oklch(0.72 0.19 48)",
+          "oklch(0.84 0.19 48)",
+          "oklch(0.95 0.19 48)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--primary"
+        }
+      },
+      "reading-light-action-ink": {
+        "role": "neutral",
+        "displayName": "Light action ink",
+        "canonical": "oklch(0.18 0.016 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.016 255)",
+          "oklch(0.26 0.016 255)",
+          "oklch(0.38 0.016 255)",
+          "oklch(0.49 0.016 255)",
+          "oklch(0.61 0.016 255)",
+          "oklch(0.72 0.016 255)",
+          "oklch(0.84 0.016 255)",
+          "oklch(0.95 0.016 255)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--primary-foreground"
+        }
+      },
+      "reading-light-accent": {
+        "role": "primary",
+        "displayName": "Light detail orange",
+        "canonical": "oklch(0.66 0.19 46)",
+        "tonalRamp": [
+          "oklch(0.15 0.19 46)",
+          "oklch(0.26 0.19 46)",
+          "oklch(0.38 0.19 46)",
+          "oklch(0.49 0.19 46)",
+          "oklch(0.61 0.19 46)",
+          "oklch(0.72 0.19 46)",
+          "oklch(0.84 0.19 46)",
+          "oklch(0.95 0.19 46)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--accent"
+        }
+      },
+      "reading-dark-ground": {
+        "role": "neutral",
+        "displayName": "Reading night",
+        "canonical": "oklch(0.165 0.014 258)",
+        "tonalRamp": [
+          "oklch(0.15 0.014 258)",
+          "oklch(0.26 0.014 258)",
+          "oklch(0.38 0.014 258)",
+          "oklch(0.49 0.014 258)",
+          "oklch(0.61 0.014 258)",
+          "oklch(0.72 0.014 258)",
+          "oklch(0.84 0.014 258)",
+          "oklch(0.95 0.014 258)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ".dark",
+          "property": "--background"
+        }
+      },
+      "reading-dark-text": {
+        "role": "neutral",
+        "displayName": "Night text",
+        "canonical": "oklch(0.94 0.006 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.006 250)",
+          "oklch(0.26 0.006 250)",
+          "oklch(0.38 0.006 250)",
+          "oklch(0.49 0.006 250)",
+          "oklch(0.61 0.006 250)",
+          "oklch(0.72 0.006 250)",
+          "oklch(0.84 0.006 250)",
+          "oklch(0.95 0.006 250)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ".dark",
+          "property": "--foreground"
+        }
+      },
+      "reading-dark-card": {
+        "role": "neutral",
+        "displayName": "Night card",
+        "canonical": "oklch(0.2 0.016 258)",
+        "tonalRamp": [
+          "oklch(0.15 0.016 258)",
+          "oklch(0.26 0.016 258)",
+          "oklch(0.38 0.016 258)",
+          "oklch(0.49 0.016 258)",
+          "oklch(0.61 0.016 258)",
+          "oklch(0.72 0.016 258)",
+          "oklch(0.84 0.016 258)",
+          "oklch(0.95 0.016 258)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ".dark",
+          "property": "--card"
+        }
+      },
+      "reading-dark-muted": {
+        "role": "neutral",
+        "displayName": "Night secondary text",
+        "canonical": "oklch(0.73 0.016 252)",
+        "tonalRamp": [
+          "oklch(0.15 0.016 252)",
+          "oklch(0.26 0.016 252)",
+          "oklch(0.38 0.016 252)",
+          "oklch(0.49 0.016 252)",
+          "oklch(0.61 0.016 252)",
+          "oklch(0.72 0.016 252)",
+          "oklch(0.84 0.016 252)",
+          "oklch(0.95 0.016 252)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ".dark",
+          "property": "--muted-foreground"
+        }
+      },
+      "reading-dark-rule": {
+        "role": "neutral",
+        "displayName": "Night rule",
+        "canonical": "oklch(0.31 0.018 258)",
+        "tonalRamp": [
+          "oklch(0.15 0.018 258)",
+          "oklch(0.26 0.018 258)",
+          "oklch(0.38 0.018 258)",
+          "oklch(0.49 0.018 258)",
+          "oklch(0.61 0.018 258)",
+          "oklch(0.72 0.018 258)",
+          "oklch(0.84 0.018 258)",
+          "oklch(0.95 0.018 258)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ".dark",
+          "property": "--border"
+        }
+      },
+      "reading-dark-action": {
+        "role": "primary",
+        "displayName": "Night action orange",
+        "canonical": "oklch(0.76 0.17 54)",
+        "tonalRamp": [
+          "oklch(0.15 0.17 54)",
+          "oklch(0.26 0.17 54)",
+          "oklch(0.38 0.17 54)",
+          "oklch(0.49 0.17 54)",
+          "oklch(0.61 0.17 54)",
+          "oklch(0.72 0.17 54)",
+          "oklch(0.84 0.17 54)",
+          "oklch(0.95 0.17 54)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ".dark",
+          "property": "--primary"
+        }
+      },
+      "reading-artifact-light": {
+        "role": "neutral",
+        "displayName": "Light-theme artifact navy",
+        "canonical": "oklch(0.17 0.03 265)",
+        "tonalRamp": [
+          "oklch(0.15 0.03 265)",
+          "oklch(0.26 0.03 265)",
+          "oklch(0.38 0.03 265)",
+          "oklch(0.49 0.03 265)",
+          "oklch(0.61 0.03 265)",
+          "oklch(0.72 0.03 265)",
+          "oklch(0.84 0.03 265)",
+          "oklch(0.95 0.03 265)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ":root",
+          "property": "--artifact-bg"
+        }
+      },
+      "reading-artifact-dark": {
+        "role": "neutral",
+        "displayName": "Dark-theme artifact navy",
+        "canonical": "oklch(0.13 0.025 265)",
+        "tonalRamp": [
+          "oklch(0.15 0.025 265)",
+          "oklch(0.26 0.025 265)",
+          "oklch(0.38 0.025 265)",
+          "oklch(0.49 0.025 265)",
+          "oklch(0.61 0.025 265)",
+          "oklch(0.72 0.025 265)",
+          "oklch(0.84 0.025 265)",
+          "oklch(0.95 0.025 265)"
+        ],
+        "source": {
+          "file": "app/globals.css",
+          "selector": ".dark",
+          "property": "--artifact-bg"
+        }
+      },
+      "cine-ground": {
+        "role": "neutral",
+        "displayName": "Projection navy",
+        "canonical": "oklch(0.135 0.03 266)",
+        "tonalRamp": [
+          "oklch(0.15 0.03 266)",
+          "oklch(0.26 0.03 266)",
+          "oklch(0.38 0.03 266)",
+          "oklch(0.49 0.03 266)",
+          "oklch(0.61 0.03 266)",
+          "oklch(0.72 0.03 266)",
+          "oklch(0.84 0.03 266)",
+          "oklch(0.95 0.03 266)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--background"
+        }
+      },
+      "cine-card": {
+        "role": "neutral",
+        "displayName": "Projection board",
+        "canonical": "oklch(0.175 0.03 264)",
+        "tonalRamp": [
+          "oklch(0.15 0.03 264)",
+          "oklch(0.26 0.03 264)",
+          "oklch(0.38 0.03 264)",
+          "oklch(0.49 0.03 264)",
+          "oklch(0.61 0.03 264)",
+          "oklch(0.72 0.03 264)",
+          "oklch(0.84 0.03 264)",
+          "oklch(0.95 0.03 264)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--card"
+        }
+      },
+      "cine-text": {
+        "role": "neutral",
+        "displayName": "Projection text",
+        "canonical": "oklch(0.965 0.006 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.006 250)",
+          "oklch(0.26 0.006 250)",
+          "oklch(0.38 0.006 250)",
+          "oklch(0.49 0.006 250)",
+          "oklch(0.61 0.006 250)",
+          "oklch(0.72 0.006 250)",
+          "oklch(0.84 0.006 250)",
+          "oklch(0.95 0.006 250)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--foreground"
+        }
+      },
+      "cine-muted": {
+        "role": "neutral",
+        "displayName": "Projection secondary text",
+        "canonical": "oklch(0.77 0.02 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.02 255)",
+          "oklch(0.26 0.02 255)",
+          "oklch(0.38 0.02 255)",
+          "oklch(0.49 0.02 255)",
+          "oklch(0.61 0.02 255)",
+          "oklch(0.72 0.02 255)",
+          "oklch(0.84 0.02 255)",
+          "oklch(0.95 0.02 255)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--muted-foreground"
+        }
+      },
+      "cine-rule": {
+        "role": "neutral",
+        "displayName": "Projection rule",
+        "canonical": "oklch(0.3 0.03 262)",
+        "tonalRamp": [
+          "oklch(0.15 0.03 262)",
+          "oklch(0.26 0.03 262)",
+          "oklch(0.38 0.03 262)",
+          "oklch(0.49 0.03 262)",
+          "oklch(0.61 0.03 262)",
+          "oklch(0.72 0.03 262)",
+          "oklch(0.84 0.03 262)",
+          "oklch(0.95 0.03 262)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--border"
+        }
+      },
+      "cine-action": {
+        "role": "primary",
+        "displayName": "Live orange",
+        "canonical": "oklch(0.76 0.17 54)",
+        "tonalRamp": [
+          "oklch(0.15 0.17 54)",
+          "oklch(0.26 0.17 54)",
+          "oklch(0.38 0.17 54)",
+          "oklch(0.49 0.17 54)",
+          "oklch(0.61 0.17 54)",
+          "oklch(0.72 0.17 54)",
+          "oklch(0.84 0.17 54)",
+          "oklch(0.95 0.17 54)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--primary"
+        }
+      },
+      "cine-action-ink": {
+        "role": "neutral",
+        "displayName": "Projection action ink",
+        "canonical": "oklch(0.16 0.03 266)",
+        "tonalRamp": [
+          "oklch(0.15 0.03 266)",
+          "oklch(0.26 0.03 266)",
+          "oklch(0.38 0.03 266)",
+          "oklch(0.49 0.03 266)",
+          "oklch(0.61 0.03 266)",
+          "oklch(0.72 0.03 266)",
+          "oklch(0.84 0.03 266)",
+          "oklch(0.95 0.03 266)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--primary-foreground"
+        }
+      },
+      "cine-window": {
+        "role": "neutral",
+        "displayName": "Window navy",
+        "canonical": "oklch(0.168 0.033 266)",
+        "tonalRamp": [
+          "oklch(0.15 0.033 266)",
+          "oklch(0.26 0.033 266)",
+          "oklch(0.38 0.033 266)",
+          "oklch(0.49 0.033 266)",
+          "oklch(0.61 0.033 266)",
+          "oklch(0.72 0.033 266)",
+          "oklch(0.84 0.033 266)",
+          "oklch(0.95 0.033 266)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--artifact-bg"
+        }
+      },
+      "cine-raised": {
+        "role": "neutral",
+        "displayName": "Raised window navy",
+        "canonical": "oklch(0.212 0.035 263)",
+        "tonalRamp": [
+          "oklch(0.15 0.035 263)",
+          "oklch(0.26 0.035 263)",
+          "oklch(0.38 0.035 263)",
+          "oklch(0.49 0.035 263)",
+          "oklch(0.61 0.035 263)",
+          "oklch(0.72 0.035 263)",
+          "oklch(0.84 0.035 263)",
+          "oklch(0.95 0.035 263)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--artifact-raised"
+        }
+      },
+      "cine-scene-text": {
+        "role": "neutral",
+        "displayName": "Scene text",
+        "canonical": "oklch(0.96 0.008 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.008 255)",
+          "oklch(0.26 0.008 255)",
+          "oklch(0.38 0.008 255)",
+          "oklch(0.49 0.008 255)",
+          "oklch(0.61 0.008 255)",
+          "oklch(0.72 0.008 255)",
+          "oklch(0.84 0.008 255)",
+          "oklch(0.95 0.008 255)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--artifact-text"
+        }
+      },
+      "cine-scene-dim": {
+        "role": "neutral",
+        "displayName": "Scene secondary text",
+        "canonical": "oklch(0.76 0.024 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.024 255)",
+          "oklch(0.26 0.024 255)",
+          "oklch(0.38 0.024 255)",
+          "oklch(0.49 0.024 255)",
+          "oklch(0.61 0.024 255)",
+          "oklch(0.72 0.024 255)",
+          "oklch(0.84 0.024 255)",
+          "oklch(0.95 0.024 255)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--artifact-dim"
+        }
+      },
+      "cine-scene-accent": {
+        "role": "primary",
+        "displayName": "Scene live orange",
+        "canonical": "oklch(0.77 0.17 53)",
+        "tonalRamp": [
+          "oklch(0.15 0.17 53)",
+          "oklch(0.26 0.17 53)",
+          "oklch(0.38 0.17 53)",
+          "oklch(0.49 0.17 53)",
+          "oklch(0.61 0.17 53)",
+          "oklch(0.72 0.17 53)",
+          "oklch(0.84 0.17 53)",
+          "oklch(0.95 0.17 53)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--artifact-accent"
+        }
+      },
+      "cine-ok": {
+        "role": "secondary",
+        "displayName": "Completed green",
+        "canonical": "oklch(0.8 0.15 158)",
+        "tonalRamp": [
+          "oklch(0.15 0.15 158)",
+          "oklch(0.26 0.15 158)",
+          "oklch(0.38 0.15 158)",
+          "oklch(0.49 0.15 158)",
+          "oklch(0.61 0.15 158)",
+          "oklch(0.72 0.15 158)",
+          "oklch(0.84 0.15 158)",
+          "oklch(0.95 0.15 158)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--artifact-ok"
+        }
+      },
+      "cine-key-light": {
+        "role": "neutral",
+        "displayName": "Cool key light",
+        "canonical": "oklch(0.36 0.08 262)",
+        "tonalRamp": [
+          "oklch(0.15 0.08 262)",
+          "oklch(0.26 0.08 262)",
+          "oklch(0.38 0.08 262)",
+          "oklch(0.49 0.08 262)",
+          "oklch(0.61 0.08 262)",
+          "oklch(0.72 0.08 262)",
+          "oklch(0.84 0.08 262)",
+          "oklch(0.95 0.08 262)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--cine-key"
+        }
+      },
+      "cine-warn": {
+        "role": "secondary",
+        "displayName": "Attention yellow",
+        "canonical": "oklch(0.86 0.13 86)",
+        "tonalRamp": [
+          "oklch(0.15 0.13 86)",
+          "oklch(0.26 0.13 86)",
+          "oklch(0.38 0.13 86)",
+          "oklch(0.49 0.13 86)",
+          "oklch(0.61 0.13 86)",
+          "oklch(0.72 0.13 86)",
+          "oklch(0.84 0.13 86)",
+          "oklch(0.95 0.13 86)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--cine-warn"
+        }
+      },
+      "cine-del": {
+        "role": "secondary",
+        "displayName": "Deletion red",
+        "canonical": "oklch(0.73 0.15 22)",
+        "tonalRamp": [
+          "oklch(0.15 0.15 22)",
+          "oklch(0.26 0.15 22)",
+          "oklch(0.38 0.15 22)",
+          "oklch(0.49 0.15 22)",
+          "oklch(0.61 0.15 22)",
+          "oklch(0.72 0.15 22)",
+          "oklch(0.84 0.15 22)",
+          "oklch(0.95 0.15 22)"
+        ],
+        "source": {
+          "file": "app/marketing.css",
+          "selector": ".cine",
+          "property": "--cine-del"
+        }
+      },
+      "meaning-ground": {
+        "role": "neutral",
+        "displayName": "Naming navy",
+        "canonical": "oklch(0.135 0.022 265)",
+        "tonalRamp": [
+          "oklch(0.15 0.022 265)",
+          "oklch(0.26 0.022 265)",
+          "oklch(0.38 0.022 265)",
+          "oklch(0.49 0.022 265)",
+          "oklch(0.61 0.022 265)",
+          "oklch(0.72 0.022 265)",
+          "oklch(0.84 0.022 265)",
+          "oklch(0.95 0.022 265)"
+        ],
+        "source": {
+          "file": "app/what-does-mezair-mean/meaning.module.css",
+          "selector": ".page",
+          "property": "--background"
+        }
+      },
+      "meaning-text": {
+        "role": "neutral",
+        "displayName": "Naming text",
+        "canonical": "oklch(0.96 0.008 250)",
+        "tonalRamp": [
+          "oklch(0.15 0.008 250)",
+          "oklch(0.26 0.008 250)",
+          "oklch(0.38 0.008 250)",
+          "oklch(0.49 0.008 250)",
+          "oklch(0.61 0.008 250)",
+          "oklch(0.72 0.008 250)",
+          "oklch(0.84 0.008 250)",
+          "oklch(0.95 0.008 250)"
+        ],
+        "source": {
+          "file": "app/what-does-mezair-mean/meaning.module.css",
+          "selector": ".page",
+          "property": "--foreground"
+        }
+      },
+      "meaning-muted": {
+        "role": "neutral",
+        "displayName": "Naming secondary text",
+        "canonical": "oklch(0.73 0.018 255)",
+        "tonalRamp": [
+          "oklch(0.15 0.018 255)",
+          "oklch(0.26 0.018 255)",
+          "oklch(0.38 0.018 255)",
+          "oklch(0.49 0.018 255)",
+          "oklch(0.61 0.018 255)",
+          "oklch(0.72 0.018 255)",
+          "oklch(0.84 0.018 255)",
+          "oklch(0.95 0.018 255)"
+        ],
+        "source": {
+          "file": "app/what-does-mezair-mean/meaning.module.css",
+          "selector": ".page",
+          "property": "--muted-foreground"
+        }
+      },
+      "meaning-rule": {
+        "role": "neutral",
+        "displayName": "Naming rule",
+        "canonical": "oklch(0.3 0.024 260)",
+        "tonalRamp": [
+          "oklch(0.15 0.024 260)",
+          "oklch(0.26 0.024 260)",
+          "oklch(0.38 0.024 260)",
+          "oklch(0.49 0.024 260)",
+          "oklch(0.61 0.024 260)",
+          "oklch(0.72 0.024 260)",
+          "oklch(0.84 0.024 260)",
+          "oklch(0.95 0.024 260)"
+        ],
+        "source": {
+          "file": "app/what-does-mezair-mean/meaning.module.css",
+          "selector": ".page",
+          "property": "--border"
+        }
+      },
+      "meaning-action": {
+        "role": "primary",
+        "displayName": "Naming orange",
+        "canonical": "oklch(0.77 0.16 55)",
+        "tonalRamp": [
+          "oklch(0.15 0.16 55)",
+          "oklch(0.26 0.16 55)",
+          "oklch(0.38 0.16 55)",
+          "oklch(0.49 0.16 55)",
+          "oklch(0.61 0.16 55)",
+          "oklch(0.72 0.16 55)",
+          "oklch(0.84 0.16 55)",
+          "oklch(0.95 0.16 55)"
+        ],
+        "source": {
+          "file": "app/what-does-mezair-mean/meaning.module.css",
+          "selector": ".page",
+          "property": "--primary"
+        }
+      }
+    },
+    "tonalRampNote": "Tonal ramps are synthesized OKLCH preview strips, not additional source tokens. Canonical values and source mappings are the implemented values.",
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Marketing hero headings."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Marketing section headings."
+      },
+      "reading-display": {
+        "displayName": "Reading Display",
+        "purpose": "Shared display utility on reading surfaces."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Shared text at normal width."
+      },
+      "doc-body": {
+        "displayName": "Doc Body",
+        "purpose": "Long-form documentation."
+      },
+      "lede": {
+        "displayName": "Lede",
+        "purpose": "Short marketing summaries."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Reel chapter labels."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Commands, paths, code and operational detail."
+      }
+    },
+    "shadows": [
+      {
+        "name": "projected-window",
+        "value": "0 1px 0 oklch(1 0 0 / 0.06) inset, 0 50px 100px -40px oklch(0.04 0.02 265 / 0.95), 0 24px 40px -28px oklch(0.04 0.02 265 / 0.8)",
+        "purpose": "Full product scene window.",
+        "source": "app/marketing.css .sc-win"
+      },
+      {
+        "name": "handoff-stage",
+        "value": "0 1px 0 oklch(1 0 0 / 0.06) inset, 0 50px 100px -40px oklch(0.04 0.02 265 / 0.95)",
+        "purpose": "Full Sync handoff stage.",
+        "source": "app/marketing.css .ho-stage"
+      },
+      {
+        "name": "plans-board",
+        "value": "0 50px 100px -50px oklch(0.04 0.02 265 / 0.95)",
+        "purpose": "One pricing board.",
+        "source": "app/marketing.css .plans"
+      },
+      {
+        "name": "primary-button",
+        "value": "inset 0 -1px 0 oklch(0 0 0/0.18), 0 1px 2px oklch(0.2 0.02 255/0.12)",
+        "purpose": "Shallow action affordance.",
+        "source": "components/ui/button.tsx"
+      }
+    ],
+    "motion": [
+      {
+        "name": "cinematic-ease",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Stage settling, scene reveals and panel cuts."
+      },
+      {
+        "name": "page-load-rise",
+        "value": "700ms cubic-bezier(0.16, 1, 0.3, 1); from opacity 0.85, translateY(20px) scale(0.99), blur(1px)",
+        "purpose": "A single stage entrance; removed under reduced motion."
+      },
+      {
+        "name": "panel-cut",
+        "value": "620ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Re-cut the scene side panel on chapter changes."
+      },
+      {
+        "name": "feed-reveal",
+        "value": "grid-template-rows 560ms cubic-bezier(0.16, 1, 0.3, 1), opacity 380ms ease, transform 560ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Fold conversation blocks into the scene."
+      },
+      {
+        "name": "reel-chapters",
+        "value": "5200ms, 7600ms, 6400ms, 9800ms; 100ms tick",
+        "purpose": "Task, Agent work, Review, Handoff; selection plays once and holds."
+      },
+      {
+        "name": "handoff-loop",
+        "value": "12000ms; 100ms tick",
+        "purpose": "Full Sync scene, subject to the same playback gate."
+      },
+      {
+        "name": "activity-edge",
+        "value": "5.5s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate",
+        "purpose": "Working turn card rim; only while the scene motion gate is on."
+      },
+      {
+        "name": "horseplay",
+        "value": "1.2s cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "One click-triggered collected hop; no autoplay, removed under reduced motion."
+      }
+    ],
+    "playback": {
+      "source": "components/marketing/use-reel.ts",
+      "gate": "IntersectionObserver isIntersecting (threshold 0.2), visible document, no reduced motion, not paused, and not holding a completed selected chapter.",
+      "ambientMotion": "data-motion follows ticking, including explicit pause and completed chapter hold.",
+      "initialFrame": "Elapsed is null, so the server and initial reduced-motion scene use a completed static frame.",
+      "controls": "Left/Right, Home and End select and focus reel chapters; Play resumes auto mode; reduced motion hides the play toggle."
+    },
+    "breakpoints": [
+      {
+        "name": "scene-two-panes",
+        "value": "640px",
+        "purpose": "Wider shell padding; split product panes and horizontal full handoff."
+      },
+      {
+        "name": "naming-stack",
+        "value": "700px (max-width)",
+        "purpose": "Stack naming intro, caption and afterword."
+      },
+      {
+        "name": "comparison-columns",
+        "value": "768px",
+        "purpose": "Credits, comparison/billing columns, two plans, reel hints."
+      },
+      {
+        "name": "desktop-stage",
+        "value": "1024px",
+        "purpose": "Header desktop nav, title row, scene rail and seven handoff steps."
+      },
+      {
+        "name": "four-plans",
+        "value": "1280px",
+        "purpose": "Four plan columns in one ruled board."
+      }
+    ],
+    "specimenNote": "Static component specimens render actual source styles without framework utilities. Scene wrappers repeat the scoped .cine variables because those variables are not root tokens. Runtime scene behavior remains in its source components."
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Shared default action; inherits the current root theme. Marketing uses the large size.",
+      "html": "<button type=\"button\" class=\"ds-button ds-primary\">Download for Mac</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;white-space:nowrap;border-radius:calc(var(--radius,0.625rem) - 2px);font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif;font-size:0.875rem;font-weight:500;line-height:1.25rem;height:2.5rem;padding:0.5rem 1rem;transition:background-color 150ms,border-color 150ms,color 150ms,transform 150ms;cursor:pointer}.ds-button:active{transform:translateY(1px)}.ds-button:focus-visible{outline:2px solid oklch(var(--ring));outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:.5}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-primary{border:0;background:oklch(var(--primary));color:oklch(var(--primary-foreground));font-weight:600;box-shadow:inset 0 -1px 0 oklch(0 0 0/.18),0 1px 2px oklch(.2 .02 255/.12)}.ds-primary:hover{background:color-mix(in oklch,oklch(var(--primary)) 88%,white)}"
+    },
+    {
+      "name": "Outline button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Ruled secondary action with a muted hover surface.",
+      "html": "<button type=\"button\" class=\"ds-button ds-outline\">Source</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;white-space:nowrap;border-radius:calc(var(--radius,0.625rem) - 2px);font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif;font-size:0.875rem;font-weight:500;line-height:1.25rem;height:2.5rem;padding:0.5rem 1rem;transition:background-color 150ms,border-color 150ms,color 150ms,transform 150ms;cursor:pointer}.ds-button:active{transform:translateY(1px)}.ds-button:focus-visible{outline:2px solid oklch(var(--ring));outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:.5}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-outline{border:1px solid oklch(var(--input));background:oklch(var(--background));color:oklch(var(--foreground))}.ds-outline:hover{border-color:oklch(var(--foreground)/.3);background:oklch(var(--muted))}"
+    },
+    {
+      "name": "Ghost button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Quiet action that becomes foreground on hover.",
+      "html": "<button type=\"button\" class=\"ds-button ds-ghost\">Read the docs</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:0.5rem;white-space:nowrap;border-radius:calc(var(--radius,0.625rem) - 2px);font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif;font-size:0.875rem;font-weight:500;line-height:1.25rem;height:2.5rem;padding:0.5rem 1rem;transition:background-color 150ms,border-color 150ms,color 150ms,transform 150ms;cursor:pointer}.ds-button:active{transform:translateY(1px)}.ds-button:focus-visible{outline:2px solid oklch(var(--ring));outline-offset:2px}.ds-button:disabled{pointer-events:none;opacity:.5}@media(prefers-reduced-motion:reduce){.ds-button{transition:none}}.ds-ghost{border:0;background:transparent;color:oklch(var(--muted-foreground))}.ds-ghost:hover{background:oklch(var(--muted));color:oklch(var(--foreground))}"
+    },
+    {
+      "name": "Documentation search field",
+      "kind": "input",
+      "refersTo": "search-field",
+      "description": "Transparent input within the search dialog’s ruled header.",
+      "html": "<div class=\"ds-search\"><svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"8\"/><path d=\"m21 21-4.3-4.3\"/></svg><label class=\"ds-search-label\" for=\"ds-search-input\">Search Mezair documentation</label><input id=\"ds-search-input\" type=\"search\" placeholder=\"Search pages, commands, and headings…\" /></div>",
+      "css": ".ds-search{display:flex;align-items:center;gap:.75rem;border-bottom:1px solid oklch(var(--border));padding:0 1rem;background:oklch(var(--background));color:oklch(var(--accent))}.ds-search svg{flex:none}.ds-search-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}.ds-search input{height:3.5rem;min-width:0;flex:1;border:0;background:transparent;color:oklch(var(--foreground));outline:none;font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif;font-size:1rem;line-height:1.5rem;caret-color:oklch(var(--accent))}.ds-search input::placeholder{color:oklch(var(--muted-foreground))}.ds-search input::-webkit-search-cancel-button,.ds-search input::-webkit-search-decoration{display:none}"
+    },
+    {
+      "name": "Navigation links",
+      "kind": "nav",
+      "refersTo": "navigation-link",
+      "description": "Shared navigation with foreground current-page and hover states.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Example navigation\"><a href=\"#sync\" aria-current=\"page\">Sync &amp; Mesh</a><a href=\"#docs\">Docs</a><a href=\"#pricing\">Pricing</a></nav>",
+      "css": ".ds-nav{display:flex;gap:.125rem;background:oklch(var(--background));font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif}.ds-nav a{display:flex;min-height:2.75rem;align-items:center;padding:0 .75rem;border-radius:calc(var(--radius,.625rem) - 2px);color:oklch(var(--muted-foreground));font-size:.875rem;line-height:1.25rem;font-weight:500;text-decoration:none;transition:color 150ms}.ds-nav a:hover,.ds-nav a[aria-current=\"page\"]{color:oklch(var(--foreground))}.ds-nav a:focus-visible{outline:2px solid oklch(var(--ring));outline-offset:2px}"
+    },
+    {
+      "name": "Scene branch chip",
+      "kind": "chip",
+      "refersTo": "branch-chip",
+      "description": "A compact mono branch identifier inside the authored product window.",
+      "html": "<div class=\"ds-cine\"><span class=\"ds-branch\">main</span></div>",
+      "css": ".ds-cine{--background:0.135 0.03 266;--foreground:0.965 0.006 250;--card:0.175 0.03 264;--card-foreground:0.965 0.006 250;--popover:0.19 0.032 264;--popover-foreground:0.965 0.006 250;--primary:0.76 0.17 54;--primary-foreground:0.16 0.03 266;--secondary:0.21 0.03 264;--secondary-foreground:0.965 0.006 250;--muted:0.2 0.03 264;--muted-foreground:0.77 0.02 255;--accent:0.76 0.17 54;--accent-foreground:0.16 0.03 266;--border:0.3 0.03 262;--input:0.34 0.032 262;--ring:0.78 0.16 56;--artifact-bg:0.168 0.033 266;--artifact-raised:0.212 0.035 263;--artifact-line:0.35 0.036 262;--artifact-faint:0.46 0.035 260;--artifact-text:0.96 0.008 255;--artifact-dim:0.76 0.024 255;--artifact-accent:0.77 0.17 53;--artifact-ok:0.8 0.15 158;--cine-ease:cubic-bezier(0.16, 1, 0.3, 1);font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif;color:oklch(var(--foreground));background:oklch(var(--background));padding:1rem}.ds-branch{display:inline-flex;align-items:center;gap:.35rem;border:1px solid oklch(var(--artifact-line)/.72);border-radius:999px;padding:.1rem .55rem;color:oklch(var(--artifact-dim));font-family:var(--font-mono),ui-monospace,monospace;font-size:11px;line-height:1.5;white-space:nowrap}"
+    },
+    {
+      "name": "Completed turn card",
+      "kind": "card",
+      "refersTo": "scene-turn-card",
+      "description": "Static completed state of the scene’s turn card; the working rim is described in the motion contract.",
+      "html": "<div class=\"ds-cine\"><div class=\"ds-turn\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" aria-hidden=\"true\"><path d=\"m5 12 4 4L19 6\"/></svg><div><strong>Work completed</strong><span>4 files changed</span></div></div></div>",
+      "css": ".ds-cine{--background:0.135 0.03 266;--foreground:0.965 0.006 250;--card:0.175 0.03 264;--card-foreground:0.965 0.006 250;--popover:0.19 0.032 264;--popover-foreground:0.965 0.006 250;--primary:0.76 0.17 54;--primary-foreground:0.16 0.03 266;--secondary:0.21 0.03 264;--secondary-foreground:0.965 0.006 250;--muted:0.2 0.03 264;--muted-foreground:0.77 0.02 255;--accent:0.76 0.17 54;--accent-foreground:0.16 0.03 266;--border:0.3 0.03 262;--input:0.34 0.032 262;--ring:0.78 0.16 56;--artifact-bg:0.168 0.033 266;--artifact-raised:0.212 0.035 263;--artifact-line:0.35 0.036 262;--artifact-faint:0.46 0.035 260;--artifact-text:0.96 0.008 255;--artifact-dim:0.76 0.024 255;--artifact-accent:0.77 0.17 53;--artifact-ok:0.8 0.15 158;--cine-ease:cubic-bezier(0.16, 1, 0.3, 1);font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif;color:oklch(var(--foreground));background:oklch(var(--background));padding:1rem}.ds-turn{display:flex;align-items:center;gap:.7rem;border:1px solid oklch(var(--artifact-line)/.72);border-radius:12px;padding:.65rem .8rem;background:color-mix(in oklch,oklch(var(--artifact-raised)) 55%,oklch(var(--artifact-bg)));color:oklch(var(--artifact-text));font-size:13px;line-height:1.5}.ds-turn svg{flex:none;color:oklch(var(--artifact-ok))}.ds-turn strong{display:block;font-weight:600}.ds-turn span{display:block;font-size:12px;color:oklch(var(--artifact-dim))}"
+    },
+    {
+      "name": "Product window",
+      "kind": "custom",
+      "refersTo": "scene-window",
+      "description": "A bounded, lit application frame with a ruled titlebar. Full scene content belongs to ProductReel.",
+      "html": "<div class=\"ds-cine\"><div class=\"ds-window\"><div class=\"ds-window-bar\"><span class=\"ds-window-dot\"></span><strong>Mezair</strong><span>example repository</span></div><div class=\"ds-window-content\">Session on This MacBook</div></div></div>",
+      "css": ".ds-cine{--background:0.135 0.03 266;--foreground:0.965 0.006 250;--card:0.175 0.03 264;--card-foreground:0.965 0.006 250;--popover:0.19 0.032 264;--popover-foreground:0.965 0.006 250;--primary:0.76 0.17 54;--primary-foreground:0.16 0.03 266;--secondary:0.21 0.03 264;--secondary-foreground:0.965 0.006 250;--muted:0.2 0.03 264;--muted-foreground:0.77 0.02 255;--accent:0.76 0.17 54;--accent-foreground:0.16 0.03 266;--border:0.3 0.03 262;--input:0.34 0.032 262;--ring:0.78 0.16 56;--artifact-bg:0.168 0.033 266;--artifact-raised:0.212 0.035 263;--artifact-line:0.35 0.036 262;--artifact-faint:0.46 0.035 260;--artifact-text:0.96 0.008 255;--artifact-dim:0.76 0.024 255;--artifact-accent:0.77 0.17 53;--artifact-ok:0.8 0.15 158;--cine-ease:cubic-bezier(0.16, 1, 0.3, 1);font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif;color:oklch(var(--foreground));background:oklch(var(--background));padding:1rem}.ds-window{overflow:hidden;border:1px solid oklch(var(--artifact-line)/.8);border-radius:16px;background:oklch(var(--artifact-bg));color:oklch(var(--artifact-text));font-size:13px;line-height:1.5;box-shadow:0 1px 0 oklch(1 0 0/.06) inset,0 50px 100px -40px oklch(.04 .02 265/.95),0 24px 40px -28px oklch(.04 .02 265/.8)}.ds-window-bar{display:flex;height:2.5rem;align-items:center;gap:.75rem;border-bottom:1px solid oklch(var(--artifact-line)/.72);padding:0 .9rem;color:oklch(var(--artifact-dim));font-size:12px}.ds-window-bar strong{font-weight:600;color:oklch(var(--artifact-text))}.ds-window-dot{width:.65rem;height:.65rem;border-radius:999px;background:oklch(var(--artifact-accent))}.ds-window-content{padding:1rem}"
+    },
+    {
+      "name": "Selected reel chapter",
+      "kind": "custom",
+      "refersTo": "reel-tab",
+      "description": "Static specimen of a selected chapter at half progress; runtime progress and keyboard behavior remain in ProductReel.",
+      "html": "<div class=\"ds-cine\"><button class=\"ds-reel-tab\" type=\"button\" role=\"tab\" aria-selected=\"true\"><span class=\"ds-reel-progress\" aria-hidden=\"true\"></span><span class=\"ds-reel-label\">Agent work</span><span class=\"ds-reel-hint\">Watch every step</span></button></div>",
+      "css": ".ds-cine{--background:0.135 0.03 266;--foreground:0.965 0.006 250;--card:0.175 0.03 264;--card-foreground:0.965 0.006 250;--popover:0.19 0.032 264;--popover-foreground:0.965 0.006 250;--primary:0.76 0.17 54;--primary-foreground:0.16 0.03 266;--secondary:0.21 0.03 264;--secondary-foreground:0.965 0.006 250;--muted:0.2 0.03 264;--muted-foreground:0.77 0.02 255;--accent:0.76 0.17 54;--accent-foreground:0.16 0.03 266;--border:0.3 0.03 262;--input:0.34 0.032 262;--ring:0.78 0.16 56;--artifact-bg:0.168 0.033 266;--artifact-raised:0.212 0.035 263;--artifact-line:0.35 0.036 262;--artifact-faint:0.46 0.035 260;--artifact-text:0.96 0.008 255;--artifact-dim:0.76 0.024 255;--artifact-accent:0.77 0.17 53;--artifact-ok:0.8 0.15 158;--cine-ease:cubic-bezier(0.16, 1, 0.3, 1);font-family:var(--font-sans),ui-sans-serif,system-ui,sans-serif;color:oklch(var(--foreground));background:oklch(var(--background));padding:1rem}.ds-reel-tab{position:relative;display:grid;min-height:2.9rem;align-content:start;gap:.1rem;border:0;border-top:1px solid oklch(var(--border));padding:.65rem .25rem .35rem 0;background:transparent;color:oklch(var(--muted-foreground));font-family:inherit;text-align:left;transition:color 300ms}.ds-reel-tab:hover,.ds-reel-tab[aria-selected=\"true\"]{color:oklch(var(--foreground))}.ds-reel-tab:focus-visible{outline:2px solid oklch(var(--ring));outline-offset:3px;border-radius:4px}.ds-reel-label{font-size:.9375rem;font-weight:600;line-height:1.3}.ds-reel-hint{display:none;font-size:.8125rem;line-height:1.4;color:oklch(var(--muted-foreground))}.ds-reel-progress{position:absolute;top:-1px;left:0;right:0;height:2px;background:oklch(var(--accent));transform:scaleX(.5);transform-origin:left center;transition:transform 140ms linear}@media(min-width:768px){.ds-reel-hint{display:block}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The projection room and the workbench",
+    "overview": "Mezair shares one identity across two visual worlds: a calm, inspectable reading workspace and a dramatic projection room where working product scenes carry the marketing. Both use cool neutrals, Archivo, the monochrome horse-M and a restrained orange action accent. The mark follows the text color.\n\nThe always-dark projection room covers `/`, `/sync`, `/pricing` and `/what-does-mezair-mean`. The naming page is its quieter identity expression: power under precise control, with strength, discipline, progression and elegance expressed through the large horse-M and a visitor-triggered hop. Docs, account, workspace, auth and shared-artifact routes retain their existing reading and operating styles; the cinematic scope does not replace them.",
+    "keyCharacteristics": [
+      "Cool neutral grounds, a single action accent and explicit status words.",
+      "Wide, heavy display type paired with normal-width interface text.",
+      "Authored product scenes, divided comparisons and quiet reading surfaces.",
+      "Purposeful motion with pause controls, reduced-motion support and static initial frames."
+    ],
+    "rules": [
+      {
+        "name": "The Scope Rule",
+        "body": "Keep the cinematic palette inside the marketing wrapper. Reading and operating routes retain their established theme bindings.",
+        "section": "colors"
+      },
+      {
+        "name": "The Display Rule",
+        "body": "Use wide Archivo for headings and large prices; keep body and interface text at normal width.",
+        "section": "typography"
+      },
+      {
+        "name": "The Lit Object Rule",
+        "body": "Reserve cinematic depth for product windows and staged objects. Keep comparisons and explanatory lists divided and quiet.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep the horse-M monochrome and bound to the surrounding text color.",
+      "Do use the scoped marketing palette on all four cinematic routes and keep their theme toggle hidden.",
+      "Do label authored product scenes as illustrative demos and pair operational colors with text.",
+      "Do keep chapter selection, pause controls, keyboard focus and reduced-motion behavior available.",
+      "Do preserve the naming page’s click-triggered horseplay and its power-under-control character."
+    ],
+    "donts": [
+      "Don't carry cinematic page styling into docs, account or workspace routes.",
+      "Don't use gradient text, decorative glass, fake screenshots, fake metrics or testimonials.",
+      "Don't replace divided comparisons with a repetitive grid of equal icon cards.",
+      "Don't add decorative eyebrows, kickers or machine-looking labels to marketing headings.",
+      "Don't turn the orange accent into a large decorative background or convey status through color alone."
+    ]
+  }
+}
