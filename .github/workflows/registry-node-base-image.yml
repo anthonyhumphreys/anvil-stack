@@ -1,24 +1,24 @@
-name: Anvil Node Base Image
+name: Mezair Node Base Image
 
 on:
   pull_request:
     paths:
       - ".github/workflows/registry-node-base-image.yml"
-      - "anvil-registry/apps/admin/**"
-      - "anvil-registry/apps/cli/**"
-      - "anvil-registry/apps/gateway/**"
-      - "anvil-registry/devcontainer-base/**"
-      - "anvil-registry/docs/anvil-node-base-spec.md"
-      - "anvil-registry/infra/docker/**"
-      - "anvil-registry/package.json"
-      - "anvil-registry/packages/**"
-      - "anvil-registry/pnpm-lock.yaml"
-      - "anvil-registry/pnpm-workspace.yaml"
-      - "anvil-registry/scripts/smoke-node-base-image"
-      - "anvil-registry/scripts/smoke-node-base-image-observed"
-      - "anvil-registry/scripts/smoke-node-base-image-report"
-      - "anvil-registry/turbo.json"
-      - "anvil-registry/tsconfig.base.json"
+      - "mezair-registry/apps/admin/**"
+      - "mezair-registry/apps/cli/**"
+      - "mezair-registry/apps/gateway/**"
+      - "mezair-registry/devcontainer-base/**"
+      - "mezair-registry/docs/mezair-node-base-spec.md"
+      - "mezair-registry/infra/docker/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/packages/**"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/scripts/smoke-node-base-image"
+      - "mezair-registry/scripts/smoke-node-base-image-observed"
+      - "mezair-registry/scripts/smoke-node-base-image-report"
+      - "mezair-registry/turbo.json"
+      - "mezair-registry/tsconfig.base.json"
   push:
     branches:
       - main
@@ -26,21 +26,21 @@ on:
       - "node-base-v*"
     paths:
       - ".github/workflows/registry-node-base-image.yml"
-      - "anvil-registry/apps/admin/**"
-      - "anvil-registry/apps/cli/**"
-      - "anvil-registry/apps/gateway/**"
-      - "anvil-registry/devcontainer-base/**"
-      - "anvil-registry/docs/anvil-node-base-spec.md"
-      - "anvil-registry/infra/docker/**"
-      - "anvil-registry/package.json"
-      - "anvil-registry/packages/**"
-      - "anvil-registry/pnpm-lock.yaml"
-      - "anvil-registry/pnpm-workspace.yaml"
-      - "anvil-registry/scripts/smoke-node-base-image"
-      - "anvil-registry/scripts/smoke-node-base-image-observed"
-      - "anvil-registry/scripts/smoke-node-base-image-report"
-      - "anvil-registry/turbo.json"
-      - "anvil-registry/tsconfig.base.json"
+      - "mezair-registry/apps/admin/**"
+      - "mezair-registry/apps/cli/**"
+      - "mezair-registry/apps/gateway/**"
+      - "mezair-registry/devcontainer-base/**"
+      - "mezair-registry/docs/mezair-node-base-spec.md"
+      - "mezair-registry/infra/docker/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/packages/**"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/scripts/smoke-node-base-image"
+      - "mezair-registry/scripts/smoke-node-base-image-observed"
+      - "mezair-registry/scripts/smoke-node-base-image-report"
+      - "mezair-registry/turbo.json"
+      - "mezair-registry/tsconfig.base.json"
   workflow_dispatch:
 
 permissions:
@@ -53,12 +53,12 @@ concurrency:
 
 env:
   CI: true
-  IMAGE_NAME: ghcr.io/${{ github.repository }}/anvil-node-base
-  SMOKE_IMAGE: anvil-node-base-smoke:ci
+  IMAGE_NAME: ghcr.io/${{ github.repository }}/mezair-node-base
+  SMOKE_IMAGE: mezair-node-base-smoke:ci
 
 defaults:
   run:
-    working-directory: anvil-registry
+    working-directory: mezair-registry
 
 jobs:
   build:
@@ -82,7 +82,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-registry/pnpm-lock.yaml
+          cache-dependency-path: mezair-registry/pnpm-lock.yaml
 
       - name: Show tool versions
         run: |
@@ -100,21 +100,21 @@ jobs:
       - name: Build smoke image
         uses: docker/build-push-action@v7
         with:
-          context: anvil-registry/devcontainer-base
-          file: anvil-registry/devcontainer-base/Dockerfile
+          context: mezair-registry/devcontainer-base
+          file: mezair-registry/devcontainer-base/Dockerfile
           load: true
           tags: ${{ env.SMOKE_IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Verify image defaults
-        run: ANVIL_NODE_BASE_SMOKE_IMAGE="${SMOKE_IMAGE}" ./scripts/smoke-node-base-image
+        run: MEZAIR_NODE_BASE_SMOKE_IMAGE="${SMOKE_IMAGE}" ./scripts/smoke-node-base-image
 
       - name: Verify observed install mode
-        run: ANVIL_NODE_BASE_SMOKE_IMAGE="${SMOKE_IMAGE}" ./scripts/smoke-node-base-image-observed
+        run: MEZAIR_NODE_BASE_SMOKE_IMAGE="${SMOKE_IMAGE}" ./scripts/smoke-node-base-image-observed
 
       - name: Verify registry report submission
-        run: ANVIL_NODE_BASE_SMOKE_IMAGE="${SMOKE_IMAGE}" ./scripts/smoke-node-base-image-report
+        run: MEZAIR_NODE_BASE_SMOKE_IMAGE="${SMOKE_IMAGE}" ./scripts/smoke-node-base-image-report
 
       - name: Capture Docker logs
         if: failure()
@@ -129,7 +129,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: node-base-image-logs
-          path: anvil-registry/.ci-artifacts
+          path: mezair-registry/.ci-artifacts
+          include-hidden-files: true
           if-no-files-found: ignore
 
       - name: Log in to GHCR
@@ -157,8 +158,8 @@ jobs:
         if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/node-base-v'))
         uses: docker/build-push-action@v7
         with:
-          context: anvil-registry/devcontainer-base
-          file: anvil-registry/devcontainer-base/Dockerfile
+          context: mezair-registry/devcontainer-base
+          file: mezair-registry/devcontainer-base/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

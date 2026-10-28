@@ -14,8 +14,15 @@ coverage/
 *.tsbuildinfo
 
 # Canvas/session artifacts are session scratch — kept locally under
-# .anvil/artifacts/<category>/ but not committed to the repository.
+# .mezair/artifacts/<category>/ but not committed to the repository.
+/.mezair/artifacts/
+
+# Local artifacts and build caches retained after the workspace rename.
 /.anvil/artifacts/
+/anvil-app/
+/anvil-cloud/
+/anvil-registry/
+/anvil-website/
 
 # Headless daemon bundle output
-anvil-app/dist-daemon/
+mezair-app/dist-daemon/

@@ -1,9 +1,0 @@
-{
-  "name": "aws-preview",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@anvil-cloud/client": "workspace:*",
-    "@anvil-cloud/runtime": "workspace:*"
-  }
-}

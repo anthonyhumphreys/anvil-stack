@@ -14,14 +14,14 @@ Final checkpoint: UI, transport, Desktop grants, and tools owners returned their
 4. Finish Desktop durable result outbox handling. Exact ciphertext/fence retry is covered by acceptance, but one expired/revoked/unpublishable result must not starve all later commands. Verify tools dispatch and revocation cleanup are wired into the real runtime, not only standalone tests.
 5. Finish isolated screenshot permissions and total-result-size handling. Preview remains noninteractive. No arbitrary URL proxy is authorized.
 6. Repeat relevant checks once integration settles: full app tests, backend tests/typecheck, website lint/typecheck/build, app lint/build, and the bounded Impeccable confirmation/reviewer handoff. Native dependencies currently target Node; coordinate before rebuilding them for Electron.
-7. Remove the temporary presentation-only `anvil-website/app/docs/workspace-review-local/page.tsx` before shipping. It is dev-only and contains explicitly labelled fixture data. Initial captures omit the real account wrapper; UI owner is correcting the actual workspace layout to avoid duplicate sidebars. Do not treat fixture screenshots as live acceptance.
+7. Remove the temporary presentation-only `mezair-website/app/docs/workspace-review-local/page.tsx` before shipping. It is dev-only and contains explicitly labelled fixture data. Initial captures omit the real account wrapper; UI owner is correcting the actual workspace layout to avoid duplicate sidebars. Do not treat fixture screenshots as live acceptance.
 8. Only after local checks pass, ask permission to deploy the new relay to hosted staging, then ask Anth to sign in and approve the browser from Desktop. Sign-in alone cannot test the relay while staging is still on the old backend.
 
 ### Local verification environment
 
 - Website development server: `http://localhost:3000`. WorkOS callback is local; backend points to existing hosted staging. No new backend deployed.
-- Initial workspace shell captures: `anvil-website/.impeccable/review/workspace-desktop-initial.png` and `workspace-mobile-initial.png`. Browser viewport override has been reset.
-- Earlier local worker: port 8799, persistence `/tmp/anvil-readiness-worker.qKAAm1`. Earlier isolated Electron QA profile: `/tmp/anvil-readiness-desktop.ynXySj`. Recheck process state before using; the running Desktop may have an older build.
+- Initial workspace shell captures: `mezair-website/.impeccable/review/workspace-desktop-initial.png` and `workspace-mobile-initial.png`. Browser viewport override has been reset.
+- Earlier local worker: port 8799, persistence `/tmp/mezair-readiness-worker.qKAAm1`. Earlier isolated Electron QA profile: `/tmp/mezair-readiness-desktop.ynXySj`. Recheck process state before using; the running Desktop may have an older build.
 - Current work includes the earlier settings, onboarding, marketing, cloud-provider, and backend changes tracked in `MARKET_READINESS_PROGRESS.md`. Do not revert them while finishing this browser phase.
 
 ## Decisions
@@ -108,7 +108,7 @@ All four outstanding handoff items are now implemented; nothing is committed or 
 
 Checks after this session's edits: `tsc -b` (app node+web) pass; focused Vitest `browser-workspace-tools`/`browser-workspace-executor` 30/30 pass; backend typecheck pass; backend `browser-workspace.test.ts` 4/4 pass; website typecheck/lint/build pass (one pre-existing `no-img-element` warning for the runtime PNG preview); `git diff --check` clean.
 
-Still outstanding: deploy the new relay to authorized staging (`anvil-sync-hosted-staging`), verify the descriptor advertises `workos-device`, then run the real sign-in + Desktop approval acceptance — including revocation-closes-terminals and no-replay-after-reconnect checks.
+Still outstanding: deploy the new relay to authorized staging (`mezair-sync-hosted-staging`), verify the descriptor advertises `workos-device`, then run the real sign-in + Desktop approval acceptance — including revocation-closes-terminals and no-replay-after-reconnect checks.
 
 ## Independent integration reviewer checkpoint
 
@@ -121,15 +121,15 @@ These are review findings from the current dirty worktree, not all independently
 - **Policy decision: completed result ciphertext remains retrievable after revoke.** Hosted command status does not recheck the revoked grant for completed results. The approved plan says revocation stops further access; enforce that for result retrieval or explicitly reconcile the narrower policy before shipping.
 - Reviewer found file-write expected revisions, history shapes, and command/result AAD domain separation consistent in the inspected snapshot. This does not substitute for full signed-in acceptance.
 
-Resume verification update: `anvil-app` Node TypeScript check passes after changing cross-project crypto acceptance imports to runtime-only absolute URL imports. Browser crypto + pump/executor acceptance passes 8/8. Backend browser-workspace tests pass 7/7 and backend typecheck passes. Desktop grant + pump tests pass 11/11 after failed-outcome and deterministic-denial fixes. Website typecheck and `git diff --check` pass. The backend owner also reports 17 taskkey/dashboard tests passing for issuer-bound request lookup.
+Resume verification update: `mezair-app` Node TypeScript check passes after changing cross-project crypto acceptance imports to runtime-only absolute URL imports. Browser crypto + pump/executor acceptance passes 8/8. Backend browser-workspace tests pass 7/7 and backend typecheck passes. Desktop grant + pump tests pass 11/11 after failed-outcome and deterministic-denial fixes. Website typecheck and `git diff --check` pass. The backend owner also reports 17 taskkey/dashboard tests passing for issuer-bound request lookup.
 
-Root also added ready-grant status polling in `anvil-website/lib/browser-workspace.ts`: approved sessions recheck every 15 seconds, while pending sessions retain the 5-second poll. Revocation, denial, and expiry now clear the session through the existing account-scoped cleanup path. Website typecheck passes; lint has one intentional dynamic-PNG `<img>` warning.
+Root also added ready-grant status polling in `mezair-website/lib/browser-workspace.ts`: approved sessions recheck every 15 seconds, while pending sessions retain the 5-second poll. Revocation, denial, and expiry now clear the session through the existing account-scoped cleanup path. Website typecheck passes; lint has one intentional dynamic-PNG `<img>` warning.
 
 Website production build completed successfully after that transport change. The build-generated `next-env.d.ts` path change was restored to the development references so it does not become accidental source churn.
 
 Full local app suite now passes: 195 files passed, 4 skipped; 1,466 tests passed, 11 skipped. Full backend suite passes: 32 files, 355 tests. App Node typecheck, website typecheck, focused browser acceptance, backend typecheck, website build, website lint, and `git diff --check` are green. Website lint retains one `no-img-element` warning for the runtime Desktop PNG preview.
 
-Resume update: the acceptance tests now load the website crypto implementation through an absolute runtime-only URL, keeping it out of the app TypeScript root while still exercising the real implementation. `anvil-app` Node typecheck passes, website typecheck passes, the two cross-component acceptance files pass 8/8, and `git diff --check` passes. The P0/P1 contract fixes below are still pending owner reports.
+Resume update: the acceptance tests now load the website crypto implementation through an absolute runtime-only URL, keeping it out of the app TypeScript root while still exercising the real implementation. `mezair-app` Node typecheck passes, website typecheck passes, the two cross-component acceptance files pass 8/8, and `git diff --check` passes. The P0/P1 contract fixes below are still pending owner reports.
 
 ## Grant checkpoint — Desktop scoped grants and relay pump
 
@@ -155,17 +155,17 @@ Status: bounded UI integration is saved in the shared worktree. The account work
 
 Presentation: `WorkspaceShell` is a full-width Desktop-backed surface with conversation, compact repository/session navigation, files/editor, changes/diffs, runs, terminal and PNG-preview slots, contextual approvals/connection state, mobile view tabs, and keyboard-visible controls. Timestamps use deterministic UTC formatting for hydration. “Approval needed” jumps to the contextual approval section. `/account/workspace` now keeps the global header but removes the account sidebar/footer; the workspace header links back to Account.
 
-Temporary review: `anvil-website/app/docs/workspace-review-local/page.tsx` is a development-only, public-fixture route for visual review at `/docs/workspace-review-local`. It imports no transport, disables mutations, labels “Local UI fixture,” and reports preview unavailable rather than inventing an image. Root should remove this route before the final build. The existing AuthKit sign-in tab was left untouched.
+Temporary review: `mezair-website/app/docs/workspace-review-local/page.tsx` is a development-only, public-fixture route for visual review at `/docs/workspace-review-local`. It imports no transport, disables mutations, labels “Local UI fixture,” and reports preview unavailable rather than inventing an image. Root should remove this route before the final build. The existing AuthKit sign-in tab was left untouched.
 
 Current blockers: the access request contract currently requires exact non-empty repository IDs, so the gate asks for IDs selected in Desktop; no wildcard/discovery shortcut is used. Terminal and preview command callbacks remain intentionally absent until `browser_web_transport` / `browser_terminal_preview` expose the typed tool-result bridge. Tests have no separate browser operation yet, so the run-tests control stays disabled. Mutation errors now throw from send/create-session paths so composer drafts are preserved; broader uncertain-command recovery remains transport-owned. Root should finish the generation/polling review against the final hook contract.
 
-Files owned by this checkpoint: `anvil-website/components/workspace/types.ts`, `workspace-shell.tsx`, `workspace-route.tsx`, `workspace-client.tsx`; `anvil-website/app/account/workspace/page.tsx`; temporary `anvil-website/app/docs/workspace-review-local/page.tsx`; `anvil-website/components/account/account-chrome.tsx`; `anvil-website/app/account/layout.tsx`; and the Workspace item in `anvil-website/lib/site.ts`.
+Files owned by this checkpoint: `mezair-website/components/workspace/types.ts`, `workspace-shell.tsx`, `workspace-route.tsx`, `workspace-client.tsx`; `mezair-website/app/account/workspace/page.tsx`; temporary `mezair-website/app/docs/workspace-review-local/page.tsx`; `mezair-website/components/account/account-chrome.tsx`; `mezair-website/app/account/layout.tsx`; and the Workspace item in `mezair-website/lib/site.ts`.
 
 Last local website checks before this checkpoint: `pnpm typecheck` passed; `pnpm lint` had no errors and one existing `@next/next/no-img-element` warning for dynamic Desktop PNG data. No deployment, commit, hosted sign-in, or production write was performed.
 
 ## Browser transport checkpoint — 2026-09-22
 
-Status: website transport/actions are implemented in `anvil-website/lib/browser-workspace.ts`, `lib/browser-workspace-auth.ts`, `lib/mesh-crypto.ts`, `app/account/workspace/actions.ts`, and the hosted client/type mirrors. Commands use the shared browser-workspace/1 operation list (including terminal/preview), distinct command/result AAD, bounded 384 KiB envelopes and 256 KiB decrypted results, stable IDs, opaque hosted forwarding, and no blind mutation retry. Pending command metadata plus the exact encrypted envelope is persisted before submit; reconnect polls the same command ID without resubmitting. Command results returned from the hook intentionally expose only public metadata, not DSK/account/backend internals. IndexedDB wrapping keys use a conditional single readwrite transaction and are stored as `{id,key}` records.
+Status: website transport/actions are implemented in `mezair-website/lib/browser-workspace.ts`, `lib/browser-workspace-auth.ts`, `lib/mesh-crypto.ts`, `app/account/workspace/actions.ts`, and the hosted client/type mirrors. Commands use the shared browser-workspace/1 operation list (including terminal/preview), distinct command/result AAD, bounded 384 KiB envelopes and 256 KiB decrypted results, stable IDs, opaque hosted forwarding, and no blind mutation retry. Pending command metadata plus the exact encrypted envelope is persisted before submit; reconnect polls the same command ID without resubmitting. Command results returned from the hook intentionally expose only public metadata, not DSK/account/backend internals. IndexedDB wrapping keys use a conditional single readwrite transaction and are stored as `{id,key}` records.
 
 Checks: website `pnpm typecheck`, `pnpm lint` (one existing dynamic PNG `<img>` warning), and `pnpm build` passed. Desktop/website crypto interoperability test `src/main/services/__tests__/browser-workspace-crypto.acceptance.test.ts` passed 3 tests directly. The broader Desktop test command remains noisy/failed on unrelated schema-version and executor-constant work in the shared dirty tree.
 

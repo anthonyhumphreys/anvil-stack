@@ -1,0 +1,904 @@
+import {
+  createThreadWithPullRequest,
+  linkThreadPullRequest,
+  unlinkThreadPullRequest,
+  listThreadPullRequestLinks,
+  listPullRequestThreads,
+  refreshThreadPullRequest,
+} from '../services/thread-pull-request.service.js';
+import type { ChatThreadPullRequestInput } from '../../shared/types.js';
+import {
+  assertReviewRepairForkAllowed,
+  resolveReviewRepairPaths,
+} from '../services/change-review.service.js';
+import { ipcMain } from 'electron';
+import type {
+  AgentUIIntentPresentationPatch,
+  AgentUIPlanPatch,
+  AgentUIQuestionResolution,
+} from '../../shared/agent-ui-intents.js';
+import type {
+  AgentProvider,
+  ChatMessage,
+  ChatArtifact,
+  ChatArtifactAnnotation,
+  ChatArtifactAnnotationInput,
+  ChatArtifactAnnotationPatch,
+  ChatArtifactFile,
+  ChatArtifactInput,
+  ChatAttachment,
+  ChatAttachmentInput,
+  ChatFileMentionSearchInput,
+  ChatFileMentionSearchResult,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
+  ChatGoalSnapshot,
+  ChatPlanSnapshot,
+  ChatSendOptions,
+  ChatStartOptions,
+  ChatSteerResult,
+  ChatThread,
+  ChatThreadPurpose,
+  CodexEvent,
+  CodexInputResponse,
+  CodexSession,
+  Persona,
+  WorkItemProvider,
+} from '../../shared/types.js';
+import { getDb } from '../db/database.js';
+import {
+  startSession,
+  sendMessage,
+  steerTurn,
+  followUpTurn,
+  stopSession,
+  stopSessionAndWait,
+  interruptTurn,
+  emitLocalAssistantTurnStart,
+  emitLocalAssistantText,
+  emitLocalAssistantTurnEnd,
+  getSessionStatus,
+  getCodexSession,
+  isTemporaryChatSession,
+  stopAllSessions,
+  getSessionForRepo,
+  listActiveCodexSessions,
+  resolveApproval,
+  resolveInputRequest,
+  dismissAgentUIIntentAndBroadcast,
+  patchAgentUIPlanAndNotify,
+  resolveAgentUIQuestion,
+  restoreAgentUIIntentAndBroadcast,
+  updateAgentUIIntentPresentationAndBroadcast,
+} from '../services/codex-session.service.js';
+import {
+  callPreferredLocalModel,
+  classifyPromptForLocalModel,
+  isLikelyLocalModelRefusal,
+} from '../services/local-llm.service.js';
+import { getAppleLocalModelStatus } from '../services/apple-foundation-models.service.js';
+import { getSettings } from '../services/settings.service.js';
+import { getPersonas } from '../services/persona.service.js';
+import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
+import { resolveCodexRuntime } from '../services/codex-runtime.service.js';
+import { detectCursorCli } from '../services/cursor-bridge.service.js';
+import { detectDevinCli } from '../services/devin-bridge.service.js';
+import {
+  createChatSession,
+  deleteChatThread,
+  ensureWorkItemChatThread,
+  getChatThreadProviderBinding,
+  getChatThread,
+  isTemporaryChatThread,
+  listChatThreads,
+  listWorkItemChatThreads,
+  saveChatEntry,
+  saveChatThreadGoal,
+  saveChatThreadPlan,
+  setChatThreadProviderThreadId,
+  loadChatHistory,
+  clearChatHistory,
+  createTemporaryChatThread,
+  endTemporaryChatThread,
+  updateChatThread,
+} from '../services/chat-persistence.service.js';
+import {
+  prepareChatAttachments,
+  selectChatAttachmentFiles,
+} from '../services/chat-attachment.service.js';
+import { saveChatEvent } from '../services/chat-evidence.service.js';
+import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
+import {
+  discardChatArtifact,
+  listChatArtifacts,
+  readChatArtifactFile,
+  shareChatArtifact,
+  unshareChatArtifact,
+  upsertChatArtifact,
+} from '../services/chat-artifact.service.js';
+import { isArtifactSharingAvailable } from '../services/artifact-share.service.js';
+import {
+  createChatArtifactAnnotation,
+  deleteChatArtifactAnnotation,
+  listChatArtifactAnnotations,
+  updateChatArtifactAnnotation,
+} from '../services/chat-artifact-annotation.service.js';
+import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
+import { resolveMezairOwnedQuestion } from '../surfaces/core.js';
+import {
+  actOnChatDelegation,
+  assertChatDelegationsFinished,
+  describeChatDelegation,
+  listChatDelegations,
+  prepareDelegationIntegration,
+  integrateDelegation,
+  retryDelegationVerification,
+  applyDelegationIntegration,
+  requireChatDelegation,
+  stopChatDelegation,
+} from '../services/chat-delegation.service.js';
+import {
+  captureThreadContinuation,
+  prependThreadContinuation,
+} from '../services/chat-continuation.service.js';
+
+const LOCAL_LLM_CHAT_MAX_PROMPT_CHARS = 8_000;
+// Hold back this many streamed characters so early refusals never reach the UI.
+const LOCAL_LLM_STREAM_HOLDBACK_CHARS = 48;
+
+async function assertChatProviderAvailable(provider: AgentProvider): Promise<void> {
+  if (provider === 'cursor') {
+    const status = await detectCursorCli();
+    if (!status.installed) {
+      throw new Error(
+        'Cursor CLI is not installed. Install it and run `cursor-agent login` before starting a Cursor chat.',
+      );
+    }
+    return;
+  }
+
+  if (provider === 'devin') {
+    const status = await detectDevinCli();
+    if (!status.installed) {
+      throw new Error(
+        'Devin CLI is not installed. Install it from https://devin.ai and run `devin auth login` before starting a Devin chat.',
+      );
+    }
+    if (status.authenticated === false) {
+      throw new Error(
+        'Devin CLI is not signed in. Run `devin auth login` or sign in from Settings → AI Providers.',
+      );
+    }
+    return;
+  }
+
+  if (provider === 'llmgateway') {
+    try {
+      await resolveCodexRuntime();
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\n\n${getCodexInstallInstructions('llmgateway')}`,
+      );
+    }
+    return;
+  }
+
+  const status = await detectCodexCli();
+  if (!status.installed) {
+    throw new Error(`Codex CLI is not installed.\n\n${getCodexInstallInstructions('codex')}`);
+  }
+}
+
+/**
+ * When the local-model opt-in is enabled, classify the prompt and —
+ * if it is simple enough — answer it locally instead of starting a Codex turn.
+ * Image attachments are eligible when the Apple provider reports vision
+ * support (macOS 27+). Returns true when the message was fully handled
+ * on-device.
+ */
+async function tryLocalLlmChatReply(
+  sessionId: string,
+  message: string,
+  attachments?: ChatAttachment[],
+): Promise<boolean> {
+  const settings = getSettings();
+  if (settings.localLlmMode !== 'prefer-simple') return false;
+  if (message.length > LOCAL_LLM_CHAT_MAX_PROMPT_CHARS) return false;
+
+  let imagePaths: string[] | undefined;
+  if (attachments?.length) {
+    if (attachments.some((attachment) => attachment.kind !== 'image')) return false;
+    if (settings.localLlmProvider !== 'apple') return false;
+    const status = await getAppleLocalModelStatus();
+    // Require probed availability, not just the feature flag — a backend can
+    // advertise image API support while the model itself is not ready.
+    if (!status.available || !status.features.images) return false;
+    imagePaths = attachments.map((attachment) => attachment.path);
+  }
+
+  const route = await classifyPromptForLocalModel(message, (imagePaths?.length ?? 0) > 0);
+  if (route !== 'local') return false;
+  const threadId = isTemporaryChatSession(sessionId)
+    ? undefined
+    : getCodexSession(sessionId)?.appThreadId;
+  const localPrompt = prependThreadContinuation(
+    threadId ? captureThreadContinuation(threadId).context : undefined,
+    message,
+  );
+  if (localPrompt.length > LOCAL_LLM_CHAT_MAX_PROMPT_CHARS) return false;
+
+  let started = false;
+  let emittedChars = 0;
+  let pending = '';
+  const start = () => {
+    if (!started) {
+      emitLocalAssistantTurnStart(sessionId);
+      started = true;
+    }
+  };
+  const result = await callPreferredLocalModel(localPrompt, 4096, {
+    images: imagePaths,
+    onPartial: (delta) => {
+      pending += delta;
+      // Check the buffered prefix for refusal phrasing on every delta so a
+      // refusal is caught before its text ever reaches the transcript.
+      if (isLikelyLocalModelRefusal(pending)) return;
+      if (pending.length > LOCAL_LLM_STREAM_HOLDBACK_CHARS) {
+        start();
+        emitLocalAssistantText(sessionId, pending);
+        emittedChars += pending.length;
+        pending = '';
+      }
+    },
+  });
+  const full = result.ok ? (result.content ?? '') : '';
+  const content = full.trim();
+  if (!result.ok || !content || isLikelyLocalModelRefusal(content)) {
+    if (started) emitLocalAssistantTurnEnd(sessionId, 'interrupted');
+    console.warn('[Chat] Local model reply unusable; falling back to configured provider');
+    return false;
+  }
+
+  console.log(`[Chat] Answered via local model (${content.length} chars)`);
+  start();
+  // Streamed text is already on screen; emit only the unstreamed remainder (or
+  // the trimmed body when the backend didn't stream at all).
+  const remainder = emittedChars > 0 ? full.slice(emittedChars) : content;
+  if (remainder) emitLocalAssistantText(sessionId, remainder);
+  emitLocalAssistantTurnEnd(sessionId);
+  return true;
+}
+
+export function registerChatHandlers(): void {
+  ipcMain.handle('chat:list-delegations', (_event, threadId: string) =>
+    listChatDelegations(threadId),
+  );
+  ipcMain.handle('chat:read-delegation', (_event, threadId: string, runId: string) =>
+    describeChatDelegation(requireChatDelegation(threadId, runId)),
+  );
+  ipcMain.handle('chat:stop-delegation', (_event, threadId: string, runId: string) =>
+    stopChatDelegation(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:act-on-delegation',
+    (
+      _event,
+      threadId: string,
+      runId: string,
+      action: import('../../shared/chat-delegation.js').ChatDelegationAction,
+      nodeId?: string,
+    ) => actOnChatDelegation(threadId, runId, action, nodeId),
+  );
+  ipcMain.handle('chat:prepare-delegation-integration', (_event, threadId: string, runId: string) =>
+    prepareDelegationIntegration(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:integrate-delegation',
+    (
+      _event,
+      threadId: string,
+      runId: string,
+      selectedChecks: import('../../shared/chat-delegation.js').ChatDelegationVerificationSelection[],
+    ) => integrateDelegation(threadId, runId, selectedChecks),
+  );
+  ipcMain.handle('chat:retry-delegation-verification', (_event, threadId: string, runId: string) =>
+    retryDelegationVerification(threadId, runId),
+  );
+  ipcMain.handle(
+    'chat:apply-delegation-integration',
+    (_event, threadId: string, runId: string, repositoryId: string) =>
+      applyDelegationIntegration(threadId, runId, repositoryId),
+  );
+  ipcMain.handle(
+    'chat:link-pull-request',
+    (_event, threadId: string, input: ChatThreadPullRequestInput) =>
+      linkThreadPullRequest(threadId, input),
+  );
+  ipcMain.handle('chat:unlink-pull-request', (_event, threadId: string, linkId: string) =>
+    unlinkThreadPullRequest(threadId, linkId),
+  );
+  ipcMain.handle('chat:list-pull-request-links', (_event, threadId: string) =>
+    listThreadPullRequestLinks(threadId),
+  );
+  ipcMain.handle(
+    'chat:list-pull-request-threads',
+    (_event, repoId: string, provider: 'github' | 'ado', pullRequestId: string) =>
+      listPullRequestThreads(repoId, provider, pullRequestId),
+  );
+  ipcMain.handle('chat:refresh-pull-request-link', (_event, threadId: string, linkId: string) =>
+    refreshThreadPullRequest(threadId, linkId),
+  );
+  ipcMain.handle(
+    'chat:start-session',
+    async (
+      _event,
+      repoIds: string[],
+      personaId: string,
+      options?: ChatStartOptions,
+    ): Promise<CodexSession> => {
+      const provider = options?.provider ?? getSettings().llmProvider;
+      await assertChatProviderAvailable(provider);
+
+      const temporaryThread = getChatThread(options?.threadId ?? '');
+      const temporaryFlag = options?.temporaryChat === true;
+      if (temporaryFlag !== isTemporaryChatThread(options?.threadId)) {
+        throw new Error('Temporary chat session state does not match its thread.');
+      }
+      if (temporaryFlag) {
+        if (
+          !temporaryThread?.temporary ||
+          repoIds.length > 0 ||
+          options?.workspace ||
+          options?.scaffold ||
+          options?.providerThreadId ||
+          options?.forkFromProviderThreadId
+        ) {
+          throw new Error(
+            'Temporary chat cannot use workspace, repository, or resumed-thread context.',
+          );
+        }
+      } else if (temporaryThread?.temporary) {
+        throw new Error('Temporary chat sessions must use the isolated temporary session mode.');
+      }
+
+      // Get repo paths from DB
+      const db = getDb();
+      const repoPaths: string[] = [];
+      for (const rid of repoIds) {
+        const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(rid) as
+          { path: string } | undefined;
+        if (row) repoPaths.push(row.path);
+      }
+      if (repoPaths.length === 0 && !options?.scaffold && !options?.workspace && !temporaryFlag) {
+        throw new Error('No repos found');
+      }
+
+      const repairPaths = resolveReviewRepairPaths(
+        options?.threadId,
+        repoIds,
+        options?.changeReviewId,
+      );
+      if (repairPaths) {
+        if (options?.scaffold || options?.workspace?.cwd)
+          throw new Error('Repair sessions use the retained candidate working directory.');
+        repoPaths.splice(0, repoPaths.length, ...repairPaths);
+      }
+
+      // Use first repo's path as primary cwd; pass all paths for context
+      const storedBinding = temporaryFlag ? null : getChatThreadProviderBinding(options?.threadId);
+      const providerThreadId = temporaryFlag
+        ? undefined
+        : (options?.providerThreadId ??
+          (storedBinding?.provider === provider ? storedBinding.providerThreadId : undefined));
+      const codexSession = await startSession(repoPaths, repoIds, personaId, {
+        ...options,
+        providerThreadId: options?.forkFromProviderThreadId
+          ? undefined
+          : (providerThreadId ?? undefined),
+      });
+
+      // Create persistence session — associate with first repo for history
+      createChatSession(
+        options?.threadId ?? null,
+        repoIds[0] ?? null,
+        personaId,
+        codexSession.id,
+        codexSession.providerThreadId ?? null,
+        provider,
+      );
+
+      return codexSession;
+    },
+  );
+
+  ipcMain.handle(
+    'chat:start-scaffold-session',
+    async (
+      _event,
+      workspaceId: string,
+      rootPath: string,
+      personaId: string,
+      options?: Pick<ChatStartOptions, 'provider' | 'model'>,
+    ): Promise<CodexSession> => {
+      const provider = options?.provider ?? getSettings().llmProvider;
+      await assertChatProviderAvailable(provider);
+
+      const codexSession = await startSession([rootPath], [], personaId, {
+        provider,
+        model: options?.model,
+        scaffold: { workspaceId, rootPath },
+      });
+
+      createChatSession(
+        null,
+        null,
+        personaId,
+        codexSession.id,
+        codexSession.providerThreadId,
+        provider,
+      );
+      return codexSession;
+    },
+  );
+
+  ipcMain.handle(
+    'chat:send',
+    async (
+      _event,
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+      options?: ChatSendOptions,
+    ): Promise<void> => {
+      if (isTemporaryChatSession(sessionId) && (attachments?.length ?? 0) > 0) {
+        throw new Error('Temporary chat supports text messages only.');
+      }
+      // Parse chat commands before sending
+      const parsed = parseChatCommand(message);
+
+      if (parsed.command === 'persona') {
+        // Handled by chat:switch-persona instead
+        throw new Error('Use the persona dropdown to switch personas');
+      }
+
+      if (parsed.command === 'new') {
+        // Restart session — the renderer should call start-session again
+        stopSession(sessionId);
+        return;
+      }
+
+      // For plan/fix/review commands, enrich the message with work item context
+      let enrichedMessage = message;
+      if (parsed.command && parsed.workItemId) {
+        // TODO: Fetch real work item from ADO in Phase 4
+        enrichedMessage = `[Work Item ${parsed.workItemId}] ${parsed.command}: ${message}`;
+      }
+
+      // Plain messages — and, on macOS 27+, image-only attachments — may be
+      // answerable on-device.
+      if (!parsed.command) {
+        const handledLocally = await tryLocalLlmChatReply(sessionId, enrichedMessage, attachments);
+        if (handledLocally) return;
+      }
+
+      await sendMessage(sessionId, enrichedMessage, attachments, options);
+    },
+  );
+
+  ipcMain.handle('chat:stop-session', (_event, sessionId: string) => stopSessionAndWait(sessionId));
+
+  ipcMain.handle('chat:interrupt', (_event, sessionId: string): void => {
+    interruptTurn(sessionId);
+  });
+
+  ipcMain.handle(
+    'chat:steer',
+    (
+      _event,
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+    ): Promise<ChatSteerResult> => {
+      return steerTurn(sessionId, message, attachments);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:follow-up',
+    (_event, request: ChatFollowUpRequest): Promise<ChatFollowUpResult> => {
+      return followUpTurn(request);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:fork-provider-thread',
+    async (_event, sourceThreadId: string, targetThreadId: string): Promise<ChatThread | null> => {
+      assertReviewRepairForkAllowed(sourceThreadId);
+      assertReviewRepairForkAllowed(targetThreadId);
+      const sourceBinding = getChatThreadProviderBinding(sourceThreadId);
+      if (!sourceBinding) return null;
+
+      const targetThread = updateChatThread(targetThreadId, {});
+      if (!targetThread) return null;
+
+      const db = getDb();
+      const repoPaths: string[] = [];
+      for (const rid of targetThread.repoIds) {
+        const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(rid) as
+          { path: string } | undefined;
+        if (row) repoPaths.push(row.path);
+      }
+
+      const codexSession = await startSession(
+        repoPaths,
+        targetThread.repoIds,
+        targetThread.personaId,
+        {
+          threadId: targetThreadId,
+          workspace: targetThread.workspaceId
+            ? { workspaceId: targetThread.workspaceId }
+            : undefined,
+          provider: sourceBinding.provider,
+          forkFromProviderThreadId: sourceBinding.providerThreadId,
+        },
+      );
+      createChatSession(
+        targetThreadId,
+        targetThread.repoIds[0] ?? null,
+        targetThread.personaId,
+        codexSession.id,
+        codexSession.providerThreadId ?? null,
+        sourceBinding.provider,
+      );
+      stopSession(codexSession.id);
+      if (codexSession.providerThreadId) {
+        setChatThreadProviderThreadId(
+          targetThreadId,
+          codexSession.providerThreadId,
+          sourceBinding.provider,
+        );
+      }
+      return updateChatThread(targetThreadId, {});
+    },
+  );
+
+  ipcMain.handle(
+    'chat:resolve-approval',
+    (
+      _event,
+      sessionId: string,
+      requestId: string | number,
+      decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+      optionId?: string,
+    ): void => {
+      resolveApproval(sessionId, requestId, decision, optionId);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:resolve-input-request',
+    (_event, sessionId: string, requestId: string | number, response: CodexInputResponse): void => {
+      resolveInputRequest(sessionId, requestId, response);
+    },
+  );
+
+  ipcMain.handle('chat:list-agent-ui-intents', (_event, threadId: string, includeInactive = true) =>
+    listAgentUIIntents(threadId, { includeInactive }),
+  );
+
+  ipcMain.handle(
+    'chat:resolve-agent-ui-question',
+    (_event, intentId: string, resolution: AgentUIQuestionResolution) =>
+      resolveMezairOwnedQuestion(intentId, resolution) ??
+      resolveAgentUIQuestion(intentId, resolution),
+  );
+
+  ipcMain.handle('chat:patch-agent-ui-plan', (_event, intentId: string, patch: AgentUIPlanPatch) =>
+    patchAgentUIPlanAndNotify(intentId, patch),
+  );
+
+  ipcMain.handle(
+    'chat:update-agent-ui-presentation',
+    (_event, intentId: string, patch: AgentUIIntentPresentationPatch) =>
+      updateAgentUIIntentPresentationAndBroadcast(intentId, patch),
+  );
+
+  ipcMain.handle('chat:dismiss-agent-ui-intent', (_event, intentId: string) =>
+    dismissAgentUIIntentAndBroadcast(intentId),
+  );
+
+  ipcMain.handle('chat:restore-agent-ui-intent', (_event, intentId: string) =>
+    restoreAgentUIIntentAndBroadcast(intentId),
+  );
+
+  ipcMain.handle(
+    'chat:switch-persona',
+    async (_event, repoId: string, personaId: string): Promise<CodexSession> => {
+      // Kill existing session for this repo
+      const existing = getSessionForRepo(repoId);
+      if (existing) {
+        stopSession(existing.id);
+      }
+
+      // Get repo path
+      const db = getDb();
+      const repoRow = db.prepare('SELECT path FROM repos WHERE id = ?').get(repoId) as
+        { path: string } | undefined;
+      if (!repoRow) throw new Error(`Repo not found: ${repoId}`);
+
+      return startSession([repoRow.path], [repoId], personaId);
+    },
+  );
+
+  ipcMain.handle('chat:get-personas', (): Persona[] => {
+    return getPersonas();
+  });
+
+  ipcMain.handle('chat:create-temporary-thread', (_event, personaId: string): ChatThread => {
+    const persona = getPersonas().find((candidate) => candidate.id === personaId);
+    if (!persona) throw new Error('Choose an available persona before starting a temporary chat.');
+    return createTemporaryChatThread(persona.id);
+  });
+
+  ipcMain.handle('chat:end-temporary-thread', (_event, threadId: string): boolean => {
+    return endTemporaryChatThread(threadId);
+  });
+
+  ipcMain.handle('chat:list-threads', (_event, workspaceId: string | null): ChatThread[] => {
+    return listChatThreads(workspaceId);
+  });
+
+  ipcMain.handle(
+    'chat:list-work-item-threads',
+    (_event, workspaceId: string | null): ChatThread[] => {
+      return listWorkItemChatThreads(workspaceId);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:create-thread',
+    (
+      _event,
+      input: {
+        pullRequest?: ChatThreadPullRequestInput;
+        workspaceId?: string | null;
+        personaId: string;
+        title?: string;
+        purpose?: ChatThreadPurpose;
+        sideQuestionOfThreadId?: string;
+        workItemId?: string;
+        workItemProvider?: WorkItemProvider;
+        workItemTitle?: string;
+        repoIds?: string[];
+        activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
+      },
+    ): Promise<ChatThread> => {
+      return createThreadWithPullRequest(input);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:ensure-work-item-thread',
+    (
+      _event,
+      input: {
+        workspaceId?: string | null;
+        personaId: string;
+        workItemId: string;
+        workItemProvider: WorkItemProvider;
+        workItemTitle: string;
+        repoIds?: string[];
+        activeRepoId?: string | null;
+      },
+    ): ChatThread => {
+      return ensureWorkItemChatThread(input);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:update-thread',
+    (
+      _event,
+      threadId: string,
+      updates: {
+        title?: string;
+        personaId?: string;
+        workItemTitle?: string;
+        repoIds?: string[];
+        activeRepoId?: string | null;
+        /** Set by manual renames so generated titles stop overwriting the thread. */
+        titleLocked?: boolean;
+      },
+    ): ChatThread | null => {
+      return updateChatThread(threadId, updates);
+    },
+  );
+
+  ipcMain.handle('chat:delete-thread', async (_event, threadId: string): Promise<void> => {
+    await assertChatDelegationsFinished(threadId);
+    deleteChatThread(threadId);
+  });
+
+  ipcMain.handle('chat:session-status', (_event, sessionId: string): CodexSession['status'] => {
+    return getSessionStatus(sessionId);
+  });
+
+  ipcMain.handle('chat:list-active-sessions', (): CodexSession[] => {
+    return listActiveCodexSessions();
+  });
+
+  ipcMain.handle('chat:list-artifacts', (_event, threadId: string): ChatArtifact[] => {
+    return listChatArtifacts(threadId);
+  });
+
+  ipcMain.handle('chat:upsert-artifact', (_event, input: ChatArtifactInput): ChatArtifact => {
+    return upsertChatArtifact(input);
+  });
+
+  ipcMain.handle('chat:discard-artifact', (_event, id: string): boolean => {
+    return discardChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:read-artifact-file', (_event, id: string): ChatArtifactFile => {
+    return readChatArtifactFile(id);
+  });
+
+  ipcMain.handle('chat:share-artifact', (_event, id: string): Promise<ChatArtifact> => {
+    return shareChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:unshare-artifact', (_event, id: string): Promise<ChatArtifact> => {
+    return unshareChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:artifact-sharing-available', (): boolean => {
+    return isArtifactSharingAvailable();
+  });
+
+  ipcMain.handle(
+    'chat:list-artifact-annotations',
+    (_event, artifactId: string): ChatArtifactAnnotation[] =>
+      listChatArtifactAnnotations(artifactId),
+  );
+
+  ipcMain.handle(
+    'chat:create-artifact-annotation',
+    (_event, input: ChatArtifactAnnotationInput): ChatArtifactAnnotation =>
+      createChatArtifactAnnotation(input),
+  );
+
+  ipcMain.handle(
+    'chat:update-artifact-annotation',
+    (_event, id: string, patch: ChatArtifactAnnotationPatch): ChatArtifactAnnotation =>
+      updateChatArtifactAnnotation(id, patch),
+  );
+
+  ipcMain.handle('chat:delete-artifact-annotation', (_event, id: string): boolean =>
+    deleteChatArtifactAnnotation(id),
+  );
+
+  ipcMain.handle('chat:detect-codex', async () => detectCodexCli());
+
+  ipcMain.handle(
+    'chat:prepare-attachments',
+    (_event, inputs: ChatAttachmentInput[]): ChatAttachment[] => {
+      return prepareChatAttachments(inputs);
+    },
+  );
+
+  ipcMain.handle('chat:select-attachments', async (): Promise<ChatAttachment[]> => {
+    return selectChatAttachmentFiles();
+  });
+
+  ipcMain.handle(
+    'chat:search-file-mentions',
+    (_event, input: ChatFileMentionSearchInput): Promise<ChatFileMentionSearchResult[]> => {
+      return searchChatFileMentions(input);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:save-entry',
+    (
+      _event,
+      threadId: string,
+      repoId: string | null,
+      sessionId: string | null,
+      entry: ChatMessage,
+    ): void => {
+      saveChatEntry(threadId, repoId, sessionId, entry);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:save-event',
+    (
+      _event,
+      threadId: string,
+      repoId: string | null,
+      sessionId: string | null,
+      event: CodexEvent,
+      timestamp: string,
+    ): void => {
+      saveChatEvent(threadId, repoId, sessionId, event, timestamp);
+    },
+  );
+
+  ipcMain.handle('chat:load-history', (_event, threadId: string): ChatMessage[] => {
+    return loadChatHistory(threadId);
+  });
+
+  ipcMain.handle('chat:clear-history', (_event, threadId: string): void => {
+    clearChatHistory(threadId);
+  });
+
+  ipcMain.handle(
+    'chat:save-thread-plan',
+    (_event, threadId: string, plan: ChatPlanSnapshot): ChatThread | null => {
+      return saveChatThreadPlan(threadId, plan);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:save-thread-goal',
+    (_event, threadId: string, goal: ChatGoalSnapshot | null): ChatThread | null => {
+      return saveChatThreadGoal(threadId, goal);
+    },
+  );
+}
+
+/** Clean up on app quit */
+export function cleanupChatSessions(): void {
+  stopAllSessions();
+}
+
+// --- Chat command parsing ---
+
+interface ParsedCommand {
+  command: 'plan' | 'fix' | 'review' | 'persona' | 'switch' | 'new' | null;
+  workItemId?: string;
+  argument?: string;
+}
+
+function parseChatCommand(message: string): ParsedCommand {
+  const trimmed = message.trim();
+
+  // /new — restart session
+  if (trimmed === '/new') {
+    return { command: 'new' };
+  }
+
+  // /persona <name>
+  const personaMatch = trimmed.match(/^\/persona\s+(\S+)/i);
+  if (personaMatch) {
+    return { command: 'persona', argument: personaMatch[1] };
+  }
+
+  // /switch <repo>
+  const switchMatch = trimmed.match(/^\/switch\s+(\S+)/i);
+  if (switchMatch) {
+    return { command: 'switch', argument: switchMatch[1] };
+  }
+
+  // /plan ADO-XXXX
+  const planMatch = trimmed.match(/^\/?plan\s+(ADO-\d+)/i);
+  if (planMatch) {
+    return { command: 'plan', workItemId: planMatch[1] };
+  }
+
+  // /fix ADO-XXXX
+  const fixMatch = trimmed.match(/^\/?fix\s+(ADO-\d+)/i);
+  if (fixMatch) {
+    return { command: 'fix', workItemId: fixMatch[1] };
+  }
+
+  // /review ADO-XXXX
+  const reviewMatch = trimmed.match(/^\/?review\s+(ADO-\d+)/i);
+  if (reviewMatch) {
+    return { command: 'review', workItemId: reviewMatch[1] };
+  }
+
+  return { command: null };
+}

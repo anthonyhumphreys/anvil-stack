@@ -1,4 +1,4 @@
-name: Anvil App Release macOS Apple Silicon
+name: Mezair App Release macOS Apple Silicon
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       macos_signing:
-        description: "Select signed notarized output only when the anvil-production environment has Apple credentials configured."
+        description: "Select signed notarized output only when the mezair-production environment has Apple credentials configured."
         required: true
         type: choice
         options:
@@ -28,21 +28,21 @@ concurrency:
 
 defaults:
   run:
-    working-directory: anvil-app
+    working-directory: mezair-app
 
 jobs:
   release-macos-arm64:
     name: Build and release macOS arm64
     runs-on: macos-15
-    environment: anvil-production
+    environment: mezair-production
 
     env:
       GH_TOKEN: ${{ github.token }}
-      ANVIL_DEPLOYMENT_ENV: production
-      ANVIL_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.ANVIL_PRODUCTION_HOSTED_BACKEND_URL }}
-      ANVIL_MACOS_SIGNING_MODE: ${{ inputs.macos_signing || 'unsigned' }}
+      MEZAIR_DEPLOYMENT_ENV: production
+      MEZAIR_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.MEZAIR_PRODUCTION_HOSTED_BACKEND_URL }}
+      MEZAIR_MACOS_SIGNING_MODE: ${{ inputs.macos_signing || 'unsigned' }}
       # Auto-update publication stays parked until Developer ID signing is available.
-      ANVIL_UPDATE_ORIGIN: ""
+      MEZAIR_UPDATE_ORIGIN: ""
 
     steps:
       - name: Check out repository
@@ -76,16 +76,16 @@ jobs:
           fi
 
           changed_app_files="$(
-            git -C "${GITHUB_WORKSPACE}" diff --name-only "${previous_tag}" "${GITHUB_SHA}" -- anvil-app \
+            git -C "${GITHUB_WORKSPACE}" diff --name-only "${previous_tag}" "${GITHUB_SHA}" -- mezair-app mezair-cloud mezair-registry/apps/cli mezair-registry/package.json mezair-registry/pnpm-lock.yaml mezair-registry/pnpm-workspace.yaml mezair-registry/tsconfig.base.json .github/scripts/prepare-desktop-clis.mjs \
               || true
           )"
 
           if [[ -n "${changed_app_files}" ]]; then
-            echo "Anvil app changes found since ${previous_tag}:"
+            echo "Mezair app changes found since ${previous_tag}:"
             printf '%s\n' "${changed_app_files}"
             echo "should_release=true" >> "${GITHUB_OUTPUT}"
           else
-            echo "No anvil-app changes found between ${previous_tag} and ${current_tag}; skipping release."
+            echo "No Desktop or bundled CLI changes found between ${previous_tag} and ${current_tag}; skipping release."
             echo "should_release=false" >> "${GITHUB_OUTPUT}"
           fi
 
@@ -101,7 +101,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-app/pnpm-lock.yaml
+          cache-dependency-path: mezair-app/pnpm-lock.yaml
 
       - name: Resolve release tag and build commit
         if: steps.release_scope.outputs.should_release == 'true'
@@ -110,6 +110,11 @@ jobs:
         env:
           INPUT_RELEASE_TAG: ${{ inputs.tag }}
         run: node "${GITHUB_WORKSPACE}/.github/scripts/resolve-app-release-target.mjs"
+
+      - name: Prepare local product CLIs
+        if: steps.release_scope.outputs.should_release == 'true'
+        working-directory: .
+        run: node .github/scripts/prepare-desktop-clis.mjs
 
       - name: Install dependencies
         if: steps.release_scope.outputs.should_release == 'true'
@@ -132,7 +137,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm run dist:mac:arm64:anvil:notarized
+        run: pnpm run dist:mac:arm64:mezair:notarized
 
       - name: Prepare stable download asset
         if: steps.release_scope.outputs.should_release == 'true'
@@ -141,8 +146,8 @@ jobs:
           set -euo pipefail
 
           shopt -s nullglob
-          dmg_assets=(dist/Anvil-[0-9]*-arm64.dmg)
-          zip_assets=(dist/Anvil-[0-9]*-arm64-mac.zip)
+          dmg_assets=(dist/Mezair-[0-9]*-arm64.dmg)
+          zip_assets=(dist/Mezair-[0-9]*-arm64-mac.zip)
           if [[ "${#dmg_assets[@]}" -ne 1 || "${#zip_assets[@]}" -ne 1 ]]; then
             echo "Expected one versioned macOS Apple Silicon DMG and ZIP, found ${#dmg_assets[@]} DMGs and ${#zip_assets[@]} ZIPs." >&2
             printf 'DMG candidates:\n' >&2
@@ -152,14 +157,14 @@ jobs:
             exit 1
           fi
 
-          cp "${dmg_assets[0]}" dist/Anvil-latest-arm64.dmg
+          cp "${dmg_assets[0]}" dist/Mezair-latest-arm64.dmg
           (
             cd dist
             shasum -a 256 \
               "${dmg_assets[0]##*/}" \
-              Anvil-latest-arm64.dmg \
+              Mezair-latest-arm64.dmg \
               "${zip_assets[0]##*/}" \
-              > Anvil-macos-arm64.sha256
+              > Mezair-macos-arm64.sha256
           )
 
       - name: Create or update GitHub Release
@@ -175,7 +180,7 @@ jobs:
           release_tag="${APP_RELEASE_TAG}"
           release_name="${APP_RELEASE_NAME}"
           release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
-          assets=(dist/Anvil-[0-9]*-arm64.dmg dist/Anvil-latest-arm64.dmg dist/*-arm64-mac.zip dist/Anvil-macos-arm64.sha256)
+          assets=(dist/Mezair-[0-9]*-arm64.dmg dist/Mezair-latest-arm64.dmg dist/*-arm64-mac.zip dist/Mezair-macos-arm64.sha256)
           notes_file="$(mktemp)"
           changelog_file="$(mktemp)"
           share_file="$(mktemp)"
@@ -203,11 +208,11 @@ jobs:
               > "${changelog_file}"
           fi
 
-          if [[ "${ANVIL_MACOS_SIGNING_MODE}" == "signed-notarized" ]]; then
+          if [[ "${MEZAIR_MACOS_SIGNING_MODE}" == "signed-notarized" ]]; then
             printf '%s\n' \
               'Signed and notarized macOS Apple Silicon build.' \
               '' \
-              'Verify the downloaded installer against Anvil-macos-arm64.sha256 before opening it.' \
+              'Verify the downloaded installer against Mezair-macos-arm64.sha256 before opening it.' \
               'Automatic updates remain disabled.' \
               > "${notes_file}"
           else
@@ -217,7 +222,7 @@ jobs:
               'macOS Gatekeeper may block the app after download. For private testing only, verify the checksum first, install it, then remove quarantine:' \
               '' \
               '```bash' \
-              'xattr -dr com.apple.quarantine /Applications/Anvil.app' \
+              'xattr -dr com.apple.quarantine /Applications/Mezair.app' \
               '```' \
               'Automatic updates remain disabled.' \
               > "${notes_file}"

@@ -1,0 +1,27 @@
+{
+  "name": "mezair-sizzle-video",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render MezairSizzle out/mezair-sizzle.mp4",
+    "render:splash": "remotion render MezairLogoSplash out/mezair-logo-splash.mp4",
+    "render:gif": "remotion render MezairSizzle out/mezair-sizzle.gif"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.507",
+    "@remotion/google-fonts": "4.0.507",
+    "@remotion/transitions": "4.0.507",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "remotion": "4.0.507"
+  },
+  "overrides": {
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.0"
+  }
+}

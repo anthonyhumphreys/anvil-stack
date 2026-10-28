@@ -1,0 +1,109 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '..');
+
+const brands = {
+  mezair: {
+    productName: 'Mezair',
+    appId: 'dev.anthonyhumphreys.mezair',
+    copyright: 'AnthonyHumphreys.dev',
+    macIcon: 'resources/mezair.icns',
+    pngIcon: 'resources/mezair.png',
+  },
+};
+
+const args = process.argv.slice(2);
+let brandId =
+  process.env.MEZAIR_BRAND || process.env.npm_config_brand || process.env.MEZAIR_BUILD_BRAND || '';
+const builderArgs = [];
+
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
+  if (arg === '--') continue;
+  if (arg === '--brand') {
+    brandId = args[index + 1] ?? '';
+    index += 1;
+    continue;
+  }
+  if (arg.startsWith('--brand=')) {
+    brandId = arg.slice('--brand='.length);
+    continue;
+  }
+  builderArgs.push(arg);
+}
+
+if (!brandId) brandId = 'mezair';
+if (!Object.hasOwn(brands, brandId)) {
+  console.error(
+    `[dist] Unknown brand "${brandId}". Expected one of: ${Object.keys(brands).join(', ')}`,
+  );
+  process.exit(1);
+}
+
+if (builderArgs.length === 0) {
+  builderArgs.push('--mac', 'dmg', 'zip', '--arm64', '--publish', 'never');
+}
+
+const brand = brands[brandId];
+const env = { ...process.env, MEZAIR_BRAND: brandId, MEZAIR_BUILD_BRAND: brandId };
+
+function commandExists(command) {
+  const result = spawnSync(command, ['--version'], { cwd: repoRoot, env, stdio: 'ignore' });
+  return !result.error && result.status === 0;
+}
+
+function resolvePackageManager() {
+  if (process.env.MEZAIR_PACKAGE_MANAGER) return process.env.MEZAIR_PACKAGE_MANAGER;
+
+  const npmExecPath = process.env.npm_execpath ?? '';
+  const userAgent = process.env.npm_config_user_agent ?? '';
+
+  if (npmExecPath.includes('pnpm') || userAgent.startsWith('pnpm')) return 'pnpm';
+  if (npmExecPath.includes('yarn') || userAgent.startsWith('yarn')) return 'yarn';
+  if (existsSync(path.join(repoRoot, 'pnpm-lock.yaml')) && commandExists('pnpm')) return 'pnpm';
+
+  return 'npm';
+}
+
+function run(command, commandArgs, options = {}) {
+  const result = spawnSync(command, commandArgs, {
+    cwd: repoRoot,
+    env,
+    stdio: 'inherit',
+    ...options,
+  });
+
+  if (result.error) {
+    console.error(`[dist] Failed to run ${command}:`, result.error.message);
+    process.exit(1);
+  }
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
+
+console.log(`[dist] Building ${brand.productName} (${brandId})`);
+// Invoke the package manager's JS entrypoint so Windows does not need to spawn a .cmd shim.
+if (!process.env.MEZAIR_PACKAGE_MANAGER && process.env.npm_execpath) {
+  run(process.execPath, [process.env.npm_execpath, 'run', 'build']);
+} else {
+  run(resolvePackageManager(), ['run', 'build']);
+}
+run(process.execPath, [
+  path.join(repoRoot, 'node_modules/electron-builder/cli.js'),
+  ...[
+    `-c.productName=${brand.productName}`,
+    `-c.appId=${brand.appId}`,
+    `-c.copyright=${brand.copyright}`,
+    ...(brand.macIcon ? [`-c.mac.icon=${brand.macIcon}`] : []),
+    ...(brand.pngIcon ? [`-c.win.icon=${brand.pngIcon}`, `-c.linux.icon=${brand.pngIcon}`] : []),
+  ].filter((defaultArg) => {
+    // Repeated electron-builder config flags become arrays, rather than last-value wins.
+    const key = defaultArg.slice(0, defaultArg.indexOf('='));
+    return !builderArgs.some((arg) => arg === key || arg.startsWith(`${key}=`));
+  }),
+  ...builderArgs,
+]);

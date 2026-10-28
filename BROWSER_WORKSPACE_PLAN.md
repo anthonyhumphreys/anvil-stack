@@ -4,7 +4,7 @@ Approved direction: a primary browser workspace, with Desktop execution first an
 
 ## Experience
 
-Extend the established Anvil website design: compact workspace navigation, a central conversation or file editor, and contextual changes/results. Use divided regions rather than nested cards. Keep the active repository, executing Desktop, connection freshness, and outstanding approvals visible. On narrow screens, switch between views rather than squeezing three columns together.
+Extend the established Mezair website design: compact workspace navigation, a central conversation or file editor, and contextual changes/results. Use divided regions rather than nested cards. Keep the active repository, executing Desktop, connection freshness, and outstanding approvals visible. On narrow screens, switch between views rather than squeezing three columns together.
 
 The browser and Desktop share persisted sessions, repositories, runs, and changes. Closing a tab does not cancel execution. Disconnected controls explain what cannot run; drafts survive navigation and reload. Never silently switch to paid cloud execution.
 

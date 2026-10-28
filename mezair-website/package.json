@@ -1,0 +1,56 @@
+{
+  "name": "mezair-website",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test:shares": "node --experimental-strip-types --test scripts/share-viewer.test.mjs",
+    "test:browser-workspace": "node --experimental-strip-types --test scripts/browser-workspace.test.mjs",
+    "validate:docs": "node scripts/validate-docs.mjs",
+    "test:deployment-env": "node --test scripts/deployment-env.test.mjs"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.4.0",
+    "@vercel/analytics": "^2.0.1",
+    "@workos-inc/authkit-nextjs": "4.3.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "dompurify": "^3.4.16",
+    "js-yaml": "^4.3.1",
+    "lucide-react": "^0.468.0",
+    "marked": "^15.0.12",
+    "next": "^16.3.8",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "sanitize-html": "^2.18.0",
+    "server-only": "^0.0.1",
+    "tailwind-merge": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/sanitize-html": "^2.16.2",
+    "autoprefixer": "^10.6.1",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.8",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "brace-expansion@1": "1.1.21",
+      "brace-expansion@5": "5.0.12",
+      "js-yaml": "4.3.2",
+      "postcss": "8.5.26"
+    }
+  }
+}

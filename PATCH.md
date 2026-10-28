@@ -34,31 +34,31 @@ Treat this file as a current-state guide, not a release log.
 
 ## Entries
 
-### C1: Effect for Anvil Cloud orchestration internals
+### C1: Effect for Mezair Cloud orchestration internals
 
 Status: active
-Owner project: `anvil-cloud`
+Owner project: `mezair-cloud`
 
 #### Intent
 
 Use [Effect](https://effect.website) for retries, timeouts, typed failures,
-and multi-step async control flow inside Anvil Cloud platform orchestration,
+and multi-step async control flow inside Mezair Cloud platform orchestration,
 without changing any external contract. Cell authors, CLI users, and adapter
 consumers must never need to know Effect exists.
 
 #### Owner modules
 
-- `anvil-cloud/packages/runtime/src/workflow.ts` — workflow step executor
+- `mezair-cloud/packages/runtime/src/workflow.ts` — workflow step executor
   (attempts, retry schedule, step timeouts).
-- `anvil-cloud/packages/runtime/src/agent.ts` — guarded agent runtime
+- `mezair-cloud/packages/runtime/src/agent.ts` — guarded agent runtime
   (`AgentRuntime.invoke`, `AgentRuntime.executeTool`).
-- `anvil-cloud/packages/aws/src/aws-provisioner.ts` — AWS preview provisioner
+- `mezair-cloud/packages/aws/src/aws-provisioner.ts` — AWS preview provisioner
   and destroyer (artifact uploads, stack apply/poll, destroy/poll).
-- `anvil-cloud/packages/aws/src/remote.ts` — AWS remote reader (deployment
+- `mezair-cloud/packages/aws/src/remote.ts` — AWS remote reader (deployment
   metadata, logs).
-- `anvil-cloud/packages/cli/src/index.ts` — preview deploy command flow.
-- Docs: `anvil-cloud/docs/architecture/deployment-adapters.md` (Effect usage)
-  and `anvil-cloud/docs/architecture/workflows.md`.
+- `mezair-cloud/packages/cli/src/index.ts` — preview deploy command flow.
+- Docs: `mezair-cloud/docs/architecture/deployment-adapters.md` (Effect usage)
+  and `mezair-cloud/docs/architecture/workflows.md`.
 
 #### Required behavior
 
@@ -94,16 +94,16 @@ consumers must never need to know Effect exists.
    platform does not bound.
 7. Effect stays out of the Cell authoring surface. Cell code, the app DSL,
    manifests, and adapter contracts remain ordinary async TypeScript. The
-   `effect` dependency belongs to `@anvil-cloud/runtime`, `@anvil-cloud/aws`,
-   and `@anvilstack/cloud-cli` only.
+   `effect` dependency belongs to `@mezair-cloud/runtime`, `@mezair-cloud/aws`,
+   and `@mezairstack/cloud-cli` only.
 
 #### Verification
 
-Run from `anvil-cloud/`:
+Run from `mezair-cloud/`:
 
 ```sh
-pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli typecheck
-pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli test
+pnpm --filter @mezair-cloud/runtime --filter @mezair-cloud/aws --filter @mezairstack/cloud-cli typecheck
+pnpm --filter @mezair-cloud/runtime --filter @mezair-cloud/aws --filter @mezairstack/cloud-cli test
 ```
 
 Behavior that must hold after any reconciliation:
@@ -131,7 +131,7 @@ Behavior that must hold after any reconciliation:
 ### C2: Provider-neutral agent execution control plane
 
 Status: active
-Owner project: `anvil-cloud`
+Owner project: `mezair-cloud`
 
 #### Intent
 
@@ -143,20 +143,20 @@ contract later.
 
 #### Owner modules
 
-- `anvil-cloud/packages/runtime/src/agent-execution.ts` — JSON-friendly source,
+- `mezair-cloud/packages/runtime/src/agent-execution.ts` — JSON-friendly source,
   policy, event, result, and provider I/O contracts.
-- `anvil-cloud/packages/control-plane/src/execution*.ts` and
+- `mezair-cloud/packages/control-plane/src/execution*.ts` and
   `fake-execution-provider.ts` — leases, stores, authenticated HTTP boundary,
   immutable snapshot/grant storage, worker protocol, Node service adapter,
   conformance, budgets, and cleanup receipts.
-- `anvil-cloud/packages/aws/src/sandbox.ts` — Lambda MicroVM lifecycle and
+- `mezair-cloud/packages/aws/src/sandbox.ts` — Lambda MicroVM lifecycle and
   read-only execution transport.
-- `anvil-cloud/packages/cli/src/index.ts` — execution conformance, durable
+- `mezair-cloud/packages/cli/src/index.ts` — execution conformance, durable
   service, snapshot, and lifecycle client commands.
-- `anvil-app/src/main/services/anvil-cloud-execution.service.ts` and the typed
+- `mezair-app/src/main/services/mezair-cloud-execution.service.ts` and the typed
   IPC/UI path — opt-in Desktop execution connection and read-only launch flow.
-- Docs: `anvil-cloud/docs/architecture/agent-execution-control-plane.md`,
-  `anvil-cloud/docs/architecture/agents.md`, and the Anvil Website Cloud mirror.
+- Docs: `mezair-cloud/docs/architecture/agent-execution-control-plane.md`,
+  `mezair-cloud/docs/architecture/agents.md`, and the Mezair Website Cloud mirror.
 
 #### Required behavior
 
@@ -199,7 +199,7 @@ contract later.
     SHA-256 verifier is persisted. The worker verifies declared byte counts and
     SHA-256 digests before preparing the workspace. Snapshot and worker grants
     with invalid expiry timestamps fail closed.
-13. Desktop keeps the Anvil Cloud bearer encrypted in the Electron main
+13. Desktop keeps the Mezair Cloud bearer encrypted in the Electron main
     process. The renderer sees only endpoint and configured state. Desktop
     uploads a committed Git archive with `.git`, ignored/untracked files,
     working-tree changes, and known secret-file paths excluded; remote launch
@@ -211,15 +211,15 @@ contract later.
 
 #### Verification
 
-Run from `anvil-cloud/`:
+Run from `mezair-cloud/`:
 
 ```sh
-pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/control-plane --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli typecheck
-pnpm --filter @anvil-cloud/control-plane test
-pnpm --filter @anvil-cloud/aws test -- agent.test.ts
-pnpm --filter @anvilstack/cloud-cli test -- cli.test.ts
-anvil-cloud executions conformance --json
-cd ../anvil-app && pnpm exec tsc --noEmit -p tsconfig.node.json && pnpm exec tsc --noEmit -p tsconfig.web.json && pnpm lint && pnpm test
+pnpm --filter @mezair-cloud/runtime --filter @mezair-cloud/control-plane --filter @mezair-cloud/aws --filter @mezairstack/cloud-cli typecheck
+pnpm --filter @mezair-cloud/control-plane test
+pnpm --filter @mezair-cloud/aws test -- agent.test.ts
+pnpm --filter @mezairstack/cloud-cli test -- cli.test.ts
+mezair-cloud executions conformance --json
+cd ../mezair-app && pnpm exec tsc --noEmit -p tsconfig.node.json && pnpm exec tsc --noEmit -p tsconfig.web.json && pnpm lint && pnpm test
 ```
 
 #### Upstream break risks
@@ -246,7 +246,7 @@ cd ../anvil-app && pnpm exec tsc --noEmit -p tsconfig.node.json && pnpm exec tsc
 ### C3: Portable application data and background work
 
 Status: active
-Owner project: `anvil-cloud`
+Owner project: `mezair-cloud`
 
 Keep conditional commits, bounded table pages and the job outbox provider-neutral.
 Local, in-memory, DynamoDB and D1 hosts share all-or-nothing compare-and-replace
@@ -271,16 +271,16 @@ Owner modules are `packages/runtime/src/database-{commit,page}.ts`,
 `packages/runtime/src/job-outbox.ts`, the local/AWS hosts, the AWS queue bridge,
 and `packages/cloudflare/src/{database,files,host,http,resources,artifacts}.ts`.
 The behavior and open release checks are in
-`anvil-cloud/docs/architecture/application-backends.md`.
+`mezair-cloud/docs/architecture/application-backends.md`.
 
-Verify from `anvil-cloud/` with `pnpm lint`, `pnpm typecheck`, `pnpm test`, and
+Verify from `mezair-cloud/` with `pnpm lint`, `pnpm typecheck`, `pnpm test`, and
 `pnpm verify:cloudflare-preview`. Real local D1/R2 tests and AWS SDK tests are
 required; neither substitutes for live provider evidence.
 
 ### C4: Reviewed Desktop delivery and read-only Mesh candidates
 
 Status: active
-Owner project: `anvil-app`
+Owner project: `mezair-app`
 
 Turn-level delivery captures an immutable main-process review of the current
 changes in explicitly selected files. Provider edit events identify the files;
@@ -336,7 +336,7 @@ Native UI and physical-device acceptance remain separate evidence.
 ### C5: Explicit conversational validation
 
 Status: active
-Owner project: `anvil-app`
+Owner project: `mezair-app`
 
 Validation is introduced only by a user request or an explicit workflow step.
 Resolve acceptance criteria from the linked work item or the original request
@@ -367,7 +367,7 @@ production build. Browser replay is presentation evidence, not native acceptance
 ### C6: Reviewed thread shares and explicit ticket publication
 
 Status: active
-Owner projects: `anvil-app`, `anvil-website`
+Owner projects: `mezair-app`, `mezair-website`
 
 Share only the exact main-process snapshot reviewed by the author. Include
 visible conversation text and explicitly selected artifacts, native surfaces
@@ -401,11 +401,11 @@ revocation/expiry, frozen preview bytes, redaction and ticket retry boundaries;
 also run typechecks, lint, website viewer tests and production builds. Live
 identity-provider and external-ticket acceptance is separate from local mocks.
 
-Recipients may explicitly pick up a thread by downloading a `.anvil-thread`
+Recipients may explicitly pick up a thread by downloading a `.mezair-thread`
 package from the authorised, decrypted viewer. The package contains the same
 redacted structured conversation, selected context and inert snapshot; it is a
 readable local copy that cannot be recalled by revocation. Keep fragment keys
-out of packages and protocol links. `anvil://pick-up-thread` only opens import
+out of packages and protocol links. `mezair://pick-up-thread` only opens import
 review; it carries no conversation data. File association and manual import
 must use the same bounded, frozen main-process validation.
 
@@ -424,7 +424,7 @@ remain isolated from OS file/protocol association registration.
 ### C7: Opt-in automation publication and current-head PR repair
 
 Status: active
-Owner project: `anvil-app`
+Owner project: `mezair-app`
 
 Replace the blanket automation publication ban with an explicit saved
 `allowRemotePublishing` choice. Existing definitions default to disabled.
@@ -455,12 +455,12 @@ Verify migration retention, permission defaults and prerequisites, execution
 context, PR identity/head races, retained worktrees and feedback suppression;
 run desktop typechecks, lint and tests. Live provider publication is separate
 acceptance evidence. Full factory intake, durable PR lifecycle control and
-policy-based merging remain planned in `anvil-app/docs/plans/software-factories.md`.
+policy-based merging remain planned in `mezair-app/docs/plans/software-factories.md`.
 
 ### C8: Reviewed software factories and typed GitHub delivery
 
 Status: implemented; automated verification passed
-Owner project: `anvil-app`
+Owner project: `mezair-app`
 
 A factory is a reviewed typed definition and immutable workflow revision. Saving
 or drafting does not activate it. Activation grants standing authority for its
@@ -569,7 +569,7 @@ No live GitHub write, commit or deployment was performed.
 ### C10: LAN first Mesh route selection and session migration
 
 Status: implemented locally; automated verification passed; physical-device acceptance and deployment pending
-Owner project: `anvil-app`
+Owner project: `mezair-app`
 
 Prefer validated host LAN-address candidates, other private routes, explicit HTTPS
 and managed ingress in that order. Route hints never grant trust or weaken URL,
@@ -604,8 +604,8 @@ Account route-change hints contain enrollment IDs only and require the explicit
 `machine.routes-changed/1` socket feature opt-in, since old parsers reject unknown
 frames. Periodic active-client discovery covers missed hints. Repeated failures
 respect dwell/backoff, and background mobile clients cancel network preparation.
-`ANVIL_MESH_ROUTE_UPGRADES=false` disables desktop/daemon upgrades;
-`EXPO_PUBLIC_ANVIL_MESH_ROUTE_UPGRADES=false` does so for a native mobile build.
+`MEZAIR_MESH_ROUTE_UPGRADES=false` disables desktop/daemon upgrades;
+`EXPO_PUBLIC_MEZAIR_MESH_ROUTE_UPGRADES=false` does so for a native mobile build.
 Neither switch disables ordinary reconnect or changes authorization.
 
 Selected-path UI is sanitized. `Direct` with host LAN-address detail is a preference
@@ -619,4 +619,31 @@ Owner modules: shared machine route contracts/policy/scheduler, hosted discovery
 and account socket hints, Mesh client/runtime/session services, network monitor
 and advertisement integration, mobile account/session/network adapters and the
 existing connection status surfaces. Verification and outstanding physical cases
-are recorded in `anvil-app/docs/plans/sync-mesh/lan-first-connectivity.md`.
+are recorded in `mezair-app/docs/plans/sync-mesh/lan-first-connectivity.md`.
+
+### C11: Mezair identity and coordinated namespace cutover
+
+Status: implemented in source; external provisioning and migration pending
+Owner projects: Desktop, Cloud, Registry, website
+
+Use Mezair consistently in source identifiers, package names, CLI commands,
+protocols, environment variables, paths, documentation and the shared horse-M
+artwork. The SVG in `branding/mezair-mark.svg` owns the mark geometry. Keep light
+and dark presentation, reduced motion and accessible live text intact.
+
+This is a coordinated breaking identity cutover. Renamed AAD/HKDF/proof contexts,
+stored ownership values and message/file namespaces are not a data migration.
+Do not weaken validation or silently adopt ciphertext, credentials or databases
+from another identity. Startup selects only the Mezair profile and its
+`mezair.db`; retained profile directories are never copied and alternate
+database filenames are never selected implicitly. Existing Mezair profiles and
+explicit development/preview profile selection remain supported. Retain original
+profile data. Any future migration needs explicit key custody, export/import
+validation and recovery evidence.
+
+Keep the four workspaces independent. Desktop uses the built local CLI package
+surfaces; `.github/scripts/prepare-desktop-clis.mjs` prepares them before a
+Desktop install. The new domain, repository, package scopes, images, hosted
+resources and signing identities require operator-controlled provisioning.
+`docs/mezair-identity-cutover.md` records those prerequisites and acceptance
+limits. Preserve every C1–C10 authentication, custody and evidence boundary.

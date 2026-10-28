@@ -1,4 +1,4 @@
-name: Anvil App CI
+name: Mezair App CI
 
 on:
   pull_request:
@@ -10,7 +10,14 @@ on:
       - ".github/scripts/publish-r2-immutable.mjs"
       - ".github/scripts/publish-r2-immutable.test.mjs"
       - ".github/scripts/resolve-app-release-target.mjs"
-      - "anvil-app/**"
+      - "mezair-app/**"
+      - "mezair-cloud/**"
+      - "mezair-registry/apps/cli/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/tsconfig.base.json"
+      - ".github/scripts/prepare-desktop-clis.mjs"
   push:
     branches:
       - main
@@ -23,7 +30,14 @@ on:
       - ".github/scripts/publish-r2-immutable.mjs"
       - ".github/scripts/publish-r2-immutable.test.mjs"
       - ".github/scripts/resolve-app-release-target.mjs"
-      - "anvil-app/**"
+      - "mezair-app/**"
+      - "mezair-cloud/**"
+      - "mezair-registry/apps/cli/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/tsconfig.base.json"
+      - ".github/scripts/prepare-desktop-clis.mjs"
   workflow_dispatch:
 
 permissions:
@@ -35,11 +49,11 @@ concurrency:
 
 env:
   CI: true
-  ANVIL_DEPLOYMENT_ENV: staging
+  MEZAIR_DEPLOYMENT_ENV: staging
 
 defaults:
   run:
-    working-directory: anvil-app
+    working-directory: mezair-app
 
 jobs:
   validate:
@@ -60,7 +74,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-app/pnpm-lock.yaml
+          cache-dependency-path: mezair-app/pnpm-lock.yaml
+
+      - name: Prepare local product CLIs
+        working-directory: .
+        run: node .github/scripts/prepare-desktop-clis.mjs
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -97,11 +115,11 @@ jobs:
         run: node --test .github/scripts/app-release-target.test.mjs
 
       - name: Verify hosted config validator
-        working-directory: anvil-app/cloud/backend
+        working-directory: mezair-app/cloud/backend
         run: node scripts/verify-hosted-config.mjs --self-check
 
       - name: Test hosted deployment isolation
-        working-directory: anvil-app/cloud/backend
+        working-directory: mezair-app/cloud/backend
         run: pnpm test:hosted-deploy
 
       - name: Build
@@ -125,26 +143,26 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-app/cloud/backend/pnpm-lock.yaml
+          cache-dependency-path: mezair-app/cloud/backend/pnpm-lock.yaml
 
       - name: Install dependencies
-        working-directory: anvil-app/cloud/backend
+        working-directory: mezair-app/cloud/backend
         run: pnpm install --ignore-workspace --frozen-lockfile
 
       - name: Test
-        working-directory: anvil-app/cloud/backend
+        working-directory: mezair-app/cloud/backend
         run: pnpm test
 
       - name: Typecheck
-        working-directory: anvil-app/cloud/backend
+        working-directory: mezair-app/cloud/backend
         run: pnpm typecheck
 
       - name: Verify hosted config validator
-        working-directory: anvil-app/cloud/backend
+        working-directory: mezair-app/cloud/backend
         run: node scripts/verify-hosted-config.mjs --self-check
 
       - name: Test hosted deployment isolation
-        working-directory: anvil-app/cloud/backend
+        working-directory: mezair-app/cloud/backend
         run: pnpm test:hosted-deploy
 
   provisioner:
@@ -152,7 +170,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: anvil-app/cloud/provisioner
+        working-directory: mezair-app/cloud/provisioner
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -162,7 +180,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-app/cloud/provisioner/pnpm-lock.yaml
+          cache-dependency-path: mezair-app/cloud/provisioner/pnpm-lock.yaml
       - run: pnpm install --ignore-workspace --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test

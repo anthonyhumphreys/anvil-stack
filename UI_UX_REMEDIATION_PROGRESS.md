@@ -6,9 +6,9 @@ Tracks implementation of the two review plans. Source of truth for decisions and
 
 ## Plans being implemented
 
-- `anvil-app/docs/plans/first-run-to-first-change-remediation.md` (J/R/X/C/O/S IDs, Phases 1–5)
-- `anvil-app/docs/plans/ui-surfaces-review.md` (CH/ST/OB/WS/RM/NV/DS IDs, Phases A–E)
-- `anvil-app/docs/plans/agent-harness-parity-and-work-timeline.md` (companion doc being written)
+- `mezair-app/docs/plans/first-run-to-first-change-remediation.md` (J/R/X/C/O/S IDs, Phases 1–5)
+- `mezair-app/docs/plans/ui-surfaces-review.md` (CH/ST/OB/WS/RM/NV/DS IDs, Phases A–E)
+- `mezair-app/docs/plans/agent-harness-parity-and-work-timeline.md` (companion doc being written)
 
 ## Decisions (2026-09-23, confirmed with Anth)
 
@@ -32,7 +32,7 @@ Shared worktree contains unrelated in-flight work (browser workspace, sync mesh,
 |------|-----------|------|--------|
 | 1 | `indexing-backend` | `src/main/services/repo-index*.ts`, `indexer.service.ts`, `persona.service.ts`, `src/main/ipc/repo.ipc.ts`, `workspace.ipc.ts` (triggers only), `workspace-scaffold.service.ts`, `db/schema.ts` (new migration), `src/shared/*` index-job types, `src/preload/index.ts` (index APIs only) | done — schema v96, repo_index_jobs + index_tier + content_hash, 9 files/99 tests pass, node typecheck clean. IPC: `repo:index`, `repo:index-jobs`, `repo:cancel-index`, `repo:forget`, `repo:index-progress` broadcast; tiers mapped/enriched; reasons connect/manual/commit/scaffold. Flagged: workitems.ipc.ts:118 still gates on `status='indexed'`; live `pnpm dev` unverified |
 | 1 | `ui-primitives` | `src/renderer/components/ui/*` (new), `styles/global.css`, tailwind config | done — Button/IconButton/Dialog/ConfirmDialog/PromptDialog/Menu/SegmentedControl/cx; `accent-foreground` + `scrim` + `text-eyebrow` tokens; AA contrast test parses CSS; typecheck/lint/build green |
-| 1 | `harness-parity-doc` | `anvil-app/docs/plans/agent-harness-parity-and-work-timeline.md` only | done — written; found trust-level gaps (H1–H16): persona read-only clamp not enforced on ACP (Cursor/Devin run in agent mode), ACP diffs discarded, steer() throws post-render, env allowlist bypass. **Remediation is new scope — flagged to Anth, not started.** |
+| 1 | `harness-parity-doc` | `mezair-app/docs/plans/agent-harness-parity-and-work-timeline.md` only | done — written; found trust-level gaps (H1–H16): persona read-only clamp not enforced on ACP (Cursor/Devin run in agent mode), ACP diffs discarded, steer() throws post-render, env allowlist bypass. **Remediation is new scope — flagged to Anth, not started.** |
 | 2 | `chat-surface` | `src/renderer/components/chat/**`, ChatPaneState/ChatView split, access chip, TurnChangesFooter | done — ChatView 2,794→791 lines, access chip+Full-access confirm, TurnChangesFooter (review/commit/PR), error classifier, rail filter+layout toggle, persona recents, ChatStatusBar deleted, 98 chat tests pass |
 | 2 | `settings-surface` | `src/renderer/components/settings/**`, dirty tracking, category split, `/settings/:category` contract | done — SettingsView 3,605→~456 lines, 9 lazy categories + registry, per-key dirty+autosave (credentials manual), `/settings/:category#panel` wired, `SettingsLink` + `RoleHiddenNotice` built, AI split providers/agents, 28 tests pass |
 | 2 | `workspace-shell` | WorkspaceContext/RepoIndexContext, readiness strip, repos+workspace overview, remove-repo UI, onboarding, App.tsx | done — `/workspace` home route, merged 2-step Welcome flow + onboardingStep resume, RepoIndexContext + WorkspaceReadinessStrip, RemoveRepoDialog + repo:forget, AddRepositoriesDialog, mapped-tier unlocks, starter-prompts helper, 15 new tests pass |
@@ -87,9 +87,9 @@ Shared worktree contains unrelated in-flight work (browser workspace, sync mesh,
 | `harness-renderer` | components/chat/**, ChatContext — H2/H5/H8/H9/H12/H13/H14 renderer | done — queued-send UX, TurnUsageFooter, provider-aware access chip, goal gating, agentLabel strings, full suite 1639 pass |
 | `metrics` | activation_events table + metrics.service + metrics:track IPC + §7 funnel emits (local-only) | done — schema v97 `activation_events`, `metrics:track` (allowlisted), emits wired in WelcomeOverlay/App/ChatView/TurnChangesFooter + main-side index-tier/enrich events, 44 tests pass |
 
-**Final state (2026-09-23):** full suite 210 files / 1,646 tests — 0 failures · tsc node+web clean · lint clean · `pnpm build` success. Caveat fix complete: harness parity H1–H16 implemented (both ACP CLIs probed live — `loadSession` advertised, resume implemented), local-first activation metrics wired, live smoke verified migration path on real DB. Remaining: real `pnpm dev` session for **verify** items (blocked by installed Anvil's single-instance lock), commit decision deferred to Anth (worktree interleaved with other workstreams).
+**Final state (2026-09-23):** full suite 210 files / 1,646 tests — 0 failures · tsc node+web clean · lint clean · `pnpm build` success. Caveat fix complete: harness parity H1–H16 implemented (both ACP CLIs probed live — `loadSession` advertised, resume implemented), local-first activation metrics wired, live smoke verified migration path on real DB. Remaining: real `pnpm dev` session for **verify** items (blocked by installed Mezair's single-instance lock), commit decision deferred to Anth (worktree interleaved with other workstreams).
 
-**Live smoke (2026-09-23):** `pnpm dev` builds main+preload+renderer clean; DB migrated v93→v96 without error against the real user database; startup then correctly refused because a release Anvil instance holds the single-instance lock. Remaining live **verify** items (read-only persona on Cursor writing, queued-send UX, per-turn usage footer) need a real `pnpm dev` session after the user quits the installed app — or wait for the next installable build.
+**Live smoke (2026-09-23):** `pnpm dev` builds main+preload+renderer clean; DB migrated v93→v96 without error against the real user database; startup then correctly refused because a release Mezair instance holds the single-instance lock. Remaining live **verify** items (read-only persona on Cursor writing, queued-send UX, per-turn usage footer) need a real `pnpm dev` session after the user quits the installed app — or wait for the next installable build.
 
 Root integration fixes applied between agents: usage/usage_context now forwarded to renderer (early-return removed, `model` stamped); `stopSession` broadcasts `queue_update:0`; mobile approvals label `permissions` kind; `listTurnSummaries`/`ChatTurnSummary`/`file_read` dead surface removed from preload/ipc-api/types (file_read renderer handling kept for replaying old persisted events).
 
@@ -98,5 +98,5 @@ Decisions taken for harness work: ACP diffs→`file_edit`, execute→`command_ex
 ## Verification
 
 - Per-workstream: focused Vitest files + `pnpm lint` scoped.
-- Per wave: `pnpm --dir anvil-app test`, `pnpm --dir anvil-app lint`, `pnpm --dir anvil-app build`.
+- Per wave: `pnpm --dir mezair-app test`, `pnpm --dir mezair-app lint`, `pnpm --dir mezair-app build`.
 - Items marked **verify** in the plans need a live `pnpm dev` check before sign-off.

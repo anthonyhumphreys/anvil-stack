@@ -1,0 +1,368 @@
+import type {
+  MessageBatch,
+  ScheduledController,
+} from "@cloudflare/workers-types";
+import {
+  handleRuntimeRequest,
+  RuntimeError,
+  type AppDefinition,
+  type RuntimeHost,
+  type RuntimeRequest,
+  type RuntimeResponse,
+} from "@mezair-cloud/runtime";
+
+import type { CloudflareWorkerBindings } from "./host.js";
+
+export type CloudflareWorkerHandler = {
+  queue(
+    batch: MessageBatch<unknown>,
+    env: CloudflareWorkerBindings,
+    context: ExecutionContext,
+  ): Promise<void>;
+  scheduled(
+    event: ScheduledController,
+    env: CloudflareWorkerBindings,
+    context: ExecutionContext,
+  ): Promise<void>;
+  fetch(
+    request: Request,
+    env: CloudflareWorkerBindings,
+    context: ExecutionContext,
+  ): Promise<Response>;
+};
+
+export type ExecutionContext = {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException?(): void;
+};
+
+export type CreateCloudflareWorkerHandlerOptions = {
+  createHost(env: CloudflareWorkerBindings): RuntimeHost;
+};
+
+export function createCloudflareWorkerHandler(
+  app: AppDefinition,
+  options: CreateCloudflareWorkerHandlerOptions,
+): CloudflareWorkerHandler {
+  return {
+    async queue(batch, env) {
+      const host = options.createHost(env);
+      for (const message of batch.messages) {
+        const body = message.body;
+        if (
+          !isObject(body) ||
+          body.kind !== "job" ||
+          typeof body.name !== "string" ||
+          typeof body.id !== "string"
+        ) {
+          message.retry();
+          continue;
+        }
+        const response = await handleRuntimeRequest(app, host, {
+          kind: "job",
+          name: body.name,
+          payload: body.payload,
+          requestId: body.id,
+        });
+        if (response.ok) message.ack();
+        else message.retry();
+      }
+    },
+    async scheduled(event, env) {
+      const host = options.createHost(env);
+      for (const [name, job] of Object.entries(app.jobs ?? {})) {
+        if (job.schedule === event.cron) {
+          await host.jobs.enqueue(
+            name,
+            {},
+            { id: `${name}:${event.scheduledTime}` },
+          );
+        }
+      }
+    },
+    async fetch(request, env) {
+      const requestId =
+        request.headers.get("x-mezair-request-id") ?? crypto.randomUUID();
+
+      if (request.method.toUpperCase() === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: withRuntimeHeaders({}, requestId),
+        });
+      }
+
+      const url = new URL(request.url);
+
+      if (request.method === "GET" && url.pathname === "/_mezair/health") {
+        return jsonResponse(
+          200,
+          { ok: true, runtime: "cloudflare-preview" },
+          requestId,
+        );
+      }
+
+      if (!isRuntimeRoute(app, request.method, url.pathname)) {
+        const assets = env.MEZAIR_ASSETS;
+
+        return assets
+          ? assets.fetch(request)
+          : jsonResponse(
+              404,
+              {
+                ok: false,
+                error: {
+                  code: "NOT_FOUND",
+                  message:
+                    "No Cell endpoint or static asset matched this request.",
+                },
+              },
+              requestId,
+            );
+      }
+
+      const host = options.createHost(env);
+      let runtimeRequest: RuntimeRequest;
+
+      try {
+        runtimeRequest = await cloudflareRequestToRuntimeRequest(
+          request,
+          requestId,
+        );
+        const authorization = request.headers.get("authorization");
+        if (authorization !== null) {
+          const token = /^Bearer ([^\s]+)$/i.exec(authorization)?.[1];
+          if (!token || !host.auth.verifyToken)
+            throw new RuntimeError(
+              "AUTH_REQUIRED",
+              "A valid bearer token is required.",
+              401,
+            );
+          try {
+            runtimeRequest.auth = await host.auth.verifyToken(token);
+            if (!runtimeRequest.auth) throw new Error("Token identity missing");
+          } catch {
+            throw new RuntimeError(
+              "AUTH_REQUIRED",
+              "Your access token is invalid or expired. Sign in again.",
+              401,
+            );
+          }
+        }
+      } catch (error) {
+        if (error instanceof RuntimeError)
+          return jsonResponse(
+            error.status,
+            { ok: false, error: { code: error.code, message: error.message } },
+            requestId,
+          );
+        if (error instanceof SyntaxError || error instanceof URIError) {
+          return jsonResponse(
+            400,
+            {
+              ok: false,
+              error: {
+                code: "INVALID_JSON",
+                message: "Request body must be valid JSON.",
+              },
+            },
+            requestId,
+          );
+        }
+
+        throw error;
+      }
+
+      const response = await handleRuntimeRequest(app, host, runtimeRequest);
+
+      return runtimeResponseToCloudflareResponse(response, requestId);
+    },
+  };
+}
+
+export async function cloudflareRequestToRuntimeRequest(
+  request: Request,
+  requestId: string = crypto.randomUUID(),
+): Promise<
+  Extract<RuntimeRequest, { kind: "query" | "mutation" | "endpoint" }>
+> {
+  const method = request.method.toUpperCase();
+  const path = new URL(request.url).pathname;
+
+  if (method === "POST" && path.startsWith("/_mezair/query/")) {
+    return {
+      kind: "query",
+      name: decodeURIComponent(path.slice("/_mezair/query/".length)),
+      input: inputFromBody(await readJsonBody(request)),
+      auth: null,
+      requestId,
+    };
+  }
+
+  if (method === "POST" && path.startsWith("/_mezair/mutation/")) {
+    return {
+      kind: "mutation",
+      name: decodeURIComponent(path.slice("/_mezair/mutation/".length)),
+      input: inputFromBody(await readJsonBody(request)),
+      auth: null,
+      requestId,
+    };
+  }
+
+  const headers: Record<string, string> = {};
+  request.headers.forEach((value, key) => {
+    headers[key.toLowerCase()] = value;
+  });
+  const body =
+    method === "GET" || method === "HEAD"
+      ? null
+      : await readBoundedBody(request);
+
+  return {
+    kind: "endpoint",
+    method,
+    path,
+    headers,
+    body,
+    auth: null,
+    requestId,
+  };
+}
+
+export async function runtimeResponseToCloudflareResponse(
+  response: RuntimeResponse,
+  requestId: string,
+): Promise<Response> {
+  if (response.body instanceof Response) {
+    const headers = new Headers(response.body.headers);
+    applyRuntimeHeaders(headers, requestId);
+
+    return new Response(response.body.body, {
+      status: response.body.status,
+      statusText: response.body.statusText,
+      headers,
+    });
+  }
+
+  return jsonResponse(
+    response.status,
+    {
+      ok: response.ok,
+      ...(response.ok ? { result: response.body } : {}),
+      ...(response.error ? { error: response.error } : {}),
+      ...(response.diagnostics ? { diagnostics: response.diagnostics } : {}),
+    },
+    requestId,
+    response.headers,
+  );
+}
+
+function isRuntimeRoute(
+  app: AppDefinition,
+  method: string,
+  path: string,
+): boolean {
+  if (
+    path.startsWith("/_mezair/query/") ||
+    path.startsWith("/_mezair/mutation/")
+  ) {
+    return true;
+  }
+
+  return Object.values(app.endpoints ?? {}).some(
+    (endpoint) =>
+      endpoint.method.toUpperCase() === method.toUpperCase() &&
+      endpoint.path === path,
+  );
+}
+
+async function readJsonBody(request: Request): Promise<unknown> {
+  const text = new TextDecoder().decode(await readBoundedBody(request));
+
+  return text.length === 0 ? {} : (JSON.parse(text) as unknown);
+}
+
+function inputFromBody(body: unknown): unknown {
+  return isObject(body) && "input" in body ? body.input : body;
+}
+
+function jsonResponse(
+  status: number,
+  body: unknown,
+  requestId: string,
+  extraHeaders: Record<string, string> = {},
+): Response {
+  return new Response(`${JSON.stringify(body)}\n`, {
+    status,
+    headers: withRuntimeHeaders(
+      { "content-type": "application/json", ...extraHeaders },
+      requestId,
+    ),
+  });
+}
+
+function withRuntimeHeaders(
+  headers: Record<string, string>,
+  requestId: string,
+): Headers {
+  const result = new Headers(headers);
+  applyRuntimeHeaders(result, requestId);
+
+  return result;
+}
+
+function applyRuntimeHeaders(headers: Headers, requestId: string): void {
+  headers.set("access-control-allow-origin", "*");
+  headers.set(
+    "access-control-allow-methods",
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+  );
+  headers.set(
+    "access-control-allow-headers",
+    "authorization,content-type,x-mezair-request-id",
+  );
+  headers.set("access-control-max-age", "600");
+  headers.set("x-mezair-request-id", requestId);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const MAX_REQUEST_BYTES = 1024 * 1024;
+async function readBoundedBody(request: Request): Promise<Uint8Array> {
+  if (Number(request.headers.get("content-length")) > MAX_REQUEST_BYTES)
+    throw new RuntimeError(
+      "VALIDATION_ERROR",
+      "Request body exceeds 1 MiB.",
+      413,
+    );
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > MAX_REQUEST_BYTES) {
+        await reader.cancel();
+        throw new RuntimeError(
+          "VALIDATION_ERROR",
+          "Request body exceeds 1 MiB.",
+          413,
+        );
+      }
+      chunks.push(chunk.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+}

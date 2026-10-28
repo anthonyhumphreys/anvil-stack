@@ -1,10 +1,17 @@
-name: Anvil App Windows x64
+name: Mezair App Windows x64
 
 on:
   pull_request:
     paths:
       - ".github/workflows/app-windows-x64.yml"
-      - "anvil-app/**"
+      - "mezair-app/**"
+      - "mezair-cloud/**"
+      - "mezair-registry/apps/cli/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/tsconfig.base.json"
+      - ".github/scripts/prepare-desktop-clis.mjs"
   push:
     tags:
       - "app-v*"
@@ -23,18 +30,18 @@ env:
 
 defaults:
   run:
-    working-directory: anvil-app
+    working-directory: mezair-app
     shell: bash
 
 jobs:
   package:
     name: Build and release Windows x64 installer and portable app
     runs-on: windows-latest
-    environment: ${{ github.ref_type == 'tag' && 'anvil-production' || 'anvil-staging' }}
+    environment: ${{ github.ref_type == 'tag' && 'mezair-production' || 'mezair-staging' }}
     env:
-      ANVIL_DEPLOYMENT_ENV: ${{ github.ref_type == 'tag' && 'production' || 'staging' }}
-      ANVIL_STAGING_HOSTED_BACKEND_URL: ${{ vars.ANVIL_STAGING_HOSTED_BACKEND_URL }}
-      ANVIL_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.ANVIL_PRODUCTION_HOSTED_BACKEND_URL }}
+      MEZAIR_DEPLOYMENT_ENV: ${{ github.ref_type == 'tag' && 'production' || 'staging' }}
+      MEZAIR_STAGING_HOSTED_BACKEND_URL: ${{ vars.MEZAIR_STAGING_HOSTED_BACKEND_URL }}
+      MEZAIR_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.MEZAIR_PRODUCTION_HOSTED_BACKEND_URL }}
 
     steps:
       - name: Checkout
@@ -50,7 +57,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-app/pnpm-lock.yaml
+          cache-dependency-path: mezair-app/pnpm-lock.yaml
 
       - name: Verify release tag
         if: github.ref_type == 'tag'
@@ -62,6 +69,10 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare local product CLIs
+        working-directory: .
+        run: node .github/scripts/prepare-desktop-clis.mjs
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -72,21 +83,21 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          test -f "Anvil Setup $(node -p "require('../package.json').version").exe"
-          test -f "Anvil $(node -p "require('../package.json').version").exe"
+          test -f "Mezair Setup $(node -p "require('../package.json').version").exe"
+          test -f "Mezair $(node -p "require('../package.json').version").exe"
           test -f latest.yml
           sha256sum ./*.exe ./*.blockmap ./latest.yml > SHA256SUMS-windows-x64
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: anvil-windows-x64
+          name: mezair-windows-x64
           if-no-files-found: error
           path: |
-            anvil-app/dist/*.exe
-            anvil-app/dist/*.blockmap
-            anvil-app/dist/latest.yml
-            anvil-app/dist/SHA256SUMS-windows-x64
+            mezair-app/dist/*.exe
+            mezair-app/dist/*.blockmap
+            mezair-app/dist/latest.yml
+            mezair-app/dist/SHA256SUMS-windows-x64
 
       - name: Create or update GitHub Release
         if: github.ref_type == 'tag'
@@ -97,7 +108,7 @@ jobs:
           if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             # Another platform can create the shared release concurrently.
             gh release create "${GITHUB_REF_NAME}" --verify-tag \
-              --title "Anvil ${GITHUB_REF_NAME}" --generate-notes \
+              --title "Mezair ${GITHUB_REF_NAME}" --generate-notes \
               || gh release view "${GITHUB_REF_NAME}" >/dev/null
           fi
           gh release upload "${GITHUB_REF_NAME}" \

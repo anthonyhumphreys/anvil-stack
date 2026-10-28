@@ -6,15 +6,15 @@ product
 
 ## Users
 
-Developers and small engineering teams using Anvil as mission control for repository-aware work. They move between chat, code, reviews, automation, and delivery, often while several agents or tools are active. They need to understand what is happening, intervene when useful, and reach the underlying evidence without leaving the app.
+Developers and small engineering teams using Mezair as mission control for repository-aware work. They move between chat, code, reviews, automation, and delivery, often while several agents or tools are active. They need to understand what is happening, intervene when useful, and reach the underlying evidence without leaving the app.
 
 ## Product Purpose
 
-Anvil coordinates AI-assisted development work across local repositories and connected services. It should make complex work visible and controllable: users can define intent, choose how work runs, inspect progress, open the real threads and artifacts, and reuse proven workflows across workspaces.
+Mezair coordinates AI-assisted development work across local repositories and connected services. It should make complex work visible and controllable: users can define intent, choose how work runs, inspect progress, open the real threads and artifacts, and reuse proven workflows across workspaces.
 
 ## Brand Personality
 
-Technically sharp, pragmatic, and quietly playful. Anvil should feel capable and direct, with helpful gremlin energy that never gets in the way of serious work.
+Technically sharp, pragmatic, and quietly playful. Mezair should feel capable and direct, with helpful gremlin energy that never gets in the way of serious work.
 
 ## Anti-references
 

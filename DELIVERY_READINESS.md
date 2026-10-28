@@ -42,20 +42,20 @@ The portable-backend Cell and verifier exercise the built application against
 real local adapters. A cross-bundle error normalization bug discovered by that
 run is fixed.
 
-See [reviewed delivery](anvil-app/docs/architecture/reviewed-delivery.md) for
-behavior and [the comparison protocol](anvil-app/docs/dogfood/anv-7-delivery-comparison.md)
+See [reviewed delivery](mezair-app/docs/architecture/reviewed-delivery.md) for
+behavior and [the comparison protocol](mezair-app/docs/dogfood/anv-7-delivery-comparison.md)
 for the remaining human benchmark.
 
 ## External evidence
 
 The corrected candidate preflight found a successful staging backend run
-[#39230703438](https://github.com/anthonyhumphreys/anvil-stack/actions/runs/39230703438)
+[#39230703438](https://github.com/anthonyhumphreys/mezair-stack/actions/runs/39230703438)
 on the starting `112c128` SHA. An earlier read saw the preceding `44590a2`
 deployment. The backend's public protocol descriptor is compatible with ordinary
 Mesh, but does not advertise the new candidate capability enforcement feature.
 No preview matches the current modified checkout. PR 91 and its previews refer
 to the older `7f7b09b` candidate. See the
-[staging evidence](anvil-app/docs/dogfood/mesh-staging-acceptance-2026-10-19.md).
+[staging evidence](mezair-app/docs/dogfood/mesh-staging-acceptance-2026-10-19.md).
 
 Physical devices on separate WANs, authenticated hosted-device acceptance, a
 fresh Mac installation, notarisation and live cloud execution remain separate
@@ -82,7 +82,7 @@ Completed component checks:
   its required native rebuild; Electron native modules were restored afterward.
 - Mesh backend: 42 files, 454 tests; typecheck passed.
 - macOS release target guards: 12 Node tests; staging status tooling: 8 Node tests.
-- Anvil Cloud: lint, typecheck, full tests and Cloudflare preview verification
+- Mezair Cloud: lint, typecheck, full tests and Cloudflare preview verification
   passed. The reference Cell built and passed all 10 local acceptance checks,
   including conflict rollback, private-file access, restart recovery, duplicate
   receipts, poison-batch visibility and cleanup. `liveCloudEvidence` is false.
@@ -114,4 +114,4 @@ main-process durable run retains them for replay.
 This record describes the local implementation and verification before
 publication. Subsequent commits are recorded in Git history. No release or
 deployment was performed during that verification. Temporary verification logs
-and the synthetic UI screenshot are in `/tmp/anvil-delivery-qa/`.
+and the synthetic UI screenshot are in `/tmp/mezair-delivery-qa/`.
