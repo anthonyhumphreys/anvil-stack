@@ -1021,6 +1021,8 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
     [],
   );
 
+  // Closing the previous external transport must immediately clear its displayed connection proof.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     let cancelled = false;
     let retryTimer: number | null = null;
@@ -1119,6 +1121,7 @@ export function useBrowserWorkspace(options: BrowserWorkspaceHookOptions) {
       current?.close();
     };
   }, [directHost, directRetry, directRoutes, phase]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     if (phase.kind !== "ready" || phase.trustId === undefined || phase.trustExpiresAt === undefined) return;
