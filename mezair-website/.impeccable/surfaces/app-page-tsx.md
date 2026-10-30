@@ -35,5 +35,6 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 - Marketing styles live in app/marketing.css, every selector under `.cine`; the mark lives in app/mark.css.
 
 ## Additional confirmed direction
+- State pricing before the homepage download action: Desktop app free, self-hosted backend free, Mezair-hosted backend paid. Keep infrastructure charges and the invite-only beta clear on the pricing and Sync pages.
 - The footer links to a playful naming page. Its story is power under precise control: strength, discipline, progression and elegance. The user sets the direction; agents carry out complex, coordinated work. A click-triggered horse-M hop retains the fun.
 - Logo motion: "Ink draw + rise", chosen by the user, refined to sumi-e brushwork painted smoothly left to right. The silhouette never comes apart.

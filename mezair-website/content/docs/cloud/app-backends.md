@@ -95,10 +95,10 @@ Wrangler's credential cache itself or include its email or credentials in the
 report. These commands make read-only identity checks and create no resources;
 they do not test resource permissions or Cell behavior. Record a full rehearsal
 against the
-[evidence schema](https://github.com/anthonyhumphreys/mezair-stack/blob/main/mezair-cloud/scripts/application-backends-evidence.schema.json)
+[evidence schema](https://github.com/anthonyhumphreys/mezair/blob/main/mezair-cloud/scripts/application-backends-evidence.schema.json)
 and follow the source project's
-[live rehearsal and cleanup contract](https://github.com/anthonyhumphreys/mezair-stack/blob/main/mezair-cloud/docs/architecture/application-backends.md#live-rehearsal-record).
+[live rehearsal and cleanup contract](https://github.com/anthonyhumphreys/mezair/blob/main/mezair-cloud/docs/architecture/application-backends.md#live-rehearsal-record).
 
-See the source project's [backend contract and release checks](https://github.com/anthonyhumphreys/mezair-stack/blob/main/mezair-cloud/docs/architecture/application-backends.md)
+See the source project's [backend contract and release checks](https://github.com/anthonyhumphreys/mezair/blob/main/mezair-cloud/docs/architecture/application-backends.md)
 for configuration, failure behavior, schedule restrictions, and the live evidence
 still needed before public traffic.

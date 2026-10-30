@@ -14,11 +14,11 @@ You can download a ready-made build or build the app from source. Either way you
 
 ## Download a release
 
-Builds are attached to the `app-v*` releases in the [mezair-stack repository](https://github.com/anthonyhumphreys/mezair-stack/releases).
+Builds are attached to the `app-v*` releases in the [mezair repository](https://github.com/anthonyhumphreys/mezair/releases).
 
 ### macOS
 
-1. Download the latest [DMG for Apple silicon](https://github.com/anthonyhumphreys/mezair-stack/releases/latest/download/Mezair-latest-arm64.dmg) and `Mezair-macos-arm64.sha256` from the same release.
+1. Download the latest [DMG for Apple silicon](https://github.com/anthonyhumphreys/mezair/releases/latest/download/Mezair-latest-arm64.dmg) and `Mezair-macos-arm64.sha256` from the same release.
 2. In Terminal, move to the download folder and verify the DMG:
 
    ```bash
@@ -39,7 +39,7 @@ Automatic updates are switched off for macOS builds for now, so check the releas
 
 ### Windows and Linux
 
-Each release also includes Windows x64 installers and portable executables, and Linux x64 AppImage, deb and pacman packages. Download the one you need from the [releases page](https://github.com/anthonyhumphreys/mezair-stack/releases) and check it against the checksum file next to it. If a brand-new release is missing your platform, its build is probably still running; check back shortly.
+Each release also includes Windows x64 installers and portable executables, and Linux x64 AppImage, deb and pacman packages. Download the one you need from the [releases page](https://github.com/anthonyhumphreys/mezair/releases) and check it against the checksum file next to it. If a brand-new release is missing your platform, its build is probably still running; check back shortly.
 
 > **Note: Using LLMGateway**
 >
@@ -60,8 +60,8 @@ You'll need:
 - Git 2.30 or later
 
 ```bash
-git clone https://github.com/anthonyhumphreys/mezair-stack.git
-cd mezair-stack/mezair-app
+git clone https://github.com/anthonyhumphreys/mezair.git
+cd mezair/mezair-app
 
 # Build the local Cloud and Registry CLI packages first
 node ../.github/scripts/prepare-desktop-clis.mjs

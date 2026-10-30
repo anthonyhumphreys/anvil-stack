@@ -10,7 +10,7 @@ order: 20
 
 # Contributing
 
-Mezair lives in the [`mezair-stack`](https://github.com/anthonyhumphreys/mezair-stack) monorepo. Make changes in the project directory that owns the feature.
+Mezair lives in the [`mezair`](https://github.com/anthonyhumphreys/mezair) monorepo. Make changes in the project directory that owns the feature.
 
 ## Project boundaries
 

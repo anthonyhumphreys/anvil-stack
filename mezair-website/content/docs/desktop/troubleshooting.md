@@ -54,4 +54,4 @@ The app stores everything in a local SQLite database (WAL mode). Schema migratio
 
 ## Still stuck?
 
-Open an issue at [mezair-stack](https://github.com/anthonyhumphreys/mezair-stack/issues) with the app version, OS, and the exact error text. Console output from `pnpm dev` is the most useful artifact for startup problems.
+Open an issue at [mezair](https://github.com/anthonyhumphreys/mezair/issues) with the app version, OS, and the exact error text. Console output from `pnpm dev` is the most useful artifact for startup problems.

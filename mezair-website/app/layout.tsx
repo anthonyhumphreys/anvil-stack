@@ -24,7 +24,7 @@ const mono = JetBrains_Mono({
 
 const title = "Mezair | Put your agents in motion";
 const description =
-  "Mezair is a free, open-source desktop app that runs Codex, Cursor, Devin and other coding agents on your own repositories. It shows each command and edit as the agent works. Sync & Mesh, hosted or self-hosted, moves work between your machines.";
+  "Mezair is a free, open-source desktop app for running coding agents on your repositories. The self-hosted Sync & Mesh backend is free; Mezair-hosted plans are paid.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),

@@ -73,7 +73,7 @@ The builder runs stages in order: config load, import policy, typecheck, server/
 
 ## Getting useful output for bug reports
 
-Every CLI command supports `--json` with stable shapes. When filing an issue at [mezair-stack](https://github.com/anthonyhumphreys/mezair-stack/issues), include:
+Every CLI command supports `--json` with stable shapes. When filing an issue at [mezair](https://github.com/anthonyhumphreys/mezair/issues), include:
 
 ```bash
 mezair cloud check --json

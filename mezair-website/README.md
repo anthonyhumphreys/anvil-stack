@@ -55,6 +55,24 @@ NEXT_PUBLIC_MEZAIR_REGISTRY_REPO_URL=https://github.com/your-org/mezair-registry
 NEXT_PUBLIC_MEZAIR_CLOUD_REPO_URL=https://github.com/your-org/mezair-cloud
 ```
 
+## Vercel website configuration
+
+The public website is **https://mezair.dev**. The existing Vercel project is
+`anvil-stack` (`prj_IHYsp7hU6kPpHobt3YebxdZ6kpjP`) in the
+`anthonyhumphreys` team. Its Git integration follows
+`anthonyhumphreys/mezair`, with `main` as the production branch.
+
+Set the project **Root Directory** to `mezair-website`; each workspace has its
+own lockfile, so install and build from that directory. The Root Directory is
+a Vercel project setting, not a Next.js configuration field. Attach
+`mezair.dev` to the production environment and set
+`NEXT_PUBLIC_SITE_URL=https://mezair.dev` for sitemap and robots output.
+Public page metadata uses this same canonical origin.
+
+The public hostname does not select a backend environment. Keep the existing
+`MEZAIR_DEPLOYMENT_ENV` selection and use a callback registered with its WorkOS
+application before enabling sign-in on a different hostname.
+
 ## Staging and Production
 
 `MEZAIR_DEPLOYMENT_ENV` selects the WorkOS and hosted backend used by the site. It accepts only

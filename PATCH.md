@@ -646,4 +646,8 @@ surfaces; `.github/scripts/prepare-desktop-clis.mjs` prepares them before a
 Desktop install. The new domain, repository, package scopes, images, hosted
 resources and signing identities require operator-controlled provisioning.
 `docs/mezair-identity-cutover.md` records those prerequisites and acceptance
-limits. Preserve every C1–C10 authentication, custody and evidence boundary.
+limits. The website uses `https://mezair.dev` as its canonical public origin
+and links to the renamed `anthonyhumphreys/mezair` repository. Vercel builds
+from `mezair-website` on `main`; the public hostname does not change the
+selected WorkOS/backend environment. Preserve every C1–C10 authentication,
+custody and evidence boundary.

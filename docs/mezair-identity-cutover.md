@@ -66,9 +66,9 @@ Before making a public release or enabling a hosted connection:
 - Configure WorkOS applications, allowed origins and browser/device callbacks
   for the new site and application schemes. Rotate or re-enter deployment
   credentials through the intended secret stores.
-- Establish the intended `anthonyhumphreys/mezair-stack` repository identity
-  before relying on the source and release links in product metadata. The
-  source change does not rename the remote repository.
+- GitHub now hosts the repository at `anthonyhumphreys/mezair`. Website source,
+  release and contribution links use that identity. Vercel's existing Git
+  integration received a push from the renamed repository successfully.
 - Publish the new npm packages and GHCR worker/Node Base images. Configure
   GitHub environments, variables and secrets for the renamed workflows.
 - Provision the new Cloudflare Worker, D1, R2, Queue, Container and Tunnel

@@ -65,4 +65,4 @@ From inside a container, `localhost` is the container, not your host. Use the Co
 
 ## Still stuck?
 
-Open an issue at [mezair-stack](https://github.com/anthonyhumphreys/mezair-stack/issues) with the image tag, the command you ran, and the report (or its absence). The reports are the evidence; attach them.
+Open an issue at [mezair](https://github.com/anthonyhumphreys/mezair/issues) with the image tag, the command you ran, and the report (or its absence). The reports are the evidence; attach them.

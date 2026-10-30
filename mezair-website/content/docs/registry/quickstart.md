@@ -17,8 +17,8 @@ This guide gets Mezair Registry running locally, points an npm-compatible client
 From a checkout:
 
 ```bash
-git clone https://github.com/anthonyhumphreys/mezair-stack.git
-cd mezair-stack/mezair-registry
+git clone https://github.com/anthonyhumphreys/mezair.git
+cd mezair/mezair-registry
 pnpm install --ignore-scripts
 ```
 

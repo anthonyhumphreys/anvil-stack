@@ -16,7 +16,7 @@ The docs link to setup commands, source files and known limits so you can check 
 
 ## Repository
 
-Everything lives in the [`mezair-stack`](https://github.com/anthonyhumphreys/mezair-stack) monorepo, organised as independent project workspaces:
+Everything lives in the [`mezair`](https://github.com/anthonyhumphreys/mezair) monorepo, organised as independent project workspaces:
 
 - `mezair-app/`: Mezair Desktop, the local Electron workspace.
 - `mezair-registry/`: Mezair Registry and Mezair Node Base.
@@ -27,7 +27,7 @@ The [monorepo map](/docs/project/repositories) explains what each directory owns
 
 ## License
 
-Everything in the monorepo is [MIT licensed](https://github.com/anthonyhumphreys/mezair-stack/blob/main/LICENSE).
+Everything in the monorepo is [MIT licensed](https://github.com/anthonyhumphreys/mezair/blob/main/LICENSE).
 
 ## Check the current status
 

@@ -24,8 +24,8 @@ Requirements:
 Clone and install:
 
 ```bash
-git clone https://github.com/anthonyhumphreys/mezair-stack.git
-cd mezair-stack/mezair-registry
+git clone https://github.com/anthonyhumphreys/mezair.git
+cd mezair/mezair-registry
 pnpm install --ignore-scripts
 ```
 

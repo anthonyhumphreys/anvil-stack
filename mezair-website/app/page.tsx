@@ -89,7 +89,7 @@ const credits: Credit[] = [
     href: "/docs/desktop/software-factories"
   },
   { role: "Companions", value: "Approve a step or reply from iPhone, Apple Watch, Raycast or the menu bar." },
-  { role: "Price", value: "Free and MIT licensed. No Mezair account for local work." }
+  { role: "Price", value: "The app and self-hosted backend are free. Mezair-hosted Sync & Mesh is paid." }
 ];
 
 const keys: Array<{ label: string; keys: string[] }> = [
@@ -141,6 +141,24 @@ export default function HomePage() {
               <p className="cine-lede cine-fade mt-5 max-w-[52ch]" style={fade(420)}>
                 Mezair is a free, open-source desktop app that runs Codex, Cursor, Devin and other coding agents on
                 your own repositories. It shows each command and edit as the agent works.
+              </p>
+              <dl className="mt-6 flex flex-wrap justify-center gap-x-7 gap-y-2 text-base">
+                <div className="flex gap-2">
+                  <dt className="text-muted-foreground">Desktop app</dt>
+                  <dd className="font-semibold">Free</dd>
+                </div>
+                <div className="flex gap-2">
+                  <dt className="text-muted-foreground">Self-hosted backend</dt>
+                  <dd className="font-semibold">Free</dd>
+                </div>
+                <div className="flex gap-2">
+                  <dt className="text-muted-foreground">Mezair-hosted backend</dt>
+                  <dd className="font-semibold">Paid</dd>
+                </div>
+              </dl>
+              <p className="cine-fine mt-2">
+                Hosted plans are proposed from £6 a month after the invite-only beta.{" "}
+                <Link href="/pricing" className="cine-link">See pricing</Link>.
               </p>
               <div className="cine-fade mt-7 flex flex-wrap justify-center gap-3" style={fade(560)}>
                 <Button asChild size="lg">

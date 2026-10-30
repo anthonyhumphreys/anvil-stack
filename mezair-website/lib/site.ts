@@ -14,9 +14,8 @@ import {
   Workflow
 } from "lucide-react";
 
-const repoTree = "https://github.com/anthonyhumphreys/mezair-stack/tree/main";
-
-export const githubRepositoryUrl = "https://github.com/anthonyhumphreys/mezair-stack";
+export const githubRepositoryUrl = "https://github.com/anthonyhumphreys/mezair";
+const repoTree = `${githubRepositoryUrl}/tree/main`;
 export const docsSourceUrl = `${githubRepositoryUrl}/blob/main/mezair-website/content/docs`;
 export const repositoryUrl = "/docs/project/repositories";
 
@@ -25,10 +24,10 @@ export const registryRepositoryUrl =
   process.env.NEXT_PUBLIC_MEZAIR_REGISTRY_REPO_URL || `${repoTree}/mezair-registry`;
 export const cloudRepositoryUrl = process.env.NEXT_PUBLIC_MEZAIR_CLOUD_REPO_URL || `${repoTree}/mezair-cloud`;
 
-export const releasesUrl = "https://github.com/anthonyhumphreys/mezair-stack/releases/latest";
+export const releasesUrl = `${githubRepositoryUrl}/releases/latest`;
 
 export const latestDesktopDmgUrl =
-  "https://github.com/anthonyhumphreys/mezair-stack/releases/latest/download/Mezair-latest-arm64.dmg";
+  `${releasesUrl}/download/Mezair-latest-arm64.dmg`;
 
 /** Shared beta wording for LAN-first Mesh and user-definable software factories. */
 export const featureBeta = {
@@ -371,7 +370,7 @@ export const plans: Plan[] = [
   },
   {
     id: "self-host",
-    name: "Self-hosted",
+    name: "Self-hosted backend",
     price: "Free",
     cadence: "you pay your host",
     summary: "Run the Sync & Mesh backend yourself.",
@@ -388,14 +387,14 @@ export const plans: Plan[] = [
 export const pricingFaqs = [
   {
     q: "Is Mezair Desktop really free?",
-    a: "Yes. The app is open source and free to use for anything, with no account. You only pay if you want your work to follow you between machines through our hosted Sync."
+    a: "Yes. The desktop app is free and open source, with no account needed for local use. The self-hosted Sync & Mesh backend is free too; you cover your own infrastructure. You pay Mezair only when we host the backend for you. Model providers bill you separately."
   },
   {
     q: "When do the paid plans start?",
     a: "Paid signup opens after the invite-only beta. Request beta access; invited testers receive a code for time-limited access without a payment method. Self-hosting needs no Mezair subscription."
   },
   {
-    q: "Why charge for Sync?",
+    q: "Why charge for Mezair-hosted Sync?",
     a: "Running encrypted sync, job routing and share storage costs money every month. Charging for the hosted service keeps the desktop app free and keeps the project going."
   },
   {

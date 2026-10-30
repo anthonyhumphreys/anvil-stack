@@ -70,6 +70,11 @@ export default function SyncPage() {
                   Sync copies your Mezair setup between machines and encrypts it on your device first. Mesh sends jobs
                   between those machines and can move a running session.
                 </p>
+                <p className="mt-4 text-base leading-relaxed">
+                  <strong>Self-hosted backend: free.</strong> You pay your infrastructure provider.{" "}
+                  <strong>Mezair-hosted backend: paid.</strong> Plans are proposed from £6 a month after beta.{" "}
+                  <Link href="/pricing" className="cine-link">Compare plans</Link>.
+                </p>
                 <div className="mt-6 flex flex-wrap gap-3">
                   <Button asChild size="lg">
                     <Link href="/waitlist">Request beta access</Link>

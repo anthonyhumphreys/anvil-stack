@@ -61,8 +61,8 @@ mezair registry doctor
 If you do not have a gateway yet, start one with Docker Compose from the repository:
 
 ```bash
-git clone https://github.com/anthonyhumphreys/mezair-stack.git
-cd mezair-stack/mezair-registry
+git clone https://github.com/anthonyhumphreys/mezair.git
+cd mezair/mezair-registry
 docker compose -f infra/docker/docker-compose.yml up -d --build gateway worker admin
 ```
 

@@ -42,11 +42,13 @@ export default function PricingPage() {
           <div className="cine-wide">
             <div className="cine-titlerow">
               <h1 id="pricing-title" className="cine-title max-w-[16ch]">
-                Desktop is free. Hosted Sync starts at £6
+                Free app. Free self-hosting. Paid hosting.
               </h1>
               <div>
                 <p className="cine-lede md:max-w-[60ch] lg:max-w-[46ch]">
-                  Desktop is free and open source. You pay only if Mezair hosts Sync &amp; Mesh for you.
+                  The desktop app and self-hosted Sync &amp; Mesh backend are free and open source.
+                  Pay Mezair only when we host the backend for you, with plans proposed from £6 a month.
+                  Your model providers and self-hosting infrastructure bill you separately.
                 </p>
                 <p className="cine-fine mt-4">
                   Hosted Sync &amp; Mesh is an invite-only beta through {featureBeta.endDate}. These are proposed

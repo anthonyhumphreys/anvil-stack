@@ -1,7 +1,7 @@
 ---
 title: Monorepo map
 navTitle: Monorepo map
-description: Find each Mezair project's source, tooling and documentation in the mezair-stack monorepo.
+description: Find each Mezair project's source, tooling and documentation in the mezair monorepo.
 product: Project
 section: Reference
 journey: reference
@@ -10,7 +10,7 @@ order: 30
 
 # Monorepo map
 
-Mezair lives in one repository: [`mezair-stack`](https://github.com/anthonyhumphreys/mezair-stack). Each product is an independent workspace inside it, with its own lockfile, tooling, and CI path filters. One clone gives you everything; each project still builds and tests on its own.
+Mezair lives in one repository: [`mezair`](https://github.com/anthonyhumphreys/mezair). Each product is an independent workspace inside it, with its own lockfile, tooling, and CI path filters. One clone gives you everything; each project still builds and tests on its own.
 
 | Directory | Product | Owns |
 | --- | --- | --- |
@@ -33,8 +33,8 @@ Mezair Cloud is a separate app-platform experiment. It tries to make small apps 
 Each project directory manages its own dependencies. Run `pnpm install` inside the project you are working on, not at the repo root:
 
 ```bash
-git clone https://github.com/anthonyhumphreys/mezair-stack.git
-cd mezair-stack/mezair-registry
+git clone https://github.com/anthonyhumphreys/mezair.git
+cd mezair/mezair-registry
 pnpm install --ignore-scripts
 ```
 

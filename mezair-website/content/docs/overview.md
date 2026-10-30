@@ -26,7 +26,7 @@ They're separate because they solve separate problems. Desktop looks after your 
 
 ## Where the code lives
 
-The [mezair-stack repository](https://github.com/anthonyhumphreys/mezair-stack) holds four projects:
+The [mezair repository](https://github.com/anthonyhumphreys/mezair) holds four projects:
 
 - **mezair-app**: Mezair Desktop, the Electron app, plus the desktop side of Sync & Mesh.
 - **mezair-registry**: Mezair Registry and Mezair Node Base.
