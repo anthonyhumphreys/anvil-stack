@@ -20,6 +20,7 @@ const states = [
   'responding',
   'history',
   'starting',
+  'showcase',
 ] as const;
 type FixtureState = (typeof states)[number];
 const noop = () => undefined;
@@ -56,11 +57,66 @@ const LIVE_STEPS: LiveStep[] = [
   }),
 ];
 
+const SHOWCASE_TASK =
+  'Checkout retries give up too early on flaky mobile networks. Raise the limit to 5, keep the backoff, and add a test that proves the fifth attempt runs.';
+
+/** A complete, realistic turn for screenshots: reproduce, fix, verify. */
+const SHOWCASE_EVENTS: CodexEvent[] = [
+  {
+    type: 'tool_call',
+    itemId: 'show-read',
+    toolName: 'read_file',
+    toolStatus: 'completed',
+    toolInput: { path: 'src/lib/retry.ts' },
+    toolOutput: "import { sleep } from './time';\n\nexport const MAX_ATTEMPTS = 3;",
+  },
+  {
+    type: 'tool_call',
+    itemId: 'show-search',
+    toolName: 'search',
+    toolStatus: 'completed',
+    toolInput: { query: 'withRetry(' },
+    toolOutput: 'src/checkout/submit.ts:14\nsrc/search/client.ts:9',
+  },
+  {
+    type: 'file_edit',
+    itemId: 'show-test-edit',
+    filePath: 'test/retry.test.ts',
+    diff: "@@ -8,3 +8,12 @@\n   });\n+\n+  it('retries five times before giving up', async () => {\n+    let calls = 0;\n+    const flaky = async () => {\n+      calls += 1;\n+      if (calls < 5) throw new Error('ECONNRESET');\n+      return 'ok';\n+    };\n+    await expect(withRetry(flaky)).resolves.toBe('ok');\n+  });",
+  },
+  {
+    type: 'command_exec',
+    itemId: 'show-red',
+    command: 'pnpm test -- retry',
+    output:
+      ' FAIL  test/retry.test.ts > withRetry > retries five times before giving up\nError: ECONNRESET\n Tests  1 failed | 1 passed (2)',
+    exitCode: 1,
+    toolStatus: 'failed',
+  },
+  {
+    type: 'file_edit',
+    itemId: 'show-fix',
+    filePath: 'src/lib/retry.ts',
+    diff: "@@ -1,4 +1,4 @@\n import { sleep } from './time';\n \n-export const MAX_ATTEMPTS = 3;\n+export const MAX_ATTEMPTS = 5;",
+  },
+  {
+    type: 'command_exec',
+    itemId: 'show-green',
+    command: 'pnpm test',
+    output:
+      ' ✓ test/retry.test.ts (2)\n ✓ test/cart.test.ts (7)\n ✓ test/address.test.ts (5)\n Tests  14 passed (14)',
+    exitCode: 0,
+    toolStatus: 'completed',
+  },
+];
+
 /** Development-only fixtures rendered with the real Electron shell and preload. */
 export default function ProcessingPreview() {
   const [interactions, setInteractions] = useState(false);
   const [provider, setProvider] = useState<AgentProvider>('codex');
-  const [state, setState] = useState<FixtureState>('working');
+  const [state, setState] = useState<FixtureState>(() =>
+    window.location.hash.includes('showcase') ? 'showcase' : 'working',
+  );
   const [width, setWidth] = useState<'wide' | 'narrow'>('wide');
   const [accessMode, setAccessMode] = useState<CodexMode>('on-request');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -93,10 +149,31 @@ export default function ProcessingPreview() {
     const entries: ChatEntry[] = [
       {
         kind: 'user',
-        content: 'Check the retry policy and run its tests.',
+        content: state === 'showcase' ? SHOWCASE_TASK : 'Check the retry policy and run its tests.',
         timestamp: startedAt.current,
       },
     ];
+    if (state === 'showcase') {
+      entries.push(
+        {
+          kind: 'thinking',
+          content:
+            'I’ll reproduce the early give-up with a failing test first, then raise the limit and run the whole suite.',
+        },
+        ...SHOWCASE_EVENTS.map(event),
+        {
+          kind: 'assistant',
+          phase: 'final',
+          content:
+            'Raised `MAX_ATTEMPTS` from 3 to 5 in `src/lib/retry.ts`. The backoff still doubles from 100 ms, so the fifth attempt waits 1.6 s.\n\nAdded **retries five times before giving up** to `test/retry.test.ts`. It failed before the change and passes now. Full suite: 14 passed.',
+        },
+        {
+          ...event({ type: 'turn_outcome', turnOutcome: 'completed' }),
+          timestamp: new Date(Date.parse(startedAt.current) + 41_000).toISOString(),
+        },
+      );
+      return composeChatTurns(entries, { active: false });
+    }
     if (state === 'live') {
       for (const step of LIVE_STEPS.slice(0, tick)) entries.push(event(step(tick)));
       if (tick > LIVE_STEPS.length) {
@@ -189,7 +266,10 @@ export default function ProcessingPreview() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-3 text-xs text-text-secondary">
+      <div
+        data-fixture-toolbar
+        className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-3 text-xs text-text-secondary"
+      >
         <span className="mr-auto">Processing fixtures · isolated desktop preview</span>
         <button
           type="button"

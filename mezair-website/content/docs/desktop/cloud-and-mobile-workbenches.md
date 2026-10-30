@@ -33,7 +33,7 @@ During a run, Desktop can read event batches, resolve approval requests, steer t
 
 Remote execution is separate from normal Chat and disabled by default. Review the uploaded commit, endpoint, authentication mode, requested approval, and returned evidence before acting on the result.
 
-This is the Cloud workbench's own execution path against a Mezair Cloud endpoint. It is separate from Sync & Mesh remote executions, which dispatch account jobs to your enrolled devices — see [Mesh jobs](/docs/sync/mesh-jobs).
+This is the Cloud workbench's own execution path against a Mezair Cloud endpoint. It is separate from Sync & Mesh remote executions, which dispatch account jobs to your enrolled devices. See [Mesh jobs](/docs/sync/mesh-jobs).
 
 ## Argent Workbench
 

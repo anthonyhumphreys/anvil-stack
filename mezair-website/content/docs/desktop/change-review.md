@@ -12,6 +12,8 @@ order: 130
 
 Change review ties your sign-off to a specific version of the code, a specific set of acceptance criteria and a recorded browser replay. Open Review for a repository change, or start from a connected work item. Work items are tracked with their connection, so the same ticket number from two different trackers never gets mixed up.
 
+![An inline Review surface for a working tree: Blocked, three risks and eight findings, the change explained in chapters, and findings grouped by severity.](/screens/surface-review.webp "A working-tree review published into the thread.")
+
 ## Configure a replay
 
 1. Choose the repository and the base to compare against. Mezair takes a snapshot of the changed code.

@@ -12,6 +12,17 @@ import {
 } from "@/lib/docs-navigation";
 
 const docsDirectory = path.join(process.cwd(), "content", "docs");
+type ScreenSize = { file: string; width: number; height: number };
+let screenSizes: Promise<Map<string, ScreenSize>> | undefined;
+
+/** Capture sizes from public/screens/manifest.json, so docs images never shift the layout. */
+function readScreenSizes() {
+  screenSizes ??= fs
+    .readFile(path.join(process.cwd(), "public", "screens", "manifest.json"), "utf8")
+    .then((source) => new Map(Object.values(JSON.parse(source) as Record<string, ScreenSize>).map((shot) => [shot.file, shot])))
+    .catch(() => new Map<string, ScreenSize>());
+  return screenSizes;
+}
 const productOrder = new Map(docsProducts.map((product, index) => [product.id, index]));
 const journeyOrder = new Map(docsJourneys.map((journey, index) => [journey.id, index]));
 
@@ -172,6 +183,7 @@ const calloutTitles = { note: "Note", tip: "Tip", warning: "Warning" } as const;
 
 async function renderMarkdown(content: string) {
   const slug = createSlugger();
+  const sizes = await readScreenSizes();
   const renderer = new Renderer();
   renderer.heading = function ({ tokens, depth }) {
     const html = this.parser.parseInline(tokens);
@@ -184,6 +196,20 @@ async function renderMarkdown(content: string) {
     const label = codeLanguageLabels[language] ?? (language ? language.toUpperCase() : "Code");
     const className = language ? ` class="language-${escapeHtml(language)}"` : "";
     return `<div class="doc-code"><div class="doc-code-bar"><span>${escapeHtml(label)}</span><button type="button" class="doc-code-copy" data-copy-code>Copy</button></div><pre><code${className}>${escapeHtml(text)}</code></pre></div>`;
+  };
+  // Screenshots: lazy, sized from the capture manifest (no layout shift), and
+  // captioned from the Markdown title: ![alt](/screens/x.webp "Caption").
+  renderer.image = function ({ href, title, text }) {
+    const shot = sizes.get(href);
+    const size = shot ? ` width="${shot.width}" height="${shot.height}"` : "";
+    const img = `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}"${size} loading="lazy" decoding="async">`;
+    return title ? `<figure class="doc-figure">${img}<figcaption>${escapeHtml(title)}</figcaption></figure>` : img;
+  };
+  // A paragraph that only holds an image becomes the figure itself, not a <p> around it.
+  renderer.paragraph = function ({ tokens }) {
+    const content = tokens.filter((token) => !(token.type === "text" && !token.raw.trim()));
+    if (content.length === 1 && content[0].type === "image") return this.parser.parseInline(tokens);
+    return `<p>${this.parser.parseInline(tokens)}</p>\n`;
   };
   renderer.blockquote = function ({ tokens }) {
     let body = this.parser.parse(tokens);

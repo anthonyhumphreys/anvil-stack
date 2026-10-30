@@ -36,12 +36,12 @@ export function SiteFooter() {
     <footer className="border-t bg-background">
       <div className="page-shell grid gap-12 py-14 md:grid-cols-[1.4fr_repeat(3,minmax(0,1fr))]">
         <div className="max-w-xs">
-          <Link href="/" className="inline-flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <Link href="/" className="mk-hover inline-flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <MezairMark className="h-8 w-12 text-foreground" />
             <span className="font-display text-xl tracking-[-0.02em]">Mezair</span>
           </Link>
           <p className="mt-4 text-sm leading-6 text-muted-foreground">
-            Open-source tools for running coding agents on your own machines, built in the open.
+            Open-source tools for running coding agents on your own machines.
           </p>
         </div>
         {columns.map((column) => (

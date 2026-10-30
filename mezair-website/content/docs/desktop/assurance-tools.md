@@ -12,6 +12,8 @@ order: 250
 
 Mezair Desktop has several tools for checking work. They overlap on purpose, but each answers a different question. None of them replaces tests, a specialist reviewer or a real control in production.
 
+![A Pipeline surface showing CI jobs as a graph with the failing test job and an uncached install called out.](/screens/surface-pipeline.webp "A pipeline analysis published inline.")
+
 ## Code Review
 
 Code Review can inspect a full codebase, commit, branch, or pull request in quick-glance or deeper senior-review mode. A review stores its findings and repository change summary.

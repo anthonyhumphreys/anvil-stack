@@ -60,7 +60,7 @@ Every transition is written through the host log adapter with `kind: "service"`,
 
 ## Local runtime
 
-The local dev server starts every declared service on boot and stops them all when it shuts down. After each state transition it persists a status snapshot to `.mezair/local/services.json` — that file is informational; live state is in-process and served over HTTP:
+The local dev server starts every declared service on boot and stops them all when it shuts down. After each state transition it persists a status snapshot to `.mezair/local/services.json`. That file is informational; live state is in-process and served over HTTP:
 
 ```txt
 GET  /_mezair/services                ->  { "ok": true, "services": [...] }
@@ -87,7 +87,7 @@ Failed services additionally carry `lastError: { code, message }`.
 mezair cloud services list --json
 ```
 
-This reads the `.mezair/local/services.json` snapshot — the last recorded states, not necessarily live. For live state, query `GET /_mezair/services` on a running dev server.
+This reads the `.mezair/local/services.json` snapshot, the last recorded states, not necessarily live. For live state, query `GET /_mezair/services` on a running dev server.
 
 ## Current limits
 

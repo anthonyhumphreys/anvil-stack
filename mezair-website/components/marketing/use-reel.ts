@@ -55,7 +55,11 @@ export function useReducedMotion() {
   );
 }
 
-function useInView(ref: RefObject<HTMLElement | null>) {
+export function usePageVisible() {
+  return useSyncExternalStore(subscribeVisibility, () => !document.hidden, () => true);
+}
+
+export function useInView(ref: RefObject<HTMLElement | null>) {
   const [inView, setInView] = useState(false);
   useEffect(() => {
     const element = ref.current;
@@ -78,7 +82,7 @@ export function useReel(durations: readonly number[]) {
   const rootRef = useRef<HTMLDivElement>(null);
   const reduced = useReducedMotion();
   const inView = useInView(rootRef);
-  const pageVisible = useSyncExternalStore(subscribeVisibility, () => !document.hidden, () => true);
+  const pageVisible = usePageVisible();
   const [state, dispatch] = useReducer(reelReducer, { chapter: 0, elapsed: null, mode: "auto", paused: false });
 
   const motion = inView && pageVisible && !reduced;

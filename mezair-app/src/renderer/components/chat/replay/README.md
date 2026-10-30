@@ -85,6 +85,20 @@ fixture only. Add `&factories-empty` for the first-run state and `&workflows` to
 the same data from the Workflows side (pinned-by counts, "Use in a factory" and
 factory-run provenance). No GitHub, Codex or daemon call is made.
 
+Open `http://127.0.0.1:4179/?mesh` for the production **Settings → Sync & Mesh**
+panel against an in-memory account (`MeshPreview.tsx`): a self-hosted backend,
+four enrolled devices (one revoked), a conflict, Mesh jobs in every honest state
+and a session mid-handoff. `?mesh=jobs` opens a running job and watches its
+attempt stream, `?mesh=approval` shows a pending bootstrap approval, and
+`?mesh=session` shows the ownership strip idle with **Move session** open and
+mid-handoff. Every bridge call is synthetic; unsupported calls throw a labelled
+error. No backend, worker, provider or key is used.
+
+The native processing preview also has a `showcase` state (open
+`/_dev/processing?showcase`): one complete, realistic turn that writes a failing
+test, fixes it and runs the suite. The website's screenshots use it and the
+`?mesh` fixture; see `mezair-website/scripts/capture-screens.mjs`.
+
 Open `http://127.0.0.1:4179/?composer` to try the production chat input with local
 callbacks. Switch themes, pane widths, and ready/working/unavailable states; use
 the sample draft to check wrapping, model selection, access controls, and send

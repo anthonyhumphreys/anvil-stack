@@ -12,6 +12,8 @@ order: 140
 
 Use Mezair Desktop's review tools to check a change before you keep it. A useful finding identifies the file, severity, reasoning and validation needed. Read the supporting code and run the relevant checks before acting on it.
 
+![A Findings surface from a security audit with one critical, one high, two medium and one low finding, each with a file and line, and Ask agent to fix top 5.](/screens/surface-findings.webp "Findings arrive with file and line, ready to hand back as tasks.")
+
 ## Review a concrete change
 
 [Change review](/docs/desktop/change-review) replays a configured browser scenario against a base and candidate, stores screenshots and traces, and binds acceptance to the source snapshot and criteria version. Changes to the candidate or criteria require fresh evidence.

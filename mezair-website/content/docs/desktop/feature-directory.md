@@ -19,7 +19,9 @@ Role selection controls which tools appear. Cloud is also hidden until you enabl
 | Feature | What it does | Guide |
 | --- | --- | --- |
 | Inbox | Collects approvals, questions, failures, completed work, agent runs, automations, indexing, and local processes that need attention. | [Workspaces, repositories, and activity](/docs/desktop/workspaces-repositories-and-activity) |
-| Chat | Runs repository-aware Codex, Cursor, OpenAI, or Azure-backed conversations with attachments, approvals, plans, goals, artifacts, and agent activity. | [Chat, canvas, and agent runs](/docs/desktop/chat-canvas-and-agent-runs) |
+| Chat | Runs repository-aware Codex, Cursor, Devin, OpenAI, Azure or LLMGateway conversations with attachments, approvals, plans, goals, inline surfaces, artifacts, and agent activity. | [Chat, surfaces and agent runs](/docs/desktop/chat-canvas-and-agent-runs) |
+| Agent tools | Gives every session Mezair's MCP tools: structured questions, reviews, findings, dependencies, diagrams, delegation, workflows and factories. | [Agent tools](/docs/desktop/agent-tools) |
+| Command palette | Reaches views, threads, workspaces and actions from the keyboard. Shortcuts are rebindable. | [Keyboard shortcuts](/docs/desktop/keyboard-shortcuts) |
 | Workspace | Groups repositories and workspace-specific preferences, supports more than one window, and exports VS Code workspace files. | [Workspaces, repositories, and activity](/docs/desktop/workspaces-repositories-and-activity) |
 | Repositories | Connects local checkouts, clones GitHub or Azure DevOps repositories, indexes code, and builds repository maps. | [Workspaces, repositories, and activity](/docs/desktop/workspaces-repositories-and-activity) |
 

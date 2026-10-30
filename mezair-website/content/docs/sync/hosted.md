@@ -66,7 +66,7 @@ To sign in:
   `http://127.0.0.1:<ephemeral-port>/callback`; the desktop chooses an
   ephemeral port in the documented loopback range. Automatic connection is
   the default for new hosted accounts. You can choose **Verify each device
-  with a code** in Sync & Mesh settings for a manual check — see
+  with a code** in Sync & Mesh settings for a manual check, see
   [Devices and sign-in](/docs/sync/devices).
 - **Headless daemon:** Run `mezair-daemon sign-in --api-url https://<backend>`
   on the host. Add `--worker` only for an explicit Mesh worker opt-in. After
@@ -109,7 +109,7 @@ remain available. New hosted writes, Mesh job submissions and handoffs stop.
 
 ## Limits
 
-Limits — device count, artifact bytes, history bytes — come from **backend
+Limits (device count, artifact bytes, history bytes) come from **backend
 deployment config**, not a hardcoded product table. `/account` shows the
 actual numbers your deployment enforces; this page does not quote them
 because the defaults in the repo are provisional test fixtures, not
@@ -134,17 +134,17 @@ The website's account area (requires WorkOS env on the site deployment):
 | Surface | What it shows |
 | --- | --- |
 | `/account` | Current backend-reported access state and enforced fair-use limits. |
-| `/account` devices | Full device roster — rename and revoke. |
+| `/account` devices | Full device roster, rename and revoke. |
 | `/account/billing` | Beta-code redemption, personal checkout when open, subscription state, portal and refresh controls. |
 | `/account/organizations` | Membership, invitations, roles and team billing. It does not share workspaces, devices or Sync & Mesh data. |
-| `/account/data` | Export/deletion status — the deletion state machine's visible progress. |
+| `/account/data` | Export/deletion status, the deletion state machine's visible progress. |
 
 New organisations have five allocated member seats, including the owner. Older
 owner seat opt-outs remain in effect, so total membership can differ from the
 number of allocated seats. Membership administration does not create a shared
 workspace or Sync & Mesh fleet.
 
-Web device revocation severs the session but does **not** rotate the ADK —
+Web device revocation severs the session but does **not** rotate the ADK,
 the app does. See [Devices and sign-in](/docs/sync/devices) for the table.
 
 ## Provisioning status

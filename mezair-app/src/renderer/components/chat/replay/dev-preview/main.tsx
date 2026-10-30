@@ -19,6 +19,7 @@ import {
   installSkillsRecommendationsPreview,
 } from '../SkillsRecommendationsPreview';
 import { FactoriesPreview, installFactoriesPreviewBridge } from '../FactoriesPreview';
+import { MeshPreview, installMeshPreviewBridge } from '../MeshPreview';
 import {
   DeliveryReadinessPreview,
   installDeliveryPreviewBridge,
@@ -244,14 +245,18 @@ const composerPreview = new URLSearchParams(window.location.search).has('compose
 const validationPreview = new URLSearchParams(window.location.search).has('validation');
 const skillsPreview = new URLSearchParams(window.location.search).has('skills');
 const factoriesPreview = new URLSearchParams(window.location.search).has('factories');
+const meshPreview = new URLSearchParams(window.location.search).has('mesh');
 if (deliveryPreview) installDeliveryPreviewBridge();
 if (skillsPreview) installSkillsRecommendationsPreview();
 if (factoriesPreview) installFactoriesPreviewBridge();
+if (meshPreview) installMeshPreviewBridge();
 
 createRoot(rootElement).render(
   <StrictMode>
     <MemoryRouter>
-      {factoriesPreview ? (
+      {meshPreview ? (
+        <MeshPreview />
+      ) : factoriesPreview ? (
         <FactoriesPreview />
       ) : skillsPreview ? (
         <SkillsRecommendationsPreview />

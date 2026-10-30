@@ -14,6 +14,8 @@ Sign in on each device you want to connect. Every device gets its own
 credential and X25519 identity, plus a copy of the account encryption key.
 You can revoke one device while keeping the others connected.
 
+![Enrolled devices: Dana's MacBook Pro marked This device, studio-mac trusted by pairing, build-box trusted by manual approval, and old-imac revoked, each with Rename, Compare and verify, and Revoke.](/screens/mesh-devices.webp "The device roster shows how each device became trusted. Revoked devices stay listed for audit.")
+
 ## The enrollment model
 
 - A hosted daemon can start with WorkOS Device Authorization. WorkOS returns a
@@ -21,14 +23,14 @@ You can revoke one device while keeping the others connected.
   code for polling and never prints it. There is no loopback redirect in this
   flow.
 - An **enrollment code** is a bootstrap path offered by some compatible or
-  self-hosted backends. Codes are single-use and stored hashed at rest — the
+  self-hosted backends. Codes are single-use and stored hashed at rest. The
   server never keeps the code itself. The Mezair-hosted website does not mint
   enrollment codes; hosted users sign in with WorkOS on each device.
 - Redeeming a code produces a device-scoped credential: an access token plus
   a refresh token bound to that enrollment. The refresh token rotates on use;
   revocation severs the session immediately.
 - Each enrollment mints a fresh **X25519 device identity** and publishes the
-  public half as a device-identity entity — the crypto boundary other devices
+  public half as a device-identity entity, the crypto boundary other devices
   wrap keys to. See [Encryption and keys](/docs/sync/encryption).
 
 ## First device: sign in and connect
@@ -134,21 +136,21 @@ lists every enrollment: name, enrollment id, age, status.
 
 - **Rename** sets the display name. Submitting an empty name clears it back
   to the default.
-- **Revoke** ends the enrollment. See below — where you revoke from changes
+- **Revoke** ends the enrollment. See below: where you revoke from changes
   what happens.
-- The current device cannot be revoked from its own UI — that would strand
+- The current device cannot be revoked from its own UI, because that would strand
   the session mid-operation. Revoke it from another enrolled device or from
   the website.
 - Revocation is idempotent: revoking an already-revoked device is a no-op.
 
-## What revocation does — and does not do
+## What revocation does and does not do
 
 Both paths sever the device's session immediately and account-wide. They
 differ on keys:
 
 | | Session severed | ADK rotated |
 | --- | --- | --- |
-| Revoke from the app | Yes | Yes — ADK v(N+1) wraps to all surviving devices |
+| Revoke from the app | Yes | Yes, ADK v(N+1) wraps to all surviving devices |
 | Revoke from the website | Yes | Reconciled by a surviving trusted device before its next new write |
 
 After an **app-initiated** revoke, anything sealed under the new key version

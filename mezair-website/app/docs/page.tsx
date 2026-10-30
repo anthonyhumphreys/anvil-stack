@@ -4,12 +4,14 @@ import { DocsSearch } from "@/components/site/docs-search";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
 import { getDocs, groupDocs, toSearchItems } from "@/lib/docs";
+import { pageMetadata } from "@/lib/metadata";
 import { products } from "@/lib/site";
 
-export const metadata = {
+export const metadata = pageMetadata({
   title: "Docs | Mezair",
-  description: "Guides and reference for Mezair Desktop, Sync & Mesh, Registry, Node Base and Cloud."
-};
+  description: "Guides and reference for Mezair Desktop, Sync & Mesh, Registry, Node Base and Cloud.",
+  path: "/docs"
+});
 
 const ways = [
   {
@@ -22,9 +24,9 @@ const ways = [
   {
     icon: Wrench,
     title: "Setting it up",
-    body: "Install the app, connect an agent, and run your first piece of work.",
-    href: "/docs/desktop/installation",
-    cta: "Install Desktop"
+    body: "Install the app, connect an agent, and take your first task from prompt to reviewed change.",
+    href: "/docs/desktop/quickstart",
+    cta: "Quickstart"
   },
   {
     icon: BookOpen,

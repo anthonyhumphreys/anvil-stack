@@ -10,6 +10,7 @@ import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
 import { getDoc, getDocs, toSearchItems } from "@/lib/docs";
 import { journeyById, productById, type ProductId } from "@/lib/docs-navigation";
+import { pageMetadata } from "@/lib/metadata";
 import { docsSourceUrl } from "@/lib/site";
 
 export async function generateStaticParams() {
@@ -18,7 +19,15 @@ export async function generateStaticParams() {
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string[] }> }) {
   const doc = await getDoc((await params).slug.join("/"));
-  return doc ? { title: `${doc.title} | Mezair Docs`, description: doc.description } : {};
+  return doc
+    ? pageMetadata({
+        title: `${doc.title} | Mezair Docs`,
+        description: doc.description,
+        path: `/docs/${doc.slug}`,
+        type: "article",
+        image: { url: `/og/docs/${doc.slug}`, alt: `${doc.title}: ${doc.description}` }
+      })
+    : {};
 }
 
 export default async function DocPage({ params }: { params: Promise<{ slug: string[] }> }) {

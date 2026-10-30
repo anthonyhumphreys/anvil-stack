@@ -12,6 +12,8 @@ order: 80
 
 Workflows turn a repeated agent process into a named graph. Each step has an instruction, persona, provider, model, and reasoning level. Edges make downstream steps wait for completed upstream work.
 
+![The Workflows view listing reusable agent workflows, which factories pin them, and Use in a factory.](/screens/factories-workflows.webp "Workflows show which factories pin them.")
+
 ## From outcome to run
 
 1. Describe the outcome and choose a delivery, review, or research starter, an existing template, or an AI-drafted flow.

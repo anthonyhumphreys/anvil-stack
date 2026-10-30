@@ -42,6 +42,14 @@ for (const file of files) {
       const target = match[1].replace(/^\/docs\//, "").replace(/\/$/, "");
       if (target && !slugs.has(target)) errors.push(`${relative}: broken docs link ${match[1]}`);
     }
+
+    // Screenshots must exist and carry alt text describing what they show.
+    for (const match of body.matchAll(/!\[([^\]]*)\]\((\/[^)\s]+)(?:\s+"[^"]*")?\)/g)) {
+      const [, alt, src] = match;
+      if (!alt.trim()) errors.push(`${relative}: image ${src} needs alt text`);
+      const file = path.join(process.cwd(), "public", src);
+      if (!(await fs.stat(file).catch(() => null))) errors.push(`${relative}: missing image ${src}`);
+    }
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }

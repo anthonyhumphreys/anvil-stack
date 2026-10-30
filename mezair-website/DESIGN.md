@@ -1,6 +1,6 @@
 ---
 name: "Mezair website"
-description: "A precise reading workspace and a cinematic projection room for working developer tools."
+description: "A precise reading workspace and a cinematic projection room lit by real captures of working developer tools."
 colors:
   reading-light-ground: "oklch(0.986 0.004 245)"
   reading-light-text: "oklch(0.2 0.016 255)"
@@ -151,7 +151,7 @@ components:
 
 **Creative North Star: "The projection room and the workbench"**
 
-Mezair shares one identity across two visual worlds: a calm, inspectable reading workspace and a dramatic projection room where working product scenes carry the marketing. Both use cool neutrals, Archivo, the monochrome horse-M and a restrained orange action accent. The mark follows the text color.
+Mezair shares one identity across two visual worlds: a calm, inspectable reading workspace and a dramatic projection room where real captures of the working product carry the marketing. Both use cool neutrals, Archivo, the monochrome horse-M and a restrained orange action accent. The mark follows the text color.
 
 The always-dark projection room covers `/`, `/sync`, `/pricing` and `/what-does-mezair-mean`. The naming page is its quieter identity expression: power under precise control, with strength, discipline, progression and elegance expressed through the large horse-M and a visitor-triggered hop. Docs, account, workspace, auth and shared-artifact routes retain their existing reading and operating styles; the cinematic scope does not replace them.
 
@@ -159,10 +159,10 @@ The always-dark projection room covers `/`, `/sync`, `/pricing` and `/what-does-
 
 - Cool neutral grounds, a single action accent and explicit status words.
 - Wide, heavy display type paired with normal-width interface text.
-- Authored product scenes, divided comparisons and quiet reading surfaces.
+- Real Desktop captures with fixture data, labelled motion diagrams, divided comparisons and quiet reading surfaces.
 - Purposeful motion with pause controls, reduced-motion support and static initial frames.
 
-This document records the final source in `app/globals.css`, `app/marketing.css`, `app/what-does-mezair-mean/meaning.module.css`, the shared UI components and the marketing scenes. Tokens above are normative. The sidecar adds source metadata, preview specimens, motion and responsive rules. Route-specific story and composition remain in `.impeccable/surfaces/app-page-tsx.md`.
+This document records the final source in `app/globals.css`, `app/marketing.css`, `app/mark.css`, `app/what-does-mezair-mean/meaning.module.css`, the shared UI components, the marketing components and the social cards in `app/_og/`. Tokens above are normative. The sidecar adds source metadata, preview specimens, motion and responsive rules. Route-specific story and composition remain in `.impeccable/surfaces/app-page-tsx.md`.
 
 ## Colors
 
@@ -172,7 +172,7 @@ Cool paper and navy grounds give the same orange accent two contexts: quiet orie
 
 - **Light action orange** fills the shared primary button; **Light detail orange** supplies the light theme’s links, focus and smaller accents. These are distinct source values.
 - **Night action orange** supplies both primary and accent roles in the shared dark theme.
-- **Live orange** supplies marketing actions and progress. **Scene live orange** is the slightly different accent inside the authored Desktop scenes.
+- **Live orange** supplies marketing actions and progress. **Scene live orange** is the slightly different accent inside the Mesh stage diagrams.
 - **Naming orange** is the naming page’s local action variation.
 
 ### Secondary
@@ -209,19 +209,21 @@ The naming hero uses the shared wide display voice with its own larger size (`cl
 
 **The Display Rule.** Use wide Archivo for headings and large prices; keep body and interface text at normal width.
 
+Social cards cannot use the variable font, so `app/_og/fonts/` holds static Archivo instances: width 125 at 800, registered with satori as **Archivo Expanded** for titles, and Medium 500 as **Archivo** for descriptions, with JetBrains Mono Medium for labels. They are the same family as the site's display and body voices, not new typefaces.
+
 ## Layout
 
 The shared shell is centered and capped at 76rem; cinematic stages use an 88rem shell. Both begin with 1.25rem horizontal padding and increase to 2rem at 640px. The spacing primitives above record repeated source distances, rather than implying a new global spacing scale.
 
-Marketing title rows stack, then become an 8:5 grid at 1024px. Stage spacing and section padding are fluid. The homepage uses a working product window, the Sync page uses the handoff stage, and pricing uses one ruled plans board. The homepage credits form a role/value list around a center gutter from 768px; this is a specific authored pattern, not the alignment rule for every page.
+Marketing title rows stack, then become an 8:5 grid at 1024px. Stage spacing and section padding are fluid. The homepage opens on a centred title card (painted mark, H1, lede, actions) above a 16:10 reel of real captures; the Sync page and the homepage's Sync section use the Mesh stage; pricing uses one ruled plans board. Use cases pair a step list with one sticky capture stage from 1024px and stack each step with its own capture below it. The homepage credits form a role/value list around a center gutter from 768px; this is a specific authored pattern, not the alignment rule for every page.
 
-The product window stacks chat and side panel below 640px. It shows two panes from 640px and adds the thread rail from 1024px. The full handoff is vertical below 640px, horizontal above it, and distributes its seven state labels across a row from 1024px. Plans use one column, two from 768px, and four from 1280px. Comparison and billing rows similarly gain columns at 768px.
+The Mesh stage switches from its wide 1000×476 layout to a tall 400×720 layout when its own width drops below 620px, so labels stay legible on phones. Reel and stage chapter tabs are four across, and two by two below 480px. Plans use one column, two from 768px, and four from 1280px. Comparison and billing rows similarly gain columns at 768px.
 
 The naming page uses the shared shell, a 1.2:1 introduction grid, a large centered horse-M and a divided caption. At 700px and below, introduction, caption and afterword stack. Its arena height and mark size are fluid. Keep all content usable at the confirmed 390px mobile target.
 
 ## Elevation & Depth
 
-Reading surfaces rely primarily on tone and borders. Bounded artifacts and navigation overlays retain their existing local shadows. Cinematic windows add a long, dark, offset shadow and a faint inset highlight; the cool radial key light places them in the room. The plans board uses a related long shadow. A contained surface gradient inside the handoff stage provides lighting without introducing glass.
+Reading surfaces rely primarily on tone and borders. Bounded artifacts and navigation overlays retain their existing local shadows. Capture frames (`.reel-frame`, `.shot`, the use-case stage) and the Mesh stage add a long, dark, offset shadow and a faint inset highlight; the cool radial key light places them in the room. The plans board uses a related long shadow. A contained surface gradient inside the Mesh stage provides lighting without introducing glass.
 
 Exact shadow declarations are in the sidecar’s elevation extensions. Its component specimens carry the complete CSS that the frontmatter’s limited component schema cannot represent.
 
@@ -247,17 +249,25 @@ The sticky header uses a translucent themed ground, a bottom rule and backdrop b
 
 Documentation search is a 56px-tall, transparent field within a ruled dialog header, with muted placeholder text and an accent search icon. Its wrapper, result selection and close control provide the interaction structure; the bare input does not acquire an invented standalone border. Search opens with `/` or Command/Ctrl-K. Documentation code blocks use bounded dark artifact panels with copy controls; notes, tips and warnings use labeled tinted callouts.
 
-### Product reel and scene cards
+### Real captures
 
-The homepage reel is authored HTML/CSS, not a screenshot. It carries an illustrative-demo label and an example repository, task and devices. Four tablist chapters—Task, Agent work, Review, Handoff—show Desktop vocabulary, conversation blocks, the turn card, activity, diffs and session ownership. A branch chip is mono and fully rounded; turn cards use a quiet raised fill, thin rule and a living activity edge while working.
+Every product image is the production Mezair Desktop UI rendered with synthetic fixture content (the Acme workspace, Dana's devices, example jobs). `scripts/capture-screens.mjs` captures the Electron shell and the `mezair-app` replay harness over the DevTools protocol, writes 2× WebP to `public/screens/` and records each capture's source, fixture, size and app commit in `manifest.json`. `lib/screens.ts` pairs every capture with alt text that describes the screen in words and a short caption. Never draw product UI in the website; add a replay fixture instead. Docs reference captures with `![alt](/screens/id.webp "caption")`, which renders a sized, lazy `.doc-figure`.
 
-The chapter durations are 5.2s, 7.6s, 6.4s and 9.8s. A 100ms clock runs only while the scene intersects the viewport, the document is visible, reduced motion is off, and playback is active. Chapter selection plays the chosen chapter once and holds its completed frame; Play resumes the automatic sequence. Left/Right arrows, Home and End select and focus chapters. A filling orange line identifies the active chapter and progress. The illustrated interior is hidden from assistive technology; each tabpanel carries a text summary.
+### Product reel
 
-The one page-load rise lasts 700ms, beginning at 85% opacity, 20px lower, scale 0.99 and a 1px blur. Scene panel cuts use 620ms; feed reveals fold into place. Ambient activity edges, live dots and the cursor run only while the scene’s `data-motion` gate is on, including respect for pause, offscreen and hidden-tab states. Reduced motion disables autoplay and the scene transitions/animations. Initial server output and initial reduced-motion scenes use completed static frames.
+The homepage reel crossfades four real captures (Watch it work, Read the result, Review the change, Move machines) inside one 16:10 frame. Full-window captures cover the frame from the top-left; panel captures sit centred on the window ground. A keyboard tablist with a filling orange line selects chapters; autoplay runs only while on screen, in a visible tab and without reduced motion, and any choice holds that chapter. Slides cross 700ms on opacity, 900ms on scale (1.012 → 1) and 700ms on a 6px blur. Where `animation-timeline: view()` is supported and motion is allowed, the frame tilts up from `rotateX(14deg) scale(0.94)` into place as it scrolls in. Its caption names the capture and links to how captures are made.
 
-### Handoff stage
+### Mesh stage
 
-Two device panels and a sealed checkpoint show source ownership, target preparation and transfer as seven labeled states. The full Sync scene runs a 12s loop through the same playback gate and exposes a pause/play control; the homepage uses the compact variant. Every step remains text with `aria-current` marking the current step. The illustrative label and save/push guidance stay attached to the scene.
+One SVG stage, four stories: Sync (an edit is sealed, relayed as ciphertext and opened on two devices), Mesh job (pinned commit, durable record, lease, live stream back, credentials staying on the worker), LAN-first routes (LAN probed first, fallback to the next route that answers, the returning route authenticating and catching up before the switch) and Handoff (the seven real `HandoffState` values, a sealed checkpoint and the generation moving 4 → 5). Devices, commits and output are fixture content; order, states and limits follow `cloud/contract`. A `requestAnimationFrame` clock advances only on screen, in a visible tab and without reduced motion; chapter choice plays once and holds; reduced motion and the server render show each chapter's key frame. Each chapter has a text summary for assistive tech, a caption with the current beat in words, and an ordered beat list. Orange marks live movement, green completion, yellow attention and red failure, always with words.
+
+### Animated mark
+
+`<AnimatedMark>` paints the canonical horse-M in the manner of sumi-e, left to right. A dry-brush ground line draws first. One continuous brush gesture follows: up from the tail's tip, over into the valley, up the neck and a firm stop at the muzzle. The foreleg is laid as that brush passes the shoulder, with a flick of ink at the hoof. Bristles run ahead of the body of ink for dry-brush streaks, a turbulence filter gives the edges paper fibre, ink pools where the brush lands, and a blurred wet bleed dries into the crisp mark. A settle layer then seals the exact geometry. The horse then makes one collected rise as a single rigid body, pivoting on the tail's tip, while only the separate foreleg folds. It lands slightly forward on a sampled spring. The whole entrance takes about 3.6s and is monochrome. Every keyframe fills backwards only, so the resting mark is the base style for no-JS, reduced motion and the end state. Pressing it replays. Any mark inside `.mk-hover` (header, footer, hero) tilts up 3.5° as one body, with the foreleg folding 10°, on hover or focus. Never alter the geometry or move its shapes independently, except the foreleg about its shoulder. Brush centrelines live in `mark-geometry.ts`.
+
+### Social cards
+
+`app/_og/card.tsx` renders 1200×630 cards with satori: projection navy (sRGB equivalents of the OKLCH tokens), the wide Archivo display voice, mono labels, the mark, and a real capture bleeding off the right edge where the page has one. Every public route has `opengraph-image` and `twitter-image` files; documentation pages get `/og/docs/<slug>` from a route handler because catch-all segments cannot hold metadata image files. `lib/metadata.ts` gives each public page matching title, description, canonical, Open Graph and Twitter fields.
 
 ### Plans and divided rows
 
@@ -273,14 +283,15 @@ Pricing is one rounded, ruled board rather than detached cards. The featured col
 
 - Do keep the horse-M monochrome and bound to the surrounding text color.
 - Do use the scoped marketing palette on all four cinematic routes and keep their theme toggle hidden.
-- Do label authored product scenes as illustrative demos and pair operational colors with text.
+- Do use real captures with fixture data for every product image, with alt text that describes the screen, and label motion diagrams as fixture content.
+- Do pair operational colors with text.
 - Do keep chapter selection, pause controls, keyboard focus and reduced-motion behavior available.
 - Do preserve the naming page’s click-triggered horseplay and its power-under-control character.
 
 ### Don't:
 
 - Don't carry cinematic page styling into docs, account or workspace routes.
-- Don't use gradient text, decorative glass, fake screenshots, fake metrics or testimonials.
+- Don't use gradient text, decorative glass, drawn or composited product UI, fake metrics or testimonials.
 - Don't replace divided comparisons with a repetitive grid of equal icon cards.
 - Don't add decorative eyebrows, kickers or machine-looking labels to marketing headings.
 - Don't turn the orange accent into a large decorative background or convey status through color alone.

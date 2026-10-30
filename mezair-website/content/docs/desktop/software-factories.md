@@ -12,6 +12,8 @@ order: 85
 
 **Beta through 30 November 2026.**
 
+![The Factories view with a factory line: runs at intake, building, review, waiting for approval and merging stations.](/screens/factories-line.webp "A factory line from the synthetic factory fixture.")
+
 A user-definable software factory takes a GitHub issue to a verified, merged pull request under a policy you write and approve. You describe the process in chat. Mezair turns it into a typed, immutable definition with a pinned workflow graph. Nothing processes issues until you explicitly activate that exact saved revision.
 
 Factories are a separate feature from [Automations](/docs/desktop/automations). An automation runs a prompt or workflow on a schedule or Watchtower event, in a throwaway worktree. A factory keeps one durable lifecycle per issue, from intake to confirmed merge and post-merge checks. The factory controller performs publication and merge as typed operations; agents never perform them directly.

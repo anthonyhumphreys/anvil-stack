@@ -53,7 +53,7 @@ service choices remain in **Advanced connection settings**:
 | Local only | No account backend is connected. A remembered backend is paused, not forgotten. New workspaces default to Local. |
 | Mezair-hosted | **Sign in to Mezair** uses the hosted service configured for this build. The test path is invite-only; hosted writes require paid or beta access. Checkout and production hosting are not available yet. See [Mezair-hosted sync](/docs/sync/hosted). |
 | Your Cloudflare | Point Mezair at a Cloudflare Workers deployment you own (labeled *My Cloudflare service* in advanced settings). Deploy it with [`mezair-cloud mesh`](/docs/sync/self-deploy). |
-| Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles — see [Backend conformance](/docs/sync/conformance). |
+| Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles, see [Backend conformance](/docs/sync/conformance). |
 
 Sign-in checks and pins the service without uploading configuration. New
 hosted accounts use automatic connection by default; choose code verification
@@ -95,7 +95,7 @@ identity, discovery, durable job decisions, and required recovery.
 - A versioned account data key (ADK) seals every synced payload with
   AES-256-GCM. Devices wrap the ADK to each other's public keys.
 - The backend validates envelope shape, journals ciphertext opaquely, and
-  coordinates devices, jobs, and handoffs. It can read metadata — never
+  coordinates devices, jobs, and handoffs. It can read metadata but never
   content.
 
 The exact field list the server can see is documented in

@@ -21,7 +21,7 @@ export function Horseplay() {
           {hops === 0
             ? "The M has a mane."
             : hops % 3 === 0
-              ? "Right. Back to the workbench."
+              ? "That's enough horseplay."
               : "A little lift. Onward."}
         </p>
         <button type="button" onClick={() => setHops((value) => value + 1)}>

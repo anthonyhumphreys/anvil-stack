@@ -105,7 +105,7 @@ export const sync: Product = {
   title: "Mezair Sync & Mesh",
   shortTitle: "Sync & Mesh",
   repoName: "mezair-app/ + mezair-cloud/",
-  tagline: "Your workbench on every machine you use.",
+  tagline: "Encrypted sync and remote jobs across your machines.",
   description:
     "Sync carries your workspaces, templates, custom agents and settings between machines, encrypted on the device before anything leaves it. Mesh lets one machine send work to another, and you can move a running session to a different machine when you get up from your desk.",
   boundary:
@@ -340,7 +340,7 @@ export const plans: Plan[] = [
     price: "£6",
     cadence: "a month",
     annual: "or £60 a year",
-    summary: "Your workbench on every machine you use.",
+    summary: "Encrypted sync and Mesh jobs across your machines.",
     features: [
       "Everything in Desktop",
       "Encrypted sync of workspaces, templates, agents and settings",

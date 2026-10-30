@@ -61,6 +61,8 @@ All of this is saved with the thread. You can dismiss and restore these without 
 
 Agents can publish documents, diagrams, data tables, reviews and quick visual sketches straight into the conversation. These render inline where they were produced. Each one can expand to fill the screen or open in its own window, and a minimise button folds it down to its title.
 
+![An inline Review surface for a working tree: Blocked, three risks and eight findings, the change explained in chapters, and findings grouped by severity.](/screens/surface-review.webp "A working-tree review published into the thread.")
+
 Artifacts are durable documents: Markdown, diagrams, HTML, Word documents, presentations, spreadsheets, code, data and text. An artifact can point at a file under `.mezair/artifacts`. You can read it, discard it and add comments to specific parts. Make comments about a concrete change rather than turning them into a second conversation.
 
 Treat previews as something to review, not proof. A generated plan or report doesn't show that its commands were run, and a generated file still needs checking in the format it's in.
@@ -68,6 +70,8 @@ Treat previews as something to review, not proof. A generated plan or report doe
 ## Agent activity and parallel work
 
 Each turn has a working card that shows what the agent is doing: the commands it runs, files it edits and tools it uses. Expand it to see every step. Delegated work from helper agents shows its status and progress without flooding the main conversation, and folds back into the parent turn when it finishes.
+
+![A thread with the turn card expanded: read a file, searched, edited a test, ran the focused test with one failure, edited the source, then ran the full suite with 14 passing.](/screens/desktop-run-steps.webp "The turn card lists every step with exit codes.")
 
 Mezair tracks active sessions and recent runs, so the Inbox, the repository twin, the sidebar and companion devices can show work that's carrying on outside the thread you're looking at.
 

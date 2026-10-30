@@ -12,8 +12,10 @@ order: 60
 
 A mesh job runs on a machine you enrolled, under your account, at commits the
 job manifest pins. The account service records durable job decisions; your
-hardware executes. Compute and provider credentials stay on your machines —
+hardware executes. Compute and provider credentials stay on your machines,
 the service never runs the job and never sees provider keys.
+
+![Mesh jobs: a start-session job running on studio-mac with its attempt stream open, including a marked gap; other jobs read Needs approval, Completed, Lost contact, outcome unknown, and Stopping.](/screens/mesh-jobs.webp "Remote executions with a watched attempt. Lost contact is never shown as cancelled.")
 
 This is provider-neutral infrastructure: codex/claude/cursor-style providers
 plug in behind the same job contract.
@@ -22,13 +24,13 @@ plug in behind the same job contract.
 
 | Type | What it does |
 | --- | --- |
-| `start-session` | Spawn a provider session on a worker — the remote-run case. |
+| `start-session` | Spawn a provider session on a worker, the remote-run case. |
 | `diagnostic` | Run diagnostics against a device or workspace and report back. |
 | `prepare-workspace` | Materialize a workspace at a pinned revision so a later job or handoff starts warm. |
 
 ## How a job runs
 
-1. **Create.** You create a job against the account — targeting a device or a
+1. **Create.** You create a job against the account, targeting a device or a
    set of requirements. The job carries a manifest pinning the workspace
    definition revision and the exact repository commits it needs.
 2. **Advertise and claim.** Enrolled devices running the mesh worker advertise
@@ -40,20 +42,20 @@ plug in behind the same job contract.
    repository state matches the pinned commits. A drifted tree is a failed
    claim, not a job that runs on the wrong code.
 4. **Execute in an isolated worktree.** Each attempt runs in its own
-   per-attempt worktree at the pinned commit — attempts never share a working
+   per-attempt worktree at the pinned commit. Attempts never share a working
    tree and never touch your checkout.
 5. **Record and watch.** Durable job state and required recovery records remain
    account-scoped. Supported upgraded clients can carry live commands and
    output over an authenticated, encrypted direct session with the host when a
-   route is enabled and reachable. Artifacts the job produces upload sealed —
+   route is enabled and reachable. Artifacts the job produces upload sealed,
    see [Artifacts and share links](/docs/sync/artifacts-and-shares).
 6. **Integrate.** Results transfer back and integrate in dependency order;
    conflicts surface visibly rather than merging silently.
 
 ## Attempts, leases, incarnations
 
-A job's attempts are first-class. Each attempt carries a **lease** — the
-worker must keep renewing it or the attempt is presumed lost — and a **worker
+A job's attempts are first-class. Each attempt carries a **lease.** The
+worker must keep renewing it or the attempt is presumed lost, and a **worker
 incarnation** that identifies which worker process holds it. If a worker dies
 mid-attempt, the lease expiry is what tells the account the attempt is gone;
 nothing is declared finished on a heartbeat failure.
@@ -80,19 +82,21 @@ The activity view combines saved history and live output:
 
 ## Approvals
 
-Pending approvals show the **action digest** — what the action will do — and
+Pending approvals show the **action digest**, what the action will do, and
 an **expiry**. Approve/Deny renders only where this device is actually
 permitted to decide. An approval pinned to another device, or raised by this
 device's own worker, shows what it is waiting on instead of offering buttons
 that would no-op.
 
+![A code-task job on build-box waiting for approval of a bootstrap recipe, showing the commands, the action digest, the expiry, and Approve and Deny.](/screens/mesh-approval.webp "A pending approval shows exactly what will run. The executing worker can't approve its own request.")
+
 ## Job status
 
 Job states are labeled by what is actually known:
 
-- `Stopping…` while cancellation propagates — the request is in flight, the
+- `Stopping…` while cancellation propagates. The request is in flight; the
   outcome is not yet known.
-- `Lost contact` when the outcome is genuinely unknown — the worker stopped
+- `Lost contact` when the outcome is genuinely unknown: the worker stopped
   answering and the backend cannot say whether the work finished. It is never
   presented as cancelled.
 
@@ -101,7 +105,7 @@ is a bug, not a state.
 
 ## Running a worker on this device
 
-The mesh worker is opt-in and **device-local — the flag never syncs**.
+The mesh worker is opt-in and **device-local**. The flag never syncs.
 Enabling it lets this machine claim account jobs it can satisfy; disabling it
 stops new claims. There is no account-level "run jobs everywhere" switch:
 every machine decides for itself, which is what keeps a laptop you forgot was
@@ -115,7 +119,7 @@ path continues to provide durable coordination.
 ## Job history
 
 The Remote executions list shows source and target devices, the placement
-explanation, and state — capped at the **most recent 100 jobs**. Older
+explanation, and state, capped at the **most recent 100 jobs**. Older
 history is not retained in the list; the attempt journals that mattered are
 already entities.
 
@@ -123,12 +127,12 @@ already entities.
 
 - The dispatch/attempt/lease machinery is covered by worker and artifact
   suites and rehearsed on real deployments; a physical multi-device demo is
-  still pending — treat cross-machine UX as unproven until the recorded run
+  still pending. Treat cross-machine UX as unproven until the recorded run
   lands.
 - Job history lists the most recent 100 executions.
 - Worker opt-in is per-device by design; expect to enable it on each machine
   you want claiming work.
-- Placement requires the manifest's workspace readiness — a job targeting a
+- Placement requires the manifest's workspace readiness. A job targeting a
   workspace the worker can't materialize will not run there.
 - Direct live host traffic requires a compatible upgraded client and an enabled,
   reachable host route. Managed endpoints need provisioning, and their

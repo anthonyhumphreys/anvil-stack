@@ -21,7 +21,7 @@ export function SiteHeader({ active, showThemeToggle = true }: { active?: Active
       <div className="page-shell flex h-16 items-center justify-between gap-4">
         <Link
           href="/"
-          className="-ml-1 flex min-h-11 items-center gap-2 rounded-md px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="mk-hover -ml-1 flex min-h-11 items-center gap-2 rounded-md px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label="Mezair home"
           aria-current={active === "home" ? "page" : undefined}
         >

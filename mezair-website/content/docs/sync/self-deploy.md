@@ -29,14 +29,14 @@ mezair-cloud mesh plan --backend <path> --name <worker> \
 `plan` computes the deployment and writes a generated `wrangler.mesh.jsonc`:
 
 - **Durable Object bindings** for the coordination objects the backend uses;
-- **cumulative SQLite migrations** — a deployable config always carries its
+- **cumulative SQLite migrations.** A deployable config always carries its
   full migration history, so `--first-deploy` records intent only and does
   not change what gets emitted;
 - the **R2 artifact bucket** for sealed artifact bytes.
 
 `--base-url` and `--subdomain` are the addressing choice (a real URL or a
 `workers.dev` subdomain); `--oidc-issuer`/`--oidc-client-id` pin the identity
-the deployment advertises. Point `--backend` at the worker source —
+the deployment advertises. Point `--backend` at the worker source:
 `mezair-app/cloud/backend` in the monorepo.
 
 ## Provision, migrate, apply, and secrets
@@ -73,7 +73,7 @@ mezair-cloud mesh connection --name <worker> --base-url <url> \
 ```
 
 Writes the **discovery file** the desktop app's Sync & Mesh settings consume
-— the descriptor a "Your Cloudflare" or "Compatible backend" mode reads to
+That is the descriptor a "Your Cloudflare" or "Compatible backend" mode reads to
 learn endpoints, protocols, auth issuer, and negotiated limits.
 `--allow-insecure` exists for non-TLS development URLs; do not point a real
 backend at it.
@@ -85,19 +85,19 @@ mezair-cloud mesh remove --backend <path> --name <worker> \
   [--evidence <ref>] [--json]
 ```
 
-`remove` **regenerates its own plan before deleting** — it never targets
+`remove` **regenerates its own plan before deleting.** It never targets
 whatever config happened to be generated last, so teardown deletes the worker
 you named, not a stale one.
 
 ## Rehearsal and verification
 
-The full lifecycle rehearsal — deploy, conformance, upgrade, restore, remove —
+The full lifecycle rehearsal (deploy, conformance, upgrade, restore, remove)
 is scripted in `mezair-cloud/scripts/verify-mesh-rehearsal.mjs`. Run it before
 you trust a deployment for real devices; it is the same rehearsal the hosted
 path has been through.
 
 After deploy, prove the backend speaks the contract with the conformance
-suite — see [Backend conformance](/docs/sync/conformance):
+suite, see [Backend conformance](/docs/sync/conformance):
 
 ```sh
 pnpm conformance -- --url <backend> --admin-token <token>
@@ -136,7 +136,7 @@ control is an operator convenience, not a replacement for device auth.
 
 - Rehearsed on real Cloudflare deployments; not yet demoed end-to-end on
   physical multi-device hardware.
-- `plan` emits generated config — hand-edits to `wrangler.mesh.jsonc` will be
+- `plan` emits generated config. Hand-edits to `wrangler.mesh.jsonc` will be
   regenerated away. Treat it as build output.
 - The full flag surface, exit codes, and JSON shapes are in the
   [CLI reference](/docs/cloud/cli-reference). Backend internals and the rest

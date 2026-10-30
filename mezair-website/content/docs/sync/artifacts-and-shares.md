@@ -18,24 +18,24 @@ each share, so a recipient can open that item without access to your account.
 
 Artifact upload is a three-step sealed flow:
 
-1. **Reserve** — the worker asks the backend for an upload slot for the
+1. **Reserve.** The worker asks the backend for an upload slot for the
    artifact.
-2. **PUT ciphertext** — the artifact bytes, sealed under the ADK, go straight
+2. **PUT ciphertext.** The artifact bytes, sealed under the ADK, go straight
    to object storage (R2 on the official backend). The server stores the
    ciphertext; it does not get a decryption path.
-3. **Finalize** — the manifest commits. The manifest records `sealed`, the
-   `keyVersion` used, and `plaintextBytes` — enough for a downloader to pick
+3. **Finalize.** The manifest commits. The manifest records `sealed`, the
+   `keyVersion` used, and `plaintextBytes`, enough for a downloader to pick
    the right key and check the result, never enough to read the bytes.
 
 ## Download and verification
 
 Download reverses it with checks in a fixed order:
 
-1. Fetch the ciphertext and verify its **SHA-256** against the manifest —
+1. Fetch the ciphertext and verify its **SHA-256** against the manifest,
    integrity of what arrived, before any decryption attempt.
-2. Unseal with the manifest's `keyVersion` — a missing version fails here, not
+2. Unseal with the manifest's `keyVersion`. A missing version fails here, not
    later.
-3. Check the result against `plaintextBytes` — the decrypted size must match
+3. Check the result against `plaintextBytes`. The decrypted size must match
    what the uploader recorded.
 
 A mismatch at any stage aborts; a corrupt artifact never renders as if it
@@ -116,16 +116,16 @@ A bundle is a JSON document with the media type
 share. It holds:
 
 - `title`, `kind`, `version`, `sharedAt`;
-- `digest` — a plain-text summary, shown on the page and used as the frame's
+- `digest`: a plain-text summary, shown on the page and used as the frame's
   accessible description;
-- `snapshot` — static HTML and CSS, made by the desktop app, never containing
+- `snapshot`: static HTML and CSS, made by the desktop app, never containing
   script. HTML artifacts are loaded once in an offscreen, sandboxed renderer
   and their settled DOM is serialised (scripts stripped);
-- `interactive` — for HTML artifacts and kept sketches only: the full,
+- `interactive`: for HTML artifacts and kept sketches only: the full,
   self-contained page, with Mezair's light and dark theme tokens inlined so it
   needs no network;
-- `payload` — the redacted surface data, for opening the share in Mezair;
-- `continuation` — for newer thread shares, structured conversation entries
+- `payload`: the redacted surface data, for opening the share in Mezair;
+- `continuation`: for newer thread shares, structured conversation entries
   and selected context, redacted and encrypted together with the snapshot.
 
 ### Thread snapshots and tickets
@@ -222,7 +222,7 @@ uploaded until you publish.
 
 `/artifacts/{id}` on the website:
 
-1. fetches the ciphertext through a **signed service channel** — the server
+1. fetches the ciphertext through a **signed service channel.** The server
    checks the audience and authorizes delivery without seeing the share key;
 2. verifies the ciphertext **SHA-256** before decrypting;
 3. decrypts in the browser with **WebCrypto AES-GCM**;
@@ -248,7 +248,7 @@ digest and the static snapshot behind a warning:
 
 Choosing **Load interactive version** runs the page in a frame with:
 
-- `sandbox="allow-scripts"` and nothing else — no `allow-same-origin` (opaque
+- `sandbox="allow-scripts"` and nothing else, no `allow-same-origin` (opaque
   origin: no cookies or storage), no top navigation, popups, forms or modals;
 - a Content Security Policy injected ahead of the document:
   `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`;
@@ -267,7 +267,7 @@ Sharing an item again from Mezair offers two paths:
   under the **same fragment key** (every seal uses a fresh random nonce) and
   calls `share.update`, which reserves replacement bytes for the published
   share. The bytes are PUT to the same upload route and `share.finalize`
-  swaps them in with a single row update after verifying size and SHA-256 —
+  swaps them in with a single row update after verifying size and SHA-256,
   readers see either the old or the new version, never a mix, and a failed
   verification leaves the published version untouched. The share keeps its
   id, expiry, media type and audience; the page then shows "Version N · updated
@@ -291,13 +291,13 @@ the app can't copy or update that link later.
 
 ## Revocation and expiry
 
-- **Revoking a share removes server-side access** — the ciphertext stops
+- **Revoking a share removes server-side access.** The ciphertext stops
   being servable. Anyone holding the link gets nothing; the fragment key has
   nothing to decrypt. A pending update is discarded with it.
-- **Expiry lapses via a sweep** — shares carry an expiry and a periodic sweep
+- **Expiry lapses via a sweep.** Shares carry an expiry and a periodic sweep
   removes the ones that lapse. Expiry is enforced at fetch time, not by a
   countdown on your machine. Abandoned update uploads are swept too.
-- Revocation cannot reach bytes already downloaded — as with device
+- Revocation cannot reach bytes already downloaded, as with device
   revocation, it limits future access, it does not recall what was
   legitimately decrypted before.
 
@@ -305,7 +305,7 @@ the app can't copy or update that link later.
 
 - The share lifecycle and browser-decrypt path are implemented and
   typechecked; a manual browser click-through on a live deployment is still
-  worth doing — that path has the least exercised surface.
+  worth doing. That path has the least exercised surface.
 - Guest links are accessible to anyone with the full URL until revoked or
   expired. Organisation links additionally require current membership. There
   is no named-recipient allowlist inside a share.

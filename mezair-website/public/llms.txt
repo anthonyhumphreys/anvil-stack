@@ -1,6 +1,6 @@
 # Mezair
 
-> Mezair Desktop is an open source app for agent workflows on your own repos. The mezair-stack also publishes Sync & Mesh — the end-to-end encrypted account layer that keeps a user's own machines in step — alongside companion OSS tools: an npm policy gateway (Mezair Registry), a hardened Node base image (Mezair Node Base), and the portable app runtime (Mezair Cloud) that also powers the sync backend.
+> Mezair Desktop is an open source app for agent workflows on your own repos. The mezair-stack also publishes Sync & Mesh: the end-to-end encrypted account layer that keeps a user's own machines in step, alongside companion OSS tools: an npm policy gateway (Mezair Registry), a hardened Node base image (Mezair Node Base), and the portable app runtime (Mezair Cloud) that also powers the sync backend.
 
 The public documentation is organized by product and by task: Learn, Build, and Reference. Product status and limits are part of the documentation; do not infer production readiness from alpha surfaces.
 
@@ -14,6 +14,9 @@ The public documentation is organized by product and by task: Learn, Build, and 
 ## Products
 
 - [Mezair Desktop](/docs/desktop): Desktop app for agent workflows on your repos.
+- [Desktop quickstart](/docs/desktop/quickstart): From install to a reviewed change on a repository you know.
+- [Agent tools (Mezair MCP)](/docs/desktop/agent-tools): The loopback MCP tools every agent session receives, and how they are scoped.
+- [Keyboard shortcuts](/docs/desktop/keyboard-shortcuts): Global shortcuts, composer keys and rebinding.
 - [Mezair Registry](/docs/registry): npm dependency ingress and deterministic policy.
 - [Mezair Node Base](/docs/node-base): Safer and observed Node dependency installs.
 - [Mezair Cloud](/docs/cloud): Mezair Cells, Agents, runtime contracts, and deployment adapters.

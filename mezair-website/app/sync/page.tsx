@@ -3,29 +3,24 @@ import type { Metadata } from "next";
 import { ArrowRight, Check, Minus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { HandoffScene } from "@/components/marketing/product-reel";
+import { MeshStage } from "@/components/marketing/mesh-stage";
+import { Shot } from "@/components/marketing/shot";
 import { EnvelopeBoundary } from "@/components/site/envelope-boundary";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
+import { pageMetadata } from "@/lib/metadata";
 import { agentEnvironments, featureBeta, syncBackends } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMetadata({
   title: "Sync & Mesh | Mezair",
   description:
-    "Keep your Mezair workspaces, templates and agents in step across your machines, send jobs between machines, and move a running session. Encrypted on your device before anything leaves it."
-};
+    "Sync copies Mezair workspaces, templates and agents between your machines and encrypts them on your device first. Mesh runs jobs on another machine at a chosen commit and can move a running session.",
+  path: "/sync"
+});
 
-const syncs = ["Workspace setups: repos, agent and rules", "Templates and custom agents", "Settings you choose to share"];
+const syncs = ["Workspace setups, including repositories, agents and rules", "Workflow templates and custom agents", "Settings you choose to share"];
 
 const neverSyncs = ["Repository files", "API keys and provider logins", "Chat transcripts", "Paths on your machine"];
-
-const journey = [
-  { title: "Saved here first", body: "Online or not." },
-  { title: "Encrypted", body: "On your device. Without the key, it waits." },
-  { title: "Stored", body: "The server sees size and timing, not contents." },
-  { title: "Delivered", body: "Your devices decrypt it." },
-  { title: "Conflicts shown", body: "You choose what to keep." }
-];
 
 const routes = [
   { name: "The host's LAN address", tag: "tried first" },
@@ -34,10 +29,29 @@ const routes = [
   { name: "Managed ingress", tag: "last" }
 ];
 
+const guarantees = [
+  {
+    title: "One owner at a time",
+    body: "A handoff increments the ownership generation, and the backend rejects commands from the previous owner."
+  },
+  {
+    title: "Readiness checks",
+    body: "Uncommitted changes or unpushed commits stop a handoff before it starts, and Mezair tells you how to fix them."
+  },
+  {
+    title: "Lost contact is reported",
+    body: "If a worker stops responding, its job shows Lost contact. Mezair does not mark it as cancelled."
+  },
+  {
+    title: "Approvals",
+    body: "A bootstrap recipe waits for approval from another of your devices. A worker can't approve its own request."
+  }
+];
+
 const leaving = [
   { title: "Share links", body: "The recipient's browser decrypts them. Revoke a link to remove the hosted copy." },
   { title: "Export", body: "An encrypted backup of your synced data. Keep your recovery key to restore it." },
-  { title: "Delete your account", body: "Removes its data from the backend, and you can follow the deletion to the end." }
+  { title: "Delete your account", body: "Deletes the account's data from the backend. The account page shows the deletion's progress until it finishes." }
 ];
 
 export default function SyncPage() {
@@ -49,12 +63,12 @@ export default function SyncPage() {
           <div className="cine-wide">
             <div className="cine-titlerow">
               <h1 id="sync-hero-title" className="cine-title">
-                Work moves with you.
+                Use Mezair on all your machines
               </h1>
               <div>
                 <p className="cine-lede md:max-w-[60ch] lg:max-w-[46ch]">
-                  Sync carries your Mezair setup between machines, encrypted on your device. Mesh sends work between
-                  them and moves a running session.
+                  Sync copies your Mezair setup between machines and encrypts it on your device first. Mesh sends jobs
+                  between those machines and can move a running session.
                 </p>
                 <div className="mt-6 flex flex-wrap gap-3">
                   <Button asChild size="lg">
@@ -78,7 +92,7 @@ export default function SyncPage() {
               </div>
             </div>
             <div className="cine-stage">
-              <HandoffScene />
+              <MeshStage />
             </div>
           </div>
         </section>
@@ -86,7 +100,7 @@ export default function SyncPage() {
         <section className="cine-section" aria-labelledby="what-syncs">
           <div className="page-shell">
             <h2 id="what-syncs" className="cine-h2 max-w-[16ch]">
-              What syncs, and what never does.
+              What syncs and what stays local
             </h2>
             <p className="cine-lede mt-4">Every workspace starts local. Nothing syncs until you turn it on for that workspace.</p>
             <div className="mt-10 grid gap-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start">
@@ -116,14 +130,6 @@ export default function SyncPage() {
               </div>
               <EnvelopeBoundary className="min-w-0" />
             </div>
-            <ol className="journey mt-14" aria-label="How a change reaches your other machines">
-              {journey.map((step) => (
-                <li key={step.title}>
-                  {step.title}
-                  <span>{step.body}</span>
-                </li>
-              ))}
-            </ol>
             <p className="cine-fine mt-8">
               Key rotation and how a new device gets the key are in{" "}
               <Link href="/docs/sync/encryption" className="cine-link">
@@ -134,29 +140,84 @@ export default function SyncPage() {
           </div>
         </section>
 
-        <section className="cine-section cine-lit" aria-labelledby="mesh-title">
-          <div className="page-shell grid gap-12 lg:grid-cols-2 lg:items-center">
+        <section className="cine-section cine-lit" aria-labelledby="devices-title">
+          <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-center">
             <div>
-              <h2 id="mesh-title" className="cine-h2 max-w-[13ch]">
-                Send work to another machine.
+              <h2 id="devices-title" className="cine-h2 max-w-[14ch]">
+                Manage your devices
               </h2>
               <p className="cine-lede mt-5">
-                A machine you made a worker checks out the commit you pinned and runs the job in its own working
-                copy, with its own credentials. You watch the output from anywhere.
+                Settings lists each enrolled machine and how it became trusted. You can compare a code to verify a device
+                or revoke a lost one. Revoking from the app also rotates the account key.
               </p>
               <p className="cine-fine mt-4">
-                Making a machine a worker is a choice you make on that machine. When a job is stopping or a machine
-                goes quiet, Mezair says so instead of guessing.
+                Each machine has its own setting for running jobs and its own limit on what those jobs may do.
               </p>
-              <Link href="/docs/sync/mesh-jobs" className="cine-link mt-6 inline-flex min-h-11 items-center gap-2">
+              <Link href="/docs/sync/devices" className="cine-link mt-6 inline-flex min-h-11 items-center gap-2">
+                Devices and sign-in
+                <ArrowRight className="size-4" aria-hidden="true" />
+              </Link>
+            </div>
+            <div className="grid min-w-0 gap-6">
+              <Shot id="mesh-status" sizes="(min-width: 1024px) 640px, 94vw" />
+              <Shot id="mesh-devices" sizes="(min-width: 1024px) 640px, 94vw" />
+            </div>
+          </div>
+        </section>
+
+        <section className="cine-section" aria-labelledby="mesh-title">
+          <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-start">
+            <div className="lg:sticky lg:top-24">
+              <h2 id="mesh-title" className="cine-h2 max-w-[13ch]">
+                Run jobs on another machine
+              </h2>
+              <p className="cine-lede mt-5">
+                A machine you set up as a worker checks out the commit you chose and runs the job in its own worktree,
+                with its own logins. You can watch the output from any of your devices.
+              </p>
+              <dl className="mt-8 grid gap-6 sm:grid-cols-2">
+                {guarantees.map((item) => (
+                  <div key={item.title}>
+                    <dt className="font-semibold">{item.title}</dt>
+                    <dd className="mt-1 text-[0.9375rem] leading-relaxed text-muted-foreground">{item.body}</dd>
+                  </div>
+                ))}
+              </dl>
+              <Link href="/docs/sync/mesh-jobs" className="cine-link mt-8 inline-flex min-h-11 items-center gap-2">
                 How Mesh jobs work
+                <ArrowRight className="size-4" aria-hidden="true" />
+              </Link>
+            </div>
+            <div className="grid min-w-0 gap-6">
+              <Shot id="mesh-jobs" sizes="(min-width: 1024px) 640px, 94vw" />
+              <Shot id="mesh-approval" sizes="(min-width: 1024px) 640px, 94vw" />
+            </div>
+          </div>
+        </section>
+
+        <section className="cine-section cine-lit" aria-labelledby="routes-title">
+          <div className="page-shell grid gap-12 lg:grid-cols-2 lg:items-center">
+            <div>
+              <h2 id="routes-title" className="cine-h2 max-w-[13ch]">
+                LAN-first routing
+              </h2>
+              <p className="cine-lede mt-5">
+                Commands and output use the host&apos;s LAN address when it answers. A live session switches to a better
+                route only after the new route has authenticated and caught up, and Mesh never resends a command.
+              </p>
+              <p className="cine-fine mt-4">
+                {featureBeta.label}. Your backend still admits and authorises every session, so this is not offline
+                mode. A route labelled Direct is the host&apos;s address hint, not proof of a physical LAN path.
+              </p>
+              <Link href="/docs/sync/lan-first-routes" className="cine-link mt-6 inline-flex min-h-11 items-center gap-2">
+                How routes work
                 <ArrowRight className="size-4" aria-hidden="true" />
               </Link>
             </div>
             <figure className="min-w-0">
               <figcaption className="mb-4">
                 <span className="block font-semibold">LAN-first routes</span>
-                <span className="cine-fine block">{featureBeta.label}. Mesh tries routes in this order.</span>
+                <span className="cine-fine block">Mesh tries routes in this order.</span>
               </figcaption>
               <ol className="ladder">
                 {routes.map((route, index) => (
@@ -169,22 +230,35 @@ export default function SyncPage() {
                   </li>
                 ))}
               </ol>
-              <p className="cine-fine mt-4">
-                A live session moves to a better route only after the replacement has authenticated and caught up,
-                and commands are never resent. Your backend still admits and authorises every session, so this is not
-                offline mode.{" "}
-                <Link href="/docs/sync/lan-first-routes" className="cine-link">
-                  How routes work
-                </Link>
-              </p>
             </figure>
+          </div>
+        </section>
+
+        <section className="cine-section" aria-labelledby="handoff-title">
+          <div className="page-shell grid gap-12 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-center">
+            <div>
+              <h2 id="handoff-title" className="cine-h2 max-w-[14ch]">
+                Move a running session
+              </h2>
+              <p className="cine-lede mt-5">
+                Move session hands a running thread to another machine. The source machine pauses the thread and saves an
+                encrypted checkpoint at the current commit. The target machine resumes from that checkpoint. No running
+                process moves between machines.
+              </p>
+              <p className="cine-fine mt-4">Save and push your changes before moving a session.</p>
+              <Link href="/docs/sync/session-handoff" className="cine-link mt-6 inline-flex min-h-11 items-center gap-2">
+                How session handoff works
+                <ArrowRight className="size-4" aria-hidden="true" />
+              </Link>
+            </div>
+            <Shot id="mesh-session" className="min-w-0" sizes="(min-width: 1024px) 640px, 94vw" />
           </div>
         </section>
 
         <section className="cine-section" aria-labelledby="backends-title">
           <div className="page-shell">
             <h2 id="backends-title" className="cine-h2 max-w-[14ch]">
-              Choose where it lives.
+              Choose a backend
             </h2>
             <p className="cine-lede mt-4">The same app talks to any of these. Pick one in Settings, under Sync &amp; Mesh.</p>
             <ul className="rows mt-10">
@@ -197,7 +271,7 @@ export default function SyncPage() {
               ))}
             </ul>
 
-            <h3 className="mt-16 text-xl font-semibold">Borrow a machine for a while.</h3>
+            <h3 className="mt-16 text-xl font-semibold">Temporary cloud environments</h3>
             <p className="cine-fine mt-2">
               A workflow can ask for a temporary environment in a cloud account you connect. That provider bills you
               directly.{" "}
@@ -226,7 +300,7 @@ export default function SyncPage() {
         <section className="cine-section" aria-labelledby="leave-title">
           <div className="page-shell">
             <h2 id="leave-title" className="cine-h2 max-w-[16ch]">
-              Share safely. Leave whenever you like.
+              Sharing, export and deletion
             </h2>
             <ul className="rows mt-10">
               {leaving.map((item) => (
@@ -242,11 +316,11 @@ export default function SyncPage() {
         <section className="cine-section cine-lit" aria-labelledby="sync-close-title">
           <div className="page-shell">
             <h2 id="sync-close-title" className="cine-title max-w-[15ch]">
-              Try the hosted beta.
+              Try the hosted beta
             </h2>
             <p className="cine-lede mt-6">
-              Invite-only. Redeem the code you&apos;re sent without a payment method; paid plans aren&apos;t on sale
-              yet. Or run the whole thing yourself.
+              The beta is invite-only. You can redeem your invitation code without a payment method, and paid plans
+              aren&apos;t on sale yet. You can also run the backend yourself.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button asChild size="lg">

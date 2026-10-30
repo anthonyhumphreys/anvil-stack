@@ -5,13 +5,15 @@ import { Check, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
+import { pageMetadata } from "@/lib/metadata";
 import { featureBeta, plans, pricingFaqs } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMetadata({
   title: "Pricing | Mezair",
   description:
-    "Mezair Desktop is free and open source. Hosted Sync & Mesh is planned at £6 a month for one person or £12 per member for teams. Self-hosting stays free."
-};
+    "Mezair Desktop is free and open source. Hosted Sync & Mesh is planned at £6 a month for one person or £12 per member for teams. Self-hosting stays free.",
+  path: "/pricing"
+});
 
 function planPrice(id: (typeof plans)[number]["id"]) {
   const plan = plans.find((item) => item.id === id);
@@ -40,15 +42,15 @@ export default function PricingPage() {
           <div className="cine-wide">
             <div className="cine-titlerow">
               <h1 id="pricing-title" className="cine-title max-w-[16ch]">
-                Free to build. Sync from £6.
+                Desktop is free. Hosted Sync starts at £6
               </h1>
               <div>
                 <p className="cine-lede md:max-w-[60ch] lg:max-w-[46ch]">
-                  Desktop is free and open source. You only pay if we host Sync &amp; Mesh for you.
+                  Desktop is free and open source. You pay only if Mezair hosts Sync &amp; Mesh for you.
                 </p>
                 <p className="cine-fine mt-4">
                   Hosted Sync &amp; Mesh is an invite-only beta through {featureBeta.endDate}. These are proposed
-                  launch prices: requesting access is not a purchase, and invited testers redeem a code without a
+                  launch prices. Requesting access is not a purchase, and invited testers redeem a code without a
                   payment method.
                 </p>
                 <div className="mt-6 flex flex-wrap gap-3">
@@ -103,9 +105,9 @@ export default function PricingPage() {
         <section id="hosted-compute" className="cine-section scroll-mt-24" aria-labelledby="bill-title">
           <div className="page-shell">
             <h2 id="bill-title" className="cine-h2 max-w-[14ch]">
-              Who bills you for what.
+              Who bills you for what
             </h2>
-            <p className="cine-lede mt-4">You bring your own model and cloud accounts. Mezair never sits between you and their bill.</p>
+            <p className="cine-lede mt-4">You use your own model and cloud accounts, and those providers bill you directly. Mezair adds no margin.</p>
             <dl className="bill mt-10">
               {bill.map((row) => (
                 <div key={row.item}>
@@ -121,7 +123,7 @@ export default function PricingPage() {
         <section className="cine-section" aria-labelledby="faq-title">
           <div className="page-shell grid gap-10 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
             <h2 id="faq-title" className="cine-h2 max-w-[10ch]">
-              Questions people ask.
+              Common questions
             </h2>
             <div className="faq">
               {pricingFaqs.map((item) => (

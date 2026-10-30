@@ -1,0 +1,280 @@
+/*
+ * The horse-M in motion.
+ *
+ * A mezair is a controlled rise that carries the horse forward. The mark
+ * always moves as one body: it rises on its haunches (pivoting on the tip of
+ * the tail, the M's lowest rear point) while only the separate foreleg folds.
+ * The canonical geometry never changes and its shapes never part.
+ *
+ * <AnimatedMark> paints it first, in the manner of sumi-e: brush order,
+ * bristles running ahead of the ink, fibrous edges, a pool where the brush
+ * lands and a wet bleed that dries to the crisp mark.
+ */
+
+:root {
+  /* Spring (ζ ≈ 0.72), sampled for CSS linear(). */
+  --mk-spring: linear(0, 0.017, 0.061, 0.125, 0.201, 0.284, 0.371, 0.456, 0.539, 0.616, 0.687, 0.751, 0.807, 0.856, 0.898, 0.933, 0.961, 0.984, 1.002, 1.016, 1.026, 1.032, 1.036, 1.038, 1.038, 1.037, 1.035, 1.033, 1.029, 1.026, 1.023, 1.02, 1.017, 1.014, 1.011, 1.009, 1.007, 1.005, 1.003, 1.002, 1);
+  /* A brush stroke: press, sweep, lift. */
+  --mk-ink: cubic-bezier(0.6, 0.04, 0.28, 1);
+}
+
+/* --- One body ---------------------------------------------------------------- */
+
+.mk-body,
+.mk-leg {
+  transform-box: fill-box;
+  transition: transform 680ms var(--mk-spring);
+}
+
+/* The tip of the tail: the lowest point at the back of the horse. */
+.mk-body {
+  transform-origin: 0% 100%;
+}
+
+/* The shoulder. */
+.mk-leg {
+  transform-origin: 24% 7%;
+}
+
+@media (hover: hover) {
+  .mk-hover:hover .mk-body {
+    transform: rotate(-3.5deg);
+  }
+
+  .mk-hover:hover .mk-leg {
+    transform: rotate(-10deg);
+  }
+}
+
+.mk-hover:focus-visible .mk-body {
+  transform: rotate(-3.5deg);
+}
+
+.mk-hover:focus-visible .mk-leg {
+  transform: rotate(-10deg);
+}
+
+/* --- The painted entrance ------------------------------------------------- */
+
+.mk-stage {
+  display: inline-block;
+  border-radius: 1rem;
+  color: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mk-stage:focus-visible {
+  outline: 2px solid oklch(var(--ring));
+  outline-offset: 6px;
+}
+
+.mk-anim {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/*
+ * Brush order and pace, left to right: one long gesture through the tail and
+ * neck, with the foreleg laid as the brush passes the shoulder. Bristle lead is scaled per stroke so
+ * the dry-brush streak stays a similar length on a long and a short stroke.
+ */
+.mk-anim .mk-s-sweep {
+  --mk-delay: 300ms;
+  --mk-dur: 1460ms;
+  --mk-lead-scale: 0.42;
+  --mk-stroke-ease: cubic-bezier(0.42, 0.06, 0.3, 1);
+}
+
+.mk-anim .mk-s-leg {
+  /* Starts as the sweep passes the shoulder, while it heads for the muzzle. */
+  --mk-delay: 1400ms;
+  --mk-dur: 380ms;
+  --mk-lead-scale: 1;
+  --mk-stroke-ease: var(--mk-ink);
+}
+
+/*
+ * Every keyframe fills backwards only: the base style is the dried, resting
+ * mark, which is also what reduced motion and no-JS show.
+ */
+.mk-anim .mk-ground {
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 0;
+  animation: mk-draw 640ms var(--mk-ink) backwards;
+}
+
+/* The body of ink trails the leading bristles; the gap is the dry-brush streak. */
+.mk-anim .mk-brush {
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 0;
+  animation: mk-draw var(--mk-dur) var(--mk-stroke-ease)
+    calc(var(--mk-delay) + 0.17 * var(--mk-lead-scale) * var(--mk-dur)) backwards;
+}
+
+.mk-anim .mk-bristle {
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 0;
+  animation: mk-draw var(--mk-dur) var(--mk-stroke-ease)
+    calc(var(--mk-delay) + (0.17 - var(--mk-lead)) * var(--mk-lead-scale) * var(--mk-dur)) backwards;
+}
+
+/* Ink pools where the brush lands. */
+.mk-anim .mk-pool {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mk-pool 300ms cubic-bezier(0.2, 0.7, 0.3, 1) var(--mk-delay) backwards;
+}
+
+/* Wet ink bleeds past the edge, then dries away. */
+.mk-anim .mk-wet {
+  opacity: 0;
+  animation: mk-wet calc(var(--mk-dur) + 1200ms) ease-out var(--mk-delay) backwards;
+}
+
+/* Seals the dried mark exactly, whatever the brush edge did. */
+.mk-anim .mk-settle {
+  opacity: 1;
+  animation: mk-settle calc(1.17 * var(--mk-dur) + 240ms) linear var(--mk-delay) backwards;
+}
+
+/* A flick of ink as the brush lifts off the hoof. */
+.mk-anim .mk-splash {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 0% 50%;
+  animation: mk-splash 1400ms cubic-bezier(0.2, 0.7, 0.3, 1) 1800ms backwards;
+}
+
+@keyframes mk-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+
+@keyframes mk-pool {
+  from {
+    transform: scale(0.12);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes mk-wet {
+  0% {
+    opacity: 0;
+  }
+  8% {
+    opacity: 0.7;
+  }
+  48% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes mk-settle {
+  0%,
+  86% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes mk-splash {
+  0% {
+    opacity: 0;
+    transform: translate(-18px, -12px) scale(0.5);
+  }
+  8% {
+    opacity: 0.85;
+  }
+  60% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(6px, 4px) scale(1);
+  }
+}
+
+/* The rise: the whole horse lifts on its haunches and lands forward. */
+.mk-anim .mk-body {
+  animation: mk-mezair 1600ms linear 2020ms backwards;
+}
+
+.mk-anim .mk-leg {
+  animation: mk-fold 1600ms linear 2020ms backwards;
+}
+
+.mk-anim .mk-shadow {
+  transform-box: fill-box;
+  transform-origin: 18% 50%;
+  animation: mk-shadow 1600ms linear 2020ms backwards;
+}
+
+@keyframes mk-mezair {
+  0% {
+    transform: translateX(-24px) rotate(0deg);
+    animation-timing-function: cubic-bezier(0.3, 0, 0.18, 1);
+  }
+  34% {
+    transform: translateX(-13px) rotate(-5deg);
+    animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+  }
+  44% {
+    transform: translateX(-11px) rotate(-5deg);
+    animation-timing-function: var(--mk-spring);
+  }
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+}
+
+@keyframes mk-fold {
+  0% {
+    transform: rotate(0deg);
+    animation-timing-function: cubic-bezier(0.3, 0, 0.18, 1);
+  }
+  30% {
+    transform: rotate(-13deg);
+    animation-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+  }
+  46% {
+    transform: rotate(-11deg);
+    animation-timing-function: var(--mk-spring);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes mk-shadow {
+  0%,
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+  36% {
+    transform: scaleX(0.84);
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mk-body,
+  .mk-leg {
+    transition: none;
+  }
+
+  .mk-anim * {
+    animation: none !important;
+  }
+}

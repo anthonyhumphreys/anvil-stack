@@ -8,14 +8,28 @@ import { workosConfigured } from "@/lib/workos-env";
 // guarding it would loop sign-in before the session cookie is written.
 const unauthenticatedPaths = [
   "/",
+  "/docs",
   "/docs/:path*",
   "/sync",
+  "/sync/:path*",
   "/pricing",
+  "/pricing/:path*",
+  "/what-does-mezair-mean",
+  "/what-does-mezair-mean/:path*",
   "/waitlist",
   "/invite",
   "/artifacts/:path*",
   "/callback",
-  "/auth/callback"
+  "/auth/callback",
+  // Metadata routes (social cards, icons, manifest) are fetched by crawlers without a session.
+  "/opengraph-image",
+  "/twitter-image",
+  "/icon",
+  "/apple-icon",
+  "/manifest.webmanifest",
+  "/og/:path*",
+  "/:path*/opengraph-image",
+  "/:path*/twitter-image"
 ];
 
 // Next 16 file convention is proxy.ts (the WorkOS SDK's authkitProxy is the

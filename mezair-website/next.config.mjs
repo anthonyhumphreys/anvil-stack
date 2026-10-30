@@ -14,6 +14,8 @@ const nextConfig = {
   outputFileTracingRoot: path.resolve(projectRoot, ".."),
   turbopack: { root: path.resolve(projectRoot, "..") },
   reactStrictMode: true,
+  // Dev only: lets local preview proxies on 127.0.0.1 load HMR and dev chunks, so pages hydrate.
+  allowedDevOrigins: ["127.0.0.1"],
   async headers() {
     return [{
       source: "/artifacts/:path*",
