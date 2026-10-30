@@ -84,3 +84,26 @@ components against explicitly synthetic responses. It verifies interaction and
 layout, not Git mutation, provider delivery, device trust or a real cloud run.
 Run the real-Git/service tests for those local boundaries and the hosted
 acceptance runbook for physical-device evidence.
+
+### Connected delivery fixture
+
+The browser integration tests exercise real Chromium, Git worktrees and SQLite
+with fixture Work Item, PR and acceptance inputs. They cover a failing mobile
+scenario, finding, repair handoff, passing replay and persistence across database
+reopens. They are skipped unless a Playwright installation is supplied.
+
+From `mezair-app`, point to a directory containing `node_modules/playwright` and
+its installed Chromium browser:
+
+```sh
+MEZAIR_REVIEW_PLAYWRIGHT_ROOT=/path/to/browser-fixture \
+MEZAIR_REVIEW_QA_OUTPUT=/path/to/evidence-output \
+pnpm exec vitest run --maxWorkers=2 \
+  src/main/services/__tests__/change-review-runner.integration.test.ts \
+  src/main/services/__tests__/change-review-delivery-journey.integration.test.ts
+```
+
+The connected fixture writes `connected-delivery-journey/evidence.json`, a
+fixture database and browser artifacts. Review paths and local reviewer identity
+before sharing those files. Fixture inputs do not establish live provider or
+human acceptance.

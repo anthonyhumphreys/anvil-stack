@@ -1,7 +1,7 @@
 # The thread is the canvas: inline surfaces for Mezair
 
 Scope: `mezair-app` (main, preload, renderer, prompts, bundled MCP server).
-Related: [`ui-surfaces-review.md`](./ui-surfaces-review.md), [`../agent-ui-intents.md`](../agent-ui-intents.md), `PRODUCT.md`, `DESIGN.md`.
+Related: [agent UI intents](../agent-ui-intents.md), [product principles](../../PRODUCT.md), [design system](../../DESIGN.md).
 
 ## Implementation status (2026-10-13)
 

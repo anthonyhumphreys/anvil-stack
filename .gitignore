@@ -17,12 +17,11 @@ coverage/
 # .mezair/artifacts/<category>/ but not committed to the repository.
 /.mezair/artifacts/
 
-# Local artifacts and build caches retained after the workspace rename.
-/.anvil/artifacts/
-/anvil-app/
-/anvil-cloud/
-/anvil-registry/
-/anvil-website/
+# Local package-manager registry overrides
+/mezair-app/.npmrc
+/mezair-cloud/.npmrc
+/mezair-registry/.npmrc
+/mezair-website/.npmrc
 
 # Headless daemon bundle output
 mezair-app/dist-daemon/

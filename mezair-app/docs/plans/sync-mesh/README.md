@@ -45,7 +45,6 @@ near zero, but shared baseline, storage growth, and provider charges remain unme
   selection, network refresh and safe session migration for desktop, daemon and native mobile;
   physical acceptance remains pending.
 - [Implementation and security review](host-local-implementation-review.md)
-- [PR 91 review history](pr-91-review.md)
 - [Backend integration contract](mezair-backend-integration-contract.md)
 - [Cloud environment implementation](cloud-environments.md)
 - [Credential storage](credential-storage-fallback.md) and

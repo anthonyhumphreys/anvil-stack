@@ -3,10 +3,10 @@ import { isAcpAgentProvider, type AcpAgentProvider } from '../../../shared/agent
 import { agentProviderLabel } from '../../utils/agent-display';
 
 /**
- * CH1 — per-thread access levels.
+ * Per-thread access levels.
  *
  * Levels map onto the existing `CodexMode` transport. The user-facing labels
- * differ from the enum names on purpose (see ui-surfaces-review.md CH1):
+ * differ from the enum names to describe the access granted:
  *
  *   read-only       → "Read only"
  *   on-request      → "Ask for extra access"

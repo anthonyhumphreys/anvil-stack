@@ -13,6 +13,12 @@ Monorepo for the Mezair projects. Each project is an independent workspace with 
 
 Each project manages its own dependencies. Run `pnpm install` inside the project directory you are working on. See each project's `README.md` and `AGENTS.md` for build, test, and contribution details.
 
+## Engineering and release guides
+
+- [Owned implementation contracts](PATCH.md)
+- [Release readiness checks](docs/release-readiness.md)
+- [Mezair identity cutover](docs/mezair-identity-cutover.md)
+
 ## CI / distribution
 
 GitHub Actions workflows live in `.github/workflows/` and are path-filtered per project:
