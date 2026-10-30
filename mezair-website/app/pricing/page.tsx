@@ -1,0 +1,143 @@
+import Link from "next/link";
+import type { Metadata } from "next";
+import { Check, Plus } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { SiteFooter } from "@/components/site/footer";
+import { SiteHeader } from "@/components/site/header";
+import { featureBeta, plans, pricingFaqs } from "@/lib/site";
+
+export const metadata: Metadata = {
+  title: "Pricing | Mezair",
+  description:
+    "Mezair Desktop is free and open source. Hosted Sync & Mesh is planned at £6 a month for one person or £12 per member for teams. Self-hosting stays free."
+};
+
+function planPrice(id: (typeof plans)[number]["id"]) {
+  const plan = plans.find((item) => item.id === id);
+  return plan ? `${plan.price} ${plan.cadence}` : "";
+}
+
+const bill = [
+  { item: "Mezair Desktop", who: "Nobody. It's free and MIT licensed.", amount: "Free" },
+  { item: "Hosted Sync & Mesh", who: "Mezair, once paid signup opens", amount: planPrice("sync") },
+  { item: "Hosted Team", who: "Mezair, once paid signup opens", amount: planPrice("team") },
+  { item: "Self-hosted Sync backend", who: "Your host, such as Cloudflare", amount: "No Mezair fee" },
+  {
+    item: "Models and sandboxes",
+    who: "Your providers: OpenAI, Azure, AWS, Cloudflare, Vercel and the rest",
+    amount: "No Mezair margin"
+  },
+  { item: "Mezair Cloud Agents", who: "Hosted machines billed by use. Not available yet.", amount: "No price yet" }
+];
+
+export default function PricingPage() {
+  return (
+    <div className="cine min-h-screen">
+      <SiteHeader active="pricing" showThemeToggle={false} />
+      <main id="main-content">
+        <section className="cine-hero cine-lit" aria-labelledby="pricing-title">
+          <div className="cine-wide">
+            <div className="cine-titlerow">
+              <h1 id="pricing-title" className="cine-title max-w-[16ch]">
+                Free to build. Sync from £6.
+              </h1>
+              <div>
+                <p className="cine-lede md:max-w-[60ch] lg:max-w-[46ch]">
+                  Desktop is free and open source. You only pay if we host Sync &amp; Mesh for you.
+                </p>
+                <p className="cine-fine mt-4">
+                  Hosted Sync &amp; Mesh is an invite-only beta through {featureBeta.endDate}. These are proposed
+                  launch prices: requesting access is not a purchase, and invited testers redeem a code without a
+                  payment method.
+                </p>
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <Button asChild size="lg">
+                    <Link href="/waitlist">Request beta access</Link>
+                  </Button>
+                  <Button asChild size="lg" variant="outline">
+                    <Link href="/account/billing">Redeem a beta code</Link>
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <section className="cine-stage cine-rise" aria-label="Plans">
+              <div className="plans">
+                {plans.map((plan) => (
+                  <article
+                    key={plan.id}
+                    className="plan"
+                    data-featured={plan.featured ? "true" : "false"}
+                    aria-labelledby={`plan-${plan.id}`}
+                  >
+                    <h2 id={`plan-${plan.id}`} className="text-lg font-semibold">
+                      {plan.name}
+                    </h2>
+                    <p className="mt-1 text-[0.9375rem] text-muted-foreground">{plan.summary}</p>
+                    <p className="plan-price">
+                      <strong>{plan.price}</strong>
+                      <span className="text-sm text-muted-foreground">{plan.cadence}</span>
+                    </p>
+                    <p className="mt-2 min-h-5 text-sm text-muted-foreground">{plan.annual ?? ""}</p>
+                    <ul className="mt-6 grid flex-1 content-start gap-2.5">
+                      {plan.features.map((feature) => (
+                        <li key={feature} className="flex gap-3 text-[0.9375rem] leading-6">
+                          <Check className="mt-1 size-4 shrink-0 text-accent" aria-hidden="true" />
+                          {feature}
+                        </li>
+                      ))}
+                    </ul>
+                    {plan.note ? <p className="mt-5 text-sm leading-6 text-muted-foreground">{plan.note}</p> : null}
+                    <Button asChild className="mt-8 w-full" variant={plan.featured ? "default" : "outline"}>
+                      <Link href={plan.cta.href}>{plan.cta.label}</Link>
+                    </Button>
+                  </article>
+                ))}
+              </div>
+              <p className="cine-fine mt-5">Prices are in pounds sterling. If they change before launch, this page changes first.</p>
+            </section>
+          </div>
+        </section>
+
+        <section id="hosted-compute" className="cine-section scroll-mt-24" aria-labelledby="bill-title">
+          <div className="page-shell">
+            <h2 id="bill-title" className="cine-h2 max-w-[14ch]">
+              Who bills you for what.
+            </h2>
+            <p className="cine-lede mt-4">You bring your own model and cloud accounts. Mezair never sits between you and their bill.</p>
+            <dl className="bill mt-10">
+              {bill.map((row) => (
+                <div key={row.item}>
+                  <dt>{row.item}</dt>
+                  <dd>{row.who}</dd>
+                  <dd>{row.amount}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </section>
+
+        <section className="cine-section" aria-labelledby="faq-title">
+          <div className="page-shell grid gap-10 lg:grid-cols-[minmax(0,4fr)_minmax(0,8fr)]">
+            <h2 id="faq-title" className="cine-h2 max-w-[10ch]">
+              Questions people ask.
+            </h2>
+            <div className="faq">
+              {pricingFaqs.map((item) => (
+                <details key={item.q}>
+                  <summary>
+                    {item.q}
+                    <Plus className="size-5" aria-hidden="true" />
+                  </summary>
+                  <p>{item.a}</p>
+                </details>
+              ))}
+            </div>
+          </div>
+        </section>
+      </main>
+      <SiteFooter />
+    </div>
+  );
+}

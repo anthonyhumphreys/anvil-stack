@@ -1,0 +1,3818 @@
+import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.js';
+import type { WorkItemReference } from './change-review-types.js';
+import type { AgentUIIntent } from './agent-ui-intents.js';
+import type { RepoIndexJobState, RepoIndexJobTier, RepoIndexTier } from './index-jobs.js';
+import type { BootstrapRecipe } from '../../cloud/contract/bootstrap.js';
+import type { EnvironmentProviderId } from '../../cloud/contract/environment.js';
+
+export interface RepoInfo {
+  id: string; // SHA256 of repo path
+  name: string; // Directory name
+  path: string; // Absolute path on disk
+  remoteUrl?: string; // ADO/GitHub remote
+  defaultBranch: string;
+  languages: LanguageBreakdown[];
+  status: 'connected' | 'indexing' | 'indexed' | 'error';
+  /** Tiered readiness: connected → mapped → enriched. `status` is derived from this. */
+  indexTier?: RepoIndexTier;
+  lastIndexed?: string; // ISO timestamp
+  fileCount: number;
+  branchCount: number;
+  lastCommitMessage?: string;
+  lastCommitDate?: string;
+  indexMode?: 'deep' | 'light';
+  indexProvider?: string;
+  indexWarnings?: string[];
+}
+
+export type TerminalSessionStatus = 'running' | 'exited';
+
+export interface TerminalSessionSummary {
+  terminalId: string;
+  workspaceId: string;
+  repoId: string;
+  cwd: string;
+  status: TerminalSessionStatus;
+  exitCode?: number;
+  createdAt: string;
+  sequence: number;
+}
+
+export interface TerminalOutputChunk {
+  sequence: number;
+  data: string;
+}
+
+export interface TerminalAttachResult {
+  session: TerminalSessionSummary;
+  output: TerminalOutputChunk[];
+}
+
+export interface TerminalDataEvent extends TerminalOutputChunk {
+  terminalId: string;
+}
+
+export interface TerminalExitEvent {
+  terminalId: string;
+  exitCode: number;
+}
+
+export interface TerminalClosedEvent {
+  terminalId: string;
+}
+
+export interface LanguageBreakdown {
+  language: string;
+  percentage: number;
+  fileCount: number;
+}
+
+export interface RepoSummary {
+  repoId: string;
+  overview: string;
+  modules: ModuleSummary[];
+  patterns: string[];
+  frameworks: string[];
+  testCoverage?: string;
+  entryPoints: string[];
+  configFiles: string[];
+  mermaidDiagram: string;
+  indexMode?: 'deep' | 'light';
+  indexProvider?: string;
+  indexWarnings?: string[];
+}
+
+export type RepoMapRefreshMode = 'manual' | 'on_commit';
+
+export interface RepoMapStatus {
+  refreshMode: RepoMapRefreshMode;
+  indexedCommitSha?: string;
+  currentCommitSha?: string;
+  generatedAt?: string;
+  stale: boolean;
+}
+
+export type RepositoryChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
+
+export interface RepositorySourceRange {
+  startLine: number;
+  endLine: number;
+}
+
+export interface RepositoryChangedRange extends RepositorySourceRange {
+  side: 'current' | 'base';
+}
+
+export interface RepositoryChangedFile {
+  filePath: string;
+  previousPath?: string;
+  status: RepositoryChangeStatus;
+  ranges?: RepositoryChangedRange[];
+}
+
+export interface RepositoryChangeSummary {
+  files: RepositoryChangedFile[];
+  additions: number;
+  modifications: number;
+  deletions: number;
+  renames: number;
+  currentCommitSha?: string;
+}
+
+export type CicdProvider = 'github-actions' | 'azure-pipelines';
+export type CicdNodeType = 'workflow' | 'stage' | 'job' | 'step' | 'gate' | 'template';
+export type CicdValidationSeverity = 'error' | 'warning' | 'info';
+
+export interface CicdPipelineFile {
+  path: string;
+  provider: CicdProvider;
+  role: 'entrypoint' | 'template' | 'reusable-workflow';
+  name: string;
+  valid: boolean;
+  error?: string;
+  content: string;
+}
+
+export interface CicdFlowNode {
+  id: string;
+  type: CicdNodeType;
+  provider: CicdProvider;
+  filePath: string;
+  label: string;
+  subtitle?: string;
+  status: 'configured' | 'warning' | 'error';
+  depth: number;
+  metadata?: Record<string, string | number | boolean>;
+}
+
+export interface CicdFlowEdge {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+export interface CicdValidationFinding {
+  id: string;
+  severity: CicdValidationSeverity;
+  provider: CicdProvider;
+  filePath: string;
+  message: string;
+  nodeId?: string;
+}
+
+export interface CicdPipelineAnalysis {
+  repoId: string;
+  repoName: string;
+  generatedAt: string;
+  files: CicdPipelineFile[];
+  nodes: CicdFlowNode[];
+  edges: CicdFlowEdge[];
+  findings: CicdValidationFinding[];
+  stack: CicdStackProfile;
+  recommendations: CicdPipelineRecommendation[];
+  summary: {
+    providers: CicdProvider[];
+    workflowCount: number;
+    stageCount: number;
+    jobCount: number;
+    stepCount: number;
+    gateCount: number;
+    templateCount: number;
+  };
+}
+
+export type CicdPackageManager =
+  'pnpm' | 'npm' | 'yarn' | 'bun' | 'pip' | 'go' | 'cargo' | 'dotnet';
+
+export interface CicdStackProfile {
+  language: 'node' | 'python' | 'go' | 'rust' | 'dotnet' | 'unknown';
+  framework?: string;
+  packageManager?: CicdPackageManager;
+  packageManagerVersion?: string;
+  projectFile?: string;
+  sdkVersion?: string;
+  workspace: boolean;
+  scripts: string[];
+  workspaceScripts?: string[];
+  workspaceScriptTargets?: Array<{ name: string; scripts: string[] }>;
+  evidence: string[];
+}
+
+export interface CicdPipelineRecommendation {
+  rank: number;
+  template: CicdCreatePipelineInput['template'];
+  provider: CicdProvider;
+  title: string;
+  reason: string;
+  evidence: string[];
+  commands: string[];
+  recommended: boolean;
+}
+
+export interface CicdCreatePipelineInput {
+  provider: CicdProvider;
+  template:
+    | 'node-ci'
+    | 'python-ci'
+    | 'go-ci'
+    | 'rust-ci'
+    | 'dotnet-ci'
+    | 'dotnet-azure'
+    | 'gated-release'
+    | 'generic-ci';
+  name: string;
+  filePath?: string;
+}
+
+export interface CicdCreatePipelineResult {
+  filePath: string;
+  content: string;
+}
+
+export type RepoIndexStage =
+  | 'queued'
+  | 'discovering'
+  | 'preparing-deep-index'
+  | 'syncing-deep-index'
+  | 'gathering-context'
+  | 'synthesizing'
+  | 'analysing-module'
+  | 'generating-summary'
+  | 'saving'
+  | 'complete'
+  | 'error';
+
+export interface RepoIndexProgress {
+  repoId: string;
+  message: string;
+  percent: number;
+  stage: RepoIndexStage;
+  detail?: string;
+  /** Queue job driving this progress, when one exists. */
+  jobId?: string;
+  jobTier?: RepoIndexJobTier;
+  jobState?: RepoIndexJobState;
+}
+
+export interface ModuleSummary {
+  path: string;
+  purpose: string;
+  fileCount: number;
+  keyFiles: string[];
+  dependencies: string[];
+}
+
+export type RepositoryMapNodeKind = 'repository' | 'module' | 'directory' | 'file' | 'symbol';
+
+export type RepositoryMapSymbolKind =
+  | 'class'
+  | 'interface'
+  | 'type'
+  | 'enum'
+  | 'function'
+  | 'method'
+  | 'component'
+  | 'variable'
+  | 'export';
+
+export interface RepositoryMapGraphNode {
+  id: string;
+  kind: RepositoryMapNodeKind;
+  parentId?: string;
+  name: string;
+  path: string;
+  modulePath?: string;
+  purpose?: string;
+  language?: string;
+  sourceRange?: RepositorySourceRange;
+  symbolKind?: RepositoryMapSymbolKind;
+  exported?: boolean;
+  fileCount?: number;
+  symbolCount?: number;
+}
+
+export interface RepositoryMapGraphEdge {
+  id: string;
+  kind: 'contains' | 'dependency';
+  source: string;
+  target: string;
+  count?: number;
+}
+
+export interface RepositoryMapGraph {
+  schemaVersion: 1;
+  repoId: string;
+  repositoryName: string;
+  indexedCommitSha?: string;
+  generatedAt: string;
+  nodes: RepositoryMapGraphNode[];
+  edges: RepositoryMapGraphEdge[];
+  supportedSymbolLanguages: string[];
+  warnings: string[];
+}
+
+export interface OnboardDetection {
+  repoId: string;
+  agentsMdExists: boolean;
+  agentsMdPath?: string;
+  agentsMdStaleness?: 'current' | 'stale' | 'missing';
+  devcontainerExists: boolean;
+  devcontainerPath?: string;
+  readmeExists: boolean;
+  environmentStatus: EnvironmentCheck[];
+  suggestedActions: OnboardAction[];
+}
+
+export interface EnvironmentCheck {
+  name: string;
+  required: boolean;
+  installed: boolean;
+  version?: string;
+  installCommand?: string;
+}
+
+export type OnboardAction =
+  | 'generate-agents-md'
+  | 'update-agents-md'
+  | 'generate-devcontainer'
+  | 'update-devcontainer'
+  | 'install-dependencies'
+  | 'generate-env-template'
+  | 'generate-readme';
+
+export type WorkItemProvider = 'ado' | 'linear' | 'jira' | 'github';
+
+export interface WorkItemConnection {
+  id: string;
+  name: string;
+  provider: WorkItemProvider;
+  adoOrganizationUrl?: string;
+  adoProject?: string;
+  adoTeam?: string;
+  adoPat?: string;
+  linearApiKey?: string;
+  linearTeamId?: string;
+  jiraHost?: string;
+  jiraAuthMode?: 'cloud' | 'server';
+  jiraProject?: string;
+  jiraBoardId?: string;
+  jiraAcceptanceCriteriaField?: string;
+  jiraEmail?: string;
+  jiraApiToken?: string;
+  githubHost?: string;
+  githubOwner?: string;
+  githubRepo?: string;
+  githubToken?: string;
+}
+export type DocsProvider = 'confluence' | 'notion' | 'linear';
+
+/** Identifies the workspace and provider account a docs request was opened against. */
+export interface DocsRequestContext {
+  provider: DocsProvider;
+  workspaceId?: string;
+  connectionId?: string;
+}
+
+export interface WorkItem {
+  id: string;
+  title: string;
+  type: 'Bug' | 'User Story' | 'Feature' | 'Task' | 'Epic';
+  state: string;
+  priority: number;
+  assignee?: string;
+  description?: string;
+  acceptanceCriteria?: string;
+  repoUrl?: string;
+  linkedCommits?: string[];
+  tags?: string[];
+  iterationPath?: string;
+  parentId?: string;
+  children?: WorkItem[];
+  provider: WorkItemProvider;
+  extras?: Record<string, unknown>;
+  url?: string;
+}
+
+export interface WorkItemCreateInput {
+  title: string;
+  description?: string;
+  parentId?: string;
+}
+
+export type BaFindingType = 'compliance' | 'feasibility' | 'dependency' | 'question' | 'risk';
+export type BaFindingStatus = 'open' | 'dismissed' | 'resolved';
+export type BaSessionStatus = 'active' | 'completed' | 'orphaned';
+
+export interface BaFinding {
+  id: string;
+  workItemId: string;
+  repoId: string;
+  sessionId?: string;
+  type: BaFindingType;
+  content: string;
+  status: BaFindingStatus;
+  sourceMessageId?: string;
+  followUpWorkItemId?: string;
+  followUpWorkItemProvider?: WorkItemProvider;
+  followUpWorkItemTitle?: string;
+  followUpWorkItemUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BaSession {
+  id: string;
+  workItemId: string;
+  repoId: string;
+  spikeBranch: string;
+  originBranch: string;
+  worktreePath?: string;
+  stashRef?: string;
+  status: BaSessionStatus;
+  startedAt: string;
+  endedAt?: string;
+}
+
+export interface BaMessage {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  eventType?: string;
+  createdAt: string;
+}
+
+export interface BaRepoLink {
+  workItemId: string;
+  repoId: string;
+  linkedAt: string;
+}
+
+export interface WorkItemFilters {
+  state?: string;
+  type?: string;
+  assignee?: string;
+  tags?: string[];
+  iterationIds?: string[];
+}
+
+export interface Iteration {
+  id: string;
+  name: string;
+  path?: string;
+  startDate?: string;
+  finishDate?: string;
+  provider: WorkItemProvider;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  event?: CodexEvent;
+  repoContext?: string;
+  personaId?: string;
+  threadId?: string;
+  sessionId?: string;
+  citations?: Citation[];
+  attachments?: ChatAttachment[];
+}
+
+export type ChatArtifactKind =
+  | 'markdown'
+  | 'mermaid'
+  | 'html'
+  | 'docx'
+  | 'pptx'
+  | 'pdf'
+  | 'csv'
+  | 'xlsx'
+  | 'code'
+  | 'diagram'
+  | 'data'
+  | 'text';
+
+export type ChatArtifactContentEncoding = 'utf8' | 'base64' | 'file';
+export type ChatArtifactStorage = 'repository' | 'session';
+
+export interface ChatArtifactFile {
+  name: string;
+  mimeType: string;
+  size: number;
+  dataBase64: string;
+}
+
+export interface CodexDetectedModel {
+  id: string;
+  displayName: string;
+  description?: string;
+  hidden?: boolean;
+  defaultReasoningEffort?: ReasoningEffort;
+  supportedReasoningEfforts: ReasoningEffort[];
+  serviceTiers: Array<{ id: string; name: string; description?: string }>;
+}
+
+export interface CodexCliStatus {
+  installed: boolean;
+  version?: string;
+  path?: string;
+  configuredForFoundry: boolean;
+  authConfigured?: boolean;
+  configPath?: string;
+  configuredModel?: string;
+  configuredProvider?: string;
+  configuredReasoningEffort?: string;
+  agentMaxThreads?: number;
+  webSearchMode?: 'disabled' | 'cached' | 'indexed' | 'live';
+  features?: Record<string, { stage: string; enabled: boolean }>;
+  models?: CodexDetectedModel[];
+}
+
+export interface CursorDetectedModel {
+  id: string;
+  label: string;
+}
+
+export interface CursorCliStatus {
+  installed: boolean;
+  version?: string;
+  path?: string;
+  models: CursorDetectedModel[];
+  error?: string;
+}
+
+export interface DevinDetectedModel {
+  id: string;
+  label: string;
+}
+
+export interface DevinCliStatus {
+  installed: boolean;
+  version?: string;
+  path?: string;
+  authenticated?: boolean;
+  models: DevinDetectedModel[];
+  /** The session's own default when no model is configured (e.g. Adaptive). */
+  defaultModel?: string;
+  error?: string;
+}
+
+export interface ChatArtifact {
+  id: string;
+  threadId: string;
+  repoId?: string;
+  sourceMessageId?: string;
+  title: string;
+  kind: ChatArtifactKind;
+  storage: ChatArtifactStorage;
+  relativePath: string;
+  filePath?: string;
+  content: string;
+  version: number;
+  status: 'draft' | 'reviewed' | 'approved' | 'superseded' | 'archived';
+  visibility: 'local' | 'shareable' | 'public-ready';
+  source: 'assistant' | 'user' | 'imported';
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  /** Backend share id once published via share.* (hosted deployments). */
+  shareId?: string;
+  /** Public URL (mezair.dev/artifacts/{shareId}) while shared. */
+  sharedUrl?: string;
+  sharedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatArtifactInput {
+  threadId: string;
+  repoId?: string | null;
+  sourceMessageId?: string;
+  title: string;
+  kind: ChatArtifactKind;
+  storage?: ChatArtifactStorage;
+  relativePath: string;
+  content: string;
+  contentEncoding?: ChatArtifactContentEncoding;
+  status?: ChatArtifact['status'];
+  visibility?: ChatArtifact['visibility'];
+  source?: ChatArtifact['source'];
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+}
+
+export type ChatArtifactAnnotationStatus = 'open' | 'resolved';
+
+export interface ChatArtifactAnnotation {
+  id: string;
+  artifactId: string;
+  body: string;
+  quote?: string;
+  status: ChatArtifactAnnotationStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatArtifactAnnotationInput {
+  artifactId: string;
+  body: string;
+  quote?: string;
+}
+
+export interface ChatArtifactAnnotationPatch {
+  body?: string;
+  quote?: string | null;
+  status?: ChatArtifactAnnotationStatus;
+}
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  kind: 'image' | 'file';
+  path: string;
+  createdAt: string;
+}
+
+export interface ChatAttachmentInput {
+  id?: string;
+  name: string;
+  mimeType?: string;
+  size?: number;
+  path?: string;
+  dataUrl?: string;
+}
+
+/** Reasoning effort levels supported by Codex (`model_reasoning_effort` / app-server `effort`). */
+export type ReasoningEffort =
+  'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+
+export type WorkflowExecutionStrategy = 'focused' | 'adaptive' | 'parallel' | 'review-team';
+export type AgentProvider = 'azure' | 'openai' | 'codex' | 'cursor' | 'devin' | 'llmgateway';
+export type LlmGatewayBillingMode = 'devpass' | 'payg';
+
+export interface LlmGatewayModel extends CodexDetectedModel {
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  inputPrice?: number;
+  outputPrice?: number;
+}
+
+export interface LlmGatewayStatus {
+  connected: boolean;
+  credentialStatus: 'missing' | 'valid' | 'invalid' | 'unavailable';
+  billingMode: LlmGatewayBillingMode;
+  models: LlmGatewayModel[];
+  error?: string;
+}
+
+export interface WorkflowPosition {
+  x: number;
+  y: number;
+}
+
+export interface WorkflowAgentProfile {
+  id: string;
+  name: string;
+  personaId: string;
+  provider: AgentProvider;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  capabilities: string[];
+  /** Approved placement for tasks delegated to this specialist. */
+  target?: WorkflowTargetPolicy;
+}
+
+export type WorkflowTeamStrategy = 'manual' | 'map-reduce' | 'review' | 'debate' | 'autonomous';
+
+export interface WorkflowOrchestration {
+  maxConcurrency: number;
+  maxNodes: number;
+  maxDepth: number;
+  maxAttempts: number;
+  timeoutMinutes: number;
+  handoffChars: number;
+  profiles: WorkflowAgentProfile[];
+}
+
+export interface WorkflowRuntimeEvent {
+  id: string;
+  at: string;
+  type: 'run' | 'dispatch' | 'completed' | 'failed' | 'delegated' | 'decision' | 'retry';
+  nodeId?: string;
+  message: string;
+}
+
+export interface WorkflowAttempt {
+  id: string;
+  startedAt: string;
+  completedAt?: string;
+  status:
+    'running' | 'waiting' | 'attention' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  provider: AgentProvider;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  threadId?: string;
+  sessionId?: string;
+  output?: string;
+  error?: string;
+  remote?: WorkflowRemoteExecution;
+}
+
+export interface WorkflowCapabilityRequirements {
+  capabilities: string[];
+  os?: string;
+  cpu?: string;
+  memoryMb?: number;
+}
+
+export type WorkflowTargetPolicy =
+  | { kind: 'local' }
+  | { kind: 'device'; enrollmentId: string }
+  | { kind: 'auto'; requirements: WorkflowCapabilityRequirements }
+  | { kind: 'existing-environment'; environmentId: string }
+  | {
+      kind: 'provisioned-environment';
+      provider: EnvironmentProviderId;
+      ttlSeconds: number;
+      /** Optional device-local connection; omitted uses the first matching provisioner. */
+      connectionId?: string;
+      resources?: { vcpus?: number; memoryMb?: number };
+      requirements?: WorkflowCapabilityRequirements;
+    };
+
+export interface WorkflowRemoteExecution {
+  dispatchId: string;
+  jobId?: string;
+  target?: WorkflowTargetPolicy;
+  resolvedEnrollmentId?: string;
+  placementExplanation?: string;
+  state:
+    | 'submitting'
+    | 'queued'
+    | 'awaiting-key-delivery'
+    | 'awaiting-approval'
+    | 'claimed'
+    | 'running'
+    | 'cancel-requested'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'unknown-outcome';
+}
+
+export interface WorkflowNode {
+  id: string;
+  name: string;
+  prompt: string;
+  personaId: string;
+  /** Defaults to Codex for templates created before provider-aware workflows. */
+  provider?: AgentProvider;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  executionStrategy: WorkflowExecutionStrategy;
+  position: WorkflowPosition;
+  kind?: 'agent' | 'human';
+  teamStrategy?: WorkflowTeamStrategy;
+  teamProfileIds?: string[];
+  parentNodeId?: string;
+  depth?: number;
+  /** Optional remote target. Omitted nodes continue to run locally. */
+  target?: WorkflowTargetPolicy;
+  repositoryIds?: string[];
+  verification?: string[];
+  /** Saved conversational validation must publish current per-criterion evidence. */
+  requiresValidation?: boolean;
+  /** Chosen running mode; remote execution also obeys the target node ceiling. */
+  permissionMode?: CodexMode;
+}
+
+export interface WorkflowEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface WorkflowTemplate {
+  orchestration?: WorkflowOrchestration;
+  id: string;
+  name: string;
+  description: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowTemplateInput {
+  orchestration?: WorkflowOrchestration;
+  name: string;
+  description?: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
+export type WorkflowRunStatus =
+  'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+
+export type WorkflowNodeRunStatus =
+  | 'waiting'
+  | 'interrupted'
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled';
+
+export interface WorkflowNodeRun {
+  attempts?: WorkflowAttempt[];
+  teamExpanded?: boolean;
+  delegationCount?: number;
+  decision?: { approved: boolean; note: string; at: string };
+  nodeId: string;
+  status: WorkflowNodeRunStatus;
+  threadId?: string;
+  sessionId?: string;
+  /**
+   * Honesty marker: 'acp-print' means the step ran through a one-shot print
+   * CLI (Cursor `cursor-agent -p` / Devin `devin --print`) and no tool-call,
+   * diff, or reasoning events were captured — only the final text output.
+   */
+  executionMode?: 'app-server' | 'acp-print';
+  output?: string;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+  remote?: WorkflowRemoteExecution;
+}
+
+export interface WorkflowRepositoryPin {
+  repositoryId: string;
+  commit: string;
+}
+
+export interface WorkflowRunInputManifest {
+  workspaceDefinitionRevision: string;
+  repositories: WorkflowRepositoryPin[];
+  bootstrapDigest: string;
+  configVersions: Record<string, string>;
+  trigger?: { kind: string; headSha?: string };
+}
+
+export interface WorkflowConvergence {
+  integrationId: string;
+  state: 'integrated' | 'conflicted' | 'failed';
+  /** Branch combination is separate from verification and checkout application. */
+  combined: boolean;
+  verificationState: 'not-run' | 'running' | 'passed' | 'failed' | 'blocked' | 'stale';
+  verificationAttempt: number;
+  verificationSelections: Array<{ repositoryId: string; commands: string[] }>;
+  appliedAt: string | null;
+  repositories: Array<{
+    repositoryId: string;
+    baseCommit: string;
+    integratedCommit: string | null;
+    branch: string;
+    worktreePath: string;
+    appliedAt: string | null;
+    destinationBranch: string | null;
+    appliedCommit: string | null;
+    applyError?: string;
+    conflicts: Array<{ dispatchId: string; ref: string; conflictedFiles: string[] }>;
+  }>;
+  verification: Array<{
+    repositoryId: string;
+    command: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    durationMs: number;
+    approvalGranted: boolean;
+    logTail: string;
+    testedHead: string | null;
+    testedTree: string | null;
+  }>;
+}
+
+export interface WorkflowRun {
+  chatOrigin?: import('./chat-delegation').ChatDelegationOrigin;
+  /** Private, frozen inputs for read-only remote review; never sync as a workflow template. */
+  remoteReviewCandidates?: import('./remote-review-candidate').RemoteReviewCandidate[];
+  /** Approved Mesh identity; a candidate cannot move to another backend or account on replay. */
+  remoteReviewBackend?: import('./remote-review-candidate').RemoteReviewBackendBinding;
+  workItemRef?: WorkItemReference;
+  runtimeOwnerPid?: number;
+  executionPaths?: Array<{ id: string; path: string }>;
+  orchestration?: WorkflowOrchestration;
+  events?: WorkflowRuntimeEvent[];
+  deadlineAt?: string;
+  sourceAutomationRunId?: string;
+  id: string;
+  templateId: string;
+  templateName: string;
+  workspaceId: string;
+  repoIds: string[];
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  kickoff: string;
+  status: WorkflowRunStatus;
+  supervisorThreadId: string;
+  nodeRuns: WorkflowNodeRun[];
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+  inputManifest?: WorkflowRunInputManifest;
+  convergence?: WorkflowConvergence;
+}
+
+/** Renderer/browser view; source bytes and approved account authority stay in main. */
+export type PublicWorkflowRun = Omit<
+  WorkflowRun,
+  'remoteReviewCandidates' | 'remoteReviewBackend' | 'chatOrigin'
+> & {
+  chatOrigin?: Omit<NonNullable<WorkflowRun['chatOrigin']>, 'sourceBackend'>;
+};
+
+export interface ChatSendOptions {
+  collaborationMode?: ChatCollaborationMode;
+  reasoningEffort?: ReasoningEffort;
+  model?: string;
+  /** Optional per-turn access selection used by the browser workspace. */
+  permissionMode?: CodexMode;
+  serviceTier?: string | null;
+}
+
+/** Explicit intent for a composer send made while a chat session is running. */
+export type ChatFollowUpIntent = 'guide' | 'queue';
+
+export type ChatFollowUpStatus = 'queued' | 'delivered' | 'failed';
+
+export interface ChatFollowUpRequest {
+  sessionId: string;
+  /** Stable identity for retries of the same logical send. */
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  message: string;
+  attachments?: ChatAttachment[];
+}
+
+export interface ChatFollowUpResult {
+  requestId: string;
+  intent: ChatFollowUpIntent;
+  /**
+   * `delivered` means the request was written to provider stdin. A later
+   * JSON-RPC rejection can change it to `failed`; it does not claim that the
+   * provider accepted or completed the task.
+   */
+  status: ChatFollowUpStatus;
+  queueDepth: number;
+  error?: string;
+}
+
+export interface ChatFileMentionSearchInput {
+  repoIds: string[];
+  query?: string;
+  limit?: number;
+}
+
+export interface ChatFileMentionSearchResult {
+  repoId: string;
+  repoName: string;
+  relativePath: string;
+  name: string;
+  path: string;
+  size: number;
+}
+
+export interface ChatThreadPullRequestInput {
+  repoId: string;
+  provider: 'github' | 'ado';
+  pullRequestId: string;
+}
+export interface ChatThreadPullRequestLink {
+  availability: 'current' | 'repository_changed' | 'thread_changed';
+  id: string;
+  threadId: string;
+  threadTitle: string;
+  workspaceId: string;
+  repoId: string;
+  pullRequest: CodeReviewPullRequest;
+  linkedAt: string;
+  /** Last successful provider lookup; this snapshot is not a live status claim. */
+  observedAt: string;
+}
+
+export type ChatThreadPurpose = 'normal' | 'side-question';
+
+export interface ChatThread {
+  /** True for a workspace-less chat that exists only in the current app process. */
+  temporary?: boolean;
+  pullRequestLinks?: ChatThreadPullRequestLink[];
+  purpose?: ChatThreadPurpose;
+  sideQuestionOfThreadId?: string;
+  id: string;
+  personaId: string;
+  title: string;
+  workspaceId?: string;
+  workItemId?: string;
+  workItemProvider?: WorkItemProvider;
+  workItemTitle?: string;
+  repoIds: string[];
+  activeRepoId?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt?: string;
+  preview?: string;
+  messageCount: number;
+  providerThreadId?: string;
+  activePlan?: ChatPlanSnapshot;
+  activeGoal?: ChatGoalSnapshot;
+  attentionState: ChatThreadAttentionState;
+  attentionUpdatedAt?: string;
+  activeTurnStartedAt?: string;
+  lastViewedAt?: string;
+  settledAt?: string;
+  /** Generated rolling summary of the conversation so far. */
+  summary?: string;
+  /** True once the user has renamed the thread; generated titles stop applying. */
+  titleLocked?: boolean;
+}
+
+export type ChatThreadAttentionState =
+  'idle' | 'working' | 'approval' | 'input' | 'failed' | 'complete';
+
+export interface WorkflowNavigationTarget {
+  workspaceId: string;
+  runId: string;
+}
+
+export interface ChatNavigationTarget {
+  workspaceId: string;
+  threadId: string;
+  personaId: string;
+}
+
+export type ChatCollaborationMode = 'default' | 'plan';
+export type ChatLayout = 'classic' | 'workitems';
+
+export type ChatPlanStepStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface ChatPlanStep {
+  step: string;
+  status: ChatPlanStepStatus;
+}
+
+export interface ChatPlanSnapshot {
+  explanation?: string;
+  steps: ChatPlanStep[];
+  updatedAt: string;
+}
+
+export type ChatGoalStatus = 'active' | 'paused' | 'budgetLimited' | 'complete';
+
+export interface ChatGoalSnapshot {
+  objective: string;
+  status: ChatGoalStatus;
+  tokenBudget?: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type TurnEvidenceItemType =
+  'file_edit' | 'file_read' | 'command' | 'approval' | 'tool' | 'error' | 'plan' | 'goal';
+
+export interface TurnEvidenceItem {
+  id: string;
+  type: TurnEvidenceItemType;
+  label: string;
+  detail?: string;
+  filePath?: string;
+  command?: string;
+  exitCode?: number;
+  failed?: boolean;
+  diff?: string;
+  timestamp: string;
+}
+
+export type AgentRunSource = 'chat' | 'automation' | 'code_review';
+export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface AgentRunSummary {
+  id: string;
+  source: AgentRunSource;
+  title: string;
+  status: AgentRunStatus;
+  workspaceId?: string;
+  repoIds: string[];
+  threadId?: string;
+  sessionId?: string;
+  automationId?: string;
+  reviewId?: string;
+  startedAt: string;
+  completedAt?: string;
+  summary?: string;
+  changedFileCount: number;
+  evidenceCount: number;
+}
+
+export interface AutomationTriageItem {
+  id: string;
+  automationId: string;
+  automationName: string;
+  status: AutomationRunStatus;
+  trigger: AutomationRunTrigger;
+  startedAt: string;
+  completedAt?: string;
+  changedFileCount: number;
+  summary?: string;
+  errorMessage?: string;
+  retainedWorktreeCount: number;
+  worktrees: AutomationRunWorktree[];
+  attention: 'blocked' | 'changes' | 'running' | 'decision';
+  workflowRunId?: string;
+  nextAction?: string;
+}
+
+export type JsonRpcRequestId = string | number;
+export type ChatAssistantPhase = 'progress' | 'final';
+
+export type CodexSubagentTool = 'spawnAgent' | 'sendInput' | 'resumeAgent' | 'wait' | 'closeAgent';
+export type CodexSubagentToolStatus = 'inProgress' | 'completed' | 'failed';
+export type CodexSubagentStatus =
+  'pendingInit' | 'running' | 'interrupted' | 'completed' | 'errored' | 'shutdown' | 'notFound';
+export type CodexSubagentActivityKind =
+  'started' | 'interacted' | 'completed' | 'errored' | 'interrupted';
+
+export interface CodexSubagentState {
+  threadId: string;
+  status: CodexSubagentStatus;
+  message?: string;
+}
+
+export interface CodexSubagentUpdate {
+  id: string;
+  kind: 'tool_call' | 'activity';
+  tool?: CodexSubagentTool;
+  status?: CodexSubagentToolStatus;
+  senderThreadId?: string;
+  receiverThreadIds: string[];
+  prompt?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  agents: CodexSubagentState[];
+  activityKind?: CodexSubagentActivityKind;
+  agentThreadId?: string;
+  agentPath?: string;
+}
+
+export interface CodexUserInputOption {
+  label: string;
+  description: string;
+}
+
+export interface CodexUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options?: CodexUserInputOption[];
+}
+
+export interface CursorQuestionOption {
+  id: string;
+  label: string;
+}
+
+export interface CursorQuestion {
+  id: string;
+  prompt: string;
+  options: CursorQuestionOption[];
+  allowMultiple?: boolean;
+}
+
+export type CodexInputRequest =
+  | {
+      kind: 'user_input';
+      questions?: CodexUserInputQuestion[];
+      autoResolutionMs?: number;
+    }
+  | {
+      kind: 'mcp_elicitation';
+      message?: string;
+      serverName?: string;
+      mode?: 'form' | 'openai/form' | 'url';
+      requestedSchema?: unknown;
+      url?: string;
+    }
+  | {
+      kind: 'cursor_ask_question';
+      title?: string;
+      questions: CursorQuestion[];
+    }
+  | {
+      kind: 'cursor_create_plan';
+      title?: string;
+      plan: string;
+    };
+
+export type CodexInputResponse =
+  | {
+      kind: 'user_input';
+      answers: Record<string, string[]>;
+    }
+  | {
+      kind: 'mcp_elicitation';
+      action: 'accept' | 'decline' | 'cancel';
+      content?: unknown;
+    }
+  | {
+      kind: 'cursor_ask_question';
+      action: 'submit' | 'skip' | 'cancel';
+      answers: Array<{ questionId: string; selectedOptionIds: string[] }>;
+    }
+  | {
+      kind: 'cursor_create_plan';
+      action: 'submit' | 'skip' | 'cancel';
+    };
+
+export interface CodexEvent {
+  type:
+    | 'text'
+    | 'thinking'
+    | 'file_read'
+    | 'file_edit'
+    | 'command_exec'
+    | 'tool_call'
+    | 'approval_request'
+    | 'input_request'
+    | 'subagent_update'
+    | 'thread_status'
+    | 'request_resolved'
+    | 'plan_update'
+    | 'agent_ui_intent'
+    | 'agent_ui_intent_resolved'
+    | 'goal_update'
+    | 'goal_cleared'
+    | 'queue_update'
+    | 'follow_up_delivery'
+    | 'error'
+    | 'status'
+    | 'usage'
+    | 'turn_outcome'
+    | 'context_compaction'
+    | 'usage_context'
+    | 'thread_metadata';
+  /** Browser-owned sessions are persisted by the main process before broadcast. */
+  persistedBy?: 'main';
+  /** App routing metadata attached to live provider events. */
+  sessionId?: string;
+  appThreadId?: string;
+  /** Display name of the agent that produced the event (e.g. 'Cursor', 'Devin'). */
+  agentLabel?: string;
+  /**
+   * `queue_update` events: number of user sends still queued behind the active
+   * turn (ACP providers have no mid-turn steer; sends flush via session/prompt
+   * when the turn completes). 0 means the queue drained.
+   */
+  queuedSendCount?: number;
+  /** `follow_up_delivery` events carry the stable ID used by chat.followUp. */
+  followUpRequestId?: string;
+  followUpIntent?: ChatFollowUpIntent;
+  followUpStatus?: ChatFollowUpStatus;
+  followUpQueueDepth?: number;
+  followUpError?: string;
+  contextUsage?: { used: number; size: number };
+  observedCostUsd?: number;
+  usage?: DojoTokenUsage;
+  usageId?: string;
+  usagePrice?: DojoPrice;
+  model?: string;
+  turnOutcome?: 'completed' | 'failed' | 'interrupted' | 'inProgress';
+  protocolTurnId?: string;
+  text?: string;
+  filePath?: string;
+  diff?: string;
+  lineRange?: [number, number];
+  command?: string;
+  output?: string;
+  exitCode?: number;
+  toolStatus?: 'running' | 'completed' | 'failed';
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  toolOutput?: string;
+  approvalRequestId?: JsonRpcRequestId;
+  approvalKind?: 'command' | 'file_change' | 'permissions';
+  approvalReason?: string;
+  approvalCommand?: string;
+  approvalCwd?: string;
+  approvalGrantRoot?: string;
+  approvalPermissions?: Record<string, unknown>;
+  inputRequestId?: JsonRpcRequestId;
+  resolvedRequestId?: JsonRpcRequestId;
+  inputRequest?: CodexInputRequest;
+  protocolThreadId?: string;
+  threadActiveFlags?: Array<'waitingOnApproval' | 'waitingOnUserInput'>;
+  subagent?: CodexSubagentUpdate;
+  plan?: ChatPlanSnapshot;
+  agentUIIntent?: AgentUIIntent;
+  agentUIIntentId?: string;
+  goal?: ChatGoalSnapshot;
+  /** Generated title/summary pushed after a thread-metadata refresh. */
+  threadTitle?: string;
+  threadSummary?: string;
+  threadSettledAt?: string | null;
+  status?: 'thinking' | 'executing' | 'complete' | 'error';
+  errorMessage?: string;
+  /** Stable app-server item identity for composing streamed assistant messages. */
+  itemId?: string;
+  /** Normalised assistant-message phase when the provider exposes it. */
+  assistantPhase?: ChatAssistantPhase;
+}
+
+export interface Persona {
+  id: string;
+  name: string;
+  icon: string;
+  colour: string;
+  description: string;
+  systemPromptTemplate: string;
+  /** Inline prompt body for user-defined agents; builtins use the template file. */
+  promptBody?: string;
+  /** True for user-defined agents stored in SQLite and synced; false for compiled-in personas. */
+  editable?: boolean;
+  capabilities: {
+    canWriteFiles: boolean;
+    canRunCommands: boolean;
+    canReadFiles: boolean;
+  };
+}
+
+/** Provider-truthful capability surface for a live chat session. */
+export interface CodexSessionCapabilities {
+  /** True when a later session can continue this provider thread (native resume). */
+  resumable: boolean;
+  /**
+   * How a mid-turn composer send is delivered: 'steer' = in-band turn/steer
+   * (Codex app-server), 'queue' = held and sent as a new prompt when the turn
+   * finishes (ACP providers have no steer).
+   */
+  midTurnSend: 'steer' | 'queue';
+  /** Provider-aware options for explicit follow-ups while a turn is active. */
+  followUp: {
+    /** Can add guidance to the currently running turn in-band. */
+    guide: boolean;
+    /** Can hold a separate task locally and send it after the current turn. */
+    queue: boolean;
+  };
+  /** True only when the provider can enforce a read-only session sandbox. */
+  readOnlySession: boolean;
+  /** Provider emits thread/goal lifecycle events (Codex-only today). */
+  goals: boolean;
+  /**
+   * Distinct provider-side access modes when the provider collapses Mezair's
+   * four CodexMode levels — e.g. Cursor exposes ask/agent/plan only. Undefined
+   * for Codex-family providers where all four CodexModes are distinct.
+   */
+  accessModes?: string[];
+}
+
+/** How this session's provider thread came to be — honest lifecycle reporting. */
+export type CodexSessionContinuity =
+  | 'new'
+  | 'resumed'
+  | 'forked'
+  /** ACP providers cannot fork; a "fork" starts a fresh provider thread. */
+  | 'transcript-seeded';
+
+export interface CodexSession {
+  id: string;
+  repoId?: string;
+  workspaceId?: string;
+  appThreadId?: string;
+  kind?: 'repo' | 'workspace' | 'scaffold';
+  personaId: string;
+  provider?: AgentProvider;
+  status: 'starting' | 'ready' | 'busy' | 'error';
+  startedAt: string;
+  mode?: CodexMode;
+  /**
+   * Provider-side mode actually applied for the current turn — ACP
+   * session/set_mode id ('ask' | 'agent' | 'plan' | 'accept-edits' | 'smart' |
+   * 'bypass') for Cursor/Devin, the Codex sandbox id for Codex-family. Lets the
+   * renderer label the effective access level honestly when it differs from
+   * `mode` (persona clamps, provider mode collapse).
+   */
+  appliedMode?: string;
+  providerThreadId?: string;
+  currentTurnId?: string;
+  /** True only when the provider can natively continue `providerThreadId`. */
+  resumable?: boolean;
+  /** Number of composer sends queued behind the active turn (ACP providers). */
+  queuedSendCount?: number;
+  continuity?: CodexSessionContinuity;
+  capabilities?: CodexSessionCapabilities;
+  origin?: 'desktop' | 'browser';
+}
+
+/** Result of a mid-turn composer send (`chat:steer`). */
+export interface ChatSteerResult {
+  /**
+   * 'steered' — delivered in-band via Codex turn/steer.
+   * 'sent' — session was idle; delivered immediately as a new prompt.
+   * 'queued' — provider cannot accept mid-turn input; held and sent via
+   * session/prompt when the active turn finishes. The renderer should render
+   * the message as queued, not delivered.
+   */
+  disposition: 'steered' | 'sent' | 'queued';
+  /** Sends still waiting behind the active turn after this call. */
+  queueDepth: number;
+}
+
+export type CodexMode = import('../../cloud/contract/permissions.js').PermissionMode;
+
+// ---------------------------------------------------------------------------
+// Mobile Companion
+// ---------------------------------------------------------------------------
+
+export interface MobileCompanionAdvertisedAddress {
+  label: string;
+  url: string;
+  kind: 'lan' | 'tailscale' | 'loopback';
+}
+
+export interface MobileCompanionStatus {
+  enabled: boolean;
+  running: boolean;
+  host: string;
+  port: number;
+  baseUrl: string | null;
+  advertisedAddresses: MobileCompanionAdvertisedAddress[];
+  pairedDeviceCount: number;
+}
+
+export type CompanionSurface = 'desktop' | 'mobile' | 'watch' | 'widget' | 'carplay' | 'siri';
+
+export type MobileCompanionClientType =
+  'mobile' | 'raycast' | 'watch' | 'widget' | 'menubar' | 'carplay' | 'siri';
+
+export interface MobilePairingTicket {
+  ticket: string;
+  expiresAt: string;
+  pairingUrl: string;
+  qrSvg: string;
+}
+
+export interface RaycastCompanionToken {
+  baseUrl: string;
+  token: string;
+  device: MobileCompanionDevice;
+}
+
+export interface MobileCompanionDevice {
+  id: string;
+  name: string;
+  clientType: MobileCompanionClientType;
+  createdAt: string;
+  lastSeenAt?: string;
+  revokedAt?: string;
+}
+
+/** Cumulative per-enrollment capability tiers (MOB-01). */
+export type CompanionPolicyTier = 'observe' | 'approve' | 'steer';
+
+/** Per-enrollment authorization state on a host. */
+export type CompanionPolicyState = 'pending' | 'denied' | CompanionPolicyTier;
+
+export interface CompanionEnrollmentPolicy {
+  enrollmentId: string;
+  accountId: string;
+  displayName: string | null;
+  tier: CompanionPolicyState;
+  firstSeenAt: string;
+  decidedAt: string | null;
+  updatedAt: string;
+}
+
+export type CompanionEventType =
+  'overview' | 'approvals' | 'sessions' | 'settings' | 'notes' | 'carplay' | 'handover';
+
+export interface CompanionEvent {
+  type: CompanionEventType;
+  generatedAt: string;
+}
+
+export interface MobileApprovalRequest {
+  sessionId: string;
+  requestKey: string;
+  requestId: JsonRpcRequestId;
+  /** 'permissions' covers ACP session/request_permission (Cursor/Devin). */
+  kind: 'command' | 'file_change' | 'permissions';
+  reason?: string;
+  command?: string;
+  cwd?: string;
+  grantRoot?: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repoId?: string;
+  repoName?: string;
+  policy?: CompanionApprovalPolicy;
+  createdAt: string;
+}
+
+export type CompanionApprovalRisk = 'low' | 'medium' | 'high' | 'destructive';
+
+export interface CompanionApprovalPolicy {
+  risk: CompanionApprovalRisk;
+  requiresFullReview: boolean;
+  allowedSurfaces: CompanionSurface[];
+  summary: string;
+  requestedAction: string;
+  blockedReason?: string;
+}
+
+export interface CarPlayApprovalRequest extends MobileApprovalRequest {
+  id: string;
+  title: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repo?: string;
+  summary: string;
+  requestedAction: string;
+  risk: CompanionApprovalRisk;
+  requiresFullReview: boolean;
+  allowedSurfaces: CompanionSurface[];
+  carPlayApprovable: boolean;
+  blockedReason?: string;
+  markedForLater: boolean;
+}
+
+export type CarPlaySessionStatus = 'active' | 'paused' | 'blocked' | 'completed';
+
+export interface CarPlaySessionSummary {
+  id: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repo?: string;
+  title: string;
+  status: CarPlaySessionStatus;
+  summary: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceNote {
+  id: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repo?: string;
+  body: string;
+  source: CompanionSurface | 'desktop';
+  status: 'open' | 'accepted' | 'dismissed';
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+export interface WorkspaceNoteCreateInput {
+  workspaceId?: string;
+  repo?: string;
+  body: string;
+  source: CompanionSurface | 'desktop';
+}
+
+export interface CarPlayDriveSnapshot {
+  generatedAt: string;
+  title: 'Mezair Drive';
+  attention: {
+    pendingApprovals: number;
+    blockedSessions: number;
+    requiresDesktopReview: number;
+    failedChecks: number;
+  };
+  sessions: CarPlaySessionSummary[];
+  approvals: CarPlayApprovalRequest[];
+  recentNotes: WorkspaceNote[];
+  safeActions: Array<{
+    id:
+      | 'pause-all'
+      | 'continue-low-risk-checks'
+      | 'prepare-handover'
+      | 'mark-everything-later'
+      | 'capture-note';
+    label: string;
+    enabled: boolean;
+  }>;
+}
+
+export interface CarPlayNoteRequest {
+  workspaceId?: string;
+  repo?: string;
+  body: string;
+  source: 'carplay' | 'siri';
+}
+
+export interface MobileCompanionNotification {
+  id: string;
+  type: 'overview' | 'approvals' | 'sessions' | 'settings' | 'notes' | 'carplay' | 'handover';
+  surface?: CompanionSurface;
+  title: string;
+  body: string;
+  createdAt: string;
+}
+
+export interface MobileChatThreadSummary {
+  id: string;
+  personaId: string;
+  title: string;
+  workspaceId?: string;
+  repoIds: string[];
+  preview?: string;
+  messageCount: number;
+  updatedAt: string;
+  activeSessionId?: string;
+  activeSessionStatus?: CodexSession['status'];
+  pendingApprovalCount: number;
+}
+
+export type MobileWorkflowHealth = 'needs-approval' | 'busy' | 'ready' | 'idle' | 'unconfigured';
+
+export interface MobileWorkflowDigest {
+  health: MobileWorkflowHealth;
+  headline: string;
+  detail: string;
+  counts: {
+    pendingApprovals: number;
+    activeSessions: number;
+    busySessions: number;
+    readySessions: number;
+    recentThreads: number;
+    workspaceRepos: number;
+  };
+}
+
+export type MobileWorkQueueItemKind = 'approval' | 'session' | 'thread';
+export type MobileWorkQueueItemPriority = 'critical' | 'high' | 'normal' | 'low';
+
+export interface MobileWorkQueueItem {
+  id: string;
+  kind: MobileWorkQueueItemKind;
+  priority: MobileWorkQueueItemPriority;
+  title: string;
+  detail: string;
+  statusLabel: string;
+  updatedAt: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repoId?: string;
+  repoName?: string;
+  sessionId?: string;
+  threadId?: string;
+  requestKey?: string;
+  risk?: CompanionApprovalRisk;
+  requiresDesktopReview?: boolean;
+  actionLabel?: string;
+}
+
+export type MobileWorkspaceSignalKind = 'code_review' | 'security' | 'lifecycle' | 'work_item';
+
+export interface MobileWorkspaceSignal {
+  id: string;
+  kind: MobileWorkspaceSignalKind;
+  priority: MobileWorkQueueItemPriority;
+  title: string;
+  detail: string;
+  statusLabel: string;
+  updatedAt: string;
+  repoId?: string;
+  repoName?: string;
+  sourceId?: string;
+  actionId?: string;
+}
+
+export interface MobileWorkspaceSignalFile {
+  path: string;
+  lineStart?: number;
+  lineEnd?: number;
+}
+
+export interface MobileWorkspaceSignalProvenance {
+  label: string;
+  value: string;
+}
+
+export interface MobileWorkspaceSignalDetail {
+  signal: MobileWorkspaceSignal;
+  summary?: string;
+  description?: string;
+  recommendation?: string;
+  files: MobileWorkspaceSignalFile[];
+  linkedWorkItemId?: string;
+  provenance: MobileWorkspaceSignalProvenance[];
+}
+
+export interface MobileWorkspaceHealth {
+  reviewFindingCount: number;
+  securityFindingCount: number;
+  lifecycleItemCount: number;
+  workItemCount: number;
+  criticalCount: number;
+  highCount: number;
+  signals: MobileWorkspaceSignal[];
+}
+
+export interface MobileWorkItemSummary {
+  id: string;
+  title: string;
+  type?: string;
+  state?: string;
+  priority?: number;
+  assignee?: string;
+  iterationPath?: string;
+  updatedAt: string;
+}
+
+export interface MobileQuickAction {
+  id: string;
+  title: string;
+  subtitle: string;
+  prompt: string;
+  personaId: string;
+  tone: 'neutral' | 'blue' | 'green' | 'amber' | 'red' | 'purple';
+  requiresActiveWorkspace: boolean;
+}
+
+export interface MobileStartChatInput {
+  actionId?: string;
+  message?: string;
+  title?: string;
+  personaId?: string;
+  workspaceId?: string;
+  repoIds?: string[];
+  collaborationMode?: ChatCollaborationMode;
+  reasoningEffort?: ReasoningEffort;
+  model?: string;
+  attachments?: ChatAttachmentInput[];
+  /** Repo-relative references resolved and containment-checked by a Mesh host. */
+  fileMentions?: MobileCompanionFileMentionReference[];
+}
+
+export interface MobileSendChatMessageInput {
+  sessionId?: string;
+  message?: string;
+  collaborationMode?: ChatCollaborationMode;
+  reasoningEffort?: ReasoningEffort;
+  model?: string;
+  attachments?: ChatAttachmentInput[];
+  /** Repo-relative references resolved and containment-checked by a Mesh host. */
+  fileMentions?: MobileCompanionFileMentionReference[];
+}
+
+export interface MobileCompanionFileMentionReference {
+  repoId: string;
+  relativePath: string;
+}
+
+export interface MobileStartChatResult {
+  thread: MobileChatThreadSummary;
+  session: CodexSession;
+  queuedMessage: string;
+}
+
+export interface MobileOverview {
+  generatedAt: string;
+  activeWorkspace?: WorkspaceWithRepos;
+  workspaces: WorkspaceSummary[];
+  activeSessions: CodexSession[];
+  pendingApprovals: MobileApprovalRequest[];
+  threads: MobileChatThreadSummary[];
+  recentRuns: AgentRunSummary[];
+  workspaceHealth: MobileWorkspaceHealth;
+  workItems: MobileWorkItemSummary[];
+  currentIterationPath?: string;
+  workQueue: MobileWorkQueueItem[];
+  workflow: MobileWorkflowDigest;
+  quickActions: MobileQuickAction[];
+  companion: MobileCompanionStatus;
+  notifications: MobileCompanionNotification[];
+}
+
+export interface MobilePairingPayload {
+  app: 'mezair';
+  version: 1;
+  instanceId: string;
+  baseUrl: string;
+  ticket: string;
+  expiresAt: string;
+}
+
+export interface Citation {
+  filePath: string;
+  lineStart?: number;
+  lineEnd?: number;
+  snippet?: string;
+}
+
+export interface ConfluencePage {
+  id: string;
+  title: string;
+  spaceKey: string;
+  lastUpdated: string;
+  lastUpdatedBy: string;
+  url: string;
+  staleness?: 'current' | 'stale' | 'unknown';
+  labels?: string[];
+  parentId?: string;
+  provider: 'confluence';
+}
+
+export interface NotionPage {
+  id: string;
+  title: string;
+  url: string;
+  lastUpdated: string;
+  lastUpdatedBy: string;
+  staleness?: 'current' | 'stale' | 'unknown';
+  labels?: string[];
+  parentId?: string;
+  provider: 'notion';
+}
+
+export interface LinearDocPage {
+  id: string;
+  title: string;
+  url: string;
+  lastUpdated: string;
+  lastUpdatedBy: string;
+  staleness?: 'current' | 'stale' | 'unknown';
+  labels?: string[];
+  parentId?: string;
+  projectId?: string;
+  projectName?: string;
+  provider: 'linear';
+}
+
+export interface LinearDocProject {
+  id: string;
+  name: string;
+}
+
+export type DocPage = ConfluencePage | NotionPage | LinearDocPage;
+
+export type SecurityAuditStatus = 'running' | 'completed' | 'failed';
+export type SecurityFindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+export interface SecurityAudit {
+  id: string;
+  repoId: string;
+  scope: string[];
+  status: SecurityAuditStatus;
+  summary?: string;
+  startedAt: string;
+  completedAt?: string;
+  modelVersion?: string;
+}
+
+export interface SecurityFinding {
+  id: string;
+  auditId: string;
+  severity: SecurityFindingSeverity;
+  category: string;
+  owaspRef?: string;
+  cweRef?: string;
+  affectedFiles: string[];
+  description: string;
+  remediation?: string;
+  workItemId?: string;
+  dismissed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Code Review
+// ---------------------------------------------------------------------------
+
+export type CodeReviewStatus = 'running' | 'completed' | 'failed';
+export type CodeReviewFindingSeverity = 'critical' | 'major' | 'minor' | 'suggestion' | 'nitpick';
+export type CodeReviewMode = 'quick_glance' | 'senior_dev';
+export type CodeReviewVerificationStatus = 'not_run' | 'passed' | 'failed' | 'partial';
+export type CodeReviewVerificationStepStatus = 'passed' | 'failed' | 'skipped';
+export type CodeReviewScopeType =
+  'latest_commit' | 'commit_range' | 'branch_diff' | 'pull_request' | 'full_codebase';
+
+export interface CodeReviewPullRequestRef {
+  id: string;
+  title?: string;
+  url?: string;
+  sourceBranch?: string;
+  targetBranch?: string;
+  sourceCommitSha?: string;
+  provider?: 'github' | 'ado';
+}
+
+export interface CodeReviewScopeRef {
+  fromSha?: string;
+  toSha?: string;
+  baseBranch?: string;
+  compareBranch?: string;
+  pullRequest?: CodeReviewPullRequestRef;
+}
+
+export interface CodeReviewPullRequest {
+  id: string;
+  title: string;
+  description?: string;
+  provider: 'github' | 'ado';
+  state: 'open' | 'closed' | 'merged';
+  isDraft: boolean;
+  author?: string;
+  sourceBranch: string;
+  targetBranch: string;
+  sourceCommitSha?: string;
+  updatedAt: string;
+  url?: string;
+}
+
+export type PullRequestVisualisationStatus = 'generating' | 'ready' | 'failed';
+export type PullRequestVisualisationTone =
+  'neutral' | 'action' | 'data' | 'verified' | 'risk' | 'logic' | 'uncertainty';
+export type PullRequestVisualisationNodeKind =
+  'entry' | 'service' | 'data' | 'file' | 'test' | 'external' | 'risk';
+export type PullRequestVisualisationChangeState = 'before' | 'after' | 'both';
+
+export interface PullRequestVisualisationNode {
+  id: string;
+  label: string;
+  detail?: string;
+  kind: PullRequestVisualisationNodeKind;
+  tone: PullRequestVisualisationTone;
+  changeState: PullRequestVisualisationChangeState;
+  chapterId?: string;
+  filePath?: string;
+  line?: number;
+}
+
+export interface PullRequestVisualisationEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  tone: PullRequestVisualisationTone;
+  changeState: PullRequestVisualisationChangeState;
+  changed: boolean;
+}
+
+export interface PullRequestVisualisationChapter {
+  id: string;
+  title: string;
+  summary: string;
+  nodeIds: string[];
+  riskCount: number;
+  verifiedCount: number;
+}
+
+export interface PullRequestVisualisationRisk {
+  id: string;
+  title: string;
+  severity: 'critical' | 'major' | 'minor' | 'unknown';
+  explanation: string;
+  nodeId?: string;
+  filePath?: string;
+  line?: number;
+  evidence?: string;
+}
+
+export interface PullRequestVisualisationEvidence {
+  id: string;
+  label: string;
+  kind: 'file' | 'test' | 'finding' | 'verification' | 'pull_request';
+  status: 'verified' | 'risk' | 'changed' | 'unknown';
+  detail?: string;
+  nodeId?: string;
+  filePath?: string;
+  line?: number;
+}
+
+export interface PullRequestVisualisation {
+  id: string;
+  repoId: string;
+  reviewId?: string;
+  pullRequest: CodeReviewPullRequest;
+  headSha: string;
+  status: PullRequestVisualisationStatus;
+  summary?: string;
+  intent?: string;
+  chapters: PullRequestVisualisationChapter[];
+  nodes: PullRequestVisualisationNode[];
+  edges: PullRequestVisualisationEdge[];
+  risks: PullRequestVisualisationRisk[];
+  evidence: PullRequestVisualisationEvidence[];
+  error?: string;
+  createdAt: string;
+  generatedAt?: string;
+}
+
+export interface PullRequestDiffFile {
+  filePath: string;
+  previousPath?: string;
+  status: RepositoryChangeStatus;
+  diff: string;
+}
+
+export interface PullRequestDiff {
+  pullRequest: CodeReviewPullRequest;
+  files: PullRequestDiffFile[];
+  summary: RepositoryChangeSummary;
+}
+
+export interface CodeReviewPullRequestComment {
+  id?: string;
+  url?: string;
+  postedAt: string;
+}
+
+export interface CodeReviewVerificationStep {
+  label: string;
+  command: string;
+  status: CodeReviewVerificationStepStatus;
+  exitCode?: number;
+  durationMs: number;
+  outputSnippet?: string;
+}
+
+export interface CodeReviewVerification {
+  status: CodeReviewVerificationStatus;
+  summary?: string;
+  targetRef?: string;
+  worktreePath?: string;
+  worktreeKept?: boolean;
+  steps: CodeReviewVerificationStep[];
+}
+
+export interface CodeReview {
+  id: string;
+  repoId: string;
+  mode: CodeReviewMode;
+  scopeType: CodeReviewScopeType;
+  scopeRef?: CodeReviewScopeRef;
+  status: CodeReviewStatus;
+  summary?: string;
+  rubricUsed?: string;
+  verification?: CodeReviewVerification;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface CodeReviewFinding {
+  id: string;
+  reviewId: string;
+  severity: CodeReviewFindingSeverity;
+  category: string;
+  filePath?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  description: string;
+  suggestion?: string;
+  workItemId?: string;
+  pullRequestComment?: CodeReviewPullRequestComment;
+  dismissed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Workspaces
+// ---------------------------------------------------------------------------
+
+export type WorkspaceCreationMode = 'empty' | 'existing' | 'scaffold';
+export type WorkspaceScaffoldStatus =
+  'active' | 'syncing' | 'indexing' | 'completed' | 'failed' | 'cancelled';
+
+export interface Workspace {
+  id: string;
+  name: string;
+  /** This device's explicit choice to replicate the workspace definition with Sync. */
+  syncSelected: boolean;
+  /** Synced-definition readiness: needs-setup until portable repos map to local checkouts. */
+  definitionState?: 'ready' | 'needs-setup';
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** User-defined agent stored in SQLite and synced; surfaced as a Persona. */
+export interface EditableAgent {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  colour: string;
+  promptBody: string;
+  capabilities: {
+    canWriteFiles: boolean;
+    canRunCommands: boolean;
+    canReadFiles: boolean;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EditableAgentInput {
+  name: string;
+  description?: string;
+  icon?: string;
+  colour?: string;
+  promptBody: string;
+  capabilities?: {
+    canWriteFiles?: boolean;
+    canRunCommands?: boolean;
+    canReadFiles?: boolean;
+  };
+}
+
+/** A portable repo entry in a synced workspace definition (WS-01 mapping surface). */
+export interface WorkspaceRepoDefinition {
+  portableId: string;
+  name: string;
+  remoteUrl?: string;
+  defaultBranch?: string;
+  /** Local checkout this entry maps to; null until mapped on this device. */
+  mappedRepoId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// WS-02: workspace materialisation (journalled clone / link / safe removal)
+// ---------------------------------------------------------------------------
+
+export type WorkspaceMaterializationKind = 'clone' | 'link' | 'remove';
+
+/**
+ * Last proven journal step for one repo inside a materialisation operation.
+ * Terminal states: 'mapping-published' | 'detached' | 'quarantined' (success),
+ * 'failed' | 'unsupported' (with a machine-readable stageReason).
+ */
+export type WorkspaceMaterializationStage =
+  | 'pending'
+  | 'destination-reserved'
+  | 'cloned-to-staging'
+  | 'checkout-verified'
+  | 'commit-recorded'
+  | 'checks-recorded'
+  | 'mapping-published'
+  | 'detached'
+  | 'quarantined'
+  | 'failed'
+  | 'unsupported';
+
+export interface WorkspaceCloneRepoRequest {
+  portableId: string;
+  /** Branch/tag preference — a floating ref is a setup preference only. */
+  ref?: string;
+  /** Pinned commit SHA; takes precedence over ref when both are given. */
+  commit?: string;
+}
+
+export interface WorkspaceCloneRequest {
+  workspaceId: string;
+  /** Existing directory under which checkouts are created (one child per repo). */
+  destinationRoot: string;
+  /** Defaults to every unmapped repo definition in the workspace. */
+  repos?: WorkspaceCloneRepoRequest[];
+}
+
+export interface WorkspaceMaterializationRepoResult {
+  portableId: string;
+  stage: WorkspaceMaterializationStage;
+  /** Machine-readable failure/unsupported reason when stage is terminal-bad. */
+  reason?: string;
+  destination?: string;
+  resolvedCommit?: string;
+  repoId?: string;
+}
+
+export interface WorkspaceCloneResult {
+  opId: string;
+  /** 'partial' when some repos published and others failed/unsupported. */
+  status: 'completed' | 'partial' | 'failed' | 'running';
+  repos: WorkspaceMaterializationRepoResult[];
+}
+
+export interface WorkspaceLinkResult {
+  opId: string;
+  status: 'linked' | 'divergence' | 'failed';
+  repoId?: string;
+  /** Recorded for review when the checkout remote differs from the definition. */
+  expectedRemoteUrl?: string;
+  actualRemoteUrl?: string;
+  error?: string;
+}
+
+export interface WorkspaceRemoveCheckoutResult {
+  opId?: string;
+  status: 'detached' | 'quarantined' | 'refused' | 'not-mapped';
+  /** Machine-readable refusal reasons when status is 'refused'. */
+  refusals?: string[];
+  quarantineId?: string;
+  quarantinePath?: string;
+}
+
+export interface WorkspaceMaterializationOpSummary {
+  id: string;
+  workspaceId: string;
+  kind: WorkspaceMaterializationKind;
+  state: 'running' | 'completed' | 'failed' | 'awaiting-review';
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  repos: WorkspaceMaterializationRepoResult[];
+}
+
+/** Renderer-facing bootstrap recipe summary (WS-03 approval surface). */
+export interface WorkspaceBootstrapStatus {
+  /** The synced recipe, or null when the workspace definition has none. */
+  recipe: BootstrapRecipe | null;
+  /** Digest over recipe + resolved commits + effective policy. */
+  digest: string | null;
+  /** Whether a matching local approval covers the current digest. */
+  approved: boolean;
+  explanation: {
+    stepCount: number;
+    usesShell: boolean;
+    requiresLocalCodeConsent: boolean;
+    installsPackages: boolean;
+    envNames: string[];
+    steps: Array<{
+      id: string;
+      kind: string;
+      summary: string;
+      workingDirectory: string;
+      shell: boolean;
+      requiresLocalCodeConsent: boolean;
+      timeoutMs: number;
+      retry: string;
+    }>;
+  } | null;
+  runs: WorkspaceBootstrapRunSummary[];
+}
+
+export interface WorkspaceBootstrapRunSummary {
+  id: string;
+  digest: string;
+  state: 'awaiting-approval' | 'running' | 'verified' | 'failed' | 'unknown-outcome';
+  steps: Array<{ stepId: string; state: string; exitCode: number | null }>;
+}
+
+export interface WorkspaceBootstrapApprovalSummary {
+  id: string;
+  digest: string;
+  shellApproved: boolean;
+  createdAt: string;
+}
+
+export interface WorkspaceCreateOptions {
+  name: string;
+  repoIds?: string[];
+  workItemConnectionId?: string;
+  /** Defaults to local-only. Sync selection never depends on account entitlement. */
+  syncSelected?: boolean;
+}
+
+export interface WorkspaceUpdateOptions {
+  name?: string;
+  syncSelected?: boolean;
+}
+
+export interface WorkspaceWorkItemsPreferences {
+  workItemConnectionId?: string;
+  iterationIds?: string[];
+  iterationNames?: string[];
+}
+
+export interface WorkspaceDocsPreferences {
+  parentPageId?: string;
+  parentPageTitle?: string;
+  label?: string;
+}
+
+export interface WorkspaceLaunchPreferences {
+  source?: 'deeplink' | 'manual';
+  sourceUrl?: string;
+  requestedAt?: string;
+}
+
+/**
+ * J10: per-workspace defaults. `defaultAccessLevel` is the CodexMode new
+ * threads in this workspace start with; the Settings → Workspace panel (a
+ * later wave) edits it. Storage seam: `WorkspaceContext` exposes
+ * `workspaceAccessDefault` / `setWorkspaceAccessDefault` today; the durable
+ * home is a future `workspace_preferences.access` section.
+ */
+export interface WorkspaceAccessPreferences {
+  defaultAccessLevel?: CodexMode;
+}
+
+export interface WorkspacePreferences {
+  workspaceId: string;
+  workitems: WorkspaceWorkItemsPreferences;
+  docs: WorkspaceDocsPreferences;
+  launch: WorkspaceLaunchPreferences;
+  /** J10 seam — populated once the `access` preferences section lands. */
+  access?: WorkspaceAccessPreferences;
+  updatedAt: string;
+}
+
+export interface WorkspaceScaffoldSession {
+  id: string;
+  workspaceId: string;
+  rootPath: string;
+  personaId: string;
+  status: WorkspaceScaffoldStatus;
+  completion?: {
+    repos: Array<{ name: string; path: string }>;
+  };
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface WorkspaceFeatureAvailability {
+  /**
+   * Truthful workspace status (first-run remediation §4.1):
+   * - `empty` — no repos
+   * - `scaffolding` — a scaffold session is active/syncing/failed
+   * - `preparing` — an index job is queued or running (replaces the old
+   *   catch-all `indexing`, which is retained in the union for consumers that
+   *   haven't been updated yet)
+   * - `needs-attention` — indexing failed or never ran for any repo
+   * - `ready` — at least one repo is `mapped` or better
+   */
+  statusLabel: 'empty' | 'scaffolding' | 'indexing' | 'preparing' | 'ready' | 'needs-attention';
+  chatEnabled: boolean;
+  repoFeaturesEnabled: boolean;
+  repoFeatureReason?: string;
+}
+
+export interface WorkspaceWithRepos extends Workspace {
+  repos: RepoInfo[];
+  preferences?: WorkspacePreferences;
+  scaffoldSession?: WorkspaceScaffoldSession;
+}
+
+export interface WorkspaceSummary extends Workspace {
+  repoCount: number;
+}
+
+export type WorkspaceActivityStatus = 'running' | 'queued' | 'ready' | 'warning' | 'error';
+
+export interface WorkspaceActivityItem {
+  id: string;
+  workspaceId: string;
+  feature: Feature;
+  route: string;
+  title: string;
+  detail: string;
+  nextAction?: string;
+  status: WorkspaceActivityStatus;
+  startedAt?: string;
+}
+
+export interface WorkspaceActivitySummary {
+  workspaceId: string;
+  workspaceName: string;
+  /** Worst status across the workspace's current items, for badge colouring. */
+  status: WorkspaceActivityStatus;
+  count: number;
+  items: WorkspaceActivityItem[];
+}
+
+export interface WorkspaceScaffoldStartResult {
+  workspaceId: string;
+  scaffoldSession: WorkspaceScaffoldSession;
+}
+
+export interface WorkspaceScaffoldMaybeCompleteResult {
+  triggered: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Automations
+// ---------------------------------------------------------------------------
+
+export type AutomationExecutionMode = 'disposable-worktree';
+export type AutomationTriggerMode = 'schedule' | 'watchtower';
+export type WatchtowerEventType =
+  | 'workflow.completed'
+  | 'workflow.failed'
+  | 'pull_request.merged'
+  | 'pull_request.closed'
+  | 'pull_request.review_comment'
+  | 'pull_request.head_changed'
+  | 'pipeline.completed'
+  | 'pipeline.failed';
+export type AutomationRunTrigger = 'manual' | 'schedule' | 'watchtower';
+export type AutomationRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type AutomationLoopMode = 'sequence' | 'dynamic';
+export type AutomationEventType =
+  'status' | 'text' | 'thinking' | 'file_edit' | 'command_exec' | 'tool_call' | 'error' | 'system';
+
+export interface AutomationLoopConfig {
+  enabled: boolean;
+  mode: AutomationLoopMode;
+  memberPersonaIds: string[];
+  separateThreads: boolean;
+  maxIterations: number;
+  stopCondition: string;
+}
+
+export interface WatchtowerEvent {
+  id: string;
+  type: WatchtowerEventType;
+  workspaceId: string;
+  repoIds: string[];
+  sourceId: string;
+  sourceLabel: string;
+  occurredAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WatchtowerTarget {
+  repoId: string;
+  pullRequestNumber?: number;
+  pipelineIdentifier?: string;
+  branch?: string;
+}
+
+export interface WatchtowerState {
+  headSha?: string;
+  reviewCommentIds?: string[];
+  sourceId?: string;
+  sourceLabel?: string;
+  status?: string;
+  observedAt: string;
+  occurredAt?: string;
+  lastError?: string;
+}
+
+export interface AutomationDefinitionInput {
+  name: string;
+  personaId: string;
+  prompt: string;
+  repoIds: string[];
+  triggerMode?: AutomationTriggerMode;
+  watchEvent?: WatchtowerEventType;
+  watchTarget?: WatchtowerTarget;
+  scheduleCron: string;
+  timezone: string;
+  enabled: boolean;
+  allowRepoWrite: boolean;
+  allowCommandRun: boolean;
+  /** Authorise branch/PR publication within this automation's scope. Does not authorise merging. */
+  allowRemotePublishing?: boolean;
+  loopConfig?: AutomationLoopConfig;
+  workflowTemplateId?: string;
+}
+
+export interface AutomationDefinition extends Omit<
+  AutomationDefinitionInput,
+  'triggerMode' | 'watchEvent' | 'watchTarget' | 'allowRemotePublishing'
+> {
+  id: string;
+  workspaceId: string;
+  triggerMode: AutomationTriggerMode;
+  allowRemotePublishing: boolean;
+  watchEvent?: WatchtowerEventType;
+  watchTarget?: WatchtowerTarget;
+  watchState?: WatchtowerState;
+  executionMode: AutomationExecutionMode;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  lastRunStatus?: AutomationRunStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AutomationRunWorktree {
+  repoId: string;
+  repoName: string;
+  branchName: string;
+  path?: string;
+  kept: boolean;
+}
+
+export interface AutomationRun {
+  id: string;
+  automationId: string;
+  workspaceId: string;
+  trigger: AutomationRunTrigger;
+  triggerContext?: WatchtowerEvent;
+  status: AutomationRunStatus;
+  startedAt: string;
+  completedAt?: string;
+  assistantMessage?: string;
+  errorMessage?: string;
+  changedFileCount: number;
+  worktrees: AutomationRunWorktree[];
+}
+
+export interface AutomationRunEvent {
+  id: string;
+  runId: string;
+  type: AutomationEventType;
+  content: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AutomationDaemonStatus {
+  supported: boolean;
+  installed: boolean;
+  loaded: boolean;
+  mode: 'app' | 'daemon';
+  label?: string;
+  plistPath?: string;
+  servicePath?: string;
+  lastError?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Dojo
+// ---------------------------------------------------------------------------
+
+export interface DojoConfigInput {
+  enabled: boolean;
+  lookbackDays: number;
+  scheduleCron: string;
+  timezone: string;
+}
+
+export interface DojoConfig extends DojoConfigInput {
+  workspaceId: string;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  updatedAt: string;
+}
+
+export interface DojoProviderMetrics {
+  provider: AgentProvider | 'unknown';
+  enabled: boolean;
+  status: 'covered' | 'no-activity';
+  threadCount: number;
+  sessionCount: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+}
+
+export interface DojoMetrics {
+  threadCount: number;
+  sessionCount: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  frustrationCount: number;
+  profanityCount: number;
+  correctionCount: number;
+  providers: DojoProviderMetrics[];
+}
+
+export interface DojoObservation {
+  title: string;
+  detail: string;
+  impact: 'high' | 'medium' | 'low';
+  category: 'accuracy' | 'efficiency' | 'communication' | 'workflow';
+}
+
+export interface DojoPromptRecommendation {
+  title: string;
+  prompt: string;
+  reason: string;
+  evidenceCount: number;
+}
+
+export interface DojoSkillRecommendation {
+  rank: number;
+  library: 'Matt Pocock skills' | 'pstack';
+  skill: string;
+  reason: string;
+  url: string;
+}
+
+export interface DojoReport {
+  id: string;
+  workspaceId: string;
+  status: 'running' | 'completed' | 'failed';
+  trigger: 'manual' | 'schedule';
+  windowStart: string;
+  windowEnd: string;
+  metrics: DojoMetrics;
+  summary?: string;
+  observations: DojoObservation[];
+  promptRecommendations: DojoPromptRecommendation[];
+  skillRecommendations: DojoSkillRecommendation[];
+  craftedSkills?: DojoCraftedSkill[];
+  sampleMessageCount: number;
+  errorMessage?: string;
+  startedAt: string;
+  completedAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// DB Insights
+// ---------------------------------------------------------------------------
+
+export type DbInsightFileType = 'sql' | 'txt' | 'json' | 'other';
+export type DbInsightArtifactCategory = 'schema' | 'stored-procedure' | 'mixed' | 'other';
+export type DbInsightAnalysisStatus = 'running' | 'completed' | 'failed';
+export type DbInsightTechnology =
+  | 'sql-server'
+  | 'postgresql'
+  | 'mysql'
+  | 'sqlite'
+  | 'sql'
+  | 'mongodb'
+  | 'dynamodb'
+  | 'redis'
+  | 'unknown';
+
+export interface DbInsightEntity {
+  name: string;
+  kind: 'table' | 'item-export' | 'collection' | 'key-pattern';
+  fieldCount: number;
+  fields: string[];
+  recordCount?: number;
+  keyCount?: number;
+  notes?: string;
+}
+
+export interface DbInsightStructure {
+  technology: DbInsightTechnology;
+  entityCount: number;
+  recordCount?: number;
+  keyCount?: number;
+  entities: DbInsightEntity[];
+  evidence: string[];
+  limitations: string[];
+}
+
+export interface DbInsightArtifact {
+  id: string;
+  workspaceId: string;
+  filePath: string;
+  fileName: string;
+  fileType: DbInsightFileType;
+  category: DbInsightArtifactCategory;
+  fileSize: number;
+  addedAt: string;
+  updatedAt: string;
+}
+
+export interface DbInsightTable {
+  schema: string;
+  name: string;
+  qualifiedName: string;
+  columnCount: number;
+  keyColumns: string[];
+  fields?: string[];
+  notes?: string;
+}
+
+export interface DbInsightStoredProcedure {
+  schema: string;
+  name: string;
+  qualifiedName: string;
+  purpose?: string;
+  referencedObjects: string[];
+}
+
+export interface DbInsightAnalysis {
+  id: string;
+  workspaceId: string;
+  artifactIds: string[];
+  status: DbInsightAnalysisStatus;
+  summary: string;
+  databaseName?: string;
+  tableCount: number;
+  procedureCount: number;
+  viewCount: number;
+  functionCount: number;
+  tables: DbInsightTable[];
+  storedProcedures: DbInsightStoredProcedure[];
+  relationships: string[];
+  risks: string[];
+  recommendedQuestions: string[];
+  structure?: DbInsightStructure;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface OpenInMezairRepoSpec {
+  cloneUrl: string;
+  provider: 'github' | 'ado';
+  name?: string;
+}
+
+export interface OpenInMezairLaunchIntent {
+  workspaceName?: string;
+  repos: OpenInMezairRepoSpec[];
+  iterationId?: string;
+  iterationName?: string;
+  docsParentId?: string;
+  docsParentTitle?: string;
+  sourceUrl: string;
+  receivedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export type AppTheme =
+  | 'system'
+  | 'light'
+  | 'dark'
+  | 'prompt-whisperer'
+  | 'merge-conflict'
+  | 'token-bender'
+  | 'agent-after-hours';
+
+export type LocalLlmProvider = 'apple' | 'ollama' | 'lm-studio';
+export type LocalLlmMode = 'off' | 'prefer-simple';
+/**
+ * Which backend generates thread titles and periodic summaries.
+ * 'configured' follows the primary agent provider via the shared LLM call path.
+ * Any connected AgentProvider can be picked directly with a specific model.
+ * Legacy 'ollama'/'lm-studio' values remain valid for existing installs.
+ */
+export type ThreadAssistProvider = 'off' | 'configured' | LocalLlmProvider | AgentProvider;
+
+export interface AppleModelFeatureFlags {
+  streaming: boolean;
+  instructions: boolean;
+  images: boolean;
+  tokenCounting: boolean;
+  contextSize: boolean;
+  useCases: boolean;
+  structuredOutput: boolean;
+}
+
+/**
+ * Probed state of the on-device Apple Foundation Model stack on this machine.
+ * `reason` is a machine-readable availability reason reported by the active
+ * backend ('available', 'deviceNotEligible', 'appleIntelligenceNotEnabled',
+ * 'modelNotReady', 'licenseRequired', 'requiresMacOS', 'noBackend', ...).
+ */
+export interface AppleLocalModelStatus {
+  platform: NodeJS.Platform;
+  osVersion?: string;
+  available: boolean;
+  reason?: string;
+  backend?: 'fm-cli' | 'swift-helper-27' | 'swift-helper-vision' | 'swift-helper';
+  contextSize?: number;
+  fmCli?: {
+    installed: boolean;
+    licenseAccepted: boolean;
+    detail?: string;
+  };
+  features: AppleModelFeatureFlags;
+}
+
+export interface LocalLlmCapabilities {
+  platform: NodeJS.Platform;
+  providers: LocalLlmProvider[];
+  /** Present only on macOS; probed state of the Apple Foundation Models stack. */
+  apple?: AppleLocalModelStatus;
+}
+
+export interface AppSettings {
+  /** Local read status only. Never synced or accepted as a settings update. */
+  credentialStorage?: import('./secret-storage.js').CredentialStorageStatus;
+  /** Primary provider for new chats and app-level AI tasks. */
+  llmProvider: AgentProvider;
+  /** Providers available to workflows and agent-authored shell commands. */
+  enabledLlmProviders?: AgentProvider[];
+  localLlmMode: LocalLlmMode;
+  localLlmProvider: LocalLlmProvider;
+  localLlmEndpoint: string;
+  localLlmModel: string;
+  /** Per-provider OpenAI-compatible endpoints; can point at remote hosts. */
+  ollamaEndpoint: string;
+  ollamaModel: string;
+  lmStudioEndpoint: string;
+  lmStudioModel: string;
+  /** Backend for generated thread titles and rolling summaries. */
+  threadAssistProvider: ThreadAssistProvider;
+  /** Model used when threadAssistProvider is a connected agent provider. Empty = provider default. */
+  threadAssistModel?: string;
+
+  // Azure AI Foundry
+  foundryEndpoint: string;
+  foundryDeploymentName: string;
+  foundryApiVersion: string;
+  foundryApiKey?: string;
+
+  // OpenAI
+  openaiApiKey?: string;
+  llmGatewayApiKey?: string;
+  llmGatewayBillingMode: LlmGatewayBillingMode;
+  openaiModel: string; // e.g. "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
+  reasoningLevel: ReasoningEffort;
+  codexMode: CodexMode;
+  chatLayout: ChatLayout;
+
+  /** Composer control and named provider/model/reasoning presets. */
+  modelPicker?: import('./model-picker.js').ModelPickerPreferences;
+
+  // Work Item Provider
+  workItemProvider: WorkItemProvider | 'none';
+  workItemConnections: WorkItemConnection[];
+  activeWorkItemConnectionId?: string;
+
+  // ADO
+  adoOrganizationUrl: string;
+  adoProject: string;
+  adoTeam?: string;
+  adoPat?: string;
+
+  // Linear
+  linearApiKey?: string;
+  linearTeamId?: string;
+
+  // JIRA
+  jiraHost?: string;
+  jiraAuthMode?: 'cloud' | 'server';
+  jiraProject?: string;
+  jiraBoardId?: string;
+  jiraAcceptanceCriteriaField?: string;
+  jiraEmail?: string;
+  jiraApiToken?: string;
+  githubHost?: string;
+  githubOwner?: string;
+  githubRepo?: string;
+  githubToken?: string;
+
+  confluenceBaseUrl: string;
+  confluenceSpaceKey: string;
+  confluencePat?: string;
+  docsProvider: DocsProvider | 'none';
+  notionOauthToken?: string;
+  notionOauthExpiry?: string;
+  notionDatabaseId?: string;
+
+  // Code Review
+  codeReviewQuickGlanceRubric?: string;
+  codeReviewSeniorDevRubric?: string;
+
+  defaultRepoPath?: string;
+  activeWorkspaceId?: string;
+  githubPat?: string;
+  githubUsername?: string;
+  cloudFeaturesEnabled: boolean;
+  telemetryEnabled: boolean;
+  theme: AppTheme;
+  userRole?: UserRole;
+  /** ST8: keep every tool visible/openable regardless of the chosen role. */
+  showAllTools?: boolean;
+  /**
+   * J9/3.3: first-run step persistence so a relaunch resumes where onboarding
+   * left off (`welcome` → `workspace` → `done`). The renderer persists this in
+   * localStorage today because `updateSettings` whitelists known columns —
+   * wire to a real column when the settings service grows a generic field.
+   */
+  onboardingStep?: 'welcome' | 'workspace' | 'done';
+}
+
+// ---------------------------------------------------------------------------
+// Codex registry
+// ---------------------------------------------------------------------------
+
+export interface CodexRegistryCliStatus {
+  installed: boolean;
+  version?: string;
+  path?: string;
+  codexHome: string;
+  configPaths: string[];
+  authConfigured: boolean;
+}
+
+export type CodexSkillScope =
+  'codex-global' | 'codex-system' | 'user-agents' | 'project' | 'plugin' | 'unknown';
+
+export interface CodexRegisteredSkill {
+  id: string;
+  name: string;
+  description?: string;
+  path: string;
+  directory: string;
+  scope: CodexSkillScope;
+  source?: string;
+  tags?: string[];
+  updatedAt?: string;
+}
+
+export interface CodexMcpServer {
+  name: string;
+  transport: 'stdio' | 'http' | 'unknown';
+  command?: string;
+  args?: string[];
+  url?: string;
+  status?: string;
+  auth?: string;
+  raw: string;
+}
+
+export interface CodexRegistrySnapshot {
+  cli: CodexRegistryCliStatus;
+  skills: CodexRegisteredSkill[];
+  mcpServers: CodexMcpServer[];
+  scannedSkillRoots: string[];
+  warnings: string[];
+  refreshedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Codex usage
+// ---------------------------------------------------------------------------
+
+export interface CodexUsageRateLimitWindow {
+  usedPercent: number;
+  remainingPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: string | null;
+}
+
+export interface CodexUsageCreditsSnapshot {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+}
+
+export interface CodexUsageLimitSnapshot {
+  id: string;
+  label: string;
+  planType: string | null;
+  rateLimitReachedType: string | null;
+  primary: CodexUsageRateLimitWindow | null;
+  secondary: CodexUsageRateLimitWindow | null;
+  credits: CodexUsageCreditsSnapshot | null;
+}
+
+export interface CodexUsageDailyBucket {
+  startDate: string;
+  tokens: number;
+}
+
+export interface CodexUsageTokenSummary {
+  lifetimeTokens: number | null;
+  peakDailyTokens: number | null;
+  longestRunningTurnSec: number | null;
+  currentStreakDays: number | null;
+  longestStreakDays: number | null;
+  recentDailyBuckets: CodexUsageDailyBucket[];
+}
+
+export interface CodexUsageSnapshot {
+  status: 'available' | 'unavailable';
+  refreshedAt: string;
+  cliInstalled: boolean;
+  cliVersion?: string;
+  codexHome?: string;
+  appServerUserAgent?: string;
+  defaultLimit: CodexUsageLimitSnapshot | null;
+  limits: CodexUsageLimitSnapshot[];
+  tokenUsage: CodexUsageTokenSummary | null;
+  resetCreditsAvailable: number | null;
+  error?: string;
+}
+
+export interface CodexSkillSearchResult {
+  id: string;
+  name: string;
+  description?: string;
+  source: string;
+  skillName?: string;
+  installCommand: string;
+  url?: string;
+  repositoryUrl?: string;
+  installs?: number;
+  weeklyInstalls?: number;
+  tags?: string[];
+}
+
+export interface CodexSkillInstallInput {
+  source: string;
+  skillName?: string;
+  skillNames?: string[];
+  global?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Mezair Cloud
+// ---------------------------------------------------------------------------
+
+export type MezairCloudCommandId =
+  | 'doctor'
+  | 'check'
+  | 'build'
+  | 'inspect-local'
+  | 'lens'
+  | 'logs-local'
+  | 'db-list'
+  | 'workflows-list'
+  | 'services-list'
+  | 'agents-validate'
+  | 'agents-manifest'
+  | 'agents-sandboxes';
+
+export interface MezairCloudCliStatus {
+  available: boolean;
+  command: string;
+  version?: string;
+  source: 'workspace' | 'wrapper' | 'path';
+  cloudWorkspacePath?: string;
+  error?: string;
+}
+
+export interface MezairCloudCommandDefinition {
+  id: MezairCloudCommandId;
+  label: string;
+  description: string;
+  command: string;
+  category: 'health' | 'build' | 'runtime' | 'agents';
+}
+
+export interface MezairCloudCommandResult {
+  ok: boolean;
+  commandId: MezairCloudCommandId;
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+  parsed?: unknown;
+  exitCode?: number;
+  durationMs: number;
+  completedAt: string;
+  error?: string;
+}
+
+export interface MezairCloudWorkbenchSnapshot {
+  status: MezairCloudCliStatus;
+  commands: MezairCloudCommandDefinition[];
+}
+
+export interface MezairCloudExecutionConnection {
+  configured: boolean;
+  endpoint: string;
+  tokenConfigured: boolean;
+  updatedAt?: string;
+}
+
+export interface MezairCloudExecutionConnectionInput {
+  endpoint: string;
+  token?: string;
+}
+
+export interface MezairCloudExecutionProviderDescriptor {
+  id: string;
+  capabilities: {
+    modes: string[];
+    modelAuth: string[];
+    subscriptionProviders?: string[];
+  };
+  availability: {
+    configured: boolean;
+    reasons: string[];
+  };
+}
+
+export type MezairCloudExecutionStatus =
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'waiting-for-approval'
+  | 'waiting-for-input'
+  | 'suspended'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'expired';
+
+export interface MezairCloudExecutionLease {
+  schemaVersion: '0.1';
+  id: string;
+  status: MezairCloudExecutionStatus;
+  provider: string;
+  request: {
+    workspace: string;
+    task: string;
+    cell: string;
+    environment: string;
+    policy: { mode: 'read-only' | 'read-write'; ttlSeconds: number };
+    source: {
+      kind: 'git' | 'snapshot';
+      snapshotId?: string;
+      repository?: string;
+      commit?: string;
+      baseCommit?: string;
+      branch?: string;
+    };
+  };
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  failure?: { code: string; message: string };
+  result?: {
+    status: 'completed' | 'failed' | 'cancelled';
+    summary: string;
+    changedFiles: string[];
+    evidence: Array<{ label: string; value: string }>;
+    errors: Array<{ code: string; message: string }>;
+  };
+}
+
+export interface MezairCloudExecutionEvent {
+  id: string;
+  executionId: string;
+  sequence: number;
+  cursor: string;
+  timestamp: string;
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export interface MezairCloudExecutionEventBatch {
+  executionId: string;
+  events: MezairCloudExecutionEvent[];
+  cursor: string;
+  done: boolean;
+}
+
+export interface MezairCloudExecutionStartInput {
+  workspaceId: string;
+  repoId: string;
+  task: string;
+  provider: 'auto' | 'aws-lambda-microvm';
+  agentRuntime?: 'codex-subscription' | 'cursor-subscription' | 'cloud-managed';
+  ttlSeconds?: number;
+  maxCostUsd?: number;
+}
+
+export interface MezairCloudExecutionStartResult {
+  execution: MezairCloudExecutionLease;
+  source: {
+    commit: string;
+    branch?: string;
+    repository?: string;
+    archiveBytes: number;
+    excludedWorkingTreeChanges: boolean;
+  };
+}
+
+export interface MezairCloudExecutionConnectionTest {
+  ok: boolean;
+  endpoint: string;
+  executionCount?: number;
+  providers?: MezairCloudExecutionProviderDescriptor[];
+  error?: string;
+}
+
+export interface CodexRegistryActionResult {
+  success: boolean;
+  command: string;
+  output?: string;
+  error?: string;
+}
+
+export interface CodexMcpRegisterInput {
+  name: string;
+  transport: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
+  url?: string;
+  bearerTokenEnvVar?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+export interface DiagnosticMemoryUsage {
+  rss: number;
+  heapTotal: number;
+  heapUsed: number;
+  external: number;
+  arrayBuffers: number;
+}
+
+export interface DiagnosticProcessMetric {
+  pid: number;
+  type: string;
+  memoryWorkingSetSize: number;
+  memoryPrivateBytes: number;
+  memorySharedBytes: number;
+  cpuPercentCPUUsage: number;
+  cpuIdleWakeupsPerSecond: number;
+}
+
+export interface DiagnosticFeatureMetric {
+  id: string;
+  label: string;
+  count: number;
+  bytes?: number;
+  detail?: string;
+}
+
+export interface DiagnosticsSnapshot {
+  capturedAt: string;
+  mainProcess: {
+    pid: number;
+    platform:
+      | 'aix'
+      | 'android'
+      | 'darwin'
+      | 'freebsd'
+      | 'haiku'
+      | 'linux'
+      | 'openbsd'
+      | 'sunos'
+      | 'win32'
+      | 'cygwin'
+      | 'netbsd';
+    arch: string;
+    uptimeSeconds: number;
+    memory: DiagnosticMemoryUsage;
+  };
+  processes: DiagnosticProcessMetric[];
+  featureMetrics: DiagnosticFeatureMetric[];
+  /** Local agent MCP endpoint status. Never carries bearer tokens. */
+  agentMcp?: {
+    listening: boolean;
+    port?: number;
+    error?: string;
+    activeSessions: number;
+    sessions: Array<{
+      sessionId: string;
+      createdAt: string;
+      toolCalls: number;
+      toolErrors: number;
+    }>;
+  };
+}
+
+export interface DiagramFile {
+  filename: string; // e.g. "auth-flow.drawio"
+  title: string; // derived from filename: "auth-flow"
+  xml: string; // draw.io XML content
+  mtime: number; // file modification timestamp (ms)
+}
+
+export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'nuget' | 'python';
+export type SbomFormat = 'cyclonedx-json' | 'spdx-json' | 'csv';
+
+export interface DependencyRecord {
+  name: string;
+  version: string;
+  manager: PackageManager;
+  deprecated?: boolean;
+  license?: string;
+  alternative?: string;
+}
+
+export interface DependencyAuditResult {
+  manager: PackageManager;
+  command: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  ok: boolean;
+}
+
+export interface LicenseAuditResult {
+  generatedAt: string;
+  total: number;
+  unknown: number;
+  packages: DependencyRecord[];
+}
+
+// ---------------------------------------------------------------------------
+// Roles
+// ---------------------------------------------------------------------------
+
+export type UserRole = 'developer' | 'ba-brm' | 'design' | 'itsm';
+
+export type Feature =
+  | 'repos'
+  | 'chat'
+  | 'editor'
+  | 'automations'
+  | 'dojo'
+  | 'workflows'
+  | 'dbinsights'
+  | 'onboard'
+  | 'workitems'
+  | 'dependencies'
+  | 'security'
+  | 'codereview'
+  | 'cicd'
+  | 'docs'
+  | 'adrs'
+  | 'diagrams'
+  | 'governance'
+  | 'browser'
+  | 'argent'
+  | 'git'
+  | 'compliance'
+  | 'cloud'
+  | 'meeting-notes'
+  | 'workspace-notes';
+
+export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
+  developer: [
+    'repos',
+    'chat',
+    'editor',
+    'automations',
+    'dojo',
+    'workflows',
+    'dbinsights',
+    'onboard',
+    'workitems',
+    'dependencies',
+    'security',
+    'codereview',
+    'cicd',
+    'docs',
+    'adrs',
+    'diagrams',
+    'governance',
+    'browser',
+    'argent',
+    'git',
+    'compliance',
+    'cloud',
+    'meeting-notes',
+    'workspace-notes',
+  ],
+  'ba-brm': [
+    'repos',
+    'chat',
+    'dojo',
+    'workflows',
+    'editor',
+    'dbinsights',
+    'workitems',
+    'dependencies',
+    'cicd',
+    'docs',
+    'adrs',
+    'diagrams',
+    'governance',
+    'compliance',
+    'cloud',
+    'meeting-notes',
+    'workspace-notes',
+  ],
+  design: [
+    'repos',
+    'chat',
+    'dojo',
+    'workflows',
+    'dbinsights',
+    'docs',
+    'diagrams',
+    'governance',
+    'compliance',
+    'cloud',
+    'meeting-notes',
+    'workspace-notes',
+  ],
+  itsm: [
+    'repos',
+    'chat',
+    'dojo',
+    'workflows',
+    'dbinsights',
+    'workitems',
+    'dependencies',
+    'security',
+    'cicd',
+    'docs',
+    'adrs',
+    'diagrams',
+    'governance',
+    'compliance',
+    'meeting-notes',
+    'workspace-notes',
+  ],
+} as const;
+
+export const ROLE_RECOMMENDED_PERSONAS: Partial<Record<UserRole, readonly string[]>> = {
+  itsm: [
+    'service-desk',
+    'technical-support',
+    'incident-manager',
+    'problem-manager',
+    'change-manager',
+    'service-manager',
+  ],
+} as const;
+
+export interface RemoteRepo {
+  name: string;
+  cloneUrl: string;
+  provider: 'github' | 'ado';
+  description?: string;
+  visibility?: 'public' | 'private';
+  defaultBranch?: string;
+  updatedAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Governance
+// ---------------------------------------------------------------------------
+
+export interface GovernanceBoard {
+  id: string;
+  workspaceId: string;
+  name: string; // e.g. "Technical Design Authority"
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GovernanceDocument {
+  id: string;
+  workspaceId: string;
+  boardId?: string; // optional association to a board
+  filePath: string; // absolute path on disk
+  fileName: string;
+  fileType: GovernanceFileType;
+  fileSize: number; // bytes
+  description?: string;
+  addedAt: string;
+  updatedAt: string;
+}
+
+export type GovernanceFileType = 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'other';
+
+// ---------------------------------------------------------------------------
+// ADRs (Architecture Decision Records)
+// ---------------------------------------------------------------------------
+
+export interface AdrEntry {
+  /** Relative path from repo root to the ADR file */
+  relativePath: string;
+  /** Filename only, e.g. "0001-use-react.md" */
+  filename: string;
+  /** Title extracted from first markdown heading, falls back to filename */
+  title: string;
+  /** Raw markdown content */
+  content: string;
+  /** ADR status if parseable from content (e.g. "Accepted", "Deprecated") */
+  status?: string;
+}
+
+export interface RepoAdrs {
+  repoId: string;
+  repoName: string;
+  adrs: AdrEntry[];
+}
+
+// ---------------------------------------------------------------------------
+// Data & Compliance
+// ---------------------------------------------------------------------------
+
+export type ComplianceDocType = 'dpia' | 'privacy-policy' | 'terms-of-service';
+
+export interface ComplianceDocument {
+  repoId: string;
+  repoName: string;
+  docType: ComplianceDocType;
+  filename: string;
+  title: string;
+  content: string;
+  generatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Browser / Embedded DevTools
+// ---------------------------------------------------------------------------
+
+export interface DevServerTarget {
+  id: string;
+  url: string;
+  port: number;
+  label: string;
+  terminalId?: string;
+  detectedAt: string;
+}
+
+export interface BrowserBridgeStatus {
+  running: boolean;
+  port?: number;
+  connectedUrl?: string;
+}
+
+export interface BrowserAnnotation {
+  id: string;
+  url: string;
+  title?: string;
+  note: string;
+  selectedText?: string;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  createdAt: string;
+}
+
+export interface SimulatorPreviewStatus {
+  running: boolean;
+  url?: string;
+  metroUrl?: string;
+  pid?: number;
+  cwd?: string;
+  command?: string;
+  startedAt?: string;
+  lastOutput?: string;
+  lastError?: string;
+}
+
+export interface SimulatorPreviewStartOptions {
+  cwd?: string;
+  port?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Expo Argent
+// ---------------------------------------------------------------------------
+
+export type ArgentCommandId = 'install-cli' | 'init-mcp' | 'update' | 'flags';
+export type ArgentCommandCategory = 'setup' | 'maintenance';
+
+export interface ArgentCommandDefinition {
+  id: ArgentCommandId;
+  label: string;
+  description: string;
+  command: string;
+  category: ArgentCommandCategory;
+}
+
+export interface ArgentCommandResult {
+  ok: boolean;
+  commandId: ArgentCommandId;
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+  exitCode?: number | string;
+  durationMs: number;
+  completedAt: string;
+  error?: string;
+}
+
+export type ArgentPromptId =
+  | 'launch-attach'
+  | 'verify-screenshot'
+  | 'smoke-flow'
+  | 'debug-logs'
+  | 'network-request'
+  | 'react-tree'
+  | 'profile-slowdown'
+  | 'deep-link';
+
+export interface ArgentPromptTemplate {
+  id: ArgentPromptId;
+  label: string;
+  description: string;
+  prompt: string;
+  evidence: string[];
+}
+
+export interface ArgentCliStatus {
+  installed: boolean;
+  command: string;
+  version?: string;
+  path?: string;
+  error?: string;
+}
+
+export interface ArgentNodeStatus {
+  version: string;
+  major: number;
+  supported: boolean;
+}
+
+export interface ArgentMcpStatus {
+  codexAvailable: boolean;
+  registered: boolean;
+  command: string;
+  rawList?: string;
+  error?: string;
+}
+
+export interface ArgentDeviceStatus {
+  platform: 'ios' | 'android';
+  available: boolean;
+  command: string;
+  devices: string[];
+  detail: string;
+  error?: string;
+}
+
+export interface ArgentMetroStatus {
+  running: boolean;
+  url: string;
+  detail: string;
+  error?: string;
+}
+
+export type ArgentReadinessLevel = 'pass' | 'warn' | 'fail' | 'unknown';
+
+export interface ArgentReadinessCheck {
+  id: string;
+  label: string;
+  level: ArgentReadinessLevel;
+  detail: string;
+}
+
+export interface ArgentWorkbenchSnapshot {
+  capturedAt: string;
+  projectRoot: string;
+  mobileProjectPath: string;
+  mobileProjectExists: boolean;
+  node: ArgentNodeStatus;
+  cli: ArgentCliStatus;
+  mcp: ArgentMcpStatus;
+  ios: ArgentDeviceStatus;
+  android: ArgentDeviceStatus;
+  metro: ArgentMetroStatus;
+  simulatorPreview: SimulatorPreviewStatus;
+  checks: ArgentReadinessCheck[];
+  commands: ArgentCommandDefinition[];
+  prompts: ArgentPromptTemplate[];
+}
+
+// ---------------------------------------------------------------------------
+// Embedded Editor
+// ---------------------------------------------------------------------------
+
+export type EmbeddedEditorMode = 'inspect' | 'browser';
+export type EmbeddedEditorAvailability = 'available' | 'unavailable' | 'error';
+export type EmbeddedEditorSource = 'chat' | 'cicd' | 'codereview' | 'security' | 'repos' | 'manual';
+
+export interface EmbeddedEditorTarget {
+  workspaceId?: string;
+  repoId?: string;
+  repoName?: string;
+  relativePath?: string;
+  absolutePath?: string;
+  line?: number;
+  column?: number;
+  source?: EmbeddedEditorSource;
+  title?: string;
+}
+
+export interface EmbeddedEditorStatus {
+  availability: EmbeddedEditorAvailability;
+  mode: EmbeddedEditorMode;
+  running: boolean;
+  provider?: 'code-server' | 'vscode-web';
+  command?: string;
+  url?: string;
+  workspaceId?: string;
+  startedAt?: string;
+  lastError?: string;
+  externalCommand?: 'code' | 'codium' | 'cursor';
+}
+
+export interface EmbeddedEditorFileSnapshot {
+  kind: 'text' | 'missing' | 'binary';
+  absolutePath?: string;
+  relativePath?: string;
+  fileName?: string;
+  repoId?: string;
+  repoName?: string;
+  content: string;
+  totalLines: number;
+  displayStartLine: number;
+  displayEndLine: number;
+  focusLine?: number;
+  focusColumn?: number;
+  truncated: boolean;
+  message?: string;
+}
+
+export interface EmbeddedEditorFocusResult {
+  status: EmbeddedEditorStatus;
+  snapshot: EmbeddedEditorFileSnapshot | null;
+  resolvedTarget?: EmbeddedEditorTarget & {
+    repoPath?: string;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Git Client
+// ---------------------------------------------------------------------------
+
+export type GitFileStatus =
+  'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'conflicted';
+
+export interface GitFileChange {
+  path: string;
+  status: GitFileStatus;
+  staged: boolean;
+  oldPath?: string; // for renames
+}
+
+export interface GitStatusResult {
+  branch: string;
+  ahead: number;
+  behind: number;
+  files: GitFileChange[];
+  tracking?: string; // e.g. "origin/main"
+}
+
+export interface GitWorkspaceRepoStatus {
+  repoId: string;
+  repoName: string;
+  branch: string;
+  fileCount: number;
+  stagedCount: number;
+  unstagedCount: number;
+}
+
+export interface GitWorkspaceStatus {
+  repos: GitWorkspaceRepoStatus[];
+  totalFiles: number;
+}
+
+export interface GitPullRequestCreateResult {
+  repoId: string;
+  repoName: string;
+  branch: string;
+  baseBranch: string;
+  commitHash?: string;
+  commitMessage: string;
+  pullRequestUrl?: string;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  date: string;
+  refs?: string; // branch/tag decorations
+}
+
+export interface GitBranchInfo {
+  name: string;
+  current: boolean;
+  lastCommit?: string;
+  tracking?: string;
+}
+
+export interface GitDiffResult {
+  filePath: string;
+  oldContent: string;
+  newContent: string;
+  hunks: string; // raw unified diff
+}
+
+export type {
+  DesignMode,
+  FigmaRefKind,
+  FigmaFileRef,
+  DesignReadiness,
+  ChatStartOptions,
+} from './design-types.js';
+
+// ---------------------------------------------------------------------------
+// Delivery Lifecycle (re-export)
+// ---------------------------------------------------------------------------
+
+export type {
+  LifecycleStage,
+  LifecycleStageDefinition,
+  LifecycleStageUpdate,
+  GateId,
+  GateCriterionType,
+  LifecycleItem,
+  GateCriterion,
+  GateTemplate,
+  GateTemplateUpdate,
+  GateDecisionOutcome,
+  GateDecision,
+  AffectedModule,
+  ImpactAnalysisScopeType,
+  ImpactAnalysis,
+  HandoverSection,
+  HandoverPack,
+  ReadinessStatus,
+  OverallReadiness,
+  CriterionResult,
+  GateReadinessResult,
+  AnalysisProgress,
+  HandoverProgress,
+} from './lifecycle-types.js';
+
+export { DEFAULT_LIFECYCLE_STAGES, GATE_IDS, getGateFallbackLabel } from './lifecycle-types.js';

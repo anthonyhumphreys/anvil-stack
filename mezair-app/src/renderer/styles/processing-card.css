@@ -1,0 +1,430 @@
+/*
+ * Turn processing card. Motion follows events, not a loop: the live mark
+ * breathes while work continues and strikes once per new action, the latest
+ * step rolls into place, and the edge cools from heat to neutral when the
+ * turn settles. Replayed history renders still.
+ *
+ * While work runs the edge holds heat like worked metal: two hot spots wander
+ * the top and bottom seams at unrelated rates, and every new action flares
+ * the whole rim once before it cools back.
+ */
+@property --heat-top {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 18%;
+}
+@property --heat-bottom {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 78%;
+}
+
+.processing-card {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 72%, var(--color-bg-primary));
+  transition:
+    border-color 700ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.processing-card[data-processing-state='working'] {
+  border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 3%,
+    color-mix(in srgb, var(--color-bg-secondary) 72%, var(--color-bg-primary))
+  );
+}
+.processing-card[data-processing-state='waiting'] {
+  border-color: color-mix(in srgb, var(--color-warning) 38%, var(--color-border));
+}
+
+/* Heat edge ------------------------------------------------------------ */
+/* Both layers paint only the 1px rim, sitting exactly over the border. */
+.processing-card::before,
+.processing-card-flare {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: calc(12px + 1px);
+  padding: 1px;
+  pointer-events: none;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.processing-card::before {
+  background:
+    radial-gradient(
+      32% 150% at var(--heat-top) 0%,
+      color-mix(in srgb, var(--color-accent) 92%, var(--color-text-primary)),
+      color-mix(in srgb, var(--color-accent) 50%, transparent) 50%,
+      transparent 76%
+    ),
+    radial-gradient(
+      24% 150% at var(--heat-bottom) 100%,
+      color-mix(in srgb, var(--color-accent) 75%, transparent),
+      transparent 70%
+    );
+  opacity: 0;
+  /* Cools at the same pace as the border settles to neutral. */
+  transition: opacity 700ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.processing-card[data-processing-state='working']::before {
+  opacity: 1;
+  transition-duration: 420ms;
+  animation:
+    processing-heat-top 6.4s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate,
+    processing-heat-bottom 9.2s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate;
+}
+.processing-card[data-processing-motion='paused']::before {
+  animation-play-state: paused;
+}
+.processing-card-flare {
+  background: color-mix(in srgb, var(--color-accent) 85%, var(--color-text-primary));
+  animation: processing-flare 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.processing-card:not([data-processing-state='working']) .processing-card-flare {
+  display: none;
+}
+.processing-card[data-processing-state='failed'] {
+  border-color: color-mix(in srgb, var(--color-error) 28%, var(--color-border));
+}
+
+.processing-card-header {
+  display: flex;
+  width: 100%;
+  min-height: 64px;
+  align-items: center;
+  gap: 12px;
+  border-radius: inherit;
+  padding: 12px 14px;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  transition: background-color 140ms ease-out;
+}
+.processing-card-header:hover {
+  background: color-mix(in srgb, var(--color-bg-hover) 45%, transparent);
+}
+.processing-card-header:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.processing-state-mark {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  place-items: center;
+}
+.processing-state-icon {
+  color: var(--color-text-secondary);
+}
+[data-processing-state='waiting'] .processing-state-icon {
+  color: var(--color-warning);
+}
+[data-processing-state='failed'] .processing-state-icon {
+  color: var(--color-error);
+}
+[data-processing-state='completed'] .processing-state-icon {
+  color: var(--color-success);
+}
+/* The outcome mark lands once, only when this mount saw the turn change. */
+[data-processing-settled] .processing-state-icon {
+  animation: processing-mark-land 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.processing-chevron {
+  color: var(--color-text-tertiary);
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+[data-processing-expanded] .processing-chevron {
+  transform: rotate(90deg);
+}
+
+/* Live mark ------------------------------------------------------------ */
+.live-glyph {
+  position: relative;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  place-items: center;
+}
+.live-glyph--sm {
+  width: 12px;
+  height: 12px;
+}
+.live-glyph > span {
+  grid-area: 1 / 1;
+  border-radius: 50%;
+}
+.live-glyph-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--color-accent);
+}
+.live-glyph--sm .live-glyph-dot {
+  width: 5px;
+  height: 5px;
+}
+.live-glyph-ring {
+  width: 100%;
+  height: 100%;
+  border: 1.5px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+  animation: live-glyph-breathe 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.live-glyph-strike {
+  width: 100%;
+  height: 100%;
+  border: 1.5px solid var(--color-accent);
+  animation: live-glyph-strike 700ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  pointer-events: none;
+}
+/* Off-screen or background cards keep their ring still. */
+.processing-card[data-processing-motion='paused'] .live-glyph-ring {
+  animation-play-state: paused;
+}
+
+/* Step ticker ---------------------------------------------------------- */
+.processing-ticker {
+  position: relative;
+  overflow: hidden;
+  height: 1.5em;
+}
+.processing-ticker-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.processing-ticker-line.is-entering {
+  animation: processing-ticker-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.processing-ticker-line.is-leaving {
+  position: absolute;
+  inset: 0;
+  animation: processing-ticker-out 300ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+[data-processing-state='working'] .processing-count {
+  display: inline-block;
+  animation: processing-count-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Step timeline -------------------------------------------------------- */
+.processing-item {
+  position: relative;
+  border-top: 1px solid var(--color-border-subtle);
+  padding: 10px 12px 10px 36px;
+}
+.processing-item[hidden] {
+  display: none;
+}
+.processing-item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 18px;
+  width: 1px;
+  background: var(--color-border-subtle);
+}
+.processing-item::after {
+  content: '';
+  position: absolute;
+  top: 17px;
+  left: 15px;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--color-border);
+  border-radius: 50%;
+  background: var(--color-bg-secondary);
+}
+/* Operation rows (commands, tools): centre the dot on the header line. */
+.processing-item:has(.chat-operation)::after {
+  top: 26px;
+}
+.processing-item[data-step-status='completed']::after {
+  border-color: color-mix(in srgb, var(--color-success) 70%, transparent);
+  background: color-mix(in srgb, var(--color-success) 35%, var(--color-bg-secondary));
+}
+.processing-item[data-step-status='failed']::after {
+  border-color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 40%, var(--color-bg-secondary));
+}
+.processing-item[data-step-status='running']::after {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+.processing-card[data-processing-motion='running']
+  .processing-item[data-step-status='running']::after {
+  animation: processing-step-live 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+/* Steps rise in when revealed or when they arrive during a live turn. */
+.processing-card[data-processing-expanded] .processing-item:not([hidden]),
+.processing-card[data-processing-state='working'] .processing-item:not([hidden]) {
+  animation: processing-step-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation-delay: calc(min(var(--step-index, 0), 8) * 32ms);
+}
+
+/* The timeline rail already marks reasoning; drop its own rule. */
+.processing-details [data-work-reasoning] {
+  border-left-width: 0;
+  padding-left: 0;
+}
+/* Inside the turn card, operations are rows with disclosure, not nested cards. */
+.processing-details .chat-operation {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.processing-details .animate-pulse,
+.processing-details .animate-spin {
+  animation: none;
+}
+/* One slow spinner per running row while the card is live and on screen. */
+.processing-card[data-processing-motion='running'] .processing-details .animate-spin {
+  animation: spin 1.4s linear infinite;
+}
+
+@keyframes processing-heat-top {
+  from {
+    --heat-top: 6%;
+  }
+  to {
+    --heat-top: 70%;
+  }
+}
+@keyframes processing-heat-bottom {
+  from {
+    --heat-bottom: 94%;
+  }
+  to {
+    --heat-bottom: 34%;
+  }
+}
+@keyframes processing-flare {
+  from {
+    opacity: 0.95;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes live-glyph-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.78);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1);
+  }
+}
+@keyframes live-glyph-strike {
+  from {
+    opacity: 0.85;
+    transform: scale(0.7);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+@keyframes processing-mark-land {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes processing-ticker-in {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes processing-count-in {
+  from {
+    opacity: 0;
+    transform: translateY(40%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes processing-ticker-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+}
+@keyframes processing-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes processing-step-live {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .processing-card,
+  .processing-card::before,
+  .processing-card-header,
+  .processing-chevron {
+    transition: none;
+  }
+  /* The rim holds still heat; the flare stays because it is opacity only. */
+  .processing-card[data-processing-state='working']::before {
+    animation: none;
+  }
+  .live-glyph-ring,
+  .live-glyph-strike,
+  .processing-ticker-line,
+  .processing-count,
+  .processing-item,
+  .processing-item::after,
+  [data-processing-settled] .processing-state-icon,
+  .processing-card .processing-details .animate-spin {
+    animation: none !important;
+  }
+  .live-glyph-ring {
+    opacity: 0.6;
+  }
+  .live-glyph-strike,
+  .processing-ticker-line.is-leaving {
+    display: none;
+  }
+}

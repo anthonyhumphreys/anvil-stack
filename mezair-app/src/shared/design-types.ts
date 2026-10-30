@@ -1,0 +1,49 @@
+// src/shared/design-types.ts
+
+import type { AgentProvider, CodexMode } from './types.js';
+
+export type DesignMode = 'design' | 'implement';
+
+export type FigmaRefKind = 'design' | 'board' | 'make';
+
+export interface FigmaFileRef {
+  kind: FigmaRefKind;
+  fileKey: string;
+  url: string;
+  nodeId?: string;
+  fileName?: string;
+  thumbnailUrl?: string;
+  addedAt: string; // ISO timestamp
+}
+
+export interface DesignReadiness {
+  figmaMcpRegistered: boolean;
+  frontendSkillInstalled: boolean;
+  allReady: boolean;
+}
+
+export interface ChatStartOptions {
+  changeReviewId?: string;
+  /** Surface that owns persistence for streamed chat output. */
+  origin?: 'desktop' | 'browser';
+  provider?: AgentProvider;
+  /** Optional model selected for this session; defaults to the provider setting. */
+  model?: string;
+  /** Per-session access override, used for provider-enforced read-only sessions. */
+  codexMode?: CodexMode;
+  threadId?: string;
+  providerThreadId?: string;
+  forkFromProviderThreadId?: string;
+  /** Runs in a fresh empty directory with read-only Codex access. */
+  temporaryChat?: boolean;
+  designMode?: DesignMode;
+  figmaContext?: string;
+  workspace?: {
+    workspaceId: string;
+    cwd?: string;
+  };
+  scaffold?: {
+    workspaceId: string;
+    rootPath: string;
+  };
+}

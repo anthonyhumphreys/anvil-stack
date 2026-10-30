@@ -1,0 +1,25 @@
+{
+  "name": "@mezairstack/queue",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mezairstack/config": "workspace:*",
+    "@mezairstack/shared": "workspace:*",
+    "@aws-sdk/client-sqs": "^3.1146.0",
+    "bullmq": "^5.81.5"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.12"
+  }
+}

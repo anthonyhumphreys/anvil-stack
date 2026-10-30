@@ -1,0 +1,677 @@
+# CLI Specification
+
+## Purpose
+
+The `mezair` CLI is the main human and agent interface for Mezair Cloud.
+
+Every command intended for automation must support `--json`. Agent-facing commands should return stable shapes, stable error codes, and actionable hints.
+
+## Commands
+
+### `mezair-cloud new <name>`
+
+Creates a new Mezair Cell project.
+
+```sh
+mezair-cloud new notes
+mezair-cloud new native-notes --client expo-router
+pnpm dlx @mezairstack/cloud-cli new demo
+```
+
+The published package is `@mezairstack/cloud-cli`; the binary it exposes is
+`mezair-cloud`.
+
+Options:
+
+```txt
+--client vite-react|expo-router|headless
+--template crud|auth|workflow|service|agent|sandbox
+--install / --no-install
+--git / --no-git
+--start / --no-start
+--package-manager pnpm|npm|bun
+```
+
+`vite-react` is the default. `expo-router` scaffolds an Expo Router client
+target with `app/index.tsx` and `app/_layout.tsx`; it still uses the Mezair
+runtime through `@mezair-cloud/client`. `headless` writes generated client
+metadata without a browser UI.
+
+`crud` is the default template. `auth`, `workflow`, `service`, `agent`, and
+`sandbox` add the matching Cell contract shape while keeping the generated Todo
+query and mutation working for first-run smoke checks.
+
+In human mode, `new` scaffolds the project, installs dependencies with
+`pnpm install --ignore-scripts`, runs `git init`, prints the Lens URL, and starts
+`mezair-cloud dev`. Use `--no-install`, `--no-git`, or `--no-start` to split the
+flow. With `--json` or `--agent`, the command is finite by default: it scaffolds
+and returns the install/start commands and Lens URL without launching a long-lived
+server unless the caller explicitly passes `--start`.
+
+Expo Router scaffolds read `EXPO_PUBLIC_MEZAIR_RUNTIME_URL` when it is set. For
+local development they fall back to `http://localhost:8787`, except Android
+emulators use `http://10.0.2.2:8787` so the native app can reach the host
+runtime. The scaffold includes `src/expo-env.d.ts` so the public runtime URL is
+typed without adding Node globals to Cell authoring.
+
+`--template` selects the runnable example pattern to scaffold. Every template
+keeps the starter query/mutation client path working, then adds one canonical
+primitive:
+
+- `crud`: table, query, mutation
+- `auth`: auth-required query/mutation with owner data
+- `workflow`: durable workflow
+- `service`: supervised service
+- `agent`: mounted agent with approval contract
+- `sandbox`: mounted sandbox-required agent
+
+Expected output:
+
+```txt
+Created Mezair Cell notes
+
+Next steps:
+  cd notes
+  mezair-cloud dev
+```
+
+JSON output:
+
+```json
+{
+  "ok": true,
+  "cell": "notes",
+  "client": {
+    "kind": "vite-react"
+  },
+  "template": "crud",
+  "path": "./notes",
+  "lensUrl": "http://localhost:8787/_mezair/lens",
+  "bootstrap": {
+    "install": false,
+    "git": false,
+    "start": false,
+    "packageManager": "pnpm"
+  },
+  "next": ["cd notes", "mezair-cloud dev"]
+}
+```
+
+### `mezair-cloud dev`
+
+Starts the local runtime. For `vite-react` Cells it also starts the Vite client
+dev server. For `expo-router` and `headless` Cells, the CLI runs the runtime
+only; start the native client separately and point it at the runtime URL.
+
+Options:
+
+```txt
+--json     machine-readable startup result
+--agent    JSONL event stream, no rich UI
+--host     bind address, default 127.0.0.1
+--port     runtime port, default 8787
+--client-port client port, default 5173
+```
+
+Use `--host` only for a trusted local network or native-device workflow. Lens
+and `/_mezair/*` include development management actions and are not a hosted
+authentication boundary.
+
+### `mezair-cloud check`
+
+Runs validation without building deploy artefacts.
+
+Checks:
+
+- project config;
+- TypeScript typecheck;
+- forbidden imports;
+- capability-scoped `ctx.db`, `ctx.files`, `ctx.jobs`, `fetch`, and scheduled job usage;
+- public file-read escalation against the previous local manifest when building;
+- destructive schema removals or field type changes against the previous local
+  manifest when building;
+- standalone manifest diffing through `mezair-cloud manifest diff`;
+- manifest extraction safety;
+- declared capabilities.
+
+### `mezair-cloud executions conformance`
+
+Runs the deterministic execution-provider exit gate without a cloud account:
+
+```sh
+mezair-cloud executions conformance --json
+```
+
+The command verifies idempotent lease creation, an approval pause, cursor-safe
+resume, patch/result collection, and inspected sandbox teardown. It exercises
+the provider-neutral control-plane contract; it does not claim that a hosted
+AWS worker image or credential broker is deployed.
+
+### `mezair-cloud build`
+
+Builds local artefacts into `.mezair/dist` and `.mezair/generated`.
+
+### `mezair-cloud channels simulate`
+
+Sends a provider-neutral channel message to a running local runtime.
+
+```sh
+mezair-cloud channels simulate --channel supportSlack --input "hello" --json
+```
+
+Options:
+
+```txt
+--channel     channel binding name from the Cell manifest
+--input       inbound channel message text
+--sender      optional provider sender id
+--thread      optional provider thread/conversation id
+--runtime-url local runtime URL, default http://localhost:8787
+--json        stable JSON result
+```
+
+The command posts to `/_mezair/channels/simulate`. JSON output includes the
+matched channel, local agent session summary, ordered events, continuation
+token, and reply chunks. Real provider credentials remain platform-side; Cell
+agent code only receives normalized channel context.
+
+### `mezair-cloud manifest diff`
+
+Compares Cell manifests without deploying anything.
+
+```sh
+mezair-cloud manifest diff --json
+mezair-cloud manifest diff --from .mezair/dist/manifest.json --to candidate.json --json
+```
+
+Without `--to`, the command compares the previous local
+`.mezair/dist/manifest.json` with a scratch build of the current Cell source.
+Scratch output is removed after the comparison. With `--to`, the command reads
+both manifest files directly and does not build source.
+
+JSON output includes:
+
+- `status: "no-baseline" | "unchanged" | "changed" | "block"`;
+- `summary.additions`, `summary.removals`, `summary.changes`,
+  `summary.warnings`, and `summary.errors`;
+- stable `changes[].id` values;
+- `changes[].category`, `action`, `severity`, `path`, `message`, optional
+  `before`, `after`, and `hint`.
+
+Error-severity diff entries currently cover public file access escalation,
+schema table removal, schema field removal, and schema field type changes. The
+command exits with code `5` when any error-severity diff is present.
+
+### `mezair-cloud review`
+
+Aggregates Guard diagnostics and the selected preview adapter plan into one
+trust report.
+
+```sh
+mezair-cloud review --json
+mezair-cloud review --adapter aws --env preview --json
+mezair-cloud review --adapter cloudflare --env preview --json
+mezair-cloud review --adapter cloudflare --temporary --env preview --json
+```
+
+JSON output includes:
+
+- `summary.guardErrors` and `summary.guardWarnings`;
+- the built manifest capabilities and handler lists;
+- `review.changeSet`, `review.capabilityDiffs`, cost drivers, cleanup notes,
+  rollback notes, and approval gates from the selected preview plan;
+- `status: "pass" | "review" | "block"`;
+- stable next-step commands.
+
+Guard failures block the report before deploy planning. Blocking adapter gates
+return `ok: false`; review-only gates return `ok: true` with
+`status: "review"` so humans and agents can decide before provisioning.
+
+### `mezair-cloud doctor`
+
+Checks the local Mezair Cloud toolchain and common runtime/deploy prerequisites.
+
+```sh
+mezair-cloud doctor --json
+mezair-cloud doctor --port 8787 --client-port 5173 --json
+```
+
+Doctor is read-only. It reports stable check ids with `ok`, `warning`, or
+`error` status. Warnings explain optional or situational setup, such as AWS
+preview environment variables, without failing local development. Errors are
+reserved for local blockers such as an unsupported Node version. Each check
+also includes a `docs` link to the matching diagnostic section, and `hint` is
+the remediation field.
+
+Initial checks include:
+
+- Node and pnpm availability/version requirements;
+- built CLI entrypoint;
+- package publishing boundary: `@mezairstack/cloud-cli` public, internal
+  workspace packages private, runtime/client tracked as candidate public APIs,
+  and no public `workspace:` dependencies;
+- Cell config and build manifest;
+- generated client metadata presence and consistency with the built manifest;
+- local `.mezair/local` state, including auth, database, logs, agent sessions,
+  jobs, workflows, and service snapshots;
+- local runtime health and runtime/client port availability;
+- Notes golden-path verification runs doctor against the live local runtime and
+  expects `project.build`, `project.generatedClient`, `local.state`, and
+  `local.runtime` to report `ok`;
+- AWS region, artifact bucket, and deployment metadata table env;
+- OIDC token verification env for authenticated AWS preview smoke tests;
+  `auth.oidc.details.claims` reports the effective user id, email, and roles
+  claim names plus whether each was explicitly configured;
+- `MEZAIR_AWS_SMOKE_TOKEN` presence for authenticated preview query/mutation
+  smoke coverage;
+- optional `MEZAIR_AWS_EXPIRED_SMOKE_TOKEN` presence for expired-token rejection
+  smoke coverage;
+- optional `MEZAIR_AWS_WRONG_ISSUER_SMOKE_TOKEN` and
+  `MEZAIR_AWS_WRONG_AUDIENCE_SMOKE_TOKEN` presence for issuer/audience rejection
+  smoke coverage.
+
+`local.runtime` includes `details.reason` on warnings so automation can
+distinguish `invalid-json`, `not-mezair-health`, `http-status`, and connection
+errors when a port is occupied by the wrong process or the local runtime is not
+ready.
+
+JSON output:
+
+```json
+{
+  "ok": true,
+  "checks": [
+    {
+      "id": "node.version",
+      "status": "ok",
+      "message": "Node 20.11.0 satisfies >=20.11.0.",
+      "docs": "/docs/cloud/doctor#nodeversion"
+    }
+  ],
+  "summary": {
+    "ok": 1,
+    "info": 0,
+    "warnings": 0,
+    "errors": 0
+  }
+}
+```
+
+### `mezair-cloud auth test`
+
+Runs the auth conformance kit locally and emits a CI-friendly report.
+
+```sh
+mezair-cloud auth test --json
+```
+
+The suite proves that the local IdP and OIDC verification path agree on the
+same auth contract:
+
+- local ES256 JWT issue and verification;
+- runtime auth policy for public, required, and role-gated handlers;
+- OIDC discovery plus JWKS verification;
+- expired-token, issuer, and audience rejection;
+- configured claim mapping for user id, email, and roles;
+- fixture config examples for Auth0, Entra ID, Cognito, and Keycloak.
+
+JSON output:
+
+```json
+{
+  "ok": true,
+  "summary": {
+    "passed": 13,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "id": "local.issueAndVerify",
+      "status": "pass",
+      "provider": "local",
+      "message": "Local IdP issued and verified an ES256 JWT."
+    }
+  ],
+  "fixtures": [
+    {
+      "provider": "auth0",
+      "issuer": "https://tenant.us.auth0.com/",
+      "audience": "https://api.example.test",
+      "claims": {
+        "userId": "sub",
+        "email": "email",
+        "roles": "https://mezair.dev/roles"
+      },
+      "env": {
+        "MEZAIR_AUTH_ISSUER": "https://tenant.us.auth0.com/",
+        "MEZAIR_AUTH_AUDIENCE": "https://api.example.test",
+        "MEZAIR_AUTH_USER_ID_CLAIM": "sub",
+        "MEZAIR_AUTH_EMAIL_CLAIM": "email",
+        "MEZAIR_AUTH_ROLES_CLAIM": "https://mezair.dev/roles"
+      }
+    }
+  ]
+}
+```
+
+Non-zero failures set exit code `1`. The command does not contact real Auth0,
+Entra, Cognito, or Keycloak tenants; provider entries are fixture configs kept
+green against mock OIDC endpoints so CI stays local and secret-free.
+
+### `mezair-cloud inspect`
+
+Inspects local or remote runtime state.
+
+```sh
+mezair-cloud inspect --local --json
+mezair-cloud inspect --app notes --env preview --json
+```
+
+Remote AWS inspect returns stable JSON errors for missing or malformed
+deployment metadata: `AWS_DEPLOYMENT_METADATA_NOT_FOUND` and
+`AWS_DEPLOYMENT_METADATA_INVALID`. AWS SDK read failures, such as IAM denial or
+throttling, return `AWS_REMOTE_READ_FAILED` with the failed operation and cause.
+
+When the deployment record includes an artifact summary, remote AWS inspect
+returns the Lambda bundle key and SHA-256 digest from the latest preview deploy.
+
+Remote AWS commands only accept `--env preview` during alpha. Any other
+environment returns `INVALID_USAGE`.
+
+### `mezair-cloud logs`
+
+Reads local or remote structured logs.
+
+```sh
+mezair-cloud logs --local --json
+mezair-cloud logs --trace run_123 --json
+mezair-cloud logs --app notes --env preview --since 10m --json
+```
+
+`--trace <id>` reads a local trace from `.mezair/local/traces.json` and returns
+the trace record plus ordered trace events. It is local-only in alpha.
+
+Remote AWS logs use the same deployment metadata lookup as inspect, so metadata
+lookup failures use the same stable error codes. DynamoDB or CloudWatch read
+failures return `AWS_REMOTE_READ_FAILED` with the failed operation and provider
+error cause.
+`--since` accepts millisecond timestamps or relative durations with `ms`, `s`,
+`m`, `h`, or `d` suffixes, such as `30s`, `10m`, or `1h`.
+`--limit` must be a positive whole number.
+The AWS log reader follows CloudWatch pagination until the requested limit is
+reached or there are no more pages.
+
+### `mezair-cloud usage --local`
+
+Reads local runtime usage events from `.mezair/local/usage.ndjson` and emits a
+provider-neutral summary for automation.
+
+```sh
+mezair-cloud usage --local --json
+mezair-cloud usage --local --since 1h --json
+```
+
+The local report includes:
+
+- per-Cell and per-Agent invocation counts;
+- model token totals (`inputTokens`, `outputTokens`, `totalTokens`);
+- provider/model metadata when available;
+- estimated cost in USD, defaulting to zero unless model cost rates are
+  configured;
+- sandbox runtime milliseconds;
+- hourly time-series buckets and top consumers;
+- budget warnings from `MEZAIR_USAGE_DAILY_BUDGET_USD` and
+  `MEZAIR_USAGE_SESSION_BUDGET_USD`.
+
+Budget warnings never silently kill an agent. A budget breach is explicit
+review evidence so a future approval-gated resume can be wired through the
+supervision machinery.
+
+### `mezair-cloud usage --preview`
+
+Builds the Cell and emits lightweight usage visibility from the AWS preview
+plan.
+
+```sh
+mezair-cloud usage --preview --json
+```
+
+The report includes declared resource counts for tables, files, events, jobs,
+workflows, services, and agents, plus cost-driver hints and cleanup commands.
+It is not a bill and does not query AWS.
+
+### `mezair-cloud db list`
+
+Lists tables on the active local database branch, or on `--branch <name>`.
+
+```sh
+mezair-cloud db list --local --json
+mezair-cloud db list --branch feature --local --json
+```
+
+### `mezair-cloud db dump <table>`
+
+Dumps table rows for local or remote inspection.
+
+```sh
+mezair-cloud db dump todos --local --json
+mezair-cloud db dump todos --branch feature --local --json
+```
+
+Remote database dump should require explicit environment and future confirmation/policy rules.
+
+### `mezair-cloud db branch <name>`
+
+Creates a local JSON database branch by snapshotting another branch. `main`
+maps to `.mezair/local/dev.db`; named branches live under
+`.mezair/local/db-branches`.
+
+```sh
+mezair-cloud db branch feature --from main --ttl 3600 --json
+```
+
+Related lifecycle commands:
+
+```sh
+mezair-cloud db branches --json
+mezair-cloud db branches --expired --json
+mezair-cloud db use feature --json
+mezair-cloud db diff feature --against main --json
+mezair-cloud db promote feature --json
+mezair-cloud db delete feature --yes --json
+mezair-cloud db cleanup --expired --json
+```
+
+`db use` stores the active branch for local CLI inspection and dev runs.
+`mezair-cloud dev --db-branch feature` selects a branch for that process without
+changing the stored active branch. Cell code continues to see the same `ctx.db`
+contract.
+
+### `mezair-cloud plan --stage <stage> --adapter <adapter>`
+
+Builds the Cell, compiles the provider-neutral Cell graph, and asks the adapter
+for a Mezair-first deployment plan.
+
+```sh
+mezair-cloud plan --stage dev --adapter aws --json
+mezair-cloud plan --stage dev --adapter cloudflare --json
+mezair-cloud plan --stage preview --adapter cloudflare --temporary --json
+```
+
+JSON output includes:
+
+- `graph`: provider-neutral Cell graph, with no Pulumi or AWS authoring surface;
+- `plan.changes`: stable Mezair concepts such as cells, routes, functions,
+  tables, secrets, and permissions;
+- `plan.review.changeSet`: diffable change ids for review tooling;
+- `plan.review.capabilityDiffs`: added, removed, or unchanged Cell graph
+  capabilities compared with a previous graph when available;
+- `plan.review.cost.drivers`: cost-driver hints, not price estimates;
+- `plan.review.rollback`: current rollback support and manual recovery notes;
+- `plan.review.cleanup`: cleanup commands and notes reviewers should confirm
+  before applying preview changes;
+- `plan.review.approvalSummary`: compact counts over review gates, including
+  whether any gate blocks provisioning;
+- `plan.review.approvalGates`: required review gates for destructive changes,
+  new data resources, permissions/secrets, and public ingress.
+
+Human output shows Mezair concepts first, followed by review gates, cost drivers,
+and rollback notes. `--verbose` or `--debug` may include underlying Pulumi
+resource mappings for AWS adapter debugging only. Cloudflare currently provides
+offline plan/review support and returns a blocking gate until its Worker runtime
+bridge and deploy/remove lifecycle pass provider smoke tests.
+
+`--temporary` models Cloudflare's first-run Temporary Account path. Plan JSON
+includes the Wrangler minimum version and claim-window duration, but never a
+temporary API token or claim URL. Temporary mode is for interactive previews,
+not CI or production; unsupported temporary-account resources are blocking
+review diagnostics.
+
+### `mezair-cloud deploy --preview`
+
+Deploys a Cell to a preview environment through the configured deployment adapter. AWS is the first planned alpha adapter.
+
+In alpha, deploy may be implemented after local runtime, builder, manifest, and the deployment adapter contract are stable.
+
+`mezair-cloud deploy --preview --wait --json` polls the deployed runtime
+`/_mezair/health` endpoint after successful provisioning. Use
+`--wait-timeout <seconds>` to adjust the default 60 second timeout; the value
+must be positive. If the runtime does not become healthy, the JSON result uses
+`AWS_RUNTIME_UNHEALTHY` and includes the deployment result plus verification
+details.
+
+`--name <preview>` deploys an additional named preview for the same Cell. The
+default preview keeps the existing stack and metadata key; named previews use a
+normalized preview name in the adapter-owned stack and deployment metadata key.
+
+Preview deploy JSON includes review-oriented plan metadata: stable
+`plan.review.changeSet` ids, `plan.review.changeSummary` concept counts,
+structured `plan.review.cost.drivers`, rollback/cleanup notes, and
+`plan.review.approvalSummary` / `plan.review.approvalGates`. Successful AWS
+preview deploys include
+`resources.deploymentMetadataTable` and `resources.deploymentMetadataKey` so
+automation can connect deploy output to remote inspect, logs, and destroy
+cleanup state. During alpha, workflows and outbound fetch are reviewable before
+provisioning: workflows add `workflow-preview-review`, and outbound fetch
+allow-lists are written into the generated AWS runtime guard. Service-bearing
+Cells are blocked with `AWS_PREVIEW_UNSUPPORTED_FEATURE` until the Fargate path
+executes the declared Cell service handler instead of an adapter scaffold.
+
+If CloudFormation does not reach a terminal stack status within the provisioner
+polling limit, deploy returns `AWS_STACK_TIMEOUT` with the last observed stack
+status and polling details.
+If a completed stack omits a required adapter output, deploy returns
+`AWS_STACK_OUTPUT_MISSING` with the missing output key.
+If an AWS SDK operation fails while uploading artifacts, applying the stack, or
+publishing deployment metadata, deploy returns
+`AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider
+error cause.
+
+### `mezair-cloud rollback --preview`
+
+Returns rollback intent for a previous preview deployment.
+
+```sh
+mezair-cloud rollback --preview --app notes --to-deployment dep_123 --dry-run --json
+```
+
+The deployment plan reports rollback as unsupported/manual. Current preview
+metadata stores the active deployment and client assets are not archived as a
+restorable set, so the CLI emits dry-run recovery intent rather than pretending
+it can safely promote an earlier deployment.
+
+### `mezair-cloud destroy --preview --app <name> --yes [--dry-run]`
+
+Deletes the AWS preview stack for a Cell. The command is intentionally explicit:
+alpha cleanup requires `--preview`, `--app`, and `--yes` so a typo does not
+become infrastructure archaeology with billing.
+Only `--env preview` is accepted during alpha; other environments return
+`INVALID_USAGE`.
+
+Pass `--name <preview>` to destroy a named preview. `--dry-run` validates the
+same command shape and returns the computed stack name, bucket cleanup intent,
+deployment metadata key, and real destroy command without calling AWS. It exists
+so local contract tests can cover the full lifecycle without pretending every
+laptop is a cloud control plane.
+
+When `MEZAIR_AWS_DEPLOYMENT_METADATA_TABLE` is configured, successful destroy
+also deletes the matching deployment metadata record. The JSON result includes
+`metadataDeleted` so automation can tell whether remote `inspect`/`logs` state
+was cleaned up with the stack.
+
+Before deleting the stack, destroy empties stack-owned S3 buckets exposed by
+CloudFormation outputs, including the client assets bucket and Cell files bucket
+when present. The JSON result includes `emptiedBuckets`.
+
+If CloudFormation reports a failed delete status, destroy returns
+`AWS_DESTROY_FAILED`. If deletion remains in progress past the polling limit,
+destroy returns `AWS_DESTROY_TIMEOUT` with the last observed status and polling
+details. If an AWS SDK operation fails while emptying buckets, deleting the
+stack, or deleting deployment metadata, destroy returns
+`AWS_DESTROY_OPERATION_FAILED` with the failed operation and provider error
+cause.
+
+## Exit codes
+
+Recommended exit codes:
+
+| Code | Meaning                   |
+| ---- | ------------------------- |
+| 0    | Success                   |
+| 1    | General failure           |
+| 2    | Invalid CLI usage         |
+| 3    | Project validation failed |
+| 4    | Build failed              |
+| 5    | Runtime unavailable       |
+| 6    | Deploy or destroy failed  |
+| 7    | Policy denied             |
+
+## JSON response conventions
+
+Successful command:
+
+```json
+{
+  "ok": true,
+  "result": {}
+}
+```
+
+Failed command:
+
+```json
+{
+  "ok": false,
+  "phase": "import-policy",
+  "diagnostics": [
+    {
+      "code": "FORBIDDEN_IMPORT",
+      "message": "Import '@aws-sdk/client-s3' is not allowed.",
+      "hint": "Use ctx.files instead."
+    }
+  ],
+  "errors": [
+    {
+      "code": "FORBIDDEN_IMPORT",
+      "message": "Import '@aws-sdk/client-s3' is not allowed.",
+      "hint": "Use ctx.files instead."
+    }
+  ]
+}
+```
+
+## Agent mode
+
+`mezair-cloud dev --agent --json` emits JSONL events:
+
+```jsonl
+{"type":"ready","runtimeUrl":"http://localhost:8787","clientUrl":"http://localhost:5173"}
+{"type":"build.ok","queries":["listTodos"],"mutations":["addTodo"]}
+{"type":"request","kind":"query","name":"listTodos","durationMs":6}
+```
+
+Agent mode must avoid spinners, colour codes, terminal control sequences, prompts, and unstable prose.
+
+## Human output
+
+Human output can be friendly and concise, but must not be the only available interface for automation.

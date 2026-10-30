@@ -1,10 +1,17 @@
-name: Anvil App Linux x64
+name: Mezair App Linux x64
 
 on:
   pull_request:
     paths:
       - ".github/workflows/app-linux-x64.yml"
-      - "anvil-app/**"
+      - "mezair-app/**"
+      - "mezair-cloud/**"
+      - "mezair-registry/apps/cli/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/tsconfig.base.json"
+      - ".github/scripts/prepare-desktop-clis.mjs"
   push:
     tags:
       - "app-v*"
@@ -22,12 +29,17 @@ env:
 
 defaults:
   run:
-    working-directory: anvil-app
+    working-directory: mezair-app
 
 jobs:
   package:
     name: Build AppImage, deb, and pacman packages
     runs-on: ubuntu-24.04
+    environment: ${{ github.ref_type == 'tag' && 'mezair-production' || 'mezair-staging' }}
+    env:
+      MEZAIR_DEPLOYMENT_ENV: ${{ github.ref_type == 'tag' && 'production' || 'staging' }}
+      MEZAIR_STAGING_HOSTED_BACKEND_URL: ${{ vars.MEZAIR_STAGING_HOSTED_BACKEND_URL }}
+      MEZAIR_PRODUCTION_HOSTED_BACKEND_URL: ${{ vars.MEZAIR_PRODUCTION_HOSTED_BACKEND_URL }}
 
     steps:
       - name: Checkout
@@ -43,7 +55,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-app/pnpm-lock.yaml
+          cache-dependency-path: mezair-app/pnpm-lock.yaml
 
       - name: Install Linux packaging tools
         shell: bash
@@ -57,6 +69,10 @@ jobs:
           )
           sudo apt-get "${packaging_apt_options[@]}" update
           sudo apt-get "${packaging_apt_options[@]}" install --yes libarchive-tools
+
+      - name: Prepare local product CLIs
+        working-directory: .
+        run: node .github/scripts/prepare-desktop-clis.mjs
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -93,23 +109,23 @@ jobs:
       - name: Upload Arch Linux package
         uses: actions/upload-artifact@v4
         with:
-          name: anvil-linux-x64-pacman
+          name: mezair-linux-x64-pacman
           if-no-files-found: error
           path: |
-            anvil-app/dist/*.pacman
-            anvil-app/dist/SHA256SUMS-pacman-x64
+            mezair-app/dist/*.pacman
+            mezair-app/dist/SHA256SUMS-pacman-x64
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: anvil-linux-x64
+          name: mezair-linux-x64
           if-no-files-found: error
           path: |
-            anvil-app/dist/*.AppImage
-            anvil-app/dist/*.deb
-            anvil-app/dist/*.pacman
-            anvil-app/dist/latest-linux.yml
-            anvil-app/dist/SHA256SUMS-linux-x64
+            mezair-app/dist/*.AppImage
+            mezair-app/dist/*.deb
+            mezair-app/dist/*.pacman
+            mezair-app/dist/latest-linux.yml
+            mezair-app/dist/SHA256SUMS-linux-x64
 
       - name: Create or update GitHub Release
         if: github.ref_type == 'tag'
@@ -122,7 +138,7 @@ jobs:
 
           if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release create "${GITHUB_REF_NAME}" --verify-tag \
-              --title "Anvil ${GITHUB_REF_NAME}" \
+              --title "Mezair ${GITHUB_REF_NAME}" \
               --generate-notes \
               || gh release view "${GITHUB_REF_NAME}" >/dev/null
           fi

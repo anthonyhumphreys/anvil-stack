@@ -1,0 +1,25 @@
+{
+  "name": "@mezairstack/registry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mezairstack/config": "workspace:*",
+    "@mezairstack/logger": "workspace:*",
+    "@mezairstack/name-squatting": "workspace:*",
+    "@mezairstack/npm-registry": "workspace:*",
+    "@mezairstack/object-store": "workspace:*",
+    "@mezairstack/persistence": "workspace:*",
+    "@mezairstack/policy-engine": "workspace:*",
+    "@mezairstack/queue": "workspace:*",
+    "@mezairstack/shared": "workspace:*",
+    "fastify": "^5.12.6"
+  }
+}

@@ -1,0 +1,179 @@
+# Deployment adapters
+
+Mezair defines app capabilities. Deployment adapters realise those capabilities on a target platform. The AWS adapter currently uses Pulumi internally for planning and deployment, but Pulumi is not part of the Cell authoring contract.
+
+## Layers
+
+1. **Authoring layer**: Mezair Cells declare routes, handlers, tables, secrets, jobs, policies, workflows, and other application intent. Normal Cell definitions import Mezair packages only; they do not import Pulumi, AWS SDKs, Terraform, CDK, Kubernetes, or raw infrastructure resources.
+2. **Cell graph layer**: Mezair Builder compiles a Cell manifest into a provider-neutral `MezairCellGraph`. The graph is stable, serialisable, inspectable, and contains Mezair concepts such as HTTP routes, functions, tables, secrets, and permissions.
+3. **Adapter layer**: deployment adapters consume the graph through a `MezairDeployAdapter`-style contract with `plan`, `deploy`, and `remove` operations. Local runtime code stays Pulumi-free. Cloud adapters may choose an engine internally.
+
+4. **Engine layer**: the AWS adapter currently uses Pulumi as its realisation engine. Pulumi resource mappings are implementation details and are only shown by explicit verbose/debug output.
+
+`validateMezairCellGraph` rejects provider-specific graph field names and
+provider/adapter values such as AWS, Pulumi, Vite, Expo, or Bedrock. Those words
+are valid in adapters, providers, and client targets; they are not the Cell graph
+mental model.
+
+## Current vertical slice
+
+The AWS adapter maps the provider-neutral graph as follows:
+
+- HTTP route → API Gateway HTTP entrypoint.
+- Function/runtime handler → Lambda.
+- Table/storage → DynamoDB.
+- Secret → SSM Parameter Store parameter.
+- Logs → CloudWatch.
+- Permissions → generated IAM role policies.
+- Stage naming → deterministic `<app>-<stage>` resource prefixes.
+- Outputs → Mezair-level endpoint, function names, table names, and secret references.
+
+The CLI shape is app-first:
+
+```sh
+mezair-cloud dev
+mezair-cloud inspect
+mezair-cloud plan --stage dev --adapter aws
+mezair-cloud deploy --stage dev --adapter aws
+mezair-cloud remove --stage dev --adapter aws
+```
+
+Human-readable plan output lists Mezair concepts first, for example cells, HTTP
+routes, functions, tables, secrets, and permissions. It also shows review gates,
+cost drivers, and rollback notes so humans see the same important warnings that
+automation sees in JSON. Use `--verbose` or `--debug` to include underlying
+Pulumi resource mappings while diagnosing adapter behaviour.
+
+JSON plan output is intentionally diffable. The top-level `changes` array keeps
+the Mezair-first change list in stable action/concept/name order, while
+`plan.review` adds stable ids and review metadata:
+
+```json
+{
+  "stableId": "aws:notes:dev:deploy",
+  "operation": "deploy",
+  "changeSummary": [
+    {
+      "concept": "table",
+      "creates": 1,
+      "updates": 0,
+      "reuses": 0,
+      "total": 1,
+      "changeIds": ["create:table:notes"]
+    }
+  ],
+  "changeSet": [
+    {
+      "id": "create:table:notes",
+      "action": "create",
+      "concept": "Table",
+      "name": "notes"
+    }
+  ],
+  "capabilityDiffs": [
+    {
+      "id": "table:notes",
+      "action": "add",
+      "capability": "table",
+      "name": "notes"
+    }
+  ],
+  "cost": {
+    "drivers": [
+      {
+        "id": "dynamodb",
+        "label": "DynamoDB reads, writes, and storage"
+      }
+    ]
+  },
+  "rollback": {
+    "supported": false,
+    "strategy": "redeploy-or-remove"
+  },
+  "approvalSummary": {
+    "required": 1,
+    "info": 0,
+    "review": 1,
+    "block": 0,
+    "hasBlockingGate": false
+  },
+  "approvalGates": [
+    {
+      "id": "data-resource-review",
+      "required": true,
+      "severity": "review"
+    }
+  ]
+}
+```
+
+`changeSummary` is a compact concept-level index over `changeSet`; the
+`changeIds` values are the same stable ids used by review gates and detailed
+diffs.
+
+`approvalSummary` is a compact count over `approvalGates`; automation can check
+`hasBlockingGate` before deciding whether a plan is actionable.
+
+`capabilityDiffs` compares the desired Cell graph with a previous graph when one
+is supplied by the caller. Without a previous graph, the plan treats desired
+capabilities as additions. That is conservative for first deploys and keeps the
+review surface honest instead of pretending the adapter knows remote state it
+has not inspected.
+
+## Effect usage
+
+Effect is used inside Mezair Cloud orchestration code where retries, timeouts,
+typed provider failures, resource cleanup, or multi-step async control flow are
+part of the platform contract. The AWS preview provisioner and destroyer,
+remote reader, CLI deploy flow, workflow executor, and guarded agent tool
+runtime are valid Effect surfaces.
+
+Effect is not part of the Cell authoring contract. Cell code should continue to
+use the normal Mezair Runtime APIs and ordinary async TypeScript; deployment
+adapters translate those provider-neutral contracts into Effect-backed platform
+operations internally.
+
+Effect surfaces follow a shared boundary contract:
+
+- Public APIs stay Promise-based. Effect programs are run at the boundary with
+  `Effect.runPromiseExit`, and both typed failures and defects are rethrown as
+  their original error values, so callers see the same error shapes as before
+  Effect adoption (`RuntimeError`, `AwsPreviewProvisioningError`,
+  `AwsPreviewDestroyError`, `AwsRemoteReaderError`).
+- Error channels are typed. Each surface declares its expected failure type in
+  the Effect error channel; unexpected errors are defects, not silently widened
+  `unknown` failures.
+- Polling and retry use `Schedule` (`Schedule.spaced`, `Schedule.recurs`,
+  `Schedule.addDelay`) rather than hand-rolled loops, with attempt budgets that
+  match the documented adapter options (`stackPollDelayMs`,
+  `stackMaxPollAttempts`, workflow `retries`).
+- Fan-out work (for example client asset uploads) uses `Effect.all` with a
+  bounded concurrency, because input sizes are not bounded by the platform.
+
+## Cloudflare preview planning
+
+Cloudflare is registered as a plan-only preview adapter. Use
+`mezair-cloud plan --stage dev --adapter cloudflare --json` or
+`mezair-cloud review --adapter cloudflare --env preview --json` to inspect
+provider mappings and blocking compatibility gates. Deploy and remove remain
+disabled until the opt-in provider lifecycle smoke tests pass. The experimental
+verification seam now generates a workerd-compatible module Worker, bridges
+HTTP requests into Mezair Runtime, emits Wrangler configuration, and supports a
+credential-safe dry run. See
+[Cloudflare adapter implementation plan](./cloudflare-adapter-plan.md) for the
+remaining phases and adapter-authoring strategy.
+
+Add `--temporary` to model Cloudflare's unauthenticated Temporary Account flow.
+The plan records the Wrangler 4.102.0 minimum, 60-minute claim window, and
+temporary-resource compatibility gates without creating an account or exposing
+claim credentials.
+
+`pnpm verify:cloudflare-preview` is non-mutating by default. Live verification
+requires `MEZAIR_CLOUDFLARE_LIVE=1`; Temporary Account mode strips inherited
+Cloudflare and Wrangler environment variables, redacts the bearer claim URL
+from captured output, and hands it only to an interactive terminal without
+persisting it.
+
+## Non-goals
+
+Mezair is not a Pulumi authoring surface. Users should not write Pulumi components for Cells, and generated manifests should not require Pulumi concepts. Future adapters may use Terraform/OpenTofu, CDK, Kubernetes, direct provider APIs, or another engine without changing Cell authoring.

@@ -13,6 +13,15 @@ node_modules/
 coverage/
 *.tsbuildinfo
 
-# Canvas artifacts belong in .anvil/artifacts/<category>/, never a nested
-# .anvil working directory created from an already-prefixed artifact path.
-/.anvil/artifacts/.anvil/
+# Canvas/session artifacts are session scratch — kept locally under
+# .mezair/artifacts/<category>/ but not committed to the repository.
+/.mezair/artifacts/
+
+# Local package-manager registry overrides
+/mezair-app/.npmrc
+/mezair-cloud/.npmrc
+/mezair-registry/.npmrc
+/mezair-website/.npmrc
+
+# Headless daemon bundle output
+mezair-app/dist-daemon/

@@ -1,9 +1,0 @@
-node_modules
-dist
-.turbo
-.next
-*.tsbuildinfo
-.env
-.anvil
-coverage
-*.log

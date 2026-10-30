@@ -1,20 +1,43 @@
-name: Anvil App CI
+name: Mezair App CI
 
 on:
   pull_request:
     paths:
       - ".github/workflows/app-ci.yml"
+      - ".github/workflows/app-release-macos-arm64.yml"
+      - ".github/scripts/app-release-target.test.mjs"
+      - ".github/scripts/ensure-app-release-target.sh"
       - ".github/scripts/publish-r2-immutable.mjs"
       - ".github/scripts/publish-r2-immutable.test.mjs"
-      - "anvil-app/**"
+      - ".github/scripts/resolve-app-release-target.mjs"
+      - "mezair-app/**"
+      - "mezair-cloud/**"
+      - "mezair-registry/apps/cli/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/tsconfig.base.json"
+      - ".github/scripts/prepare-desktop-clis.mjs"
   push:
     branches:
       - main
+      - develop
     paths:
       - ".github/workflows/app-ci.yml"
+      - ".github/workflows/app-release-macos-arm64.yml"
+      - ".github/scripts/app-release-target.test.mjs"
+      - ".github/scripts/ensure-app-release-target.sh"
       - ".github/scripts/publish-r2-immutable.mjs"
       - ".github/scripts/publish-r2-immutable.test.mjs"
-      - "anvil-app/**"
+      - ".github/scripts/resolve-app-release-target.mjs"
+      - "mezair-app/**"
+      - "mezair-cloud/**"
+      - "mezair-registry/apps/cli/**"
+      - "mezair-registry/package.json"
+      - "mezair-registry/pnpm-lock.yaml"
+      - "mezair-registry/pnpm-workspace.yaml"
+      - "mezair-registry/tsconfig.base.json"
+      - ".github/scripts/prepare-desktop-clis.mjs"
   workflow_dispatch:
 
 permissions:
@@ -26,10 +49,11 @@ concurrency:
 
 env:
   CI: true
+  MEZAIR_DEPLOYMENT_ENV: staging
 
 defaults:
   run:
-    working-directory: anvil-app
+    working-directory: mezair-app
 
 jobs:
   validate:
@@ -50,7 +74,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-app/pnpm-lock.yaml
+          cache-dependency-path: mezair-app/pnpm-lock.yaml
+
+      - name: Prepare local product CLIs
+        working-directory: .
+        run: node .github/scripts/prepare-desktop-clis.mjs
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -58,12 +86,101 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Typecheck desktop processes
+        run: |
+          pnpm exec tsc --noEmit -p tsconfig.node.json
+          pnpm exec tsc --noEmit -p tsconfig.web.json
+
+      - name: Verify mobile Mesh connections
+        run: |
+          pnpm --dir mobile test:mesh-session
+          pnpm --dir mobile typecheck
+          pnpm --dir mobile lint
+
+      - name: Build headless daemon
+        run: pnpm build:daemon
+
       - name: Test
         run: pnpm test
+
+      - name: Test staging status checks
+        run: node --test scripts/staging-status.node-test.mjs
 
       - name: Test immutable R2 publisher
         working-directory: .
         run: node --test .github/scripts/publish-r2-immutable.test.mjs
 
+      - name: Test macOS release candidate target
+        working-directory: .
+        run: node --test .github/scripts/app-release-target.test.mjs
+
+      - name: Verify hosted config validator
+        working-directory: mezair-app/cloud/backend
+        run: node scripts/verify-hosted-config.mjs --self-check
+
+      - name: Test hosted deployment isolation
+        working-directory: mezair-app/cloud/backend
+        run: pnpm test:hosted-deploy
+
       - name: Build
         run: pnpm build
+
+  backend:
+    name: Sync backend tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mezair-app/cloud/backend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: mezair-app/cloud/backend
+        run: pnpm install --ignore-workspace --frozen-lockfile
+
+      - name: Test
+        working-directory: mezair-app/cloud/backend
+        run: pnpm test
+
+      - name: Typecheck
+        working-directory: mezair-app/cloud/backend
+        run: pnpm typecheck
+
+      - name: Verify hosted config validator
+        working-directory: mezair-app/cloud/backend
+        run: node scripts/verify-hosted-config.mjs --self-check
+
+      - name: Test hosted deployment isolation
+        working-directory: mezair-app/cloud/backend
+        run: pnpm test:hosted-deploy
+
+  provisioner:
+    name: Managed provisioner tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mezair-app/cloud/provisioner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mezair-app/cloud/provisioner/pnpm-lock.yaml
+      - run: pnpm install --ignore-workspace --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test

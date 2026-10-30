@@ -1,0 +1,113 @@
+# Mezair Cloud
+
+Mezair Cloud is an alpha TypeScript platform for Mezair Cells and contract-first
+Agents. It is local-first, capability-scoped, and adapter-driven. Do not treat
+it as a raw AWS authoring surface.
+
+Full agent instructions: `llms-full.txt`.
+
+## Start Here
+
+- `README.md`: project overview.
+- `AGENTS.md`: repo rules for coding agents.
+- `docs/product/vision.md`: product thesis and boundaries.
+- `docs/specs/alpha-implementation-spec.md`: alpha scope.
+- `docs/specs/cell-contract.md`: Mezair Cell contract.
+- `docs/specs/cli.md`: CLI and stable JSON contracts.
+- `docs/examples/agents/README.md`: agent contract examples.
+- `examples/notes/README.md`: canonical local Cell example.
+- `examples/aws-preview/README.md`: AWS preview smoke Cell.
+- `docs/architecture/agents.md`: Mezair Agent contract.
+- `docs/architecture/runtime.md`: runtime design.
+- `docs/architecture/builder.md`: Builder and Guard design.
+- `docs/architecture/local-dev.md`: Mezair Local and Lens.
+- `docs/architecture/aws-adapter.md`: AWS preview adapter.
+
+## Auth conformance
+
+- Use `mezair-cloud auth test --json` before changing auth behavior or wiring a
+  new OIDC provider.
+- The command returns stable `checks` for local JWT issue/verify, runtime
+  public/required/role policy, OIDC discovery and JWKS verification, expiry,
+  issuer and audience rejection, configured claim mapping, and provider fixture
+  configs.
+- Handler code should rely on `ctx.auth.identity.userId`, `email`, `roles`, and
+  `claims`; provider-specific JWT names belong in `MEZAIR_AUTH_*_CLAIM`
+  configuration, not Cell code.
+
+## Core terms
+
+- Mezair Cloud: overall platform.
+- Mezair Cell: deployable app unit.
+- Mezair Runtime: shared execution layer.
+- Mezair Builder: compiler and bundler.
+- Mezair Local: local development runtime.
+- Mezair Guard: policy and capability checks.
+- Mezair Lens: inspection and diagnostics.
+- Agent Execution Control Plane: provider-neutral, resumable sandbox work with
+  cursor events, approvals, budgets, results, and cleanup receipts.
+
+## Current implementation priority
+
+Implement in this order:
+
+1. Runtime DSL and test host.
+2. Local runtime server.
+3. Builder and manifest extraction.
+4. CLI with stable `--json` output.
+5. Client SDK and generated metadata.
+6. AWS preview deployment.
+7. Runnable provider-neutral agent execution control plane and AWS read-only transport.
+
+## Non-Negotiable Rules
+
+- Cell code must default-export `app(...)` from `src/cell.server.ts`.
+- Cell code uses Mezair runtime primitives: `ctx.db`, `ctx.files`, `ctx.env`,
+  `ctx.log`, `ctx.jobs`, `ctx.workflows`, and global `fetch` only with a
+  declared `capabilities.outboundFetch.allow` host.
+- Cell code must not import AWS SDKs, Pulumi, CDK, SST, Terraform/CDKTF,
+  Kubernetes clients, Docker clients, Node filesystem modules for app data, or
+  direct network modules such as `http`, `https`, `net`, `tls`, or `undici`.
+- Cell code must not read `process.env` directly. Declare `capabilities.env`
+  or `capabilities.secrets` and use `ctx.env.get` or `ctx.env.require`.
+- Public automation commands must support `--json`; prefer JSON output in
+  agent workflows.
+- Effect is internal to Mezair Cloud orchestration only. Do not expose Effect in
+  Cell authoring APIs or examples.
+
+## Useful Commands
+
+```sh
+mezair-cloud new notes
+mezair-cloud check --json
+mezair-cloud build --json
+mezair-cloud dev --json
+mezair-cloud inspect --local --json
+mezair-cloud logs --local --json
+mezair-cloud doctor --json
+mezair-cloud review --json
+```
+
+## Starter templates
+
+Use `mezair-cloud new <name> --template <crud|auth|workflow|service|agent|sandbox>`
+to scaffold runnable examples. Each template keeps the starter generated client
+path working and adds one canonical primitive for agents to copy.
+
+From the monorepo checkout, run commands inside `mezair-cloud/` and use the
+workspace script or built entrypoint:
+
+```sh
+pnpm mezair-cloud --help
+node packages/cli/dist/index.js check --json
+```
+
+## Hard rules
+
+- Do not use `forge` naming.
+- Do not expose direct AWS SDK usage to Mezair Cell authors.
+- Do not begin with AWS infrastructure before local runtime is proven.
+- Do not add Kubernetes, ECS, arbitrary Docker, or multi-cloud support in v0.
+- Local database branches are JSON snapshots managed through `mezair-cloud db branch`, `db use`, `db diff`, `db promote`, `db delete`, and `db cleanup --expired`; Cell code still uses the same `ctx.db` contract.
+- Local usage metering is available through `.mezair/local/usage.ndjson`, `GET /_mezair/usage`, Lens Usage, and `mezair-cloud usage --local --json`; preview usage remains declared-resource visibility.
+- Keep docs professional and suitable for a future open-source repository.

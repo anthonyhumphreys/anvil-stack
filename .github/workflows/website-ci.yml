@@ -1,16 +1,29 @@
-name: Anvil Website CI
+name: Mezair Website CI
 
 on:
   pull_request:
     paths:
       - ".github/workflows/website-ci.yml"
-      - "anvil-website/**"
+      - "mezair-website/**"
+      - "mezair-app/cloud/contract/thread-pickup.ts"
+      - "mezair-app/src/main/services/thread-share.service.ts"
+      - "mezair-app/src/main/services/share-secret-scan.ts"
+      - "mezair-app/src/renderer/components/chat/shared/**"
+      - "mezair-app/src/renderer/components/chat/ChatEmptyState.tsx"
+      - "mezair-app/src/renderer/styles/chat-theme.css"
   push:
     branches:
       - main
+      - develop
     paths:
       - ".github/workflows/website-ci.yml"
-      - "anvil-website/**"
+      - "mezair-website/**"
+      - "mezair-app/cloud/contract/thread-pickup.ts"
+      - "mezair-app/src/main/services/thread-share.service.ts"
+      - "mezair-app/src/main/services/share-secret-scan.ts"
+      - "mezair-app/src/renderer/components/chat/shared/**"
+      - "mezair-app/src/renderer/components/chat/ChatEmptyState.tsx"
+      - "mezair-app/src/renderer/styles/chat-theme.css"
   workflow_dispatch:
 
 permissions:
@@ -25,7 +38,7 @@ env:
 
 defaults:
   run:
-    working-directory: anvil-website
+    working-directory: mezair-website
 
 jobs:
   validate:
@@ -46,13 +59,22 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-website/pnpm-lock.yaml
+          cache-dependency-path: mezair-website/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Test deployment environment isolation
+        run: pnpm test:deployment-env
+
+      - name: Test browser workspace credentials
+        run: pnpm test:browser-workspace
+
+      - name: Test shared thread access and pickup
+        run: pnpm test:shares
 
       - name: Build
         run: pnpm build

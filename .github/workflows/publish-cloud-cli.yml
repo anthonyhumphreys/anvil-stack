@@ -1,4 +1,4 @@
-name: Publish @anvilstack/cloud-cli to npm
+name: Publish @mezairstack/cloud-cli to npm
 
 on:
   push:
@@ -18,7 +18,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: anvil-cloud
+    working-directory: mezair-cloud
 
 jobs:
   publish:
@@ -42,7 +42,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-cloud/pnpm-lock.yaml
+          cache-dependency-path: mezair-cloud/pnpm-lock.yaml
 
       - name: Update npm for trusted publishing
         run: npm install -g npm@latest
@@ -58,7 +58,7 @@ jobs:
           package_version="$(node -p "require('./packages/cli/package.json').version")"
           expected_tag="cloud-cli-v${package_version}"
           if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match @anvilstack/cloud-cli version ${package_version} (${expected_tag})." >&2
+            echo "Tag ${GITHUB_REF_NAME} does not match @mezairstack/cloud-cli version ${package_version} (${expected_tag})." >&2
             exit 1
           fi
 
@@ -66,16 +66,16 @@ jobs:
         run: pnpm build
 
       - name: Typecheck
-        run: pnpm --filter @anvilstack/cloud-cli typecheck
+        run: pnpm --filter @mezairstack/cloud-cli typecheck
 
       - name: Test
-        run: pnpm --filter @anvilstack/cloud-cli test
+        run: pnpm --filter @mezairstack/cloud-cli test
 
       - name: Build
-        run: pnpm --filter @anvilstack/cloud-cli build
+        run: pnpm --filter @mezairstack/cloud-cli build
 
       - name: Stage package on npm
-        working-directory: anvil-cloud/packages/cli
+        working-directory: mezair-cloud/packages/cli
         run: |
           extra_args=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then

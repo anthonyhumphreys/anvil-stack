@@ -1,6 +1,6 @@
 # Work items and change review
 
-This brief records the implemented Work Items and Change Review screens. It is scoped to `anvil-app/src/renderer/components/workitems/WorkItemsView.tsx` and `anvil-app/src/renderer/components/review/ChangeReviewPanel.tsx`; the app's existing `DESIGN.md` remains the visual authority.
+This brief records the implemented Work Items and Change Review screens. It is scoped to `mezair-app/src/renderer/components/workitems/WorkItemsView.tsx` and `mezair-app/src/renderer/components/review/ChangeReviewPanel.tsx`; the app's existing `DESIGN.md` remains the visual authority.
 
 ## Purpose and first view
 
@@ -40,8 +40,8 @@ Captures render at the available pane width. A mobile capture can therefore beco
 
 Evidence reviewed on 2026-09-07:
 
-- `WorkItemsView.tsx`, `ChangeReviewPanel.tsx` and `src/renderer/styles/global.css` in `anvil-app`.
-- Root `PRODUCT.md` and `anvil-app/PRODUCT.md`.
+- `WorkItemsView.tsx`, `ChangeReviewPanel.tsx` and `src/renderer/styles/global.css` in `mezair-app`.
+- Root `PRODUCT.md` and `mezair-app/PRODUCT.md`.
 - `/Users/anthonyhumphreys/.agent-browser/tmp/screenshots/screenshot-1788764907856.png`, selected task.
 - `/Users/anthonyhumphreys/.agent-browser/tmp/screenshots/screenshot-1788764934766.png`, labelled mobile overlay.
 - `/Users/anthonyhumphreys/.agent-browser/tmp/screenshots/screenshot-1788764934903.png`, finding controls and acceptance.

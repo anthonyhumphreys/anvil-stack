@@ -1,0 +1,1466 @@
+import type { RemoteCodexAccountAuthChoice } from './remote-chat';
+import type {
+  CloudAgentConnectionProvider,
+  CloudAgentConnectionResult,
+  CloudAgentSettingsSnapshot,
+} from './cloud-agent.js';
+import type { AgentProvider } from './types.js';
+import type {
+  CreateRemoteChatInput,
+  SendRemoteChatInput,
+  RemoteChatRecord,
+} from './remote-chat.js';
+import type { ChatThreadPullRequestInput, ChatThreadPullRequestLink } from './types.js';
+import type { RepoIndexJob } from './index-jobs';
+import type {
+  SaveSkillRecommendationsInput,
+  SkillCollectionInspection,
+  SkillRecommendationCatalog,
+  SkillRecommendationSelection,
+} from './skill-recommendations';
+import type { ChangeReviewApi } from './change-review-types.js';
+import type {
+  FactoryActivateInput,
+  FactoryControlInput,
+  FactoryDefinition,
+  FactoryDefinitionInput,
+  FactoryDirectoryItem,
+  FactoryOrganizationMember,
+  FactoryOrganizationOption,
+  FactoryPreview,
+  FactoryPreviewOptions,
+  FactoryRun,
+  FactoryRunControlInput,
+  FactorySaveInput,
+} from './factories.js';
+import type {
+  DojoAnalytics,
+  DojoPrice,
+  DojoRecommendationState,
+  DojoRecommendationStatus,
+} from './dojo-types';
+import type { RunCommand, RunStatus } from './run-types';
+import type { CodexRuntimeStatus } from './codex-runtime';
+import type {
+  AgentUIIntent,
+  AgentUIIntentPresentationPatch,
+  AgentUIPlanIntent,
+  AgentUIPlanPatch,
+  AgentUIQuestionIntent,
+  AgentUIQuestionResolution,
+} from './agent-ui-intents';
+import type {
+  Iteration,
+  AgentRunSummary,
+  ArgentCommandId,
+  ArgentCommandResult,
+  ArgentWorkbenchSnapshot,
+  MezairCloudCommandId,
+  MezairCloudCommandResult,
+  MezairCloudWorkbenchSnapshot,
+  MezairCloudExecutionConnection,
+  MezairCloudExecutionConnectionInput,
+  MezairCloudExecutionConnectionTest,
+  MezairCloudExecutionEventBatch,
+  MezairCloudExecutionLease,
+  MezairCloudExecutionStartInput,
+  MezairCloudExecutionStartResult,
+  AutomationDaemonStatus,
+  AutomationDefinition,
+  AutomationDefinitionInput,
+  AutomationRun,
+  AutomationRunEvent,
+  AutomationTriageItem,
+  AppSettings,
+  LocalLlmCapabilities,
+  BaFinding,
+  BaFindingStatus,
+  BaFindingType,
+  BaMessage,
+  BaRepoLink,
+  BaSession,
+  ChatAttachment,
+  ChatFollowUpRequest,
+  ChatFollowUpResult,
+  ChatNavigationTarget,
+  WorkflowNavigationTarget,
+  ChatAttachmentInput,
+  ChatArtifact,
+  ChatArtifactAnnotation,
+  ChatArtifactAnnotationInput,
+  ChatArtifactAnnotationPatch,
+  ChatArtifactFile,
+  ChatArtifactInput,
+  ChatFileMentionSearchInput,
+  ChatFileMentionSearchResult,
+  ChatGoalSnapshot,
+  BrowserBridgeStatus,
+  ChatMessage,
+  ChatPlanSnapshot,
+  ChatSendOptions,
+  ChatThread,
+  ChatThreadPurpose,
+  ChatStartOptions,
+  ChatSteerResult,
+  CicdCreatePipelineInput,
+  CicdCreatePipelineResult,
+  CicdPipelineAnalysis,
+  CodeReview,
+  CodeReviewFinding,
+  CodeReviewMode,
+  CodeReviewPullRequest,
+  CodeReviewPullRequestComment,
+  PullRequestDiff,
+  PullRequestVisualisation,
+  CodeReviewScopeRef,
+  CodeReviewScopeType,
+  CodexCliStatus,
+  CursorCliStatus,
+  DevinCliStatus,
+  LlmGatewayBillingMode,
+  LlmGatewayStatus,
+  CodexMcpRegisterInput,
+  CodexRegistryActionResult,
+  CodexRegistrySnapshot,
+  CodexSkillInstallInput,
+  CodexSkillSearchResult,
+  CodexUsageSnapshot,
+  CodexEvent,
+  CodexInputResponse,
+  CodexSession,
+  DocPage,
+  DesignReadiness,
+  ComplianceDocType,
+  ComplianceDocument,
+  DevServerTarget,
+  DiagnosticsSnapshot,
+  EmbeddedEditorFocusResult,
+  EmbeddedEditorStatus,
+  EmbeddedEditorTarget,
+  DbInsightAnalysis,
+  DbInsightArtifact,
+  DependencyAuditResult,
+  DependencyRecord,
+  DiagramFile,
+  DojoConfig,
+  DojoConfigInput,
+  DojoReport,
+  GitStatusResult,
+  GitLogEntry,
+  GitBranchInfo,
+  GitDiffResult,
+  GitPullRequestCreateResult,
+  GitWorkspaceStatus,
+  GovernanceBoard,
+  GovernanceDocument,
+  OpenInMezairLaunchIntent,
+  OnboardDetection,
+  RemoteRepo,
+  RepoAdrs,
+  Workspace,
+  WorkspaceUpdateOptions,
+  WorkspacePreferences,
+  WorkspaceWithRepos,
+  WorkspaceSummary,
+  WorkspaceActivitySummary,
+  Persona,
+  RepoInfo,
+  RepoMapRefreshMode,
+  RepositoryMapGraph,
+  RepoMapStatus,
+  RepoIndexProgress,
+  RepoSummary,
+  RepositoryChangeSummary,
+  SecurityAudit,
+  SecurityFinding,
+  WorkItem,
+  PublicWorkflowRun,
+  WorkflowTemplate,
+  WorkflowTemplateInput,
+  WorkItemCreateInput,
+  WorkItemFilters,
+  WorkItemProvider,
+  EditableAgent,
+  EditableAgentInput,
+  WorkspaceCreateOptions,
+  WorkspaceRepoDefinition,
+  WorkspaceBootstrapApprovalSummary,
+  WorkspaceBootstrapStatus,
+  WorkspaceCloneRequest,
+  WorkspaceCloneResult,
+  WorkspaceLinkResult,
+  WorkspaceMaterializationOpSummary,
+  WorkspaceRemoveCheckoutResult,
+  WorkspaceScaffoldMaybeCompleteResult,
+  WorkspaceScaffoldSession,
+  WorkspaceScaffoldStartResult,
+  LifecycleItem,
+  LifecycleStage,
+  LifecycleStageDefinition,
+  LifecycleStageUpdate,
+  LicenseAuditResult,
+  CompanionEnrollmentPolicy,
+  CompanionEvent,
+  CompanionPolicyState,
+  MobileCompanionDevice,
+  MobileCompanionStatus,
+  MobilePairingTicket,
+  WorkspaceNote,
+  WorkspaceNoteCreateInput,
+  RaycastCompanionToken,
+  GateId,
+  GateTemplate,
+  GateTemplateUpdate,
+  GateDecision,
+  GateDecisionOutcome,
+  GateReadinessResult,
+  ImpactAnalysis,
+  HandoverPack,
+  SbomFormat,
+  SimulatorPreviewStartOptions,
+  SimulatorPreviewStatus,
+  TerminalAttachResult,
+  TerminalClosedEvent,
+  TerminalDataEvent,
+  TerminalExitEvent,
+  TerminalSessionSummary,
+} from './types';
+import type { Brand } from './branding';
+import type { SyncBackendDiscovery, SyncBackendPinInput, SyncBackendStatus } from './sync-backend';
+import type {
+  ApprovalDecision,
+  ApprovalRecord,
+  CloudEnvironmentProviderConnection,
+  CloudEnvironmentRecord,
+  EnvironmentProviderId,
+  ExecutionAttempt,
+  HandoffRecord,
+  JobSummary,
+  SessionMeshState,
+  SyncAdoptionPreviewItem,
+  MeshWorkerStatus,
+  SyncAttemptActivity,
+  SyncAuthPublicSnapshot,
+  SyncConflictResolutionChoice,
+  SyncConflictView,
+  SyncDashboardGrantApproval,
+  SyncDashboardGrantDecisionResult,
+  SyncDashboardGrantWorkspace,
+  SyncDashboardRequest,
+  SyncDataExportFileResult,
+  SyncDataImportCommitResult,
+  SyncDataImportFilePreview,
+  SyncDevice,
+  SyncDeviceRenameResult,
+  SyncDeviceRevokeResult,
+  SyncDeviceVerification,
+  SyncDiagnostics,
+  SyncHostedStatus,
+  SyncInitiateHandoffResult,
+  SyncIssuedEnrollmentCode,
+  LocalCloudEnvironment,
+  SyncRuntimeStatus,
+  SyncSpikeEnrollInput,
+} from './sync-runtime';
+import type {
+  SyncDeviceRecoveryResult,
+  SyncDeviceSecurityStatus,
+  SyncDeviceTrustPolicy,
+  SyncEncryptedSyncAccountResetConfirmation,
+} from './sync-device-security';
+import type {
+  OverviewLayout,
+  OverviewLayoutState,
+  OverviewLayoutTarget,
+  OverviewModuleRequest,
+  OverviewModuleResult,
+  OverviewScope,
+  OverviewSources,
+} from './overview';
+
+export interface MezairAPI {
+  cloudAgentSettings: {
+    get: () => Promise<CloudAgentSettingsSnapshot>;
+    setEnabled: (provider: AgentProvider, enabled: boolean) => Promise<CloudAgentSettingsSnapshot>;
+    connect: (provider: CloudAgentConnectionProvider) => Promise<CloudAgentConnectionResult>;
+    disconnect: (provider: CloudAgentConnectionProvider) => Promise<CloudAgentSettingsSnapshot>;
+    cancelConnection: (provider: CloudAgentConnectionProvider) => Promise<void>;
+  };
+  appWindow: {
+    getVersion: () => Promise<string>;
+    getChromeState: () => Promise<{ isFullScreen: boolean }>;
+    openToolWindow: (route: string, workspaceId?: string) => Promise<void>;
+    onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
+    onNavigateToWorkflow: (callback: (target: WorkflowNavigationTarget) => void) => () => void;
+    onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
+  };
+
+  diagnostics: {
+    getSnapshot: () => Promise<DiagnosticsSnapshot>;
+  };
+
+  metrics: {
+    /** Local-only activation funnel event — recorded in SQLite, never sent. */
+    track: (event: string, payload?: Record<string, unknown>) => Promise<{ ok: boolean }>;
+  };
+
+  mobileCompanion: {
+    getStatus: () => Promise<MobileCompanionStatus>;
+    setEnabled: (enabled: boolean) => Promise<MobileCompanionStatus>;
+    createPairingTicket: () => Promise<MobilePairingTicket>;
+    createRaycastToken: () => Promise<RaycastCompanionToken>;
+    listDevices: () => Promise<MobileCompanionDevice[]>;
+    revokeDevice: (deviceId: string) => Promise<void>;
+    listEnrollmentPolicies: () => Promise<CompanionEnrollmentPolicy[]>;
+    setEnrollmentPolicy: (
+      enrollmentId: string,
+      tier: CompanionPolicyState,
+    ) => Promise<CompanionEnrollmentPolicy | null>;
+    removeEnrollmentPolicy: (enrollmentId: string) => Promise<void>;
+    onEvent: (callback: (event: CompanionEvent) => void) => () => void;
+  };
+
+  /** ANV-51: configurable overviews. Layouts are local-only and never synced. */
+  overview: {
+    sources: () => Promise<OverviewSources>;
+    getLayout: (scope: OverviewScope) => Promise<OverviewLayoutState>;
+    saveLayout: (target: OverviewLayoutTarget, layout: OverviewLayout) => Promise<OverviewLayout>;
+    /** Save the default for every workspace and drop this workspace's override. */
+    saveWorkspaceDefault: (workspaceId: string, layout: OverviewLayout) => Promise<OverviewLayout>;
+    resetLayout: (target: OverviewLayoutTarget) => Promise<void>;
+    loadModule: (request: OverviewModuleRequest) => Promise<OverviewModuleResult>;
+  };
+
+  workspaceNotes: {
+    list: (workspaceId?: string, includeReviewed?: boolean) => Promise<WorkspaceNote[]>;
+    create: (input: WorkspaceNoteCreateInput) => Promise<WorkspaceNote>;
+    accept: (noteId: string) => Promise<void>;
+    dismiss: (noteId: string) => Promise<void>;
+  };
+
+  repo: {
+    list: () => Promise<RepoInfo[]>;
+    connect: (repoPath: string) => Promise<RepoInfo>;
+    index: (repoId: string) => Promise<RepoIndexJob[]>;
+    /** Hydrate index job state; live updates arrive via onIndexProgress (jobId/jobTier/jobState). */
+    listIndexJobs: (repoId?: string) => Promise<RepoIndexJob[]>;
+    cancelIndex: (repoId: string) => Promise<void>;
+    /**
+     * Delete the repos row and its index data (summaries, map graph, jobs).
+     * Refuses while any workspace still references the repo; never touches
+     * files on disk. Reviews/audits are kept orphaned.
+     */
+    forget: (repoId: string) => Promise<void>;
+    getStatus: (repoId: string) => Promise<RepoInfo['status']>;
+    resetStatus: (repoId: string) => Promise<void>;
+    getSummary: (repoId: string) => Promise<RepoSummary | null>;
+    getMapStatus: (repoId: string) => Promise<RepoMapStatus>;
+    getMapGraph: (repoId: string) => Promise<RepositoryMapGraph | null>;
+    setMapRefreshMode: (repoId: string, refreshMode: RepoMapRefreshMode) => Promise<RepoMapStatus>;
+    getArchitecture: (repoId: string) => Promise<string | null>;
+    selectDirectory: () => Promise<string | null>;
+    onIndexProgress: (callback: (data: RepoIndexProgress) => void) => () => void;
+    openInVSCode: (repoPath: string) => Promise<void>;
+    scan: (folderPath: string, maxDepth?: number) => Promise<Array<{ path: string; name: string }>>;
+    onScanProgress: (callback: (data: { path: string; name: string }) => void) => () => void;
+    cancelScan: () => Promise<void>;
+    ghAuthStatus: () => Promise<{ authenticated: boolean; username?: string; error?: string }>;
+    listGithubRepos: () => Promise<RemoteRepo[]>;
+    listAdoRepos: () => Promise<RemoteRepo[]>;
+    clone: (cloneUrl: string, targetDir: string, provider: 'github' | 'ado') => Promise<string>;
+    onCloneProgress: (
+      callback: (data: { repoName: string; cloneUrl: string; message: string }) => void,
+    ) => () => void;
+  };
+
+  chat: {
+    listDelegations(threadId: string): Promise<import('./chat-delegation').ChatDelegationRun[]>;
+    readDelegation(
+      threadId: string,
+      runId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    stopDelegation(
+      threadId: string,
+      runId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    actOnDelegation(
+      threadId: string,
+      runId: string,
+      action: import('./chat-delegation').ChatDelegationAction,
+      nodeId?: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    prepareDelegationIntegration(
+      threadId: string,
+      runId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationIntegrationPlan>;
+    integrateDelegation(
+      threadId: string,
+      runId: string,
+      selectedChecks: import('./chat-delegation').ChatDelegationVerificationSelection[],
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    retryDelegationVerification(
+      threadId: string,
+      runId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    applyDelegationIntegration(
+      threadId: string,
+      runId: string,
+      repositoryId: string,
+    ): Promise<import('./chat-delegation').ChatDelegationRun>;
+    createTemporaryThread(personaId: string): Promise<ChatThread>;
+    endTemporaryThread(threadId: string): Promise<boolean>;
+    linkPullRequest(
+      threadId: string,
+      input: ChatThreadPullRequestInput,
+    ): Promise<ChatThreadPullRequestLink>;
+    unlinkPullRequest(threadId: string, linkId: string): Promise<void>;
+    listPullRequestLinks(threadId: string): Promise<ChatThreadPullRequestLink[]>;
+    listPullRequestThreads(
+      repoId: string,
+      provider: 'github' | 'ado',
+      pullRequestId: string,
+    ): Promise<ChatThreadPullRequestLink[]>;
+    refreshPullRequestLink(threadId: string, linkId: string): Promise<ChatThreadPullRequestLink>;
+    startSession: (
+      repoIds: string[],
+      personaId: string,
+      options?: ChatStartOptions,
+    ) => Promise<CodexSession>;
+    startScaffoldSession: (
+      workspaceId: string,
+      rootPath: string,
+      personaId: string,
+      options?: Pick<ChatStartOptions, 'provider' | 'model'>,
+    ) => Promise<CodexSession>;
+    send: (
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+      options?: ChatSendOptions,
+    ) => Promise<void>;
+    onEvent: (callback: (event: CodexEvent) => void) => () => void;
+    stopSession: (sessionId: string) => Promise<void>;
+    interrupt: (sessionId: string) => Promise<void>;
+    steer: (
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+    ) => Promise<ChatSteerResult>;
+    followUp: (request: ChatFollowUpRequest) => Promise<ChatFollowUpResult>;
+    forkProviderThread: (
+      sourceThreadId: string,
+      targetThreadId: string,
+    ) => Promise<ChatThread | null>;
+    resolveApproval: (
+      sessionId: string,
+      requestId: string | number,
+      decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+      optionId?: string,
+    ) => Promise<void>;
+    resolveInputRequest: (
+      sessionId: string,
+      requestId: string | number,
+      response: CodexInputResponse,
+    ) => Promise<void>;
+    switchPersona: (repoId: string, personaId: string) => Promise<CodexSession>;
+    getPersonas: () => Promise<Persona[]>;
+    getSessionStatus: (sessionId: string) => Promise<CodexSession['status']>;
+    listActiveSessions: () => Promise<CodexSession[]>;
+
+    listArtifacts: (threadId: string) => Promise<ChatArtifact[]>;
+    upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
+    discardArtifact: (id: string) => Promise<boolean>;
+    readArtifactFile: (id: string) => Promise<ChatArtifactFile>;
+    shareArtifact: (id: string) => Promise<ChatArtifact>;
+    unshareArtifact: (id: string) => Promise<ChatArtifact>;
+    artifactSharingAvailable: () => Promise<boolean>;
+    listArtifactAnnotations: (artifactId: string) => Promise<ChatArtifactAnnotation[]>;
+    createArtifactAnnotation: (
+      input: ChatArtifactAnnotationInput,
+    ) => Promise<ChatArtifactAnnotation>;
+    updateArtifactAnnotation: (
+      id: string,
+      patch: ChatArtifactAnnotationPatch,
+    ) => Promise<ChatArtifactAnnotation>;
+    deleteArtifactAnnotation: (id: string) => Promise<boolean>;
+    listThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
+    listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
+    createThread: (input: {
+      pullRequest?: ChatThreadPullRequestInput;
+      workspaceId?: string | null;
+      personaId: string;
+      purpose?: ChatThreadPurpose;
+      sideQuestionOfThreadId?: string;
+      title?: string;
+      workItemId?: string;
+      workItemProvider?: WorkItemProvider;
+      workItemTitle?: string;
+      repoIds?: string[];
+      activeRepoId?: string | null;
+    }) => Promise<ChatThread>;
+    ensureWorkItemThread: (input: {
+      workspaceId?: string | null;
+      personaId: string;
+      workItemId: string;
+      workItemProvider: WorkItemProvider;
+      workItemTitle: string;
+      repoIds?: string[];
+      activeRepoId?: string | null;
+    }) => Promise<ChatThread>;
+    updateThread: (
+      threadId: string,
+      updates: {
+        title?: string;
+        personaId?: string;
+        workItemTitle?: string;
+        repoIds?: string[];
+        activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
+        titleLocked?: boolean;
+      },
+    ) => Promise<ChatThread | null>;
+    deleteThread: (threadId: string) => Promise<void>;
+    prepareAttachments: (inputs: ChatAttachmentInput[]) => Promise<ChatAttachment[]>;
+    selectAttachments: () => Promise<ChatAttachment[]>;
+    searchFileMentions: (
+      input: ChatFileMentionSearchInput,
+    ) => Promise<ChatFileMentionSearchResult[]>;
+    saveEntry: (
+      threadId: string,
+      repoId: string | null,
+      sessionId: string | null,
+      entry: ChatMessage,
+    ) => Promise<void>;
+    saveEvent: (
+      threadId: string,
+      repoId: string | null,
+      sessionId: string | null,
+      event: CodexEvent,
+      timestamp: string,
+    ) => Promise<void>;
+    loadHistory: (threadId: string) => Promise<ChatMessage[]>;
+    clearHistory: (threadId: string) => Promise<void>;
+    saveThreadPlan: (threadId: string, plan: ChatPlanSnapshot) => Promise<ChatThread | null>;
+    saveThreadGoal: (threadId: string, goal: ChatGoalSnapshot | null) => Promise<ChatThread | null>;
+    listAgentUIIntents: (threadId: string, includeInactive?: boolean) => Promise<AgentUIIntent[]>;
+    resolveAgentUIQuestion: (
+      intentId: string,
+      resolution: AgentUIQuestionResolution,
+    ) => Promise<AgentUIQuestionIntent>;
+    patchAgentUIPlan: (intentId: string, patch: AgentUIPlanPatch) => Promise<AgentUIPlanIntent>;
+    updateAgentUIIntentPresentation: (
+      intentId: string,
+      patch: AgentUIIntentPresentationPatch,
+    ) => Promise<AgentUIIntent>;
+    dismissAgentUIIntent: (intentId: string) => Promise<AgentUIIntent>;
+    restoreAgentUIIntent: (intentId: string) => Promise<AgentUIIntent>;
+  };
+
+  workflow: {
+    pauseRun: (runId: string) => Promise<PublicWorkflowRun>;
+    resumeRun: (runId: string) => Promise<PublicWorkflowRun>;
+    retryNode: (runId: string, nodeId: string) => Promise<PublicWorkflowRun>;
+    inspectNode: (runId: string, nodeId: string) => Promise<PublicWorkflowRun>;
+    convergeRun: (runId: string, verification?: string[]) => Promise<PublicWorkflowRun>;
+    decideNode: (
+      runId: string,
+      nodeId: string,
+      approved: boolean,
+      note: string,
+    ) => Promise<PublicWorkflowRun>;
+    listTemplates: () => Promise<WorkflowTemplate[]>;
+    draftTemplate: (request: string) => Promise<WorkflowTemplateInput>;
+    saveTemplate: (input: WorkflowTemplateInput, id?: string) => Promise<WorkflowTemplate>;
+    deleteTemplate: (id: string) => Promise<void>;
+    listRuns: (workspaceId: string) => Promise<PublicWorkflowRun[]>;
+    getRun: (id: string) => Promise<PublicWorkflowRun | null>;
+    startRun: (input: {
+      templateId: string;
+      workspaceId: string;
+      repoIds: string[];
+      kickoff: string;
+      workItemRef?: import('./change-review-types').WorkItemReference;
+    }) => Promise<PublicWorkflowRun>;
+    askSupervisor: (runId: string, question: string) => Promise<string>;
+    cancelRun: (runId: string) => Promise<PublicWorkflowRun | null>;
+  };
+
+  dbInsights: {
+    listArtifacts: (workspaceId: string) => Promise<DbInsightArtifact[]>;
+    addArtifact: (workspaceId: string, filePath: string) => Promise<DbInsightArtifact>;
+    removeArtifact: (id: string) => Promise<void>;
+    selectFiles: () => Promise<string[]>;
+    analyze: (workspaceId: string) => Promise<DbInsightAnalysis>;
+    getLatestAnalysis: (workspaceId: string) => Promise<DbInsightAnalysis | null>;
+  };
+
+  automations: {
+    list: (workspaceId: string) => Promise<AutomationDefinition[]>;
+    get: (automationId: string) => Promise<AutomationDefinition | null>;
+    create: (
+      workspaceId: string,
+      input: AutomationDefinitionInput,
+    ) => Promise<AutomationDefinition>;
+    update: (
+      automationId: string,
+      input: AutomationDefinitionInput,
+    ) => Promise<AutomationDefinition | null>;
+    remove: (automationId: string) => Promise<void>;
+    runNow: (automationId: string) => Promise<AutomationRun>;
+    triage: (workspaceId: string) => Promise<AutomationTriageItem[]>;
+    listRuns: (automationId: string) => Promise<AutomationRun[]>;
+    getRun: (runId: string) => Promise<AutomationRun | null>;
+    listRunEvents: (runId: string) => Promise<AutomationRunEvent[]>;
+    getDaemonStatus: () => Promise<AutomationDaemonStatus>;
+    reconcileDaemon: () => Promise<AutomationDaemonStatus>;
+  };
+
+  factories: {
+    draft: (request: string, workspaceId: string) => Promise<FactoryDefinitionInput>;
+    preview: (
+      definition: FactoryDefinitionInput,
+      factoryId?: string,
+      options?: FactoryPreviewOptions,
+    ) => Promise<FactoryPreview>;
+    save: (input: FactorySaveInput) => Promise<FactoryDefinition>;
+    activate: (input: FactoryActivateInput) => Promise<FactoryDefinition>;
+    list: (workspaceId?: string) => Promise<FactoryDefinition[]>;
+    get: (factoryId: string) => Promise<FactoryDefinition | null>;
+    listRuns: (factoryId: string) => Promise<FactoryRun[]>;
+    getRun: (runId: string) => Promise<FactoryRun | null>;
+    control: (input: FactoryControlInput) => Promise<FactoryDefinition>;
+    controlRun: (input: FactoryRunControlInput) => Promise<FactoryRun>;
+    listOrganizations: () => Promise<FactoryOrganizationOption[]>;
+    listOrganizationMembers: (organizationId: string) => Promise<FactoryOrganizationMember[]>;
+    validateOrganizationTeam: (
+      organizationId: string,
+      source: { host: 'github.com'; owner: string; repo: string },
+      teamId: string,
+    ) => Promise<boolean>;
+    registerOrganizationKey: (organizationId: string) => Promise<string>;
+    directory: (organizationId?: string) => Promise<FactoryDirectoryItem[]>;
+  };
+
+  dojo: {
+    setDelivery: (workspaceId: string, workItem: string, completed: boolean) => Promise<void>;
+
+    getAnalytics: (workspaceId: string, days: number) => Promise<DojoAnalytics>;
+    savePrice: (price: Omit<DojoPrice, 'updatedAt'>) => Promise<DojoPrice[]>;
+    setRecommendationState: (
+      workspaceId: string,
+      reportId: string,
+      key: string,
+      status: DojoRecommendationStatus,
+    ) => Promise<DojoRecommendationState>;
+
+    getConfig: (workspaceId: string) => Promise<DojoConfig>;
+    updateConfig: (workspaceId: string, input: DojoConfigInput) => Promise<DojoConfig>;
+    listReports: (workspaceId: string) => Promise<DojoReport[]>;
+    getReport: (reportId: string) => Promise<DojoReport | null>;
+    runNow: (workspaceId: string) => Promise<DojoReport>;
+  };
+
+  agentRuns: {
+    list: (workspaceId: string, limit?: number) => Promise<AgentRunSummary[]>;
+  };
+
+  onboard: {
+    detect: (repoId: string) => Promise<OnboardDetection>;
+    generateAgentsMd: (repoId: string) => Promise<string>;
+    generateDevcontainer: (repoId: string) => Promise<string>;
+    checkEnvironment: (repoId: string) => Promise<OnboardDetection['environmentStatus']>;
+    readArtifact: (repoId: string, artifactType: string) => Promise<string | null>;
+    writeArtifact: (repoId: string, artifactType: string, content: string) => Promise<void>;
+    writeAndCommit: (
+      repoId: string,
+      artifactType: string,
+      content: string,
+      commitMessage: string,
+    ) => Promise<void>;
+    installDep: (command: string) => Promise<{ success: boolean; error?: string }>;
+    onInstallOutput: (callback: (line: string) => void) => () => void;
+  };
+
+  changeReview: ChangeReviewApi;
+
+  workitems: {
+    list: (filters?: WorkItemFilters) => Promise<WorkItem[]>;
+    get: (id: string, connectionId?: string, fresh?: boolean) => Promise<WorkItem>;
+    plan: (id: string) => Promise<string>;
+    generateFixPrompt: (id: string) => Promise<string>;
+    listIterations: () => Promise<Iteration[]>;
+    search: (query: string) => Promise<WorkItem[]>;
+  };
+
+  security: {
+    runAudit: (repoId: string) => Promise<SecurityAudit>;
+    getAudit: (auditId: string) => Promise<SecurityAudit | null>;
+    getRunningAudit: (repoId: string) => Promise<SecurityAudit | null>;
+    listAudits: (repoId: string) => Promise<SecurityAudit[]>;
+    getFindings: (auditId: string) => Promise<SecurityFinding[]>;
+    dismissFinding: (findingId: string) => Promise<void>;
+    createWorkItem: (findingId: string) => Promise<string>;
+    createWorkItemsBulk: (findingIds: string[]) => Promise<string[]>;
+    exportReport: (auditId: string) => Promise<string>;
+    onAuditProgress: (
+      callback: (data: { repoId: string; message: string; percent: number }) => void,
+    ) => () => void;
+  };
+
+  run: {
+    detectScripts(repoId: string): Promise<RunCommand[]>;
+    detectAllScripts(repoIds: string[]): Promise<Record<string, RunCommand[]>>;
+    detectScriptsAi(repoId: string): Promise<RunCommand[]>;
+    saveCustomCommand(repoId: string, label: string, command: string): Promise<RunCommand>;
+    listSavedCommands(repoId: string): Promise<RunCommand[]>;
+    pinCommand(commandId: string): Promise<void>;
+    unpinCommand(commandId: string): Promise<void>;
+    deleteCommand(commandId: string): Promise<void>;
+    start(repoId: string, command: string): Promise<void>;
+    stop(repoId: string): Promise<void>;
+    getStatus(repoId: string): Promise<RunStatus | null>;
+    getOutput(repoId: string): Promise<string>;
+    onStarted(callback: (data: { repoId: string; command: string }) => void): () => void;
+    onStopped(
+      callback: (data: { repoId: string; exitCode: number | null; signal?: string }) => void,
+    ): () => void;
+  };
+
+  codereview: {
+    run: (
+      repoId: string,
+      mode: CodeReviewMode,
+      scopeType: CodeReviewScopeType,
+      scopeRef?: CodeReviewScopeRef,
+    ) => Promise<CodeReview>;
+    get: (reviewId: string) => Promise<CodeReview | null>;
+    getRunning: (repoId: string) => Promise<CodeReview | null>;
+    list: (repoId: string) => Promise<CodeReview[]>;
+    getFindings: (reviewId: string) => Promise<CodeReviewFinding[]>;
+    generateFixPrompt: (findingId: string) => Promise<string>;
+    generateBulkFixPrompt: (findingIds: string[]) => Promise<string>;
+    dismissFinding: (findingId: string) => Promise<void>;
+    postFindingToPullRequest: (findingId: string) => Promise<CodeReviewPullRequestComment>;
+    postReviewToPullRequest: (reviewId: string) => Promise<CodeReviewPullRequestComment>;
+    createWorkItem: (findingId: string) => Promise<string>;
+    createWorkItemsBulk: (findingIds: string[]) => Promise<string[]>;
+    exportReport: (reviewId: string) => Promise<string>;
+    listCommits: (
+      repoId: string,
+    ) => Promise<
+      Array<{ sha: string; shortSha: string; message: string; author: string; date: string }>
+    >;
+    listBranches: (repoId: string) => Promise<string[]>;
+    listPullRequests: (repoId: string) => Promise<CodeReviewPullRequest[]>;
+    visualisePullRequest: (
+      repoId: string,
+      pullRequestId: string,
+      options?: { force?: boolean; reviewId?: string },
+    ) => Promise<PullRequestVisualisation>;
+    getPullRequestVisualisation: (
+      repoId: string,
+      pullRequestId: string,
+    ) => Promise<PullRequestVisualisation | null>;
+    exportPullRequestVisualisation: (repoId: string, pullRequestId: string) => Promise<string>;
+    getPullRequestDiff: (repoId: string, pullRequestId: string) => Promise<PullRequestDiff>;
+    getChangeSummary: (reviewId: string) => Promise<RepositoryChangeSummary>;
+    onProgress: (
+      callback: (data: { repoId: string; message: string; percent: number }) => void,
+    ) => () => void;
+  };
+
+  ba: {
+    startSession: (
+      workItemId: string,
+      repoId: string,
+    ) => Promise<{ session: BaSession; codexSession: CodexSession }>;
+    endSession: (sessionId: string) => Promise<void>;
+    listSessions: (workItemId: string) => Promise<BaSession[]>;
+    listFindings: (workItemId: string) => Promise<BaFinding[]>;
+    createFinding: (finding: {
+      workItemId: string;
+      repoId: string;
+      sessionId?: string;
+      type: BaFindingType;
+      content: string;
+      sourceMessageId?: string;
+    }) => Promise<BaFinding>;
+    updateFinding: (id: string, updates: { status: BaFindingStatus }) => Promise<void>;
+    deleteFinding: (id: string) => Promise<void>;
+    createWorkItem: (findingId: string, input: WorkItemCreateInput) => Promise<BaFinding>;
+    getRepoLink: (workItemId: string) => Promise<BaRepoLink | null>;
+    setRepoLink: (workItemId: string, repoId: string) => Promise<void>;
+    saveMessage: (opts: {
+      sessionId: string;
+      role: 'user' | 'assistant' | 'system';
+      content: string;
+      eventType?: string;
+    }) => Promise<BaMessage>;
+    loadMessages: (sessionId: string) => Promise<BaMessage[]>;
+    onSpikeDrift: (callback: (data: { workItemId: string; repoId: string }) => void) => () => void;
+    onEvent: (callback: (event: CodexEvent) => void) => () => void;
+  };
+
+  adr: {
+    /** Scan all repos in a workspace for ADR files */
+    listByWorkspace: (workspaceId: string) => Promise<RepoAdrs[]>;
+  };
+
+  docs: {
+    listProjects: (
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<import('./types.js').LinearDocProject[]>;
+    listPages: (
+      spaceKey: string | undefined,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<DocPage[]>;
+    listChildren: (
+      pageId: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<DocPage[]>;
+    checkStaleness: (
+      pageId: string,
+      repoId: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<DocPage['staleness']>;
+    generateUpdate: (
+      pageId: string,
+      repoId: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<string>;
+    createPage: (
+      spaceKey: string,
+      title: string,
+      repoId: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<string>;
+    updatePage: (
+      pageId: string,
+      title: string,
+      content: string,
+      context: import('./types.js').DocsRequestContext,
+    ) => Promise<void>;
+  };
+
+  settings: {
+    getSecretStorageStatus: () => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    setupSecretVault: (
+      input: import('./secret-storage.js').SecretVaultSetup,
+    ) => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    unlockSecretVault: (
+      passphrase?: string,
+    ) => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    lockSecretVault: () => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    selectSecretStorageProvider: (
+      provider: import('./secret-storage.js').SecretStorageProvider,
+    ) => Promise<import('./secret-storage.js').CredentialStorageStatus>;
+    migrateSavedCredentials: () => Promise<import('./secret-storage.js').CredentialMigrationResult>;
+    get: () => Promise<AppSettings>;
+    update: (settings: Partial<AppSettings>) => Promise<void>;
+    getCodexStatus: () => Promise<CodexCliStatus>;
+    getCodexRuntimeStatus: () => Promise<CodexRuntimeStatus>;
+    installCodexRuntime: () => Promise<CodexRuntimeStatus>;
+    getCursorStatus: () => Promise<CursorCliStatus>;
+    getDevinStatus: () => Promise<DevinCliStatus>;
+    startDevinLogin: () => Promise<{ ok: boolean; error?: string }>;
+    getLlmGatewayStatus: (
+      forceModels?: boolean,
+      billingMode?: LlmGatewayBillingMode,
+    ) => Promise<LlmGatewayStatus>;
+    connectLlmGateway: (billingMode: LlmGatewayBillingMode) => Promise<LlmGatewayStatus>;
+    disconnectLlmGateway: () => Promise<LlmGatewayStatus>;
+    setCodexAgentMaxThreads: (maxThreads: number) => Promise<CodexCliStatus>;
+    testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
+    getLocalLlmCapabilities: () => Promise<LocalLlmCapabilities>;
+    testLocalLlm: () => Promise<{ ok: boolean; error?: string }>;
+    testWorkItemProviderConnection: () => Promise<{ ok: boolean; error?: string }>;
+    listLinearTeams: () => Promise<Array<{ id: string; name: string; key: string }>>;
+    testConfluenceConnection: () => Promise<{ ok: boolean; error?: string }>;
+    testDocsProviderConnection: () => Promise<{ ok: boolean; error?: string }>;
+    testGitConnection: () => Promise<{ ok: boolean; error?: string }>;
+    getNotionMcpStatus: () => Promise<{ installed: boolean; error?: string }>;
+    installNotionMcp: () => Promise<{ success: boolean; error?: string }>;
+    startNotionOAuthFlow: () => Promise<{ authUrl: string; state: string; error?: string }>;
+    exchangeNotionOAuthCode: (code: string) => Promise<{ success: boolean; error?: string }>;
+    getCodexAgentsFile: () => Promise<{
+      path: string;
+      content: string;
+      exists: boolean;
+      updatedAt?: string;
+    }>;
+    saveCodexAgentsFile: (content: string) => Promise<{
+      path: string;
+      savedAt: string;
+      bytes: number;
+    }>;
+    resetOnboarding: () => Promise<{ success: boolean; error?: string }>;
+  };
+
+  codexRegistry: {
+    snapshot: () => Promise<CodexRegistrySnapshot>;
+    recommendations: () => Promise<SkillRecommendationCatalog>;
+    inspectCollection: (input: SkillRecommendationSelection) => Promise<SkillCollectionInspection>;
+    installCollection: (
+      input: SkillRecommendationSelection & { skillName?: string },
+    ) => Promise<CodexRegistryActionResult>;
+    saveRecommendations: (input: SaveSkillRecommendationsInput) => Promise<void>;
+    searchSkills: (query: string) => Promise<CodexSkillSearchResult[]>;
+    installSkill: (input: CodexSkillInstallInput) => Promise<CodexRegistryActionResult>;
+    registerMcp: (input: CodexMcpRegisterInput) => Promise<CodexRegistryActionResult>;
+  };
+
+  codexUsage: {
+    snapshot: () => Promise<CodexUsageSnapshot>;
+  };
+
+  syncBackend: {
+    discover: (url: string) => Promise<SyncBackendDiscovery>;
+    pin: (input: SyncBackendPinInput) => Promise<SyncBackendStatus>;
+    status: () => Promise<SyncBackendStatus>;
+    disconnect: () => Promise<SyncBackendStatus>;
+    resolveReview: (backendId: string) => Promise<SyncBackendStatus>;
+    integrationPrompt: () => Promise<string>;
+  };
+
+  syncRuntime: {
+    createRemoteChat: (input: CreateRemoteChatInput) => Promise<RemoteChatRecord>;
+    listRemoteChats: (workspaceId?: string) => Promise<RemoteChatRecord[]>;
+    getRemoteChat: (id: string) => Promise<RemoteChatRecord | null>;
+    sendRemoteChat: (input: SendRemoteChatInput) => Promise<RemoteChatRecord>;
+    cancelRemoteChat: (id: string) => Promise<RemoteChatRecord>;
+    endRemoteChat: (id: string) => Promise<RemoteChatRecord>;
+
+    status: () => Promise<SyncRuntimeStatus>;
+    listCloudProviderConnections: () => Promise<CloudEnvironmentProviderConnection[]>;
+    addCloudProviderConnection: (input: {
+      provider: EnvironmentProviderId;
+      displayName?: string;
+      config: Record<string, unknown>;
+      secret?: string;
+    }) => Promise<CloudEnvironmentProviderConnection>;
+    removeCloudProviderConnection: (connectionId: string) => Promise<boolean>;
+    listLocalCloudEnvironments: () => Promise<LocalCloudEnvironment[]>;
+    listCloudEnvironments: (
+      includeTerminal?: boolean,
+    ) => Promise<{ environments: CloudEnvironmentRecord[] }>;
+    getManagedEnvironmentLimits: () => Promise<{
+      maxTtlSeconds: number;
+      maxConcurrent: number;
+    }>;
+    requestCloudEnvironment: (input: {
+      provider: EnvironmentProviderId;
+      ttlSeconds: number;
+      environmentId?: string;
+      imageRef?: string;
+      networkPolicy?: string[];
+      resources?: { vcpus?: number; memoryMb?: number };
+      displayName?: string;
+      connectionId?: string;
+    }) => Promise<{ environmentId: string; job: JobSummary }>;
+    reapCloudEnvironment: (environmentId: string) => Promise<CloudEnvironmentRecord>;
+    preview: () => Promise<SyncAdoptionPreviewItem[]>;
+    /** Production sign-in: system-browser OIDC + PKCE at the pinned backend. */
+    signIn: () => Promise<SyncAuthPublicSnapshot>;
+    /** Discover the configured Mezair service and sign in; uploading stays off. */
+    connectHosted: () => Promise<SyncAuthPublicSnapshot>;
+    /** Cancel hosted discovery or OIDC sign-in without signing out a saved session. */
+    cancelSignIn: () => Promise<void>;
+    enrollWithCode: (code: string) => Promise<SyncAuthPublicSnapshot>;
+    issueEnrollmentCode: () => Promise<SyncIssuedEnrollmentCode>;
+    spikeEnroll: (input: SyncSpikeEnrollInput) => Promise<SyncAuthPublicSnapshot>;
+    enable: () => Promise<SyncRuntimeStatus>;
+    signOut: () => Promise<SyncRuntimeStatus>;
+    conflicts: () => Promise<SyncConflictView[]>;
+    resolveConflict: (
+      conflictId: string,
+      resolution: SyncConflictResolutionChoice,
+    ) => Promise<SyncRuntimeStatus>;
+    /** Redacted sync diagnostics bundle; safe to share with an operator. */
+    diagnostics: () => Promise<SyncDiagnostics>;
+    /**
+     * BILL-05: re-check hosted access via session.describe and return the
+     * current renderer-safe view. Null when the backend reports no hosted
+     * entitlement (self-host) or the session is signed out.
+     */
+    refreshHostedEntitlement: () => Promise<SyncHostedStatus | null>;
+    /**
+     * Opens the fixed hosted account page (https://mezair.dev/account) in the
+     * system browser. Payment state is never read back from a URL — the
+     * backend remains the only source of truth.
+     */
+    openHostedAccount: () => Promise<void>;
+    /**
+     * Device-local mesh worker opt-in (MESH-02). Publishes the device policy
+     * and connects a leased worker incarnation when enabled; requires sync.
+     */
+    setMeshWorker: (enabled: boolean) => Promise<MeshWorkerStatus>;
+    setMeshMaximumPermissionMode: (
+      mode: import('../../cloud/contract/permissions.js').PermissionMode,
+    ) => Promise<MeshWorkerStatus>;
+    /** All enrollments on the account, including revoked rows and self. */
+    listDevices: () => Promise<SyncDevice[]>;
+    /** Rename any same-account enrollment; empty string clears the name. */
+    renameDevice: (enrollmentId: string, displayName: string) => Promise<SyncDeviceRenameResult>;
+    /** Revoke an enrollment; idempotent and severs its live sessions. */
+    revokeDevice: (enrollmentId: string) => Promise<SyncDeviceRevokeResult>;
+    /** Short authentication string for out-of-band device verification. */
+    verifyDevice: (enrollmentId: string) => Promise<SyncDeviceVerification>;
+    /** Read the current enrollment's trust and recovery state. */
+    getDeviceSecurityStatus: () => Promise<SyncDeviceSecurityStatus>;
+    /** Configure recovery and the new-device trust policy for a new account. */
+    setupDeviceRecovery: (policy: SyncDeviceTrustPolicy) => Promise<SyncDeviceRecoveryResult>;
+    /** Unlock this enrollment's local account key with the saved recovery code. */
+    unlockDeviceRecovery: (code: string) => Promise<SyncDeviceSecurityStatus>;
+    /** Change how future authenticated enrollments are trusted. */
+    setNewDeviceTrustPolicy: (policy: SyncDeviceTrustPolicy) => Promise<SyncDeviceSecurityStatus>;
+    /** Replace the recovery secret; the new code is returned exactly once. */
+    replaceDeviceRecovery: () => Promise<SyncDeviceRecoveryResult>;
+    /** Permanently discard encrypted account data after an explicit acknowledgement. */
+    resetEncryptedSyncAccount: (
+      confirmation: SyncEncryptedSyncAccountResetConfirmation,
+    ) => Promise<void>;
+    /** Approve a pending enrollment after the user compares its verification code. */
+    approveDeviceTrust: (enrollmentId: string, verificationCode: string) => Promise<void>;
+    /**
+     * DASH-01: browser dashboard authorization requests and live grants —
+     * pending rows await a trusted-device decision.
+     */
+    listDashboardRequests: () => Promise<SyncDashboardRequest[]>;
+    /** Workspaces and repositories available for an explicit browser grant. */
+    listDashboardWorkspaces: () => Promise<SyncDashboardGrantWorkspace[]>;
+    /**
+     * Approve or deny a pending request. Approval mints a scoped DSK, seals
+     * it to the browser's public key, and starts the snapshot stream.
+     */
+    decideDashboardRequest: (
+      requestId: string,
+      decision: 'approved' | 'denied',
+      approval?: SyncDashboardGrantApproval,
+    ) => Promise<SyncDashboardGrantDecisionResult>;
+    /** Revoke a live grant — the sealed snapshot stream ends immediately. */
+    revokeDashboardAccess: (requestId: string) => Promise<void>;
+    /** Export the account's synced entities to a user-chosen JSON file. */
+    exportDataToFile: () => Promise<SyncDataExportFileResult>;
+    /** Pick an export file and stage an import plan; nothing applies yet. */
+    previewDataImportFromFile: () => Promise<SyncDataImportFilePreview>;
+    /** Apply a staged import plan. */
+    commitDataImport: (operationId: string) => Promise<SyncDataImportCommitResult>;
+    /** Account-wide mesh jobs (most recent 100). */
+    listMeshJobs: () => Promise<JobSummary[]>;
+    /** One job plus its execution attempts. */
+    getMeshJob: (jobId: string) => Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }>;
+    /**
+     * Request cancellation — the job sits in `cancel-requested` until
+     * stopping is verified; it never masks as `cancelled` early.
+     */
+    cancelMeshJob: (jobId: string) => Promise<JobSummary>;
+    /** Approval records for a job (pending and decided). */
+    getMeshApprovals: (jobId: string) => Promise<ApprovalRecord[]>;
+    decideMeshApproval: (
+      approvalId: string,
+      decision: ApprovalDecision,
+      reason?: string,
+    ) => Promise<{ approval: ApprovalRecord; job: JobSummary; duplicate: boolean }>;
+    /** Handoffs this device participated in, refreshed against the backend. */
+    listMeshHandoffs: () => Promise<HandoffRecord[]>;
+    /** Local ownership mirror + live handoff rows for a chat session. */
+    getSessionMeshState: (sessionId: string) => Promise<SessionMeshState>;
+    /**
+     * Move a chat session to another device (SESSION-03). Runs the
+     * readiness gate first — `{ok:false}` returns remediations, never a
+     * half-moved session.
+     */
+    initiateSessionHandoff: (
+      sessionId: string,
+      targetEnrollmentId: string,
+      cloudAuthChoice?: RemoteCodexAccountAuthChoice,
+    ) => Promise<SyncInitiateHandoffResult>;
+    /**
+     * Subscribe to an attempt's activity stream (live socket + durable
+     * replay). Returns the unsubscribe function.
+     */
+    observeAttemptActivity: (
+      attemptId: string,
+      listener: (item: SyncAttemptActivity) => void,
+    ) => () => void;
+  };
+
+  mezairCloud: {
+    snapshot: () => Promise<MezairCloudWorkbenchSnapshot>;
+    run: (commandId: MezairCloudCommandId, cwd: string) => Promise<MezairCloudCommandResult>;
+    openLens: (cwd: string) => Promise<{
+      success: boolean;
+      url?: string;
+      result: MezairCloudCommandResult;
+      error?: string;
+    }>;
+    executionConnection: () => Promise<MezairCloudExecutionConnection>;
+    saveExecutionConnection: (
+      input: MezairCloudExecutionConnectionInput,
+    ) => Promise<MezairCloudExecutionConnection>;
+    clearExecutionConnection: () => Promise<MezairCloudExecutionConnection>;
+    testExecutionConnection: () => Promise<MezairCloudExecutionConnectionTest>;
+    listExecutions: () => Promise<MezairCloudExecutionLease[]>;
+    getExecution: (executionId: string) => Promise<MezairCloudExecutionLease>;
+    startExecution: (
+      input: MezairCloudExecutionStartInput,
+    ) => Promise<MezairCloudExecutionStartResult>;
+    executionEvents: (
+      executionId: string,
+      cursor?: string,
+    ) => Promise<MezairCloudExecutionEventBatch>;
+    resolveExecutionApproval: (input: {
+      executionId: string;
+      requestId: string;
+      decision: 'approved' | 'rejected';
+      reason?: string;
+    }) => Promise<MezairCloudExecutionLease>;
+    steerExecution: (executionId: string, message: string) => Promise<MezairCloudExecutionLease>;
+    collectExecution: (executionId: string) => Promise<MezairCloudExecutionLease>;
+    terminateExecution: (executionId: string) => Promise<MezairCloudExecutionLease>;
+  };
+
+  diagrams: {
+    list: (repoId: string) => Promise<DiagramFile[]>;
+    read: (repoId: string, filename: string) => Promise<DiagramFile | null>;
+    write: (repoId: string, filename: string, xml: string) => Promise<void>;
+    delete: (repoId: string, filename: string) => Promise<void>;
+    generate: (
+      repoId: string,
+      context: string,
+      existingXml?: string,
+    ) => Promise<{ title: string; drawioXml: string }>;
+    cancelGenerate: () => Promise<void>;
+    initialize: (repoId: string) => Promise<DiagramFile[]>;
+    dirExists: (repoId: string) => Promise<boolean>;
+    openEditor: (repoId: string, filename: string) => Promise<void>;
+    checkDrawio: () => Promise<{ available: boolean }>;
+  };
+
+  workspace: {
+    list: () => Promise<WorkspaceSummary[]>;
+    activityFeed: () => Promise<WorkspaceActivitySummary[]>;
+    get: (id: string) => Promise<WorkspaceWithRepos>;
+    getPreferences: (id: string) => Promise<WorkspacePreferences | null>;
+    create: (opts: WorkspaceCreateOptions) => Promise<Workspace>;
+    update: (id: string, opts: WorkspaceUpdateOptions) => Promise<Workspace>;
+    delete: (id: string) => Promise<void>;
+    addRepos: (workspaceId: string, repoIds: string[]) => Promise<void>;
+    removeRepos: (workspaceId: string, repoIds: string[]) => Promise<void>;
+    updatePreferences: (
+      workspaceId: string,
+      updates: {
+        workitems?: Record<string, unknown>;
+        docs?: Record<string, unknown>;
+        launch?: Record<string, unknown>;
+      },
+    ) => Promise<WorkspacePreferences>;
+    clearPreferences: (
+      workspaceId: string,
+      sections?: Array<'workitems' | 'docs' | 'launch'>,
+    ) => Promise<WorkspacePreferences>;
+    exportVSCodeWorkspace: (workspaceId: string) => Promise<void>;
+    openInNewWindow: (workspaceId: string) => Promise<void>;
+    repoDefinitions: (workspaceId: string) => Promise<WorkspaceRepoDefinition[]>;
+    mapRepo: (workspaceId: string, portableId: string, repoId: string) => Promise<void>;
+    /** WS-02: journalled clone of unmapped repo definitions under a root. */
+    startClone: (input: WorkspaceCloneRequest) => Promise<WorkspaceCloneResult>;
+    /** WS-02: link an existing local checkout to a portable definition entry. */
+    linkRepo: (
+      workspaceId: string,
+      portableId: string,
+      checkoutPath: string,
+      options?: { allowRemoteDivergence?: boolean },
+    ) => Promise<WorkspaceLinkResult>;
+    /** WS-02: detach a checkout mapping; optionally quarantine Mezair-created files. */
+    removeCheckout: (
+      workspaceId: string,
+      portableId: string,
+      options?: { deleteCheckout?: boolean },
+    ) => Promise<WorkspaceRemoveCheckoutResult>;
+    /** WS-02: second explicit irreversible purge of a quarantined checkout. */
+    purgeQuarantine: (quarantineId: string) => Promise<void>;
+    materializationOps: (workspaceId: string) => Promise<WorkspaceMaterializationOpSummary[]>;
+    /** WS-03: recipe, current digest, approval state, and run history. */
+    bootstrapStatus: (workspaceId: string) => Promise<WorkspaceBootstrapStatus>;
+    /** WS-03: pin a local approval to the current digest and start the run. */
+    bootstrapApprove: (
+      workspaceId: string,
+      options?: { shellApproved?: boolean },
+    ) => Promise<{ approval: WorkspaceBootstrapApprovalSummary; runId: string | null }>;
+    /** WS-03: journal + start a run; parks in awaiting-approval without a pin. */
+    bootstrapRun: (workspaceId: string) => Promise<string>;
+    bootstrapApprovals: (workspaceId: string) => Promise<WorkspaceBootstrapApprovalSummary[]>;
+    bootstrapRevokeApproval: (approvalId: string) => Promise<{ revoked: boolean }>;
+  };
+
+  agents: {
+    list: () => Promise<EditableAgent[]>;
+    save: (input: EditableAgentInput, agentId?: string) => Promise<EditableAgent>;
+    delete: (agentId: string) => Promise<void>;
+  };
+
+  workspaceScaffold: {
+    start: (workspaceId: string, rootPath: string) => Promise<WorkspaceScaffoldStartResult>;
+    getByWorkspace: (workspaceId: string) => Promise<WorkspaceScaffoldSession | null>;
+    maybeComplete: (
+      workspaceId: string,
+      assistantMessage: string,
+    ) => Promise<WorkspaceScaffoldMaybeCompleteResult>;
+    cancel: (workspaceId: string) => Promise<void>;
+  };
+
+  launch: {
+    getPendingIntent: () => Promise<OpenInMezairLaunchIntent | null>;
+    clearPendingIntent: () => Promise<void>;
+    onIntent: (callback: (intent: OpenInMezairLaunchIntent) => void) => () => void;
+  };
+
+  design: {
+    checkReadiness: () => Promise<DesignReadiness>;
+    registerFigmaMcp: () => Promise<{ success: boolean; error?: string }>;
+    installFrontendSkill: () => Promise<{ success: boolean; error?: string }>;
+  };
+
+  terminal: {
+    create(workspaceId: string, repoId: string, cwd: string): Promise<{ terminalId: string }>;
+    list(workspaceId: string): Promise<TerminalSessionSummary[]>;
+    attach(terminalId: string, afterSequence?: number): Promise<TerminalAttachResult>;
+    detach(terminalId: string): void;
+    input(terminalId: string, data: string): void;
+    resize(terminalId: string, cols: number, rows: number): void;
+    close(terminalId: string): Promise<void>;
+    onData(callback: (data: TerminalDataEvent) => void): () => void;
+    onExit(callback: (data: TerminalExitEvent) => void): () => void;
+    onClosed(callback: (data: TerminalClosedEvent) => void): () => void;
+  };
+
+  browser: {
+    listTargets(): Promise<DevServerTarget[]>;
+    addTarget(url: string): Promise<DevServerTarget>;
+    getBridgeStatus(): Promise<BrowserBridgeStatus>;
+    startBridge(id: number, workspaceId: string): Promise<{ port: number }>;
+    stopBridge(): Promise<void>;
+    attachDebugger(id: number, workspaceId: string): Promise<void>;
+    detachDebugger(id: number): Promise<void>;
+    registerMcp(): Promise<{ success: boolean; error?: string }>;
+    onTargetDetected(callback: (target: DevServerTarget) => void): () => void;
+  };
+
+  simulatorPreview: {
+    getStatus(): Promise<SimulatorPreviewStatus>;
+    start(options?: SimulatorPreviewStartOptions): Promise<SimulatorPreviewStatus>;
+    stop(): Promise<void>;
+  };
+
+  argent: {
+    getSnapshot(): Promise<ArgentWorkbenchSnapshot>;
+    runCommand(commandId: ArgentCommandId): Promise<ArgentCommandResult>;
+    startSimulatorPreview(): Promise<SimulatorPreviewStatus>;
+  };
+
+  editor: {
+    getStatus(): Promise<EmbeddedEditorStatus>;
+    start(workspaceId: string): Promise<EmbeddedEditorStatus>;
+    stop(): Promise<void>;
+    focusTarget(
+      target: EmbeddedEditorTarget,
+      options?: { startServer?: boolean },
+    ): Promise<EmbeddedEditorFocusResult>;
+    openExternal(target: EmbeddedEditorTarget): Promise<void>;
+  };
+
+  git: {
+    status(repoId: string): Promise<GitStatusResult>;
+    workspaceStatus(repoIds: string[]): Promise<GitWorkspaceStatus>;
+    stage(repoId: string, paths: string[]): Promise<void>;
+    unstage(repoId: string, paths: string[]): Promise<void>;
+    discard(repoId: string, paths: string[]): Promise<void>;
+    commit(repoId: string, message: string): Promise<string>;
+    generateCommitMessage(repoId: string): Promise<string>;
+    createPullRequest(repoId: string): Promise<GitPullRequestCreateResult>;
+    prepareTurnDelivery(
+      repoId: string,
+      paths: string[],
+      mode: import('./scoped-git').TurnDeliveryMode,
+    ): Promise<import('./scoped-git').PreparedTurnDelivery>;
+    commitTurnDelivery(
+      repoId: string,
+      reviewId: string,
+      message: string,
+    ): Promise<import('./scoped-git').TurnDeliveryCommitResult>;
+    createTurnPullRequest(
+      repoId: string,
+      reviewId: string,
+      message: string,
+    ): Promise<import('./scoped-git').TurnPullRequestResult>;
+    push(repoId: string, remote?: string, branch?: string, setUpstream?: boolean): Promise<string>;
+    pull(repoId: string, remote?: string, branch?: string): Promise<string>;
+    fetch(repoId: string, remote?: string): Promise<void>;
+    log(repoId: string, count?: number): Promise<GitLogEntry[]>;
+    branches(repoId: string): Promise<GitBranchInfo[]>;
+    createBranch(repoId: string, name: string, startPoint?: string): Promise<void>;
+    switchBranch(repoId: string, name: string): Promise<void>;
+    deleteBranch(repoId: string, name: string, force?: boolean): Promise<void>;
+    diff(repoId: string, filePath: string, staged: boolean): Promise<GitDiffResult>;
+    merge(repoId: string, branch: string): Promise<string>;
+  };
+
+  cicd: {
+    analyze(repoId: string): Promise<CicdPipelineAnalysis>;
+    createPipeline(
+      repoId: string,
+      input: CicdCreatePipelineInput,
+    ): Promise<CicdCreatePipelineResult>;
+  };
+
+  voice: {
+    requestPermission(): Promise<{
+      granted: boolean;
+      status: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
+      error?: string;
+    }>;
+    startListening(): Promise<{ success: boolean; error?: string; fallback?: boolean }>;
+    stopListening(): Promise<{ success: boolean; error?: string }>;
+    getStatus(): Promise<{ isListening: boolean }>;
+    onResult(callback: (text: string) => void): () => void;
+    onError(callback: (error: string) => void): () => void;
+    onStatus(callback: (status: 'listening' | 'stopped' | 'error') => void): () => void;
+  };
+
+  dependencies: {
+    list: (repoId: string) => Promise<DependencyRecord[]>;
+    audit: (repoId: string, manager: DependencyRecord['manager']) => Promise<DependencyAuditResult>;
+    auditLicenses: (repoId: string) => Promise<LicenseAuditResult>;
+    exportSbom: (repoId: string, format: SbomFormat) => Promise<string>;
+  };
+
+  compliance: {
+    generate(repoId: string, docType: ComplianceDocType): Promise<ComplianceDocument>;
+    list(repoId: string): Promise<ComplianceDocument[]>;
+    read(repoId: string, docType: ComplianceDocType): Promise<ComplianceDocument | null>;
+    onProgress(
+      callback: (data: {
+        repoId: string;
+        docType: ComplianceDocType;
+        message: string;
+        percent: number;
+      }) => void,
+    ): () => void;
+  };
+
+  governance: {
+    listBoards(workspaceId: string): Promise<GovernanceBoard[]>;
+    createBoard(workspaceId: string, name: string, description?: string): Promise<GovernanceBoard>;
+    updateBoard(
+      id: string,
+      opts: { name?: string; description?: string },
+    ): Promise<GovernanceBoard>;
+    deleteBoard(id: string): Promise<void>;
+    listDocuments(workspaceId: string, boardId?: string): Promise<GovernanceDocument[]>;
+    addDocument(
+      workspaceId: string,
+      filePath: string,
+      boardId?: string,
+      description?: string,
+    ): Promise<GovernanceDocument>;
+    updateDocument(
+      id: string,
+      opts: { boardId?: string | null; description?: string },
+    ): Promise<GovernanceDocument>;
+    removeDocument(id: string): Promise<void>;
+    selectFiles(): Promise<string[]>;
+  };
+
+  lifecycle: {
+    createItem(
+      workspaceId: string,
+      opts: {
+        title: string;
+        description?: string;
+        changeClassification?: 'major' | 'minor' | 'standard';
+        linkedWorkItemId?: string;
+        linkedWorkItemProvider?: WorkItemProvider;
+      },
+    ): Promise<LifecycleItem>;
+    updateItem(
+      id: string,
+      opts: Partial<
+        Pick<LifecycleItem, 'title' | 'description' | 'stage' | 'changeClassification'>
+      > & {
+        linkedWorkItemId?: string | null;
+        linkedWorkItemProvider?: WorkItemProvider | null;
+      },
+    ): Promise<LifecycleItem>;
+    deleteItem(id: string): Promise<void>;
+    getItem(id: string): Promise<LifecycleItem | null>;
+    listItems(workspaceId: string, filters?: { stage?: LifecycleStage }): Promise<LifecycleItem[]>;
+    linkRepos(lifecycleItemId: string, repoIds: string[]): Promise<void>;
+    unlinkRepo(lifecycleItemId: string, repoId: string): Promise<void>;
+    listStages(workspaceId: string): Promise<LifecycleStageDefinition[]>;
+    updateStages(
+      workspaceId: string,
+      stages: LifecycleStageUpdate[],
+    ): Promise<LifecycleStageDefinition[]>;
+    resetStages(workspaceId: string): Promise<LifecycleStageDefinition[]>;
+    getGateTemplates(workspaceId: string): Promise<GateTemplate[]>;
+    updateGateTemplate(
+      workspaceId: string,
+      gate: GateId,
+      updates: GateTemplateUpdate,
+    ): Promise<GateTemplate>;
+    resetGateTemplates(workspaceId: string): Promise<GateTemplate[]>;
+    checkReadiness(lifecycleItemId: string, gate: GateId): Promise<GateReadinessResult>;
+    recordGateDecision(
+      lifecycleItemId: string,
+      opts: {
+        gate: GateId;
+        decision: GateDecisionOutcome;
+        decidedBy: string;
+        conditions?: string;
+        rationale?: string;
+      },
+    ): Promise<GateDecision>;
+    listGateDecisions(lifecycleItemId: string): Promise<GateDecision[]>;
+    runImpactAnalysis(
+      lifecycleItemId: string,
+      opts: {
+        scopeType: string;
+        scopeRef?: string;
+      },
+    ): Promise<ImpactAnalysis>;
+    getImpactAnalysis(id: string): Promise<ImpactAnalysis | null>;
+    listImpactAnalyses(lifecycleItemId: string): Promise<ImpactAnalysis[]>;
+    generateHandoverPack(lifecycleItemId: string): Promise<HandoverPack>;
+    listHandoverPacks(lifecycleItemId: string): Promise<HandoverPack[]>;
+    exportHandoverPack(packId: string): Promise<string>;
+    onAnalysisProgress(
+      callback: (data: { lifecycleItemId: string; message: string; percent: number }) => void,
+    ): () => void;
+    onHandoverProgress(
+      callback: (data: {
+        lifecycleItemId: string;
+        section: string;
+        message: string;
+        percent: number;
+      }) => void,
+    ): () => void;
+  };
+
+  surfaces: import('./surfaces/ipc.js').SurfacesApi;
+  shares: import('./shares-ipc.js').SharesApi;
+  library: import('./library-ipc.js').LibraryApi;
+}
+
+export interface BrandAPI {
+  get: () => Promise<Brand>;
+}
+
+declare global {
+  interface Window {
+    mezair: MezairAPI;
+    devhub: MezairAPI;
+    brand: BrandAPI;
+  }
+}

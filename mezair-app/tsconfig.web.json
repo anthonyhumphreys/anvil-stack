@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ESNext",
+    "strict": true,
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "out",
+    "rootDir": ".",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"]
+  },
+  "include": [
+    "src/renderer/**/*",
+    "src/shared/**/*",
+    "cloud/contract/**/*.ts",
+    "cloud/contract/**/*.json",
+    "cloud/provisioner/src/bootstrap.ts",
+    "cloud/provisioner/src/lifecycle.ts",
+    "mobile/lib/home-summary.ts"
+  ]
+}

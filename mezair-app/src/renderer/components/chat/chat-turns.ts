@@ -1,0 +1,491 @@
+import type { AgentUIQuestionIntent, AgentUISurfaceIntent } from '../../../shared/agent-ui-intents';
+import type { CodexEvent } from '../../../shared/types';
+import type { ChatEntry } from '../../contexts/ChatContext';
+import { isPendingChatUserEntry } from '../../utils/chat-entry-order';
+
+type AssistantEntry = Extract<ChatEntry, { kind: 'assistant' }> & {
+  itemId?: string;
+  phase?: 'progress' | 'final';
+};
+
+export type IndexedChatEntry<T extends ChatEntry = ChatEntry> = T & { sourceIndex: number };
+
+export type ChatTurnWorkItem =
+  | {
+      kind: 'progress';
+      content: string;
+      sourceIndex: number;
+    }
+  | {
+      kind: 'thinking';
+      content: string;
+      sourceIndex: number;
+    }
+  | {
+      kind: 'event';
+      event: CodexEvent;
+      sourceIndex: number;
+    };
+
+/**
+ * H5 — per-turn usage/context/cost rollup, aggregated from `usage` deltas
+ * (Codex token totals, deduplicated by `usageId`) and `usage_context`
+ * snapshots (ACP context window + observed USD cost).
+ */
+export interface ChatTurnUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  /** Latest context-window snapshot, when the provider reports one. */
+  contextUsed?: number;
+  contextSize?: number;
+  /** USD cost — observed (ACP) or priced from `usagePrice` (Codex). */
+  costUsd?: number;
+  model?: string;
+}
+
+/** An inline surface published during the turn; it renders in the reply, not the work log. */
+export interface ChatTurnSurface {
+  intent: AgentUISurfaceIntent;
+  sourceIndex: number;
+}
+
+export interface ComposedChatTurn {
+  key: string;
+  startedAt?: string;
+  endedAt?: string;
+  user: IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | null;
+  work: ChatTurnWorkItem[];
+  answer: IndexedChatEntry<AssistantEntry> | null;
+  trailingWork: ChatTurnWorkItem[];
+  /** Surfaces in publish order; compare `sourceIndex` with `answer` to place them. */
+  surfaces: ChatTurnSurface[];
+  /** Answer receipts remain visible after their composer prompt closes. */
+  questionReceipts?: AgentUIQuestionIntent[];
+  usage?: ChatTurnUsage;
+  /** Provider-reported turn lifecycle. Missing means the provider supplied no terminal outcome. */
+  runOutcome?: NonNullable<CodexEvent['turnOutcome']>;
+  pendingMessages?: Array<IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>>>;
+  questionReceiptSourceIndexes?: Record<string, number>;
+}
+
+interface AssistantSegment {
+  entry: IndexedChatEntry<AssistantEntry>;
+  sourceIndexes: number[];
+}
+
+export function composeChatTurns(
+  entries: ChatEntry[],
+  options: { active?: boolean } = {},
+): ComposedChatTurn[] {
+  const pendingTurns: Array<Array<IndexedChatEntry>> = [];
+  let pending: Array<IndexedChatEntry> = [];
+
+  const flush = () => {
+    if (pending.length > 0) pendingTurns.push(pending);
+    pending = [];
+  };
+
+  for (const [sourceIndex, entry] of entries.entries()) {
+    const indexed = { ...entry, sourceIndex } as IndexedChatEntry;
+    if (isPendingChatUserEntry(entry)) {
+      pending.push(indexed);
+      continue;
+    }
+    if (entry.kind === 'user') flush();
+    pending.push(indexed);
+  }
+  flush();
+
+  return pendingTurns.map((turnEntries, turnIndex) =>
+    composeTurn(turnEntries, options.active === true && turnIndex === pendingTurns.length - 1),
+  );
+}
+
+export type ApprovalAwareWorkSegment =
+  | {
+      kind: 'routine';
+      key: string;
+      items: ChatTurnWorkItem[];
+      expandedByDefault: boolean;
+    }
+  | {
+      kind: 'approval';
+      key: string;
+      item: Extract<ChatTurnWorkItem, { kind: 'event' }>;
+    };
+
+/** Split routine activity around pending approvals without losing source order. */
+export function buildApprovalAwareWorkSegments(
+  items: readonly ChatTurnWorkItem[],
+): ApprovalAwareWorkSegment[] {
+  const resolvedRequests = new Set(
+    items.flatMap((item) => {
+      if (item.kind !== 'event' || item.event.type !== 'request_resolved') return [];
+      if (item.event.resolvedRequestId === undefined) return [];
+      return [requestKey(item.event, item.event.resolvedRequestId)];
+    }),
+  );
+
+  const segments: ApprovalAwareWorkSegment[] = [];
+  let routineItems: ChatTurnWorkItem[] = [];
+  const flushRoutine = (expandedByDefault: boolean) => {
+    if (routineItems.length === 0) return;
+    const firstIndex = routineItems[0].sourceIndex;
+    segments.push({
+      kind: 'routine',
+      key: `work-${firstIndex}`,
+      items: routineItems,
+      expandedByDefault,
+    });
+    routineItems = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === 'event' && item.event.type === 'request_resolved') continue;
+    if (item.kind === 'event' && item.event.type === 'approval_request') {
+      const requestId = item.event.approvalRequestId;
+      if (requestId !== undefined && resolvedRequests.has(requestKey(item.event, requestId))) {
+        continue;
+      }
+
+      flushRoutine(true);
+      segments.push({
+        kind: 'approval',
+        key:
+          requestId === undefined
+            ? `approval-${item.event.sessionId ?? item.event.appThreadId ?? 'thread'}-index-${item.sourceIndex}`
+            : `approval-${requestKey(item.event, requestId)}`,
+        item,
+      });
+      continue;
+    }
+
+    routineItems.push(item);
+  }
+  flushRoutine(false);
+  return segments;
+}
+
+function requestKey(event: CodexEvent, requestId: string | number): string {
+  return `${event.sessionId ?? event.appThreadId ?? 'thread'}:${typeof requestId}:${String(requestId)}`;
+}
+
+function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): ComposedChatTurn {
+  const userEntry = entries.find(
+    (entry) => entry.kind === 'user' && !isPendingChatUserEntry(entry),
+  ) as IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | undefined;
+  const pendingMessages = entries.filter(
+    (entry): entry is IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> =>
+      entry.kind === 'user' && isPendingChatUserEntry(entry),
+  );
+  const assistantSegments = coalesceAssistantSegments(entries);
+  const explicitFinal = [...assistantSegments]
+    .reverse()
+    .find((segment) => segment.entry.phase === 'final');
+  // When no provider tagged a final segment (or phases are unknown), fall back
+  // to the last progress-free segment so the answer always renders as an
+  // answer rather than being buried in the work log.
+  const fallbackFinal = [...assistantSegments]
+    .reverse()
+    .find((segment) => segment.entry.phase !== 'progress');
+  const answerSegment = explicitFinal ?? (active ? undefined : fallbackFinal);
+  const answerSourceIndexes = new Set(answerSegment?.sourceIndexes ?? []);
+  const answerEndSourceIndex =
+    answerSegment && answerSegment.sourceIndexes.length > 0
+      ? Math.max(...answerSegment.sourceIndexes)
+      : Number.POSITIVE_INFINITY;
+  const progressBySourceIndex = new Map<number, AssistantSegment>();
+
+  for (const segment of assistantSegments) {
+    if (segment === answerSegment) continue;
+    progressBySourceIndex.set(segment.sourceIndexes[0], segment);
+  }
+
+  const work: ChatTurnWorkItem[] = [];
+  const trailingWork: ChatTurnWorkItem[] = [];
+  const surfaces: ChatTurnSurface[] = [];
+  const questionReceipts: AgentUIQuestionIntent[] = [];
+  const questionReceiptSourceIndexes: Record<string, number> = {};
+  const usage = emptyTurnUsage();
+  const seenUsageIds = new Set<string>();
+  let sawUsage = false;
+  let runOutcome: ComposedChatTurn['runOutcome'];
+
+  for (const entry of entries) {
+    if (entry.kind === 'user' || answerSourceIndexes.has(entry.sourceIndex)) continue;
+
+    // H5 — usage telemetry belongs to the turn footer, not the work log.
+    if (
+      entry.kind === 'event' &&
+      (entry.event.type === 'usage' || entry.event.type === 'usage_context')
+    ) {
+      sawUsage = accumulateTurnUsage(usage, seenUsageIds, entry.event) || sawUsage;
+      continue;
+    }
+
+    // H14 — `file_read` is a dead renderer surface; drop any legacy persisted
+    // rows instead of rendering or counting them.
+    if (entry.kind === 'event' && entry.event.type === 'file_read') continue;
+
+    // Thread title/summary refreshes arrive after the turn settles; they are
+    // thread metadata, not turn activity or evidence of when the turn ended.
+    if (entry.kind === 'event' && entry.event.type === 'thread_metadata') continue;
+
+    // The outcome belongs to the turn summary rather than the operational
+    // activity list. Providers that do not report it leave it undefined.
+    if (entry.kind === 'event' && entry.event.type === 'turn_outcome') {
+      runOutcome = entry.event.turnOutcome;
+      continue;
+    }
+
+    if (
+      entry.kind === 'event' &&
+      entry.event.type === 'agent_ui_intent' &&
+      entry.event.agentUIIntent?.kind === 'question' &&
+      ['resolved', 'dismissed', 'expired'].includes(entry.event.agentUIIntent.lifecycle)
+    ) {
+      questionReceipts.push(entry.event.agentUIIntent);
+      questionReceiptSourceIndexes[entry.event.agentUIIntent.id] = entry.sourceIndex;
+      continue;
+    }
+
+    if (
+      entry.kind === 'event' &&
+      entry.event.type === 'agent_ui_intent' &&
+      entry.event.agentUIIntent?.kind === 'surface'
+    ) {
+      surfaces.push({ intent: entry.event.agentUIIntent, sourceIndex: entry.sourceIndex });
+      continue;
+    }
+
+    const target = entry.sourceIndex > answerEndSourceIndex ? trailingWork : work;
+
+    if (entry.kind === 'assistant') {
+      const segment = progressBySourceIndex.get(entry.sourceIndex);
+      if (segment) {
+        target.push({
+          kind: 'progress',
+          content: segment.entry.content,
+          sourceIndex: segment.entry.sourceIndex,
+        });
+      }
+      continue;
+    }
+
+    if (entry.kind === 'thinking') {
+      // Reasoning streams as many small fragments (providers emit COT deltas
+      // without a stable item id). Coalesce consecutive fragments so the chain
+      // renders as one collapsible trace regardless of provider chunking.
+      const previous = target[target.length - 1];
+      if (previous?.kind === 'thinking') {
+        previous.content += entry.content;
+      } else {
+        target.push({ kind: 'thinking', content: entry.content, sourceIndex: entry.sourceIndex });
+      }
+    } else {
+      target.push({ kind: 'event', event: entry.event, sourceIndex: entry.sourceIndex });
+    }
+  }
+
+  return {
+    key: userEntry?.id ?? answerSegment?.entry.id ?? `turn-${entries[0]?.sourceIndex ?? 0}`,
+    startedAt: userEntry?.timestamp ?? entries[0]?.timestamp,
+    endedAt: active
+      ? undefined
+      : entries.findLast(
+          (entry) =>
+            entry.kind !== 'user' &&
+            entry.timestamp &&
+            !(entry.kind === 'event' && entry.event.type === 'thread_metadata'),
+        )?.timestamp,
+    user: userEntry ?? null,
+    work,
+    answer: answerSegment?.entry ?? null,
+    trailingWork,
+    surfaces,
+    ...(questionReceipts.length ? { questionReceipts } : {}),
+    ...(questionReceipts.length ? { questionReceiptSourceIndexes } : {}),
+    ...(pendingMessages.length ? { pendingMessages } : {}),
+    usage: sawUsage ? usage : undefined,
+    runOutcome,
+  };
+}
+
+function emptyTurnUsage(): ChatTurnUsage {
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+}
+
+/**
+ * Fold one usage-family event into the running turn totals. Mirrors the
+ * accumulation rules in dojo-analytics.service.ts (`usage` deltas dedupe by
+ * `usageId`; `usage_context` context is a snapshot, `observedCostUsd` is a
+ * delta). Returns whether the event contributed anything worth rendering.
+ */
+function accumulateTurnUsage(
+  turn: ChatTurnUsage,
+  seenUsageIds: Set<string>,
+  event: CodexEvent,
+): boolean {
+  if (event.model) turn.model = event.model;
+
+  if (event.type === 'usage') {
+    const usage = event.usage;
+    if (!usage) return false;
+    if (event.usageId) {
+      if (seenUsageIds.has(event.usageId)) return false;
+      seenUsageIds.add(event.usageId);
+    }
+    if (
+      ![usage.input, usage.cachedInput, usage.output].every((n) => Number.isFinite(n) && n >= 0)
+    ) {
+      return false;
+    }
+    turn.inputTokens += usage.input;
+    turn.cachedInputTokens += usage.cachedInput;
+    turn.outputTokens += usage.output;
+    const price = event.usagePrice;
+    if (
+      price &&
+      [price.input, price.cachedInput, price.output].every((n) => Number.isFinite(n) && n >= 0)
+    ) {
+      turn.costUsd =
+        (turn.costUsd ?? 0) +
+        ((usage.input - usage.cachedInput) * price.input +
+          usage.cachedInput * price.cachedInput +
+          usage.output * price.output) /
+          1_000_000;
+    }
+    return true;
+  }
+
+  // usage_context
+  const context = event.contextUsage;
+  let contributed = false;
+  if (context && Number.isFinite(context.size) && context.size > 0) {
+    turn.contextUsed = context.used;
+    turn.contextSize = context.size;
+    contributed = true;
+  }
+  if (
+    typeof event.observedCostUsd === 'number' &&
+    Number.isFinite(event.observedCostUsd) &&
+    event.observedCostUsd >= 0
+  ) {
+    turn.costUsd = (turn.costUsd ?? 0) + event.observedCostUsd;
+    contributed = true;
+  }
+  return contributed;
+}
+
+function coalesceAssistantSegments(entries: Array<IndexedChatEntry>): AssistantSegment[] {
+  const segments: AssistantSegment[] = [];
+
+  for (const entry of entries) {
+    if (entry.kind !== 'assistant') continue;
+    const assistantEntry = entry as IndexedChatEntry<AssistantEntry>;
+    const previous = segments[segments.length - 1];
+
+    if (previous && shouldJoinAssistantSegments(previous.entry, assistantEntry)) {
+      previous.entry = {
+        ...previous.entry,
+        phase: assistantEntry.phase ?? previous.entry.phase,
+        content: previous.entry.content + assistantEntry.content,
+      };
+      previous.sourceIndexes.push(entry.sourceIndex);
+    } else {
+      segments.push({ entry: assistantEntry, sourceIndexes: [entry.sourceIndex] });
+    }
+  }
+
+  return segments;
+}
+
+export type ChatTurnTimelineItem =
+  | { kind: 'work'; key: string; sourceIndex: number; items: ChatTurnWorkItem[] }
+  | {
+      kind: 'answer';
+      key: string;
+      sourceIndex: number;
+      entry: NonNullable<ComposedChatTurn['answer']>;
+    }
+  | { kind: 'surface'; key: string; sourceIndex: number; intent: AgentUISurfaceIntent }
+  | { kind: 'receipt'; key: string; sourceIndex: number; intent: AgentUIQuestionIntent }
+  | {
+      kind: 'pending-message';
+      key: string;
+      sourceIndex: number;
+      entry: IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>>;
+    };
+
+/** Group routine work between conversation content, retaining first-appearance order. */
+export function buildChatTurnTimeline(turn: ComposedChatTurn): ChatTurnTimelineItem[] {
+  const content: ChatTurnTimelineItem[] = turn.surfaces.map(({ intent, sourceIndex }) => ({
+    kind: 'surface',
+    key: `surface-${intent.id}`,
+    sourceIndex,
+    intent,
+  }));
+  if (turn.answer)
+    content.push({
+      kind: 'answer',
+      key: 'answer',
+      sourceIndex: turn.answer.sourceIndex,
+      entry: turn.answer,
+    });
+  for (const intent of turn.questionReceipts ?? []) {
+    content.push({
+      kind: 'receipt',
+      key: `receipt-${intent.id}`,
+      sourceIndex: turn.questionReceiptSourceIndexes?.[intent.id] ?? Number.MAX_SAFE_INTEGER,
+      intent,
+    });
+  }
+  for (const entry of turn.pendingMessages ?? []) {
+    content.push({
+      kind: 'pending-message',
+      key: `pending-${entry.id ?? entry.sourceIndex}`,
+      sourceIndex: entry.sourceIndex,
+      entry,
+    });
+  }
+  content.sort((left, right) => left.sourceIndex - right.sourceIndex);
+  const work = [...turn.work, ...turn.trailingWork];
+  const timeline: ChatTurnTimelineItem[] = [];
+  let position = 0;
+  const flushWork = (before: number) => {
+    const items: ChatTurnWorkItem[] = [];
+    while (position < work.length && work[position].sourceIndex < before)
+      items.push(work[position++]);
+    if (items.length)
+      timeline.push({
+        kind: 'work',
+        key: `work-${items[0].sourceIndex}`,
+        sourceIndex: items[0].sourceIndex,
+        items,
+      });
+  };
+  for (const item of content) {
+    flushWork(item.sourceIndex);
+    timeline.push(item);
+  }
+  flushWork(Number.POSITIVE_INFINITY);
+  return timeline;
+}
+
+export function shouldJoinAssistantSegments(
+  previous: Pick<AssistantEntry, 'content' | 'itemId' | 'phase'>,
+  next: Pick<AssistantEntry, 'content' | 'itemId' | 'phase'>,
+): boolean {
+  if (previous.itemId && next.itemId) return previous.itemId === next.itemId;
+  if (previous.itemId || next.itemId) return false;
+  // Providers tag phases inconsistently (some tag every item, some none). Only
+  // merge fragments that plausibly belong to the same message so a final
+  // answer is never glued onto a trailing progress update.
+  if (previous.phase !== next.phase) return false;
+
+  return (
+    /^\s/.test(next.content) ||
+    (!/[\s.!?;:)>\]}]$/.test(previous.content) && /^[a-z]/.test(next.content))
+  );
+}

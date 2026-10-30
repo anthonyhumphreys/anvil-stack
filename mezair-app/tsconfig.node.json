@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "target": "ESNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "out",
+    "rootDir": ".",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/main/**/*",
+    "src/shared/**/*",
+    "src/preload/**/*",
+    "cloud/contract/**/*.ts",
+    "cloud/contract/**/*.json",
+    "cloud/provisioner/src/bootstrap.ts",
+    "cloud/provisioner/src/lifecycle.ts",
+    "mobile/lib/home-summary.ts"
+  ]
+}

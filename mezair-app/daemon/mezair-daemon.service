@@ -1,0 +1,20 @@
+# systemd user unit for mezair-daemon (DAEMON-01).
+# Install: copy to ~/.config/systemd/user/mezair-daemon.service,
+# replace __MEZAIR_APP_DIR__, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now mezair-daemon
+# For a system-level service, move to /etc/systemd/system/ and set User=.
+[Unit]
+Description=Mezair headless host daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory="__MEZAIR_APP_DIR__"
+Environment="MEZAIR_DATA_DIR=%h/.mezair-daemon"
+ExecStart=/usr/bin/env node "__MEZAIR_APP_DIR__/dist-daemon/mezair-daemon.mjs" run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
