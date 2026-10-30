@@ -43,15 +43,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.32.1
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -107,7 +107,7 @@ jobs:
           sha256sum ./*.pacman > SHA256SUMS-pacman-x64
 
       - name: Upload Arch Linux package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mezair-linux-x64-pacman
           if-no-files-found: error
@@ -116,7 +116,7 @@ jobs:
             mezair-app/dist/SHA256SUMS-pacman-x64
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mezair-linux-x64
           if-no-files-found: error

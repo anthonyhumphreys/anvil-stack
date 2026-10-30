@@ -50,13 +50,13 @@ jobs:
           [[ "$HEAD_SHA" == "$GITHUB_SHA" ]] || { echo 'Select the PR source branch as the workflow ref'; exit 1; }
           actual=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
           [[ "$actual" == "$HEAD_SHA" ]] || { echo 'Candidate is stale'; exit 1; }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.32.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Install Linux packaging tools
@@ -122,7 +122,7 @@ jobs:
           JS
       - name: Retain build evidence and installable preview
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mezair-preview-pr-${{ inputs.pull_request }}-${{ inputs.head_sha }}-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
