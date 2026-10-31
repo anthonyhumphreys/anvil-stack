@@ -1,14 +1,14 @@
 import { cardContentType, cardSize, renderCard } from "../_og/card";
 
-export const alt = "Mezair pricing: Desktop is free. Hosted Sync is planned from £6 a month, and self-hosting is free.";
+export const alt = "Mezair pricing. The app is free. Sync & Mesh is free on a backend you run, or £6 a month if Mezair hosts it.";
 export const size = cardSize;
 export const contentType = cardContentType;
 
 export default function Image() {
   return renderCard({
-    title: "Desktop is free. Hosted Sync is planned from £6 a month.",
-    description: "The desktop app costs nothing. You can self-host Sync & Mesh for free or request the hosted beta.",
+    title: "The app is free. Hosted Sync is £6 a month.",
+    description: "Sync & Mesh is free on a backend you run. Our hosting is an invite-only beta for now.",
     label: "Pricing",
-    facts: ["Desktop free", "Self-host free", "Hosted from £6/mo"]
+    facts: ["App free", "Self-hosted Sync free", "Hosted Sync £6 a month"]
   });
 }

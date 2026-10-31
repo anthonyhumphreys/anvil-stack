@@ -271,7 +271,7 @@ One SVG stage, four stories: Sync (an edit is sealed, relayed as ciphertext and 
 
 ### Plans and divided rows
 
-The homepage states the pricing split before the download action: the Desktop app is free, a self-hosted backend is free, and the Mezair-hosted backend is paid. Keep all three visible as a short definition list, with proposed hosted pricing and beta availability beside it. The pricing and Sync introductions repeat this distinction; self-hosting's infrastructure costs stay explicit.
+Every mention of price says the same thing in one or two plain sentences: the app is free, and Sync & Mesh is free on a backend you run (your cloud provider bills you) or £6 a month if Mezair hosts it. Where space allows, add that hosting is an invite-only beta until `featureBeta.endDate` and the prices are planned. The homepage says it under the lede, before the download action. Don't turn price into badges, definition lists or "Free / Free / Paid" grids.
 
 Pricing is one rounded, ruled board rather than detached cards. The featured column receives a subtle orange tint and a two-pixel top edge; wide Archivo gives prices their hierarchy. The bill ledger, backend comparisons and companion list use divided rows. FAQs use native disclosure controls with a plus rotating when open. Availability and pricing limits remain visible beside the action they qualify.
 

@@ -11,7 +11,7 @@ import { featureBeta, plans, pricingFaqs } from "@/lib/site";
 export const metadata: Metadata = pageMetadata({
   title: "Pricing | Mezair",
   description:
-    "Mezair Desktop is free and open source. Hosted Sync & Mesh is planned at £6 a month for one person or £12 per member for teams. Self-hosting stays free.",
+    "The Mezair app is free. Sync & Mesh is free on a backend you run, or £6 a month for one person and £12 per member for teams if Mezair hosts it.",
   path: "/pricing"
 });
 
@@ -42,18 +42,14 @@ export default function PricingPage() {
           <div className="cine-wide">
             <div className="cine-titlerow">
               <h1 id="pricing-title" className="cine-title max-w-[16ch]">
-                Free app. Free self-hosting. Paid hosting.
+                The app is free. Hosted Sync is £6 a month
               </h1>
               <div>
                 <p className="cine-lede md:max-w-[60ch] lg:max-w-[46ch]">
-                  The desktop app and self-hosted Sync &amp; Mesh backend are free and open source.
-                  Pay Mezair only when we host the backend for you, with plans proposed from £6 a month.
-                  Your model providers and self-hosting infrastructure bill you separately.
+                  Run Sync yourself for free, or let us host it for £6 a month. Teams are £12 per member.
                 </p>
                 <p className="cine-fine mt-4">
-                  Hosted Sync &amp; Mesh is an invite-only beta through {featureBeta.endDate}. These are proposed
-                  launch prices. Requesting access is not a purchase, and invited testers redeem a code without a
-                  payment method.
+                  Planned prices. Hosting is invite-only until {featureBeta.endDate}, and testers get a free code.
                 </p>
                 <div className="mt-6 flex flex-wrap gap-3">
                   <Button asChild size="lg">

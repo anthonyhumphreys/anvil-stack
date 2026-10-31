@@ -67,13 +67,15 @@ export default function SyncPage() {
               </h1>
               <div>
                 <p className="cine-lede md:max-w-[60ch] lg:max-w-[46ch]">
-                  Sync copies your Mezair setup between machines and encrypts it on your device first. Mesh sends jobs
-                  between those machines and can move a running session.
+                  Sync keeps your setup the same on every machine, end-to-end encrypted. Mesh runs jobs across them and
+                  moves sessions between them.
                 </p>
-                <p className="mt-4 text-base leading-relaxed">
-                  <strong>Self-hosted backend: free.</strong> You pay your infrastructure provider.{" "}
-                  <strong>Mezair-hosted backend: paid.</strong> Plans are proposed from £6 a month after beta.{" "}
-                  <Link href="/pricing" className="cine-link">Compare plans</Link>.
+                <p className="mt-4 text-[0.9375rem] leading-relaxed">
+                  Free to self-host, or{" "}
+                  <Link href="/pricing" className="cine-link">
+                    £6 a month
+                  </Link>{" "}
+                  hosted.
                 </p>
                 <div className="mt-6 flex flex-wrap gap-3">
                   <Button asChild size="lg">
@@ -84,7 +86,7 @@ export default function SyncPage() {
                   </Button>
                 </div>
                 <p className="cine-fine mt-4">
-                  Invite-only beta through {featureBeta.endDate}. Requesting access is not a purchase.{" "}
+                  Hosting is invite-only until {featureBeta.endDate}.{" "}
                   <Link href="/account/billing" className="cine-link">
                     Redeem your code
                   </Link>{" "}

@@ -22,7 +22,7 @@ const useCases: UseCase[] = [
   {
     id: "bug",
     title: "Fix a bug while you work on something else",
-    body: "Describe the bug in the thread. In this example the agent wrote a failing test, changed one line in src/lib/retry.ts and ran the full suite. Each step stays in the thread.",
+    body: "Describe it. The agent writes a failing test, fixes the bug and runs the suite.",
     shot: "desktop-run-steps",
     detail: "pnpm test -- retry",
     link: { label: "Agent workflows", href: "/docs/desktop/agent-workflows" }
@@ -30,7 +30,7 @@ const useCases: UseCase[] = [
   {
     id: "review",
     title: "Review your changes before you commit",
-    body: "Ask for a review of your uncommitted changes. The review appears in the thread, explains the change section by section and lists findings by severity. You can send any finding back to the agent.",
+    body: "Get a review in the thread, with findings you can send straight back to the agent.",
     shot: "surface-review",
     detail: "Review my uncommitted changes.",
     link: { label: "Change review", href: "/docs/desktop/change-review" }
@@ -38,7 +38,7 @@ const useCases: UseCase[] = [
   {
     id: "audit",
     title: "Audit a repository you're new to",
-    body: "A security audit lists each finding with its file and line. A dependency check lists advisories, licence problems and deprecated packages. You can send the findings you want fixed back to the agent.",
+    body: "Security and dependency issues, each with a file and line.",
     shot: "surface-findings",
     detail: "Run a security audit of this repo.",
     link: { label: "Security and review", href: "/docs/desktop/security-and-review" }
@@ -46,7 +46,7 @@ const useCases: UseCase[] = [
   {
     id: "ci",
     title: "Find out why CI is slow",
-    body: "The agent reads your workflow files and draws the pipeline as a graph. In this example it marks the failing test job and an install step that skips the cache.",
+    body: "See the pipeline as a graph, with the slow and failing steps marked.",
     shot: "surface-pipeline",
     detail: "Why is CI slow?",
     link: { label: "Assurance tools", href: "/docs/desktop/assurance-tools" }
@@ -54,7 +54,7 @@ const useCases: UseCase[] = [
   {
     id: "factory",
     title: "Turn labelled issues into merged pull requests",
-    body: "A software factory picks up GitHub issues that carry your label and runs each one through the steps you define. It stops for approval where your policy requires it and confirms the merge at the end.",
+    body: "A software factory works through labelled GitHub issues and stops for approval where you want it to.",
     shot: "factories-line",
     status: featureBeta.label,
     link: { label: "Software factories", href: "/docs/desktop/software-factories" }
@@ -62,7 +62,7 @@ const useCases: UseCase[] = [
   {
     id: "mesh",
     title: "Run a job on another of your machines",
-    body: "Send a job to your desktop or a Linux server. That machine checks out the commit you chose, runs the agent with its own logins and streams the output back to you.",
+    body: "Send a job to your desktop or a server. It runs there and streams back.",
     shot: "mesh-jobs",
     fit: "panel",
     detail: "start-session → studio-mac",
@@ -77,7 +77,7 @@ const credits: Credit[] = [
   {
     role: "Git",
     value: "Commit, open a pull request or undo a turn from the thread.",
-    note: "Workflows, delegated helpers, factories and Mesh jobs each work in their own worktree."
+    note: "Background work runs in its own worktree."
   },
   { role: "Review", value: "Diffs, test results and security, dependency and pipeline checks appear in the thread." },
   { role: "Plans", value: "Work items with acceptance criteria, risks and follow-ups attached." },
@@ -89,7 +89,11 @@ const credits: Credit[] = [
     href: "/docs/desktop/software-factories"
   },
   { role: "Companions", value: "Approve a step or reply from iPhone, Apple Watch, Raycast or the menu bar." },
-  { role: "Price", value: "The app and self-hosted backend are free. Mezair-hosted Sync & Mesh is paid." }
+  {
+    role: "Price",
+    value: "Free. Sync is free to self-host, or £6 a month hosted.",
+    href: "/pricing"
+  }
 ];
 
 const keys: Array<{ label: string; keys: string[] }> = [
@@ -104,19 +108,19 @@ const keys: Array<{ label: string; keys: string[] }> = [
 const dx: Array<{ title: string; body: string }> = [
   {
     title: "Agent tools",
-    body: "Mezair runs a local MCP server for each agent session. Agents use it to ask you questions and to post reviews, findings and diagrams in the thread."
+    body: "Agents can ask you questions and post reviews and diagrams in the thread."
   },
   {
     title: "No account",
-    body: "Mezair stores repositories, threads and settings in a local SQLite database. Crash reporting is off by default."
+    body: "Everything stays in a local database. Crash reporting is off by default."
   },
   {
     title: "Custom shortcuts",
-    body: "You can change any global shortcut in Settings. On Windows and Linux, Ctrl replaces ⌘."
+    body: "Rebind any shortcut in Settings."
   },
   {
     title: "Source code",
-    body: "The Electron app, the Sync backend, the registry and this website are in one MIT-licensed repository. A preview mode renders the app's screens with sample data and no agent account."
+    body: "The app, the backend and this site are MIT-licensed on GitHub."
   }
 ];
 
@@ -139,26 +143,14 @@ export default function HomePage() {
                 Put your agents in motion.
               </h1>
               <p className="cine-lede cine-fade mt-5 max-w-[52ch]" style={fade(420)}>
-                Mezair is a free, open-source desktop app that runs Codex, Cursor, Devin and other coding agents on
-                your own repositories. It shows each command and edit as the agent works.
+                An open-source desktop app for running coding agents on your own repos.
               </p>
-              <dl className="mt-6 flex flex-wrap justify-center gap-x-7 gap-y-2 text-base">
-                <div className="flex gap-2">
-                  <dt className="text-muted-foreground">Desktop app</dt>
-                  <dd className="font-semibold">Free</dd>
-                </div>
-                <div className="flex gap-2">
-                  <dt className="text-muted-foreground">Self-hosted backend</dt>
-                  <dd className="font-semibold">Free</dd>
-                </div>
-                <div className="flex gap-2">
-                  <dt className="text-muted-foreground">Mezair-hosted backend</dt>
-                  <dd className="font-semibold">Paid</dd>
-                </div>
-              </dl>
-              <p className="cine-fine mt-2">
-                Hosted plans are proposed from £6 a month after the invite-only beta.{" "}
-                <Link href="/pricing" className="cine-link">See pricing</Link>.
+              <p className="cine-fade mt-4 max-w-[52ch] text-[0.9375rem] leading-relaxed" style={fade(480)}>
+                Free. Sync across machines is free to self-host, or{" "}
+                <Link href="/pricing" className="cine-link">
+                  £6 a month
+                </Link>{" "}
+                hosted.
               </p>
               <div className="cine-fade mt-7 flex flex-wrap justify-center gap-3" style={fade(560)}>
                 <Button asChild size="lg">
@@ -198,7 +190,7 @@ export default function HomePage() {
 
         <section className="py-10" aria-label="Agent providers">
           <div className="page-shell">
-            <p className="text-center text-sm text-muted-foreground">Uses your own account with any of these providers</p>
+            <p className="text-center text-sm text-muted-foreground">Bring your own account</p>
             <ul className="providers mt-4">
               {desktopProviders.map((provider) => (
                 <li key={provider}>{provider}</li>
@@ -212,9 +204,6 @@ export default function HomePage() {
             <h2 id="uses-title" className="cine-h2 max-w-[17ch]">
               What you can ask it to do
             </h2>
-            <p className="cine-lede mt-4">
-              These screenshots come from the app, running against a sample workspace called Acme.
-            </p>
             <div className="mt-12 lg:mt-4">
               <UseCases items={useCases} />
             </div>
@@ -229,8 +218,8 @@ export default function HomePage() {
               </h2>
               <div>
                 <p className="cine-lede">
-                  Sync copies your workspace setup to your other machines and encrypts it on your device before upload.
-                  Mesh sends jobs to those machines and can move a running session from one to another.
+                  Sync keeps your setup the same on every machine, end-to-end encrypted. Mesh runs jobs across them and
+                  moves sessions between them.
                 </p>
                 <div className="mt-6 flex flex-wrap gap-3">
                   <Button asChild>
@@ -241,8 +230,7 @@ export default function HomePage() {
                   </Button>
                 </div>
                 <p className="cine-fine mt-4">
-                  Beta through {featureBeta.endDate}. Hosted Sync is invite-only and planned from £6 a month. Self-hosting
-                  has no Mezair fee; your host may charge.
+                  Free to self-host, £6 a month hosted. Hosting is invite-only until {featureBeta.endDate}.
                 </p>
               </div>
             </div>
@@ -290,8 +278,7 @@ export default function HomePage() {
                 Keyboard shortcuts and developer tools
               </h2>
               <p className="cine-lede mt-5">
-                Mezair works alongside your editor and Git. It opens repositories in VS Code and has a built-in
-                terminal for each workspace.
+                Works with your editor, terminal and Git.
               </p>
               <dl className="mt-10 grid gap-x-10 gap-y-7 sm:grid-cols-2">
                 {dx.map((item) => (
@@ -335,7 +322,7 @@ export default function HomePage() {
               <h2 id="tools-title" className="cine-h2 max-w-[14ch]">
                 Other Mezair tools
               </h2>
-              <p className="cine-fine max-w-[40ch]">Each one is open source and works without Desktop.</p>
+              <p className="cine-fine max-w-[40ch]">Open source, and none of them need Desktop.</p>
             </div>
             <ul className="rows mt-10">
               {companionProducts.map((product) => (
@@ -374,7 +361,7 @@ export default function HomePage() {
                 The source is on GitHub
               </h2>
               <p className="cine-lede mt-5">
-                The app, the Sync backend, the registry and this website are in one MIT-licensed repository.
+                One MIT-licensed repo for everything.
               </p>
               <div className="mt-7 flex flex-wrap gap-3">
                 <Button asChild variant="outline">
@@ -444,7 +431,7 @@ export default function HomePage() {
               Try it on a repository you know well
             </h2>
             <p className="cine-lede mt-6">
-              Local use needs no Mezair account. You connect your agent account before your first task.
+              No sign-up needed.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button asChild size="lg">

@@ -102,9 +102,9 @@ export function ProductReel() {
       </div>
 
       <p className="cine-fine mt-3">
-        {screen(current.shot).caption} Screenshot from the app with sample data.{" "}
+        {screen(current.shot).caption}{" "}
         <Link href="/docs/project/screenshots" className="cine-link">
-          How these screenshots are made
+          About these screenshots
         </Link>
       </p>
     </div>
