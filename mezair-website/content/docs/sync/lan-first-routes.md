@@ -72,16 +72,16 @@ Backend authorization failures are reported separately from route unavailability
 | Client | Behavior |
 | --- | --- |
 | Desktop and headless daemon | LAN-first selection, network monitoring and live session migration. |
-| Native iOS and Android, account mode | The same route policy and migration. The iOS app declares local network access, which iOS may ask you to allow. If LAN routes are blocked, Mesh is designed to fall back to another route without repeated prompts; physical release-build checks of this are still pending. |
+| Native iOS and Android, account mode | The same route policy and migration. The iOS app declares local network access, which iOS may ask you to allow. If LAN routes are blocked, Mesh is designed to fall back to another route without repeated prompts. |
 | Browser workspace | Keeps its HTTPS routing. |
 | Locally paired companion | Keeps its own pairing transport. See [Companion surfaces](/docs/desktop/companion-surfaces). |
 | Raycast | Gets the improved route selection, but not live session migration. |
 
 Android permits plain HTTP and WebSocket connections to private IP addresses for this. Application URL restrictions still apply, broker credentials still need HTTPS, and machine sessions stay authenticated and end-to-end encrypted.
 
-## Beta status and verification
-
-Automated suites cover route ordering, bounded fallback, ordered replay before promotion, requests staying on their original connection, no command replay, session cleanup and mobile lifecycle cases, including encrypted loopback wire tests. Loopback tests don't measure physical LAN latency or platform permissions. Physical acceptance is still pending during the beta: a MacBook and a Mac mini switching on a shared LAN, plus local network permission and route switching on native iOS and Android release builds. Being in beta does not mean those checks have passed. Current Mesh limits are listed in [Status and limits](/docs/sync/status-and-limits).
+Sync & Mesh is in beta through 30 November 2026. See
+[Status and limits](/docs/sync/status-and-limits) for connection requirements
+and supported clients.
 
 ## Reference
 
@@ -96,7 +96,7 @@ Neither switch disables initial route selection or ordinary reconnects, and neit
 
 ### Initial tuning values
 
-These are starting values, tuned from physical results as they come in.
+These defaults control connection selection and recovery.
 
 | Control | Value |
 | --- | --- |

@@ -89,8 +89,6 @@ first; if it blocks, you get the reason and the fix, not a partial transfer.
 
 ## Current limits
 
-- Backend state machine and sealed-checkpoint behavior are covered by tests;
-  a physical device-to-device handoff demo is still pending.
 - Resume fidelity is provider-dependent. A provider without checkpoint import
   gets summary continuation. It works, but it is a reconstructed prompt,
   not the original session state.

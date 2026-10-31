@@ -31,7 +31,7 @@ Builds are attached to the `app-v*` releases in the [mezair repository](https://
 
 > **About signed builds**
 >
-> Check the release notes. They state whether that build is signed and notarised. Unsigned internal builds may be blocked by Gatekeeper. For private testing only, follow the release note's quarantine-removal instruction after verifying the checksum. Removing quarantine does not sign or notarise the app. Never use that step to make an unverified download appear safe.
+> Check the release notes. They state whether that build is signed and notarised. Unsigned builds may be blocked by Gatekeeper. Follow the release note's quarantine-removal instruction only after verifying the checksum. Removing quarantine does not sign or notarise the app. Never use that step to make an unverified download appear safe.
 >
 > [Sponsoring Mezair on GitHub](https://github.com/sponsors/anthonyhumphreys) helps pay for the Apple Developer membership.
 

@@ -20,6 +20,20 @@ Use it for:
 - Unknown repo inspection.
 - Pull request dependency review.
 
+## Set it up with your agent
+
+Copy this prompt into your coding agent to use Node Base in an existing project.
+
+```prompt
+Help me use Mezair Node Base for dependency installs in this repository.
+
+Read https://mezair.dev/docs/node-base/overview and inspect the project's package manager, lockfile, Dockerfile, devcontainer and CI configuration. Propose the smallest change for the setup I already use. Preserve the existing package manager and lockfile.
+
+Use safe mode by default so dependency install scripts do not run. If a dependency needs a lifecycle script, explain why before suggesting observed mode. If I use Mezair Registry, ask for its gateway URL and configure it at the project level.
+
+Check that the install and project build work. Show where reports are written, how to read them and how to undo the configuration change.
+```
+
 ## What it changes
 
 The image is built around safer npm defaults:
@@ -80,7 +94,7 @@ Use observed mode when:
 - You want evidence for outbound connections, child processes, or sensitive file access.
 - You are debugging a dependency that behaves differently under `--ignore-scripts`.
 
-Observed mode is intentionally explicit. It is the "fine, but we are watching" mode.
+Observed mode runs install scripts and records their activity. Choose it only when those scripts are needed.
 
 ## Registry integration
 

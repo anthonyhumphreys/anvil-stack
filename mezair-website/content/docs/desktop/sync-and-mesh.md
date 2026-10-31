@@ -17,12 +17,9 @@ own machines, where provider credentials stay. For the technical details,
 see the [Sync & Mesh docs](/docs/sync/overview).
 
 Everything here is optional. New workspaces default to Local. Sync & Mesh,
-including LAN-first Mesh routing, is in beta through 30 November 2026. The
-lifecycle is implemented and tested and has been rehearsed against real
-Cloudflare deployments; a recorded physical multi-device demo is still
-pending.
+including LAN-first Mesh routing, is in beta through 30 November 2026.
 
-![Sync and Mesh status for this device: connected to a self-hosted Cloudflare backend, Sync on with the live connection up, and this device allowed to run Mesh jobs.](/screens/mesh-status.webp "Settings → Sync & Mesh on a connected device (fixture account).")
+![Sync and Mesh status for this device: connected to a self-hosted Cloudflare backend, Sync on with the live connection up, and this device allowed to run Mesh jobs.](/screens/mesh-status.webp "Settings → Sync & Mesh on a connected device.")
 
 ## Account backend modes
 
@@ -31,7 +28,7 @@ The panel offers four account backend modes:
 | Mode | Behavior |
 | --- | --- |
 | Local only | No account backend is connected. A remembered backend is paused, not forgotten. |
-| Mezair-hosted | We run the backend for you. The invite-only test path requires paid or beta access. Checkout and production hosting are not available yet. |
+| Mezair-hosted | We run the backend for you. The invite-only beta requires a subscription or a beta code. Checkout and production hosting are not available yet. |
 | Your Cloudflare | A backend you deploy to your own Cloudflare account with `mezair-cloud mesh`. |
 | Compatible backend | Any URL implementing the Sync v2 and Mesh v2 profiles. |
 

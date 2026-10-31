@@ -32,16 +32,14 @@ Cloudflare account, or a third-party implementation that passes the
 conformance suite.
 
 Mezair-hosted writes require a paid entitlement or a redeemed beta code. The
-invite-only test path uses time-limited codes, checkout is closed, and
+invite-only beta uses time-limited codes, checkout is closed, and
 production hosting is not available yet. Proposed paid plans start at £8.99 a
 month for one person. You can run your own backend without paying Mezair; your
 infrastructure costs still apply. See [pricing](/pricing).
 
 Sync & Mesh, including [LAN-first Mesh routing](/docs/sync/lan-first-routes),
-is in beta through 30 November 2026. The architecture, contract, and lifecycle
-are implemented and tested, and the system has been rehearsed on real
-Cloudflare deployments. A recorded physical multi-device demo is still pending.
-See [Status and limits](/docs/sync/status-and-limits) before relying on it.
+is in beta through 30 November 2026. See [Status and limits](/docs/sync/status-and-limits)
+for supported clients, connection requirements and data-handling limits.
 
 ## Account backend modes
 
@@ -51,7 +49,7 @@ service choices remain in **Advanced connection settings**:
 | Mode | Behavior |
 | --- | --- |
 | Local only | No account backend is connected. A remembered backend is paused, not forgotten. New workspaces default to Local. |
-| Mezair-hosted | **Sign in to Mezair** uses the hosted service configured for this build. The test path is invite-only; hosted writes require paid or beta access. Checkout and production hosting are not available yet. See [Mezair-hosted sync](/docs/sync/hosted). |
+| Mezair-hosted | **Sign in to Mezair** uses the hosted service configured for this build. The beta is invite-only; hosted writes require paid or beta access. Checkout and production hosting are not available yet. See [Mezair-hosted sync](/docs/sync/hosted). |
 | Your Cloudflare | Point Mezair at a Cloudflare Workers deployment you own (labeled *My Cloudflare service* in advanced settings). Deploy it with [`mezair-cloud mesh`](/docs/sync/self-deploy). |
 | Compatible backend | Any URL implementing the frozen Sync v2 and Mesh v2 profiles, see [Backend conformance](/docs/sync/conformance). |
 

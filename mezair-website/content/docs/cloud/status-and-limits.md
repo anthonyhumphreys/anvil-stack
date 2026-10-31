@@ -1,7 +1,7 @@
 ---
 title: Status and limits
 navTitle: Status and limits
-description: What works in Mezair Cloud today, known limits, deployment restrictions and work still needed before hosted agents launch.
+description: What works in Mezair Cloud today, known limits, deployment restrictions and hosted availability.
 product: Mezair Cloud
 section: Reference
 journey: reference
@@ -27,13 +27,12 @@ Both adapters now have conditional database commits, bounded record pages,
 private file storage, queue dispatch and bearer-token verification. Cloudflare
 also has a queue consumer and Cron Trigger bridge. Its experimental artifact
 builder accepts existing resources and generates a database migration. Normal
-Cell deployment remains gated. Automatic provisioning and live lifecycle evidence
-are still incomplete. AWS remains a preview adapter.
+Cell deployment and automatic resource provisioning are not available yet. AWS remains a preview adapter.
 
 Read [data and background work](/docs/cloud/app-backends) for failure behavior
-and the release checks required on each provider.
+and supported deployment targets.
 
-## Implemented surfaces
+## Supported features
 
 | Surface           | Current state                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -73,17 +72,16 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | CLI packaging is alpha                       | The Cloud CLI package is `@mezairstack/cloud-cli` and exposes `mezair-cloud`. From the `mezair-cloud` workspace, use `pnpm mezair-cloud ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`.                                                                                                                                             |
 | Generated client is early                    | React/Vite is the default UI path and hook helpers exist, but invalidation is manual, there is no cache policy layer, and the generated surface is query/mutation metadata rather than a full SDK.                                                                                                                                                                         |
 | AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including named deploys, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers. Rollback is dry-run recovery intent only because deployment history and restorable client assets are not yet stored. |
-| No deployed hosted control-plane service | The execution plane now has mandatory auth/workspace policy hooks, content-addressed snapshot storage, one-time worker grants, a Node HTTP adapter, durable CLI clients, and an opt-in Desktop workbench. It is runnable locally, but production persistence, a deployed AWS worker image, and real-account verification remain. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
 | Workflows need deeper remote inspection      | Local workflows have durable run state, retries, timeouts, resume behavior, CLI commands, and Lens inspection. AWS preview maps workflows to Step Functions, but remote `workflows list/show --app` is not wired yet.                                                                                                                                                      |
 | Services are local-only                      | The `service` primitive is supervised by the local runtime. AWS preview blocks service-bearing deploys before provisioning until the Fargate runner executes the exact Cell handler. See [Services](/docs/cloud/services). |
 | Usage is visibility, not billing             | `mezair cloud usage --preview` reports declared resource counts and cost-driver hints. It does not query AWS billing or produce prices.                                                                                                                                                                                                                                     |
-| Agents are foundation-level | Mounted Cell Agents and shallow subagent trees run locally and compile to manifests. Project-agent discovery, Guardian review, and provider-neutral execution leases/events/controls now exist; authenticated hosted orchestration, production approval UI, trace-linked parent/child sessions, and hosted memory are not deployed. See [Mezair Agents](/docs/cloud/agents). |
+| Agent hosting | Cell Agents and subagents run locally. Hosted orchestration, approval UI and memory are not available. See [Mezair Agents](/docs/cloud/agents). |
 | Agent evals are local-first                  | Mounted agent eval suites run locally through `mezair-cloud eval`, support baseline comparisons, and can write updated baselines for CI review. Hosted eval orchestration and remote eval execution are not wired yet.                                                                                                                                         |
 | Agent sessions are local-first               | Mounted agents support local persisted sessions, ordered events, continuation tokens, and SSE replay streams. AWS preview session transport and hosted continuation are not wired yet. See [Mezair Agents](/docs/cloud/agents).                                                                                                                                           |
 | Channels are contract-first                  | Channel bindings compile into the manifest and local simulation can route messages into mounted agent sessions. Real Slack/GitHub/Discord adapters, signature verification, and deployed webhook ingress are not wired yet. See [Mezair Agents](/docs/cloud/agents).                                                                                                       |
-| Agent Sandboxes have a runnable control plane | Runtime contracts, local providers, idempotent leases, durable cursor events, controls, budgets, cleanup receipts, authenticated HTTP/service boundaries, immutable snapshots, one-time grants, Desktop controls, provider-account authentication intent, and AWS read-only transport exist. Mezair Cloud Agents hosted compute is unavailable and disabled by default. A deployed compatible worker, concrete provider login runners, sandbox-aware Lens, hosted persistence, and real-account verification remain. Hosted compute will be paid when released; no price or release date has been set. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
+| Agent Sandboxes | Local execution and the CLI service are available. AWS supports read-only execution with a compatible worker image in your own account. Mezair-hosted compute is not available. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
 
-## What to verify before trusting a Cell
+## Check your Cell
 
 Run:
 
@@ -94,59 +92,12 @@ mezair cloud inspect --local --json
 mezair cloud logs --local --json
 ```
 
-Before preview deploy, inspect:
+Before deploying a preview, review the generated manifest, declared capabilities
+and deployment plan. See [AWS preview](/docs/cloud/aws-preview) for account
+configuration, deployment commands, costs and cleanup.
 
-- manifest
-- declared capabilities
-- generated client output
-- import policy diagnostics
-- typecheck diagnostics
-- deployment plan
-- CloudFormation template
-- artifact summary, including the Lambda bundle hash and content-addressed key
-- rollback, cleanup, and cost-driver hints in the deployment plan
+## Related
 
-## What to verify before trusting AWS preview
-
-Before treating AWS preview as more than a local deploy experiment, verify:
-
-- artifact bucket configuration
-- stack creation or update behavior
-- Lambda runtime URL
-- `pnpm verify:aws-preview` against `examples/aws-preview`
-- generated IAM permissions
-- DynamoDB table shape
-- S3 asset and file behavior
-- SQS and scheduled job behavior
-- EventBridge event and scheduled-job behavior
-- CloudWatch logs
-- deployment metadata table
-- remote `inspect` and `logs`
-- preview cleanup through `mezair cloud destroy --preview --app <name> --yes`
-- rollback intent for versioned preview metadata plus the current artifact-promotion limit: redeploy a known-good checkout or destroy the preview stack when direct pointer promotion is not enough
-
-## Contribution priorities
-
-Useful next work includes:
-
-- documenting a complete OIDC setup flow for `MEZAIR_AWS_SMOKE_TOKEN`
-- adding negative auth tests and cleanup assertions to `pnpm verify:aws-preview`
-- remote workflow run-state persistence and remote CLI/Lens inspection
-- exact Cell service-handler execution inside the Fargate preview task path
-- auth provider integration examples
-- richer Guard capability checks
-- generated client examples: loading/error examples, token handling, invalidation patterns, and typed examples around `examples/notes`
-- standalone project-agent manifest generation beyond instruction discovery
-- provider-mode examples for AWS Bedrock with local contract checks
-- hosted approval, memory, credential broker, and concurrency-safe execution
-  persistence for agents
-- deployed subscription-capable execution workers and real-account cleanup
-  evidence
-- a compatible AWS Lambda MicroVM execution worker image plus real-account
-  read-only smoke and cleanup evidence
-- automated artifact rollback beyond dry-run intent
-- real cost reporting beyond declared usage visibility and preview plan cost drivers
-- clearer package publishing path
-- custom domain support
-
-Keep the contract small. The first version should be understandable, not omniscient.
+- [Quickstart](/docs/cloud/quickstart)
+- [Agents](/docs/cloud/agents)
+- [Agent Sandboxes](/docs/cloud/agent-sandboxes)

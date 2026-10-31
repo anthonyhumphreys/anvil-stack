@@ -86,7 +86,7 @@ interface ControlPlaneApi {
 
 `createHttpControlPlane(baseUrl)` implements this interface against a local runtime's `/_mezair/*` routes. The point of the abstraction is the adapter swap: a future hosted control plane implements the same interface against hosted APIs, and tooling written against `ControlPlaneApi` does not change. That hosted plane does not exist yet; do not plan around it.
 
-## Honest limits
+## Access and limits
 
 - Lens is local only. It reads the state of the dev server on your machine, nothing else.
 - The page itself has no authentication. It is only as protected as the local runtime, which binds to localhost. Do not expose the runtime port to a network you do not trust.

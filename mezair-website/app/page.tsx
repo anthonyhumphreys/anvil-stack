@@ -406,7 +406,7 @@ export default function HomePage() {
                   {"\n"}
                   <span className="text-[oklch(var(--artifact-accent))]">$</span> git clone {githubRepositoryUrl}
                   {"\n"}
-                  <span className="text-[oklch(var(--artifact-accent))]">$</span> cd mezair-stack
+                  <span className="text-[oklch(var(--artifact-accent))]">$</span> cd mezair
                   {"\n"}
                   <span className="text-[oklch(var(--artifact-accent))]">$</span> node .github/scripts/prepare-desktop-clis.mjs
                   {"\n"}
@@ -417,15 +417,10 @@ export default function HomePage() {
                   <span className="text-[oklch(var(--artifact-accent))]">$</span> pnpm install
                   {"\n"}
                   <span className="text-[oklch(var(--artifact-accent))]">$</span> pnpm dev
-                  {"\n\n"}
-                  <span className="text-[oklch(var(--artifact-dim))]"># real components on fixture data, no provider needed</span>
-                  {"\n"}
-                  <span className="text-[oklch(var(--artifact-accent))]">$</span> pnpm exec vite --config scripts/chat-replay.vite.config.ts
                 </code>
               </pre>
               <figcaption className="sr-only">
-                Commands to clone the mezair-stack repository, start Mezair Desktop in development mode, and open the
-                fixture replay that renders the screens on this site.
+                Commands to clone the Mezair repository and start Mezair Desktop in development mode.
               </figcaption>
             </figure>
           </div>

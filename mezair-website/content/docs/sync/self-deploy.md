@@ -14,8 +14,23 @@ Run the Sync & Mesh backend in your own Cloudflare account with the
 `mezair-cloud` CLI. It uses the same Worker source as Mezair-hosted, from
 `mezair-app/cloud/backend`. The CLI lives in `mezair-cloud`.
 
-Four commands cover the lifecycle: `plan`, `apply`, `connection`, `remove`.
-All accept `--json` for automation.
+Self-hosting has no Mezair subscription fee; Cloudflare bills you for the
+resources you use. The lifecycle commands below accept `--json` for automation.
+
+## Set it up with your agent
+
+Copy this prompt into your coding agent. It will guide the setup in your own
+Cloudflare account.
+
+```prompt
+Help me self-host Mezair Sync & Mesh in my Cloudflare account.
+
+Follow https://mezair.dev/docs/sync/self-deploy and the current CLI help. Use my existing Mezair checkout, or clone https://github.com/anthonyhumphreys/mezair into a new directory. Work in the relevant project directories.
+
+Ask which Cloudflare account, Worker name and backend URL I want to use. Show the resources to be created and any hosting costs before deploying. Use self-hosted mode and the documented deployment workflow. Keep generated configuration reproducible and enter secrets through the supported secret-input mechanism without printing their values.
+
+Check that the deployed backend is reachable and passes the Sync compatibility checks. Finish with the backend URL, a discovery file, and the steps to connect Mezair Desktop and enroll my first device. Explain how to connect a second device and remove this deployment later.
+```
 
 ## `mesh plan`
 
@@ -26,7 +41,9 @@ mezair-cloud mesh plan --backend <path> --name <worker> \
   [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--json]
 ```
 
-`plan` computes the deployment and writes a generated `wrangler.mesh.jsonc`:
+`plan` computes the deployment and writes a generated `wrangler.mesh.jsonc`.
+Change the CLI options rather than editing this file; the next plan replaces it.
+The generated configuration includes:
 
 - **Durable Object bindings** for the coordination objects the backend uses;
 - **cumulative SQLite migrations.** A deployable config always carries its
@@ -89,15 +106,10 @@ mezair-cloud mesh remove --backend <path> --name <worker> \
 whatever config happened to be generated last, so teardown deletes the worker
 you named, not a stale one.
 
-## Rehearsal and verification
+## Check your backend
 
-The full lifecycle rehearsal (deploy, conformance, upgrade, restore, remove)
-is scripted in `mezair-cloud/scripts/verify-mesh-rehearsal.mjs`. Run it before
-you trust a deployment for real devices; it is the same rehearsal the hosted
-path has been through.
-
-After deploy, prove the backend speaks the contract with the conformance
-suite, see [Backend conformance](/docs/sync/conformance):
+After deployment, run the [compatibility checks](/docs/sync/conformance)
+against your backend:
 
 ```sh
 pnpm conformance -- --url <backend> --admin-token <token>
@@ -132,12 +144,7 @@ only. After the first device is enrolled, use Mezair Desktop's normal device
 management and in-app pairing for additional devices. The page's inspection
 control is an operator convenience, not a replacement for device auth.
 
-## Current limits
+## Related
 
-- Rehearsed on real Cloudflare deployments; not yet demoed end-to-end on
-  physical multi-device hardware.
-- `plan` emits generated config. Hand-edits to `wrangler.mesh.jsonc` will be
-  regenerated away. Treat it as build output.
-- The full flag surface, exit codes, and JSON shapes are in the
-  [CLI reference](/docs/cloud/cli-reference). Backend internals and the rest
-  of the Mezair Cloud CLI live in [Mezair Cloud](/docs/cloud/overview).
+- [CLI reference](/docs/cloud/cli-reference) for flags, exit codes and JSON output.
+- [Sync & Mesh overview](/docs/sync/overview) for connection modes and what syncs.

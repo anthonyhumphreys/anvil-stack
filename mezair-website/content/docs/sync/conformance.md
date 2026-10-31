@@ -1,7 +1,7 @@
 ---
 title: Backend conformance
 navTitle: Backend conformance
-description: The frozen Sync v2 wire profile, the conformance suite that tests it, and the limits of what a passing backend proves.
+description: Check whether your backend implements the Sync v2 protocol and understand which operations the compatibility suite covers.
 product: Mezair Sync & Mesh
 section: Guides
 journey: build
@@ -24,12 +24,10 @@ version 1; Sync and Mesh capabilities are negotiated as version 2 profiles.
 This suite checks Sync. It does not yet validate Mesh job, handoff, or direct
 host-session operations.
 
-The contract is provider-neutral by construction. Nothing in it requires
-Durable Objects, R2, or Workers. The suite ships a plain `node:http`
-in-memory fixture that passes all 12 checks, including compact snapshot
-publication and verification. This proves the contract is implementable
-without Cloudflare primitives. It is a conformance fixture, not a production
-backend.
+The protocol does not require Cloudflare Workers, Durable Objects or R2.
+The suite includes a small in-memory Node HTTP backend as a reference for
+implementing another server. It is intended for development, not hosting
+account data.
 
 ## Run the suite
 

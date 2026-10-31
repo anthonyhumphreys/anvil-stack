@@ -1,7 +1,7 @@
 ---
 title: Alpha status
 navTitle: Alpha status
-description: What the first Mezair alpha is meant for, what is working, and what to verify before broader rollout.
+description: Registry availability, deployment limits and a gradual rollout for your repositories.
 product: Mezair Registry
 section: Reference
 journey: reference
@@ -10,69 +10,32 @@ order: 180
 
 # Alpha status
 
-This is the first public version of Mezair Registry and Mezair Node Base. It is an alpha release: useful for review, local trials, CI experiments, and early operator feedback, but not something to drop in front of every production install path without a careful rollout.
+Mezair Registry and Node Base are alpha software. You can run the local Docker
+Compose stack, deploy Registry to your own host, route npm-compatible clients
+through the gateway and use Node Base for dependency installs.
 
-Start with a local trial and inspect its package decisions before changing team or CI configuration. The sections below describe what has been tested and what still needs work.
+Start with one repository so you can inspect decisions and adjust policy before
+changing a team-wide registry or a critical CI pipeline.
 
-## Good alpha use cases
+## Current limits
 
-Use this version for:
+- Admin access uses the documented admin-token configuration.
+- Policy thresholds need to match your organisation and dependency graph. A
+  blocked package can stop an install; review decisions before enabling strict
+  enforcement.
+- Optional LLM review explains analysis. It does not decide whether a package
+  is allowed.
+- Node Base observed mode runs dependency install scripts and records their
+  activity. Use safe mode when those scripts are not needed.
+- Keep the alpha stack on a private network or behind your own access controls.
 
-- Running the local Docker Compose stack.
-- Routing a pilot repository through the npm-compatible gateway.
-- Exercising metadata and tarball proxying for scoped and unscoped packages.
-- Inspecting package decisions and explain output.
-- Warming caches and queueing analysis from representative lockfiles.
-- Reviewing Node Base safe-mode and observed-mode reports.
-- Testing CI dependency-review workflows on non-critical repositories.
-- Contributing fixes, docs, and implementation feedback.
+## Roll out gradually
 
-## Use caution for
+1. Start the [local stack](/docs/registry/quickstart) or [deploy to your own host](/docs/registry/deploy).
+2. Seed common lockfiles with `mezair registry warm`.
+3. Route one project through the gateway using a project-level `.npmrc`.
+4. Install with lifecycle scripts disabled, then inspect package decisions and Node Base reports.
+5. Add CI checks in warning mode before switching to stricter enforcement.
 
-Be more careful with:
-
-- Production builds that must fail closed under every dependency edge case.
-- Large organisation-wide registry cutovers.
-- Private scoped registry setups with complex token and upstream routing requirements.
-- Strict policy modes that have not been tested against your real dependency graph.
-- Workflows where a false block would stop a critical release.
-- Workflows where a false allow would create meaningful security exposure.
-
-Pilot first. Seed common lockfiles. Watch decisions. Review report output. Then tighten policy.
-
-## Current coverage
-
-The alpha docs cover:
-
-- Local quickstart and registry client configuration.
-- Registry request flow, tarball rewriting, scoped upstreams, and cache behaviour.
-- Policy actions, runtime modes, quarantine, blocks, and overrides.
-- CLI commands for explain, scan, warm, queue, reports, overrides, and health checks.
-- Registry seeding from lockfiles.
-- Node Base safe mode, observed mode, reports, network monitoring, and strict gates.
-- CI usage and deployment notes.
-- API endpoints and operator reference.
-- Troubleshooting for routing, readiness, blocks, reports, and lifecycle scripts.
-
-## What is not a promise
-
-This alpha does not promise:
-
-- Full production hardening for every npm client edge case.
-- A finished auth system beyond the documented admin token path.
-- That optional LLM review is enabled or required.
-- That every policy threshold is correct for your organisation.
-- That observed mode makes lifecycle scripts safe. It makes them visible. Those are not the same thing, and the difference matters.
-
-## Recommended rollout
-
-1. Start locally with Docker Compose.
-2. Run the smoke checks relevant to your workflow.
-3. Seed the registry with representative lockfiles using `mezair registry warm`.
-4. Route one low-risk repository through the gateway.
-5. Run installs with lifecycle scripts disabled.
-6. Review package decisions and Node Base reports.
-7. Add CI checks in warning or review mode.
-8. Move toward stricter policy only after the evidence looks sane.
-
-See [Quickstart](/docs/registry/quickstart), [Registry seeding](/docs/registry/registry-seeding), and [CI usage](/docs/registry/ci) for the practical flow.
+See [Registry seeding](/docs/registry/registry-seeding), [Policy](/docs/registry/policy)
+and [CI usage](/docs/registry/ci) for configuration.

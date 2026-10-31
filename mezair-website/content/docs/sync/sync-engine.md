@@ -18,9 +18,8 @@ edit -> sync_outbox -> seal at dispatch -> push
      -> peers pull -> unseal -> domain apply
 ```
 
-Every stage is implemented and covered by engine and keyring tests. This page
-walks the loop and the failure behavior at each stage, the interesting part
-of a sync engine is never the happy path.
+The sections below explain each stage and how interrupted or conflicting
+changes are handled.
 
 ## Stage by stage
 
@@ -100,10 +99,6 @@ the loop and no silent discard.
 
 ## Current limits
 
-- The loop is proven in engine/keyring suites and rehearsed against real
-  Cloudflare deployments; a physical multi-device demo is still pending.
-  Cross-device timing (how fast a wrap or a pull reaches real
-  hardware) is the least proven part.
 - Conflicts require manual resolution. The sync engine does not merge
   divergent edits automatically.
 - Fallback polling is a convergence path, not a performance path. Expect

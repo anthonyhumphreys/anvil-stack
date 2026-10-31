@@ -11,7 +11,7 @@ The site is not nested under another repo. It is the public website for Mezair D
 Mezair is open source developer infrastructure. Keep the site useful for developers trying to inspect, run, or contribute to the projects today.
 
 - Be honest about alpha or early surfaces.
-- Describe unbuilt features by their current behavior, limits, and verification path.
+- Describe feature availability and limits in terms of what users can do.
 - Do not hide sharp edges behind glossy copy.
 - Avoid SaaS dashboard language, cybersecurity vendor sludge, and fake maturity.
 - Lead with commands, architecture, setup paths, policy reasoning, and evidence.
@@ -24,6 +24,14 @@ Mezair is open source developer infrastructure. Keep the site useful for develop
 - Keep docs broad enough for a new OSS reader to understand the desktop app, registry gateway, Node Base, Mezair Cloud, CLI, CI, deployment, policy, reports, companion controls, extension points, and known limitations.
 - Keep security claims grounded in implementation, specs, or explicit scope notes.
 - Deterministic policy is the Registry enforcement authority. LLM review can explain evidence; it must not be described as what allows a package.
+
+## Public And Internal Content
+
+- Write public pages for people choosing, installing, using, deploying or extending Mezair.
+- Keep internal QA reports, test counts, deployment rehearsals, physical-device acceptance plans, release gates, production provisioning checklists and implementation diaries in the owning project's repository docs, plans or runbooks. Do not publish them in `content/docs` or marketing copy.
+- Keep limitations that change a user's actions: unsupported features, compatibility, data handling, configuration requirements and costs. State unavailable services plainly without listing internal launch work.
+- Place configuration warnings beside the command or setting they affect. Reference links belong under related reading, not under "Current limits".
+- Setup guides should offer a useful prompt users can copy into their coding agent. Use a `prompt` fenced block so it renders with a "Copy prompt" button. Include the goal, relevant public guide, necessary choices and expected result.
 
 ## Site Architecture
 

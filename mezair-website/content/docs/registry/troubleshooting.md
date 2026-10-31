@@ -129,7 +129,7 @@ cat .mezair/reports/ioc-report.md
 cat .mezair/reports/npm-install.log
 ```
 
-If the finding is expected, document why and adjust policy narrowly. Do not globally weaken observed mode because one package is dramatic.
+If the finding is expected, document why and adjust policy narrowly. Keep the exception scoped to that package.
 
 ## Reports are not submitted
 

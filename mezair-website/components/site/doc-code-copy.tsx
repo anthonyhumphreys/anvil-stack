@@ -27,7 +27,7 @@ export function DocCodeCopy() {
       timers.set(
         button,
         window.setTimeout(() => {
-          button.textContent = "Copy";
+          button.textContent = button.dataset.copyLabel ?? "Copy";
           delete button.dataset.state;
         }, 1600)
       );

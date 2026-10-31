@@ -18,6 +18,18 @@ Coding agents can read the short contract at `/llms.txt` or the full authoring
 guide at `/llms-full.txt`. The same files are bundled under `docs/` in the
 published Cloud CLI package so an installed project can be inspected offline.
 
+## Set it up with your agent
+
+Copy this prompt into your coding agent to run the Notes example locally.
+
+```prompt
+Help me run the Mezair Cloud Notes example locally.
+
+Follow https://mezair.dev/docs/cloud/quickstart. Use an existing Mezair checkout if available; otherwise clone https://github.com/anthonyhumphreys/mezair into a new directory. Install and build inside mezair-cloud, then check, build and start examples/notes using the current CLI.
+
+Keep this local: do not create cloud resources. Check the runtime health endpoint, add and read a note, and show me the client and Lens URLs. Explain which process to stop when I am done and where the example stores its local data.
+```
+
 ## 1) Prepare the checkout
 
 From `mezair-cloud`:
@@ -32,7 +44,7 @@ If dependencies are already installed, `pnpm build` is enough to refresh the
 package output used by the CLI. `pnpm mezair-cloud` runs the built CLI entrypoint
 from the workspace root.
 
-## 2) Run the canonical Notes Cell first
+## 2) Run the Notes Cell
 
 The fastest useful path is the checked-in `examples/notes` Cell. It exercises a
 React/Vite client, local auth, database queries and mutations, a public
@@ -44,17 +56,7 @@ node ../../packages/cli/dist/index.js check --json
 node ../../packages/cli/dist/index.js build --json
 ```
 
-For a repeatable smoke test, run this from the `mezair-cloud` workspace:
-
-```bash
-pnpm verify:notes-local
-```
-
-The verifier starts `mezair cloud dev` on ephemeral ports, creates a local user, mints
-a JWT, calls authenticated note mutation/query routes, checks local inspect and
-logs, and then shuts the dev server down.
-
-## 3) Install the published CLI shape
+## 3) Install the CLI
 
 For normal command-line usage, install the umbrella wrapper and the Cloud
 product CLI:

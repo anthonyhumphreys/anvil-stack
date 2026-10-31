@@ -176,5 +176,3 @@ rotates when a surviving trusted device next reconciles, as described in
   saved by the user.
 - A device revocation invalidates the local recovery refresh root; replace
   recovery and save the newly issued code before refreshing that envelope.
-- Pairing-payload redemption is covered by lifecycle tests; the full
-  two-device acceptance run on hardware is still pending.

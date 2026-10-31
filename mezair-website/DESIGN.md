@@ -249,6 +249,8 @@ The sticky header uses a translucent themed ground, a bottom rule and backdrop b
 
 Documentation search is a 56px-tall, transparent field within a ruled dialog header, with muted placeholder text and an accent search icon. Its wrapper, result selection and close control provide the interaction structure; the bare input does not acquire an invented standalone border. Search opens with `/` or Command/Ctrl-K. Documentation code blocks use bounded dark artifact panels with copy controls; notes, tips and warnings use labeled tinted callouts.
 
+Setup prompts use a `prompt` fence with an Agent prompt label and a Copy prompt button. Their text wraps in the body font, including on mobile. Copy feedback restores the original action label. Public docs describe user tasks and practical limits; internal test reports, acceptance plans and launch checklists stay in repository docs and runbooks.
+
 ### Real captures
 
 Every product image is the production Mezair Desktop UI rendered with synthetic fixture content (the Acme workspace, Dana's devices, example jobs). `scripts/capture-screens.mjs` captures the Electron shell and the `mezair-app` replay harness over the DevTools protocol, writes 2× WebP to `public/screens/` and records each capture's source, fixture, size and app commit in `manifest.json`. `lib/screens.ts` pairs every capture with alt text that describes the screen in words and a short caption. Never draw product UI in the website; add a replay fixture instead. Docs reference captures with `![alt](/screens/id.webp "caption")`, which renders a sized, lazy `.doc-figure`.

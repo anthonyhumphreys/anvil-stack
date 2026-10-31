@@ -58,8 +58,8 @@ Cloud features are off by default. Enabling them reveals the Cloud Workbench; it
 
 In **Settings → Sync & Mesh**, choose a backend and sign in to connect a device.
 You can use your own Cloudflare deployment or a compatible third-party backend.
-Mezair-hosted production access has not launched. Its invite-only test path
-requires paid or beta access, and checkout is closed. Proposed paid plans are
+Mezair-hosted production access has not launched. Its invite-only beta
+requires a subscription or a beta code, and checkout is closed. Proposed paid plans are
 on the [pricing page](/pricing). Running your own backend carries no Mezair
 subscription charge.
 

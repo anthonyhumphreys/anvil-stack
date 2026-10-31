@@ -125,10 +125,6 @@ already entities.
 
 ## Current limits
 
-- The dispatch/attempt/lease machinery is covered by worker and artifact
-  suites and rehearsed on real deployments; a physical multi-device demo is
-  still pending. Treat cross-machine UX as unproven until the recorded run
-  lands.
 - Job history lists the most recent 100 executions.
 - Worker opt-in is per-device by design; expect to enable it on each machine
   you want claiming work.

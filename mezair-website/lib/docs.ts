@@ -164,6 +164,7 @@ const codeLanguageLabels: Record<string, string> = {
   sql: "SQL",
   dockerfile: "Dockerfile",
   http: "HTTP",
+  prompt: "Agent prompt",
   text: "Text",
   txt: "Text"
 };
@@ -194,8 +195,10 @@ async function renderMarkdown(content: string) {
   renderer.code = function ({ text, lang }) {
     const language = (lang ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
     const label = codeLanguageLabels[language] ?? (language ? language.toUpperCase() : "Code");
+    const isPrompt = language === "prompt";
+    const copyLabel = isPrompt ? "Copy prompt" : "Copy";
     const className = language ? ` class="language-${escapeHtml(language)}"` : "";
-    return `<div class="doc-code"><div class="doc-code-bar"><span>${escapeHtml(label)}</span><button type="button" class="doc-code-copy" data-copy-code>Copy</button></div><pre><code${className}>${escapeHtml(text)}</code></pre></div>`;
+    return `<div class="doc-code${isPrompt ? " doc-prompt" : ""}"><div class="doc-code-bar"><span>${escapeHtml(label)}</span><button type="button" class="doc-code-copy" data-copy-code data-copy-label="${copyLabel}" aria-live="polite">${copyLabel}</button></div><pre><code${className}>${escapeHtml(text)}</code></pre></div>`;
   };
   // Screenshots: lazy, sized from the capture manifest (no layout shift), and
   // captioned from the Markdown title: ![alt](/screens/x.webp "Caption").

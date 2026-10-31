@@ -90,8 +90,8 @@ Current alpha limits include:
 - Services execute fully locally; AWS preview blocks service-bearing deploys
   until the Fargate runner executes the exact Cell service handler.
 - Outbound fetch policy is checked by Guard and enforced by the AWS Lambda runtime allow-list guard.
-- Production use needs wider operational validation beyond the preview verifier.
-- Agents are a runnable alpha control-plane foundation, not a deployed hosted agent platform. Project-agent discovery, deterministic Guardian review, authenticated resumable execution leases/events/controls, immutable snapshots, one-time worker grants, a CLI service, an optional Desktop workbench, subscription-auth intent, provider conformance, and an AWS Lambda MicroVM read-only transport exist. A deployed compatible worker image, concrete Codex/Cursor login runners, production persistence/approval UI, hosted memory, real-account proof, and sandbox-aware Lens views are future work.
+- AWS deployments are previews; production hosting is not available.
+- Agents run locally or through a compatible execution worker in your own account. AWS execution is read-only. Mezair-hosted agent compute, hosted memory and hosted approvals are not available.
 - Auth token verification is real locally and on AWS, but session/refresh lifecycle and login UI belong to your provider.
 - Mezair Lens is local-first; there is no hosted control plane, marketplace, or multi-region deployment.
 - No arbitrary provider-resource authoring or raw container/Kubernetes definitions in Cell code.

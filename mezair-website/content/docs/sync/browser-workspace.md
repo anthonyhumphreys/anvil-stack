@@ -62,42 +62,12 @@ server on the connected machine. It is not an interactive browser session.
 File edits carry an expected revision so a stale browser cannot silently
 overwrite a newer change.
 
-## Acceptance checks for a candidate
+## Connection limits
 
-Use a candidate Desktop and the matching staging backend for these checks:
+The connected machine must be online and reachable. If it goes offline, the
+browser preserves your unsent draft. Reconnect before sending more work; check
+the outcome of an interrupted command before running it again.
 
-1. Request a connection by machine name, approve exact repositories, and
-   confirm the browser lists only those projects.
-2. Send a chat with a configured provider and model. Follow its progress,
-   send a follow-up, resolve a requested approval and interrupt a turn. Switch
-   providers after a turn finishes and send again in the same thread. Confirm
-   agent progress is attributed to Mezair and newer draft text survives a slow
-   send.
-3. Set the machine's maximum mode below the requested mode. Confirm the
-   session reports and enforces the effective mode. Repeat with Desktop's
-   default set to Full access.
-4. Reopen a remembered browser and verify renewal of its short session.
-   Changing the browser key, origin, account, target, repositories or scopes
-   must not inherit that approval.
-5. Disconnect the browser or revoke access in Desktop. Confirm renewed
-   sessions and browser terminals lose access too.
-6. Take the machine offline. Confirm the browser preserves an unsent draft
-   and reports uncertain command outcomes without replaying mutations. Let a
-   session expire while Desktop cannot reach the backend; confirm its active
-   browser turn and terminals stop without interrupting other Desktop work.
-
-Passing an automated build does not replace these physical-device and
-provider-login checks. Availability in the operated service still depends
-on the matching Desktop and backend being released.
-
-## Shared chat presentation
-
-The web composer, message framing, thread rows and empty state use the same
-React presentation components as Desktop, in
-`mezair-app/src/renderer/components/chat/shared/ChatPresentation.tsx`. The
-default palette is shared through `mezair-app/src/renderer/styles/chat-theme.css`.
-These components accept data and callbacks; they do not import Electron or
-Desktop services. Browser transport and Desktop execution stay separate.
-
-Website CI also runs when those shared sources change. The website installs
-its own dependencies and supplies the React types for those shared sources.
+A session needs a valid renewal to continue an active turn. If it expires,
+Desktop stops that browser's active turn and terminals. Other Desktop work
+continues.

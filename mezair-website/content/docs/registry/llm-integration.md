@@ -35,25 +35,17 @@ The gateway and Admin service can enqueue LLM review jobs. The worker calls the 
 
 Provider credentials are needed only by the worker. Do not expose `LLM_REVIEW_API_KEY` to the gateway, Admin browser code, public docs routes, or `NEXT_PUBLIC_*` variables.
 
-## Enable review locally
+## Enable review
 
-The default Compose stack keeps LLM review disabled. To run the local mock provider:
+The default Compose stack keeps LLM review disabled. To use an HTTP reviewer,
+set `LLM_REVIEW_ENABLED=true`, choose a provider and model label, and set
+`LLM_REVIEW_ENDPOINT` to an endpoint that returns the review schema below.
+Configure `LLM_REVIEW_API_KEY` on the worker if that endpoint requires a bearer
+token. Restart the gateway, worker and Admin services after updating their
+configuration.
 
-```bash
-pnpm smoke:llm-review
-```
-
-That smoke test starts the Compose stack with the `llm-review` profile, queues a forced review, waits for the worker, and verifies that Admin can read the persisted review.
-
-For a manual local run:
-
-```bash
-LLM_REVIEW_ENABLED=true \
-LLM_REVIEW_PROVIDER=mock \
-LLM_REVIEW_MODEL=risk-reviewer \
-LLM_REVIEW_ENDPOINT=http://llm-review-mock:8787/review \
-docker compose -f infra/docker/docker-compose.yml --profile llm-review up -d --build llm-review-mock gateway worker admin
-```
+For a Codex subscription, use the Docker setup under **Codex CLI on a NAS**
+below instead.
 
 Then queue a review:
 
@@ -224,5 +216,3 @@ The SST preflight catches partially enabled HTTP review, such as setting `LLM_RE
 | Jobs enqueue but no review appears | For HTTP, check `LLM_REVIEW_ENDPOINT` and provider output. For Codex, check the worker mount, `CODEX_AUTH_FILE` permissions, and worker logs. |
 | Private package review is skipped | This is the default. Set `LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES=true` only after approving that data flow. |
 | Provider returns text instead of JSON | Make the provider return the schema object directly or inside `review`. |
-
-When in doubt, run `pnpm smoke:llm-review` against the local mock first. It removes provider drama from the equation, which is rude to drama but helpful to debugging.

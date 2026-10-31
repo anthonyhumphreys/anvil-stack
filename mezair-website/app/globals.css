@@ -587,6 +587,18 @@
     color: inherit;
   }
 
+  .doc-markdown .doc-prompt pre {
+    font-family: inherit;
+    font-size: 0.9375rem;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .doc-markdown .doc-prompt code {
+    font-family: inherit;
+  }
+
   .doc-markdown blockquote {
     @apply mt-6 border-l pl-5 italic text-muted-foreground;
   }

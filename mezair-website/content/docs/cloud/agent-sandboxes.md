@@ -19,10 +19,8 @@ service and an optional Desktop view. The AWS Lambda MicroVM adapter supports
 read-only execution. The sections below describe the contracts and their limits.
 
 Mezair Cloud Agents will let you run this work on machines we host. It hasn't
-launched, and no price or release date has been set. It still needs a deployed
-worker image, provider login runners, production storage, Lens integration and
-testing with real accounts. Existing integrations use your own machines or
-provider accounts; those providers bill you directly.
+launched, and no price or release date has been set. Existing integrations use
+your own machines or provider accounts; those providers bill you directly.
 
 ## Why sandboxes exist
 
@@ -220,16 +218,15 @@ execution leases with:
   SHA-256 before workspace preparation
 - a loopback-safe Node service adapter
 
-The deterministic exit gate needs no cloud account:
+Check the execution lifecycle locally without a cloud account:
 
 ```bash
 mezair cloud executions conformance --json
 ```
 
 It starts a fake writable execution, pauses for approval, resumes from the same
-cursor, returns a patch, and verifies that the sandbox was terminated. This is a
-real contract test, not a simulated claim that AWS credentials or a hosted
-service exist.
+cursor, returns a patch, and verifies that the sandbox was terminated. It uses
+a local test provider and does not create cloud resources.
 
 AWS implements the same interface in read-only mode. A compatible Lambda
 MicroVM image receives source preparation, run, cursor event, approval, input,
@@ -367,58 +364,17 @@ Example future inspect shape:
 }
 ```
 
-## Current status
+## Availability and limits
 
-Implemented today:
-
-- `defineAgent`
-- provider-neutral agent manifests
-- mounted Cell Agents
-- local stub inference
-- provider registry
-- tool capability checks
-- approval-required results
-- AWS Bedrock inference provider
-- AWS compatibility reporting
-- provider-neutral Agent Sandbox types in `@mezair-cloud/runtime`
-- provider-neutral execution request, source, policy, event, result, artifact,
-  and provider I/O types in `@mezair-cloud/runtime`
-- idempotent execution leases, durable cursors, approval/input/steering
-  controls, budgets, results, and cleanup receipts in
-  `@mezair-cloud/control-plane`
-- in-memory and atomic JSON-file execution stores
-- authenticated and workspace-authorised execution HTTP router/clients
-- content-addressed file/in-memory snapshot stores and one-time worker grants
-- authenticated worker HTTP boundary with source-integrity verification
-- runnable execution service plus CLI snapshot and lifecycle commands
-- optional Desktop remote execution connection, event/approval controls, and
-  encrypted main-process token storage
-- execution-scoped Codex/Cursor subscription-auth descriptors without model
-  API keys or copied local OAuth caches
-- deterministic fake-provider conformance with approval, patch, cursor, and
-  teardown proof
-- brokered credential declarations in agent manifests and sandbox startup
-  payloads
-- local Docker and process sandbox providers in `@mezair-cloud/local`
-- local sandbox backend selection and inspect JSON session reporting
-- `AwsLambdaMicroVmSandboxProvider` in `@mezair-cloud/aws`
-- token-scoped AWS read-only execution transport for compatible MicroVM worker
-  images
-- `MEZAIR_AWS_AGENT_SANDBOX_IMAGE`-gated AWS support for sandbox-required agents
-- AWS preview plan changes, review gates, and cost drivers for `agent-sandboxes`
-- `mezair cloud agents sandboxes --json`
-- `mezair cloud executions conformance --json`
-
-Not implemented yet:
-
-- live network-bound credential injection around sandbox tools
-- compatible deployed AWS execution worker image and real-account smoke
-- concrete Codex device-login and Cursor interactive-login worker drivers
-- concurrency-safe hosted persistence beyond the alpha JSON stores
-- production approval UI
-- sandbox-aware Lens views
-- remote sandbox inspect/logs
-- persistent hosted memory
-- durable multi-step orchestration
-
-Treat this as a runnable alpha boundary, not the finished hosted experience.
+- Local execution supports isolated workspaces, file changes, events, approvals
+  and saved execution state.
+- The CLI service and optional Desktop view connect to an execution control plane
+  you run. They require authentication and workspace authorization.
+- AWS Lambda MicroVM execution is read-only and requires a compatible worker
+  image in your own AWS account. It does not apply working-tree patches.
+- Codex or Cursor subscription sign-in requires a worker that explicitly
+  supports that provider's login flow.
+- The alpha service stores state locally. It does not provide shared hosted
+  persistence, hosted memory or a hosted credential broker.
+- Mezair Cloud Agents hosted compute is not available. No price or release date
+  has been set.

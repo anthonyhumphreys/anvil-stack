@@ -45,7 +45,7 @@ Point npm at the gateway:
 npm config set registry http://localhost:4873
 ```
 
-Then install in a test project. Do not start with the repository that deploys payroll or production auth. Be brave later.
+Try an install in a test project before changing a production repository or CI pipeline.
 
 ## 2) Inspect decisions before enforcement
 
@@ -173,7 +173,7 @@ Preflight catches missing gateway URLs, domain/certificate mismatches, malformed
 
 Read [Deploy](/docs/registry/deploy) for deployment configuration.
 
-## Production readiness checklist
+## Before a team rollout
 
 Before a team depends on the registry:
 
@@ -187,23 +187,18 @@ Before a team depends on the registry:
 - tarball URL rewrites use the public HTTPS gateway URL
 - policy is reviewed and documented
 - override process exists
-- smoke tests pass
 - CI behavior is understood
 - Node Base report handling is documented
 - release images are pinned to an immutable `registry-v*` tag
-- `MEZAIR_DATA_DIR` is included in backups and restore has been rehearsed
+- `MEZAIR_DATA_DIR` is backed up and you can restore it
 
-## Smoke tests
+## Check a package install
 
-Run relevant smokes:
+Use the installed CLI to check gateway readiness and package delivery:
 
 ```bash
-pnpm smoke:local
-pnpm smoke:clients
-pnpm smoke:scoped-upstream
-pnpm smoke:analysis
-pnpm smoke:node-base-report
-pnpm smoke:llm-review
+mezair registry smoke is-number
 ```
 
-Use smoke output as rollout evidence. If a smoke fails, fix the failing contract or mark the limitation before widening adoption.
+Then try an install through the gateway in a test project. Check the package
+decision, tarball download and any reports before adding more repositories.

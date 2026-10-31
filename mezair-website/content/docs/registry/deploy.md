@@ -10,6 +10,20 @@ order: 50
 
 # Deployment
 
+## Set it up with your agent
+
+Copy this prompt into your coding agent to deploy Registry on your own host.
+
+```prompt
+Help me deploy Mezair Registry on my NAS or Docker host.
+
+Follow https://mezair.dev/docs/registry/deploy and use the Compose bundle from a current Registry release at https://github.com/anthonyhumphreys/mezair/releases. Ask for my host architecture, reachable gateway URL and persistent data directory. Inspect any existing deployment before changing it.
+
+Configure the release with separate secrets for the admin token, database and object storage. Keep their values out of chat and source control. Show the services, storage locations and exposed ports before starting them. Check the gateway health and readiness endpoints.
+
+Finish with a project-level .npmrc example using the reachable gateway URL, the Admin URL, and the commands to stop, back up and upgrade the deployment. Do not change my global npm configuration.
+```
+
 ## Local registry stack
 
 ```bash
@@ -18,7 +32,7 @@ docker compose -f infra/docker/docker-compose.yml up --build
 
 The local stack includes the Fastify gateway, worker, Next.js Admin service, Postgres, Redis, and MinIO.
 
-## Local readiness
+## Check the services
 
 Before routing installs through the gateway, check:
 
@@ -30,21 +44,7 @@ curl http://localhost:3000/-/health
 
 Use `/-/health` for service liveness checks and gateway `/-/ready` for traffic readiness. Readiness should fail if persistence, object storage, or queue dependencies are unavailable.
 
-## Local smoke checks
-
-The product stack includes smoke scripts for npm-compatible clients and worker flows:
-
-```bash
-pnpm smoke:clients
-pnpm smoke:analysis
-pnpm smoke:node-base-report
-pnpm smoke:llm-review
-pnpm smoke:scoped-upstream
-```
-
-Run these after bringing up the local stack when changing gateway routing, policy decisions, upstream registry handling, or report submission.
-
-## NAS and operator deployment
+## Deploy to a NAS or Docker host
 
 Each `registry-v*` GitHub release includes a self-contained Compose bundle for Linux AMD64 and ARM64 hosts. It runs versioned gateway, worker, Admin, and migration images from GHCR and stores Postgres, Redis, and MinIO data beneath one configurable directory.
 
