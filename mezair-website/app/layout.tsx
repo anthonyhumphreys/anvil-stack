@@ -24,7 +24,7 @@ const mono = JetBrains_Mono({
 
 const title = "Mezair | Put your agents in motion";
 const description =
-  "The open-source workbench for coding agents. Harness them, in both senses. Free, with optional hosted sync for £6 a month.";
+  "The open-source harness for coding agents. You steer, it pulls. Free, with optional hosted sync for £6 a month.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
