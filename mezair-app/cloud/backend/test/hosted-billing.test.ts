@@ -27,6 +27,7 @@ const HOSTED_CLIENT_ID = 'client_hosted_test';
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const MONTHLY_PRICE = 'price_test_monthly';
+const ANNUAL_PRICE = 'price_test_annual';
 /** A fixed evaluation instant safely past the 2026-11-01 preview cutoff. */
 const POST_PREVIEW = PREVIEW_END_MS + 30 * DAY;
 
@@ -857,81 +858,93 @@ describe('entitlement over stored provider truth', () => {
 });
 
 describe('internal billing routes', () => {
-  it('opens configured checkout for an admitted account without granting access before payment', async () => {
-    const identity = makeIdentity(`paid-checkout-${crypto.randomUUID()}`);
-    const account = await admittedAccount(identity);
-    const customerId = `cus_${crypto.randomUUID().replaceAll('-', '')}`;
-    const sessionId = `cs_${crypto.randomUUID().replaceAll('-', '')}`;
-    await stubStripe('GET', `/v1/prices/${MONTHLY_PRICE}`, {
-      id: MONTHLY_PRICE,
-      active: true,
-      livemode: false,
-      currency: 'gbp',
-      unit_amount: 600,
-      recurring: { interval: 'month', interval_count: 1 },
-    });
-    await stubStripe('POST', '/v1/customers', { id: customerId });
-    await stubStripe('POST', '/v1/checkout/sessions', {
-      id: sessionId,
-      status: 'open',
-      customer: customerId,
-      url: 'https://checkout.stripe.com/test',
-    });
-    const checkout = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-    expect(checkout.status).toBe(200);
-    expect(checkout.body).toEqual({ checkoutUrl: 'https://checkout.stripe.com/test', sessionId });
-    expect(
-      (await getEntitlement(hostedDb(), account, Date.now(), DEFAULT_HOSTED_LIMITS, false)).state,
-    ).toBe('restricted');
-    await stubStripe('GET', `/v1/checkout/sessions/${sessionId}`, {
-      id: sessionId,
-      status: 'open',
-      customer: customerId,
-      url: 'https://checkout.stripe.com/test',
-    });
-    expect(
-      (await signedHostedPost('/internal/hosted/checkout', { ...identity, interval: 'month' }))
-        .body,
-    ).toEqual(checkout.body);
-  });
+  it.each([
+    { interval: 'month', priceId: MONTHLY_PRICE, amount: 899 },
+    { interval: 'year', priceId: ANNUAL_PRICE, amount: 8990 },
+  ])(
+    'opens $interval checkout for an admitted account without granting access before payment',
+    async ({ interval, priceId, amount }) => {
+      const identity = makeIdentity(`paid-checkout-${crypto.randomUUID()}`);
+      const account = await admittedAccount(identity);
+      const customerId = `cus_${crypto.randomUUID().replaceAll('-', '')}`;
+      const sessionId = `cs_${crypto.randomUUID().replaceAll('-', '')}`;
+      await stubStripe('GET', `/v1/prices/${priceId}`, {
+        id: priceId,
+        active: true,
+        livemode: false,
+        currency: 'gbp',
+        unit_amount: amount,
+        recurring: { interval, interval_count: 1 },
+      });
+      await stubStripe('POST', '/v1/customers', { id: customerId });
+      await stubStripe('POST', '/v1/checkout/sessions', {
+        id: sessionId,
+        status: 'open',
+        customer: customerId,
+        url: 'https://checkout.stripe.com/test',
+      });
+      const checkout = await signedHostedPost('/internal/hosted/checkout', {
+        ...identity,
+        interval,
+      });
+      expect(checkout.status).toBe(200);
+      expect(checkout.body).toEqual({ checkoutUrl: 'https://checkout.stripe.com/test', sessionId });
+      expect(
+        (await getEntitlement(hostedDb(), account, Date.now(), DEFAULT_HOSTED_LIMITS, false)).state,
+      ).toBe('restricted');
+      await stubStripe('GET', `/v1/checkout/sessions/${sessionId}`, {
+        id: sessionId,
+        status: 'open',
+        customer: customerId,
+        url: 'https://checkout.stripe.com/test',
+      });
+      expect(
+        (await signedHostedPost('/internal/hosted/checkout', { ...identity, interval })).body,
+      ).toEqual(checkout.body);
+    },
+  );
 
-  it('rejects unapproved waitlist identities and prices that do not match the advertised plan', async () => {
-    const identity = makeIdentity(`unapproved-checkout-${crypto.randomUUID()}`);
-    await stubWaitlist(identity, 'pending');
-    const denied = await signedHostedPost('/internal/hosted/checkout', {
-      ...identity,
-      interval: 'month',
-    });
-    expect(denied.status).toBe(403);
-    expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
-    await admittedAccount(identity);
-    await stubStripe('GET', `/v1/prices/${MONTHLY_PRICE}`, {
-      id: MONTHLY_PRICE,
-      active: true,
-      livemode: false,
-      currency: 'gbp',
-      unit_amount: 6000,
-      recurring: { interval: 'month', interval_count: 1 },
-    });
-    expect(
-      (await signedHostedPost('/internal/hosted/checkout', { ...identity, interval: 'month' }))
-        .status,
-    ).toBe(503);
-    expect(
-      (
-        await signedHostedPost('/internal/hosted/checkout', {
-          ...identity,
-          interval: 'month',
-          planKey: 'sync_team',
-          organizationId: 'org_foreign',
-          seats: 5,
-        })
-      ).status,
-    ).toBe(403);
-  });
+  it.each([
+    { interval: 'month', priceId: MONTHLY_PRICE, amount: 600 },
+    { interval: 'year', priceId: ANNUAL_PRICE, amount: 6000 },
+    { interval: 'month', priceId: MONTHLY_PRICE, amount: 8990 },
+    { interval: 'year', priceId: ANNUAL_PRICE, amount: 899 },
+  ])(
+    'rejects unapproved waitlist identities and a $interval price of $amount pence',
+    async ({ interval, priceId, amount }) => {
+      const identity = makeIdentity(`unapproved-checkout-${crypto.randomUUID()}`);
+      await stubWaitlist(identity, 'pending');
+      const denied = await signedHostedPost('/internal/hosted/checkout', {
+        ...identity,
+        interval,
+      });
+      expect(denied.status).toBe(403);
+      expect(await getBillingAccountByIdentity(hostedDb(), identity)).toBeNull();
+      await admittedAccount(identity);
+      await stubStripe('GET', `/v1/prices/${priceId}`, {
+        id: priceId,
+        active: true,
+        livemode: false,
+        currency: 'gbp',
+        unit_amount: amount,
+        recurring: { interval, interval_count: 1 },
+      });
+      expect(
+        (await signedHostedPost('/internal/hosted/checkout', { ...identity, interval })).status,
+      ).toBe(503);
+      expect(
+        (
+          await signedHostedPost('/internal/hosted/checkout', {
+            ...identity,
+            interval: 'month',
+            planKey: 'sync_team',
+            organizationId: 'org_foreign',
+            seats: 5,
+          })
+        ).status,
+      ).toBe(403);
+    },
+  );
 
   it('keeps personal and team checkout disabled until launch without provider or account mutation', async () => {
     const identity = makeIdentity(`retired-checkout-${crypto.randomUUID()}`);

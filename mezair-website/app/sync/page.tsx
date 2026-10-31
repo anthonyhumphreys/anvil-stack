@@ -73,7 +73,7 @@ export default function SyncPage() {
                 <p className="mt-4 text-[0.9375rem] leading-relaxed">
                   Free to self-host, or{" "}
                   <Link href="/pricing" className="cine-link">
-                    £6 a month
+                    £8.99 a month
                   </Link>{" "}
                   hosted.
                 </p>

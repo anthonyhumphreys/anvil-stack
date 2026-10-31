@@ -33,7 +33,7 @@ conformance suite.
 
 Mezair-hosted writes require a paid entitlement or a redeemed beta code. The
 invite-only test path uses time-limited codes, checkout is closed, and
-production hosting is not available yet. Proposed paid plans start at £6 a
+production hosting is not available yet. Proposed paid plans start at £8.99 a
 month for one person. You can run your own backend without paying Mezair; your
 infrastructure costs still apply. See [pricing](/pricing).
 

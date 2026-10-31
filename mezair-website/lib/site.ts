@@ -257,7 +257,7 @@ export const syncBackends = [
   {
     name: "Mezair-hosted",
     body: "We run the backend and keep it updated. Invite-only beta now; request access and redeem an invitation code. The Sync and Team plans are not on sale yet.",
-    cost: "From £6 a month"
+    cost: "From £8.99 a month"
   },
   {
     name: "Your Cloudflare account",
@@ -336,9 +336,9 @@ export const plans: Plan[] = [
   {
     id: "sync",
     name: "Sync",
-    price: "£6",
+    price: "£8.99",
     cadence: "a month",
-    annual: "or £60 a year",
+    annual: "or £89.90 a year",
     summary: "Encrypted sync and Mesh jobs across your machines.",
     features: [
       "Everything in Desktop",

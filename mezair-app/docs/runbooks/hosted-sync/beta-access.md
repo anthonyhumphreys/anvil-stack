@@ -38,7 +38,7 @@ This code change does not deploy anything or open checkout. Before launch, verif
 Stripe webhooks, reconciliation, return URLs and cancellation in the selected
 environment. Configure these nonsecret Worker variables:
 
-- `STRIPE_PRICE_SYNC_MONTHLY` and `STRIPE_PRICE_SYNC_ANNUAL`, GBP £6 and £60.
+- `STRIPE_PRICE_SYNC_MONTHLY` and `STRIPE_PRICE_SYNC_ANNUAL`, GBP £8.99 and £89.90.
 - `STRIPE_PRICE_TEAM_MONTHLY` and `STRIPE_PRICE_TEAM_ANNUAL`, GBP £12 and £120 per seat.
 - `HOSTED_CHECKOUT_SUCCESS_URL`, `HOSTED_CHECKOUT_CANCEL_URL` and
   `HOSTED_PORTAL_RETURN_URL`, all fixed HTTPS URLs returning to account billing.

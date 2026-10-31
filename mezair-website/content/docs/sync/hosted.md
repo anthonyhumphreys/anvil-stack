@@ -14,7 +14,7 @@ With Mezair-hosted Sync & Mesh, we run the backend for you. Hosted writes requir
 a paid entitlement or a redeemed beta code. The current test path is invite-only
 and uses time-limited codes without a payment method; checkout stays closed.
 Production hosting is not yet available. Request beta access through the
-[waitlist sign-up](/waitlist); requesting access is not a purchase. Proposed prices are £6 a month for one person or £12 per team member;
+[waitlist sign-up](/waitlist); requesting access is not a purchase. Proposed prices are £8.99 a month for one person or £12 per team member;
 see [pricing](/pricing) for the current proposal.
 
 You can also run the same backend yourself, from `mezair-app/cloud/backend`,

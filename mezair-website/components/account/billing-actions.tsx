@@ -50,8 +50,8 @@ export function BillingActions({ hasStripeCustomer, checkoutAvailable = false, h
               <span className="sr-only">Billing interval</span>
               <select aria-label="Billing interval" className="min-h-11 rounded-md border bg-background px-3" value={interval}
                 onChange={(event) => setInterval(event.target.value as "month" | "year")} disabled={pending !== null}>
-                <option value="month">£6 monthly</option>
-                <option value="year">£60 annually</option>
+                <option value="month">£8.99 monthly</option>
+                <option value="year">£89.90 annually</option>
               </select>
             </label>
             <Button disabled={pending !== null} onClick={() => void run("checkout", () => createCheckoutAction(interval),

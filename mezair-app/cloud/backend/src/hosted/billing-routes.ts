@@ -992,7 +992,7 @@ export async function handleCheckout(body: unknown, env: Env, db: D1Database): P
   const price = parseStripePrice(
     await stripeRequest(env, `/v1/prices/${encodeURIComponent(priceId)}`),
   );
-  const expectedAmount = (planKey === 'sync_team' ? 1200 : 600) * (interval === 'year' ? 10 : 1);
+  const expectedAmount = (planKey === 'sync_team' ? 1200 : 899) * (interval === 'year' ? 10 : 1);
   if (
     price === null ||
     price.id !== priceId ||

@@ -11,7 +11,7 @@ import { featureBeta, plans, pricingFaqs } from "@/lib/site";
 export const metadata: Metadata = pageMetadata({
   title: "Pricing | Mezair",
   description:
-    "The Mezair app is free. Sync & Mesh is free on a backend you run, or £6 a month for one person and £12 per member for teams if Mezair hosts it.",
+    "The Mezair app is free. Sync & Mesh is free on a backend you run, or £8.99 a month for one person and £12 per member for teams if Mezair hosts it.",
   path: "/pricing"
 });
 
@@ -42,11 +42,11 @@ export default function PricingPage() {
           <div className="cine-wide">
             <div className="cine-titlerow">
               <h1 id="pricing-title" className="cine-title max-w-[16ch]">
-                The app is free. Hosted Sync is £6 a month
+                The app is free. Hosted Sync is £8.99 a month
               </h1>
               <div>
                 <p className="cine-lede md:max-w-[60ch] lg:max-w-[46ch]">
-                  Run Sync yourself for free, or let us host it for £6 a month. Teams are £12 per member.
+                  Run Sync &amp; Mesh yourself for free, or let us host it for £8.99 a month. Teams are £12 per member.
                 </p>
                 <p className="cine-fine mt-4">
                   Planned prices. Hosting is invite-only until {featureBeta.endDate}, and testers get a free code.

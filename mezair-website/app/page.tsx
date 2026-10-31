@@ -91,7 +91,7 @@ const credits: Credit[] = [
   { role: "Companions", value: "Approve a step or reply from iPhone, Apple Watch, Raycast or the menu bar." },
   {
     role: "Price",
-    value: "Free. Sync is free to self-host, or £6 a month hosted.",
+    value: "Free. Sync & Mesh is free to self-host, or £8.99 a month hosted.",
     href: "/pricing"
   }
 ];
@@ -150,7 +150,11 @@ export default function HomePage() {
                 </Link>{" "}
                 for{" "}
                 <Link href="/pricing" className="cine-link">
-                  £6/mo
+                  £8.99/mo
+                </Link>
+                , or{" "}
+                <Link href="/docs/sync/self-deploy" className="cine-link">
+                  self-host it for free
                 </Link>
                 .
               </p>
@@ -232,7 +236,7 @@ export default function HomePage() {
                   </Button>
                 </div>
                 <p className="cine-fine mt-4">
-                  Free to self-host, £6 a month hosted. Hosting is invite-only until {featureBeta.endDate}.
+                  Free to self-host, £8.99 a month hosted. Hosting is invite-only until {featureBeta.endDate}.
                 </p>
               </div>
             </div>
