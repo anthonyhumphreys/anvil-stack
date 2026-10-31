@@ -55,7 +55,7 @@ The `@mezair-cloud/aws` package currently includes:
 | Agent inference        | AWS Bedrock through the `@mezair-cloud/aws` inference provider                                                                                                   |
 | Agent sandboxes        | Lambda MicroVM sessions for sandbox-required agent work when a sandbox image is configured                                                                      |
 | Outbound fetch         | Lambda runtime allow-list guard from `capabilities.outboundFetch.allow`                                                                                         |
-| Environment            | Lambda environment values for alpha                                                                                                                             |
+| Environment            | Lambda environment values for beta                                                                                                                             |
 | Logs                   | CloudWatch Logs                                                                                                                                                 |
 | Deployment metadata    | DynamoDB                                                                                                                                                        |
 
@@ -92,16 +92,16 @@ S3-managed server-side encryption. Declaring `capabilities.files` gives Cell
 code object storage through `ctx.files`; it does not make uploaded files public.
 Preview artifact uploads and runtime `ctx.files.put` writes request S3-managed
 encryption explicitly, and browser client assets use `Cache-Control: no-cache`
-so alpha redeploys do not depend on stale cached files.
+so beta redeploys do not depend on stale cached files.
 
 Generated DynamoDB tables use pay-per-request billing and point-in-time
 recovery for both Cell data and deployment metadata.
 
-Preview Lambdas use explicit alpha defaults: 256 MB memory and a 30 second
+Preview Lambdas use explicit beta defaults: 256 MB memory and a 30 second
 timeout. Queued job Cells get an SQS queue with a 60 second visibility timeout
 so job messages are not immediately retried while the Lambda is still running.
 The generated queue redrives messages to a Cell-owned dead-letter queue after
-three failed receives, with 14 day retention for alpha debugging.
+three failed receives, with 14 day retention for beta debugging.
 
 ## Agent sandbox target
 
@@ -205,7 +205,7 @@ mezair cloud dev --db-branch branch --json
 mezair cloud db diff branch --against main --json
 ```
 
-The AWS alpha adapter currently provisions DynamoDB for preview Cells, but it
+The AWS beta adapter currently provisions DynamoDB for preview Cells, but it
 does not yet map local JSON branches to provider-native database branches.
 Use local branches for safe preview/test data states; provider-backed branch
 promotion remains an adapter roadmap item.
@@ -319,7 +319,7 @@ correlation. Malformed JSON query or mutation bodies return a stable
 - Production use needs wider operational validation beyond the preview verifier.
 - CloudFormation stack failures return `AWS_STACK_FAILED` with recent failing stack events. Stack polling timeouts return `AWS_STACK_TIMEOUT` with the last observed status. Missing required stack outputs return `AWS_STACK_OUTPUT_MISSING`. AWS SDK provisioning failures return `AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider error cause.
 - If a deployed runtime is missing adapter environment values for a declared capability, it returns `CAPABILITY_NOT_DECLARED` diagnostics naming the missing variable, such as `MEZAIR_EVENT_BUS_NAME` for events.
-- Auth provider lookup is alpha-scoped. Current preview verifies bearer tokens through OIDC when `MEZAIR_AUTH_ISSUER` is configured; otherwise authenticated handlers require a future auth integration or a smoke token setup.
+- Auth provider lookup is beta-scoped. Current preview verifies bearer tokens through OIDC when `MEZAIR_AUTH_ISSUER` is configured; otherwise authenticated handlers require a future auth integration or a smoke token setup.
 - Multi-region, custom domains, hosted control plane, marketplace, production policy packs, automated artifact rollback, signed artifacts, and real cost reporting are future work.
 
 ## Safety posture

@@ -80,7 +80,7 @@ npm and pnpm both read this setting. The server's `PUBLIC_BASE_URL` must match t
 
 The bundle starts in `development` mode so unanalysed dependencies warn rather than unexpectedly blocking a first install. Warm representative lockfiles and inspect decisions before switching `RUNTIME_MODE` to `ci` or `production`.
 
-Only gateway and Admin publish host ports. Postgres, Redis, and MinIO remain on the private Compose network. Do not expose the alpha stack directly to the public internet.
+Only gateway and Admin publish host ports. Postgres, Redis, and MinIO remain on the private Compose network. Do not expose the beta stack directly to the public internet.
 
 For optional Codex-backed package review, the release also includes `docker-compose.codex.yml`. Set `CODEX_AUTH_FILE` to the NAS user's absolute `~/.codex/auth.json` path and apply both Compose files. Only the worker receives the read-only credential mount. See [LLM integration](/docs/registry/llm-integration) before enabling it.
 

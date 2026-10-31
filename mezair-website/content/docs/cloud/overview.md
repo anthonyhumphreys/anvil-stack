@@ -59,7 +59,7 @@ The API and architecture references below describe those parts in detail.
 
 ## What works now
 
-The alpha implementation includes:
+The beta implementation includes:
 
 - object-based Cell DSL for `app`, `query`, `mutation`, `endpoint`, `job`, `workflow`, `service`, `table`, and field builders
 - contract-first [Mezair Agents](/docs/cloud/agents): `defineAgent`, provider-neutral agent manifests, mounted Cell Agents, local stub inference, provider registry, approval gates, tool capability checks, and AWS Bedrock provider support
@@ -81,9 +81,9 @@ The alpha implementation includes:
 - remote inspect and logs through deployment metadata and CloudWatch Logs
 - preview destroy that empties stack-owned buckets and removes deployment metadata when configured
 
-## Alpha boundaries
+## Beta boundaries
 
-Current alpha limits include:
+Current beta limits include:
 
 - AWS is the first adapter, not the application contract.
 - Workflows execute end-to-end locally and map to Step Functions in AWS preview, but remote workflow run inspection is still maturing.

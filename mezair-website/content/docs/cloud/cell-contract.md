@@ -127,7 +127,7 @@ capabilities: {
 ```
 
 Guard checks use these declarations to reject direct provider access and
-undeclared effects where alpha can detect them.
+undeclared effects where beta can detect them.
 
 ## Manifest output
 

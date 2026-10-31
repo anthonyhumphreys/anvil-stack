@@ -20,7 +20,7 @@ Everything lives in the [`mezair`](https://github.com/anthonyhumphreys/mezair) m
 
 - `mezair-app/`: Mezair Desktop, the local Electron workspace.
 - `mezair-registry/`: Mezair Registry and Mezair Node Base.
-- `mezair-cloud/`: Mezair Cloud, the alpha Cell runtime and adapter platform.
+- `mezair-cloud/`: Mezair Cloud, the beta Cell runtime and adapter platform.
 - `mezair-website/`: this public docs site.
 
 The [monorepo map](/docs/project/repositories) explains what each directory owns and how to build it.
@@ -31,9 +31,9 @@ Everything in the monorepo is [MIT licensed](https://github.com/anthonyhumphreys
 
 ## Check the current status
 
-Several parts of Mezair are in alpha. Start with the status page for the tool you want to use:
+All Mezair products are currently in beta. Start with the status page for the tool you want to use:
 
-- [Registry alpha status](/docs/registry/alpha-status)
+- [Registry beta status](/docs/registry/beta-status)
 - [Cloud status and limits](/docs/cloud/status-and-limits)
 - [Sync & Mesh status and limits](/docs/sync/status-and-limits)
 

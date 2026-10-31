@@ -168,7 +168,7 @@ try {
 
 ## Status
 
-Generated client output is part of the alpha builder path. The current surface is
+Generated client output is part of the beta builder path. The current surface is
 metadata plus small runtime helpers, not a full application data layer. The next
 useful work is better typed examples, clearer token handling, and cache
 invalidation patterns around `examples/notes`.

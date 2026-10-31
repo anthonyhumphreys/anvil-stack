@@ -1,7 +1,7 @@
 ---
 title: Builder and Guard
 navTitle: Builder and Guard
-description: How the Mezair Builder checks, bundles, extracts manifests, and enforces alpha import and capability policy.
+description: How the Mezair Builder checks, bundles, extracts manifests, and enforces beta import and capability policy.
 product: Mezair Cloud
 section: Concepts
 journey: build
@@ -126,13 +126,13 @@ Guard can detect some undeclared effects:
 - `service(...)` requires `capabilities.services`
 - direct `process.env` is rejected; use `ctx.env.get()` or `ctx.env.require()`
 - handler use of capabilities should match declared Cell capabilities where
-  alpha can inspect it
+  beta can inspect it
 
 Current direct environment checks catch straightforward static forms such as
 `process.env` and `process["env"]`. Guard is not a perfect JavaScript sandbox;
 it is a policy check for normal Cell code and a clear signal to reviewers.
 
-This is not a perfect sandbox. It is a practical alpha control that narrows the
+This is not a perfect sandbox. It is a practical beta control that narrows the
 contract and catches common ways app code escapes into provider-specific
 behavior.
 

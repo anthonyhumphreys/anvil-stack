@@ -208,7 +208,7 @@ mounted agents. The generated Cell manifest includes mounted agent manifests
 under `agents`, each agent manifest includes its explicit `subagents` tree, and
 channel bindings under `channels`.
 
-Subagents are shallow during alpha. A parent can declare subagents, but a
+Subagents are shallow during beta. A parent can declare subagents, but a
 subagent cannot declare its own nested subagents. Guard validation fails if a
 subagent declares capabilities outside the parent's capability set.
 

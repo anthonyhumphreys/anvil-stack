@@ -10,7 +10,7 @@ order: 60
 
 # Registry rollout guide
 
-Mezair Registry is alpha software. Roll it out like infrastructure, not like a browser extension someone installed because the icon looked useful.
+Mezair Registry is beta software. Roll it out like infrastructure, not like a browser extension someone installed because the icon looked useful.
 
 The safe path is staged:
 

@@ -1,7 +1,7 @@
 ---
 title: API reference
 navTitle: API reference
-description: Gateway, Admin, health, readiness, explain, policy, override, report, and package endpoint reference for alpha operators.
+description: Gateway, Admin, health, readiness, explain, policy, override, report, and package endpoint reference for beta operators.
 product: Mezair Registry
 section: Reference
 journey: reference
@@ -10,7 +10,7 @@ order: 150
 
 # API reference
 
-This page summarizes the alpha HTTP surface that operators, CI jobs, and the CLI use. The CLI wraps most of these routes; call the API directly when you are debugging or integrating a custom workflow.
+This page summarizes the beta HTTP surface that operators, CI jobs, and the CLI use. The CLI wraps most of these routes; call the API directly when you are debugging or integrating a custom workflow.
 
 Local defaults:
 
@@ -246,7 +246,7 @@ MEZAIR_ADMIN_TOKEN=local-dev-token \
 
 ## Authentication model
 
-The alpha admin surface uses an environment admin token where protected operations need it. Full auth is intentionally not described as finished.
+The beta admin surface uses an environment admin token where protected operations need it. Full auth is intentionally not described as finished.
 
 Use:
 

@@ -10,7 +10,7 @@ order: 200
 
 # Status and limits
 
-Mezair Cloud is alpha software. You can run Cells locally, build React/Vite
+Mezair Cloud is beta software. You can run Cells locally, build React/Vite
 clients, inspect them with the CLI and Lens, and try AWS preview deployments.
 
 Mezair Cloud Agents will run agents on machines we host. It hasn't launched
@@ -48,9 +48,9 @@ and supported deployment targets.
 | Examples          | `examples/notes` is the canonical local demo. `examples/aws-preview` is the AWS-compatible smoke Cell.                                                                                                                                                                                                                                                                                                                 |
 | AWS preview       | Plan, review aggregation, CloudFormation synthesis, artifacts, optional provisioner, named preview metadata, Lambda bridge, DynamoDB, S3, SQS, EventBridge events and schedules, Step Functions workflows, outbound fetch guard, ECS/Fargate service resource synthesis, CloudWatch logs, remote inspect, remote logs, usage visibility, rollback intent, preview destroy, cost-driver hints, and cleanup hints exist. |
 
-## Non-goals for alpha
+## Non-goals for beta
 
-Mezair Cloud alpha does not aim to provide:
+Mezair Cloud beta does not aim to provide:
 
 - arbitrary cloud resource authoring in Cell code
 - direct provider SDK access from Cell handlers
@@ -69,9 +69,9 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Limit                                        | Impact                                                                                                                                                                                                                                                                                                                                                                     |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Auth lifecycle is provider-owned             | Token verification is real locally and on AWS (local IdP + OIDC config), but session/refresh management and login UI belong to your provider. See [Auth](/docs/cloud/auth).                                                                                                                                                                                                |
-| CLI packaging is alpha                       | The Cloud CLI package is `@mezairstack/cloud-cli` and exposes `mezair-cloud`. From the `mezair-cloud` workspace, use `pnpm mezair-cloud ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`.                                                                                                                                             |
+| CLI packaging is beta                       | The Cloud CLI package is `@mezairstack/cloud-cli` and exposes `mezair-cloud`. From the `mezair-cloud` workspace, use `pnpm mezair-cloud ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`.                                                                                                                                             |
 | Generated client is early                    | React/Vite is the default UI path and hook helpers exist, but invalidation is manual, there is no cache policy layer, and the generated surface is query/mutation metadata rather than a full SDK.                                                                                                                                                                         |
-| AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including named deploys, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers. Rollback is dry-run recovery intent only because deployment history and restorable client assets are not yet stored. |
+| AWS preview is beta, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including named deploys, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers. Rollback is dry-run recovery intent only because deployment history and restorable client assets are not yet stored. |
 | Workflows need deeper remote inspection      | Local workflows have durable run state, retries, timeouts, resume behavior, CLI commands, and Lens inspection. AWS preview maps workflows to Step Functions, but remote `workflows list/show --app` is not wired yet.                                                                                                                                                      |
 | Services are local-only                      | The `service` primitive is supervised by the local runtime. AWS preview blocks service-bearing deploys before provisioning until the Fargate runner executes the exact Cell handler. See [Services](/docs/cloud/services). |
 | Usage is visibility, not billing             | `mezair cloud usage --preview` reports declared resource counts and cost-driver hints. It does not query AWS billing or produce prices.                                                                                                                                                                                                                                     |

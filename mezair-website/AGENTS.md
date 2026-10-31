@@ -10,7 +10,8 @@ The site is not nested under another repo. It is the public website for Mezair D
 
 Mezair is open source developer infrastructure. Keep the site useful for developers trying to inspect, run, or contribute to the projects today.
 
-- Be honest about alpha or early surfaces.
+- Describe beta availability and current feature limits accurately.
+- All products are currently Beta. Keep public product labels and release-stage wording consistent with that status.
 - Describe feature availability and limits in terms of what users can do.
 - Do not hide sharp edges behind glossy copy.
 - Avoid SaaS dashboard language, cybersecurity vendor sludge, and fake maturity.

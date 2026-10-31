@@ -2,7 +2,7 @@
 
 > Mezair Desktop is an open source app for agent workflows on your own repos. The mezair-stack also publishes Sync & Mesh: the end-to-end encrypted account layer that keeps a user's own machines in step, alongside companion OSS tools: an npm policy gateway (Mezair Registry), a hardened Node base image (Mezair Node Base), and the portable app runtime (Mezair Cloud) that also powers the sync backend.
 
-The public documentation is organized by product and by task: Learn, Build, and Reference. Product status and limits are part of the documentation; do not infer production readiness from alpha surfaces.
+The public documentation is organized by product and by task: Learn, Build, and Reference. All Mezair products are currently in beta. Check each product's documented features and limits before using it in production.
 
 ## Start here
 

@@ -167,7 +167,7 @@ Local logs are NDJSON. AWS preview writes structured logs through Lambda and Clo
 
 ## Why the split matters
 
-This split gives alpha three useful properties:
+This split gives beta three useful properties:
 
 - local behavior and deployed behavior are comparable
 - adapters can change provider details without changing Cell code

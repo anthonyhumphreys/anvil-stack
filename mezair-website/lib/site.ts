@@ -74,8 +74,8 @@ export const desktop: Product = {
     "Mezair Desktop gives each repo a workspace where you plan with an agent, watch it work, and review every change before you keep it. The app runs locally and connects to Codex, Cursor, Devin, OpenAI, Azure OpenAI or LLMGateway with your own provider account. No Mezair account is needed for local use.",
   boundary:
     "Runs your local workflow: repositories, agent sessions, terminals, reviews and the notes you hand on with finished work.",
-  status: `In active development. Builds for macOS (Apple silicon), Windows and Linux ship from GitHub releases. User-definable software factories are in beta through ${featureBeta.endDate}.`,
-  statusLabel: "In development",
+  status: `Beta. Builds for macOS (Apple silicon), Windows and Linux ship from GitHub releases. User-definable software factories are in beta through ${featureBeta.endDate}.`,
+  statusLabel: "Beta",
   icon: Terminal,
   href: "/docs/desktop",
   startHref: "/docs/desktop/installation",
@@ -145,8 +145,8 @@ export const registry: Product = {
     "Mezair Registry sits between npm and your developers or CI. It applies your policy to every package, analyses new versions, caches what it allows and records why it decided.",
   boundary:
     "Decides which npm packages get in: policy, analysis, caching and a record of every override.",
-  status: "Alpha. Good for local trials, security reviews and early CI experiments.",
-  statusLabel: "Alpha",
+  status: "Beta. Good for local trials, security reviews and early CI experiments.",
+  statusLabel: "Beta",
   icon: PackageCheck,
   href: "/docs/registry",
   startHref: "/docs/registry/quickstart",
@@ -175,8 +175,8 @@ export const nodeBase: Product = {
   description:
     "A Node 22 devcontainer image for unfamiliar repos. Safe mode installs with lifecycle scripts switched off. Observed mode lets them run and writes down what they did.",
   boundary: "Runs installs for repos you haven't vetted, and reports what happened.",
-  status: "Ships inside the Mezair Registry repo as a companion tool.",
-  statusLabel: "Companion tool",
+  status: "Beta. Ships inside the Mezair Registry repo as a companion tool.",
+  statusLabel: "Beta",
   icon: Boxes,
   href: "/docs/node-base",
   startHref: "/docs/node-base/safe-mode",
@@ -207,8 +207,8 @@ export const cloud: Product = {
   boundary:
     "Provides the backend tools for your own apps. It is separate from Desktop and the optional hosted Sync service.",
   status:
-    "Alpha. The runtime, CLI and AWS preview work today. Hosted Mezair Cloud Agents isn't available yet.",
-  statusLabel: "Alpha",
+    "Beta. The runtime, CLI and AWS preview work today. Hosted Mezair Cloud Agents isn't available yet.",
+  statusLabel: "Beta",
   icon: Cloud,
   href: "/docs/cloud",
   startHref: "/docs/cloud/quickstart",

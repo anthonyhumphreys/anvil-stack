@@ -29,7 +29,7 @@ const nextConfig = {
   },
   async redirects() {
     const registryDocs = [
-      "alpha-status",
+      "beta-status",
       "api-reference",
       "architecture",
       "ci",
@@ -47,6 +47,16 @@ const nextConfig = {
     ];
 
     return [
+      {
+        source: "/docs/alpha-status",
+        destination: "/docs/registry/beta-status",
+        permanent: true
+      },
+      {
+        source: "/docs/registry/alpha-status",
+        destination: "/docs/registry/beta-status",
+        permanent: true
+      },
       ...registryDocs.map((slug) => ({
         source: `/docs/${slug}`,
         destination: `/docs/registry/${slug}`,

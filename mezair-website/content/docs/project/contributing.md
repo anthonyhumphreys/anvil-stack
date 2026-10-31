@@ -28,7 +28,7 @@ Across all projects:
 - Keep changes scoped to one concern.
 - Add or update tests for the behaviour you change.
 - Update documentation in the same change.
-- Describe alpha features by their current behavior, limits, and verification path.
+- Describe beta features by their current behavior, limits, and verification path.
 - Do not hide sharp edges.
 
 ## Mezair Desktop contributions
@@ -66,7 +66,7 @@ See `mezair-cloud/AGENTS.md` and `mezair-cloud/docs/contributing/development.md`
 Documentation lives in `mezair-website/content/docs`. To add or edit docs:
 
 1. Add a Markdown file with frontmatter.
-2. Use concrete commands, architecture, and honest alpha notes.
+2. Use concrete commands, architecture, and honest beta notes.
 3. Group docs by product folder.
 4. Run `pnpm build` and `pnpm typecheck` in `mezair-website`.
 

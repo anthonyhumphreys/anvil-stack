@@ -154,4 +154,4 @@ AWS preview deployment plans include a `workflow-preview-review` approval gate
 and Step Functions cost-driver hints. Remote workflow run inspection is not yet
 mirrored through `mezair-cloud workflows list/show --app`.
 
-Steps are a linear sequence: no branching, no parallelism, and no cross-Cell workflows in alpha.
+Steps are a linear sequence: no branching, no parallelism, and no cross-Cell workflows in beta.

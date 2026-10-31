@@ -297,21 +297,6 @@ export async function getDoc(slug: string): Promise<DocPage | undefined> {
   }
 }
 
-export function groupDocs(docs: Array<DocMeta & { slug: string; segments: string[] }>) {
-  const products = new Map<string, Map<string, Array<DocMeta & { slug: string; segments: string[] }>>>();
-  for (const doc of docs) {
-    const product = products.get(doc.product) ?? new Map<string, Array<DocMeta & { slug: string; segments: string[] }>>();
-    const section = product.get(doc.section) ?? [];
-    section.push(doc);
-    product.set(doc.section, section);
-    products.set(doc.product, product);
-  }
-  return [...products.entries()].map(([product, sections]) => ({
-    product,
-    sections: [...sections.entries()]
-  }));
-}
-
 export function groupProductDocs(
   docs: Array<DocMeta & { slug: string; segments: string[] }>,
   productId: ProductId

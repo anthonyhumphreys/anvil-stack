@@ -14,7 +14,7 @@ An Agent Sandbox gives an agent an isolated workspace to run tools and work on
 a repository. You can inspect its activity, pause for approval and resume from
 saved state.
 
-The alpha includes local execution, persisted events, source snapshots, a CLI
+The beta includes local execution, persisted events, source snapshots, a CLI
 service and an optional Desktop view. The AWS Lambda MicroVM adapter supports
 read-only execution. The sections below describe the contracts and their limits.
 
@@ -234,7 +234,7 @@ steering, and result requests under `/_mezair/execution/*`. Every request uses a
 short-lived MicroVM auth token. The token is not stored in the execution lease
 or event log.
 
-Run the durable alpha service and lifecycle clients with:
+Run the durable beta service and lifecycle clients with:
 
 ```bash
 export MEZAIR_EXECUTION_CONTROL_TOKEN="$(openssl rand -base64 32)"
@@ -374,7 +374,7 @@ Example future inspect shape:
   image in your own AWS account. It does not apply working-tree patches.
 - Codex or Cursor subscription sign-in requires a worker that explicitly
   supports that provider's login flow.
-- The alpha service stores state locally. It does not provide shared hosted
+- The beta service stores state locally. It does not provide shared hosted
   persistence, hosted memory or a hosted credential broker.
 - Mezair Cloud Agents hosted compute is not available. No price or release date
   has been set.

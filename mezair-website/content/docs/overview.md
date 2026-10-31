@@ -122,7 +122,7 @@ mezair registry doctor
 ### Mezair Registry
 
 - [Introduction](/docs/registry/introduction)
-- [Alpha status](/docs/registry/alpha-status)
+- [Beta status](/docs/registry/beta-status)
 - [Quickstart](/docs/registry/quickstart)
 - [Architecture](/docs/registry/architecture)
 - [Policy](/docs/registry/policy)

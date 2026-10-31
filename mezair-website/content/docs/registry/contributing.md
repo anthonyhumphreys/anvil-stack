@@ -10,7 +10,7 @@ order: 190
 
 # Contributing to Mezair Registry
 
-Mezair Registry and Mezair Node Base are open source and accept contributions. The project is alpha, so sharp edges are expected. Honest documentation of limitations is preferred over optimistic silence.
+Mezair Registry and Mezair Node Base are open source and accept contributions. The project is beta, so sharp edges are expected. Honest documentation of limitations is preferred over optimistic silence.
 
 ## Development setup
 

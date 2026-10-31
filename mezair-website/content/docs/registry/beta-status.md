@@ -1,6 +1,6 @@
 ---
-title: Alpha status
-navTitle: Alpha status
+title: Beta status
+navTitle: Beta status
 description: Registry availability, deployment limits and a gradual rollout for your repositories.
 product: Mezair Registry
 section: Reference
@@ -8,9 +8,9 @@ journey: reference
 order: 180
 ---
 
-# Alpha status
+# Beta status
 
-Mezair Registry and Node Base are alpha software. You can run the local Docker
+Mezair Registry and Node Base are beta software. You can run the local Docker
 Compose stack, deploy Registry to your own host, route npm-compatible clients
 through the gateway and use Node Base for dependency installs.
 
@@ -27,7 +27,7 @@ changing a team-wide registry or a critical CI pipeline.
   is allowed.
 - Node Base observed mode runs dependency install scripts and records their
   activity. Use safe mode when those scripts are not needed.
-- Keep the alpha stack on a private network or behind your own access controls.
+- Keep the beta stack on a private network or behind your own access controls.
 
 ## Roll out gradually
 

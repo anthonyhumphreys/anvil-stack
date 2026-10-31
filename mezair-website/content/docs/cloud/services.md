@@ -99,4 +99,4 @@ The current task scaffold does not run the exact Cell service handler. Blocking
 before provisioning avoids creating an idle, billable service while that runner
 is incomplete.
 
-Single instance per service: no horizontal scaling, leader election, or distributed coordination in alpha.
+Single instance per service: no horizontal scaling, leader election, or distributed coordination in beta.

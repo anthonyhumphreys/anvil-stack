@@ -131,7 +131,7 @@ Local state lives in `.mezair/local` by default:
   workflows.json
 ```
 
-The current database adapter stores JSON records in `dev.db`. It is intentionally simple, inspectable, and suited to alpha local development.
+The current database adapter stores JSON records in `dev.db`. It is intentionally simple, inspectable, and suited to beta local development.
 
 Local database branches snapshot that JSON store for previews, tests, and agent
 experiments. `main` maps to `.mezair/local/dev.db`; named branches live under

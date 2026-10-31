@@ -74,7 +74,7 @@ the front door so the Cloud and Registry commands share one Mezair shape.
 
 ## 4) Create a new Cell
 
-From the workspace root during alpha development:
+From the workspace root during beta development:
 
 ```bash
 pnpm mezair-cloud new notes

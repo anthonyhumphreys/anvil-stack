@@ -81,7 +81,7 @@ Safe research guidelines:
 
 ## Known limitations
 
-- Full auth (Cognito, OAuth) is future work. The alpha uses an environment admin token.
+- Full auth (Cognito, OAuth) is future work. The beta uses an environment admin token.
 - Private package metadata is excluded from LLM review by default.
 - The worker does not sandbox tarball unpacking beyond static analysis.
 - Very large tarballs may hit timeout limits.

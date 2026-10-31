@@ -135,7 +135,7 @@ AWS preview maps:
 - Scheduled jobs to EventBridge rules invoking the Lambda runtime.
 - `ctx.events.publish` to EventBridge when `capabilities.events` is declared.
 - Repeatedly failing queued jobs to a Cell-owned SQS dead-letter queue after
-  three receives, with 14 day retention for alpha debugging.
+  three receives, with 14 day retention for beta debugging.
 
 ### Limitations
 

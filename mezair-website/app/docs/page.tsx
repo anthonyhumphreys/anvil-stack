@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { ArrowRight, BookOpen, ChevronDown, Compass, Wrench } from "lucide-react";
+import { ArrowRight, BookOpen, Compass, Wrench } from "lucide-react";
 import { DocsSearch } from "@/components/site/docs-search";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
-import { getDocs, groupDocs, toSearchItems } from "@/lib/docs";
+import { getDocs, toSearchItems } from "@/lib/docs";
 import { pageMetadata } from "@/lib/metadata";
 import { products } from "@/lib/site";
 
@@ -39,7 +39,6 @@ const ways = [
 
 export default async function DocsIndexPage() {
   const docs = await getDocs();
-  const groupedDocs = groupDocs(docs.filter((doc) => doc.kind !== "product"));
 
   return (
     <div className="min-h-screen bg-background">
@@ -112,40 +111,6 @@ export default async function DocsIndexPage() {
                 </li>
               ))}
             </ul>
-          </div>
-        </section>
-
-        <section className="border-t py-16">
-          <div className="page-shell">
-            <details className="group border-y">
-              <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between text-lg font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-                Every page, in one list
-                <ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden="true" />
-              </summary>
-              <div className="border-t">
-                {groupedDocs.map(({ product, sections }) => (
-                  <div key={product} className="grid gap-6 border-b py-8 last:border-b-0 lg:grid-cols-[13rem_1fr]">
-                    <h3 className="font-semibold">{product}</h3>
-                    <div className="grid gap-7 sm:grid-cols-2 lg:grid-cols-3">
-                      {sections.map(([section, entries]) => (
-                        <div key={`${product}-${section}`}>
-                          <p className="text-sm font-medium text-muted-foreground">{section}</p>
-                          <ul className="mt-3 grid gap-2">
-                            {entries.map((entry) => (
-                              <li key={entry.slug}>
-                                <Link href={`/docs/${entry.slug}`} className="text-[0.9375rem] hover:underline hover:underline-offset-4">
-                                  {entry.navTitle}
-                                </Link>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </details>
           </div>
         </section>
       </main>

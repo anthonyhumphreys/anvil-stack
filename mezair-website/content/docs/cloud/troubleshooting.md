@@ -47,7 +47,7 @@ export default app({
 });
 ```
 
-Dynamic fetch targets are not fully inspectable in alpha. Prefer a small helper
+Dynamic fetch targets are not fully inspectable in beta. Prefer a small helper
 that keeps the external host visible in code, because hiding network access in
 string plumbing is how tiny demos grow a trench coat.
 

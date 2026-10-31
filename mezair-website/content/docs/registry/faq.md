@@ -62,7 +62,7 @@ Three places, in increasing depth:
 
 ## Where should I use this today?
 
-It is alpha infrastructure for local trials, security review, early CI experiments, and contribution work. Before putting it on an organization-wide install path, validate the gateway, cache, policy, overrides, analysis worker, and fallback behavior against your own packages. [Alpha status](/docs/registry/alpha-status) is the scope statement.
+It is beta infrastructure for local trials, security review, early CI experiments, and contribution work. Before putting it on an organization-wide install path, validate the gateway, cache, policy, overrides, analysis worker, and fallback behavior against your own packages. [Beta status](/docs/registry/beta-status) is the scope statement.
 
 ## How do I report a security issue?
 

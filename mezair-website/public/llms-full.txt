@@ -6,7 +6,7 @@ run the checks, and keep provider machinery out of user code.
 
 ## Product Model
 
-Mezair Cloud is an alpha TypeScript platform for deployable Mezair Cells and
+Mezair Cloud is a beta TypeScript platform for deployable Mezair Cells and
 contract-first Mezair Agents.
 
 Core terms:
@@ -406,5 +406,5 @@ For example: `/docs/cloud/doctor#nodeversion`.
   `mezair-website/content/docs/cloud`.
 - Treating `usage --preview` as a bill. It is declared resource visibility, not
   measured cloud cost.
-- Describing alpha gaps as finished production infrastructure. Be precise;
+- Describing beta gaps as finished production infrastructure. Be precise;
   optimism is not a deployment adapter.

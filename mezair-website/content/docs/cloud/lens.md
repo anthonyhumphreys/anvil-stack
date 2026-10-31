@@ -10,7 +10,7 @@ order: 170
 
 # Mezair Lens
 
-Mezair Lens lets you inspect and debug a running Cell in your browser. The local runtime serves the page and its data through the same `/_mezair/*` routes the CLI uses. A hosted version could use the same API later; the alpha runs locally.
+Mezair Lens lets you inspect and debug a running Cell in your browser. The local runtime serves the page and its data through the same `/_mezair/*` routes the CLI uses. A hosted version could use the same API later; the beta runs locally.
 
 ## Opening Lens
 

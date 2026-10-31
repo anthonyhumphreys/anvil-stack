@@ -249,6 +249,8 @@ The sticky header uses a translucent themed ground, a bottom rule and backdrop b
 
 Documentation search is a 56px-tall, transparent field within a ruled dialog header, with muted placeholder text and an accent search icon. Its wrapper, result selection and close control provide the interaction structure; the bare input does not acquire an invented standalone border. Search opens with `/` or Command/Ctrl-K. Documentation code blocks use bounded dark artifact panels with copy controls; notes, tips and warnings use labeled tinted callouts.
 
+The documentation landing page uses search, task links and a product list. Do not add a second expandable index of every page. All product status labels currently read Beta.
+
 Setup prompts use a `prompt` fence with an Agent prompt label and a Copy prompt button. Their text wraps in the body font, including on mobile. Copy feedback restores the original action label. Public docs describe user tasks and practical limits; internal test reports, acceptance plans and launch checklists stay in repository docs and runbooks.
 
 ### Real captures

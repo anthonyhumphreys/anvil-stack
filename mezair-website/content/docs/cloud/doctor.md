@@ -41,7 +41,7 @@ do. `details` is intentionally check-specific, so automation should key on
 | `error`   | The local environment cannot run the expected workflow safely.                   |
 
 `doctor` exits with code `5` when any check reports `error`. Warnings and info
-items keep the command successful because alpha workflows often check optional
+items keep the command successful because beta workflows often check optional
 preview/auth setup on machines that are only running local Cells.
 
 ## Diagnostic IDs
