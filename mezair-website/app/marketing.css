@@ -448,6 +448,17 @@ html:has(.cine) {
 
 /* --- Pricing ------------------------------------------------------------------ */
 
+.cine .pricing-title {
+  font-size: clamp(2rem, 1.35rem + 2.3vw, 3.4rem);
+  line-height: 1;
+  max-width: none;
+  text-wrap: balance;
+}
+
+.cine .pricing-intro .cine-lede {
+  max-width: 62ch;
+}
+
 .cine .plans {
   display: grid;
   overflow: hidden;

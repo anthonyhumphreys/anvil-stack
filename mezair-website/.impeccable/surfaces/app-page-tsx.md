@@ -34,7 +34,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 - No private financial forecasts. No gradient text, decorative glass, fake metrics or testimonials. No horizontal overflow from 320px.
 - Marketing styles live in app/marketing.css, every selector under `.cine`; the mark lives in app/mark.css.
 
+## Pricing composition
+
+- Pricing uses a compact, left-aligned “Pricing” heading with a short explanation of the free app and the choice of self-hosted or hosted Sync & Mesh. The comparison board carries the price figures and primary actions. Beta access and code redemption are quiet links above the board, not a second set of large buttons.
+
 ## Additional confirmed direction
-- Pricing is up front and said the same way everywhere, in one or two sentences: the app is free; Sync & Mesh is free on a backend you run (your cloud provider bills you) or £6 a month if Mezair hosts it; hosting is an invite-only beta for now. On the homepage it sits under the lede, before the download action.
+- Pricing is up front and said the same way everywhere, in one or two sentences: the app is free; Sync & Mesh is free on a backend you run (your cloud provider bills you) or £8.99 a month (£89.90 a year) if Mezair hosts it; hosting is an invite-only beta for now. On the homepage it sits in the lede, before the download action.
 - The footer links to a playful naming page. Its story is power under precise control: strength, discipline, progression and elegance. The user sets the direction; agents carry out complex, coordinated work. A click-triggered horse-M hop retains the fun.
 - Logo motion: "Ink draw + rise", chosen by the user, refined to sumi-e brushwork painted smoothly left to right. The silhouette never comes apart.

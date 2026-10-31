@@ -279,6 +279,8 @@ Every mention of price says the same thing in one or two plain sentences: the ap
 
 Pricing is one rounded, ruled board rather than detached cards. The featured column receives a subtle orange tint and a two-pixel top edge; wide Archivo gives prices their hierarchy. The bill ledger, backend comparisons and companion list use divided rows. FAQs use native disclosure controls with a plus rotating when open. Availability and pricing limits remain visible beside the action they qualify.
 
+The pricing page opens with a compact, left-aligned “Pricing” heading. Use the headline type scale, one short explanation that the app and self-hosted Sync & Mesh are free, then quiet beta-access and code-redemption links. Keep price figures in the comparison board rather than repeating them in the headline and lede. Plan actions carry the button emphasis.
+
 ### Naming and horseplay
 
 `/what-does-mezair-mean` gives the name a visual expression of controlled power. The large horse-M sits above a hairline ground. “A little horseplay” triggers a single 1.2s collected hop; there is no entrance autoplay. The caption changes through a polite live region. Reduced motion removes the hop and button transition while preserving the action and text feedback.

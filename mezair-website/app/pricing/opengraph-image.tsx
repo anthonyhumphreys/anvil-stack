@@ -6,8 +6,8 @@ export const contentType = cardContentType;
 
 export default function Image() {
   return renderCard({
-    title: "The app is free. Hosted Sync is £8.99 a month.",
-    description: "Sync & Mesh is free on a backend you run. Our hosting is an invite-only beta for now.",
+    title: "Pricing",
+    description: "The app is free. Self-host Sync & Mesh for free, or choose our invite-only hosted beta.",
     label: "Pricing",
     facts: ["App free", "Self-hosted Sync free", "Hosted Sync £8.99 a month"]
   });

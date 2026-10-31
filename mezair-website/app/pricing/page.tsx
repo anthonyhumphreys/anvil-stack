@@ -40,25 +40,23 @@ export default function PricingPage() {
       <main id="main-content">
         <section className="cine-hero cine-lit" aria-labelledby="pricing-title">
           <div className="cine-wide">
-            <div className="cine-titlerow">
-              <h1 id="pricing-title" className="cine-title max-w-[16ch]">
-                The app is free. Hosted Sync is £8.99 a month
+            <div className="pricing-intro">
+              <h1 id="pricing-title" className="cine-title pricing-title">
+                Pricing
               </h1>
-              <div>
-                <p className="cine-lede md:max-w-[60ch] lg:max-w-[46ch]">
-                  Run Sync &amp; Mesh yourself for free, or let us host it for £8.99 a month. Teams are £12 per member.
+              <p className="cine-lede mt-5">
+                The app is free. Self-host Sync &amp; Mesh for free, or let us run it for you.
+              </p>
+              <div className="mt-4 flex flex-wrap items-baseline gap-x-5 gap-y-2 text-sm">
+                <p className="cine-fine">
+                  Hosted beta access is invite-only until {featureBeta.endDate}.
                 </p>
-                <p className="cine-fine mt-4">
-                  Planned prices. Hosting is invite-only until {featureBeta.endDate}, and testers get a free code.
-                </p>
-                <div className="mt-6 flex flex-wrap gap-3">
-                  <Button asChild size="lg">
-                    <Link href="/waitlist">Request beta access</Link>
-                  </Button>
-                  <Button asChild size="lg" variant="outline">
-                    <Link href="/account/billing">Redeem a beta code</Link>
-                  </Button>
-                </div>
+                <Link href="/waitlist" className="cine-link inline-flex min-h-11 items-center">
+                  Request beta access
+                </Link>
+                <Link href="/account/billing" className="cine-link inline-flex min-h-11 items-center">
+                  Redeem a beta code
+                </Link>
               </div>
             </div>
 
@@ -95,7 +93,6 @@ export default function PricingPage() {
                   </article>
                 ))}
               </div>
-              <p className="cine-fine mt-5">Prices are in pounds sterling. If they change before launch, this page changes first.</p>
             </section>
           </div>
         </section>
