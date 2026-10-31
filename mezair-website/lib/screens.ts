@@ -77,6 +77,3 @@ export type Screen = ScreenText & (typeof manifest)[ScreenId] & { id: ScreenId; 
 export function screen(id: ScreenId): Screen {
   return { id, ...manifest[id], ...text[id], panel: panels.has(id) };
 }
-
-export const screenProvenance =
-  "These are screenshots of Mezair Desktop with sample data. No agent, provider or backend was contacted to make them.";

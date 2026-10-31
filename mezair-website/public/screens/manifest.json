@@ -6,8 +6,8 @@
     "source": "desktop",
     "route": "#/_dev/processing?showcase",
     "fixture": "Electron shell, Acme fixture workspace, ProcessingPreview showcase turn",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "desktop-run-steps": {
     "file": "/screens/desktop-run-steps.webp",
@@ -16,8 +16,8 @@
     "source": "desktop",
     "route": "#/_dev/processing?showcase",
     "fixture": "Electron shell, Acme fixture workspace, ProcessingPreview showcase turn expanded",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "factories-line": {
     "file": "/screens/factories-line.webp",
@@ -26,8 +26,8 @@
     "source": "replay",
     "route": "?factories",
     "fixture": "FactoriesPreview synthetic factory backend",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "factories-workflows": {
     "file": "/screens/factories-workflows.webp",
@@ -36,8 +36,8 @@
     "source": "replay",
     "route": "?factories&workflows",
     "fixture": "FactoriesPreview, Workflows side",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "mesh-approval": {
     "file": "/screens/mesh-approval.webp",
@@ -46,8 +46,8 @@
     "source": "replay",
     "route": "?mesh=approval",
     "fixture": "MeshPreview: code-task waiting for a bootstrap approval",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "mesh-devices": {
     "file": "/screens/mesh-devices.webp",
@@ -56,8 +56,8 @@
     "source": "replay",
     "route": "?mesh",
     "fixture": "MeshPreview: Settings → Sync & Mesh, enrolled devices",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "mesh-jobs": {
     "file": "/screens/mesh-jobs.webp",
@@ -66,8 +66,8 @@
     "source": "replay",
     "route": "?mesh=jobs",
     "fixture": "MeshPreview: Mesh jobs with a watched attempt stream",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "mesh-session": {
     "file": "/screens/mesh-session.webp",
@@ -76,8 +76,8 @@
     "source": "replay",
     "route": "?mesh=session",
     "fixture": "MeshPreview: session ownership idle with Move open, and mid-handoff",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "mesh-status": {
     "file": "/screens/mesh-status.webp",
@@ -86,8 +86,8 @@
     "source": "replay",
     "route": "?mesh",
     "fixture": "MeshPreview: Settings → Sync & Mesh connection status",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "surface-dependencies": {
     "file": "/screens/surface-dependencies.webp",
@@ -96,8 +96,8 @@
     "source": "replay",
     "route": "",
     "fixture": "ChatReplayPreview surface-dependencies: Dependencies surface with advisories",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "surface-findings": {
     "file": "/screens/surface-findings.webp",
@@ -106,8 +106,8 @@
     "source": "replay",
     "route": "",
     "fixture": "ChatReplayPreview surface-findings: Findings surface from a security audit",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "surface-pipeline": {
     "file": "/screens/surface-pipeline.webp",
@@ -116,8 +116,8 @@
     "source": "replay",
     "route": "",
     "fixture": "ChatReplayPreview surface-pipeline: Pipeline surface for a slow CI run",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   },
   "surface-review": {
     "file": "/screens/surface-review.webp",
@@ -126,7 +126,7 @@
     "source": "replay",
     "route": "",
     "fixture": "ChatReplayPreview surface-review-working-tree: Review surface for a working tree",
-    "appCommit": "91532c8b",
-    "capturedAt": "2026-10-30"
+    "appCommit": "1e91d524",
+    "capturedAt": "2026-10-31"
   }
 }

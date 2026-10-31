@@ -1,7 +1,6 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { useRef, type CSSProperties, type KeyboardEvent } from "react";
 import { Pause, Play } from "lucide-react";
 import { screen, type ScreenId } from "@/lib/screens";
@@ -100,13 +99,6 @@ export function ProductReel() {
           </button>
         )}
       </div>
-
-      <p className="cine-fine mt-3">
-        {screen(current.shot).caption}{" "}
-        <Link href="/docs/project/screenshots" className="cine-link">
-          About these screenshots
-        </Link>
-      </p>
     </div>
   );
 }

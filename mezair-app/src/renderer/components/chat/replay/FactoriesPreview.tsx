@@ -98,8 +98,8 @@ function node(
     prompt: `${name} the issue.`,
     personaId,
     provider: 'codex',
-    model: 'gpt-5.6-sol',
-    reasoningEffort: 'high',
+    model: 'gpt-6.1-sol',
+    reasoningEffort: 'xhigh',
     executionStrategy: 'focused',
     position: { x, y: 0 },
     ...extra,
@@ -114,7 +114,7 @@ let templates: WorkflowTemplate[] = [
     nodes: [
       node('plan', 'Plan', 'architect', 0, { reasoningEffort: 'xhigh' }),
       node('build', 'Implement', 'coder', 330),
-      node('review', 'Review', 'reviewer', 660, { model: 'gpt-5.6-sol-mini' }),
+      node('review', 'Review', 'reviewer', 660),
     ],
     edges: [
       { id: 'e1', source: 'plan', target: 'build' },
@@ -197,11 +197,11 @@ const pinned = (templateId: string, at: string): WorkflowTemplate => {
   return { ...structuredClone(template), updatedAt: at };
 };
 
-// The template's review step moved to a smaller model after this copy was pinned.
+// The template's review step increased its reasoning effort after this copy was pinned.
 const pinnedBeforeEdit = (): WorkflowTemplate => {
   const copy = pinned('tpl-plan-build-review', ago(60 * 24 * 2));
   copy.nodes = copy.nodes.map((item) =>
-    item.id === 'review' ? { ...item, model: 'gpt-5.6-sol' } : item,
+    item.id === 'review' ? { ...item, reasoningEffort: 'high' } : item,
   );
   return copy;
 };
@@ -213,7 +213,7 @@ const orphanedPin = (): WorkflowTemplate => ({
   description: 'Bump, run the suite, summarise breaking changes.',
   nodes: [
     node('bump', 'Bump dependencies', 'coder', 0),
-    node('notes', 'Summarise changes', 'reviewer', 330, { model: 'gpt-5.6-sol-mini' }),
+    node('notes', 'Summarise changes', 'reviewer', 330),
   ],
   edges: [{ id: 'e1', source: 'bump', target: 'notes' }],
   createdAt: ago(60 * 24 * 60),
@@ -808,7 +808,7 @@ export function installFactoriesPreviewBridge(): void {
       activeWorkspaceId: workspace.id,
       llmProvider: 'codex',
       enabledLlmProviders: ['codex'],
-      openaiModel: 'gpt-5.6-sol',
+      openaiModel: 'gpt-6.1-sol',
     }),
     update: async () => undefined,
     getCodexStatus: async () => null,

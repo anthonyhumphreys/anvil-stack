@@ -11,6 +11,6 @@ export default function Image() {
     label: "Sync & Mesh",
     status: "Beta through 30 November 2026",
     facts: ["AES-256-GCM", "LAN first", "Self-host free"],
-    image: { file: "mesh-jobs.jpg", width: 1100, height: 1376, top: 96 }
+    image: { file: "mesh-jobs.jpg", width: 1100, height: 1184, top: 96 }
   });
 }

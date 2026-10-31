@@ -10,7 +10,7 @@
  *   desktop  The Electron app on an isolated fixture profile with remote debugging:
  *              MEZAIR_DEV_USER_DATA_PATH=/tmp/mezair-capture MEZAIR_DEV_PROCESSING_PREVIEW=1 \
  *                pnpm dev -- --remote-debugging-port=9333
- *            See docs at /docs/project/screenshots for seeding the fixture workspace.
+ *            See scripts/capture-screens.md for seeding the fixture workspace.
  *
  * Usage: node scripts/capture-screens.mjs [id ...]
  * Env:   CHROME_PATH, MEZAIR_REPLAY_URL (http://127.0.0.1:4179), MEZAIR_DESKTOP_CDP (9333)

@@ -93,7 +93,7 @@ const manifest = (commit: string) => ({
   repositories: [{ repositoryId: 'repo_storefront', commit }],
   bootstrapDigest: 'sha256:5d1c0e7a',
   provider: 'codex',
-  model: 'gpt-5.6-sol',
+  model: 'gpt-6.1-sol',
   configVersions: { agents: '7', rules: '3' },
   inputs: {},
 });
@@ -189,7 +189,7 @@ const activityScript: Array<Pick<SyncAttemptActivity, 'kind' | 'text'>> = [
   { kind: 'stdout', text: 'worktree clean · commit verified' },
   { kind: 'stdout', text: '$ pnpm install --frozen-lockfile' },
   { kind: 'stdout', text: 'Packages: +412 · done in 6.1s' },
-  { kind: 'status', text: 'codex session started · gpt-5.6-sol · ask for extra access' },
+  { kind: 'status', text: 'codex session started · gpt-6.1-sol · xhigh · ask for extra access' },
   { kind: 'stdout', text: 'read src/lib/retry.ts' },
   { kind: 'stdout', text: '$ pnpm test -- retry' },
   { kind: 'stderr', text: 'FAIL retries five times: expected 5, received 3' },

@@ -255,7 +255,7 @@ Every product image is the production Mezair Desktop UI rendered with synthetic 
 
 ### Product reel
 
-The homepage reel crossfades four real captures (Watch it work, Read the result, Review the change, Move machines) inside one 16:10 frame. Full-window captures cover the frame from the top-left; panel captures sit centred on the window ground. A keyboard tablist with a filling orange line selects chapters; autoplay runs only while on screen, in a visible tab and without reduced motion, and any choice holds that chapter. Slides cross 700ms on opacity, 900ms on scale (1.012 → 1) and 700ms on a 6px blur. Where `animation-timeline: view()` is supported and motion is allowed, the frame tilts up from `rotateX(14deg) scale(0.94)` into place as it scrolls in. Its caption names the capture and links to how captures are made.
+The homepage reel crossfades four real captures (Watch it work, Read the result, Review the change, Move machines) inside one 16:10 frame. Full-window captures cover the frame from the top-left; panel captures sit centred on the window ground. A keyboard tablist with a filling orange line selects chapters; autoplay runs only while on screen, in a visible tab and without reduced motion, and any choice holds that chapter. Slides cross 700ms on opacity, 900ms on scale (1.012 → 1) and 700ms on a 6px blur. Where `animation-timeline: view()` is supported and motion is allowed, the frame tilts up from `rotateX(14deg) scale(0.94)` into place as it scrolls in. The chapter labels explain the sequence; there is no extra caption about the screenshots. Capture instructions belong in `scripts/capture-screens.md`, not the public site.
 
 ### Mesh stage
 

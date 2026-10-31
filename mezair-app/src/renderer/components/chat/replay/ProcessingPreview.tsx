@@ -358,8 +358,11 @@ export default function ProcessingPreview() {
           onSideQuestion={async () => true}
           personaColour="var(--color-accent)"
           modelProvider={provider}
-          model={isAcpAgentProvider(provider) ? 'auto' : 'gpt-5.6-sol'}
+          model={isAcpAgentProvider(provider) ? 'auto' : 'gpt-6.1-sol'}
           onModelChange={noop}
+          reasoningLevel="xhigh"
+          reasoningOptions={['medium', 'high', 'xhigh']}
+          onReasoningChange={noop}
           codexMode={accessMode}
           accessOptions={chatAccessOptionsForProvider(provider).filter(
             (option) => option.level !== null,

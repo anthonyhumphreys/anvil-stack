@@ -1,14 +1,7 @@
----
-title: How the website's screenshots are made
-navTitle: Screenshots
-description: Every product image on this site is the real Mezair UI with fixture data. Here is how to reproduce and refresh them.
-product: Project
-section: Guides
-journey: build
-order: 40
----
+# Screenshot capture guide
 
-# How the website's screenshots are made
+Maintainer instructions for refreshing the website assets. This guide is kept
+in the repository and is not part of the public documentation.
 
 Every product image on mezair.dev is a screenshot of Mezair Desktop with sample data. The website draws none of them. The animations on the [Sync & Mesh page](/sync) are diagrams, and the page labels them that way.
 
@@ -41,7 +34,9 @@ The source code labels all fixture content as synthetic. The Acme workspace, its
      pnpm dev -- --remote-debugging-port=9333
    ```
 
-   If your shell sets `ELECTRON_RUN_AS_NODE`, unset it first. Finish the welcome flow with **Continue without Sync**, set the theme to Dark, and add a fixture workspace named Acme with a small local repository.
+   If your shell sets `ELECTRON_RUN_AS_NODE`, unset it first. Finish the welcome flow with **Continue without Sync**, set the theme to Dark, and add a fixture workspace named Acme with a small local repository that has at least one commit.
+
+   Website examples use `gpt-6.1-sol` with `xhigh` reasoning (shown as **Extra high** in the composer). Keep the processing, factory, Mesh and chat replay fixtures consistent when refreshing the captures.
 
 3. Capture from `mezair-website`:
 
@@ -51,6 +46,8 @@ The source code labels all fixture content as synthetic. The Acme workspace, its
    ```
 
 The script uses Chrome through the DevTools protocol with no extra dependencies, writes 2× WebP files to `public/screens/` (PNG if `cwebp` is missing), and rewrites the manifest. Set `CHROME_PATH`, `MEZAIR_REPLAY_URL` or `MEZAIR_DESKTOP_CDP` if your setup differs. Development-only fixture controls are hidden during capture; nothing else is changed.
+
+Refresh the matching JPEG copies in `app/_og/assets/` too: desktop, desktop steps and factories at 1400 px wide; Mesh jobs and review at 1100 px wide. Preserve their aspect ratio and update the social-card image dimensions if a capture's shape changes.
 
 ## Add a capture
 

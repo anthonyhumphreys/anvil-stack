@@ -622,8 +622,10 @@ export function ChatReplayPreview() {
                 }
                 onSideQuestion={askSyntheticSideQuestion}
                 personaColour="#48d597"
-                model="synthetic-fixture-model"
+                model="gpt-6.1-sol"
                 modelProvider="codex"
+                reasoningLevel="xhigh"
+                reasoningOptions={['medium', 'high', 'xhigh']}
                 draftKey={`mezair:chat-replay:${scenario.id}:${selectedThreadId}`}
                 prefill={reviewPrefill}
                 showSyntaxHint={false}
