@@ -7,7 +7,7 @@ export const contentType = cardContentType;
 export default function Image() {
   return renderCard({
     title: "Put your agents in motion.",
-    description: "Codex, Cursor, Devin and more, in one open-source desktop app.",
+    description: "Your open-source workbench for getting real work done. You bring the inference, we'll wrangle it.",
     label: "mezair.dev",
     facts: ["Free", "MIT", "macOS · Windows · Linux"],
     image: { file: "desktop.jpg", width: 1400, height: 875, top: 150 }

@@ -143,11 +143,10 @@ export default function HomePage() {
                 Put your agents in motion.
               </h1>
               <p className="cine-lede cine-fade mt-5 max-w-[52ch]" style={fade(420)}>
-                Codex, Cursor, Devin and more, in one desktop app. Check every change before you keep it. Pick up
-                the session on another machine.
+                Your open-source workbench for getting real work done. You bring the inference, we&apos;ll wrangle it.
               </p>
               <p className="cine-fade mt-4 max-w-[52ch] text-[0.9375rem] leading-relaxed" style={fade(480)}>
-                Free and open source. Hosted sync is{" "}
+                Desktop is free. Hosted sync is{" "}
                 <Link href="/pricing" className="cine-link">
                   £6 a month
                 </Link>
