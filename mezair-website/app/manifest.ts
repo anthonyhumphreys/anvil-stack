@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Mezair",
     short_name: "Mezair",
-    description: "A free, open-source desktop app for running coding agents on your own repos.",
+    description: "Codex, Cursor, Devin and more, in one open-source desktop app.",
     start_url: "/",
     display: "browser",
     background_color: "#060a17",

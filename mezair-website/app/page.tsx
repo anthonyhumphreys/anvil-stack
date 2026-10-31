@@ -143,14 +143,15 @@ export default function HomePage() {
                 Put your agents in motion.
               </h1>
               <p className="cine-lede cine-fade mt-5 max-w-[52ch]" style={fade(420)}>
-                An open-source desktop app for running coding agents on your own repos.
+                Codex, Cursor, Devin and more, in one desktop app. Check every change before you keep it. Pick up
+                the session on another machine.
               </p>
               <p className="cine-fade mt-4 max-w-[52ch] text-[0.9375rem] leading-relaxed" style={fade(480)}>
-                Free. Sync across machines is free to self-host, or{" "}
+                Free and open source. Hosted sync is{" "}
                 <Link href="/pricing" className="cine-link">
                   £6 a month
-                </Link>{" "}
-                hosted.
+                </Link>
+                , or run it yourself for free.
               </p>
               <div className="cine-fade mt-7 flex flex-wrap justify-center gap-3" style={fade(560)}>
                 <Button asChild size="lg">
