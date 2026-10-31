@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Mezair",
     short_name: "Mezair",
-    description: "The open-source workbench for coding agents. You set the direction. Mezair carries it forward.",
+    description: "The open-source workbench for coding agents. Harness them, in both senses.",
     start_url: "/",
     display: "browser",
     background_color: "#060a17",

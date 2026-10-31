@@ -143,7 +143,7 @@ export default function HomePage() {
                 Put your agents in motion.
               </h1>
               <p className="cine-lede cine-fade mt-5 max-w-[52ch]" style={fade(420)}>
-                The open-source workbench for coding agents. You set the direction. Mezair carries it forward.
+                The open-source workbench for coding agents. Harness them, in both senses.
               </p>
               <p className="cine-fade mt-4 max-w-[52ch] text-[0.9375rem] leading-relaxed" style={fade(480)}>
                 Desktop is free. Hosted sync is{" "}
