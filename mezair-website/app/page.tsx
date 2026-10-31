@@ -142,15 +142,17 @@ export default function HomePage() {
               <h1 id="hero-title" className="cine-title cine-fade mt-6 max-w-[14ch]" style={fade(250)}>
                 Put your agents in motion.
               </h1>
-              <p className="cine-lede cine-fade mt-5 max-w-[52ch]" style={fade(420)}>
-                The open-source harness for coding agents. You steer, it pulls.
-              </p>
-              <p className="cine-fade mt-4 max-w-[52ch] text-[0.9375rem] leading-relaxed" style={fade(480)}>
-                Desktop is free. Hosted sync is{" "}
+              <p className="cine-lede cine-fade mt-5 max-w-[54ch]" style={fade(420)}>
+                Run Codex, Cursor, Devin and more from one desktop app. Bring your own subscriptions. Free and open
+                source. Add hosted{" "}
+                <Link href="/sync" className="cine-link">
+                  Sync &amp; Mesh
+                </Link>{" "}
+                for{" "}
                 <Link href="/pricing" className="cine-link">
-                  £6 a month
+                  £6/mo
                 </Link>
-                , or run it yourself for free.
+                .
               </p>
               <div className="cine-fade mt-7 flex flex-wrap justify-center gap-3" style={fade(560)}>
                 <Button asChild size="lg">
