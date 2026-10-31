@@ -69,7 +69,7 @@ export const desktop: Product = {
   title: "Mezair Desktop",
   shortTitle: "Desktop",
   repoName: "mezair-app/",
-  tagline: "Your open-source workbench for getting real work done.",
+  tagline: "The open-source workbench for coding agents.",
   description:
     "Mezair Desktop gives each repo a workspace where you plan with an agent, watch it work, and review every change before you keep it. The app runs locally and connects to Codex, Cursor, Devin, OpenAI, Azure OpenAI or LLMGateway with your own provider account. No Mezair account is needed for local use.",
   boundary:

@@ -143,7 +143,7 @@ export default function HomePage() {
                 Put your agents in motion.
               </h1>
               <p className="cine-lede cine-fade mt-5 max-w-[52ch]" style={fade(420)}>
-                Your open-source workbench for getting real work done. You bring the inference, we&apos;ll wrangle it.
+                The open-source workbench for coding agents. Bring your own models, and hold the reins.
               </p>
               <p className="cine-fade mt-4 max-w-[52ch] text-[0.9375rem] leading-relaxed" style={fade(480)}>
                 Desktop is free. Hosted sync is{" "}
